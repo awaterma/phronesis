@@ -1,0 +1,33 @@
+[package]
+name = "phronesis"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+description = "Practical-rank surface for rules-bounded LLM interaction."
+license = "MIT"
+authors = ["Andrew Waterman"]
+
+# This crate is intentionally minimal. It must not depend on phronesis or any
+# domain-specific code — its job is to host the abstraction (Consequence,
+# Actor, Provenance) that phronesis and future hosts implement against.
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+async-trait = "0.1"
+anyhow = "1.0"
+tracing = "0.1"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+[dev-dependencies]
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["macros", "rt"] }
+async-trait = "0.1"
+anyhow = "1.0"
+
+[[example]]
+name = "push_and_pull"
+path = "examples/push_and_pull.rs"
+
+[[example]]
+name = "rule_driven_lookup"
+path = "examples/rule_driven_lookup.rs"

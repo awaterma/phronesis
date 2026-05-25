@@ -1,0 +1,631 @@
+//! End-to-end tests for `phr-mcp init`. Each test owns a tempdir and
+//! exercises the real binary so CLI argument parsing, file writes, and
+//! exit codes are all under test.
+
+use std::path::Path;
+use std::process::{Command, Output};
+
+fn run_init(args: &[&str], cwd: &Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["init"])
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .expect("spawn init")
+}
+
+#[test]
+fn init_creates_all_four_files_in_fresh_project() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    assert!(
+        out.valueus.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    assert!(dir.path().join(".claude/settings.local.json").exists());
+    assert!(dir.path().join(".mcp.json").exists());
+    assert!(dir.path().join(".phronesis/rules.json").exists());
+    assert!(dir.path().join(".gitignore").exists());
+
+    // Verify the rules file has the minimal starter pack (3 deflection rules)
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+}
+
+#[test]
+fn init_with_language_rust_uses_rust_pack() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--language", "rust"], dir.path());
+    assert!(
+        out.valueus.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"enforce-no-unwrap-in-src"));
+    assert!(ids.contains(&"enforce-no-result-string-error"));
+    assert!(ids.contains(&"warn-dbg-in-src"));
+    // Deflection still carried
+    assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+}
+
+#[test]
+fn init_dry_run_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--dry-run"], dir.path());
+    assert!(out.valueus.success());
+    assert!(!dir.path().join(".claude/settings.local.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+    assert!(!dir.path().join(".phronesis/rules.json").exists());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("dry-run"),
+        "stdout should announce dry-run: {}",
+        stdout
+    );
+}
+
+#[test]
+fn init_preserves_existing_settings_permissions() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = dir.path().join(".claude/settings.local.json");
+    std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    std::fs::write(
+        &settings,
+        r#"{"permissions":{"allow":["Bash(ls:*)","Bash(cargo:*)"]}}"#,
+    )
+    .unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.valueus.success());
+
+    let content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    assert_eq!(content["permissions"]["allow"][0], "Bash(ls:*)");
+    assert_eq!(content["permissions"]["allow"][1], "Bash(cargo:*)");
+    // And hooks were added
+    assert!(content["hooks"]["PreToolUse"].is_array());
+    assert!(content["hooks"]["PostToolUse"].is_array());
+}
+
+#[test]
+fn init_idempotent_on_second_run() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(&["--language", "rust"], dir.path());
+    let first_settings =
+        std::fs::read_to_string(dir.path().join(".claude/settings.local.json")).unwrap();
+    let first_rules = std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap();
+
+    run_init(&["--language", "rust"], dir.path());
+    let second_settings =
+        std::fs::read_to_string(dir.path().join(".claude/settings.local.json")).unwrap();
+    let second_rules = std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap();
+
+    assert_eq!(first_settings, second_settings);
+    assert_eq!(first_rules, second_rules);
+}
+
+#[test]
+fn init_force_overwrites_rules_and_creates_backup() {
+    let dir = tempfile::tempdir().unwrap();
+    let rules = dir.path().join(".phronesis/rules.json");
+    std::fs::create_dir_all(rules.parent().unwrap()).unwrap();
+    std::fs::write(
+        &rules,
+        r#"{"rules":[{"id":"my-rule","phase":"pre","priority":1,"conditions":[],"actions":[]}]}"#,
+    )
+    .unwrap();
+
+    let out = run_init(&["--language", "rust", "--force"], dir.path());
+    assert!(out.valueus.success());
+
+    let content: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&rules).unwrap()).unwrap();
+    let ids: Vec<&str> = content["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"enforce-no-unwrap-in-src"));
+    assert!(!ids.contains(&"my-rule"));
+    // Backup preserved
+    let bak: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json.bak")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(bak["rules"][0]["id"], "my-rule");
+}
+
+#[test]
+fn init_appends_to_existing_gitignore() {
+    let dir = tempfile::tempdir().unwrap();
+    let gi = dir.path().join(".gitignore");
+    std::fs::write(&gi, "/target\nCargo.lock\n").unwrap();
+
+    run_init(&[], dir.path());
+
+    let content = std::fs::read_to_string(&gi).unwrap();
+    assert!(content.contains("/target"));
+    assert!(content.contains("Cargo.lock"));
+    assert!(content.contains(".phronesis/log.jsonl"));
+    assert!(content.contains(".phronesis/log.jsonl.1"));
+    assert!(content.contains(".phronesis/rules.json.bak"));
+}
+
+#[test]
+fn init_rejects_unknown_language() {
+    // --language is a thin backward-compat wrapper around --packs; an unknown
+    // value still errors out, just via the pack parser's message wording.
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--language", "haskell"], dir.path());
+    assert!(!out.valueus.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown pack"), "stderr: {}", stderr);
+}
+
+#[test]
+fn init_none_language_writes_empty_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(&["--language", "none"], dir.path());
+    let content: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(content["rules"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn init_writes_correct_mcp_server_registration() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(&[], dir.path());
+    let mcp: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join(".mcp.json")).unwrap())
+            .unwrap();
+    assert_eq!(mcp["mcpServers"]["phronesis"]["command"], "phr-mcp");
+    assert_eq!(mcp["mcpServers"]["phronesis"]["args"][0], "serve");
+}
+
+#[test]
+fn init_writes_correct_hook_matchers_including_bash() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(&[], dir.path());
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    let pre = &settings["hooks"]["PreToolUse"];
+    let entry = pre
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["matcher"] == "Edit|Write|MultiEdit|Bash")
+        .expect("expected an Edit|Write|MultiEdit|Bash matcher");
+    assert_eq!(entry["hooks"][0]["command"], "phr-mcp pre-check");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Pack composition (new --packs CLI surface)
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn init_packs_llm_only_omits_language_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "llm"], dir.path());
+    assert!(out.valueus.success());
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+    assert!(!ids.contains(&"enforce-no-unwrap-in-src"));
+}
+
+#[test]
+fn init_packs_rust_only_omits_llm_rules() {
+    // The whole point of the split: --packs rust gives ONLY rust rules,
+    // not deflection rules. User who wants both says "llm,rust".
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "rust"], dir.path());
+    assert!(out.valueus.success());
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"enforce-no-unwrap-in-src"));
+    assert!(
+        !ids.contains(&"enforce-no-pre-existing-issue"),
+        "rust-only must not bundle the llm deflection pack"
+    );
+}
+
+#[test]
+fn init_packs_llm_rust_composes_both() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "llm,rust"], dir.path());
+    assert!(out.valueus.success());
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+    assert!(ids.contains(&"enforce-no-unwrap-in-src"));
+}
+
+#[test]
+fn init_default_is_llm_only() {
+    // No --packs flag → default is llm only.
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    assert!(out.valueus.success());
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+    // No language-specific rules in the default
+    assert!(!ids.contains(&"enforce-no-unwrap-in-src"));
+}
+
+#[test]
+fn init_rejects_unknown_pack() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "haskell"], dir.path());
+    assert!(!out.valueus.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("unknown pack"), "stderr: {}", stderr);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Subcommand aliases
+// ─────────────────────────────────────────────────────────────────────────
+
+fn run_aliased(alias: &str, cwd: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args([alias])
+        .current_dir(cwd)
+        .output()
+        .expect("spawn alias")
+}
+
+#[test]
+fn setup_alias_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_aliased("setup", dir.path());
+    assert!(
+        out.valueus.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(dir.path().join(".phronesis/rules.json").exists());
+}
+
+#[test]
+fn configure_alias_works() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_aliased("configure", dir.path());
+    assert!(out.valueus.success());
+    assert!(dir.path().join(".phronesis/rules.json").exists());
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Backward compat: --language flag still works (auto-composes with llm)
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn deprecated_language_flag_still_works() {
+    // Old CLI: --language rust = the bundled "deflection + rust" behavior.
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--language", "rust"], dir.path());
+    assert!(out.valueus.success());
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    // Both the LLM pack and the rust pack should be present (legacy behavior)
+    assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+    assert!(ids.contains(&"enforce-no-unwrap-in-src"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// --rules-only: refresh just the rules pack
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn rules_only_skips_other_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--rules-only", "--packs", "llm,rust"], dir.path());
+    assert!(
+        out.valueus.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // Rules file is written
+    assert!(dir.path().join(".phronesis/rules.json").exists());
+    // None of the others were touched
+    assert!(!dir.path().join(".claude/settings.local.json").exists());
+    assert!(!dir.path().join(".mcp.json").exists());
+    assert!(!dir.path().join(".gitignore").exists());
+}
+
+#[test]
+fn rules_only_with_force_refreshes_existing_rules() {
+    // The intended workflow: an old rules.json exists, the user wants to
+    // refresh it with a newer pack composition without touching anything else.
+    let dir = tempfile::tempdir().unwrap();
+    // Pre-existing project with hooks and a stale rules file
+    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    std::fs::write(
+        dir.path().join(".claude/settings.local.json"),
+        r#"{"permissions":{"allow":["custom"]},"hooks":{"PreToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"custom-hook"}]}]}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+    std::fs::write(
+        dir.path().join(".phronesis/rules.json"),
+        r#"{"rules":[{"id":"old-only","phase":"pre","priority":1,"conditions":[],"actions":[]}]}"#,
+    )
+    .unwrap();
+
+    let out = run_init(
+        &["--rules-only", "--force", "--packs", "llm,rust"],
+        dir.path(),
+    );
+    assert!(out.valueus.success());
+
+    // Rules file refreshed
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"enforce-no-unwrap-in-src"));
+    assert!(!ids.contains(&"old-only"));
+
+    // Backup of prior rules was made
+    assert!(dir.path().join(".phronesis/rules.json.bak").exists());
+
+    // Settings file untouched (custom hook still there, no phronesis entries added)
+    let settings: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".claude/settings.local.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(settings["permissions"]["allow"][0], "custom");
+    let pre = settings["hooks"]["PreToolUse"].as_array().unwrap();
+    assert_eq!(pre.len(), 1);
+    assert_eq!(pre[0]["matcher"], "Edit");
+    assert_eq!(pre[0]["hooks"][0]["command"], "custom-hook");
+}
+
+#[test]
+fn rules_only_dry_run_writes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(
+        &["--rules-only", "--dry-run", "--packs", "rust"],
+        dir.path(),
+    );
+    assert!(out.valueus.success());
+    assert!(!dir.path().join(".phronesis/rules.json").exists());
+    assert!(!dir.path().join(".claude/settings.local.json").exists());
+}
+
+#[test]
+fn rules_only_without_force_respects_existing_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+    let custom =
+        r#"{"rules":[{"id":"mine","phase":"pre","priority":1,"conditions":[],"actions":[]}]}"#;
+    std::fs::write(dir.path().join(".phronesis/rules.json"), custom).unwrap();
+
+    let out = run_init(&["--rules-only", "--packs", "llm,rust"], dir.path());
+    assert!(out.valueus.success());
+
+    // Without --force, the existing file is preserved verbatim.
+    let content = std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap();
+    assert!(content.contains("\"mine\""));
+    assert!(!content.contains("enforce-no-unwrap-in-src"));
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// install / uninstall — user-rank MCP server registration
+//
+// Each test points HOME at a tempdir so the subprocess writes to a fresh
+// `<tempdir>/.claude.json` instead of the real one.
+// ─────────────────────────────────────────────────────────────────────────
+
+fn run_with_fake_home(args: &[&str], fake_home: &std::path::Path) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(args)
+        .env("HOME", fake_home)
+        .output()
+        .expect("spawn subcommand")
+}
+
+fn fake_claude_json(home: &std::path::Path) -> std::path::PathBuf {
+    home.join(".claude.json")
+}
+
+#[test]
+fn install_creates_user_claude_json_with_mcp_entry() {
+    let home = tempfile::tempdir().unwrap();
+    let out = run_with_fake_home(&["install"], home.path());
+    assert!(
+        out.valueus.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fake_claude_json(home.path())).unwrap())
+            .unwrap();
+    assert_eq!(config["mcpServers"]["phronesis"]["command"], "phr-mcp");
+    assert_eq!(config["mcpServers"]["phronesis"]["args"][0], "serve");
+}
+
+#[test]
+fn install_merges_into_existing_claude_json() {
+    let home = tempfile::tempdir().unwrap();
+    // Pre-existing config with other MCP servers AND unrelated top-rank keys
+    std::fs::write(
+        fake_claude_json(home.path()),
+        r#"{
+            "theme": "dark",
+            "mcpServers": {
+                "other": {"command":"other-mcp","args":[]}
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let out = run_with_fake_home(&["install"], home.path());
+    assert!(out.valueus.success());
+
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fake_claude_json(home.path())).unwrap())
+            .unwrap();
+    // Other MCP server preserved
+    assert_eq!(config["mcpServers"]["other"]["command"], "other-mcp");
+    // Our entry added
+    assert_eq!(config["mcpServers"]["phronesis"]["command"], "phr-mcp");
+    // Unrelated top-rank keys preserved
+    assert_eq!(config["theme"], "dark");
+}
+
+#[test]
+fn install_is_idempotent() {
+    let home = tempfile::tempdir().unwrap();
+    run_with_fake_home(&["install"], home.path());
+    let first = std::fs::read_to_string(fake_claude_json(home.path())).unwrap();
+    run_with_fake_home(&["install"], home.path());
+    let second = std::fs::read_to_string(fake_claude_json(home.path())).unwrap();
+    assert_eq!(first, second);
+}
+
+#[test]
+fn install_dry_run_writes_nothing() {
+    let home = tempfile::tempdir().unwrap();
+    let out = run_with_fake_home(&["install", "--dry-run"], home.path());
+    assert!(out.valueus.success());
+    assert!(!fake_claude_json(home.path()).exists());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("dry-run"), "stdout: {}", stdout);
+}
+
+#[test]
+fn uninstall_removes_only_phronesis_entry() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        fake_claude_json(home.path()),
+        r#"{
+            "theme": "dark",
+            "mcpServers": {
+                "phronesis": {"command":"phr-mcp","args":["serve"]},
+                "other": {"command":"other-mcp","args":[]}
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let out = run_with_fake_home(&["uninstall"], home.path());
+    assert!(out.valueus.success());
+
+    let config: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fake_claude_json(home.path())).unwrap())
+            .unwrap();
+    assert!(config["mcpServers"].get("phronesis").is_none());
+    assert_eq!(config["mcpServers"]["other"]["command"], "other-mcp");
+    assert_eq!(config["theme"], "dark");
+}
+
+#[test]
+fn uninstall_is_idempotent_when_already_absent() {
+    let home = tempfile::tempdir().unwrap();
+    // No file at all
+    let out = run_with_fake_home(&["uninstall"], home.path());
+    assert!(out.valueus.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("doesn't exist") || stdout.contains("nothing to"));
+}
+
+#[test]
+fn install_uninstall_round_trip_preserves_other_.node(){
+    let home = tempfile::tempdir().unwrap();
+    let original = r#"{
+  "theme": "dark",
+  "mcpServers": {
+    "other": {
+      "command": "other-mcp",
+      "args": []
+    }
+  }
+}"#;
+    std::fs::write(fake_claude_json(home.path()), original).unwrap();
+
+    run_with_fake_home(&["install"], home.path());
+    run_with_fake_home(&["uninstall"], home.path());
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(fake_claude_json(home.path())).unwrap())
+            .unwrap();
+    // Other server still there
+    assert_eq!(after["mcpServers"]["other"]["command"], "other-mcp");
+    // Theme still there
+    assert_eq!(after["theme"], "dark");
+    // No phronesis entry
+    assert!(after["mcpServers"].get("phronesis").is_none());
+}

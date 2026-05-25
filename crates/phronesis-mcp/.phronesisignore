@@ -1,0 +1,10 @@
+# Files excluded from `phr-mcp audit`. Gitignore values.
+#
+# This file lives at project root and is read by `audit` (not by the
+# hook, which only sees diffs). Add paths whose contents legitimately
+# embed rule-trigger strings — for example, files that define rules.
+
+# init.rs embeds every starter-pack rule as inline JSON, so its source
+# trips the rules' own content matchers (impl Deref for, => return Err,
+# _id: String, etc.) — pure self-reference, not real debt.
+src/init.rs

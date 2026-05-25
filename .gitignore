@@ -1,0 +1,16 @@
+/target
+**/Cargo.lock
+**/*.bak
+**/.phronesis/log.jsonl
+**/.phronesis/log.jsonl.1
+**/.phronesis/rules.json.bak
+
+# Local IDE / agent configs (not part of the project)
+.claude/
+.crush/
+.gemini/
+.vscode/
+.mcp.json
+
+# Local rules cache produced when running phr-mcp here
+.phronesis/

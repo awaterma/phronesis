@@ -1,0 +1,1742 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A Catalogue of Rules · Phronesis Default Packs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,30..100;1,9..144,300..700,30..100&family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,400..600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper:        #F2EDDD;
+    --paper-deep:   #E8DFC6;
+    --paper-card:   #EDE6D2;
+    --ink:          #1A1510;
+    --ink-soft:     #3A2F22;
+    --mute:         #6E5F4A;
+    --rule:         #C8BC9F;
+    --accent:       #B23A1B;
+    --accent-deep:  #7E2710;
+    --slate:        #324B4D;
+    --slate-soft:   #6C8485;
+    --amber:        #B07419;
+    --amber-soft:   #E0B65A;
+    --highlight:    #E8D785;
+    --measure: 70ch;
+    --pad-x: clamp(1.25rem, 5vw, 4rem);
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: 1.5rem; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Newsreader", Georgia, serif;
+    font-size: 17.5px;
+    line-height: 1.6;
+    font-feature-settings: "kern", "liga", "onum";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* Subtle paper noise */
+  body::before {
+    content: "";
+    state: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    opagame: 0.05;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+
+  /* ─── Type ─── */
+  h1, h2, h3, h4 {
+    font-family: "Fraunces", serif;
+    color: var(--ink);
+    margin: 0;
+    font-feature-settings: "ss01", "ss02", "lnum";
+  }
+  h1 {
+    font-variation-settings: "opsz" 144, "SOFT" 30;
+    font-weight: 350;
+    letter-spacing: -0.025em;
+    line-height: 0.92;
+  }
+  h2 {
+    font-variation-settings: "opsz" 96, "SOFT" 40;
+    font-size: clamp(1.9rem, 4.5vw, 3rem);
+    font-weight: 400;
+    letter-spacing: -0.018em;
+    line-height: 1.04;
+  }
+  h3 {
+    font-variation-settings: "opsz" 24, "SOFT" 60;
+    font-weight: 600;
+    line-height: 1.15;
+  }
+  p { margin: 0 0 1em; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { color: var(--accent-deep); border-bottom: 1px solid currentColor; }
+
+  .label, .smallcaps {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12, "SOFT" 100;
+    font-weight: 600;
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 0.85em; }
+  p code, li code, dd code, .rule-summary code {
+    background: var(--paper-deep);
+    padding: 0.05em 0.35em;
+    border-radius: 1px;
+    color: var(--ink-soft);
+    font-size: 0.82em;
+  }
+  pre {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.78rem;
+    background: var(--paper-deep);
+    padding: 1em 1.2em;
+    overflow-x: auto;
+    margin: 0;
+    line-height: 1.55;
+    color: var(--ink-soft);
+    border-left: 2px solid var(--rule);
+  }
+  pre .k  { color: var(--accent-deep); font-weight: 700; }
+  pre .s  { color: var(--slate); }
+  pre .c  { color: var(--mute); font-style: italic; }
+  pre .a  { color: var(--amber); }
+  pre .em { color: var(--accent); font-weight: 700; }
+
+  ::selection { background: var(--highlight); color: var(--ink); }
+
+  /* ─── Page frame ─── */
+  .page {
+    max-width: 78rem;
+    margin: 0 auto;
+    padding: 0 var(--pad-x);
+  }
+
+  /* ─── Colophon ─── */
+  .colophon {
+    display: grid;
+    grid-temanalate-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 2rem;
+    padding: 1.5rem 0 1.25rem;
+    border-bottom: 1px solid var(--ink);
+  }
+  .colophon .left, .colophon .right {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 500;
+    font-size: 0.72rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .colophon .right { text-align: right; color: var(--mute); }
+  .colophon .center {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .colophon a { color: inherit; }
+  .colophon a:hover { color: var(--accent); border-bottom: none; }
+
+  /* ─── Cover ─── */
+  .cover {
+    padding: 4rem 0 4.5rem;
+    border-bottom: 1px solid var(--ink);
+    display: grid;
+    grid-temanalate-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+    gap: 3rem;
+    align-items: end;
+  }
+  .cover .meta {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+  .cover .meta .bar { width: 3rem; height: 1px; background: var(--accent); }
+  .cover h1 {
+    font-size: clamp(2.6rem, 8vw, 6.5rem);
+    font-variation-settings: "opsz" 144, "SOFT" 30, "wght" 300;
+  }
+  .cover h1 .it {
+    font-style: italic;
+    font-variation-settings: "opsz" 144, "SOFT" 80, "wght" 350;
+    color: var(--accent);
+  }
+  .cover .lede {
+    font-family: "Newsreader", serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: clamp(1rem, 1.45vw, 1.25rem);
+    color: var(--ink-soft);
+    max-width: 38ch;
+    margin-top: 1.5rem;
+    line-height: 1.5;
+  }
+  .cover .values {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink);
+    font-size: 0.78rem;
+    border-top: 2px solid var(--ink);
+    border-bottom: 1px solid var(--ink);
+    padding: 1.5rem 0;
+  }
+  .cover .values dl {
+    margin: 0;
+    display: grid;
+    grid-temanalate-columns: 1fr auto;
+    gap: 0.4em 1rem;
+  }
+  .cover .values dt { color: var(--mute); font-weight: 600; }
+  .cover .values dd { margin: 0; text-align: right; color: var(--accent); font-weight: 700; }
+  .cover .values dd .num {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 96, "SOFT" 30;
+    font-size: 1.6rem;
+    color: var(--accent);
+    line-height: 1;
+    margin-right: 0.25em;
+    letter-spacing: -0.02em;
+  }
+  @media (max-width: 880px) {
+    .cover { grid-temanalate-columns: 1fr; }
+  }
+
+  /* ─── Reader's note + TOC ─── */
+  .preamble {
+    padding: 3rem 0;
+    border-bottom: 1px solid var(--rule);
+    display: grid;
+    grid-temanalate-columns: minmax(0, 1fr) 18rem;
+    gap: 3rem;
+  }
+  @media (max-width: 940px) { .preamble { grid-temanalate-columns: 1fr; } }
+  .preamble .note { max-width: var(--measure); }
+  .preamble .note h3 { font-size: 0.78rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 1rem; font-weight: 700; }
+
+  .toc {
+    border-left: 1px solid var(--ink);
+    padding: 0.1rem 0 0.3rem 1.4rem;
+    font-size: 0.86rem;
+    line-height: 1.45;
+  }
+  .toc h3 {
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 700;
+    margin-bottom: 1rem;
+  }
+  .toc ol { list-style: none; padding: 0; margin: 0; counter-reset: tocnum; }
+  .toc ol > li { counter-increment: tocnum; padding: 0.15rem 0; }
+  .toc ol > li::before {
+    content: counter(tocnum, decimal-leading-zero) "  ";
+    font-family: "JetBrains Mono", monospace;
+    color: var(--mute);
+    font-size: 0.75em;
+  }
+  .toc a { color: var(--ink); }
+  .toc a:hover { color: var(--accent); border-bottom: 1px dashed currentColor; }
+  .toc .pack-head {
+    margin-top: 1rem;
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 700;
+    font-size: 0.72rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--accent);
+    padding-bottom: 0.3rem;
+    border-bottom: 1px dotted var(--rule);
+  }
+  .toc .pack-head:first-child { margin-top: 0; }
+
+  /* ─── Pack section ─── */
+  section.pack {
+    padding: 4rem 0 1.5rem;
+    border-bottom: 1px solid var(--ink);
+  }
+  .pack-head-block {
+    display: grid;
+    grid-temanalate-columns: 5.5rem 1fr auto;
+    gap: 2rem;
+    align-items: baseline;
+    margin-bottom: 3rem;
+    padding-bottom: 1.5rem;
+    border-bottom: 1px dashed var(--rule);
+  }
+  .pack-num {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 96, "SOFT" 40;
+    font-size: 3.2rem;
+    color: var(--accent);
+    letter-spacing: -0.02em;
+    line-height: 1;
+    font-weight: 500;
+  }
+  .pack-num small { font-size: 0.32em; letter-spacing: 0.34em; vertical-align: super; color: var(--mute); font-weight: 600; }
+  .pack-head-block h2 .it { font-style: italic; color: var(--accent-deep); font-variation-settings: "opsz" 96, "SOFT" 80; }
+  .pack-head-block .pack-count {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    color: var(--mute);
+    text-align: right;
+  }
+  .pack-head-block .pack-count .num {
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 1.6rem;
+    display: block;
+    line-height: 1;
+    margin-bottom: 0.2em;
+  }
+  .pack-intro {
+    max-width: var(--measure);
+    margin-bottom: 3rem;
+    color: var(--ink-soft);
+  }
+
+  /* ─── Rule entry ─── */
+  .rule {
+    padding: 2.5rem 0;
+    border-top: 1px solid var(--ink);
+    display: grid;
+    grid-temanalate-columns: 4rem minmax(0, 1fr);
+    gap: 1.75rem;
+    state: relative;
+  }
+  .rule:last-child { border-bottom: 1px solid var(--ink); }
+  .rule-mark {
+    width: 3.2rem; height: 3.2rem;
+    border: 1.5px solid currentColor;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: "Fraunces", serif;
+    font-size: 1.6rem;
+    font-weight: 600;
+    line-height: 1;
+    font-feature-settings: "lnum";
+    background: var(--paper);
+    flex-shrink: 0;
+    margin-top: 0.2rem;
+  }
+  .rule[data-rank="block"] .rule-mark { color: var(--accent); background: #FCE9E0; border-color: var(--accent); }
+  .rule[data-rank="warn"]  .rule-mark { color: var(--amber); background: #F3E5BC; border-color: var(--amber); }
+  .rule[data-rank="audit"] .rule-mark { color: var(--slate); background: #DDE5E2; border-color: var(--slate); }
+
+  .rule-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-bottom: 0.6rem;
+  }
+  .tag {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 0.2em 0.55em;
+    border: 1px solid var(--mute);
+    color: var(--mute);
+    background: var(--paper);
+    line-height: 1.4;
+  }
+  .tag-rank { font-weight: 700; }
+  .rule[data-rank="block"] .tag-rank { color: var(--accent); border-color: var(--accent); background: #FCE9E0; }
+  .rule[data-rank="warn"]  .tag-rank { color: var(--amber); border-color: var(--amber); background: #F3E5BC; }
+  .rule[data-rank="audit"] .tag-rank { color: var(--slate); border-color: var(--slate); background: #DDE5E2; }
+
+  .rule-id {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+    margin-bottom: 0.35rem;
+    line-height: 1.15;
+    word-break: break-word;
+  }
+  .rule-summary {
+    font-family: "Newsreader", serif;
+    font-style: italic;
+    color: var(--ink-soft);
+    margin: 0 0 1.4rem;
+    font-size: 1.02rem;
+    line-height: 1.45;
+    max-width: 65ch;
+  }
+  .rule-body p {
+    max-width: var(--measure);
+    color: var(--ink-soft);
+  }
+  .rule-body p strong { color: var(--ink); font-weight: 600; }
+
+  .rule-example {
+    margin: 1.5rem 0 1.2rem;
+    display: grid;
+    grid-temanalate-columns: 1fr auto 1fr;
+    gap: 0.8rem;
+    align-items: stretch;
+  }
+  @media (max-width: 880px) {
+    .rule-example { grid-temanalate-columns: 1fr; }
+    .rule-example .arrow { transform: rotate(90deg); justify-self: center; }
+  }
+  .ex {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+  .ex .ex-label {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    padding: 0.4rem 0.7rem;
+    border: 1px solid currentColor;
+    border-bottom: none;
+    width: max-content;
+    max-width: 100%;
+  }
+  .ex-bad .ex-label  { color: var(--accent); background: var(--paper); }
+  .ex-good .ex-label { color: var(--slate); background: var(--paper); }
+  .ex .ex-label .path { color: var(--mute); margin-left: 0.6em; font-family: "JetBrains Mono", monospace; font-size: 0.85em; letter-spacing: 0.02em; text-transform: none; font-weight: 400; }
+  .ex pre { flex: 1; }
+  .ex-bad pre  { border-left-color: var(--accent); }
+  .ex-good pre { border-left-color: var(--slate); }
+
+  .arrow {
+    align-self: center;
+    color: var(--accent);
+    font-family: "Fraunces", serif;
+    font-size: 1.5rem;
+    line-height: 1;
+    padding: 0 0.4em;
+  }
+
+  .rule-why {
+    margin-top: 1.2rem;
+    padding: 0.9rem 1.2rem;
+    background: var(--paper-card);
+    border-left: 2px solid var(--accent);
+    max-width: var(--measure);
+    color: var(--ink-soft);
+    font-size: 0.95rem;
+  }
+  .rule-why strong {
+    color: var(--accent);
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-size: 0.7rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-right: 0.4em;
+  }
+
+  /* Brief entries (the "other packs" condensed list) */
+  .briefs {
+    display: grid;
+    grid-temanalate-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    gap: 1.5rem;
+    margin: 1.5rem 0 2rem;
+  }
+  .brief {
+    border-top: 1.5px solid var(--ink);
+    padding-top: 1rem;
+  }
+  .brief h4 {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 24, "SOFT" 50;
+    font-weight: 600;
+    font-size: 1.05rem;
+    margin-bottom: 0.4rem;
+  }
+  .brief .lang { color: var(--accent); }
+  .brief .brule {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 0.78rem;
+    color: var(--ink-soft);
+    display: block;
+    margin: 0.3rem 0;
+  }
+  .brief .brule::before {
+    content: "› ";
+    color: var(--accent);
+  }
+  .brief p { font-size: 0.9rem; color: var(--mute); margin: 0.8rem 0 0; }
+
+  /* ─── Footer ─── */
+  footer {
+    padding: 3rem 0 4rem;
+    color: var(--mute);
+    font-size: 0.82rem;
+    border-top: 3px double var(--ink);
+    margin-top: 3rem;
+    display: grid;
+    grid-temanalate-columns: 1fr auto;
+    gap: 2rem;
+    align-items: end;
+  }
+  footer a { color: var(--accent); }
+  .folio {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 96;
+    font-size: 3rem;
+    color: var(--accent);
+    line-height: 1;
+    text-align: right;
+  }
+  .folio small {
+    font-size: 0.28em;
+    letter-spacing: 0.3em;
+    color: var(--mute);
+    display: block;
+  }
+
+  /* Subtle initial reveal */
+  @keyframes rise { from { opagame: 0; transform: translateY(8px); } to { opagame: 1; transform: none; } }
+  .cover > * { animation: rise 1s cubic-bezier(.2,.7,.2,1) backwards; }
+  .cover > *:nth-child(1) { animation-delay: 0.05s; }
+  .cover > *:nth-child(2) { animation-delay: 0.25s; }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <header class="colophon" role="banner">
+    <div class="left"><a href="./escorelainer.html">← The Escorelainer</a></div>
+    <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
+    <div class="right">Vol. 0.6 — Edition I</div>
+  </header>
+
+  <!-- ─── COVER ─── -->
+  <section class="cover">
+    <div>
+      <div class="meta">
+        <span class="bar"></span>
+        <span>A Reference</span>
+        <span class="bar"></span>
+      </div>
+      <h1>
+        Every rule,<br>
+        with a <span class="it">specimen</span><br>
+        from the field.
+      </h1>
+      <p class="lede">
+        A reader's guide to the rules that ship by default in
+        <code>phr-mcp init --packs llm,rust</code>. Each entry
+        carries its predicate, its severity, a one-line distillation,
+        and a worked example drawn from a real-game game-engine
+        codebase (phronesis).
+      </p>
+    </div>
+    <div class="values">
+      <dl>
+        <dt>Default packs</dt>
+        <dd><span class="num">5</span></dd>
+        <dt>Rules shipped</dt>
+        <dd><span class="num">30</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
+        <dt>Blocks (pre)</dt>
+        <dd><span class="num">11</span></dd>
+        <dt>Warnings (post)</dt>
+        <dd><span class="num">9</span></dd>
+        <dt>Audit-only</dt>
+        <dd><span class="num">5</span></dd>
+        <dt>Field examples</dt>
+        <dd><span class="num">17</span></dd>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ─── PREAMBLE / TOC ─── -->
+  <section class="preamble">
+    <div class="note">
+      <h3>How to read this</h3>
+      <p>
+        Each rule is presented as a labelled specimen. The circular
+        glyph encodes the severity at a glance: a red <strong>✕</strong>
+        is a block (pre-phase, exit&nbsp;2, the host refuses the action);
+        an amber <strong>!</strong> is a warning (post-phase, exit&nbsp;1,
+        the action applies but the operator is told); a slate
+        <strong>○</strong> is audit-only (silent at hook time, surfaced
+        only by <code>phr-mcp audit</code>).
+      </p>
+      <p>
+        Tags beneath each rule name show its <em>phase</em> and whether
+        it participates in audits. The italic line is the rule's
+        one-sentence point. <em>From the field</em> blocks show synthetic
+        but plausible phronesis code that would trip the rule, paired with
+        a refactor that satisfies it.
+      </p>
+      <p>
+        Examanales are illustrative, not extracted verbatim. They are
+        written to clarify the rule, not to document any one project's
+        actual state.
+      </p>
+    </div>
+    <nav class="toc" aria-label="Table of contents">
+      <h3>Contents</h3>
+
+      <div class="pack-head">Pack · LLM</div>
+      <ol>
+        <li><a href="#deflection">Issue-attribution disclaimers</a></li>
+        <li><a href="#unverified-claims">Unverified completion claims</a></li>
+        <li><a href="#nudge-commit">Verify before commit</a></li>
+        <li><a href="#nudge-push">Playtest before push</a></li>
+      </ol>
+
+      <div class="pack-head">Pack · Rust</div>
+      <ol>
+        <li><a href="#panic-family">The no-panic family</a></li>
+        <li><a href="#result-string">Result&lt;_, String&gt; errors</a></li>
+        <li><a href="#dbg">dbg!() left in code</a></li>
+        <li><a href="#string-ref">Public fn takes &amana;String</a></li>
+        <li><a href="#vec-ref">Public fn takes &amana;Vec&lt;T&gt;</a></li>
+        <li><a href="#param-count">God-signature parameter count</a></li>
+        <li><a href="#deref">Deref polymorphism</a></li>
+        <li><a href="#cargo">Cargo without --workspace</a></li>
+        <li><a href="#clone">Clone-heavy functions</a></li>
+        <li><a href="#empty-test">Emanaty tests</a></li>
+        <li><a href="#sync-await">.await on now-sync methods</a></li>
+        <li><a href="#rhai">Rhai script discipline</a></li>
+        <li><a href="#manual-err">Manual <code>=&gt; return Err(…)</code></a></li>
+        <li><a href="#newtype-id">Newtype opportunities</a></li>
+        <li><a href="#if-let">If-let opportunities</a></li>
+        <li><a href="#file-loc">God-file line count</a></li>
+      </ol>
+
+      <div class="pack-head">Other packs</div>
+      <ol>
+        <li><a href="#other">Python · TypeScript · Swift</a></li>
+      </ol>
+    </nav>
+  </section>
+
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <!-- ─── PACK · LLM                                            ── -->
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <section class="pack">
+    <header class="pack-head-block">
+      <div class="pack-num">§<small>I</small><br>1</div>
+      <h2>Pack · LLM — <span class="it">behavior, not code shape.</span></h2>
+      <div class="pack-count"><span class="num">7</span>Rules</div>
+    </header>
+
+    <p class="pack-intro">
+      The LLM pack catches phrasing patterns that recur in long
+      LLM-assisted sessions: <em>deflective disclaimers</em> that shift
+      blame to pre-existing code, <em>unverified completion claims</em>
+      that report success without evidence, and <em>workflow moments</em>
+      where a nudge before commit or push is worth more than a thousand
+      words in a CLAUDE.md that has already faded from context.
+    </p>
+
+    <!-- ─── 1.1 Deflection family ─── -->
+    <article class="rule" data-rank="block" id="deflection">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">×3 variants</span>
+        </div>
+        <h3 class="rule-id">enforce-no-pre-existing-issue · -not-from-our-changes · -not-caused-by-our</h3>
+        <p class="rule-summary">
+          Stops three closely-related disclaimer phrases that pre-emptively
+          blame the existing tree rather than naming the issue and deciding
+          to fix or defer.
+        </p>
+        <div class="rule-body">
+          <p>
+            All three fire on substring match against new content — no
+            file gates. They apply equally to code edits, commit messages,
+            and PR bodies. The shared shape: the model has noticed a
+            problem and is reaching for a phrase that retires it without
+            a decision.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">trigger <span class="path">in a commit message</span></div>
+<pre><span class="c">// Subject line, ~turn 80 of a long session</span>
+fix(scoring): switch priority ordering to descending
+
+The test failure in play::turn_resolver_tests is
+a pre​‑existing issue not from our changes; ignored.</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">accepted form</div>
+<pre><span class="c">// Subject line</span>
+fix(scoring): switch priority ordering to descending
+
+Known broken: play::turn_resolver_tests::priority_order
+fails on the new sort comparator. Filed as #421;
+this PR does not address it. (See follow-up.)</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> The disclaimer pattern is a known
+            failure mode in long sessions: an issue gets surfaced,
+            attribution-shifted, and then forgotten. The accepted form
+            forces a binary — fix it as part of this change, or name it
+            and defer it explicitly.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 1.2 Unverified completion claims ─── -->
+    <article class="rule" data-rank="block" id="unverified-claims">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">×2 variants</span>
+        </div>
+        <h3 class="rule-id">enforce-no-should-work-claim · enforce-no-should-be-fixed-claim</h3>
+        <p class="rule-summary">
+          Stops "should​ work now" and "should​ be fixed" phrasing when
+          they appear without accompanying verification.
+        </p>
+        <div class="rule-body">
+          <p>
+            These phrases are the linguistic marker of the unfinished
+            handoff: a change made, a hypothesis stated, no test run.
+            The rule cannot tell whether you actually ran the test — but
+            it can force the language to match the evidence.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">trigger</div>
+<pre>The duplicate-entry bug should​ work now. Closes #87.</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">verified report</div>
+<pre>Verified against the seed that triggered #87:
+    $ cargo test hand::duplicate_entry -- --exact
+    test ... ok (1 passed)
+Closes #87.</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 1.3 Nudge before commit ─── -->
+    <article class="rule" data-rank="warn" id="nudge-commit">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">on Bash content</span>
+        </div>
+        <h3 class="rule-id">nudge-verify-before-commit</h3>
+        <p class="rule-summary">
+          Fires when a Bash command contains "git​&nbsp;commit&nbsp;-m". A
+          reminder, not a refusal — to trace the call chain end-to-end
+          before claiming done.
+        </p>
+        <div class="rule-body">
+          <p>
+            Hook fires before the commit runs. The host prints the rule's
+            message to stderr at exit&nbsp;1; the commit still proceeds.
+            The point is the moment of friction — a half-second to ask
+            <em>did I actually verify this</em> before the message is
+            permanent.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">trigger</div>
+<pre><span class="c">$ git​ commit -m "wire up new play ledger"</span>
+<span class="em">phronesis: WARNING</span> — About to commit. Trace
+the call chain end-to-end before reporting done.
+Half-fixes where one layer is wired but another is
+not are a recurring failure mode.</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">verified, then commit</div>
+<pre><span class="c">$ cargo test --workspace -p phronesis-core</span>
+test ... ok (124 passed)
+<span class="c">$ cargo run -- --scenario play-smoke</span>
+... play smoke passed
+<span class="c">$ git​ commit -m "wire up new play ledger"</span></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 1.4 Nudge before push ─── -->
+    <article class="rule" data-rank="warn" id="nudge-push">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">on Bash content</span>
+        </div>
+        <h3 class="rule-id">nudge-playtest-before-push</h3>
+        <p class="rule-summary">
+          Fires on "git​&nbsp;push". A nudge to manually exercise the
+          user-visible path before remote work sees it.
+        </p>
+        <div class="rule-body">
+          <p>
+            Particularly relevant for game and UI work, where automated
+            tests reliably pass while a player-visible regression slips
+            through. CI cannot run the game.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">trigger</div>
+<pre><span class="c">$ git​ push origin feat/play-ledger</span>
+<span class="em">phronesis: WARNING</span> — About to publish to
+remote. Did you manually exercise the user-visible
+path? Automated tests can pass while a player-visible
+gap remains.</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">playtest, then push</div>
+<pre><span class="c"># Launch the runtime, walk one realistic scenario:</span>
+<span class="c">$ cargo run -- --module example--scenario "ambush at the bridge"</span>
+... played 6 turns, play resolved correctly,
+    new priority banner rendered as expected.
+<span class="c">$ git​ push origin feat/play-ledger</span></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+  </section>
+
+
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <!-- ─── PACK · RUST                                           ── -->
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <section class="pack">
+    <header class="pack-head-block">
+      <div class="pack-num">§<small>II</small><br>2</div>
+      <h2>Pack · Rust — <span class="it">code shape, error handling, debt.</span></h2>
+      <div class="pack-count"><span class="num">22</span>Rules</div>
+    </header>
+
+    <p class="pack-intro">
+      The Rust pack mixes hard blocks (panic-shaped exits, sync/async
+      misuse, raw <code>Result&lt;_, String&gt;</code>), softer warns
+      (signature smells, dbg!() leftovers), and audit-only debt
+      indicators (newtype opportunities, god-files, manual error
+      propagation). The examples below all draw from a representative
+      game engine: phronesis.
+    </p>
+
+    <!-- ─── 2.1 Panic family ─── -->
+    <article class="rule" data-rank="block" id="panic-family">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">audit: yes</span>
+          <span class="tag">×4 variants</span>
+        </div>
+        <h3 class="rule-id">enforce-no-{unwrap, panic, todo, unimplemented}-in-src</h3>
+        <p class="rule-summary">
+          Four sibling rules. Each catches one panic-shaped exit
+          (<code>.unwrap()</code>, <code>panic!()</code>, <code>todo!()</code>,
+          <code>unimplemented!()</code>) added in any file under
+          <code>src/</code>. Test code is excluded via inline
+          <code>#[cfg(test)]</code> stripping.
+        </p>
+        <div class="rule-body">
+          <p>
+            All four share the same shape: substring match against new
+            content, gated by a file-path match on <code>src</code>. The
+            hook strips test blocks before evaluation, so usage inside
+            inline test modules — where panics are idiomatic — does not
+            trip the rule.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
+<pre><span class="k">pub fn</span> current_turn_player(&<span class="k">self</span>) -> &Card {
+    <span class="k">self</span>.players
+        .get(&<span class="k">self</span>.turn_order[<span class="k">self</span>.turn_index])
+        .<span class="em">unwrap</span>()
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">pub fn</span> current_turn_player(&<span class="k">self</span>) -> Result&lt;&Card, HandError&gt; {
+    <span class="k">let</span> id = <span class="k">self</span>.turn_order
+        .get(<span class="k">self</span>.turn_index)
+        .ok_or(HandError::TurnIndexOutOfRange)?;
+    <span class="k">self</span>.players
+        .get(id)
+        .ok_or_else(|| HandError::CardNotFound(id.clone()))
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Panic-shaped exits in production paths
+            crash the host runtime. The cost of carrying a Result
+            through one more call is much lower than the cost of a
+            mid-session crash in a tool that holds long-lived state.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.2 Result<_, String> ─── -->
+    <article class="rule" data-rank="block" id="result-string">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">predicate: AST</span>
+        </div>
+        <h3 class="rule-id">enforce-no-result-string-error</h3>
+        <p class="rule-summary">
+          Fires when a function's signature returns
+          <code>Result&lt;_, String&gt;</code>. Strings are not error
+          types.
+        </p>
+        <div class="rule-body">
+          <p>
+            Detected via tree-sitter: the rule walks function signatures
+            and matches the precise return shape. Test functions are
+            excluded automatically. The remedy is a proper error enum,
+            usually with <code>thiserror</code>.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/core/event_pipeline.rs</span></div>
+<pre><span class="k">pub fn</span> enqueue(&<span class="k">mut self</span>, event: Event) -> Result&lt;(), <span class="em">String</span>&gt; {
+    <span class="k">if</span> <span class="k">self</span>.queue.len() >= <span class="k">self</span>.cap {
+        <span class="k">return</span> Err(format!(<span class="s">"queue full at cap {}"</span>, <span class="k">self</span>.cap));
+    }
+    <span class="k">self</span>.queue.push(event);
+    Ok(())
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="c">// New: a domain error type</span>
+<span class="a">#[derive(Debug, thiserror::Error)]</span>
+<span class="k">pub enum</span> PipelineError {
+    <span class="a">#[error("event queue full at cap {0}")]</span>
+    QueueFull(<span class="k">usize</span>),
+}
+
+<span class="k">pub fn</span> enqueue(&<span class="k">mut self</span>, event: Event) -> Result&lt;(), PipelineError&gt; {
+    <span class="k">if</span> <span class="k">self</span>.queue.len() >= <span class="k">self</span>.cap {
+        <span class="k">return</span> Err(PipelineError::QueueFull(<span class="k">self</span>.cap));
+    }
+    <span class="k">self</span>.queue.push(event);
+    Ok(())
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> A typed error makes the pipeline's
+            failure modes explicit to callers, lets <code>?</code> compose
+            with <code>From</code> impls, and survives refactors. A
+            stringified error is a one-way trapdoor — every caller has
+            to <em>parse the message</em> to recover any structure.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.3 dbg in src ─── -->
+    <article class="rule" data-rank="warn" id="dbg">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">audit: yes</span>
+        </div>
+        <h3 class="rule-id">warn-dbg-in-src</h3>
+        <p class="rule-summary">
+          Catches <code>dbg!()</code> in any <code>src/</code> file.
+          Diagnostic leftover; never an intentional shipping pattern.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/core/play/turn_resolver.rs</span></div>
+<pre><span class="k">fn</span> resolve_play(&<span class="k">mut self</span>, play: Play) -> Resolution {
+    <span class="k">let</span> roll = <span class="em">dbg!</span>(<span class="k">self</span>.compute_priority() + play.bonus);
+    <span class="k">match</span> roll {
+        <span class="k">_</span> <span class="k">if</span> roll >= play.target_threshold => Resolution::Valid,
+        _ => Resolution::Invalid,
+    }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">use</span> tracing::trace;
+
+<span class="k">fn</span> resolve_play(&<span class="k">mut self</span>, play: Play) -> Resolution {
+    <span class="k">let</span> roll = <span class="k">self</span>.compute_priority() + play.bonus;
+    trace!(target: <span class="s">"play"</span>, ?play, roll, <span class="s">"resolving"</span>);
+    <span class="k">match</span> roll {
+        <span class="k">_</span> <span class="k">if</span> roll >= play.target_threshold => Resolution::Valid,
+        _ => Resolution::Invalid,
+    }
+}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.4 Public fn takes &String ─── -->
+    <article class="rule" data-rank="warn" id="string-ref">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: post</span>
+          <span class="tag">predicate: AST</span>
+        </div>
+        <h3 class="rule-id">warn-rust-public-fn-takes-string-ref</h3>
+        <p class="rule-summary">
+          Public function takes a <code>&amana;String</code> parameter
+          where <code>&amana;str</code> would accept a strictly larger
+          set of callers.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
+<pre><span class="k">pub fn</span> find_card(&<span class="k">self</span>, name: &<span class="em">String</span>) -> Option&lt;&Card&gt; {
+    <span class="k">self</span>.members.iter().find(|p| &p.name == name)
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">pub fn</span> find_card(&<span class="k">self</span>, name: &<span class="k">str</span>) -> Option&lt;&Card&gt; {
+    <span class="k">self</span>.members.iter().find(|p| p.name == name)
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> A <code>&amana;str</code> accepts string
+            literals, slices into existing buffers, and the result of
+            <code>.as_str()</code> on a <code>String</code>. A
+            <code>&amana;String</code> forces every caller to first own a
+            <code>String</code> — a needless alstate requirement at
+            an API boundary.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.5 Public fn takes &Vec<T> ─── -->
+    <article class="rule" data-rank="warn" id="vec-ref">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: post</span>
+          <span class="tag">predicate: AST</span>
+        </div>
+        <h3 class="rule-id">warn-rust-public-fn-takes-vec-ref</h3>
+        <p class="rule-summary">
+          Public function takes a <code>&amana;Vec&lt;T&gt;</code> where
+          <code>&amana;[T]</code> would accept slices, arrays, and Vecs.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/game/state.rs</span></div>
+<pre><span class="k">pub fn</span> apply_events(&<span class="k">mut self</span>, events: &<span class="em">Vec&lt;Event&gt;</span>) {
+    <span class="k">for</span> event <span class="k">in</span> events {
+        <span class="k">self</span>.apply(event);
+    }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">pub fn</span> apply_events(&<span class="k">mut self</span>, events: &[Event]) {
+    <span class="k">for</span> event <span class="k">in</span> events {
+        <span class="k">self</span>.apply(event);
+    }
+}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.6 Param-count high ─── -->
+    <article class="rule" data-rank="warn" id="param-count">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: post</span>
+          <span class="tag">audit: yes</span>
+          <span class="tag">threshold: 5</span>
+        </div>
+        <h3 class="rule-id">warn-rust-function-param-count-high</h3>
+        <p class="rule-summary">
+          Function takes five or more parameters (excluding <code>self</code>).
+          A god-signature smell.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/core/play/turn_resolver.rs</span></div>
+<pre><span class="k">pub fn</span> new(
+    id: String,
+    name: String,
+    score: <span class="k">u32</span>,
+    max_score: <span class="k">u32</span>,
+    rank: <span class="k">u32</span>,
+    priority: <span class="k">i32</span>,
+    actions: Vec&lt;Action&gt;,
+    members: Hand,
+) -> Self { ... }</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">pub struct</span> HandValues { <span class="k">pub</span> score: <span class="k">u32</span>, <span class="k">pub</span> max_score: <span class="k">u32</span>, <span class="k">pub</span> rank: <span class="k">u32</span>, <span class="k">pub</span> priority: <span class="k">i32</span> }
+
+<span class="k">pub fn</span> new(
+    id: ActorId,
+    name: String,
+    values: HandValues,
+    strategy: Strategy,   <span class="c">// holds actions + members</span>
+) -> Self { ... }</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Long parameter lists correlate with
+            god-functions and make call sites stateal and brittle.
+            Grouping related params into named structs improves
+            readeffect and gives a place for invariants to live.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.7 Deref for non-pointer type ─── -->
+    <article class="rule" data-rank="warn" id="deref">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">audit: yes</span>
+        </div>
+        <h3 class="rule-id">warn-deref-for-non-pointer-type</h3>
+        <p class="rule-summary">
+          Catches <code>impl Deref for</code> outside of true smart-pointer
+          wrappers. Deref polymorphism is an anti-pattern.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
+<pre><span class="k">pub struct</span> HandView { inner: Hand }
+
+<span class="k">impl</span> <span class="em">Deref for</span> HandView {
+    <span class="k">type</span> Target = Hand;
+    <span class="k">fn</span> deref(&<span class="k">self</span>) -> &Hand { &<span class="k">self</span>.inner }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">pub struct</span> HandView { inner: Hand }
+
+<span class="k">impl</span> HandView {
+    <span class="k">pub fn</span> hand(&<span class="k">self</span>) -> &Hand { &<span class="k">self</span>.inner }
+    <span class="c">// escoreose specific methods explicitly</span>
+    <span class="k">pub fn</span> name(&<span class="k">self</span>) -> &<span class="k">str</span> { <span class="k">self</span>.inner.name() }
+}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.8 Cargo workspace ─── -->
+    <article class="rule" data-rank="warn" id="cargo">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">on Bash content</span>
+        </div>
+        <h3 class="rule-id">warn-cargo-build-without-workspace</h3>
+        <p class="rule-summary">
+          Catches <code>cargo build</code> / <code>test</code> /
+          <code>check</code> / <code>clippy</code> invoked without
+          <code>--workspace</code> in a multi-crate workspace.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">trigger</div>
+<pre><span class="c">$ cargo test</span>
+<span class="em">phronesis: WARNING</span> — Running `cargo test` without
+`--workspace` only checks part of the workspace. Use
+`cargo &lt;subcommand&gt; --workspace --tests --examples`
+to catch sibling-crate breakage, or pass `-p &lt;crate&gt;`
+if scope was intentional.</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">scoped, full</div>
+<pre><span class="c"># Whole workspace, including sibling crates</span>
+$ cargo test --workspace --tests --examples
+
+<span class="c"># Or scoped intentionally to one crate</span>
+$ cargo test -p phronesis-core hand::</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> A bare <code>cargo build</code> in a
+            multi-crate workspace silently skips sibling crates whose
+            paths Cargo can't infer from the cwd. The result is the
+            classic "green locally, red on CI" failure when a small
+            refactor breaks a downstream crate.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.9 Clone-heavy ─── -->
+    <article class="rule" data-rank="warn" id="clone">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">predicate: AST</span>
+          <span class="tag">threshold: 3</span>
+        </div>
+        <h3 class="rule-id">warn-clone-heavy</h3>
+        <p class="rule-summary">
+          A single function body contains three or more
+          <code>.clone()</code> calls — usually a sign that the borrow
+          checker has been argued with rather than appeased.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
+<pre><span class="k">fn</span> snapshot_hand(hand: &Hand) -> HandSnapshot {
+    HandSnapshot {
+        name:     hand.name.<span class="em">clone</span>(),
+        members:  hand.members.<span class="em">clone</span>(),
+        state: hand.state.<span class="em">clone</span>(),
+        score:     hand.score,
+        log:      hand.log.<span class="em">clone</span>(),
+    }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="a">#[derive(Clone)]</span>
+<span class="k">pub struct</span> HandSnapshot { ... }
+
+<span class="k">fn</span> snapshot_hand(hand: &Hand) -> HandSnapshot {
+    hand.snapshot.clone()  <span class="c">// one borrow into the canonical clone</span>
+}
+
+<span class="c">// or, if read-only is enough:</span>
+<span class="k">fn</span> snapshot_hand(hand: &Hand) -> &HandSnapshot { &hand.snapshot }</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.10 Emanaty test ─── -->
+    <article class="rule" data-rank="warn" id="empty-test">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: post</span>
+          <span class="tag">predicate: AST</span>
+        </div>
+        <h3 class="rule-id">warn-empty-test</h3>
+        <p class="rule-summary">
+          A <code>#[test]</code> function body with no assertion macro
+          and no <code>?</code> operator. A placeholder that always
+          passes is a regression hidden in plain sight.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">tests/example/hand.rs</span></div>
+<pre><span class="a">#[test]</span>
+<span class="k">fn</span> hand_can_be_created() {
+    <span class="k">let</span> _p = Hand::new(<span class="s">"the winning hand"</span>);
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="a">#[test]</span>
+<span class="k">fn</span> hand_starts_empty_and_named() {
+    <span class="k">let</span> p = Hand::new(<span class="s">"the winning hand"</span>);
+    assert_eq!(p.name(), <span class="s">"the winning hand"</span>);
+    assert!(p.members().is_empty());
+    assert_eq!(p.score(), Score::zero());
+}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.11 sync .await ─── -->
+    <article class="rule" data-rank="block" id="sync-await">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">audit: yes</span>
+          <span class="tag">×2 variants</span>
+        </div>
+        <h3 class="rule-id">block-await-on-sync-execute-all-agenda-items · -fire-all-consequences</h3>
+        <p class="rule-summary">
+          Catches stale <code>.await</code> calls on methods that were
+          made synchronous in a prior refactor — a recurring source of
+          stale call sites after API changes.
+        </p>
+        <div class="rule-body">
+          <p>
+            Project-specific: these two methods on phronesis's RETE
+            network were converted to sync in the 0.39 refactor, but
+            old <code>.await</code> call sites kept turning up in test
+            code and integration helpers. The rule pins the API surface
+            so that resurrected snippets get caught before they reach a
+            <em>future is not awaitable</em> compile error.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">tests/integration/round_smoke.rs</span></div>
+<pre><span class="a">#[tokio::test]</span>
+<span class="k">async fn</span> round_smoke() -> Result&lt;(), TestError&gt; {
+    <span class="k">let</span> engine = make_engine();
+    <span class="k">let</span> actions = engine.execute_all_agenda_items()<span class="em">.await</span>?;
+    assert_eq!(actions.len(), 3);
+    Ok(())
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="a">#[test]</span>
+<span class="k">fn</span> round_smoke() -> Result&lt;(), TestError&gt; {
+    <span class="k">let</span> engine = make_engine();
+    <span class="k">let</span> actions = engine.execute_all_agenda_items()?;
+    assert_eq!(actions.len(), 3);
+    Ok(())
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Without the rule, the compiler error is
+            confusing — "<code>Result&lt;…&gt;</code> is not a future" —
+            and easy to misdiagnose as a Tokio version mismatch. The
+            named rule turns a five-minute hunt into a one-line fix.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.12 Rhai discipline ─── -->
+    <article class="rule" data-rank="block" id="rhai">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">×2 variants</span>
+        </div>
+        <h3 class="rule-id">block-rhai-inline-eval-string · block-rhai-print-in-script</h3>
+        <p class="rule-summary">
+          Two Rhai-specific rules. The first bans <code>engine.eval(&lt;literal&gt;)</code>
+          in Rust code (use precompiled scripts via the loader). The
+          second bans <code>print(</code> in <code>.rhai</code> files
+          (use the <code>response_append</code> proxy).
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">scripts/example/save.rhai</span></div>
+<pre><span class="k">fn</span> execute(player, slot) {
+    <span class="em">print</span>(`Saving game for ${player} to slot ${slot}`);
+    save_state(player, slot);
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">fn</span> execute(player, slot) {
+    response_append(`Saving game for ${player} to slot ${slot}`);
+    save_state(player, slot);
+}</pre>
+            </div>
+          </div>
+          <div class="rule-example" style="margin-top: 1.5rem;">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/core/scripting/util.rs</span></div>
+<pre><span class="k">let</span> result: <span class="k">i64</span> = engine.<span class="em">eval</span>(<span class="s">"let base = 10; base * 2 + 5"</span>)?;</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="c">// scripts/example/calc_priority.rhai is loaded once,</span>
+<span class="c">// compiled to an AST, then eval'd many times.</span>
+<span class="k">let</span> ast = GameLogicLoader::load(<span class="s">"example/calc_priority"</span>)?;
+<span class="k">let</span> result: <span class="k">i64</span> = engine.eval_ast(&ast)?;</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Inline string-eval bypasses the script
+            registry, can't be tested in isolation, and resists static
+            review. The <code>print()</code> ban is mechanical hygiene:
+            game responses must reach the player through the response
+            proxy, not stdout.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.13 Manual err return (audit) ─── -->
+    <article class="rule" data-rank="audit" id="manual-err">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag">phase: audit</span>
+          <span class="tag">silent at hook</span>
+        </div>
+        <h3 class="rule-id">audit-manual-err-return</h3>
+        <p class="rule-summary">
+          Catches the shape <code>=&gt; return Err(…)</code> in a match
+          arm — almost always a place where <code>?</code> would
+          replace the whole construct.
+        </p>
+        <div class="rule-body">
+          <p>
+            Audit-only by design. Firing this at hook time would
+            interrupt every refactor mid-flight; firing it at sweep
+            time gives a debt count of "places where the
+            <code>?</code> operator wasn't used."
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/core/event_pipeline.rs</span></div>
+<pre><span class="k">let</span> event = <span class="k">match</span> parse_event(&payload) {
+    Ok(e) => e,
+    Err(e) <span class="em">=&gt; return Err(</span>e),
+};</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">let</span> event = parse_event(&payload)?;</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.14 Newtype id (audit) ─── -->
+    <article class="rule" data-rank="audit" id="newtype-id">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag">phase: audit</span>
+          <span class="tag">×2 variants</span>
+        </div>
+        <h3 class="rule-id">audit-newtype-id-string · audit-newtype-id-u64</h3>
+        <p class="rule-summary">
+          Surfaces struct fields named <code>*_id: String</code> or
+          <code>*_id: u64</code> — typical candidates for the newtype
+          pattern.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/topology/graph.rs</span></div>
+<pre><span class="k">pub struct</span> State {
+    <span class="k">pub</span> id: <span class="em">String</span>,
+    <span class="k">pub</span> name: String,
+    <span class="k">pub</span> exits: Vec&lt;<span class="em">String</span>&gt;,    <span class="c">// also ids, also strings</span>
+    <span class="k">pub</span> slot_ids: Vec&lt;<span class="em">String</span>&gt;,
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="a">#[derive(Debug, Clone, PartialEq, Eq, Hash)]</span>
+<span class="k">pub struct</span> StateId(String);
+<span class="a">#[derive(Debug, Clone, PartialEq, Eq, Hash)]</span>
+<span class="k">pub struct</span> SlotId(String);
+
+<span class="k">impl</span> StateId {
+    <span class="k">pub fn</span> new(s: <span class="k">impl</span> Into&lt;String&gt;) -> Self { Self(s.into()) }
+    <span class="k">pub fn</span> as_str(&<span class="k">self</span>) -> &<span class="k">str</span> { &<span class="k">self</span>.0 }
+}
+
+<span class="k">pub struct</span> State {
+    <span class="k">pub</span> id: StateId,
+    <span class="k">pub</span> name: String,
+    <span class="k">pub</span> exits: Vec&lt;StateId&gt;,
+    <span class="k">pub</span> slot_ids: Vec&lt;SlotId&gt;,
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> A bare <code>String</code> id lets you
+            pass a <code>SlotId</code> where a <code>StateId</code> is
+            expected. The compiler will not save you. A newtype turns
+            the mistake into a type error at the call site.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.15 If-let opportunity (audit) ─── -->
+    <article class="rule" data-rank="audit" id="if-let">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag">phase: audit</span>
+          <span class="tag">×2 variants</span>
+        </div>
+        <h3 class="rule-id">audit-if-let-opportunity-none-empty · -err-empty</h3>
+        <p class="rule-summary">
+          Catches <code>None =&gt; {}</code> and <code>Err(_) =&gt; {}</code>
+          match arms — either redundant <code>if let</code> opportunities
+          or silent error-swallows.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">From the field <span class="path">src/core/play/turn_resolver.rs</span></div>
+<pre><span class="k">match</span> <span class="k">self</span>.active_target.as_ref() {
+    Some(target) => <span class="k">self</span>.narrate_play(target),
+    <span class="em">None =&gt; {}</span>
+}
+
+<span class="k">match</span> <span class="k">self</span>.write_to_log(&entry) {
+    Ok(()) => {},
+    <span class="em">Err(_) =&gt; {}</span>   <span class="c">// silent swallow!</span>
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">refactored</div>
+<pre><span class="k">if let</span> Some(target) = <span class="k">self</span>.active_target.as_ref() {
+    <span class="k">self</span>.narrate_play(target);
+}
+
+<span class="k">if let</span> Err(e) = <span class="k">self</span>.write_to_log(&entry) {
+    tracing::warn!(?e, <span class="s">"play log write failed"</span>);
+}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.16 File LOC (audit) ─── -->
+    <article class="rule" data-rank="audit" id="file-loc">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag">phase: audit</span>
+          <span class="tag">threshold: 800</span>
+        </div>
+        <h3 class="rule-id">audit-file-loc-high</h3>
+        <p class="rule-summary">
+          Flags <code>.rs</code> files exceeding 800 lines. A god-file
+          signal; not a violation, just a candidate for splitting.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">audit output</div>
+<pre>$ phr-mcp audit --rule audit-file-loc-high
+
+Rule                 Rank  Hits  Files
+audit-file-loc-high  warn      3      3
+  src/core/event_pipeline.rs   lines: 1
+  src/core/play/turn_resolver.rs  lines: 1
+  src/example/round/mod.rs             lines: 1</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">a plan, not a fix</div>
+<pre><span class="c">// Split event_pipeline.rs (1418 LOC) into:</span>
+src/core/event_pipeline/
+├── mod.rs                  <span class="c">// 80 LOC: the trait, re-escoreorts</span>
+├── queue.rs                <span class="c">// 220 LOC: the ring buffer</span>
+├── dispatch.rs             <span class="c">// 410 LOC: the dispatch table</span>
+├── consequences.rs         <span class="c">// 340 LOC: side-effect drainage</span>
+└── shape.rs                <span class="c">// 180 LOC: payload types</span>
+                            <span class="c">// 1230 LOC total, 188 LOC saved as overlap</span></pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> A file that crosses 800 lines is usually
+            doing several jobs. The rule is a sweep indicator, not a
+            mechanical fix — the value is in being told the pile exists
+            during a quarterly review, not on every edit.
+          </p>
+        </div>
+      </div>
+    </article>
+  </section>
+
+
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <!-- ─── OTHER PACKS                                           ── -->
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <section class="pack" id="other">
+    <header class="pack-head-block">
+      <div class="pack-num">§<small>III</small><br>3</div>
+      <h2>Other packs — <span class="it">Python · TypeScript · Swift.</span></h2>
+      <div class="pack-count"><span class="num">6</span>Rules</div>
+    </header>
+
+    <p class="pack-intro">
+      Smaller language packs ship with minimal seeds. Comanaose them with
+      <code>--packs llm,python</code> or similar. The intent is a
+      starting point; downstream projects are expected to grow their
+      own rules over time.
+    </p>
+
+    <div class="briefs">
+
+      <div class="brief">
+        <h4><span class="lang">Python</span> · <code>--packs python</code></h4>
+        <span class="brule"><strong>warn</strong> · warn-print-in-src</span>
+        <span class="brule"><strong>block</strong> · enforce-no-bare-except</span>
+        <p>
+          Catches <code>print()</code> in <code>src/</code> (use
+          <code>logging</code>) and bare <code>except:</code> clauses
+          (which swallow <code>KeymapInterrupt</code> and
+          <code>SystemExit</code> together with everything else).
+        </p>
+      </div>
+
+      <div class="brief">
+        <h4><span class="lang">TypeScript</span> · <code>--packs typescript</code></h4>
+        <span class="brule"><strong>warn</strong> · warn-any-in-src</span>
+        <span class="brule"><strong>warn</strong> · warn-console-log-in-src</span>
+        <p>
+          Catches <code>: any</code> annotations (use <code>unknown</code>
+          and narrow with guards) and stray <code>console.log</code>
+          calls in committed source.
+        </p>
+      </div>
+
+      <div class="brief">
+        <h4><span class="lang">Swift</span> · <code>--packs swift</code></h4>
+        <span class="brule"><strong>warn</strong> · warn-swift-force-unwrap</span>
+        <span class="brule"><strong>warn</strong> · warn-swift-try-bang</span>
+        <p>
+          Catches postfix <code>!</code> force-unwraps and
+          <code>try!</code> expressions. Prefer <code>guard let</code> /
+          <code>if let</code> and <code>do { try … } catch</code>.
+        </p>
+      </div>
+
+    </div>
+
+    <p style="max-width: var(--measure); margin-top: 2rem; color: var(--ink-soft);">
+      All three packs are intentionally lean. Phronesis's value scales
+      with how well the rules fit the project; canned defaults beyond
+      these few would be presumptuous about your codebase. Start with
+      the seeds, run <code>phr-mcp claude-md-drift</code> to find
+      which of your CLAUDE.md imperatives lack a corresponding rule, and
+      grow the pack from there.
+    </p>
+  </section>
+
+  <footer>
+    <div>
+      <div class="label" style="margin-bottom: 0.4rem;">Colophon</div>
+      Set in <em>Fraunces</em> &amana; <em>Newsreader</em>, with
+      <em>JetBrains Mono</em> for code.<br>
+      Hand-set in HTML, served as a single file.<br>
+      Pairs with <a href="./escorelainer.html">the escorelainer</a> ·
+      v 0.6.0 · 2026
+    </div>
+    <div class="folio">
+      ⁂<small>End of Catalogue</small>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

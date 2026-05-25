@@ -1,0 +1,44 @@
+[package]
+name = "phronesis-mcp"
+version = "0.6.0"
+edition = "2021"
+rust-version = "1.90"
+description = "MCP server wrapping the phronesis RETE rules engine for rules-bounded LLM interaction"
+license = "MIT"
+authors = ["Andrew Waterman"]
+
+[lib]
+name = "phronesis_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "phr-mcp"
+path = "src/main.rs"
+
+[dependencies]
+phr = { path = "../phronesis", package = "phronesis" }
+rmcp = { version = "0.17", features = ["server", "macros", "transport-io", "schemars"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1.0"
+anyhow = "1"
+thiserror = "2"
+regex = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+streaming-iterator = "0.1"
+tree-sitter = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-swift = "0.7"
+fs2 = "0.4"
+ignore = "0.4"
+
+[dev-dependencies]
+cucumber = "0.23"
+tempfile = "3"
+
+[[test]]
+name = "bdd"
+harness = false
