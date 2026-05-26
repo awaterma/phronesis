@@ -1,10 +1,20 @@
 //! Whole-tree audit: walk the project, run opted-in rules' predicates
 //! against full file contents, report per-rule violation counts. Pure
 //! functions for the eval/aggregation/render path; I/O lives in `run`.
+//!
+//! Holds the engine, the public types (`AuditReport`, `RuleAudit`,
+//! `FileAudit`, `DebtTrend`, `RuleTrend`), the trend computation, and
+//! the table/JSON renderers in one file because they form a single
+//! cohesive surface — splitting them across `audit/{run,types,render,
+//! trend}.rs` would scatter related code for the sake of a line-count
+//! threshold rather than for any independent reason.
+//!
+//! phronesis-allow: audit-file-loc-high (cohesive audit-engine surface)
 
 use std::path::{Path, PathBuf};
 
 use crate::rules_file::{DiskRule, RulesFile};
+use phr::RuleId;
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -50,7 +60,7 @@ pub struct AuditReport {
 
 #[derive(Debug, Clone)]
 pub struct RuleAudit {
-    pub rule_id: String,
+    pub rule_id: RuleId,
     pub rank: Rank,
     pub hits: u32,
     pub files: Vec<FileAudit>,
@@ -123,6 +133,61 @@ fn is_whole_file_rule(rule: &DiskRule) -> bool {
         .all(|c| c.predicate != "new_content_contains")
 }
 
+/// True if the file's top-rank `//!` doc-comment carries an exemption
+/// marker for `rule_id`. Looks for a line of the form
+/// `//! phronesis-allow: <rule-id>[ <free-form reason>]` anywhere in the
+/// leading run of `//!` doc-comment lines (allowing blank lines between).
+/// Stops scanning at the first non-blank, non-`//!` line.
+fn file_exempts_rule(lines: &[&str], rule_id: &str) -> bool {
+    for line in lines {
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(rest) = trimmed.strip_prefix("//!") {
+            let body = rest.trim();
+            if let Some(after_marker) = body.strip_prefix("phronesis-allow:") {
+                // Match exemption rule-id, treating whatever comes after
+                // (space or end-of-line) as a separator. Allows trailing
+                // free-form reason text.
+                let after_marker = after_marker.trim_start();
+                if after_marker == rule_id
+                    || after_marker
+                        .strip_prefix(rule_id)
+                        .map(|tail| tail.starts_with(|c: char| c.is_whitespace()))
+                        .unwrap_or(false)
+                {
+                    return true;
+                }
+            }
+        } else {
+            // First non-blank, non-`//!` line — end of the leading
+            // doc-comment block; nothing more to check.
+            return false;
+        }
+    }
+    false
+}
+
+/// True if the lines above index `i` end with a `///` doc-comment block,
+/// after skipping past blank lines and other stacked `#[...]` attribute
+/// lines. Lets a documented `#[allow(...)]` survive even when interleaved
+/// with siblings like `#[serde(default)]`. Used by rules that opt into
+/// `doc_excepted: true`.
+fn line_preceded_by_doc_comment(lines: &[&str], i: usize) -> bool {
+    for j in (0..i).rev() {
+        let trimmed = lines[j].trim_start();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if trimmed.starts_with("#[") {
+            continue;
+        }
+        return trimmed.starts_with("///");
+    }
+    false
+}
+
 /// Run the audit over `opts.scan_root` using `rules`. Reads files, runs each
 /// opted-in rule's predicates against the file contents, returns an
 /// `AuditReport`. Never panics; unreadable files are skipped silently.
@@ -169,10 +234,30 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
             None
         };
 
+        // For `file_line_count_above` checks, count only production lines on
+        // Rust files. Test files inflate line count without being the kind of
+        // "god-file" debt the rule is trying to surface — and the audit
+        // engine already strips test blocks for content predicates, so being
+        // consistent here too is the principled move.
+        let effective_line_count = match &keep_mask {
+            Some(mask) => mask.iter().filter(|&&keep| keep).count(),
+            None => lines.len(),
+        };
+
         for rule in &audit_rules {
             // Check gate predicates and reject rules that contain unsupported
             // predicates (most AST and diff-only ones).
-            if !rule_applies_to_file(rule, path, lines.len()) {
+            if !rule_applies_to_file(rule, path, effective_line_count) {
+                continue;
+            }
+            // File-rank exemption: a file with a top-of-file `//! phronesis-allow:
+            // <rule-id>` doc-comment is exempt from that rule, when the rule
+            // opts in via `doc_excepted: true`. Lets an intentional god-file
+            // (e.g. a coherent MCP tool surface) document its size choice
+            // rather than be split mechanically.
+            if rule.doc_excepted.unwrap_or(false)
+                && file_exempts_rule(&lines, &rule.id)
+            {
                 continue;
             }
             for action in &rule.actions {
@@ -192,7 +277,10 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
 
                 // Evaluate each `new_content_contains` condition against each
                 // line, recording line numbers of each match. Lines inside
-                // Rust test blocks are skipped via `keep_mask`.
+                // Rust test blocks are skipped via `keep_mask`. Matches
+                // immediately preceded by a `///` doc-comment are skipped
+                // when the rule opts in via `doc_excepted: true`.
+                let doc_excepted = rule.doc_excepted.unwrap_or(false);
                 for cond in &rule.conditions {
                     if cond.predicate != "new_content_contains" {
                         continue;
@@ -208,6 +296,9 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                             }
                         }
                         let count = line.matches(needle.as_str()).count();
+                        if count > 0 && doc_excepted && line_preceded_by_doc_comment(&lines, i) {
+                            continue;
+                        }
                         for _ in 0..count {
                             hit_lines.push((i + 1) as u32);
                         }
@@ -233,7 +324,7 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                 .collect();
             let hits: u32 = files.iter().map(|f| f.lines.len() as u32).sum();
             RuleAudit {
-                rule_id,
+                rule_id: rule_id.into(),
                 rank,
                 hits,
                 files,
@@ -263,6 +354,188 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
         files_scanned,
         per_rule,
     }
+}
+
+/// Per-section timing breakdown for `run_profiled`. All fields are
+/// cumulative across the scan unless noted.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AuditSectionTimes {
+    /// Time inside `discover_files` (walking the tree).
+    pub discover: std::time::Duration,
+    /// Sum of `fs::read_to_string` over every file (I/O + decode + alloc).
+    pub read_files: std::time::Duration,
+    /// Sum of `rust_test_block_keep_mask_for` over every Rust file.
+    pub keep_mask: std::time::Duration,
+    /// Sum of the rule × condition × line inner loop (substring matching,
+    /// the suspected hot spot).
+    pub match_loop: std::time::Duration,
+    /// Final aggregation/sort/render setup.
+    pub report_build: std::time::Duration,
+    /// Total wall time of `run_profiled`.
+    pub total: std::time::Duration,
+
+    pub files_scanned: u32,
+    pub audit_rules: u32,
+    /// Total `line.matches(needle)` invocations performed.
+    pub line_matches_evaluated: u64,
+}
+
+/// Profiling variant of [`run`] — same logic, returns per-section wall
+/// times via [`AuditSectionTimes`]. Kept in tree as a permanent diagnostic
+/// (analogous to the criterion bench in `phronesis`); no behavior change vs
+/// `run`. Call this from a probe binary; production callers use `run`.
+pub fn run_profiled(
+    rules: &RulesFile,
+    opts: &AuditOpts,
+) -> (AuditReport, AuditSectionTimes) {
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+
+    let total_start = Instant::now();
+    let mut times = AuditSectionTimes::default();
+
+    let audit_rules: Vec<&DiskRule> = rules
+        .rules
+        .iter()
+        .filter(|r| r.audit == Some(true))
+        .filter(|r| opts.rule_filter.as_deref().is_none_or(|f| r.id == f))
+        .collect();
+    times.audit_rules = audit_rules.len() as u32;
+
+    let t = Instant::now();
+    let files = if audit_rules.is_empty() {
+        Vec::new()
+    } else {
+        discover_files(&opts.scan_root, &["*"])
+    };
+    times.discover = t.elapsed();
+    times.files_scanned = files.len() as u32;
+
+    let mut accum: BTreeMap<String, (Rank, BTreeMap<PathBuf, Vec<u32>>)> = BTreeMap::new();
+
+    for path in &files {
+        let t = Instant::now();
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => {
+                times.read_files += t.elapsed();
+                continue;
+            }
+        };
+        times.read_files += t.elapsed();
+
+        let lines: Vec<&str> = content.lines().collect();
+        let is_rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
+
+        let t = Instant::now();
+        let keep_mask: Option<Vec<bool>> = if is_rust {
+            Some(crate::diff_extract::rust_test_block_keep_mask_for(&content))
+        } else {
+            None
+        };
+        times.keep_mask += t.elapsed();
+
+        let effective_line_count = match &keep_mask {
+            Some(mask) => mask.iter().filter(|&&keep| keep).count(),
+            None => lines.len(),
+        };
+
+        let t = Instant::now();
+        for rule in &audit_rules {
+            if !rule_applies_to_file(rule, path, effective_line_count) {
+                continue;
+            }
+            if rule.doc_excepted.unwrap_or(false) && file_exempts_rule(&lines, &rule.id) {
+                continue;
+            }
+            for action in &rule.actions {
+                let Some(rank) = Rank::from_action_type(&action.action_type) else {
+                    continue;
+                };
+                if is_whole_file_rule(rule) {
+                    let entry = accum
+                        .entry(rule.id.clone())
+                        .or_insert_with(|| (rank, BTreeMap::new()));
+                    entry.1.entry(path.clone()).or_default().push(1);
+                    continue;
+                }
+                let doc_excepted = rule.doc_excepted.unwrap_or(false);
+                for cond in &rule.conditions {
+                    if cond.predicate != "new_content_contains" {
+                        continue;
+                    }
+                    let Some(needle) = cond.args.first() else {
+                        continue;
+                    };
+                    let mut hit_lines: Vec<u32> = Vec::new();
+                    for (i, line) in lines.iter().enumerate() {
+                        if let Some(mask) = &keep_mask {
+                            if !mask.get(i).copied().unwrap_or(true) {
+                                continue;
+                            }
+                        }
+                        times.line_matches_evaluated += 1;
+                        let count = line.matches(needle.as_str()).count();
+                        if count > 0 && doc_excepted && line_preceded_by_doc_comment(&lines, i) {
+                            continue;
+                        }
+                        for _ in 0..count {
+                            hit_lines.push((i + 1) as u32);
+                        }
+                    }
+                    if hit_lines.is_empty() {
+                        continue;
+                    }
+                    let entry = accum
+                        .entry(rule.id.clone())
+                        .or_insert_with(|| (rank, BTreeMap::new()));
+                    entry.1.entry(path.clone()).or_default().extend(hit_lines);
+                }
+            }
+        }
+        times.match_loop += t.elapsed();
+    }
+
+    let t = Instant::now();
+    let mut per_rule: Vec<RuleAudit> = accum
+        .into_iter()
+        .map(|(rule_id, (rank, by_path))| {
+            let files: Vec<FileAudit> = by_path
+                .into_iter()
+                .map(|(path, lines)| FileAudit { path, lines })
+                .collect();
+            let hits: u32 = files.iter().map(|f| f.lines.len() as u32).sum();
+            RuleAudit {
+                rule_id: rule_id.into(),
+                rank,
+                hits,
+                files,
+            }
+        })
+        .collect();
+    per_rule.sort_by(|a, b| {
+        let lvl = match (a.rank, b.rank) {
+            (Rank::Block, Rank::Warn) => std::cmp::Ordering::Less,
+            (Rank::Warn, Rank::Block) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        };
+        lvl.then_with(|| b.hits.cmp(&a.hits))
+            .then_with(|| a.rule_id.cmp(&b.rule_id))
+    });
+    times.report_build = t.elapsed();
+    times.total = total_start.elapsed();
+
+    let scan_duration_ms = times.total.as_millis() as u64;
+    let report = AuditReport {
+        generated_at: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        scan_duration_ms,
+        files_scanned: times.files_scanned,
+        per_rule,
+    };
+    (report, times)
 }
 
 /// Walk `root` and return all files whose extension matches one of
@@ -329,7 +602,7 @@ pub struct DebtTrend {
 
 #[derive(Debug, Clone)]
 pub struct RuleTrend {
-    pub rule_id: String,
+    pub rule_id: RuleId,
     pub rank: Rank,
     pub history: Vec<TrendPoint>,
     pub first_hits: u32,
@@ -443,7 +716,7 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
             let last_hits = history.iter().rev().find_map(|p| p.hits).unwrap_or(0);
             let net_change = (last_hits as i32) - (first_hits as i32);
             RuleTrend {
-                rule_id,
+                rule_id: rule_id.into(),
                 rank,
                 history,
                 first_hits,
@@ -486,7 +759,7 @@ pub fn render_table(report: &AuditReport, escoreand: bool) -> String {
     let id_width = report
         .per_rule
         .iter()
-        .map(|r| r.rule_id.len())
+        .map(|r| r.rule_id.as_str().len())
         .max()
         .unwrap_or(0)
         .max("Rule".len());
@@ -615,7 +888,7 @@ pub fn render_trend_table(trend: &DebtTrend) -> String {
     let id_width = trend
         .rules
         .iter()
-        .map(|r| r.rule_id.len())
+        .map(|r| r.rule_id.as_str().len())
         .max()
         .unwrap_or(0)
         .max("Rule".len());
@@ -751,6 +1024,7 @@ mod tests {
             }],
             silent: None,
             audit: Some(true),
+            doc_excepted: None,
         }
     }
 
@@ -822,6 +1096,135 @@ mod tests {
     }
 
     #[test]
+    fn doc_excepted_rule_skips_matches_preceded_by_doc_comment() {
+        let dir = tempfile::tempdir().unwrap();
+        // Two `#[allow(dead_code)]` attributes: the first carries a
+        // `///` doc-comment justification immediately above (should be
+        // exempt); the second does not (should be flagged).
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "/// Documented exception: planned API surface.\n\
+             #[allow(dead_code)]\n\
+             struct A;\n\
+             \n\
+             #[allow(dead_code)]\n\
+             struct B;\n",
+        )
+        .unwrap();
+        let mut r = rule(
+            "audit-allow-dead-code-in-src",
+            "#[allow(dead_code)]",
+            "constraint_warning",
+        );
+        r.doc_excepted = Some(true);
+        let rules = RulesFile { rules: vec![r] };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert_eq!(report.per_rule.len(), 1);
+        // Only one hit: the undocumented `#[allow(dead_code)]` on line 5.
+        assert_eq!(report.per_rule[0].hits, 1);
+        assert_eq!(report.per_rule[0].files[0].lines, vec![5]);
+    }
+
+    #[test]
+    fn doc_excepted_rule_skips_past_stacked_attributes() {
+        let dir = tempfile::tempdir().unwrap();
+        // A `///` doc-comment block, followed by another attribute
+        // (`#[serde(default)]`), then the `#[allow(dead_code)]`. The
+        // exception walker should skip past the intermediate attribute
+        // to find the doc-comment.
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "/// Documented exception.\n\
+             #[serde(default)]\n\
+             #[allow(dead_code)]\n\
+             struct A;\n",
+        )
+        .unwrap();
+        let mut r = rule(
+            "audit-allow-dead-code-in-src",
+            "#[allow(dead_code)]",
+            "constraint_warning",
+        );
+        r.doc_excepted = Some(true);
+        let rules = RulesFile { rules: vec![r] };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert!(report.per_rule.is_empty(), "doc-comment above stacked attributes should still exempt");
+    }
+
+    #[test]
+    fn doc_excepted_rule_with_blank_line_between_still_exempts() {
+        let dir = tempfile::tempdir().unwrap();
+        // A `///` doc-comment with one blank line between it and the
+        // `#[allow(...)]` should still count as documentation — the
+        // helper walks past blanks to find the nearest non-blank line.
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "/// Documented.\n\
+             \n\
+             #[allow(dead_code)]\n\
+             struct A;\n",
+        )
+        .unwrap();
+        let mut r = rule(
+            "audit-allow-dead-code-in-src",
+            "#[allow(dead_code)]",
+            "constraint_warning",
+        );
+        r.doc_excepted = Some(true);
+        let rules = RulesFile { rules: vec![r] };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert!(report.per_rule.is_empty(), "documented exception should be skipped even with blank line");
+    }
+
+    #[test]
+    fn doc_excepted_rule_does_not_exempt_when_flag_false() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "/// Documented.\n#[allow(dead_code)]\nstruct A;\n",
+        )
+        .unwrap();
+        // doc_excepted defaults to None/false → rule fires anyway.
+        let r = rule(
+            "audit-allow-dead-code-in-src",
+            "#[allow(dead_code)]",
+            "constraint_warning",
+        );
+        let rules = RulesFile { rules: vec![r] };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert_eq!(report.per_rule.len(), 1);
+        assert_eq!(report.per_rule[0].hits, 1);
+    }
+
+    #[test]
     fn run_skips_lines_inside_test_blocks_for_rust_files() {
         let dir = tempfile::tempdir().unwrap();
         // Two hits: one in production (line 1) and one inside a #[cfg(test)]
@@ -878,6 +1281,7 @@ mod tests {
             }],
             silent: None,
             audit: Some(true),
+            doc_excepted: None,
         };
         let rules = RulesFile { rules: vec![r] };
         let report = run(
@@ -896,6 +1300,164 @@ mod tests {
             .to_string_lossy()
             .ends_with("big.rs"));
         assert_eq!(report.per_rule[0].files[0].lines, vec![1]);
+    }
+
+    #[test]
+    fn doc_excepted_whole_file_rule_skips_files_with_exemption_marker() {
+        // A Rust file whose top-of-file `//!` doc-comment block carries a
+        // `phronesis-allow: <rule-id>` marker should be exempt from the
+        // named whole-file (gate-only) rule when the rule opts in.
+        let dir = tempfile::tempdir().unwrap();
+        let exempt_content = format!(
+            "//! Module doc.\n//!\n//! phronesis-allow: audit-too-big (intentional god-file)\n\nfn x() {{}}\n{}",
+            "let _ = 1;\n".repeat(100)
+        );
+        let plain_content = "let _ = 1;\n".repeat(102);
+        std::fs::write(dir.path().join("exempt.rs"), &exempt_content).unwrap();
+        std::fs::write(dir.path().join("plain.rs"), &plain_content).unwrap();
+
+        let r = DiskRule {
+            id: "audit-too-big".to_string(),
+            phase: "audit".to_string(),
+            priority: 3,
+            conditions: vec![
+                DiskCondition {
+                    predicate: "file_extension_is".to_string(),
+                    args: vec!["rs".to_string()],
+                    script: None,
+                },
+                DiskCondition {
+                    predicate: "file_line_count_above".to_string(),
+                    args: vec!["50".to_string()],
+                    script: None,
+                },
+            ],
+            actions: vec![DiskAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec!["too big".to_string()],
+            }],
+            silent: None,
+            audit: Some(true),
+            doc_excepted: Some(true),
+        };
+        let rules = RulesFile { rules: vec![r] };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        // Only plain.rs should fire; exempt.rs carries the marker.
+        assert_eq!(report.per_rule.len(), 1);
+        assert_eq!(report.per_rule[0].hits, 1);
+        assert!(report.per_rule[0].files[0]
+            .path
+            .to_string_lossy()
+            .ends_with("plain.rs"));
+    }
+
+    #[test]
+    fn doc_excepted_whole_file_marker_must_match_rule_id() {
+        // An exemption marker naming a DIFFERENT rule must not exempt
+        // the file from this rule.
+        let dir = tempfile::tempdir().unwrap();
+        let content = format!(
+            "//! phronesis-allow: some-other-rule\n\n{}",
+            "let _ = 1;\n".repeat(100)
+        );
+        std::fs::write(dir.path().join("a.rs"), &content).unwrap();
+        let r = DiskRule {
+            id: "audit-too-big".to_string(),
+            phase: "audit".to_string(),
+            priority: 3,
+            conditions: vec![
+                DiskCondition {
+                    predicate: "file_extension_is".to_string(),
+                    args: vec!["rs".to_string()],
+                    script: None,
+                },
+                DiskCondition {
+                    predicate: "file_line_count_above".to_string(),
+                    args: vec!["50".to_string()],
+                    script: None,
+                },
+            ],
+            actions: vec![DiskAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec!["too big".to_string()],
+            }],
+            silent: None,
+            audit: Some(true),
+            doc_excepted: Some(true),
+        };
+        let rules = RulesFile { rules: vec![r] };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert_eq!(report.per_rule.len(), 1, "marker for a different rule must not exempt this one");
+    }
+
+    #[test]
+    fn file_line_count_above_counts_production_lines_only_for_rust() {
+        // A Rust file with 100 lines, half of which sit inside a
+        // #[cfg(test)] mod tests block. With a threshold of 75, the rule
+        // should NOT fire — production line count is 50.
+        let dir = tempfile::tempdir().unwrap();
+        let prod_lines = "let _ = 1;\n".repeat(50);
+        let test_block = format!(
+            "#[cfg(test)]\nmod tests {{\n{}\n}}\n",
+            "    let _ = 1;\n".repeat(50)
+        );
+        std::fs::write(
+            dir.path().join("a.rs"),
+            format!("{}{}", prod_lines, test_block),
+        )
+        .unwrap();
+
+        let r = DiskRule {
+            id: "audit-file-loc-high".to_string(),
+            phase: "audit".to_string(),
+            priority: 3,
+            conditions: vec![
+                DiskCondition {
+                    predicate: "file_extension_is".to_string(),
+                    args: vec!["rs".to_string()],
+                    script: None,
+                },
+                DiskCondition {
+                    predicate: "file_line_count_above".to_string(),
+                    args: vec!["75".to_string()],
+                    script: None,
+                },
+            ],
+            actions: vec![DiskAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec!["too big".to_string()],
+            }],
+            silent: None,
+            audit: Some(true),
+            doc_excepted: None,
+        };
+        let rules = RulesFile { rules: vec![r] };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert!(
+            report.per_rule.is_empty(),
+            "rule should not fire when prod LOC is under threshold even if total exceeds it"
+        );
     }
 
     #[test]
@@ -968,6 +1530,7 @@ mod tests {
             }],
             silent: None,
             audit: Some(true),
+            doc_excepted: None,
         };
         let rules = RulesFile { rules: vec![r] };
         let report = run(
@@ -1014,6 +1577,7 @@ mod tests {
             }],
             silent: None,
             audit: Some(true),
+            doc_excepted: None,
         };
         let rules = RulesFile { rules: vec![r] };
         let report = run(
@@ -1059,6 +1623,7 @@ mod tests {
             }],
             silent: None,
             audit: Some(true),
+            doc_excepted: None,
         };
         let rules = RulesFile { rules: vec![r] };
         let report = run(
@@ -1097,6 +1662,7 @@ mod tests {
             }],
             silent: None,
             audit: Some(true),
+            doc_excepted: None,
         };
         let rules = RulesFile { rules: vec![r] };
         let report = run(
@@ -1361,7 +1927,7 @@ mod tests {
             files_scanned: 312,
             per_rule: vec![
                 RuleAudit {
-                    rule_id: "no-unwrap-in-src".to_string(),
+                    rule_id: "no-unwrap-in-src".into(),
                     rank: Rank::Block,
                     hits: 10,
                     files: vec![
@@ -1376,7 +1942,7 @@ mod tests {
                     ],
                 },
                 RuleAudit {
-                    rule_id: "warn-clone-heavy".to_string(),
+                    rule_id: "warn-clone-heavy".into(),
                     rank: Rank::Warn,
                     hits: 5,
                     files: vec![FileAudit {
@@ -1431,7 +1997,7 @@ mod tests {
             last_snapshot_ts: 1_701_000_000,
             rules: vec![
                 RuleTrend {
-                    rule_id: "no-unwrap".to_string(),
+                    rule_id: "no-unwrap".into(),
                     rank: Rank::Block,
                     history: vec![
                         TrendPoint {
@@ -1452,7 +2018,7 @@ mod tests {
                     net_change: -8,
                 },
                 RuleTrend {
-                    rule_id: "warn-clone-heavy".to_string(),
+                    rule_id: "warn-clone-heavy".into(),
                     rank: Rank::Warn,
                     history: vec![
                         TrendPoint {
@@ -1517,7 +2083,7 @@ mod tests {
             first_snapshot_ts: 1_701_000_000,
             last_snapshot_ts: 1_701_000_000,
             rules: vec![RuleTrend {
-                rule_id: "r".to_string(),
+                rule_id: "r".into(),
                 rank: Rank::Block,
                 history: vec![TrendPoint {
                     ts: 1_701_000_000,

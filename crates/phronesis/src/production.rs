@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::agenda::AgendaItem;
 use crate::consequence::{Consequence, ConsequenceKind, Provenance};
-use crate::engine_types::{Action, Rule};
+use crate::engine_types::{Action, Condition, Rule};
 use crate::variable_binding::Bindings;
 use crate::wme::WorkingMemoryElement;
 use tracing::warn;
@@ -76,11 +76,25 @@ impl ProductionState {
     }
 }
 
+/// Entry registered for each single-real-condition rule, keyed by the
+/// condition's predicate. Lets the assert path skip the full rule-set scan
+/// (see `update_agenda_for_wme_single_condition`); built once at `add_rule`
+/// time, never mutated after.
+#[derive(Debug, Clone)]
+pub struct SingleCondRuleEntry {
+    pub rule: Rule,
+    pub salience: i32,
+    pub condition: Condition,
+}
+
 /// Production Network resourceges all production states
 #[derive(Debug)]
 pub struct ProductionNetwork {
     pub states: Vec<ProductionState>,
     pub rule_index: HashMap<String, String>, // Maps rule ID to production state ID
+    /// Predicate → single-condition rules that match that predicate. Avoids a
+    /// full `states.clone()` + scan per fact assertion on the hot path.
+    pub single_cond_index: HashMap<String, Vec<SingleCondRuleEntry>>,
 }
 
 impl Default for ProductionNetwork {
@@ -94,6 +108,7 @@ impl ProductionNetwork {
         ProductionNetwork {
             states: Vec::new(),
             rule_index: HashMap::new(),
+            single_cond_index: HashMap::new(),
         }
     }
 
@@ -112,6 +127,25 @@ impl ProductionNetwork {
         let production_state =
             ProductionState::new_with_terminal(rule.clone(), salience, terminal_state_id);
         let state_id = production_state.id.clone();
+
+        // Single-cond fast-path index: if this rule has exactly one real
+        // (non-script) condition, register it under that condition's predicate.
+        let real_conds: Vec<&Condition> = rule
+            .conditions
+            .iter()
+            .filter(|c| c.predicate != "__script__")
+            .collect();
+        if real_conds.len() == 1 {
+            let cond = real_conds[0].clone();
+            self.single_cond_index
+                .entry(cond.predicate.clone())
+                .or_default()
+                .push(SingleCondRuleEntry {
+                    rule: rule.clone(),
+                    salience,
+                    condition: cond,
+                });
+        }
 
         self.states.push(production_state);
         self.rule_index.insert(rule.id.clone(), state_id.clone());
@@ -238,7 +272,7 @@ impl ProductionNetwork {
                 predicate: state.rule.id.clone(),
                 payload,
                 provenance: Provenance::RuleFiring {
-                    rule_id: state.rule.id.clone(),
+                    rule_id: state.rule.id.clone().into(),
                     bound_facts: Vec::new(),
                     bindings: agenda_item.bindings.bindings.clone(),
                 },
