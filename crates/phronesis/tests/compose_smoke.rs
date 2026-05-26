@@ -108,7 +108,7 @@ fn unregistered_action_passes_through() {
     // in `remaining` so the host handles it normally (via push adapter
     // or direct execution).
     let actions = vec![Action {
-        action_type: "apply_cost".to_string(),
+        action_type: "update_score".to_string(),
         params: vec!["player".into(), "5".into()],
     }];
 
@@ -117,7 +117,7 @@ fn unregistered_action_passes_through() {
 
     assert!(consequences.is_empty());
     assert_eq!(remaining.len(), 1);
-    assert_eq!(remaining[0].action_type, "apply_cost");
+    assert_eq!(remaining[0].action_type, "update_score");
 }
 
 #[test]

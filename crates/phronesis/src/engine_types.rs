@@ -1,7 +1,7 @@
 //! Core types for the RETE pattern matching engine
 //!
 //! This module defines the fundamental data structures used by the RETE network
-//! for rule-based game logic: Facts, Conditions, Actions, and Rules.
+//! for rule-based card game logic: Facts, Conditions, Actions, and Rules.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;

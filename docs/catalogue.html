@@ -1052,14 +1052,14 @@ test ... ok (124 passed)
             <div class="ex ex-bad">
               <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
 <pre><span class="k">pub fn</span> find_card(&<span class="k">self</span>, name: &<span class="em">String</span>) -> Option&lt;&Card&gt; {
-    <span class="k">self</span>.members.iter().find(|p| &p.name == name)
+    <span class="k">self</span>.members.iter().find(|c| &c.name == name)
 }</pre>
             </div>
             <div class="arrow" aria-hidden="true">→</div>
             <div class="ex ex-good">
               <div class="ex-label">refactored</div>
 <pre><span class="k">pub fn</span> find_card(&<span class="k">self</span>, name: &<span class="k">str</span>) -> Option&lt;&Card&gt; {
-    <span class="k">self</span>.members.iter().find(|p| p.name == name)
+    <span class="k">self</span>.members.iter().find(|c| c.name == name)
 }</pre>
             </div>
           </div>
@@ -1185,7 +1185,6 @@ test ... ok (124 passed)
             <div class="ex ex-bad">
               <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
 <pre><span class="k">pub struct</span> HandView { inner: Hand }
-
 <span class="k">impl</span> <span class="em">Deref for</span> HandView {
     <span class="k">type</span> Target = Hand;
     <span class="k">fn</span> deref(&<span class="k">self</span>) -> &Hand { &<span class="k">self</span>.inner }
@@ -1195,9 +1194,9 @@ test ... ok (124 passed)
             <div class="ex ex-good">
               <div class="ex-label">refactored</div>
 <pre><span class="k">pub struct</span> HandView { inner: Hand }
-
 <span class="k">impl</span> HandView {
     <span class="k">pub fn</span> hand(&<span class="k">self</span>) -> &Hand { &<span class="k">self</span>.inner }
+}
     <span class="c">// escoreose specific methods explicitly</span>
     <span class="k">pub fn</span> name(&<span class="k">self</span>) -> &<span class="k">str</span> { <span class="k">self</span>.inner.name() }
 }</pre>
@@ -1277,9 +1276,8 @@ $ cargo test -p core hand::</pre>
 <pre><span class="k">fn</span> snapshot_hand(hand: &Hand) -> HandSnapshot {
     HandSnapshot {
         name:     hand.name.<span class="em">clone</span>(),
-        members:  hand.members.<span class="em">clone</span>(),
-        state: hand.state.<span class="em">clone</span>(),
-        score:     hand.score,
+        members:    hand.members.<span class="em">clone</span>(),
+        state:    hand.state.<span class="em">clone</span>(),
         log:      hand.log.<span class="em">clone</span>(),
     }
 }</pre>
@@ -1334,7 +1332,6 @@ $ cargo test -p core hand::</pre>
     <span class="k">let</span> p = Hand::new(<span class="s">"the winning hand"</span>);
     assert_eq!(p.name(), <span class="s">"the winning hand"</span>);
     assert!(p.members().is_empty());
-    assert_eq!(p.score(), Score::zero());
 }</pre>
             </div>
           </div>

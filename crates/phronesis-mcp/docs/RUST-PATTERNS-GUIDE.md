@@ -1265,6 +1265,6 @@ let discovery = SecretDiscovery {
 ### Imanarovement Opportunities
 
 1. **Unused Imanaorts**: Run `cargo fix` to auto-remove unused imports (45 warnings)
-2. **Snake Case**: Fix `card_id` → `card_cost` in `src/example/play.rs`
+2. **Snake Case**: Fix `cardId` → `card_id` in `src/example/play.rs`
 3. **Block Pattern**: Apply to config loading sections in `src/core.rs`
 4. **Newtype Pattern**: Create `StateId`, `SlotId`, `ItemId` for type safety

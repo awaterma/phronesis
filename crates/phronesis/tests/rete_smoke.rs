@@ -157,3 +157,125 @@ async fn retracting_a_fact_removes_it_from_wmes() {
         "retracted fact should no longer appear in WMEs"
     );
 }
+
+#[cfg(test)]
+mod token_merge_tests {
+    use phronesis::{Bindings, Token, WorkingMemoryElement, Fact};
+
+    #[test]
+    fn token_merge_same_variable_different_values() {
+        let mut bindings1 = Bindings::new();
+        bindings1.add_binding("?x", "a").unwrap();
+
+        let mut bindings2 = Bindings::new();
+        bindings2.add_binding("?x", "b").unwrap();
+
+        let result = bindings1.merge(&bindings2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn token_merge_compatible_bindings() {
+        let mut bindings1 = Bindings::new();
+        bindings1.add_binding("?x", "a").unwrap();
+
+        let mut bindings2 = Bindings::new();
+        bindings2.add_binding("?y", "b").unwrap();
+
+        let result = bindings1.merge(&bindings2);
+        assert!(result.is_ok());
+        let merged = result.unwrap();
+        assert_eq!(merged.get_binding("?x"), Some(&"a".to_string()));
+        assert_eq!(merged.get_binding("?y"), Some(&"b".to_string()));
+    }
+
+    #[test]
+    fn token_extend_chain_preserves_parent() {
+        let token2 = Token::new_with_bindings(
+            vec![],
+            {
+                let mut b = Bindings::new();
+                b.add_binding("?x", "a").unwrap();
+                b
+            },
+        );
+
+        let token3 = token2.extend_with_binding(
+            WorkingMemoryElement::new(Fact {
+                id: "1".to_string(),
+                predicate: "test".to_string(),
+                args: vec![],
+                timestamp: 0,
+            }),
+            &Bindings::new(),
+        ).unwrap();
+
+        assert!(token3.parent.is_some());
+        assert_eq!(token3.parent.as_ref().unwrap().bindings.get_binding("?x"), Some(&"a".to_string()));
+    }
+}
+
+#[cfg(test)]
+mod token_conditions_match_tests {
+    use phronesis::{Condition, Fact, Bindings};
+
+    #[test]
+    fn condition_match_all_args() {
+        let condition = Condition {
+            predicate: "greet".to_string(),
+            args: vec!["?who".to_string()],
+            script: None,
+        };
+        let fact = Fact {
+            id: "1".to_string(),
+            predicate: "greet".to_string(),
+            args: vec!["alice".to_string()],
+            timestamp: 0,
+        };
+
+        let bindings = Bindings::new();
+        let result = bindings.can_bind(&condition, &fact);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn condition_match_multiple_args() {
+        let condition = Condition {
+            predicate: "greet".to_string(),
+            args: vec!["?who", "?target"].iter().map(|s| s.to_string()).collect(),
+            script: None,
+        };
+        let fact = Fact {
+            id: "1".to_string(),
+            predicate: "greet".to_string(),
+            args: vec!["alice".to_string(), "bob".to_string()],
+            timestamp: 0,
+        };
+
+        let bindings = Bindings::new();
+        let result = bindings.can_bind(&condition, &fact);
+        assert!(result.is_ok());
+        let bindings = result.unwrap();
+        assert!(bindings.get_binding("?who").is_some());
+        assert!(bindings.get_binding("?target").is_some());
+    }
+
+    #[test]
+    fn condition_match_arg_count_mismatch() {
+        let condition = Condition {
+            predicate: "greet".to_string(),
+            args: vec!["?who".to_string()],
+            script: None,
+        };
+        let fact = Fact {
+            id: "1".to_string(),
+            predicate: "greet".to_string(),
+            args: vec!["alice".to_string(), "bob".to_string()],
+            timestamp: 0,
+        };
+
+        let bindings = Bindings::new();
+        let result = bindings.can_bind(&condition, &fact);
+        assert!(result.is_err());
+    }
+}

@@ -742,7 +742,7 @@ impl ReteNetwork {
             "hidden_debt_found",
             "artifact_generated",
             "goal_reached",
-            // 038: Score Progression & Divine Goal System
+            // 038: Progression & Achievement System
             "contribution_logged",
             "high_rank_task_assigned",
             "platform_selected",

@@ -37,7 +37,7 @@ pub struct Consequence {
     pub kind: ConsequenceKind,
 
     /// Predicate-style identifier — e.g. `"card.played"`,
-    /// `"opponent.declined_request"`, `"compile.error"`.
+    /// `"round.ended"`, `"compile.error"`.
     ///
     /// The same shape as a RETE fact predicate, deliberately. Push-mode
     /// consequences inherit their predicate from the firing rule's head;

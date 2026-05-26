@@ -864,13 +864,19 @@
           inside escoreert systems, business-rules platforms, event
           correlation engines, the JBoss Drools framework one of the
           authors used in <a href="https://dmcommunity.org/wp-content/uploads/2016/06/rulesfest2009-andrew-waterman-playing-with-rules.pdf" style="color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor;">earlier
-          participatory-modeling work</a>, and any number of others. The algorithm itself is straightforward: facts enter
-          a network, conditions match against them in a compiled
-          discrimination graph, and consequences fire when all of a
-          rule's conditions are satisfied. There is nothing especially
-          novel in our use of the algorithm; what is new here is the
-          purpose to which we have put it. We use RETE to lint LLM
-          tool calls.
+          participatory-modeling work</a>, and any number of others. The algorithm
+          itself is straightforward: facts enter a network,
+          conditions match against them in a compiled discrimination
+          graph, and consequences fire when all of a rule's conditions
+          are satisfied. Think of it like a referee in a card game:
+          as members are played onto the table (facts), the referee
+          checks them against the rules of the game (conditions) —
+          verifying if a player has the right suit to follow the
+          lead, or if they have enough chips to raise the bet — and
+          intervenes (consequences) only when a move is illegal or
+          a hand is won. There is nothing especially novel in our
+          use of the algorithm; what is new here is the purpose to
+          which we have put it. We use RETE to lint LLM tool calls.
         </p>
         <p>
           <strong>Phr-MCP</strong> is the wrapper around the engine:
