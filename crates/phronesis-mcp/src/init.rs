@@ -30,6 +30,7 @@ use thiserror::Error;
 pub enum Pack {
     Llm,
     Rust,
+    Rhai,
     Python,
     TypeScript,
     Swift,
@@ -42,6 +43,7 @@ impl Pack {
             // `llm` and the deprecated alias `minimal` (pre-pack-split naming)
             "llm" | "minimal" => Ok(Self::Llm),
             "rust" | "rs" => Ok(Self::Rust),
+            "rhai" => Ok(Self::Rhai),
             "python" | "py" => Ok(Self::Python),
             "typescript" | "ts" | "javascript" | "js" => Ok(Self::TypeScript),
             "swift" => Ok(Self::Swift),
@@ -55,6 +57,7 @@ impl Pack {
             Self::None => json!({"rules": []}),
             Self::Llm => deflection_rules(),
             Self::Rust => rust_rules(),
+            Self::Rhai => rhai_rules(),
             Self::Python => python_rules(),
             Self::TypeScript => typescript_rules(),
             Self::Swift => swift_rules(),
@@ -65,6 +68,7 @@ impl Pack {
         match self {
             Self::Llm => "llm",
             Self::Rust => "rust",
+            Self::Rhai => "rhai",
             Self::Python => "python",
             Self::TypeScript => "typescript",
             Self::Swift => "swift",
@@ -848,18 +852,6 @@ fn deflection_rules() -> Value {
                     "action_type":"constraint_warning",
                     "params":["About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode."]
                 }]
-            },
-            {
-                "id": "nudge-playtest-before-push",
-                "phase": "pre",
-                "priority": 5,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["git push"]}
-                ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["About to publish to remote. Did you manually exercise the user-visible path? Automated tests can pass while a player-visible gap remains."]
-                }]
             }
         ]
     })
@@ -981,13 +973,15 @@ fn rust_rules() -> Value {
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
+                "doc_excepted": true,
                 "conditions": [
                     {"predicate":"file_extension_is","args":["rs"]},
+                    {"predicate":"file_path_matches","args":["src"]},
                     {"predicate":"file_line_count_above","args":["800"]}
                 ],
                 "actions": [{
                     "action_type":"constraint_warning",
-                    "params":["File exceeds 800 lines — consider splitting into focused submodules. Long files correlate with God-object debt and slow down navigation."]
+                    "params":["File exceeds 800 lines — consider splitting into focused submodules. Long files correlate with God-object debt and slow down navigation. (Scoped to src/; test blocks excluded from the count; a top-of-file `//! phronesis-allow: audit-file-loc-high <reason>` doc-comment exempts intentional god-files.)"]
                 }]
             },
             {
@@ -1116,12 +1110,13 @@ fn rust_rules() -> Value {
                 "audit": true,
                 "conditions": [
                     {"predicate": "new_content_contains", "args": ["_id: String"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                    {"predicate": "file_extension_is", "args": ["rs"]},
+                    {"predicate": "file_path_matches", "args": ["src"]}
                 ],
                 "actions": [{
                     "action_type": "constraint_warning",
                     "params": [
-                        "Field named `*_id: String` — consider a newtype like `StateId(String)` for type safety so an SlotId can't be passed where a StateId is expected. From the patterns guide §Design Patterns 2 (Newtype Pattern)."
+                        "Field named `*_id: String` — consider a newtype like `StateId(String)` for type safety so one ID kind can't be passed where another is expected. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)"
                     ]
                 }]
             },
@@ -1132,12 +1127,13 @@ fn rust_rules() -> Value {
                 "audit": true,
                 "conditions": [
                     {"predicate": "new_content_contains", "args": ["_id: u64"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                    {"predicate": "file_extension_is", "args": ["rs"]},
+                    {"predicate": "file_path_matches", "args": ["src"]}
                 ],
                 "actions": [{
                     "action_type": "constraint_warning",
                     "params": [
-                        "Field named `*_id: u64` — consider a newtype like `UserId(u64)` to prevent mixing different ID types. From the patterns guide §Design Patterns 2 (Newtype Pattern)."
+                        "Field named `*_id: u64` — consider a newtype like `UserId(u64)` to prevent mixing different ID types. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)"
                     ]
                 }]
             },
@@ -1174,6 +1170,131 @@ fn rust_rules() -> Value {
                 }]
             },
             {
+                "id": "block-deny-warnings-attribute",
+                "phase": "pre",
+                "priority": 10,
+                "audit": true,
+                "conditions": [
+                    {"predicate": "new_content_contains", "args": ["#![deny(warnings)]"]},
+                    {"predicate": "file_extension_is", "args": ["rs"]}
+                ],
+                "actions": [{
+                    "action_type": "constraint_violation",
+                    "params": [
+                        "`#![deny(warnings)]` breaks builds on toolchain upgrades, since each rustc release introduces new warnings. Move the policy to CI with `RUSTFLAGS=\"-D warnings\"` instead. From the patterns guide §Anti-patterns (deny-warnings)."
+                    ]
+                }]
+            },
+            {
+                "id": "warn-public-fn-takes-box-ref",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "conditions": [
+                    {"predicate": "new_content_contains", "args": [": &Box<"]},
+                    {"predicate": "file_extension_is", "args": ["rs"]}
+                ],
+                "actions": [{
+                    "action_type": "constraint_warning",
+                    "params": [
+                        "Parameter type `&Box<T>` adds a useless layer of indirection — prefer `&T` directly. From the patterns guide §Idioms (borrowed-types-for-arguments)."
+                    ]
+                }]
+            },
+            {
+                "id": "warn-expect-with-empty-message",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "conditions": [
+                    {"predicate": "new_content_contains", "args": [".expect(\"\")"]},
+                    {"predicate": "file_path_matches", "args": ["src"]}
+                ],
+                "actions": [{
+                    "action_type": "constraint_warning",
+                    "params": [
+                        "`.expect(\"\")` is strictly worse than `.unwrap()` — same panic, no escorelanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it."
+                    ]
+                }]
+            },
+            {
+                "id": "audit-rc-refcell-in-src",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "conditions": [
+                    {"predicate": "new_content_contains", "args": ["Rc<RefCell<"]},
+                    {"predicate": "file_path_matches", "args": ["src"]}
+                ],
+                "actions": [{
+                    "action_type": "constraint_warning",
+                    "params": [
+                        "`Rc<RefCell<T>>` is the textbook 'fighting the borrow checker' shape — often a signal that an arena, index-based references, or a redesigned ownership model would be a better fit. Confirm intent."
+                    ]
+                }]
+            },
+            {
+                "id": "audit-string-concat-with-plus",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "conditions": [
+                    {"predicate": "new_content_contains", "args": ["\" + &"]},
+                    {"predicate": "file_extension_is", "args": ["rs"]}
+                ],
+                "actions": [{
+                    "action_type": "constraint_warning",
+                    "params": [
+                        "String concatenation with `\" + &` — prefer `format!(\"{}{}\", a, b)` for readeffect and to avoid intermediate alstates. From the patterns guide §Idioms (concat-format)."
+                    ]
+                }]
+            },
+            {
+                "id": "audit-allow-dead-code-in-src",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "doc_excepted": true,
+                "conditions": [
+                    {"predicate": "new_content_contains", "args": ["#[allow(dead_code)]"]},
+                    {"predicate": "file_path_matches", "args": ["src"]}
+                ],
+                "actions": [{
+                    "action_type": "constraint_warning",
+                    "params": [
+                        "`#[allow(dead_code)]` in src/ — either delete the code or add a `///` doc-comment immediately above escorelaining why it's kept (planned API, generic-constraint trick, intentional placeholder). Documented exceptions are not flagged."
+                    ]
+                }]
+            },
+            {
+                "id": "audit-env-set-var-in-src",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "conditions": [
+                    {"predicate": "new_content_contains", "args": ["env::set_var("]},
+                    {"predicate": "file_path_matches", "args": ["src"]}
+                ],
+                "actions": [{
+                    "action_type": "constraint_warning",
+                    "params": [
+                        "`env::set_var(` in src/ — mutating process environment variables is unsound under concurrent reads (which is why edition 2024 marks the call unsafe). Verify the call site is genuinely single-threaded, or refactor to pass configuration explicitly through function arguments / a context struct. Tests where you control the thread count are usually fine; library code almost never is."
+                    ]
+                }]
+            }
+        ]
+    })
+}
+
+/// Rhai-specific rules. Apply to projects that embed the Rhai scripting
+/// language, whether via the `rhai` crate from Rust or as standalone `.rhai`
+/// scripts. Messages are intentionally generic; project-specific guidance
+/// (which loader helper to call, which response-proxy to use, etc.) should
+/// be layered in via project-local rules in `.phronesis/rules.json`.
+fn rhai_rules() -> Value {
+    json!({
+        "rules": [
+            {
                 "id": "block-rhai-inline-eval-string",
                 "phase": "pre",
                 "priority": 10,
@@ -1184,7 +1305,7 @@ fn rust_rules() -> Value {
                 "actions": [{
                     "action_type": "constraint_violation",
                     "params": [
-                        "`?fn` in ?file calls `engine.eval(<string literal>)`. Phronesis's pattern is to precompile Rhai scripts via `GameLogicLoader` and eval the AST (see `script_executor.rs`). Inline string-eval can't be tested independently and bypasses the registry. Move the script to `scripts/<domain>/<action>.rhai` and register it. Use `include_str!(\"script.rhai\")` only if the script is genuinely tiny and one-off."
+                        "`?fn` in ?file calls `engine.eval(<string literal>)`. Inline string-eval can't be tested independently of the surrounding Rust code and bypasses any script registry. Move the script to a `.rhai` file and load it via `engine.compile_file(...)` (or `compile(...)` on `include_str!`-ed content) so the AST can be cached, values-checked at build time, and exercised in isolation."
                     ]
                 }]
             },
@@ -1200,7 +1321,7 @@ fn rust_rules() -> Value {
                 "actions": [{
                     "action_type": "constraint_violation",
                     "params": [
-                        "`print(` appears in a .rhai script. Phronesis's convention is to use `response_append(...)` / `response_set_type(...)` proxies (per `save.rhai`). `print` is Rhai's `dbg!()` and never belongs in shipped scripts — swap it for the response proxy that fits your context."
+                        "`print(` appears in a .rhai script. `print` is Rhai's equivalent of `dbg!()` — debug output that bypasses whatever response/logging channel your host has registered. Use the host-registered function for emitting output (commonly a `log`, `emit`, or `response_*` proxy your `Engine` escoreoses via `register_fn`) so script output flows through the same path as the rest of your application."
                     ]
                 }]
             }
@@ -1318,11 +1439,67 @@ mod tests {
         assert_eq!(Pack::parse("ts").unwrap(), Pack::TypeScript);
         assert_eq!(Pack::parse("js").unwrap(), Pack::TypeScript);
         assert_eq!(Pack::parse("none").unwrap(), Pack::None);
+        assert_eq!(Pack::parse("rhai").unwrap(), Pack::Rhai);
+        assert_eq!(Pack::parse("RHAI").unwrap(), Pack::Rhai);
     }
 
     #[test]
     fn parses_swift_pack() {
         assert_eq!(Pack::parse("swift").unwrap(), Pack::Swift);
+    }
+
+    /// The Rhai pack carries the two formerly-rust-bundled rules with
+    /// generalized (non-project-specific) messages, and the rust pack no
+    /// longer ships them. This pins the 0.6.1 pack split against regression.
+    #[test]
+    fn rhai_pack_carries_rhai_rules_and_rust_does_not() {
+        let rhai = Pack::Rhai.rules();
+        let rhai_ids: Vec<&str> = rhai["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(rhai_ids.contains(&"block-rhai-inline-eval-string"));
+        assert!(rhai_ids.contains(&"block-rhai-print-in-script"));
+
+        let rust = Pack::Rust.rules();
+        let rust_ids: Vec<&str> = rust["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(!rust_ids.contains(&"block-rhai-inline-eval-string"));
+        assert!(!rust_ids.contains(&"block-rhai-print-in-script"));
+    }
+
+    /// The Rhai-pack messages should be project-neutral: no references
+    /// to helper identifiers, file names, or project codenames from
+    /// any particular host. Pins the "generalize messages" intent of
+    /// the 0.6.1 split. The forbidden-token list below names some
+    /// historical leaks the test exists to guard against.
+    #[test]
+    fn rhai_pack_messages_are_project_neutral() {
+        let v = Pack::Rhai.rules();
+        let arr = v["rules"].as_array().unwrap();
+        for rule in arr {
+            let msg = rule["actions"][0]["params"][0].as_str().unwrap();
+            for forbidden in [
+                "GameLogicLoader",
+                "save.rhai",
+                "response_append",
+                "Phronesis",
+                "phronesis",
+            ] {
+                assert!(
+                    !msg.contains(forbidden),
+                    "rhai pack message for {} contains project-specific reference {:?}",
+                    rule["id"],
+                    forbidden
+                );
+            }
+        }
     }
 
     #[test]
@@ -1414,6 +1591,10 @@ mod tests {
             "audit-newtype-id-u64",
             "audit-if-let-opportunity-none-empty",
             "audit-if-let-opportunity-err-empty",
+            "audit-rc-refcell-in-src",
+            "audit-string-concat-with-plus",
+            "audit-allow-dead-code-in-src",
+            "audit-env-set-var-in-src",
         ];
         for id in audit_only_ids {
             let rule = arr
@@ -1422,6 +1603,38 @@ mod tests {
                 .unwrap_or_else(|| panic!("rust pack must include {id}"));
             assert_eq!(rule["phase"], "audit", "{id} must be phase: audit");
             assert_eq!(rule["audit"], true, "{id} must be audit: true");
+        }
+    }
+
+    /// Rules added in 0.6.1, sourced from the rust-unofficial/patterns book.
+    /// Verifies presence and that the block/warn ones use the right severity.
+    #[test]
+    fn rust_pack_includes_patterns_book_rules() {
+        let v = Pack::Rust.rules();
+        let arr = v.get("rules").unwrap().as_array().unwrap();
+        let by_id = |id: &str| {
+            arr.iter()
+                .find(|r| r["id"] == id)
+                .unwrap_or_else(|| panic!("rust pack must include {id}"))
+        };
+        assert_eq!(
+            by_id("block-deny-warnings-attribute")["actions"][0]["action_type"],
+            "constraint_violation"
+        );
+        assert_eq!(
+            by_id("warn-public-fn-takes-box-ref")["actions"][0]["action_type"],
+            "constraint_warning"
+        );
+        assert_eq!(
+            by_id("warn-expect-with-empty-message")["actions"][0]["action_type"],
+            "constraint_warning"
+        );
+        for id in [
+            "audit-rc-refcell-in-src",
+            "audit-string-concat-with-plus",
+            "audit-allow-dead-code-in-src",
+        ] {
+            assert_eq!(by_id(id)["phase"], "audit");
         }
     }
 
@@ -1436,8 +1649,6 @@ mod tests {
             "block-await-on-sync-fire-all-consequences",
             "warn-clone-heavy",
             "warn-empty-test",
-            "block-rhai-inline-eval-string",
-            "block-rhai-print-in-script",
         ] {
             assert!(
                 ids.contains(required),

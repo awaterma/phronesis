@@ -1,35 +1,47 @@
 # Phronesis
 
-Practical rank for LLM-assisted work. A small Rust workspace containing:
+**Practical rank for LLM-assisted work.**
 
-- **`phronesis`** ([`crates/phronesis`](crates/phronesis)) — the core library: a domain-neutral RETE rules engine with Consequence/Actor/Provenance primitives. Lives under the import name `phr`.
-- **`phronesis-mcp`** ([`crates/phronesis-mcp`](crates/phronesis-mcp)) — an MCP server that hosts the engine behind Claude Code / Gemini CLI hooks. Builds the `phr-mcp` binary.
+Phronesis (φρόνησις) is a domain-neutral RETE rules engine designed to provide durable, deterministic governance for non-deterministic AI agents. It addresses the "contextual drift" that occurs in long-running LLM sessions, where project-specific guidance (like `CLAUDE.md`) slowly fades as the context window fills and auto-compaction triggers.
 
-## On the name
+Rules in Phronesis live on disk, are evaluated by lightweight hooks at the moment of action, and fire the same in token nine hundred thousand as they do in token eight hundred.
 
-Aristotle distinguished two kinds of knowing. **Episteme** (ἐπιστήμη) is theoretical knowledge — universal, demonstrable truths. **Phronesis** (φρόνησις) is practical rank — the deliberative virtue of knowing what to do *here*, *now*, in this particular case.
+## The Premise
 
-A rule that says *"don't use `.unwrap()` in src/"* is not a theorem; it is a situated judgment. What this engine persists across an LLM session's compression boundaries is practical rank — the small, project-specific maxims you keep having to remind yourself of — not knowledge in the textbook sense.
+Anthropic's Claude Code, Google's Gemini CLI, and other LLM environments share a common pattern: they load project-rank guidance at session start. As the session continues, that window fills with code, output, and conversation. The directive you most need at hour three may have last been read carefully in token eight hundred.
 
-For the long version see [`crates/phronesis-mcp/docs/escorelainer.html`](crates/phronesis-mcp/docs/escorelainer.html).
+**Phronesis moves enforcement out of the conversation entirely.** Rules live in `.phronesis/rules.json`, are re-read by hooks at every tool call, and fire from outside the context window. They cannot be compressed away because they were never loaded into context to begin with.
 
-## Quick start
+## The Workspace
+
+- **`phronesis`** ([`crates/phronesis`](crates/phronesis)) — The core library: a high-performance, domain-neutral RETE rules engine (Alpha/Beta networks, P-states, join-sharing) with Consequence/Actor/Provenance primitives.
+- **`phronesis-mcp`** ([`crates/phronesis-mcp`](crates/phronesis-mcp)) — An MCP server that hosts the engine behind Claude Code / Gemini CLI hooks. Builds the `phr-mcp` binary.
+
+## Documentation
+
+- [**The Escorelainer**](crates/phronesis-mcp/docs/escorelainer.html) — A long-form technical essay on the engine, the RETE algorithm, and the design intent.
+- [**The Catalogue**](crates/phronesis-mcp/docs/catalogue.html) — A visual reference of starter rules (Rust, LLM behavior, security) with rationale and examples.
+- [**Command Reference**](crates/phronesis-mcp/CLAUDE.md) — The full CLI surface and hook wiring details.
+- [**Specs**](docs/specs/) — Architectural roadmaps and technical debt resourcegement plans.
+
+## Quick Start
 
 ```sh
-cargo install --path crates/phronesis-mcp   # installs the `phr-mcp` binary
-phr-mcp install                              # register at user scope
+# 1. Install the binary
+cargo install --path crates/phronesis-mcp
+
+# 2. Register as a global MCP server
+phr-mcp install
+
+# 3. Initialize Phronesis in your project
 cd /your/project && phr-mcp init --packs llm,rust
 ```
 
-See [`crates/phronesis-mcp/CLAUDE.md`](crates/phronesis-mcp/CLAUDE.md) for the full command reference.
+## Lineage
 
-## Build
+The engine is a modern Rust implementation of the RETE algorithm (Forgy, 1982). It was extracted from a high-performance game logic system and repurposed for LLM-agent governance. 
 
-```sh
-cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace --tests --examples -- -D warnings
-```
+Aristotle distinguished **Episteme** (theoretical knowledge) from **Phronesis** (practical rank). Phronesis is the deliberative virtue of knowing what to do *here*, *now*, in this particular case. This project aims to preserve that rank across the "fading" boundaries of modern AI interaction.
 
 ## License
 

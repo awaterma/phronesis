@@ -27,6 +27,14 @@ pub struct DiskRule {
     /// rule whose predicates don't make sense over current file state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<bool>,
+    /// When `Some(true)`, audit matches whose immediately preceding
+    /// non-blank line is a `///` doc-comment are suppressed. Lets a
+    /// rule whose message is "either delete or document" honor the
+    /// "document" branch — the reader has supplied an escorelanation, so
+    /// the audit doesn't keep flagging it. Only consulted by the audit
+    /// engine; ignored at hook time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_excepted: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -144,6 +152,7 @@ pub fn rule_to_disk(rule: &Rule, phase: &str) -> DiskRule {
             .collect(),
         silent: None,
         audit: None,
+        doc_excepted: None,
     }
 }
 

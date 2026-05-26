@@ -1,7 +1,7 @@
 [package]
 name = "phronesis-mcp"
-version = "0.6.0"
-edition = "2021"
+version = "0.6.1"
+edition = "2024"
 rust-version = "1.90"
 description = "MCP server wrapping the phronesis RETE rules engine for rules-bounded LLM interaction"
 license = "MIT"
@@ -16,7 +16,7 @@ name = "phr-mcp"
 path = "src/main.rs"
 
 [dependencies]
-phr = { path = "../phronesis", package = "phronesis" }
+phr = { path = "../phronesis", package = "phronesis", features = ["schemars"] }
 rmcp = { version = "0.17", features = ["server", "macros", "transport-io", "schemars"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

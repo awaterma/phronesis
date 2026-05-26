@@ -13,7 +13,7 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 fn run_pre_check(payload: &str, root: &Path) -> (i32, String) {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_phr-mcp"));
     cmd.arg("pre-check")
-        .env("EPISTEME_PROJECT_ROOT", root)
+        .env("PHRONESIS_PROJECT_ROOT", root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -123,8 +123,8 @@ fn no_action_log_env_var_suppresses_writes() {
     // Run with the env var set
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_phr-mcp"));
     cmd.arg("pre-check")
-        .env("EPISTEME_PROJECT_ROOT", dir.path())
-        .env("EPISTEME_NO_ACTION_LOG", "1")
+        .env("PHRONESIS_PROJECT_ROOT", dir.path())
+        .env("PHRONESIS_NO_ACTION_LOG", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -155,10 +155,10 @@ impl McpClient {
     fn spawn(project_root: &Path) -> Self {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_phr-mcp"));
         cmd.arg("serve")
-            .env("EPISTEME_PROJECT_ROOT", project_root)
+            .env("PHRONESIS_PROJECT_ROOT", project_root)
             // Disable autopersist so rules don't interfere with log-only assertions.
             // The action log itself is independent of autopersist.
-            .env("EPISTEME_NO_AUTOPERSIST", "1")
+            .env("PHRONESIS_NO_AUTOPERSIST", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -411,12 +411,12 @@ fn get_action_log_reads_across_rotation_boundary() {
     // Start with a low threshold so rotation triggers after very few writes.
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_phr-mcp"));
     cmd.arg("serve")
-        .env("EPISTEME_PROJECT_ROOT", dir.path())
-        .env("EPISTEME_NO_AUTOPERSIST", "1")
+        .env("PHRONESIS_PROJECT_ROOT", dir.path())
+        .env("PHRONESIS_NO_AUTOPERSIST", "1")
         // 500 bytes fits ~6 add_rule entries before triggering rotation.
         // With 10 entries total, all 10 stay readable: older ones in .1,
         // newer ones in the current file.
-        .env("EPISTEME_LOG_MAX_BYTES", "500")
+        .env("PHRONESIS_LOG_MAX_BYTES", "500")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());

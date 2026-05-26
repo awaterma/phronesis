@@ -84,7 +84,7 @@ pub fn default_path(project_root: &Path) -> PathBuf {
 
 /// Default rotation threshold. When the active log reaches this size in
 /// bytes, it's renamed to `<path>.1` and a fresh file is started. Override
-/// at runtime via `EPISTEME_LOG_MAX_BYTES` (decimal bytes).
+/// at runtime via `PHRONESIS_LOG_MAX_BYTES` (decimal bytes).
 pub const MAX_LOG_BYTES_DEFAULT: u64 = 50 * 1024 * 1024;
 
 /// Hard ceiling on the runtime override — protects against misconfiguration
@@ -92,7 +92,7 @@ pub const MAX_LOG_BYTES_DEFAULT: u64 = 50 * 1024 * 1024;
 pub const MAX_LOG_BYTES_CEILING: u64 = 1024 * 1024 * 1024;
 
 fn max_log_bytes() -> u64 {
-    let raw = std::env::var("EPISTEME_LOG_MAX_BYTES")
+    let raw = std::env::var("PHRONESIS_LOG_MAX_BYTES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(MAX_LOG_BYTES_DEFAULT);
@@ -111,7 +111,7 @@ fn rotated_path(path: &Path) -> PathBuf {
 
 /// Append a single entry to the log file. Creates the parent directory and
 /// rotates the file when it exceeds `max_log_bytes()`. Honors
-/// `EPISTEME_NO_ACTION_LOG=1`.
+/// `PHRONESIS_NO_ACTION_LOG=1`.
 pub fn append(path: &Path, entry: &LogEntry) -> Result<(), LogError> {
     append_with_max(path, entry, max_log_bytes())
 }
@@ -120,7 +120,7 @@ pub fn append(path: &Path, entry: &LogEntry) -> Result<(), LogError> {
 /// trigger rotation with small inputs; production callers go through
 /// `append`, which reads the env-var-configurable global.
 pub fn append_with_max(path: &Path, entry: &LogEntry, max_bytes: u64) -> Result<(), LogError> {
-    if std::env::var("EPISTEME_NO_ACTION_LOG").is_ok() {
+    if std::env::var("PHRONESIS_NO_ACTION_LOG").is_ok() {
         return Ok(());
     }
     if let Some(parent) = path.parent() {
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(entries[2].ts, 109);
     }
 
-    // NOTE: env-var behavior for EPISTEME_NO_ACTION_LOG is tested in
+    // NOTE: env-var behavior for PHRONESIS_NO_ACTION_LOG is tested in
     // subprocess integration tests (tests/action_log_integration.rs) where
     // each child process has its own environment. Setting env vars in
     // parallel unit tests races against tests that depend on the var

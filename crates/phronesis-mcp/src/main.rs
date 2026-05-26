@@ -292,7 +292,7 @@ async fn main() -> anyhow::Result<()> {
                 let mut per_rule = serde_json::Map::new();
                 for r in &report.per_rule {
                     per_rule.insert(
-                        r.rule_id.clone(),
+                        r.rule_id.as_str().to_string(),
                         serde_json::json!({
                             "rank": r.rank.as_str(),
                             "hits": r.hits,

@@ -119,7 +119,7 @@ immediately enforceable** by the next Edit/Write/MultiEdit. No explicit
 
 ### When to disable autopersist
 
-Set `EPISTEME_NO_AUTOPERSIST=1` in the MCP server's environment when:
+Set `PHRONESIS_NO_AUTOPERSIST=1` in the MCP server's environment when:
 
 - You're testing the `save_rules` / `load_rules_file` tools in isolation
 - You want to add escoreerimental rules that shouldn't be persisted
@@ -187,7 +187,7 @@ jq -c --argjson cutoff $(date -d '1 hour ago' +%s) 'select(.ts >= $cutoff)' .phr
 
 ### Disabling the log
 
-Set `EPISTEME_NO_ACTION_LOG=1` in the hook or server's environment to
+Set `PHRONESIS_NO_ACTION_LOG=1` in the hook or server's environment to
 suppress writes. The log is opt-out, not opt-in — the default is on
 because the most common debugging exception ("did the hook fire?") has no
 other clear answer.
@@ -203,7 +203,7 @@ project: ~100 MB.
 rotation boundary still return the right entries (subject to the
 single-previous-file history limit).
 
-Override the threshold at runtime by setting `EPISTEME_LOG_MAX_BYTES`
+Override the threshold at runtime by setting `PHRONESIS_LOG_MAX_BYTES`
 (decimal bytes). The override is capped at 1 GB so a misconfiguration
 can't turn the log into an unbounded resource sink.
 

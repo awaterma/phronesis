@@ -3,6 +3,7 @@
 //! the CLI handler does the I/O, this module only transforms data.
 
 use crate::action_log::LogEntry;
+use phr::RuleId;
 
 /// Inputs to `aggregate`. Built by the CLI handler from clap args.
 #[derive(Debug, Clone, Default)]
@@ -29,7 +30,7 @@ pub struct Values {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RuleValues {
-    pub rule_id: String,
+    pub rule_id: RuleId,
     pub blocked: u32,
     pub warned: u32,
     /// Most recent fire timestamp (unix seconds). `0` when the rule never
@@ -94,7 +95,7 @@ pub fn aggregate(entries: &[LogEntry], opts: &StatsOpts) -> Values {
             }
             let action_type = c.get("action_type").and_then(|v| v.as_str()).unwrap_or("");
             let row = by_id.entry(rule_id.to_string()).or_insert(RuleValues {
-                rule_id: rule_id.to_string(),
+                rule_id: rule_id.into(),
                 blocked: 0,
                 warned: 0,
                 last_fired_ts: 0,
@@ -156,7 +157,7 @@ pub fn render_table(values: &Values) -> String {
     let id_width = values
         .per_rule
         .iter()
-        .map(|r| r.rule_id.len())
+        .map(|r| r.rule_id.as_str().len())
         .max()
         .unwrap_or(0)
         .max("Rule".len());
@@ -494,7 +495,7 @@ mod tests {
 
     fn rule_value(id: &str, blocked: u32, warned: u32, last: u64) -> RuleValues {
         RuleValues {
-            rule_id: id.to_string(),
+            rule_id: id.into(),
             blocked,
             warned,
             last_fired_ts: last,

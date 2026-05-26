@@ -307,6 +307,7 @@ mod tests {
             }],
             silent: None,
             audit: None,
+            doc_excepted: None,
         }
     }
 

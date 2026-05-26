@@ -379,6 +379,31 @@
   .rule[data-rank="block"] .tag-rank { color: var(--accent); border-color: var(--accent); background: #FCE9E0; }
   .rule[data-rank="warn"]  .tag-rank { color: var(--amber); border-color: var(--amber); background: #F3E5BC; }
   .rule[data-rank="audit"] .tag-rank { color: var(--slate); border-color: var(--slate); background: #DDE5E2; }
+  .tag-source {
+    font-style: italic;
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0.02em;
+    color: var(--accent-deep);
+    border-color: var(--accent-deep);
+    background: #F8EDE5;
+  }
+  a.tag-source {
+    text-decoration: none;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  a.tag-source:hover {
+    background: #EFD8C2;
+    border-color: var(--accent);
+  }
+  a.tag-source::after {
+    content: " ↗";
+    font-style: normal;
+    font-size: 0.85em;
+    opagame: 0.7;
+  }
 
   .rule-id {
     font-family: "JetBrains Mono", monospace;
@@ -544,7 +569,7 @@
   <header class="colophon" role="banner">
     <div class="left"><a href="./escorelainer.html">← The Escorelainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
-    <div class="right">Vol. 0.6 — Edition I</div>
+    <div class="right">Vol. 0.6.1 — Edition I</div>
   </header>
 
   <!-- ─── COVER ─── -->
@@ -564,24 +589,23 @@
         A reader's guide to the rules that ship by default in
         <code>phr-mcp init --packs llm,rust</code>. Each entry
         carries its predicate, its severity, a one-line distillation,
-        and a worked example drawn from a real-game game-engine
-        codebase (phronesis).
+        and a worked example drawn from real-game Rust code.
       </p>
     </div>
     <div class="values">
       <dl>
         <dt>Default packs</dt>
-        <dd><span class="num">5</span></dd>
+        <dd><span class="num">6</span></dd>
         <dt>Rules shipped</dt>
-        <dd><span class="num">30</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
+        <dd><span class="num">36</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
         <dt>Blocks (pre)</dt>
-        <dd><span class="num">11</span></dd>
+        <dd><span class="num">12</span></dd>
         <dt>Warnings (post)</dt>
-        <dd><span class="num">9</span></dd>
+        <dd><span class="num">10</span></dd>
         <dt>Audit-only</dt>
-        <dd><span class="num">5</span></dd>
+        <dd><span class="num">9</span></dd>
         <dt>Field examples</dt>
-        <dd><span class="num">17</span></dd>
+        <dd><span class="num">24</span></dd>
       </dl>
     </div>
   </section>
@@ -603,7 +627,7 @@
         Tags beneath each rule name show its <em>phase</em> and whether
         it participates in audits. The italic line is the rule's
         one-sentence point. <em>From the field</em> blocks show synthetic
-        but plausible phronesis code that would trip the rule, paired with
+        but plausible Rust code that would trip the rule, paired with
         a refactor that satisfies it.
       </p>
       <p>
@@ -620,7 +644,6 @@
         <li><a href="#deflection">Issue-attribution disclaimers</a></li>
         <li><a href="#unverified-claims">Unverified completion claims</a></li>
         <li><a href="#nudge-commit">Verify before commit</a></li>
-        <li><a href="#nudge-push">Playtest before push</a></li>
       </ol>
 
       <div class="pack-head">Pack · Rust</div>
@@ -636,11 +659,23 @@
         <li><a href="#clone">Clone-heavy functions</a></li>
         <li><a href="#empty-test">Emanaty tests</a></li>
         <li><a href="#sync-await">.await on now-sync methods</a></li>
-        <li><a href="#rhai">Rhai script discipline</a></li>
         <li><a href="#manual-err">Manual <code>=&gt; return Err(…)</code></a></li>
         <li><a href="#newtype-id">Newtype opportunities</a></li>
         <li><a href="#if-let">If-let opportunities</a></li>
         <li><a href="#file-loc">God-file line count</a></li>
+        <li><a href="#deny-warnings">#![deny(warnings)] attribute</a></li>
+        <li><a href="#box-ref">Public fn takes &amana;Box&lt;T&gt;</a></li>
+        <li><a href="#expect-empty">Emanaty .expect() message</a></li>
+        <li><a href="#rc-refcell">Rc&lt;RefCell&lt;T&gt;&gt; in src/</a></li>
+        <li><a href="#string-concat">String concat with <code>+ &amana;</code></a></li>
+        <li><a href="#allow-dead-code">#[allow(dead_code)] in src/</a></li>
+        <li><a href="#env-set-var">env::set_var() in src/</a></li>
+      </ol>
+
+      <div class="pack-head">Pack · Rhai</div>
+      <ol>
+        <li><a href="#rhai-eval">Inline engine.eval(literal)</a></li>
+        <li><a href="#rhai-print">print() in .rhai scripts</a></li>
       </ol>
 
       <div class="pack-head">Other packs</div>
@@ -657,7 +692,7 @@
     <header class="pack-head-block">
       <div class="pack-num">§<small>I</small><br>1</div>
       <h2>Pack · LLM — <span class="it">behavior, not code shape.</span></h2>
-      <div class="pack-count"><span class="num">7</span>Rules</div>
+      <div class="pack-count"><span class="num">6</span>Rules</div>
     </header>
 
     <p class="pack-intro">
@@ -797,7 +832,7 @@ not are a recurring failure mode.</pre>
             <div class="arrow" aria-hidden="true">→</div>
             <div class="ex ex-good">
               <div class="ex-label">verified, then commit</div>
-<pre><span class="c">$ cargo test --workspace -p phronesis-core</span>
+<pre><span class="c">$ cargo test --workspace -p core</span>
 test ... ok (124 passed)
 <span class="c">$ cargo run -- --scenario play-smoke</span>
 ... play smoke passed
@@ -808,48 +843,6 @@ test ... ok (124 passed)
       </div>
     </article>
 
-    <!-- ─── 1.4 Nudge before push ─── -->
-    <article class="rule" data-rank="warn" id="nudge-push">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">on Bash content</span>
-        </div>
-        <h3 class="rule-id">nudge-playtest-before-push</h3>
-        <p class="rule-summary">
-          Fires on "git​&nbsp;push". A nudge to manually exercise the
-          user-visible path before remote work sees it.
-        </p>
-        <div class="rule-body">
-          <p>
-            Particularly relevant for game and UI work, where automated
-            tests reliably pass while a player-visible regression slips
-            through. CI cannot run the game.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">trigger</div>
-<pre><span class="c">$ git​ push origin feat/play-ledger</span>
-<span class="em">phronesis: WARNING</span> — About to publish to
-remote. Did you manually exercise the user-visible
-path? Automated tests can pass while a player-visible
-gap remains.</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">playtest, then push</div>
-<pre><span class="c"># Launch the runtime, walk one realistic scenario:</span>
-<span class="c">$ cargo run -- --module example--scenario "ambush at the bridge"</span>
-... played 6 turns, play resolved correctly,
-    new priority banner rendered as expected.
-<span class="c">$ git​ push origin feat/play-ledger</span></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
   </section>
 
 
@@ -860,7 +853,7 @@ gap remains.</pre>
     <header class="pack-head-block">
       <div class="pack-num">§<small>II</small><br>2</div>
       <h2>Pack · Rust — <span class="it">code shape, error handling, debt.</span></h2>
-      <div class="pack-count"><span class="num">22</span>Rules</div>
+      <div class="pack-count"><span class="num">27</span>Rules</div>
     </header>
 
     <p class="pack-intro">
@@ -869,7 +862,8 @@ gap remains.</pre>
       (signature smells, dbg!() leftovers), and audit-only debt
       indicators (newtype opportunities, god-files, manual error
       propagation). The examples below all draw from a representative
-      game engine: phronesis.
+      Rust application — a game engine — chosen because the domain
+      tends to surface every category of Rust pain at once.
     </p>
 
     <!-- ─── 2.1 Panic family ─── -->
@@ -1246,7 +1240,7 @@ if scope was intentional.</pre>
 $ cargo test --workspace --tests --examples
 
 <span class="c"># Or scoped intentionally to one crate</span>
-$ cargo test -p phronesis-core hand::</pre>
+$ cargo test -p core hand::</pre>
             </div>
           </div>
           <p class="rule-why">
@@ -1366,12 +1360,16 @@ $ cargo test -p phronesis-core hand::</pre>
         </p>
         <div class="rule-body">
           <p>
-            Project-specific: these two methods on phronesis's RETE
-            network were converted to sync in the 0.39 refactor, but
-            old <code>.await</code> call sites kept turning up in test
-            code and integration helpers. The rule pins the API surface
-            so that resurrected snippets get caught before they reach a
-            <em>future is not awaitable</em> compile error.
+            Project-specific in shape, broadly useful in concept: these
+            two methods on phronesis's own RETE network were converted
+            from async to sync in an earlier refactor, and old
+            <code>.await</code> call sites kept turning up in test code
+            and integration helpers afterwards. The rule pins the API
+            surface so that resurrected snippets get caught before they
+            reach a <em>future is not awaitable</em> compile error. The
+            same shape — naming two specific now-sync methods you wish
+            to police — generalizes cleanly to any project undergoing
+            a sync/async migration.
           </p>
           <div class="rule-example">
             <div class="ex ex-bad">
@@ -1406,66 +1404,7 @@ $ cargo test -p phronesis-core hand::</pre>
       </div>
     </article>
 
-    <!-- ─── 2.12 Rhai discipline ─── -->
-    <article class="rule" data-rank="block" id="rhai">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">×2 variants</span>
-        </div>
-        <h3 class="rule-id">block-rhai-inline-eval-string · block-rhai-print-in-script</h3>
-        <p class="rule-summary">
-          Two Rhai-specific rules. The first bans <code>engine.eval(&lt;literal&gt;)</code>
-          in Rust code (use precompiled scripts via the loader). The
-          second bans <code>print(</code> in <code>.rhai</code> files
-          (use the <code>response_append</code> proxy).
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">scripts/example/save.rhai</span></div>
-<pre><span class="k">fn</span> execute(player, slot) {
-    <span class="em">print</span>(`Saving game for ${player} to slot ${slot}`);
-    save_state(player, slot);
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">fn</span> execute(player, slot) {
-    response_append(`Saving game for ${player} to slot ${slot}`);
-    save_state(player, slot);
-}</pre>
-            </div>
-          </div>
-          <div class="rule-example" style="margin-top: 1.5rem;">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/core/scripting/util.rs</span></div>
-<pre><span class="k">let</span> result: <span class="k">i64</span> = engine.<span class="em">eval</span>(<span class="s">"let base = 10; base * 2 + 5"</span>)?;</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="c">// scripts/example/calc_priority.rhai is loaded once,</span>
-<span class="c">// compiled to an AST, then eval'd many times.</span>
-<span class="k">let</span> ast = GameLogicLoader::load(<span class="s">"example/calc_priority"</span>)?;
-<span class="k">let</span> result: <span class="k">i64</span> = engine.eval_ast(&ast)?;</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Inline string-eval bypasses the script
-            registry, can't be tested in isolation, and resists static
-            review. The <code>print()</code> ban is mechanical hygiene:
-            game responses must reach the player through the response
-            proxy, not stdout.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.13 Manual err return (audit) ─── -->
+    <!-- ─── 2.12 Manual err return (audit) ─── -->
     <article class="rule" data-rank="audit" id="manual-err">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
@@ -1655,6 +1594,464 @@ src/core/event_pipeline/
         </div>
       </div>
     </article>
+
+    <!-- ─── 2.17 #![deny(warnings)] attribute (block) ─── -->
+    <article class="rule" data-rank="block" id="deny-warnings">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">audit: yes</span>
+          <a class="tag tag-source"
+             href="https://rust-unofficial.github.io/patterns/anti_patterns/deny-warnings.html"
+             target="_blank" rel="noopener noreferrer">patterns book</a>
+        </div>
+        <h3 class="rule-id">block-deny-warnings-attribute</h3>
+        <p class="rule-summary">
+          Blocks <code>#![deny(warnings)]</code> in any <code>.rs</code>
+          file. A toolchain-fragility anti-pattern: every new rustc
+          release introduces new warnings and breaks the build.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">avoid <span class="path">src/lib.rs</span></div>
+<pre><span class="em">#![deny(warnings)]</span>
+
+<span class="c">// every cargo update is a coin flip</span>
+<span class="k">pub fn</span> hello() { println!(<span class="s">"hello"</span>); }</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">put the policy in CI</div>
+<pre><span class="c">// src/lib.rs — no global deny</span>
+<span class="k">pub fn</span> hello() { println!(<span class="s">"hello"</span>); }
+
+<span class="c"># .github/workflows/ci.yml</span>
+- <span class="k">run</span>: cargo clippy --workspace -- -D warnings
+  env:
+    RUSTFLAGS: <span class="s">"-D warnings"</span></pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Library code with
+            <code>#![deny(warnings)]</code> stops compiling for downstream
+            consumers as soon as their toolchain introduces a new warning.
+            The policy belongs in CI, where it gates merges without
+            propagating fragility to anyone using the crate. Source:
+            <a href="https://rust-unofficial.github.io/patterns/anti_patterns/deny-warnings.html">rust-unofficial/patterns
+            §Anti-patterns (deny-warnings)</a>.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.18 Public fn takes &Box<T> (warn) ─── -->
+    <article class="rule" data-rank="warn" id="box-ref">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">audit: yes</span>
+          <a class="tag tag-source"
+             href="https://rust-unofficial.github.io/patterns/idioms/coercion-arguments.html"
+             target="_blank" rel="noopener noreferrer">patterns book</a>
+        </div>
+        <h3 class="rule-id">warn-public-fn-takes-box-ref</h3>
+        <p class="rule-summary">
+          Detects parameter types of the form
+          <code>&amana;Box&lt;T&gt;</code>. The borrow of an owned pointer
+          adds a useless layer of indirection;
+          <code>&amana;T</code> conveys the same intent without the
+          wrapper.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">avoid</div>
+<pre><span class="k">pub fn</span> describe(card: &<span class="em">Box&lt;Card&gt;</span>) -> String {
+    <span class="k">format!</span>(<span class="s">"{}: VALUE {}"</span>, card.name, card.score)
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">prefer</div>
+<pre><span class="k">pub fn</span> describe(card: &<span class="k">Card</span>) -> String {
+    <span class="k">format!</span>(<span class="s">"{}: VALUE {}"</span>, card.name, card.score)
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> A <code>&amana;Box&lt;T&gt;</code> can
+            always be obtained from a <code>&amana;T</code> via
+            auto-deref, but the reverse forces every caller to pre-wrap
+            their value in a <code>Box</code> regardless of where it
+            actually lives. Source:
+            <a href="https://rust-unofficial.github.io/patterns/idioms/coercion-arguments.html">rust-unofficial/patterns
+            §Idioms (borrowed-types-for-arguments)</a>.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.19 Emanaty .expect() message (warn) ─── -->
+    <article class="rule" data-rank="warn" id="expect-empty">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">audit: yes</span>
+        </div>
+        <h3 class="rule-id">warn-expect-with-empty-message</h3>
+        <p class="rule-summary">
+          Flags <code>.expect("")</code> in <code>src/</code>. Strictly
+          worse than <code>.unwrap()</code> — the same panic, plus the
+          noise of a method named <code>expect</code> with nothing to
+          expect.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">avoid</div>
+<pre><span class="k">let</span> config = load_config().<span class="em">expect("")</span>;
+<span class="k">let</span> port = config.port.<span class="em">expect("")</span>;</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">give the invariant a name</div>
+<pre><span class="k">let</span> config = load_config()
+    .expect(<span class="s">"config must exist at $CARGO_MANIFEST_DIR/config.toml"</span>);
+<span class="k">let</span> port = config.port
+    .expect(<span class="s">"validate_config() guarantees port is Some"</span>);</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> When the panic eventually fires in
+            production, the message is what tells the operator which
+            invariant was broken. An empty message turns a debuggable
+            assertion into an opaque crash; the existing
+            <code>warn-unwrap-in-src</code> rule already flags
+            <code>.unwrap()</code>, but <code>.expect("")</code> escapes
+            it by being technically a different call.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.20 Rc<RefCell<T>> in src/ (audit) ─── -->
+    <article class="rule" data-rank="audit" id="rc-refcell">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag">phase: audit</span>
+          <span class="tag">predicate: substring</span>
+          <a class="tag tag-source"
+             href="https://rust-unofficial.github.io/patterns/anti_patterns/borrow_clone.html"
+             target="_blank" rel="noopener noreferrer">borrow-checker workaround</a>
+        </div>
+        <h3 class="rule-id">audit-rc-refcell-in-src</h3>
+        <p class="rule-summary">
+          Flags occurrences of <code>Rc&lt;RefCell&lt;T&gt;&gt;</code>
+          inside <code>src/</code>. The textbook
+          "fighting-the-borrow-checker" shape — often a signal that the
+          ownership model could be redesigned.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">audit output</div>
+<pre>$ phr-mcp audit --rule audit-rc-refcell-in-src
+
+Rule                      Rank  Hits  Files
+audit-rc-refcell-in-src   warn      4      2
+  src/game/region.rs        lines: 18, 42
+  src/game/graph.rs         lines: 7, 91</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">redesign options</div>
+<pre><span class="c">// arena + indices replaces shared mutability</span>
+<span class="k">pub struct</span> RegionArena {
+    regions: Vec&lt;Region&gt;,
+}
+<span class="k">pub struct</span> RegionId(<span class="k">u32</span>);
+
+<span class="c">// or: precompute the graph, treat it as immutable</span>
+<span class="c">// or: move mutability into a single owner, pass &amana;mut</span></pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> <code>Rc&lt;RefCell&lt;T&gt;&gt;</code>
+            is sometimes the right answer — for graph-shaped data with
+            true aliasing, for callback registries, for single-threaded
+            observer patterns. But it is also the canonical shape that
+            appears when someone has lost a fight with the borrow checker
+            and reached for the escape hatch. Surface it during one-time
+            audits so design intent gets revisited.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.21 String concat with + & (audit) ─── -->
+    <article class="rule" data-rank="audit" id="string-concat">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag">phase: audit</span>
+          <span class="tag">predicate: substring</span>
+          <a class="tag tag-source"
+             href="https://rust-unofficial.github.io/patterns/idioms/concat-format.html"
+             target="_blank" rel="noopener noreferrer">patterns book</a>
+        </div>
+        <h3 class="rule-id">audit-string-concat-with-plus</h3>
+        <p class="rule-summary">
+          Flags the <code>" + &amana;</code> shape — string-literal
+          concatenated with a borrowed string. A signal that
+          <code>format!</code> would be clearer.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">avoid</div>
+<pre><span class="k">let</span> msg = <span class="s">"player "</span> + &name + <span class="s">" rolled "</span> + &roll.to_string();</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">prefer</div>
+<pre><span class="k">let</span> msg = <span class="k">format!</span>(<span class="s">"player {} rolled {}"</span>, name, roll);</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Plus-chained string concatenation
+            produces a sequence of intermediate <code>String</code>
+            alstates and forces awkward <code>.to_string()</code>
+            calls on non-string arguments. <code>format!</code> reads as
+            a temanalate, allocates once, and accepts anything that
+            implements <code>Display</code>. Source:
+            <a href="https://rust-unofficial.github.io/patterns/idioms/concat-format.html">rust-unofficial/patterns
+            §Idioms (concat-format)</a>.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.23 env::set_var( in src/ (audit) ─── -->
+    <article class="rule" data-rank="audit" id="env-set-var">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag">phase: audit</span>
+          <span class="tag">predicate: substring</span>
+          <a class="tag tag-source"
+             href="https://doc.rust-lang.org/edition-guide/rust-2024/newly-unsafe-functions.html"
+             target="_blank" rel="noopener noreferrer">edition 2024</a>
+        </div>
+        <h3 class="rule-id">audit-env-set-var-in-src</h3>
+        <p class="rule-summary">
+          Flags <code>env::set_var(</code> in <code>src/</code>. Edition
+          2024 marks this call <code>unsafe</code> because mutating the
+          process environment is unsound when other threads read it
+          concurrently. The audit gives you a chance to verify intent.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">avoid in library code</div>
+<pre><span class="k">pub fn</span> configure_database(url: &<span class="k">str</span>) {
+    <span class="k">unsafe</span> { <span class="em">std::env::set_var</span>(<span class="s">"DATABASE_URL"</span>, url); }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">pass configuration explicitly</div>
+<pre><span class="k">pub struct</span> DbConfig { <span class="k">pub</span> url: String }
+
+<span class="k">pub fn</span> connect(cfg: &DbConfig) -> Result&lt;Conn, DbError&gt; {
+    Conn::open(&cfg.url)
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> The standard library was tightened in
+            edition 2024 for the same reason this rule exists: env-var
+            mutation is process-global and unsynchronized, and any read
+            from another thread during the write is undefined behavior.
+            Tests where you control thread count are usually fine (and
+            already opt in with <code>unsafe</code>); library code
+            almost never is. Prefer passing configuration explicitly
+            through arguments or a context struct.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 2.22 #[allow(dead_code)] in src/ (audit) ─── -->
+    <article class="rule" data-rank="audit" id="allow-dead-code">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag">phase: audit</span>
+          <span class="tag">predicate: substring</span>
+        </div>
+        <h3 class="rule-id">audit-allow-dead-code-in-src</h3>
+        <p class="rule-summary">
+          Flags <code>#[allow(dead_code)]</code> attributes in
+          <code>src/</code>. The compiler is telling you something; the
+          attribute silences it without addressing the underlying
+          exception of why the code exists.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">avoid</div>
+<pre><span class="em">#[allow(dead_code)]</span>
+<span class="k">pub fn</span> compute_secondary_score(&<span class="k">self</span>) { /* never called */ }</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">either delete it, or document why it stays</div>
+<pre><span class="c">// option A: delete</span>
+
+<span class="c">// option B: document the reason</span>
+<span class="c">/// Held in reserve for the upcoming scoring-revision RFC (see #142).</span>
+<span class="c">/// Not yet wired into the dispatch table; cargo would otherwise warn.</span>
+<span class="em">#[allow(dead_code)]</span>
+<span class="k">pub fn</span> compute_secondary_score(&<span class="k">self</span>) { /* ... */ }</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Many <code>#[allow(dead_code)]</code>
+            attributes get added during refactors and then forgotten.
+            Audit sweeps surface them so the team can decide, code by
+            code, whether each one is still earning its keep.
+          </p>
+        </div>
+      </div>
+    </article>
+  </section>
+
+
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <!-- ─── PACK · RHAI                                           ── -->
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <section class="pack" id="rhai-pack">
+    <header class="pack-head-block">
+      <div class="pack-num">§<small>III</small><br>3</div>
+      <h2>Pack · Rhai — <span class="it">script hygiene for embedded engines.</span></h2>
+      <div class="pack-count"><span class="num">2</span>Rules</div>
+    </header>
+
+    <p class="pack-intro">
+      Discipline for projects that embed the Rhai scripting language.
+      The pack assumes a host that loads <code>.rhai</code> files,
+      compiles them to ASTs, and registers host-side functions the
+      scripts can call. The two rules push back on the two most
+      common entropy sources: inline <code>engine.eval</code> in the
+      Rust source, and ad-hoc <code>print()</code> in the scripts
+      themselves. Messages are intentionally generic — wire any
+      project-specific guidance (which loader helper, which
+      response-proxy) into your own <code>.phronesis/rules.json</code>.
+    </p>
+
+    <!-- ─── 3.1 Rhai inline eval string (block) ─── -->
+    <article class="rule" data-rank="block" id="rhai-eval">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">predicate: AST</span>
+        </div>
+        <h3 class="rule-id">block-rhai-inline-eval-string</h3>
+        <p class="rule-summary">
+          Blocks calls of the shape <code>engine.eval(&lt;string
+          literal&gt;)</code> in Rust source. Inline string-eval
+          bypasses any script registry and resists isolated testing;
+          a <code>.rhai</code> file plus <code>compile_file</code> /
+          <code>eval_ast</code> is the cached, reviewable alternative.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">avoid <span class="path">src/scripting/util.rs</span></div>
+<pre><span class="k">let</span> result: <span class="k">i64</span> = engine.<span class="em">eval</span>(<span class="s">"let base = 10; base * 2 + 5"</span>)?;</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">precompiled AST</div>
+<pre><span class="c">// scripts/calc_priority.rhai is loaded once,</span>
+<span class="c">// compiled to an AST, then eval'd many times.</span>
+<span class="k">let</span> ast = engine.compile_file(<span class="s">"scripts/calc_priority.rhai"</span>.into())?;
+<span class="k">let</span> result: <span class="k">i64</span> = engine.eval_ast(&ast)?;</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> The compiled-AST path lets the script
+            be values-checked at build time, exercised in isolation,
+            cached across calls, and discovered via the file system
+            rather than buried as a literal in unrelated code. Inline
+            string-eval gives up all of those affordances for a
+            character-count win.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 3.2 Rhai print() in script (block) ─── -->
+    <article class="rule" data-rank="block" id="rhai-print">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">audit: yes</span>
+        </div>
+        <h3 class="rule-id">block-rhai-print-in-script</h3>
+        <p class="rule-summary">
+          Blocks <code>print(</code> in any <code>.rhai</code> file.
+          Rhai's <code>print</code> is the equivalent of
+          <code>dbg!()</code> — debug output that bypasses whatever
+          response/logging channel the host has registered.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">avoid <span class="path">scripts/save.rhai</span></div>
+<pre><span class="k">fn</span> execute(player, slot) {
+    <span class="em">print</span>(`Saving game for ${player} to slot ${slot}`);
+    save_state(player, slot);
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">use the host-registered channel</div>
+<pre><span class="c">// Whatever your Engine escoreoses via register_fn:</span>
+<span class="c">// log / emit / notify / response_append / etc.</span>
+<span class="k">fn</span> execute(player, slot) {
+    log(`Saving game for ${player} to slot ${slot}`);
+    save_state(player, slot);
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Output from a shipped script should
+            flow through the same path as the rest of the
+            application's output — to be captured, replayed, formatted,
+            or addressed to a specific surface (player chat, server
+            log, audit trail). <code>print</code> escapes to stdout,
+            which is usually nowhere useful.
+          </p>
+        </div>
+      </div>
+    </article>
   </section>
 
 
@@ -1663,7 +2060,7 @@ src/core/event_pipeline/
   <!-- ─── ──────────────────────────────────────────────────────── -->
   <section class="pack" id="other">
     <header class="pack-head-block">
-      <div class="pack-num">§<small>III</small><br>3</div>
+      <div class="pack-num">§<small>IV</small><br>4</div>
       <h2>Other packs — <span class="it">Python · TypeScript · Swift.</span></h2>
       <div class="pack-count"><span class="num">6</span>Rules</div>
     </header>

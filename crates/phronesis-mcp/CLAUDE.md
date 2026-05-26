@@ -66,6 +66,7 @@ For hooks and project-specific rules, in any project:
 phr-mcp init                          # just the LLM-behavior pack (deflection rules)
 phr-mcp init --packs llm,rust         # LLM rules + Rust enforcement
 phr-mcp init --packs rust             # Rust enforcement only, no deflection
+phr-mcp init --packs llm,rust,rhai    # Rust + Rhai for embedded-scripting projects
 phr-mcp init --packs llm,python       # LLM rules + Python enforcement
 phr-mcp init --packs llm,typescript   # LLM rules + TS/JS enforcement
 phr-mcp init --packs none             # no starter rules; you add them
@@ -79,25 +80,38 @@ phr-mcp init --hooks-only             # refresh hook wiring without touching rul
 The packs are composable and **independent**:
 - `llm` — LLM-behavior rules. Blocks the deflection family (disclaimers
   that shift blame to pre-existing code or to "the test environment")
-  plus unverified completion claims. Warns on `git commit -m` and `git
-  push` to nudge end-to-end verification before reporting done. These
-  rules fire from disk at every hook invocation, so they remain active
-  even when CLAUDE.md content has been compressed out of conversation
-  context.
-- `rust` — Rust + Rhai enforcement. Blocks: `.unwrap()` / `todo!()` /
-  `panic!()` / `unimplemented!()` in src/, `Result<_, String>` returns,
+  plus unverified completion claims. Warns on `git commit -m` to nudge
+  end-to-end verification before reporting done. These rules fire from
+  disk at every hook invocation, so they remain active even when
+  CLAUDE.md content has been compressed out of conversation context.
+- `rust` — Rust code-shape enforcement. Blocks: `.unwrap()` /
+  `todo!()` / `panic!()` / `unimplemented!()` in src/,
+  `Result<_, String>` returns,
   `.execute_all_agenda_items().await` / `.fire_all_consequences().await`
-  on now-sync methods, `engine.eval(<string literal>)` (use precompiled
-  Rhai ASTs). Warns: public fn taking `&String` or `&Vec<T>`, functions
-  with 3+ `.clone()` calls, functions with 5+ parameters, `impl Deref
-  for` (Deref polymorphism anti-pattern), `#[test]` functions with no
-  assertions or `?` operator, `cargo build/test/check/clippy` without
-  `--workspace`, `print(` in `.rhai` scripts (use `response_append`),
-  `dbg!()` in src/. Audit-only (silent at hook time, surfaced by
-  `phr-mcp audit`): files exceeding 800 lines (god-file signal),
-  manual `=> return Err(...)` match arms (use `?`), `*_id: String` /
-  `*_id: u64` fields (newtype opportunity), `None => {}` and `Err(_) =>
-  {}` match arms (if-let opportunity / silent error-swallowing).
+  on now-sync methods, `#![deny(warnings)]` (breaks on toolchain
+  upgrade). Warns: public fn taking `&String`, `&Vec<T>`, or
+  `&Box<T>`, functions with 3+ `.clone()` calls, functions with 5+
+  parameters, `impl Deref for` (Deref polymorphism anti-pattern),
+  `#[test]` functions with no assertions or `?` operator,
+  `cargo build/test/check/clippy` without `--workspace`, `dbg!()` in
+  src/, `.expect("")` with an empty message in src/. Audit-only
+  (silent at hook time, surfaced by `phr-mcp audit`): files exceeding
+  800 lines (god-file signal), manual `=> return Err(...)` match arms
+  (use `?`), `*_id: String` / `*_id: u64` fields (newtype
+  opportunity), `None => {}` and `Err(_) => {}` match arms (if-let
+  opportunity / silent error-swallowing), `Rc<RefCell<...>>` in src/
+  (fighting-the-borrow-checker shape), `" + &` string concatenation
+  (prefer `format!`), `#[allow(dead_code)]` in src/, `env::set_var(`
+  in src/ (unsound under concurrent reads — and unsafe in edition
+  2024). The rust-unofficial/patterns book is the upstream source for
+  the borrow-types, deny-warnings, and string-concat rules; the
+  Rc/RefCell rule is a more general Rust-idiom observation.
+- `rhai` — discipline for projects that embed the Rhai scripting
+  language. Blocks: `engine.eval(<string literal>)` in Rust source
+  (precompile to AST via `compile_file` / `eval_ast` instead), and
+  `print(` in `.rhai` scripts (use the host-registered output channel,
+  whatever your `Engine` escoreoses via `register_fn`). Generic messages
+  — layer project-specific guidance into your own `.phronesis/rules.json`.
 - `python` — bare-except blocked, `print()` warning
 - `typescript` — `: any` warning, `console.log` warning
 - `swift` — Swift-specific advisories: force-unwrap warning, try! warning

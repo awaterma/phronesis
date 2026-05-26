@@ -34,10 +34,10 @@ pub const MAX_PAYLOAD_BYTES: u64 = 10 * 1024 * 1024;
 /// Rule of thumb: source files are typically <100KB; markdown docs <1MB. Files
 /// larger than this are unlikely to benefit from rule-based validation and
 /// risk DoS by inflating working-memory usage. Override at runtime by setting
-/// `EPISTEME_MAX_FILE_BYTES` (decimal bytes).
+/// `PHRONESIS_MAX_FILE_BYTES` (decimal bytes).
 pub const MAX_FILE_BYTES_DEFAULT: u64 = 1024 * 1024;
 
-/// Hard ceiling on the runtime override. No matter what `EPISTEME_MAX_FILE_BYTES`
+/// Hard ceiling on the runtime override. No matter what `PHRONESIS_MAX_FILE_BYTES`
 /// is set to, the cap will never exceed this value. Prevents a misconfigured
 /// override from re-introducing the unbounded-read class of bug.
 pub const MAX_FILE_BYTES_CEILING: u64 = 64 * 1024 * 1024;
@@ -51,11 +51,11 @@ pub const MAX_FILE_BYTES_CEILING: u64 = 64 * 1024 * 1024;
 /// on pattern-matched facts.
 pub const MAX_FACT_CONTENT_BYTES: usize = 256 * 1024;
 
-/// Return the effective max file-read cap, honoring the `EPISTEME_MAX_FILE_BYTES`
+/// Return the effective max file-read cap, honoring the `PHRONESIS_MAX_FILE_BYTES`
 /// env var when set and parseable, otherwise the default. Always bounded by
 /// `MAX_FILE_BYTES_CEILING`.
 pub fn max_file_bytes() -> u64 {
-    let raw = std::env::var("EPISTEME_MAX_FILE_BYTES")
+    let raw = std::env::var("PHRONESIS_MAX_FILE_BYTES")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(MAX_FILE_BYTES_DEFAULT);
@@ -96,10 +96,10 @@ pub enum SecurityError {
 
 /// Return the project root directory.
 ///
-/// Honors `EPISTEME_PROJECT_ROOT` if set, otherwise falls back to the current
+/// Honors `PHRONESIS_PROJECT_ROOT` if set, otherwise falls back to the current
 /// working directory. The returned path is not guaranteed to exist or be canonical.
 pub fn project_root() -> PathBuf {
-    std::env::var("EPISTEME_PROJECT_ROOT")
+    std::env::var("PHRONESIS_PROJECT_ROOT")
         .ok()
         .map(PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -350,30 +350,35 @@ mod tests {
 
     // Single test combining all env-var cases. Env vars are process-global,
     // so running these scenarios in parallel races. Keep them sequential.
+    //
+    // SAFETY: edition 2024 marks std::env::{set_var, remove_var} as unsafe
+    // because mutating the environment is unsound when other threads read
+    // it concurrently. This test runs single-threaded inside `cargo test`
+    // and touches an env var no other test reads, so the contract holds.
     #[test]
     fn max_file_bytes_env_override_behavior() {
-        let prior = std::env::var("EPISTEME_MAX_FILE_BYTES").ok();
+        let prior = std::env::var("PHRONESIS_MAX_FILE_BYTES").ok();
 
         // Default when unset
-        std::env::remove_var("EPISTEME_MAX_FILE_BYTES");
+        unsafe { std::env::remove_var("PHRONESIS_MAX_FILE_BYTES") };
         assert_eq!(max_file_bytes(), MAX_FILE_BYTES_DEFAULT);
 
         // Honors explicit override
-        std::env::set_var("EPISTEME_MAX_FILE_BYTES", "2048");
+        unsafe { std::env::set_var("PHRONESIS_MAX_FILE_BYTES", "2048") };
         assert_eq!(max_file_bytes(), 2048);
 
         // Ceiling caps a runaway value
-        std::env::set_var("EPISTEME_MAX_FILE_BYTES", "999999999999");
+        unsafe { std::env::set_var("PHRONESIS_MAX_FILE_BYTES", "999999999999") };
         assert_eq!(max_file_bytes(), MAX_FILE_BYTES_CEILING);
 
         // Garbage falls back to default
-        std::env::set_var("EPISTEME_MAX_FILE_BYTES", "not-a-number");
+        unsafe { std::env::set_var("PHRONESIS_MAX_FILE_BYTES", "not-a-number") };
         assert_eq!(max_file_bytes(), MAX_FILE_BYTES_DEFAULT);
 
         // Restore
         match prior {
-            Some(v) => std::env::set_var("EPISTEME_MAX_FILE_BYTES", v),
-            None => std::env::remove_var("EPISTEME_MAX_FILE_BYTES"),
+            Some(v) => unsafe { std::env::set_var("PHRONESIS_MAX_FILE_BYTES", v) },
+            None => unsafe { std::env::remove_var("PHRONESIS_MAX_FILE_BYTES") },
         }
     }
 

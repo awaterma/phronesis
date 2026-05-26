@@ -219,7 +219,7 @@ fn tdd_rules() -> &'static str {
 fn run_hook_with_root(payload: &str, root: &Path) -> (i32, String) {
     let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_phr-mcp"));
     cmd.arg("pre-check")
-        .env("EPISTEME_PROJECT_ROOT", root)
+        .env("PHRONESIS_PROJECT_ROOT", root)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());

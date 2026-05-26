@@ -211,6 +211,59 @@
     line-height: 1.45;
   }
 
+  /* Byline — primary author featured, secondary credit subordinated */
+  .cover .byline {
+    margin-top: 1.75rem;
+    padding-top: 1.1rem;
+    border-top: 1px solid var(--rule);
+    max-width: 38ch;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.3rem;
+    font-family: "Fraunces", serif;
+  }
+  .cover .byline .author.primary {
+    font-variation-settings: "opsz" 24, "SOFT" 40;
+    font-weight: 500;
+    font-size: 1.35rem;
+    color: var(--ink);
+    letter-spacing: -0.005em;
+    line-height: 1.1;
+  }
+  .cover .byline .author.primary a {
+    color: inherit;
+    text-decoration: none;
+    border-bottom: 1px solid var(--rule);
+    transition: border-color 0.2s;
+  }
+  .cover .byline .author.primary a:hover { border-bottom-color: var(--accent); }
+  .cover .byline .secondary {
+    font-variation-settings: "opsz" 14, "SOFT" 70;
+    font-weight: 400;
+    font-size: 0.92rem;
+    color: var(--ink-soft);
+    font-style: italic;
+    letter-spacing: 0.005em;
+    margin-top: 0.1rem;
+  }
+  .cover .byline .secondary .with {
+    color: var(--accent);
+    font-style: italic;
+    font-weight: 350;
+  }
+  .cover .byline .secondary .dot { color: var(--rule); padding: 0 0.15em; }
+  .cover .byline .affil {
+    margin-top: 0.45rem;
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 600;
+    font-size: 0.66rem;
+    letter-spacing: 0.32em;
+    text-transform: uppercase;
+    color: var(--mute);
+  }
+
   /* The seal — a small print mark on the right */
   .seal {
     width: 180px; height: 180px;
@@ -534,7 +587,7 @@
   <header class="colophon" role="banner">
     <div class="left">Phronesis · An Escorelainer</div>
     <div class="center">⚯ Rule-Bounded LLM Work ⚯</div>
-    <div class="right">Vol. 0.6 — 2026</div>
+    <div class="right"><a href="./catalogue.html" style="color: inherit; text-decoration: none; border-bottom: 1px solid currentColor;">The Catalogue →</a></div>
   </header>
 
   <!-- ─── COVER ────────────────────────────────────────────────────── -->
@@ -551,9 +604,14 @@
         that <span class="it">do not</span> fade.
       </h1>
       <p class="subtitle">
-        On the practical mechanics of a small RETE rules engine, the
-        MCP server that hosts it, and the four hook surfaces that
-        keep it alive across a working session.
+        Notes on a small RETE rules engine, the MCP server that
+        hosts it, and the hook surfaces we use to keep project
+        guidance alive across a long working session.
+      </p>
+      <p class="byline">
+        <span class="author primary"><a href="mailto:andrew@waterman.dev">Andrew Waterman</a></span>
+        <span class="secondary"><span class="with">with</span> Claude <span class="dot">·</span> Anthropic</span>
+        <span class="affil">2026</span>
       </p>
     </div>
 
@@ -600,36 +658,44 @@
   <section class="chunk" id="on-the-name">
     <div class="section-head">
       <div class="num" aria-hidden="true">※</div>
-      <h2>On the name — <span class="it">why phronesis, not episteme.</span></h2>
+      <h2>On the name — <span class="it">phronesis, practical rank.</span></h2>
     </div>
 
     <div class="body-grid">
       <div class="main">
         <p>
-          Aristotle drew a sharp distinction between two kinds of knowing.
-          <strong>Episteme</strong> (ἐπιστήμη) is theoretical knowledge —
-          of universal, demonstrable truths, of the kind one proves.
-          <strong>Phronesis</strong> (φρόνησις) is practical rank — the
-          deliberative virtue of knowing what to do <em>here</em>,
-          <em>now</em>, in this particular case, under uncertainty.
+          <strong>Phronesis</strong> (φρόνησις) is Aristotle's term for
+          practical rank — the deliberative virtue of knowing what to
+          do <em>here</em>, <em>now</em>, in this particular case, and
+          under genuine uncertainty. It is not the same as theoretical
+          knowledge or technical effect; it is the cultivated judgment
+          that an escoreerienced practitioner brings to a concrete
+          situation, where the general principle does not quite reach
+          and the right action has to be worked out from particulars.
         </p>
         <p>
-          A rule that says <em>"don't use <code>.unwrap()</code> in
-          src/"</em> is not a theorem. It is a situated judgment: in this
-          codebase, under these constraints, do this. The project was
-          once called <em>Episteme</em>; the name was wrong. What this
-          engine persists across compression boundaries is practical
-          rank — the small, hard-won, project-specific maxims that you
-          keep having to remind yourself of — not knowledge in the
-          textbook sense. Hence <em>Phronesis</em>.
+          We have found this an apt name for the work this project is
+          asked to do. A rule that says <em>"don't use
+          <code>.unwrap()</code> in src/"</em> is not a theorem and
+          does not pretend to be one. It is a situated judgment: in
+          this codebase, under these constraints, given everything we
+          have learned the hard way, do this rather than that. What
+          this engine persists across compression boundaries is
+          precisely that kind of small, hard-won, project-specific
+          maxim — the practical rank of a particular team about a
+          particular system, rendered durable across sessions in which
+          context windows fill, conversations get summarized, and the
+          guidance the operator most needs may be the guidance most
+          likely to have faded.
         </p>
       </div>
       <aside class="margin">
         <span class="label">Marginalia.</span>
         The crate is <code>phr</code>. The binary is <code>phr-mcp</code>.
         The on-disk directory is <code>.phronesis/</code>. The MCP server
-        name is <code>phronesis</code>. The shorthand stays Greek; the
-        ergonomics stay short.
+        name is <code>phronesis</code>. We kept the long name in
+        user-facing places and the short name everywhere a developer
+        actually types.
       </aside>
     </div>
   </section>
@@ -644,38 +710,52 @@
     <div class="body-grid">
       <div class="main lead">
         <p>
-          Anthropic's Claude Code, Google's Gemini CLI, and most other
-          LLM-assisted development environments load a project's
-          guidance — a <code>CLAUDE.md</code>, an <code>AGENTS.md</code>, a
-          system primer — exactly once, at the start of a session. As work
-          progresses and the model's context fills with code, command
-          output, and conversation, that guidance is compressed away. The
-          directive most needed at hour three may have last been seen in
-          token eight hundred.
+          Anthropic's Claude Code, Google's Gemini CLI, and the
+          broader family of LLM-assisted development environments
+          share a common pattern at startup: they load whatever
+          project-rank guidance they find — a <code>CLAUDE.md</code>,
+          an <code>AGENTS.md</code>, a system primer — at session
+          initialization, and place it in the model's context
+          window. As the session continues, that window fills with
+          code, command output, and conversation. Older content is
+          summarized by auto-compaction steps; even content that
+          literally remains in context receives less attention from
+          the model as new material accumulates between it and the
+          current prompt. The directive we most need at hour three
+          may have last been read carefully in token eight hundred.
         </p>
         <p>
-          This is not a bug. Context windows are finite; compression is
-          the price of long sessions. But it means that any project
-          convention encoded only in prose — any instruction that lives
-          solely in the loaded markdown — has a half-life. The model
-          drifts. The convention is forgotten. The deflective phrasing
-          you warned against in turn one returns in turn ninety.
+          This is not a bug; context windows are finite, and
+          compaction is the price of long-running sessions. It does,
+          however, mean that any project convention encoded only in
+          prose — any instruction that lives solely in the loaded
+          markdown — has a practical half-life. The deflective
+          phrasing we warned the model against in turn one tends to
+          come back in turn ninety. The rule about workspace flags
+          that we established on Monday is no longer reliably
+          retrieved from context on Thursday afternoon. The shape of
+          the project — the set of small, hard-won particulars one is
+          meant to honor — slowly fades, whether through explicit
+          summarization or through the gentler erosion of attention.
         </p>
         <p>
-          Phronesis moves enforcement out of the conversation entirely.
-          Rules live on disk in <code>.phronesis/rules.json</code>, are
-          re-read by lightweight hooks at every tool call, and fire from
-          outside the context window. They cannot be compressed. They
-          cannot be forgotten. They fire the same in token nine hundred
-          thousand as in token eight hundred.
+          Phronesis came out of an attemanat to address this directly,
+          by moving enforcement out of the conversation entirely.
+          Rules live on disk in <code>.phronesis/rules.json</code>; they
+          are re-read by lightweight hooks at every relevant tool
+          call; they fire from outside the context window. They cannot
+          be compressed away, because they were never loaded into
+          context to begin with. They fire the same in token nine
+          hundred thousand as they do in token eight hundred.
         </p>
       </div>
       <aside class="margin">
         <span class="label">Marginalia, i.</span>
-        Conversation-resident guidance has a half-life proportional to
-        token-budget pressure. Disk-resident rules have none. That
-        asymmetry — and not any cleverness about the rule language — is
-        what the project is really about.
+        Conversation-resident guidance has a half-life proportional
+        to token-budget pressure. Disk-resident rules have none. We
+        have found that this asymmetry — and not any cleverness about
+        the rule language itself — is what the project is really
+        about.
       </aside>
     </div>
 
@@ -775,41 +855,56 @@
     <div class="body-grid">
       <div class="main">
         <p>
-          <strong>Phronesis</strong> is a RETE rules engine. RETE — described
-          by Charles Forgy in 1979 — is the classical algorithm for
-          production-rule systems: facts enter a network, conditions
-          match against them in a compiled discrimination graph, and
-          consequences fire. It is older than the Game Wide Web and
-          has lived inside escoreert systems, business rules platforms,
-          and event-correlation engines for two generations. Here, it
-          is used for one purpose: to lint LLM tool calls.
+          <strong>Phronesis</strong> is a RETE rules engine. RETE
+          was developed by Charles Forgy in the late 1970s at
+          Carnegie Mellon and published in its canonical form in the
+          1982 paper <em>Rete: A Fast Algorithm for the Many Pattern /
+          Many Object Pattern Match Problem</em>. It has lived inside
+          production-rule systems ever since —
+          inside escoreert systems, business-rules platforms, event
+          correlation engines, the JBoss Drools framework one of the
+          authors used in <a href="https://dmcommunity.org/wp-content/uploads/2016/06/rulesfest2009-andrew-waterman-playing-with-rules.pdf" style="color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor;">earlier
+          participatory-modeling work</a>, and any number of others. The algorithm itself is straightforward: facts enter
+          a network, conditions match against them in a compiled
+          discrimination graph, and consequences fire when all of a
+          rule's conditions are satisfied. There is nothing especially
+          novel in our use of the algorithm; what is new here is the
+          purpose to which we have put it. We use RETE to lint LLM
+          tool calls.
         </p>
         <p>
-          <strong>Phr-MCP</strong> is the wrapper. A single Rust
-          binary that escoreoses the engine three ways: as an MCP server
-          over stdio (for any MCP-capable client), as a set of CLI
-          subcommands that bind to the Claude Code and Gemini CLI hook
-          protocols, and as a whole-tree audit tool. The hooks are
-          where the dureffect comes from. They are invoked by the
-          host (Claude Code, Gemini CLI) at well-defined moments —
-          before a tool fires, after it applies, when a session opens,
-          when the user submits a prompt — and they re-read the rules
-          file from disk every time.
+          <strong>Phr-MCP</strong> is the wrapper around the engine:
+          a single Rust binary that escoreoses it three ways. It runs as
+          an MCP server over stdio, for any MCP-capable client. It
+          runs as a set of CLI subcommands that bind directly to the
+          Claude Code and Gemini CLI hook protocols. And it runs as a
+          whole-tree audit tool. The hooks are where the dureffect
+          property comes from. They are invoked by the host (Claude
+          Code, Gemini CLI) at well-defined moments — before a tool
+          fires, after it applies, when a session opens, when the
+          user submits a prompt — and they re-read the rules file
+          from disk on every invocation.
         </p>
         <p>
-          That last property is structural. The hook does not cache.
-          It does not depend on the model's memory. It opens a file,
-          parses it, runs the network, prints a result, and exits.
-          Whatever the model has forgotten, the hook will remember,
-          because the hook never knew anything to begin with.
+          That last property is the structural point. The hook does
+          not cache anything between invocations. It does not depend
+          on the model's memory or on any state retained in the
+          conversation. It opens a file, parses it, runs the network
+          against the facts extracted from the current tool call,
+          prints a result, and exits. Whatever the model has
+          forgotten, the hook still has access to — because the hook
+          never knew anything to begin with, and reads the rules
+          fresh from disk every time it is asked to fire.
         </p>
       </div>
       <aside class="margin">
         <span class="label">Marginalia, ii.</span>
-        The engine itself is unremarkable — RETE is a textbook
-        algorithm. What is novel is the state: <em>outside</em> the
-        conversation, invoked <em>by</em> the conversation's host.
-        That is the move.
+        The engine itself is unremarkable; RETE is a textbook
+        algorithm and there is no shortage of implementations. What
+        we have found valuable is the <em>state</em> of the engine:
+        outside the conversation, invoked by the conversation's host.
+        That, more than anything else about the engine, is the
+        substantive move.
       </aside>
     </div>
 
@@ -930,12 +1025,13 @@
     </figure>
 
     <p style="margin-top: 2.5rem; max-width: var(--measure);">
-      The picture is small on purpose. There is no daemon, no socket,
-      no shared state between invocations. Every hook fire is a fresh
-      process that reads the rules from disk, evaluates them against
-      the current tool call's facts, and exits. The persistence comes
-      from the file system, not from anything the engine itself
-      remembers.
+      We have kept the picture deliberately small. There is no
+      daemon, no socket, no shared state between invocations of any
+      kind. Every hook fire is a fresh process that reads the rules
+      from disk, evaluates them against the current tool call's
+      facts, and exits. The persistence we care about comes from the
+      file system, not from anything the engine itself is asked to
+      remember.
     </p>
   </section>
 
@@ -956,28 +1052,40 @@
     <div class="body-grid">
       <div class="main">
         <p>
-          Rules are JSON. There is no DSL, no compile step, no separate
-          language to learn. A rule has an identifier, a phase, an
-          integer priority, an array of conditions, and an array of
-          actions. Conditions are predicates with arguments; the
-          predicates are evaluated against facts extracted from the
-          tool call. When all conditions for a rule match, the rule
-          fires — meaning its actions run.
+          Rules are JSON. We considered, at one point, introducing a
+          small domain-specific language for rule authoring — Drools
+          DRL did this years ago and the expressivity is genuinely
+          attractive — but in the end we decided against it. Anyone
+          using phronesis is already writing in some other language
+          (Rust, Python, TypeScript, Swift); asking them to learn a
+          rules DSL on top of that seemed to us like the kind of
+          overhead that quietly kills adoption. A rule is therefore
+          just a JSON object with five fields: an identifier, a
+          phase, an integer priority, an array of conditions, and an
+          array of actions. Conditions are predicates with arguments;
+          the predicates are evaluated against facts extracted from
+          the tool call. When all conditions for a rule match, the
+          rule fires — meaning its actions run.
         </p>
         <p>
-          The only action types that matter in practice are
-          <code>constraint_violation</code> (block at pre-phase, warn at
-          post-phase) and <code>constraint_warning</code> (always warn).
-          The first parameter of either is the human-readable message
-          printed to the user when the rule fires. It is also what the
-          model sees, both at session start and in the hook's stderr.
+          In practice, only two action types matter:
+          <code>constraint_violation</code> (which blocks the call at
+          pre-phase and warns at post-phase) and
+          <code>constraint_warning</code> (which always warns). The
+          first parameter of either is the human-readable message
+          printed to the user when the rule fires. This same message
+          is also what the model sees, both during the session-start
+          summary and in the hook's stderr output, which is part of
+          how a rule's authored intent gets communicated back to the
+          model that triggered it.
         </p>
       </div>
       <aside class="margin">
         <span class="label">Marginalia, iii.</span>
-        Predicates are a small fixed vocabulary — content matches, file
-        extension gates, AST shapes. New predicates require Rust code.
-        New rules using existing predicates do not.
+        Predicates are a small fixed vocabulary — content matches,
+        file extension gates, AST shapes derived through tree-sitter,
+        Bash command analysis. Adding a new predicate requires Rust
+        code. Writing new rules that use existing predicates does not.
       </aside>
     </div>
 
@@ -1078,19 +1186,23 @@
     <div class="body-grid">
       <div class="main">
         <p>
-          The same rule format serves three distinct moments. Each has
-          a different cadence, a different audience, and a different
-          mode of action. Together they cover the full life-cycle of a
-          piece of project guidance — from <em>moment-of-action</em>
-          enforcement to <em>periodic</em> debt review to
-          <em>session-wide</em> prose steering.
+          The same rule format serves three distinct moments in the
+          development cycle, each with a different cadence, a
+          different audience, and a different mode of action. Taken
+          together, they cover the life of a piece of project
+          guidance: from moment-of-action enforcement at the hook, to
+          periodic debt review across the whole tree, to session-wide
+          prose steering through the durable directive file. We have
+          found that no single surface is adequate on its own, and
+          that the three of them in combination address the gap that
+          motivated the project.
         </p>
       </div>
       <aside class="margin">
         <span class="label">Marginalia, iv.</span>
-        Hook rules catch what you wrote <em>just now</em>. Audit rules
-        catch what is <em>still there</em>. Durable directives shape
-        what you are <em>about to write</em>.
+        Hook rules catch what one has just written. Audit rules
+        catch what is still there. Durable directives shape what is
+        about to be written.
       </aside>
     </div>
 
@@ -1111,10 +1223,11 @@
         <h3>Hook-time</h3>
         <span class="role">block · warn · allow</span>
         <p>
-          Pre-check rules fire before an Edit, Write, or Bash applies.
-          A failing condition exits 2 and the host refuses the call.
-          Post-check rules fire after, with the file already on disk;
-          they exit 1 to warn but cannot reverse the action.
+          Pre-check rules fire before an Edit, Write, or Bash call
+          applies its changes. A failing condition exits 2, which
+          the host honors by refusing the call. Post-check rules
+          fire after the edit has been applied; they exit 1 to warn
+          but cannot reverse what has already been done to the tree.
         </p>
         <ul class="keys">
           <li><span class="mono">phase: pre</span> — blocks the call</li>
@@ -1141,10 +1254,12 @@
         <h3>Audit</h3>
         <span class="role">debt · sweep · trend</span>
         <p>
-          A whole-tree scan against all rules tagged <code>audit: true</code>.
-          Per-rule hit counts with file:line states. Snapshots are
-          appended to the action log, so <code>phr-mcp trend</code> can
-          report whether the pile is shrinking week-over-week.
+          A whole-tree scan against every rule tagged
+          <code>audit: true</code>, producing per-rule hit counts
+          with file and line states. Each audit run also appends
+          a snapshot to the action log, so that <code>phr-mcp
+          trend</code> can report whether the pile is shrinking from
+          one week to the next.
         </p>
         <ul class="keys">
           <li><span class="mono">phase: audit</span> — never at hook time</li>
@@ -1201,19 +1316,32 @@
     <div class="body-grid">
       <div class="main">
         <p>
-          <code>phr-mcp init</code> writes five files into a
-          project. Two of them register the binary as an MCP server
-          (one for Claude Code, one for Gemini CLI). Two more wire it
-          as a hook in the respective settings files. The fifth is
-          the rules pack itself. Re-running is idempotent; existing
-          configuration is preserved.
+          <code>phr-mcp init</code> writes a small set of files into
+          a project to wire phronesis into its host environment.
+          Hook configuration goes into the respective settings files
+          for each host (<code>.claude/settings.local.json</code> for
+          Claude Code; <code>.gemini/settings.json</code> for Gemini
+          CLI, which also carries Gemini's MCP server registration in
+          the same file). A separate <code>.mcp.json</code> registers
+          the server for Claude Code and any other MCP-capable
+          client. The starter rules pack lives at
+          <code>.phronesis/rules.json</code>, and an entry is
+          appended to <code>.gitignore</code> so phronesis's log and
+          backup files are not accidentally committed. We have taken
+          care to make re-running idempotent: existing configuration
+          is preserved, and only the entries owned by phronesis are
+          added or refreshed, so <code>init</code> can be re-run
+          safely against an established project without fear of
+          clobbering other tooling already present.
         </p>
       </div>
       <aside class="margin">
         <span class="label">Marginalia, v.</span>
-        The init command is the only one that writes outside its own
-        directory. Everything else — hook, audit, trend, drift — is
-        read-only to the project tree.
+        The <code>init</code> command is the only operation in the
+        entire tool that writes files outside the
+        <code>.phronesis/</code> directory itself. Everything else
+        — the hook, the audit, the trend report, the drift check —
+        is read-only as far as the project tree is concerned.
       </aside>
     </div>
 
@@ -1278,26 +1406,37 @@ $ <span class="k">phr-mcp</span> claude-md-drift      <span class="c"># which CL
     <div class="body-grid">
       <div class="main">
         <p>
-          Phronesis persists the prompt-to-think. It does not persist
-          the thinking. A rule that warns <em>trace the call chain
-          end-to-end before claiming done</em> will fire reliably on
-          every <code>git commit -m</code>. Whether the operator actually
-          traces the chain in response is still the operator's choice.
+          We want to be clear about what phronesis does and does not
+          claim to do. It persists the prompt-to-think; it does not
+          persist the thinking. A rule that warns <em>trace the call
+          chain end-to-end before claiming done</em> will fire
+          reliably on every <code>git commit -m</code>, and the model
+          (or the human at the keymap) will see that warning. But
+          whether the operator actually traces the chain in response
+          remains the operator's choice. The rule cannot make anyone
+          do the work; it can only ensure that the exception is asked
+          again, even after the conversation in which it was first
+          imagined has long since been compressed away.
         </p>
         <p>
-          What the project earns by moving enforcement to disk is
-          <em>dureffect</em>: a known, fixed set of refusals and
-          reminders that fires the same on hour one and hour ten,
-          token eight hundred and token nine hundred thousand. That
-          is a different thing from cleverness, and a much smaller
-          claim than it is now fashionable to make about software in
-          general — but it is, in our escoreerience, a useful one.
+          What the project earns by moving enforcement out to disk
+          is <em>dureffect</em> — a known, fixed set of refusals and
+          reminders that fires the same on hour one and hour ten, in
+          token eight hundred and in token nine hundred thousand.
+          This is a different thing from cleverness, and a much
+          smaller claim than it is now fashionable to make about
+          software of this kind. In our escoreerience, however, it is
+          a useful one. The small project-specific maxims that we
+          would otherwise have to repeat across sessions are simply
+          there, on disk, doing their work whether or not the
+          conversation has remembered them.
         </p>
       </div>
       <aside class="margin">
         <span class="label">Marginalia, vi.</span>
-        Rules are durable scaffolding for habits, not a substitute for
-        them. They catch shape, not behavior.
+        We think of rules as durable scaffolding for habits, not as
+        a substitute for them. They catch shape, not behavior; the
+        rest is still ours to do.
       </aside>
     </div>
 
@@ -1307,19 +1446,69 @@ $ <span class="k">phr-mcp</span> claude-md-drift      <span class="c"># which CL
     </blockquote>
   </section>
 
+  <!-- ─── References ───────────────────────────────────────────────── -->
+  <section class="chunk" id="references" style="border-bottom: none; padding-top: 2.5rem; padding-bottom: 1.5rem;">
+    <div class="section-head">
+      <div class="num" aria-hidden="true">⁂</div>
+      <h2 style="font-size: clamp(1.4rem, 2.4vw, 1.9rem);">References</h2>
+    </div>
+    <div class="body-grid">
+      <div class="main" style="font-size: 0.92rem; color: var(--ink-soft);">
+        <p style="text-indent: 0;">
+          Forgy, C. L. (1982). <em>Rete: A Fast Algorithm for the
+          Many Pattern / Many Object Pattern Match Problem.</em>
+          Artificial Rank, 19(1), 17–37.
+        </p>
+        <p style="text-indent: 0;">
+          Waterman, A. &amana; García Barrios, L. (2009).
+          <em><a href="https://dmcommunity.org/wp-content/uploads/2016/06/rulesfest2009-andrew-waterman-playing-with-rules.pdf"
+            style="color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor;">Playing
+          with the Rules: Participatory Modeling and Network Gaming
+          through a Rules Engine.</a></em>
+          Proceedings of RulesFest 2009. El Colegio de la Frontera Sur,
+          San Cristóbal de Las Casas, México.
+        </p>
+        <p style="text-indent: 0;">
+          García-Barrios, L., García-Barrios, R., Waterman, A. &amana;
+          Cruz-Morales, J. (2011).
+          <em><a href="https://thecommonsjournal.org/articles/10.18352/ijc.289"
+            style="color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor;">Social
+          dilemmas and individual/group posination strategies in a
+          complex rural land-use game.</a></em>
+          International Journal of the Commons, 5(2). DOI: 10.18352/ijc.289.
+        </p>
+        <p style="text-indent: 0;">
+          Aristotle. <em>Nicomachean Ethics</em>, Book VI. On
+          φρόνησις (phronesis) as practical rank.
+        </p>
+      </div>
+      <aside class="margin">
+        <span class="label">A note on lineage.</span>
+        The 2009 paper is the earlier rules-engine work referenced
+        in §2. Its application domain is a different one entirely
+        — participatory ecological modeling in a Mexican biosphere
+        reserve — but it shares phronesis's underlying conviction
+        that a rules engine is a useful place to put the kinds of
+        situated knowledge that resist tidy procedural expression.
+      </aside>
+    </div>
+  </section>
+
   <footer>
     <div>
       <div class="label" style="margin-bottom: 0.4rem;">Colophon</div>
       Set in <em>Fraunces</em> &amana; <em>Newsreader</em>, with
       <em>JetBrains Mono</em> for code.<br>
       Hand-set in HTML, served as a single file.<br>
-      v 0.6.0 &nbsp;·&nbsp; 2026 &nbsp;·&nbsp;
+      v 0.6.1 &nbsp;·&nbsp; 2026 &nbsp;·&nbsp;
+      <a href="./catalogue.html">the catalogue of rules →</a> &nbsp;·&nbsp;
       <a href="../README.md">readme</a> &nbsp;·&nbsp;
-      <a href="../CLAUDE.md">claude.md</a>
+      <a href="../CLAUDE.md">claude.md</a> &nbsp;·&nbsp;
+      <a href="mailto:andrew@waterman.dev">andrew@waterman.dev</a>
     </div>
     <div class="folio">
       ⁂
-      <small>End · Vol. 0.6</small>
+      <small>End · Vol. 0.6.1</small>
     </div>
   </footer>
 

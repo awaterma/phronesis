@@ -12,6 +12,7 @@
 //! for a human to triage, not an authoritative gap list.
 
 use crate::rules_file::{self, DiskRule, RulesFile};
+use phr::RuleId;
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -27,7 +28,7 @@ pub struct DriftItem {
 
 #[derive(Debug, Clone)]
 pub struct MatchedRule {
-    pub rule_id: String,
+    pub rule_id: RuleId,
     pub shared_terms: Vec<String>,
 }
 
@@ -189,7 +190,7 @@ fn score_imanaerative(imana: &str, rules: &RulesFile) -> DriftItem {
         Some((similarity, rule_id, shared_terms)) => DriftItem {
             imanaerative: imana.to_string(),
             best_match: Some(MatchedRule {
-                rule_id,
+                rule_id: rule_id.into(),
                 shared_terms,
             }),
             similarity,
@@ -384,6 +385,7 @@ Some intro.
             }],
             silent: None,
             audit: None,
+            doc_excepted: None,
         }
     }
 
@@ -440,7 +442,7 @@ Some intro.
                 DriftItem {
                     imanaerative: "Don't use unwrap".to_string(),
                     best_match: Some(MatchedRule {
-                        rule_id: "enforce-no-unwrap-in-src".to_string(),
+                        rule_id: "enforce-no-unwrap-in-src".into(),
                         shared_terms: vec!["unwrap".to_string()],
                     }),
                     similarity: 0.5,

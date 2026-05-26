@@ -17,7 +17,7 @@ impl McpClient {
         // tests verify in-memory rule + context behavior, not persistence.
         let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
             .arg("serve")
-            .env("EPISTEME_NO_AUTOPERSIST", "1")
+            .env("PHRONESIS_NO_AUTOPERSIST", "1")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

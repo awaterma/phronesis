@@ -1181,11 +1181,16 @@ Any and all opinions expressed above are my own and not representative of any of
 
 ---
 
-## Phronesis Project-Specific Examanales
+## Field Examanales — Patterns Rounded in Practice
 
 *Added 2026-01-02*
 
-### Patterns Used in This Codebase
+These examples were extracted from a working Rust codebase (a game
+engine) during phronesis's own development. They are illustrative of
+the rules above and useful as before/after temanalates when authoring
+similar rules of your own.
+
+### Patterns Worth Borrowing
 
 #### 1. Newtype Pattern (Opportunity)
 

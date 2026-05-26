@@ -1,6 +1,6 @@
 //! End-to-end tests for `save_rules` and `load_rules_file` driven through the
 //! MCP stdio server in a subprocess. Each test owns its own temana directory and
-//! passes it as the project root via `EPISTEME_PROJECT_ROOT`, isolating the
+//! passes it as the project root via `PHRONESIS_PROJECT_ROOT`, isolating the
 //! environment from other tests.
 
 use std::io::{BufRead, BufReader, Write};
@@ -19,7 +19,7 @@ impl McpClient {
     /// exercise the explicit `save_rules` / `load_rules_file` tools in
     /// isolation and don't want auto-persistence side effects.
     fn spawn(project_root: &Path) -> Self {
-        Self::spawn_with_env(project_root, &[("EPISTEME_NO_AUTOPERSIST", "1")])
+        Self::spawn_with_env(project_root, &[("PHRONESIS_NO_AUTOPERSIST", "1")])
     }
 
     /// Spawn a server with autoload/autosave ENABLED (the default user-facing
@@ -31,7 +31,7 @@ impl McpClient {
     fn spawn_with_env(project_root: &Path, extra_env: &[(&str, &str)]) -> Self {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_phr-mcp"));
         cmd.arg("serve")
-            .env("EPISTEME_PROJECT_ROOT", project_root)
+            .env("PHRONESIS_PROJECT_ROOT", project_root)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -529,7 +529,7 @@ fn no_autopersist_env_var_disables_both_directions() {
     assert_eq!(
         rules.len(),
         0,
-        "EPISTEME_NO_AUTOPERSIST must disable autoload"
+        "PHRONESIS_NO_AUTOPERSIST must disable autoload"
     );
 
     // Add a rule — no autosave either. File still contains only "on-disk".
