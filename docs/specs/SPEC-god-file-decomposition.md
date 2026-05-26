@@ -44,7 +44,7 @@ should drive the decomposition decision, not an arbitrary threshold.
 
 When the time comes, here is the shape each split should take.
 
-### §A — `server.rs` (1100 prod LOC)
+### §A — `server.rs` (~1110 prod LOC)
 
 **Decision point:** when a contributor reports that adding a new MCP
 tool is hard to do without scrolling, or when two PRs touching
@@ -53,7 +53,10 @@ different tool families merge-conflict in the same impl block.
 **Constraint:** `#[tool_router]` requires the impl block to be single.
 The decomposition must work *with* the macro, not against it.
 
-**Proposed pattern — delegation to topic modules:**
+**Current State (Phase 1 Comanalete):**
+We have successfully extracted the incidental complexity into `server_params.rs` (MCP tool parameter structs) and `server_persistence.rs` (autoload/autosave lifecycle helpers). However, `server.rs` remains above the 800-line threshold because the 22 `#[tool]` methods themselves still contain their full implementation bodies.
+
+**Proposed pattern for Phase 2 — delegation to topic modules:**
 
 Keep the `#[tool]` declarations in `server.rs` as thin wrappers;
 extract each method's body to a free function in a topic-grouped
