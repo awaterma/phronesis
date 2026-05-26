@@ -11,14 +11,14 @@ use phronesis::{
     LookupRegistry, Provenance,
 };
 
-/// A toy pull-mode tool. Given a opponent id as input, returns a
-/// value-block payload. Deterministic, sync, no network. Exactly the
-/// shape a phronesis spec-046 tool would take after wrapping.
+/// A toy pull-mode tool. Given a card id as input, returns a small
+/// record payload. Deterministic, sync, no network. Representative
+/// of the shape a host-side lookup tool would take after wrapping.
 struct LookupCard;
 
 impl DynLookup for LookupCard {
     fn name(&self) -> &'static str {
-        "lookup_opponent"
+        "lookup_card"
     }
 
     fn schema_version(&self) -> u8 {
@@ -27,32 +27,32 @@ impl DynLookup for LookupCard {
 
     fn invoke_dyn(&self, req: serde_json::Value) -> anyhow::Result<serde_json::Value> {
         // req is a Value::Array of Value::String per the compose
-        // convention; first element is the opponent id.
+        // convention; first element is the card id.
         let id = req
             .as_array()
             .and_then(|a| a.first())
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
-        let (value, ac) = match id {
-            "goblin" => (7, 15),
-            "orc" => (15, 13),
+        let (rank, value) = match id {
+            "ace_spades" => (7, 15),
+            "king_hearts" => (15, 13),
             _ => (1, 10),
         };
 
         Ok(serde_json::json!({
             "schemaVersion": 1,
-            "kind": "opponent",
+            "kind": "card",
             "available": true,
-            "found": id == "goblin" || id == "orc",
+            "found": id == "ace_spades" || id == "king_hearts",
             "id": id,
+            "rank": rank,
             "value": value,
-            "ac": ac,
         }))
     }
 }
 
-fn registry_with_opponent() -> LookupRegistry {
+fn registry_with_card() -> LookupRegistry {
     let mut r = LookupRegistry::new();
     r.register(LookupCard);
     r
@@ -60,18 +60,18 @@ fn registry_with_opponent() -> LookupRegistry {
 
 #[test]
 fn rule_firing_tool_action_produces_rule_driven_lookup_consequence() {
-    // A rule that fires when an opponent is spotted and whose action is
-    // to look the opponent up.
+    // A rule that fires when a card is drawn and whose action is
+    // to look the card up.
     let actions = vec![Action {
-        action_type: "lookup_opponent".to_string(),
-        params: vec!["goblin".to_string()],
+        action_type: "lookup_card".to_string(),
+        params: vec!["ace_spades".to_string()],
     }];
 
     let (consequences, remaining) = invoke_rule_driven_lookups(
-        "opponent_appeared_rule",
-        &["fact-opponent-spotted".to_string()],
+        "card_drawn_rule",
+        &["fact-card-drawn".to_string()],
         actions,
-        &registry_with_opponent(),
+        &registry_with_card(),
     );
 
     // Tool resolved → one consequence, no remaining actions.
@@ -80,9 +80,9 @@ fn rule_firing_tool_action_produces_rule_driven_lookup_consequence() {
 
     let c = &consequences[0];
     assert_eq!(c.kind, ConsequenceKind::Snapshot);
-    assert_eq!(c.predicate, "lookup_opponent");
-    assert_eq!(c.payload["value"], 7);
-    assert_eq!(c.payload["ac"], 15);
+    assert_eq!(c.predicate, "lookup_card");
+    assert_eq!(c.payload["rank"], 7);
+    assert_eq!(c.payload["value"], 15);
 
     // The load-bearing bit: provenance carries BOTH layers.
     match &c.provenance {
@@ -93,9 +93,9 @@ fn rule_firing_tool_action_produces_rule_driven_lookup_consequence() {
             schema_version,
             ..
         } => {
-            assert_eq!(rule_id, "opponent_appeared_rule");
-            assert_eq!(bound_facts, &vec!["fact-opponent-spotted".to_string()]);
-            assert_eq!(tool, "lookup_opponent");
+            assert_eq!(rule_id, "card_drawn_rule");
+            assert_eq!(bound_facts, &vec!["fact-card-drawn".to_string()]);
+            assert_eq!(tool, "lookup_card");
             assert_eq!(*schema_version, 1);
         }
         other => panic!("expected RuleDrivenLookup, got {other:?}"),
@@ -113,7 +113,7 @@ fn unregistered_action_passes_through() {
     }];
 
     let (consequences, remaining) =
-        invoke_rule_driven_lookups("cost_rule", &[], actions, &registry_with_opponent());
+        invoke_rule_driven_lookups("score_rule", &[], actions, &registry_with_card());
 
     assert!(consequences.is_empty());
     assert_eq!(remaining.len(), 1);
@@ -123,16 +123,16 @@ fn unregistered_action_passes_through() {
 #[test]
 fn mixed_actions_split_correctly() {
     // A rule whose firing produces both a tool invocation and a
-    // regular action (e.g. "log that the opponent appeared AND fetch
+    // regular action (e.g. "log that the card was drawn AND fetch
     // its values").
     let actions = vec![
         Action {
             action_type: "log_event".to_string(),
-            params: vec!["opponent_spotted".into()],
+            params: vec!["card_drawn".into()],
         },
         Action {
-            action_type: "lookup_opponent".to_string(),
-            params: vec!["orc".into()],
+            action_type: "lookup_card".to_string(),
+            params: vec!["king_hearts".into()],
         },
         Action {
             action_type: "play_sound".to_string(),
@@ -141,16 +141,16 @@ fn mixed_actions_split_correctly() {
     ];
 
     let (consequences, remaining) = invoke_rule_driven_lookups(
-        "opponent_appeared_rule",
+        "card_drawn_rule",
         &["fact-1".into()],
         actions,
-        &registry_with_opponent(),
+        &registry_with_card(),
     );
 
     assert_eq!(consequences.len(), 1, "one tool invocation");
     assert_eq!(remaining.len(), 2, "two non-tool actions pass through");
-    assert_eq!(consequences[0].payload["id"], "orc");
-    assert_eq!(consequences[0].payload["value"], 15);
+    assert_eq!(consequences[0].payload["id"], "king_hearts");
+    assert_eq!(consequences[0].payload["rank"], 15);
 
     let remaining_types: Vec<&str> = remaining.iter().map(|a| a.action_type.as_str()).collect();
     assert_eq!(remaining_types, vec!["log_event", "play_sound"]);
@@ -229,13 +229,13 @@ fn registry_supports_replacement_for_test_mocks() {
     // tests substitute a mock.
     let mut registry = LookupRegistry::new();
     registry.register(LookupCard);
-    assert!(registry.contains("lookup_opponent"));
+    assert!(registry.contains("lookup_card"));
 
     // Replace with a tool that returns a different shape.
     struct MockCard;
     impl DynLookup for MockCard {
         fn name(&self) -> &'static str {
-            "lookup_opponent"
+            "lookup_card"
         }
         fn schema_version(&self) -> u8 {
             99
@@ -250,7 +250,7 @@ fn registry_supports_replacement_for_test_mocks() {
         "r",
         &[],
         vec![Action {
-            action_type: "lookup_opponent".into(),
+            action_type: "lookup_card".into(),
             params: vec![],
         }],
         &registry,
@@ -272,21 +272,21 @@ fn registry_supports_replacement_for_test_mocks() {
 #[test]
 fn try_invoke_succeeds_when_all_tools_succeed() {
     let actions = vec![Action {
-        action_type: "lookup_opponent".to_string(),
-        params: vec!["goblin".to_string()],
+        action_type: "lookup_card".to_string(),
+        params: vec!["ace_spades".to_string()],
     }];
 
     let (consequences, remaining) = try_invoke_rule_driven_lookups(
-        "opponent_appeared_rule",
+        "card_drawn_rule",
         &["fact-1".to_string()],
         actions,
-        &registry_with_opponent(),
+        &registry_with_card(),
     )
     .expect("all tools succeed");
 
     assert_eq!(consequences.len(), 1);
     assert!(remaining.is_empty());
-    assert_eq!(consequences[0].payload["value"], 7);
+    assert_eq!(consequences[0].payload["rank"], 7);
 }
 
 #[test]
@@ -334,16 +334,16 @@ fn try_invoke_passes_through_unregistered_actions() {
     let actions = vec![
         Action {
             action_type: "log_event".to_string(),
-            params: vec!["opponent_spotted".into()],
+            params: vec!["card_drawn".into()],
         },
         Action {
-            action_type: "lookup_opponent".to_string(),
-            params: vec!["goblin".into()],
+            action_type: "lookup_card".to_string(),
+            params: vec!["ace_spades".into()],
         },
     ];
 
     let (consequences, remaining) =
-        try_invoke_rule_driven_lookups("r", &[], actions, &registry_with_opponent())
+        try_invoke_rule_driven_lookups("r", &[], actions, &registry_with_card())
             .expect("no tool errored");
 
     assert_eq!(consequences.len(), 1);

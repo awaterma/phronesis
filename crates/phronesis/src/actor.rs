@@ -10,7 +10,7 @@
 //! [`ActorOutput`] is intentionally an enum so the same trait covers the
 //! three concrete uses we already have or know we need:
 //!
-//! - **Text** — narration (phronesis Opponents today).
+//! - **Text** — narration (e.g. game Opponents, chat responses).
 //! - **Patch** — code or file edits (a future code-review actor).
 //! - **Choice** — action selection from a set of [`Affordance`]
 //!   consequences (a future autonomous play actor).

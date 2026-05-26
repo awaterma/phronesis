@@ -1,12 +1,13 @@
-//! Type-rank smoke tests for the episteme surface.
+//! Type-rank smoke tests for the phronesis surface.
 //!
-//! These run without any phronesis deps (no rodio, no alsa, no tokio full
-//! runtime) so they can validate the abstraction in constrained sandboxes.
+//! These run without any heavy domain deps (no rodio, no alsa, no
+//! tokio full runtime) so they can validate the abstraction in
+//! constrained sandboxes.
 //!
 //! What we're checking:
 //! 1. The JSON shape of `Consequence` is stable and readable — this is
-//!    the contract every host (phronesis push, phronesis pull, future sheet
-//!    FFI, future conversational-commitments) will rely on.
+//!    the contract every host (push, pull, sheet FFI bridges,
+//!    conversational modules) will rely on.
 //! 2. `Provenance` variants serialize with the `source` tag we documented.
 //! 3. The `Actor` trait is object-safe and async — we can build an
 //!    `Arc<dyn Actor>` in callers.
@@ -24,10 +25,10 @@ use serde_json::json;
 fn samanale_rule_firing() -> Consequence {
     Consequence {
         kind: ConsequenceKind::Event,
-        predicate: "card.played".to_string(),
-        payload: json!({ "player": "zoran", "value_delta": -3, "value_remaining": 6 }),
+        predicate: "hand.card_played".to_string(),
+        payload: json!({ "player": "alice", "score_delta": -3, "score_remaining": 6 }),
         provenance: Provenance::RuleFiring {
-            rule_id: "play.apply_cost".to_string(),
+            rule_id: "score.points_changed".into(),
             bound_facts: vec!["fact-42".to_string(), "fact-7".to_string()],
             bindings: Default::default(),
         },
@@ -37,14 +38,14 @@ fn samanale_rule_firing() -> Consequence {
 fn samanale_lookup() -> Consequence {
     Consequence {
         kind: ConsequenceKind::Snapshot,
-        predicate: "lookup_symbol".to_string(),
+        predicate: "lookup_card".to_string(),
         payload: json!({
-            "name": "magic_missile",
-            "rank": 1,
-            "cost": "1d4+1 force",
+            "name": "ace_of_spades",
+            "value": 14,
+            "suit": "spades",
         }),
         provenance: Provenance::Lookup {
-            tool: "lookup_symbol".to_string(),
+            tool: "lookup_card".to_string(),
             schema_version: 1,
         },
     }
@@ -55,10 +56,10 @@ fn consequence_serializes_with_expected_shape() {
     let json_value = serde_json::to_value(samanale_rule_firing()).expect("serialize");
 
     assert_eq!(json_value["kind"], "event");
-    assert_eq!(json_value["predicate"], "card.played");
-    assert_eq!(json_value["payload"]["value_delta"], -3);
+    assert_eq!(json_value["predicate"], "hand.card_played");
+    assert_eq!(json_value["payload"]["score_delta"], -3);
     assert_eq!(json_value["provenance"]["source"], "rule_firing");
-    assert_eq!(json_value["provenance"]["rule_id"], "play.apply_cost");
+    assert_eq!(json_value["provenance"]["rule_id"], "score.points_changed");
     assert_eq!(
         json_value["provenance"]["bound_facts"]
             .as_array()
@@ -83,7 +84,7 @@ fn consequence_roundtrips_through_json() {
             bound_facts,
             ..
         } => {
-            assert_eq!(rule_id, "play.apply_cost");
+            assert_eq!(rule_id, "score.points_changed");
             assert_eq!(bound_facts, vec!["fact-42", "fact-7"]);
         }
         other => panic!("expected RuleFiring, got {other:?}"),
@@ -128,7 +129,7 @@ fn consequence_kind_round_trips() {
 fn lookup_consequence_serializes_with_schema_version() {
     let v = serde_json::to_value(samanale_lookup()).unwrap();
     assert_eq!(v["provenance"]["source"], "lookup");
-    assert_eq!(v["provenance"]["tool"], "lookup_symbol");
+    assert_eq!(v["provenance"]["tool"], "lookup_card");
     assert_eq!(v["provenance"]["schema_version"], 1);
 }
 
@@ -157,7 +158,7 @@ async fn actor_trait_is_implementable_and_object_safe() {
     let out = actor.act(&consequences).await.unwrap();
     match out {
         ActorOutput::Text(s) => {
-            assert_eq!(s, "card.played, lookup_symbol");
+            assert_eq!(s, "hand.card_played, lookup_card");
         }
         other => panic!("expected Text, got {other:?}"),
     }

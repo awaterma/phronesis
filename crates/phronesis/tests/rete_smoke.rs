@@ -1,19 +1,14 @@
-//! Hermetic end-to-end tests for the lifted RETE machinery.
-//!
-//! Before this file, the RETE modules in episteme had zero tests
-//! *inside the crate* — phronesis's integration tests exercised them,
-//! but those tests depend on the phronesis crate (GameCore, CUE
-//! loading, D&D rules). That made episteme technically untested as a
-//! standalone library.
+//! Hermetic end-to-end tests for the RETE machinery.
 //!
 //! These tests prove the RETE engine runs end-to-end using only
-//! episteme's public surface:
+//! phronesis's public surface, with no dependency on any host
+//! application:
 //!
 //!   ReteNetwork::new → add_rule → assert_fact → update_agenda →
 //!   execute_all_agenda_items → Vec<Action>
 //!
-//! If any of these break, the lift broke something — not a
-//! phronesis-specific glue layer.
+//! If any of these break, something in the core engine has regressed
+//! — not a host-side integration layer.
 
 use phronesis::{Action, Condition, Fact, ReteNetwork, Rule};
 

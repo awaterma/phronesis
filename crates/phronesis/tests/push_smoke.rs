@@ -1,6 +1,6 @@
-//! End-to-end tests for the push-mode path inside episteme.
+//! End-to-end tests for the push-mode path inside phronesis.
 //!
-//! Validates the full chain without any phronesis dependency:
+//! Validates the full chain without any host-application dependency:
 //!
 //!   assert_fact  →  rule fires  →  Vec<Action>
 //!                →  rule_firing_to_consequences  →  Vec<Consequence>
@@ -8,10 +8,10 @@
 //!
 //! Before this test file, the two halves of the crate — the RETE
 //! engine and the Consequence/Actor surface — had no single test
-//! exercising them together. That gap was the heart of what "E2" was
-//! supposed to prove. Proving it inside episteme (instead of inside
-//! phronesis) keeps the sandbox loop tight and avoids the alsa-sys
-//! rebuild.
+//! exercising them together. Proving the chain inside the phronesis
+//! crate itself (rather than from a downstream host's integration
+//! tests) keeps the sandbox loop tight and avoids dragging in
+//! host-specific dependencies.
 
 use async_trait::async_trait;
 use phronesis::{

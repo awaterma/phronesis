@@ -81,7 +81,7 @@ fn action_to_consequence(
             "params": action.params,
         }),
         provenance: Provenance::RuleFiring {
-            rule_id: rule_id.to_string(),
+            rule_id: rule_id.into(),
             bound_facts: bound_facts.to_vec(),
             bindings: Default::default(),
         },

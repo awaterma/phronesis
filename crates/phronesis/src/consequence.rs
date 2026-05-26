@@ -25,6 +25,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::ids::RuleId;
+
 /// A deterministic, rule-derived statement that an [`Actor`] may consume.
 ///
 /// [`Actor`]: super::actor::Actor
@@ -88,7 +90,7 @@ pub enum ConsequenceKind {
 pub enum Provenance {
     /// Emitted by a rule firing in the rete network.
     RuleFiring {
-        rule_id: String,
+        rule_id: RuleId,
         /// Optional fact IDs that satisfied the rule's conditions, for
         /// "why did this fire?" tracing.
         bound_facts: Vec<String>,
@@ -100,12 +102,13 @@ pub enum Provenance {
     },
 
     /// Returned by a deterministic lookup tool. `tool` is a stable
-    /// identifier the host defines (phronesis uses the same string as
-    /// `tools::DispatchedTool::kind`).
+    /// identifier the host defines (typically the dispatched tool's
+    /// kind/name string).
     Lookup {
         tool: String,
         /// Schema version of the payload. Hosts define their own
-        /// versioning scheme; phronesis mirrors `tools::SCHEMA_VERSION`.
+        /// versioning scheme — commonly mirroring whatever their tool
+        /// dispatch layer escoreoses (e.g. `tools::SCHEMA_VERSION`).
         schema_version: u8,
     },
 
@@ -119,7 +122,7 @@ pub enum Provenance {
     /// invocation, producing a consequence a narrator can trace
     /// back through both sources.
     RuleDrivenLookup {
-        rule_id: String,
+        rule_id: RuleId,
         bound_facts: Vec<String>,
         /// See [`Provenance::RuleFiring`]'s `bindings` field for semantics.
         #[serde(default)]

@@ -161,14 +161,16 @@ impl ScriptEvaluator {
             })
             .count();
 
-        Ok(match op {
+        let result = match op {
             ">=" => count >= threshold,
             ">" => count > threshold,
             "==" => count == threshold,
             "<=" => count <= threshold,
             "<" => count < threshold,
-            _ => return Err(format!("Unknown operator: {}", op)),
-        })
+            _ => Err(format!("Unknown operator: {}", op))?,
+        };
+
+        Ok(result)
     }
 
     /// Parse a comparison operator and threshold from a string like ">= 5" or "< 10".

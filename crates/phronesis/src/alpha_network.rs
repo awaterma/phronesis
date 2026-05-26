@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::beta_network::BetaNetwork;
 use crate::engine_types::Condition;
+use crate::ids::StateId;
 use crate::variable_binding::{Bindings, Token};
 use crate::wme::WorkingMemoryElement;
 
@@ -27,7 +28,8 @@ impl AlphaState {
     }
 
     /// Add a child beta state to this alpha state
-    pub fn add_child(&mut self, child_id: String) {
+    pub fn add_child(&mut self, child_id: impl Into<StateId>) {
+        let child_id = child_id.into().into_inner();
         if !self.children.contains(&child_id) {
             self.children.push(child_id);
         }

@@ -1,8 +1,8 @@
-//! Episteme — domain-neutral surface for rules-bounded LLM interaction.
+//! Phronesis — domain-neutral surface for rules-bounded LLM interaction.
 //!
-//! Extracted from phronesis as an in-tree workspace member crate. Has no
-//! dependency on phronesis; phronesis depends on it. See
-//! `docs/research/episteme-extraction.md` for the design thesis.
+//! This crate is intentionally minimal and has no domain-specific
+//! dependencies. Its job is to host the abstraction (Consequence, Actor,
+//! Provenance) that hosting applications implement against.
 //!
 //! # The pattern
 //!
@@ -14,14 +14,15 @@
 //! Two transports of the same idea coexist:
 //!
 //! - **Push**: rule fires → [`Consequence`] → [`Actor`] consumes it.
-//!   In phronesis, backed by the `rete` network feeding `play::llm_generation`.
+//!   Typically backed by a RETE network feeding a narration or
+//!   code-generation layer.
 //! - **Pull**: actor asks → deterministic lookup returns a [`Consequence`].
-//!   In phronesis, backed by `tools::*` (spec 046, also wraps the swift-bridge
-//!   FFI that powers the `sheet` companion app).
+//!   Typically backed by a registry of tool implementations the host
+//!   escoreoses to its agent.
 //!
-//! Phase E1 (current) defines the types only. No behavior. No adapters.
-//! Adapters land in phronesis in E2 (push) and E3 (pull) without moving any
-//! existing files. See the design doc for the phase plan.
+//! The crate defines the types and the engine; integration with any
+//! particular host (an MCP server, a game engine, a sheet-FFI bridge,
+//! a conversational module) lives outside this crate.
 
 pub mod actor;
 pub mod agenda;
@@ -30,6 +31,7 @@ pub mod beta_network;
 pub mod compose;
 pub mod consequence;
 pub mod engine_types;
+pub mod ids;
 pub mod network;
 pub mod production;
 pub mod pull;
@@ -47,6 +49,7 @@ pub use compose::{
 };
 pub use consequence::{Consequence, ConsequenceKind, Provenance};
 pub use engine_types::{Action, Condition, Fact, PerformanceValues, Rule};
+pub use ids::{FactId, StateId, RuleId};
 pub use network::*;
 pub use production::*;
 pub use pull::{dyn_lookup_as_consequence, lookup_as_consequence, DynLookup, Lookup};

@@ -55,6 +55,7 @@ use std::collections::HashMap;
 
 use crate::consequence::{Consequence, ConsequenceKind, Provenance};
 use crate::engine_types::Action;
+use crate::ids::RuleId;
 use crate::pull::DynLookup;
 
 /// A tool invocation that returned `Err` while executing inside
@@ -64,7 +65,7 @@ use crate::pull::DynLookup;
 #[derive(Debug)]
 pub struct ToolInvocationError {
     /// The rule whose firing produced the failed action.
-    pub rule_id: String,
+    pub rule_id: RuleId,
     /// The registered tool name (== `action.action_type` at the time of dispatch).
     pub tool: String,
     /// Schema version reported by the tool at dispatch.
@@ -167,7 +168,7 @@ fn make_consequence(
         predicate: action.action_type.clone(),
         payload,
         provenance: Provenance::RuleDrivenLookup {
-            rule_id: rule_id.to_string(),
+            rule_id: rule_id.into(),
             bound_facts: bound_facts.to_vec(),
             bindings: Default::default(),
             tool: tool.name().to_string(),
@@ -235,8 +236,8 @@ pub fn invoke_rule_driven_lookups(
 ///
 /// Use this when the host has opted into a mode where silent fallback
 /// would mask the very signal the operator is observing — for example,
-/// phronesis's composed-narration test path, where the whole point of
-/// turning the toggle on is to *see* tool failures, not bury them.
+/// a composed-narration test path where the whole point of turning
+/// the toggle on is to *see* tool failures, not bury them.
 ///
 /// On `Err`:
 /// - Actions processed before the failure produce their `Consequence`s
@@ -275,7 +276,7 @@ pub fn try_invoke_rule_driven_lookups(
             }
             Err(source) => {
                 return Err(ToolInvocationError {
-                    rule_id: rule_id.to_string(),
+                    rule_id: rule_id.into(),
                     tool: tool.name().to_string(),
                     schema_version: tool.schema_version(),
                     latency_ms: start.elapsed().as_millis() as u64,

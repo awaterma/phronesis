@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use uuid::Uuid;
 
+use crate::ids::{StateId, RuleId};
 use crate::variable_binding::Token;
 
 /// P-state metadata — marks this beta state as a production terminal (Forgy's p-state).
@@ -9,7 +10,7 @@ use crate::variable_binding::Token;
 /// becomes an instantiation in the conflict set.
 #[derive(Debug, Clone)]
 pub struct PStateInfo {
-    pub rule_id: String,
+    pub rule_id: RuleId,
     pub salience: i32,
 }
 
@@ -17,7 +18,7 @@ pub struct PStateInfo {
 /// These are collected during beta network propagation and added to the agenda.
 #[derive(Debug, Clone)]
 pub struct PStateActivation {
-    pub rule_id: String,
+    pub rule_id: RuleId,
     pub token: Token,
     pub salience: i32,
 }
@@ -58,26 +59,32 @@ impl BetaState {
     }
 
     /// Mark this beta state as a p-state (Forgy's production terminal)
-    pub fn set_p_state(&mut self, rule_id: String, salience: i32) {
-        self.p_state = Some(PStateInfo { rule_id, salience });
+    pub fn set_p_state(&mut self, rule_id: impl Into<RuleId>, salience: i32) {
+        self.p_state = Some(PStateInfo {
+            rule_id: rule_id.into(),
+            salience,
+        });
     }
 
     /// Add a left input source (from alpha or beta state)
-    pub fn add_left_input(&mut self, input_id: String) {
+    pub fn add_left_input(&mut self, input_id: impl Into<StateId>) {
+        let input_id = input_id.into().into_inner();
         if !self.left_input.contains(&input_id) {
             self.left_input.push(input_id);
         }
     }
 
     /// Add a right input source (from alpha or beta state)
-    pub fn add_right_input(&mut self, input_id: String) {
+    pub fn add_right_input(&mut self, input_id: impl Into<StateId>) {
+        let input_id = input_id.into().into_inner();
         if !self.right_input.contains(&input_id) {
             self.right_input.push(input_id);
         }
     }
 
     /// Add a child state
-    pub fn add_child(&mut self, child_id: String) {
+    pub fn add_child(&mut self, child_id: impl Into<StateId>) {
+        let child_id = child_id.into().into_inner();
         if !self.children.contains(&child_id) {
             self.children.push(child_id);
         }
@@ -187,7 +194,7 @@ impl BetaNetwork {
     }
 
     /// Mark a beta state as a p-state (Forgy's production terminal)
-    pub fn mark_as_p_state(&mut self, state_id: &str, rule_id: String, salience: i32) {
+    pub fn mark_as_p_state(&mut self, state_id: &str, rule_id: impl Into<RuleId>, salience: i32) {
         if let Some(state) = self.states.get_mut(state_id) {
             state.set_p_state(rule_id, salience);
         }

@@ -14,7 +14,7 @@
 //!   are both `serde_json::Value`. The core engine is intentionally
 //!   **schema-agnostic**: it trusts the tagged dynamic values it's
 //!   handed. Schema validation, if any, happens at module-load time in
-//!   a higher layer (CUE for phronesis) — not per-call at runtime.
+//!   a higher layer (e.g. a CUE schema check) — not per-call at runtime.
 //! - [`Lookup`] — a typed convenience layer for Rust-native hosts
 //!   where the compiler can already check request/response shapes.
 //!   Imanalementors get `serde_json::Value` marshalling for free via the
@@ -22,15 +22,14 @@
 //!   without extra work.
 //!
 //! Use [`Lookup`] when the host is a Rust process authoring tools
-//! directly in Rust (phronesis's `src/tools/*`). Use [`DynLookup`] when
-//! the tools are authored in a dynamic layer like Rhai scripts, WASM
-//! modules, or remote RPC — anywhere the types aren't known to the
-//! Rust compiler.
+//! directly in Rust. Use [`DynLookup`] when the tools are authored in
+//! a dynamic layer like Rhai scripts, WASM modules, or remote RPC —
+//! anywhere the types aren't known to the Rust compiler.
 //!
 //! # Usage pattern
 //!
 //! Each tool the host wants to escoreose implements one of the traits.
-//! The host (phronesis, a future conversational module, a sheet FFI
+//! The host (a game engine, a conversational module, a sheet FFI
 //! boundary, etc.) collects its implementations into a registry its
 //! actor can invoke. The registry is out of scope for the core crate
 //! — we don't want to commit to a naming scheme or dispatcher
@@ -154,7 +153,7 @@ impl Consequence {
 
     /// Wrap a rule-firing payload as a push-mode [`Consequence`].
     pub fn from_rule_firing<T: Serialize>(
-        rule_id: impl Into<String>,
+        rule_id: impl Into<crate::RuleId>,
         predicate: impl Into<String>,
         bound_facts: Vec<String>,
         kind: ConsequenceKind,

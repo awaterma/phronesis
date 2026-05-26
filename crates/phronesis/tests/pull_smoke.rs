@@ -3,10 +3,11 @@
 //! Two jobs:
 //! 1. Prove `Consequence::from_lookup` / `from_rule_firing` produce the
 //!    JSON shapes the contract promises.
-//! 2. Prove the adapter fits the shape of a real phronesis spec-046 tool
-//!    response (schemaVersion, kind, available, found, camelCase) without
-//!    depending on phronesis. If this test ever needs to change, the
-//!    contract between episteme and phronesis's `src/tools/*` has moved.
+//! 2. Prove the adapter fits the shape of a representative host-side
+//!    tool response (schemaVersion, kind, available, found, camelCase)
+//!    without taking a dependency on any particular host. If this test
+//!    ever needs to change, the contract phronesis escoreoses to host-side
+//!    tools has moved.
 
 use phronesis::{
     dyn_lookup_as_consequence, lookup_as_consequence, Consequence, ConsequenceKind, DynLookup,
@@ -14,13 +15,14 @@ use phronesis::{
 };
 use serde::{Deserialize, Serialize};
 
-/// Mirrors the exact wire shape of `phronesis_simple::tools::LookupSpellResponse`
-/// (see src/tools/lookup_symbol.rs). We don't import from phronesis — we
-/// mirror the shape. If phronesis's tool drifts, this test needs updating,
-/// which is the right signal.
+/// Mirrors the wire shape of a representative pull-mode tool response
+/// (a card-lookup tool, sketched here for illustration). The point of
+/// the mirror is to pin the JSON contract phronesis promises hosts.
+/// If a real host-side tool drifts from this shape, this test will
+/// need updating — which is the right signal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct FakeSpellResponse {
+struct FakeCardResponse {
     schema_version: u8,
     kind: &'static str,
     available: bool,
@@ -32,11 +34,11 @@ struct FakeSpellResponse {
     error: Option<String>,
 }
 
-struct FakeSpellTool;
+struct FakeCardLookup;
 
-impl Lookup for FakeSpellTool {
+impl Lookup for FakeCardLookup {
     type Request = String;
-    type Response = FakeSpellResponse;
+    type Response = FakeCardResponse;
 
     fn name(&self) -> &'static str {
         "card"
@@ -47,7 +49,7 @@ impl Lookup for FakeSpellTool {
     }
 
     fn invoke(&self, req: Self::Request) -> anyhow::Result<Self::Response> {
-        Ok(FakeSpellResponse {
+        Ok(FakeCardResponse {
             schema_version: 1,
             kind: "card",
             available: false,
@@ -79,10 +81,10 @@ fn from_lookup_uses_snapshot_kind_and_lookup_provenance() {
 
 #[test]
 fn from_rule_firing_preserves_bound_facts() {
-    let payload = serde_json::json!({"value_delta": -3});
+    let payload = serde_json::json!({"score_delta": -3});
     let c = Consequence::from_rule_firing(
-        "play.apply_cost",
-        "card.played",
+        "score.points_changed",
+        "hand.card_played",
         vec!["f1".into(), "f2".into()],
         ConsequenceKind::Event,
         &payload,
@@ -90,14 +92,14 @@ fn from_rule_firing_preserves_bound_facts() {
     .unwrap();
 
     assert_eq!(c.kind, ConsequenceKind::Event);
-    assert_eq!(c.predicate, "card.played");
+    assert_eq!(c.predicate, "hand.card_played");
     match c.provenance {
         Provenance::RuleFiring {
             rule_id,
             bound_facts,
             ..
         } => {
-            assert_eq!(rule_id, "play.apply_cost");
+            assert_eq!(rule_id, "score.points_changed");
             assert_eq!(bound_facts, vec!["f1", "f2"]);
         }
         other => panic!("expected RuleFiring, got {other:?}"),
@@ -106,18 +108,18 @@ fn from_rule_firing_preserves_bound_facts() {
 
 #[test]
 fn lookup_trait_drives_consequence_end_to_end() {
-    let tool = FakeSpellTool;
-    let c = lookup_as_consequence(&tool, "fireball".into()).unwrap();
+    let tool = FakeCardLookup;
+    let c = lookup_as_consequence(&tool, "ace_spades".into()).unwrap();
 
     assert_eq!(c.kind, ConsequenceKind::Snapshot);
     assert_eq!(c.predicate, "card");
 
-    // Payload preserves the exact camelCase contract spec 046 guarantees.
+    // Payload preserves the exact camelCase contract the lookup tools guarantee.
     let v = serde_json::to_value(&c).unwrap();
     assert_eq!(v["payload"]["schemaVersion"], 1);
     assert_eq!(v["payload"]["kind"], "card");
     assert_eq!(v["payload"]["available"], false);
-    assert_eq!(v["payload"]["name"], "fireball");
+    assert_eq!(v["payload"]["name"], "ace_spades");
     assert_eq!(v["payload"]["error"], "not wired yet");
     // `found` was None, should be omitted.
     assert!(v["payload"].get("found").is_none());
@@ -129,12 +131,12 @@ fn typed_lookup_is_automatically_a_dyn_lookup() {
     // at runtime the engine only needs the dynamic shape. The blanket
     // impl lets hosts treat every typed tool uniformly alongside any
     // Rhai/RPC/WASM tools that only speak Value -> Value.
-    let tool: Box<dyn DynLookup> = Box::new(FakeSpellTool);
-    let req = serde_json::Value::String("fireball".into());
+    let tool: Box<dyn DynLookup> = Box::new(FakeCardLookup);
+    let req = serde_json::Value::String("ace_spades".into());
     let resp = tool.invoke_dyn(req).unwrap();
 
     assert_eq!(resp["kind"], "card");
-    assert_eq!(resp["name"], "fireball");
+    assert_eq!(resp["name"], "ace_spades");
     assert_eq!(resp["available"], false);
     assert_eq!(tool.name(), "card");
     assert_eq!(tool.schema_version(), 1);
@@ -142,9 +144,9 @@ fn typed_lookup_is_automatically_a_dyn_lookup() {
 
 #[test]
 fn dyn_lookup_as_consequence_round_trips_untyped() {
-    let tool: Box<dyn DynLookup> = Box::new(FakeSpellTool);
+    let tool: Box<dyn DynLookup> = Box::new(FakeCardLookup);
     let c =
-        dyn_lookup_as_consequence(tool.as_ref(), serde_json::Value::String("cure".into())).unwrap();
+        dyn_lookup_as_consequence(tool.as_ref(), serde_json::Value::String("king_hearts".into())).unwrap();
 
     assert_eq!(c.kind, ConsequenceKind::Snapshot);
     assert_eq!(c.predicate, "card");
@@ -159,7 +161,7 @@ fn dyn_lookup_as_consequence_round_trips_untyped() {
         other => panic!("expected Lookup, got {other:?}"),
     }
     // The payload is preserved unchanged — schema-agnostic core.
-    assert_eq!(c.payload["name"], "cure");
+    assert_eq!(c.payload["name"], "king_hearts");
     assert_eq!(c.payload["available"], false);
 }
 
@@ -203,7 +205,7 @@ fn purely_dynamic_tool_produces_a_consequence() {
 fn unavailable_lookup_still_produces_a_consequence() {
     // Philosophical test: "tool not wired yet" is a real consequence
     // the actor should reason from, not an error to suppress.
-    let tool = FakeSpellTool;
+    let tool = FakeCardLookup;
     let c = lookup_as_consequence(&tool, "anything".into()).unwrap();
     let v = serde_json::to_value(&c).unwrap();
     assert_eq!(v["payload"]["available"], false);
