@@ -19,7 +19,7 @@ fn init_creates_all_four_files_in_fresh_project() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&[], dir.path());
     assert!(
-        out.valueus.success(),
+        out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -48,7 +48,7 @@ fn init_with_language_rust_uses_rust_pack() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--language", "rust"], dir.path());
     assert!(
-        out.valueus.success(),
+        out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -74,7 +74,7 @@ fn init_with_language_rust_uses_rust_pack() {
 fn init_dry_run_writes_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--dry-run"], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     assert!(!dir.path().join(".claude/settings.local.json").exists());
     assert!(!dir.path().join(".mcp.json").exists());
     assert!(!dir.path().join(".phronesis/rules.json").exists());
@@ -98,7 +98,7 @@ fn init_preserves_existing_settings_permissions() {
     .unwrap();
 
     let out = run_init(&[], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
 
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
@@ -138,7 +138,7 @@ fn init_force_overwrites_rules_and_creates_backup() {
     .unwrap();
 
     let out = run_init(&["--language", "rust", "--force"], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
 
     let content: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&rules).unwrap()).unwrap();
@@ -180,7 +180,7 @@ fn init_rejects_unknown_language() {
     // value still errors out, just via the pack parser's message wording.
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--language", "haskell"], dir.path());
-    assert!(!out.valueus.success());
+    assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("unknown pack"), "stderr: {}", stderr);
 }
@@ -233,7 +233,7 @@ fn init_writes_correct_hook_matchers_including_bash() {
 fn init_packs_llm_only_omits_language_rules() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--packs", "llm"], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     let rules: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
     )
@@ -254,7 +254,7 @@ fn init_packs_rust_only_omits_llm_rules() {
     // not deflection rules. User who wants both says "llm,rust".
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--packs", "rust"], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     let rules: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
     )
@@ -276,7 +276,7 @@ fn init_packs_rust_only_omits_llm_rules() {
 fn init_packs_llm_rust_composes_both() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--packs", "llm,rust"], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     let rules: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
     )
@@ -296,7 +296,7 @@ fn init_default_is_llm_only() {
     // No --packs flag → default is llm only.
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&[], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     let rules: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
     )
@@ -316,7 +316,7 @@ fn init_default_is_llm_only() {
 fn init_rejects_unknown_pack() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--packs", "haskell"], dir.path());
-    assert!(!out.valueus.success());
+    assert!(!out.status.success());
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("unknown pack"), "stderr: {}", stderr);
 }
@@ -338,7 +338,7 @@ fn setup_alias_works() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_aliased("setup", dir.path());
     assert!(
-        out.valueus.success(),
+        out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -349,7 +349,7 @@ fn setup_alias_works() {
 fn configure_alias_works() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_aliased("configure", dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     assert!(dir.path().join(".phronesis/rules.json").exists());
 }
 
@@ -362,7 +362,7 @@ fn deprecated_language_flag_still_works() {
     // Old CLI: --language rust = the bundled "deflection + rust" behavior.
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--language", "rust"], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     let rules: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
     )
@@ -387,7 +387,7 @@ fn rules_only_skips_other_files() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--rules-only", "--packs", "llm,rust"], dir.path());
     assert!(
-        out.valueus.success(),
+        out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -422,7 +422,7 @@ fn rules_only_with_force_refreshes_existing_rules() {
         &["--rules-only", "--force", "--packs", "llm,rust"],
         dir.path(),
     );
-    assert!(out.valueus.success());
+    assert!(out.status.success());
 
     // Rules file refreshed
     let rules: serde_json::Value = serde_json::from_str(
@@ -460,7 +460,7 @@ fn rules_only_dry_run_writes_nothing() {
         &["--rules-only", "--dry-run", "--packs", "rust"],
         dir.path(),
     );
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     assert!(!dir.path().join(".phronesis/rules.json").exists());
     assert!(!dir.path().join(".claude/settings.local.json").exists());
 }
@@ -474,7 +474,7 @@ fn rules_only_without_force_respects_existing_rules() {
     std::fs::write(dir.path().join(".phronesis/rules.json"), custom).unwrap();
 
     let out = run_init(&["--rules-only", "--packs", "llm,rust"], dir.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
 
     // Without --force, the existing file is preserved verbatim.
     let content = std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap();
@@ -483,7 +483,7 @@ fn rules_only_without_force_respects_existing_rules() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// install / uninstall — user-rank MCP server registration
+// install / uninstall — user-level MCP server registration
 //
 // Each test points HOME at a tempdir so the subprocess writes to a fresh
 // `<tempdir>/.claude.json` instead of the real one.
@@ -506,7 +506,7 @@ fn install_creates_user_claude_json_with_mcp_entry() {
     let home = tempfile::tempdir().unwrap();
     let out = run_with_fake_home(&["install"], home.path());
     assert!(
-        out.valueus.success(),
+        out.status.success(),
         "stderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
@@ -520,7 +520,7 @@ fn install_creates_user_claude_json_with_mcp_entry() {
 #[test]
 fn install_merges_into_existing_claude_json() {
     let home = tempfile::tempdir().unwrap();
-    // Pre-existing config with other MCP servers AND unrelated top-rank keys
+    // Pre-existing config with other MCP servers AND unrelated top-level keys
     std::fs::write(
         fake_claude_json(home.path()),
         r#"{
@@ -533,7 +533,7 @@ fn install_merges_into_existing_claude_json() {
     .unwrap();
 
     let out = run_with_fake_home(&["install"], home.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
 
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fake_claude_json(home.path())).unwrap())
@@ -542,7 +542,7 @@ fn install_merges_into_existing_claude_json() {
     assert_eq!(config["mcpServers"]["other"]["command"], "other-mcp");
     // Our entry added
     assert_eq!(config["mcpServers"]["phronesis"]["command"], "phr-mcp");
-    // Unrelated top-rank keys preserved
+    // Unrelated top-level keys preserved
     assert_eq!(config["theme"], "dark");
 }
 
@@ -560,7 +560,7 @@ fn install_is_idempotent() {
 fn install_dry_run_writes_nothing() {
     let home = tempfile::tempdir().unwrap();
     let out = run_with_fake_home(&["install", "--dry-run"], home.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     assert!(!fake_claude_json(home.path()).exists());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("dry-run"), "stdout: {}", stdout);
@@ -582,7 +582,7 @@ fn uninstall_removes_only_phronesis_entry() {
     .unwrap();
 
     let out = run_with_fake_home(&["uninstall"], home.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
 
     let config: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fake_claude_json(home.path())).unwrap())
@@ -597,13 +597,13 @@ fn uninstall_is_idempotent_when_already_absent() {
     let home = tempfile::tempdir().unwrap();
     // No file at all
     let out = run_with_fake_home(&["uninstall"], home.path());
-    assert!(out.valueus.success());
+    assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("doesn't exist") || stdout.contains("nothing to"));
 }
 
 #[test]
-fn install_uninstall_round_trip_preserves_other_.node(){
+fn install_uninstall_round_trip_preserves_other_state() {
     let home = tempfile::tempdir().unwrap();
     let original = r#"{
   "theme": "dark",

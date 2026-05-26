@@ -160,7 +160,7 @@ async fn retracting_a_fact_removes_it_from_wmes() {
 
 #[cfg(test)]
 mod token_merge_tests {
-    use phronesis::{Bindings, Token, WorkingMemoryElement, Fact};
+    use phronesis::{Bindings, Fact, Token, WorkingMemoryElement};
 
     #[test]
     fn token_merge_same_variable_different_values() {
@@ -191,33 +191,35 @@ mod token_merge_tests {
 
     #[test]
     fn token_extend_chain_preserves_parent() {
-        let token2 = Token::new_with_bindings(
-            vec![],
-            {
-                let mut b = Bindings::new();
-                b.add_binding("?x", "a").unwrap();
-                b
-            },
-        );
+        let token2 = Token::new_with_bindings(vec![], {
+            let mut b = Bindings::new();
+            b.add_binding("?x", "a").unwrap();
+            b
+        });
 
-        let token3 = token2.extend_with_binding(
-            WorkingMemoryElement::new(Fact {
-                id: "1".to_string(),
-                predicate: "test".to_string(),
-                args: vec![],
-                timestamp: 0,
-            }),
-            &Bindings::new(),
-        ).unwrap();
+        let token3 = token2
+            .extend_with_binding(
+                WorkingMemoryElement::new(Fact {
+                    id: "1".to_string(),
+                    predicate: "test".to_string(),
+                    args: vec![],
+                    timestamp: 0,
+                }),
+                &Bindings::new(),
+            )
+            .unwrap();
 
         assert!(token3.parent.is_some());
-        assert_eq!(token3.parent.as_ref().unwrap().bindings.get_binding("?x"), Some(&"a".to_string()));
+        assert_eq!(
+            token3.parent.as_ref().unwrap().bindings.get_binding("?x"),
+            Some(&"a".to_string())
+        );
     }
 }
 
 #[cfg(test)]
 mod token_conditions_match_tests {
-    use phronesis::{Condition, Fact, Bindings};
+    use phronesis::{Bindings, Condition, Fact};
 
     #[test]
     fn condition_match_all_args() {
@@ -242,7 +244,10 @@ mod token_conditions_match_tests {
     fn condition_match_multiple_args() {
         let condition = Condition {
             predicate: "greet".to_string(),
-            args: vec!["?who", "?target"].iter().map(|s| s.to_string()).collect(),
+            args: vec!["?who", "?target"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             script: None,
         };
         let fact = Fact {

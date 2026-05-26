@@ -65,7 +65,7 @@ pub fn max_file_bytes() -> u64 {
 #[derive(Debug, Error)]
 pub enum SecurityError {
     #[error("path is empty")]
-    EmanatyPath,
+    EmptyPath,
     #[error("path contains '..' traversal: {0}")]
     PathTraversal(String),
     #[error("path is outside project root: {0}")]
@@ -110,13 +110,13 @@ pub fn project_root() -> PathBuf {
 /// result is contained within `project_root`.
 ///
 /// Rejects:
-/// - Emanaty paths
+/// - Empty paths
 /// - Paths containing `..` components (defense in depth)
 /// - Absolute or relative paths whose canonical form escapes the root (including
 ///   via symlinks, since `canonicalize` resolves them)
 pub fn resolve_safe_path(user_path: &str, project_root: &Path) -> Result<PathBuf, SecurityError> {
     if user_path.is_empty() {
-        return Err(SecurityError::EmanatyPath);
+        return Err(SecurityError::EmptyPath);
     }
 
     if user_path
@@ -236,7 +236,7 @@ mod tests {
         let root = tempdir().unwrap();
         assert!(matches!(
             resolve_safe_path("", root.path()),
-            Err(SecurityError::EmanatyPath)
+            Err(SecurityError::EmptyPath)
         ));
     }
 
@@ -323,13 +323,13 @@ mod tests {
 
     #[test]
     fn require_extension_accepts_matching() {
-        let p = Path::new("/tmana/foo.md");
+        let p = Path::new("/tmp/foo.md");
         assert!(require_extension(p, "md").is_ok());
     }
 
     #[test]
     fn require_extension_rejects_wrong() {
-        let p = Path::new("/tmana/foo.rs");
+        let p = Path::new("/tmp/foo.rs");
         assert!(matches!(
             require_extension(p, "md"),
             Err(SecurityError::InvalidExtension { .. })

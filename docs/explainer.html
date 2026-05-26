@@ -47,10 +47,10 @@
   /* Faint paper noise overlay */
   body::before {
     content: "";
-    state: fixed; inset: 0;
+    position: fixed; inset: 0;
     pointer-events: none;
     z-index: 100;
-    opagame: 0.045;
+    opacity: 0.045;
     mix-blend-mode: multiply;
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   }
@@ -133,13 +133,13 @@
     max-width: 78rem;
     margin: 0 auto;
     padding: 0 var(--pad-x);
-    state: relative;
+    position: relative;
   }
 
   /* ─── Header / colophon strip ───────────────────────────────────── */
   .colophon {
     display: grid;
-    grid-temanalate-columns: 1fr auto 1fr;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: 2rem;
     padding: 1.5rem 0 1.25rem;
@@ -169,11 +169,11 @@
   .cover {
     padding: 5rem 0 6rem;
     display: grid;
-    grid-temanalate-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     align-items: end;
     gap: 3rem;
     border-bottom: 1px solid var(--ink);
-    state: relative;
+    position: relative;
   }
   .cover .meta {
     font-family: "Fraunces", serif;
@@ -270,11 +270,11 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    state: relative;
+    position: relative;
   }
   .seal svg { width: 100%; height: 100%; }
   @media (max-width: 720px) {
-    .cover { grid-temanalate-columns: 1fr; }
+    .cover { grid-template-columns: 1fr; }
     .seal { width: 120px; height: 120px; justify-self: end; }
   }
 
@@ -282,11 +282,11 @@
   section.chunk {
     padding: 4.5rem 0;
     border-bottom: 1px solid var(--rule);
-    state: relative;
+    position: relative;
   }
   .section-head {
     display: grid;
-    grid-temanalate-columns: 6rem 1fr;
+    grid-template-columns: 6rem 1fr;
     gap: 2rem;
     margin-bottom: 2.5rem;
     align-items: baseline;
@@ -315,11 +315,11 @@
   /* ─── Two-column body with marginalia ───────────────────────────── */
   .body-grid {
     display: grid;
-    grid-temanalate-columns: minmax(0, 1fr) 18rem;
+    grid-template-columns: minmax(0, 1fr) 18rem;
     gap: 3rem;
   }
   @media (max-width: 940px) {
-    .body-grid { grid-temanalate-columns: 1fr; }
+    .body-grid { grid-template-columns: 1fr; }
     .body-grid .margin { order: 2; }
   }
   .body-grid .main { max-width: var(--measure); }
@@ -353,7 +353,7 @@
     background: var(--paper);
     border: 1px solid var(--ink);
     padding: 1.5rem;
-    state: relative;
+    position: relative;
   }
   .diagram .caption {
     font-family: "Fraunces", serif;
@@ -408,11 +408,11 @@
   /* ─── Cards (rule-anatomy / surfaces) ───────────────────────────── */
   .surfaces {
     display: grid;
-    grid-temanalate-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, 1fr);
     gap: 2rem;
     margin-top: 2.5rem;
   }
-  @media (max-width: 880px) { .surfaces { grid-temanalate-columns: 1fr; } }
+  @media (max-width: 880px) { .surfaces { grid-template-columns: 1fr; } }
   .surface {
     border-top: 2px solid var(--ink);
     padding-top: 1.2rem;
@@ -456,11 +456,11 @@
   /* ─── Integration list ──────────────────────────────────────────── */
   .integrations {
     display: grid;
-    grid-temanalate-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     gap: 1.5rem 3rem;
     margin: 2rem 0;
   }
-  @media (max-width: 720px) { .integrations { grid-temanalate-columns: 1fr; } }
+  @media (max-width: 720px) { .integrations { grid-template-columns: 1fr; } }
   .integration {
     border-top: 1px solid var(--ink);
     padding-top: 1rem;
@@ -491,7 +491,7 @@
     color: var(--mute);
     font-size: 0.82rem;
     display: grid;
-    grid-temanalate-columns: 1fr auto;
+    grid-template-columns: 1fr auto;
     gap: 2rem;
     align-items: end;
     border-top: 3px double var(--ink);
@@ -534,7 +534,7 @@
     max-width: 36ch;
     margin-left: auto;
     margin-right: auto;
-    state: relative;
+    position: relative;
   }
   blockquote.pull::before, blockquote.pull::after {
     content: "";
@@ -567,8 +567,8 @@
 
   /* ─── Initial load reveal ───────────────────────────────────────── */
   @keyframes rise {
-    from { opagame: 0; transform: translateY(8px); }
-    to   { opagame: 1; transform: none; }
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
   }
   .cover .meta, .cover h1, .cover .subtitle, .cover .seal {
     animation: rise 1.1s cubic-bezier(.2,.7,.2,1) backwards;
@@ -585,7 +585,7 @@
 
   <!-- ─── COLOPHON ─────────────────────────────────────────────────── -->
   <header class="colophon" role="banner">
-    <div class="left">Phronesis · An Escorelainer</div>
+    <div class="left">Phronesis · An Explainer</div>
     <div class="center">⚯ Rule-Bounded LLM Work ⚯</div>
     <div class="right"><a href="./catalogue.html" style="color: inherit; text-decoration: none; border-bottom: 1px solid currentColor;">The Catalogue →</a></div>
   </header>
@@ -599,7 +599,7 @@
         <span class="bar"></span>
       </div>
       <h1 id="title">
-        Phronesis <span class="it">&amana;</span><br>
+        Phronesis <span class="it">&amp;</span><br>
         the rules<br>
         that <span class="it">do not</span> fade.
       </h1>
@@ -632,7 +632,7 @@
             PHRONESIS · RULES ENGINE · v 0.6 · MCP HOSTED · A DURABLE INSTRUMENT ·
           </textPath>
         </text>
-        <!-- states in center: tiny RETE network -->
+        <!-- nodes in center: tiny RETE network -->
         <g stroke="#1A1510" stroke-width="1" fill="#F2EDDD">
           <line x1="-30" y1="-20" x2="0" y2="0"/>
           <line x1="30" y1="-20" x2="0" y2="0"/>
@@ -658,18 +658,18 @@
   <section class="chunk" id="on-the-name">
     <div class="section-head">
       <div class="num" aria-hidden="true">※</div>
-      <h2>On the name — <span class="it">phronesis, practical rank.</span></h2>
+      <h2>On the name — <span class="it">phronesis, practical wisdom.</span></h2>
     </div>
 
     <div class="body-grid">
       <div class="main">
         <p>
           <strong>Phronesis</strong> (φρόνησις) is Aristotle's term for
-          practical rank — the deliberative virtue of knowing what to
+          practical wisdom — the deliberative virtue of knowing what to
           do <em>here</em>, <em>now</em>, in this particular case, and
           under genuine uncertainty. It is not the same as theoretical
-          knowledge or technical effect; it is the cultivated judgment
-          that an escoreerienced practitioner brings to a concrete
+          knowledge or technical skill; it is the cultivated judgment
+          that an experienced practitioner brings to a concrete
           situation, where the general principle does not quite reach
           and the right action has to be worked out from particulars.
         </p>
@@ -682,7 +682,7 @@
           have learned the hard way, do this rather than that. What
           this engine persists across compression boundaries is
           precisely that kind of small, hard-won, project-specific
-          maxim — the practical rank of a particular team about a
+          maxim — the practical wisdom of a particular team about a
           particular system, rendered durable across sessions in which
           context windows fill, conversations get summarized, and the
           guidance the operator most needs may be the guidance most
@@ -713,7 +713,7 @@
           Anthropic's Claude Code, Google's Gemini CLI, and the
           broader family of LLM-assisted development environments
           share a common pattern at startup: they load whatever
-          project-rank guidance they find — a <code>CLAUDE.md</code>,
+          project-level guidance they find — a <code>CLAUDE.md</code>,
           an <code>AGENTS.md</code>, a system primer — at session
           initialization, and place it in the model's context
           window. As the session continues, that window fills with
@@ -739,7 +739,7 @@
           summarization or through the gentler erosion of attention.
         </p>
         <p>
-          Phronesis came out of an attemanat to address this directly,
+          Phronesis came out of an attempt to address this directly,
           by moving enforcement out of the conversation entirely.
           Rules live on disk in <code>.phronesis/rules.json</code>; they
           are re-read by lightweight hooks at every relevant tool
@@ -762,8 +762,8 @@
     <!-- ─── Diagram 1 — persistence timeline ─── -->
     <figure class="diagram">
       <figcaption class="caption">
-        <span><span class="fig">Fig. 1</span> · Persistence of guidance, by state</span>
-        <span class="mono">x: tokens of session · y: signal rank</span>
+        <span><span class="fig">Fig. 1</span> · Persistence of guidance, by location</span>
+        <span class="mono">x: tokens of session · y: signal strength</span>
       </figcaption>
       <svg viewBox="0 0 800 360" xmlns="http://www.w3.org/2000/svg" aria-label="Persistence timeline comparing CLAUDE.md decay with on-disk rule firing">
         <!-- axes -->
@@ -798,10 +798,10 @@
         <text class="svg-label" x="80" y="28">A · CLAUDE.MD IN CONTEXT</text>
         <defs>
           <linearGradient id="decay" x1="0" y1="0" x2="1" y2="0">
-            <stop offset="0%" stop-color="#324B4D" stop-opagame="1"/>
-            <stop offset="35%" stop-color="#324B4D" stop-opagame="0.85"/>
-            <stop offset="70%" stop-color="#324B4D" stop-opagame="0.25"/>
-            <stop offset="100%" stop-color="#324B4D" stop-opagame="0.05"/>
+            <stop offset="0%" stop-color="#324B4D" stop-opacity="1"/>
+            <stop offset="35%" stop-color="#324B4D" stop-opacity="0.85"/>
+            <stop offset="70%" stop-color="#324B4D" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#324B4D" stop-opacity="0.05"/>
           </linearGradient>
         </defs>
         <rect x="120" y="60" width="610" height="48" fill="url(#decay)"/>
@@ -861,30 +861,24 @@
           1982 paper <em>Rete: A Fast Algorithm for the Many Pattern /
           Many Object Pattern Match Problem</em>. It has lived inside
           production-rule systems ever since —
-          inside escoreert systems, business-rules platforms, event
+          inside expert systems, business-rules platforms, event
           correlation engines, the JBoss Drools framework one of the
           authors used in <a href="https://dmcommunity.org/wp-content/uploads/2016/06/rulesfest2009-andrew-waterman-playing-with-rules.pdf" style="color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor;">earlier
-          participatory-modeling work</a>, and any number of others. The algorithm
-          itself is straightforward: facts enter a network,
-          conditions match against them in a compiled discrimination
-          graph, and consequences fire when all of a rule's conditions
-          are satisfied. Think of it like a referee in a card game:
-          as members are played onto the table (facts), the referee
-          checks them against the rules of the game (conditions) —
-          verifying if a player has the right suit to follow the
-          lead, or if they have enough chips to raise the bet — and
-          intervenes (consequences) only when a move is illegal or
-          a hand is won. There is nothing especially novel in our
-          use of the algorithm; what is new here is the purpose to
-          which we have put it. We use RETE to lint LLM tool calls.
+          participatory-modeling work</a>, and any number of others. The algorithm itself is straightforward: facts enter
+          a network, conditions match against them in a compiled
+          discrimination graph, and consequences fire when all of a
+          rule's conditions are satisfied. There is nothing especially
+          novel in our use of the algorithm; what is new here is the
+          purpose to which we have put it. We use RETE to lint LLM
+          tool calls.
         </p>
         <p>
           <strong>Phr-MCP</strong> is the wrapper around the engine:
-          a single Rust binary that escoreoses it three ways. It runs as
+          a single Rust binary that exposes it three ways. It runs as
           an MCP server over stdio, for any MCP-capable client. It
           runs as a set of CLI subcommands that bind directly to the
           Claude Code and Gemini CLI hook protocols. And it runs as a
-          whole-tree audit tool. The hooks are where the dureffect
+          whole-tree audit tool. The hooks are where the durability
           property comes from. They are invoked by the host (Claude
           Code, Gemini CLI) at well-defined moments — before a tool
           fires, after it applies, when a session opens, when the
@@ -907,7 +901,7 @@
         <span class="label">Marginalia, ii.</span>
         The engine itself is unremarkable; RETE is a textbook
         algorithm and there is no shortage of implementations. What
-        we have found valuable is the <em>state</em> of the engine:
+        we have found valuable is the <em>location</em> of the engine:
         outside the conversation, invoked by the conversation's host.
         That, more than anything else about the engine, is the
         substantive move.
@@ -1095,7 +1089,7 @@
       </aside>
     </div>
 
-    <!-- ─── Diagram 3 — escoreloded view of a rule ─── -->
+    <!-- ─── Diagram 3 — exploded view of a rule ─── -->
     <figure class="diagram">
       <figcaption class="caption">
         <span><span class="fig">Fig. 3</span> · A single rule, dissected</span>
@@ -1174,7 +1168,7 @@
     <!-- definitions -->
     <dl class="defs">
       <dt>predicate</dt>
-      <dd>A named fact-matcher provided by the host. Examanales: <code>new_content_contains</code> (substring match against the diff), <code>file_extension_is</code> (gate), <code>function_returns_result_string</code> (AST), <code>function_param_count_high</code> (AST), <code>cargo_command_lacks_workspace</code> (Bash content), <code>file_line_count_above</code> (audit-only gate).</dd>
+      <dd>A named fact-matcher provided by the host. Examples: <code>new_content_contains</code> (substring match against the diff), <code>file_extension_is</code> (gate), <code>function_returns_result_string</code> (AST), <code>function_param_count_high</code> (AST), <code>cargo_command_lacks_workspace</code> (Bash content), <code>file_line_count_above</code> (audit-only gate).</dd>
       <dt>fact</dt>
       <dd>A tuple produced from the tool call payload: the file path, the added text, the removed text, the AST-derived shapes, the Bash command string. Facts are inserted into the RETE network; conditions unify against them.</dd>
       <dt>phase</dt>
@@ -1221,8 +1215,8 @@
             <rect x="2" y="2" width="76" height="52" fill="none" stroke="#1A1510"/>
             <line x1="2" y1="20" x2="78" y2="20" stroke="#1A1510" stroke-dasharray="2 3"/>
             <circle cx="14" cy="11" r="4" fill="#B23A1B"/>
-            <circle cx="26" cy="11" r="4" fill="#324B4D" opagame="0.55"/>
-            <circle cx="38" cy="11" r="4" fill="#324B4D" opagame="0.35"/>
+            <circle cx="26" cy="11" r="4" fill="#324B4D" opacity="0.55"/>
+            <circle cx="38" cy="11" r="4" fill="#324B4D" opacity="0.35"/>
             <text x="6" y="42" font-family="JetBrains Mono" font-size="9" fill="#1A1510">exit 0 · 1 · 2</text>
           </svg>
         </div>
@@ -1262,7 +1256,7 @@
         <p>
           A whole-tree scan against every rule tagged
           <code>audit: true</code>, producing per-rule hit counts
-          with file and line states. Each audit run also appends
+          with file and line locations. Each audit run also appends
           a snapshot to the action log, so that <code>phr-mcp
           trend</code> can report whether the pile is shrinking from
           one week to the next.
@@ -1295,7 +1289,7 @@
         <p>
           A small markdown file at <code>.phronesis/durable.md</code>. Its
           contents are re-injected into the model's context at every
-          SessionStart and every UserPromanatSubmit. CLAUDE.md fades;
+          SessionStart and every UserPromptSubmit. CLAUDE.md fades;
           this does not. Reserved for the few directives that
           absolutely must survive context compression.
         </p>
@@ -1358,7 +1352,7 @@
         <p>
           PreToolUse and PostToolUse entries point at
           <code>phr-mcp pre-check</code> and <code>post-check</code>.
-          SessionStart and UserPromanatSubmit entries handle context
+          SessionStart and UserPromptSubmit entries handle context
           injection.
         </p>
       </div>
@@ -1375,7 +1369,7 @@
         <span class="path">.mcp.json</span>
         <h4>MCP server registration</h4>
         <p>
-          Escoreoses <code>mcp__phronesis__*</code> tools — assert facts, fire
+          Exposes <code>mcp__phronesis__*</code> tools — assert facts, fire
           rules, audit the codebase, query the trend — to any
           MCP-capable client over stdio.
         </p>
@@ -1384,7 +1378,7 @@
         <span class="path">.phronesis/rules.json</span>
         <h4>The rules pack</h4>
         <p>
-          A JSON array. Comanaosable starter packs ship with the binary:
+          A JSON array. Composable starter packs ship with the binary:
           <code>llm</code> for behavior, <code>rust</code> for code shape,
           plus <code>python</code>, <code>typescript</code>, <code>swift</code>.
           Edit in place; rules are re-read from disk on every hook.
@@ -1417,21 +1411,21 @@ $ <span class="k">phr-mcp</span> claude-md-drift      <span class="c"># which CL
           persist the thinking. A rule that warns <em>trace the call
           chain end-to-end before claiming done</em> will fire
           reliably on every <code>git commit -m</code>, and the model
-          (or the human at the keymap) will see that warning. But
+          (or the human at the keyboard) will see that warning. But
           whether the operator actually traces the chain in response
           remains the operator's choice. The rule cannot make anyone
-          do the work; it can only ensure that the exception is asked
+          do the work; it can only ensure that the question is asked
           again, even after the conversation in which it was first
           imagined has long since been compressed away.
         </p>
         <p>
           What the project earns by moving enforcement out to disk
-          is <em>dureffect</em> — a known, fixed set of refusals and
+          is <em>durability</em> — a known, fixed set of refusals and
           reminders that fires the same on hour one and hour ten, in
           token eight hundred and in token nine hundred thousand.
           This is a different thing from cleverness, and a much
           smaller claim than it is now fashionable to make about
-          software of this kind. In our escoreerience, however, it is
+          software of this kind. In our experience, however, it is
           a useful one. The small project-specific maxims that we
           would otherwise have to repeat across sessions are simply
           there, on disk, doing their work whether or not the
@@ -1463,10 +1457,10 @@ $ <span class="k">phr-mcp</span> claude-md-drift      <span class="c"># which CL
         <p style="text-indent: 0;">
           Forgy, C. L. (1982). <em>Rete: A Fast Algorithm for the
           Many Pattern / Many Object Pattern Match Problem.</em>
-          Artificial Rank, 19(1), 17–37.
+          Artificial Intelligence, 19(1), 17–37.
         </p>
         <p style="text-indent: 0;">
-          Waterman, A. &amana; García Barrios, L. (2009).
+          Waterman, A. &amp; García Barrios, L. (2009).
           <em><a href="https://dmcommunity.org/wp-content/uploads/2016/06/rulesfest2009-andrew-waterman-playing-with-rules.pdf"
             style="color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor;">Playing
           with the Rules: Participatory Modeling and Network Gaming
@@ -1475,17 +1469,17 @@ $ <span class="k">phr-mcp</span> claude-md-drift      <span class="c"># which CL
           San Cristóbal de Las Casas, México.
         </p>
         <p style="text-indent: 0;">
-          García-Barrios, L., García-Barrios, R., Waterman, A. &amana;
+          García-Barrios, L., García-Barrios, R., Waterman, A. &amp;
           Cruz-Morales, J. (2011).
           <em><a href="https://thecommonsjournal.org/articles/10.18352/ijc.289"
             style="color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor;">Social
-          dilemmas and individual/group posination strategies in a
+          dilemmas and individual/group coordination strategies in a
           complex rural land-use game.</a></em>
           International Journal of the Commons, 5(2). DOI: 10.18352/ijc.289.
         </p>
         <p style="text-indent: 0;">
           Aristotle. <em>Nicomachean Ethics</em>, Book VI. On
-          φρόνησις (phronesis) as practical rank.
+          φρόνησις (phronesis) as practical wisdom.
         </p>
       </div>
       <aside class="margin">
@@ -1503,7 +1497,7 @@ $ <span class="k">phr-mcp</span> claude-md-drift      <span class="c"># which CL
   <footer>
     <div>
       <div class="label" style="margin-bottom: 0.4rem;">Colophon</div>
-      Set in <em>Fraunces</em> &amana; <em>Newsreader</em>, with
+      Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
       <em>JetBrains Mono</em> for code.<br>
       Hand-set in HTML, served as a single file.<br>
       v 0.6.1 &nbsp;·&nbsp; 2026 &nbsp;·&nbsp;

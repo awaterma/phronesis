@@ -45,7 +45,7 @@
     state: fixed; inset: 0;
     pointer-events: none;
     z-index: 100;
-    opagame: 0.05;
+    opacity: 0.05;
     mix-blend-mode: multiply;
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   }
@@ -126,7 +126,7 @@
   /* ─── Colophon ─── */
   .colophon {
     display: grid;
-    grid-temanalate-columns: 1fr auto 1fr;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
     gap: 2rem;
     padding: 1.5rem 0 1.25rem;
@@ -159,7 +159,7 @@
     padding: 4rem 0 4.5rem;
     border-bottom: 1px solid var(--ink);
     display: grid;
-    grid-temanalate-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 0.8fr);
     gap: 3rem;
     align-items: end;
   }
@@ -211,7 +211,7 @@
   .cover .values dl {
     margin: 0;
     display: grid;
-    grid-temanalate-columns: 1fr auto;
+    grid-template-columns: 1fr auto;
     gap: 0.4em 1rem;
   }
   .cover .values dt { color: var(--mute); font-weight: 600; }
@@ -226,7 +226,7 @@
     letter-spacing: -0.02em;
   }
   @media (max-width: 880px) {
-    .cover { grid-temanalate-columns: 1fr; }
+    .cover { grid-template-columns: 1fr; }
   }
 
   /* ─── Reader's note + TOC ─── */
@@ -234,10 +234,10 @@
     padding: 3rem 0;
     border-bottom: 1px solid var(--rule);
     display: grid;
-    grid-temanalate-columns: minmax(0, 1fr) 18rem;
+    grid-template-columns: minmax(0, 1fr) 18rem;
     gap: 3rem;
   }
-  @media (max-width: 940px) { .preamble { grid-temanalate-columns: 1fr; } }
+  @media (max-width: 940px) { .preamble { grid-template-columns: 1fr; } }
   .preamble .note { max-width: var(--measure); }
   .preamble .note h3 { font-size: 0.78rem; letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent); margin-bottom: 1rem; font-weight: 700; }
 
@@ -286,7 +286,7 @@
   }
   .pack-head-block {
     display: grid;
-    grid-temanalate-columns: 5.5rem 1fr auto;
+    grid-template-columns: 5.5rem 1fr auto;
     gap: 2rem;
     align-items: baseline;
     margin-bottom: 3rem;
@@ -333,7 +333,7 @@
     padding: 2.5rem 0;
     border-top: 1px solid var(--ink);
     display: grid;
-    grid-temanalate-columns: 4rem minmax(0, 1fr);
+    grid-template-columns: 4rem minmax(0, 1fr);
     gap: 1.75rem;
     state: relative;
   }
@@ -354,9 +354,9 @@
     flex-shrink: 0;
     margin-top: 0.2rem;
   }
-  .rule[data-rank="block"] .rule-mark { color: var(--accent); background: #FCE9E0; border-color: var(--accent); }
-  .rule[data-rank="warn"]  .rule-mark { color: var(--amber); background: #F3E5BC; border-color: var(--amber); }
-  .rule[data-rank="audit"] .rule-mark { color: var(--slate); background: #DDE5E2; border-color: var(--slate); }
+  .rule[data-level="block"] .rule-mark { color: var(--accent); background: #FCE9E0; border-color: var(--accent); }
+  .rule[data-level="warn"]  .rule-mark { color: var(--amber); background: #F3E5BC; border-color: var(--amber); }
+  .rule[data-level="audit"] .rule-mark { color: var(--slate); background: #DDE5E2; border-color: var(--slate); }
 
   .rule-tags {
     display: flex;
@@ -375,10 +375,10 @@
     background: var(--paper);
     line-height: 1.4;
   }
-  .tag-rank { font-weight: 700; }
-  .rule[data-rank="block"] .tag-rank { color: var(--accent); border-color: var(--accent); background: #FCE9E0; }
-  .rule[data-rank="warn"]  .tag-rank { color: var(--amber); border-color: var(--amber); background: #F3E5BC; }
-  .rule[data-rank="audit"] .tag-rank { color: var(--slate); border-color: var(--slate); background: #DDE5E2; }
+  .tag-level { font-weight: 700; }
+  .rule[data-level="block"] .tag-level { color: var(--accent); border-color: var(--accent); background: #FCE9E0; }
+  .rule[data-level="warn"]  .tag-level { color: var(--amber); border-color: var(--amber); background: #F3E5BC; }
+  .rule[data-level="audit"] .tag-level { color: var(--slate); border-color: var(--slate); background: #DDE5E2; }
   .tag-source {
     font-style: italic;
     font-family: "Fraunces", serif;
@@ -402,7 +402,7 @@
     content: " ↗";
     font-style: normal;
     font-size: 0.85em;
-    opagame: 0.7;
+    opacity: 0.7;
   }
 
   .rule-id {
@@ -433,12 +433,12 @@
   .rule-example {
     margin: 1.5rem 0 1.2rem;
     display: grid;
-    grid-temanalate-columns: 1fr auto 1fr;
+    grid-template-columns: 1fr auto 1fr;
     gap: 0.8rem;
     align-items: stretch;
   }
   @media (max-width: 880px) {
-    .rule-example { grid-temanalate-columns: 1fr; }
+    .rule-example { grid-template-columns: 1fr; }
     .rule-example .arrow { transform: rotate(90deg); justify-self: center; }
   }
   .ex {
@@ -498,7 +498,7 @@
   /* Brief entries (the "other packs" condensed list) */
   .briefs {
     display: grid;
-    grid-temanalate-columns: repeat(auto-fit, minmax(18rem, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
     gap: 1.5rem;
     margin: 1.5rem 0 2rem;
   }
@@ -535,7 +535,7 @@
     border-top: 3px double var(--ink);
     margin-top: 3rem;
     display: grid;
-    grid-temanalate-columns: 1fr auto;
+    grid-template-columns: 1fr auto;
     gap: 2rem;
     align-items: end;
   }
@@ -556,7 +556,7 @@
   }
 
   /* Subtle initial reveal */
-  @keyframes rise { from { opagame: 0; transform: translateY(8px); } to { opagame: 1; transform: none; } }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
   .cover > * { animation: rise 1s cubic-bezier(.2,.7,.2,1) backwards; }
   .cover > *:nth-child(1) { animation-delay: 0.05s; }
   .cover > *:nth-child(2) { animation-delay: 0.25s; }
@@ -567,7 +567,7 @@
 <div class="page">
 
   <header class="colophon" role="banner">
-    <div class="left"><a href="./escorelainer.html">← The Escorelainer</a></div>
+    <div class="left"><a href="./explainer.html">← The Explainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
     <div class="right">Vol. 0.6.1 — Edition I</div>
   </header>
@@ -589,7 +589,7 @@
         A reader's guide to the rules that ship by default in
         <code>phr-mcp init --packs llm,rust</code>. Each entry
         carries its predicate, its severity, a one-line distillation,
-        and a worked example drawn from real-game Rust code.
+        and a worked example drawn from real-world Rust code.
       </p>
     </div>
     <div class="values">
@@ -631,7 +631,7 @@
         a refactor that satisfies it.
       </p>
       <p>
-        Examanales are illustrative, not extracted verbatim. They are
+        Examples are illustrative, not extracted verbatim. They are
         written to clarify the rule, not to document any one project's
         actual state.
       </p>
@@ -651,23 +651,23 @@
         <li><a href="#panic-family">The no-panic family</a></li>
         <li><a href="#result-string">Result&lt;_, String&gt; errors</a></li>
         <li><a href="#dbg">dbg!() left in code</a></li>
-        <li><a href="#string-ref">Public fn takes &amana;String</a></li>
-        <li><a href="#vec-ref">Public fn takes &amana;Vec&lt;T&gt;</a></li>
+        <li><a href="#string-ref">Public fn takes &amp;String</a></li>
+        <li><a href="#vec-ref">Public fn takes &amp;Vec&lt;T&gt;</a></li>
         <li><a href="#param-count">God-signature parameter count</a></li>
         <li><a href="#deref">Deref polymorphism</a></li>
         <li><a href="#cargo">Cargo without --workspace</a></li>
         <li><a href="#clone">Clone-heavy functions</a></li>
-        <li><a href="#empty-test">Emanaty tests</a></li>
+        <li><a href="#empty-test">Empty tests</a></li>
         <li><a href="#sync-await">.await on now-sync methods</a></li>
         <li><a href="#manual-err">Manual <code>=&gt; return Err(…)</code></a></li>
         <li><a href="#newtype-id">Newtype opportunities</a></li>
         <li><a href="#if-let">If-let opportunities</a></li>
         <li><a href="#file-loc">God-file line count</a></li>
         <li><a href="#deny-warnings">#![deny(warnings)] attribute</a></li>
-        <li><a href="#box-ref">Public fn takes &amana;Box&lt;T&gt;</a></li>
-        <li><a href="#expect-empty">Emanaty .expect() message</a></li>
+        <li><a href="#box-ref">Public fn takes &amp;Box&lt;T&gt;</a></li>
+        <li><a href="#expect-empty">Empty .expect() message</a></li>
         <li><a href="#rc-refcell">Rc&lt;RefCell&lt;T&gt;&gt; in src/</a></li>
-        <li><a href="#string-concat">String concat with <code>+ &amana;</code></a></li>
+        <li><a href="#string-concat">String concat with <code>+ &amp;</code></a></li>
         <li><a href="#allow-dead-code">#[allow(dead_code)] in src/</a></li>
         <li><a href="#env-set-var">env::set_var() in src/</a></li>
       </ol>
@@ -705,11 +705,11 @@
     </p>
 
     <!-- ─── 1.1 Deflection family ─── -->
-    <article class="rule" data-rank="block" id="deflection">
+    <article class="rule" data-level="block" id="deflection">
       <div class="rule-mark" aria-hidden="true">✕</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag tag-level">BLOCK</span>
           <span class="tag">phase: pre</span>
           <span class="tag">×3 variants</span>
         </div>
@@ -759,11 +759,11 @@ this PR does not address it. (See follow-up.)</pre>
     </article>
 
     <!-- ─── 1.2 Unverified completion claims ─── -->
-    <article class="rule" data-rank="block" id="unverified-claims">
+    <article class="rule" data-level="block" id="unverified-claims">
       <div class="rule-mark" aria-hidden="true">✕</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag tag-level">BLOCK</span>
           <span class="tag">phase: pre</span>
           <span class="tag">×2 variants</span>
         </div>
@@ -798,11 +798,11 @@ Closes #87.</pre>
     </article>
 
     <!-- ─── 1.3 Nudge before commit ─── -->
-    <article class="rule" data-rank="warn" id="nudge-commit">
+    <article class="rule" data-level="warn" id="nudge-commit">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: pre</span>
           <span class="tag">on Bash content</span>
         </div>
@@ -867,11 +867,11 @@ test ... ok (124 passed)
     </p>
 
     <!-- ─── 2.1 Panic family ─── -->
-    <article class="rule" data-rank="block" id="panic-family">
+    <article class="rule" data-level="block" id="panic-family">
       <div class="rule-mark" aria-hidden="true">✕</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag tag-level">BLOCK</span>
           <span class="tag">phase: pre</span>
           <span class="tag">audit: yes</span>
           <span class="tag">×4 variants</span>
@@ -895,8 +895,8 @@ test ... ok (124 passed)
           <div class="rule-example">
             <div class="ex ex-bad">
               <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
-<pre><span class="k">pub fn</span> current_turn_player(&<span class="k">self</span>) -> &Card {
-    <span class="k">self</span>.players
+<pre><span class="k">pub fn</span> current_card(&<span class="k">self</span>) -> &Card {
+    <span class="k">self</span>.members
         .get(&<span class="k">self</span>.turn_order[<span class="k">self</span>.turn_index])
         .<span class="em">unwrap</span>()
 }</pre>
@@ -904,11 +904,11 @@ test ... ok (124 passed)
             <div class="arrow" aria-hidden="true">→</div>
             <div class="ex ex-good">
               <div class="ex-label">refactored</div>
-<pre><span class="k">pub fn</span> current_turn_player(&<span class="k">self</span>) -> Result&lt;&Card, HandError&gt; {
+<pre><span class="k">pub fn</span> current_card(&<span class="k">self</span>) -> Result&lt;&Card, HandError&gt; {
     <span class="k">let</span> id = <span class="k">self</span>.turn_order
         .get(<span class="k">self</span>.turn_index)
         .ok_or(HandError::TurnIndexOutOfRange)?;
-    <span class="k">self</span>.players
+    <span class="k">self</span>.members
         .get(id)
         .ok_or_else(|| HandError::CardNotFound(id.clone()))
 }</pre>
@@ -925,11 +925,11 @@ test ... ok (124 passed)
     </article>
 
     <!-- ─── 2.2 Result<_, String> ─── -->
-    <article class="rule" data-rank="block" id="result-string">
+    <article class="rule" data-level="block" id="result-string">
       <div class="rule-mark" aria-hidden="true">✕</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag tag-level">BLOCK</span>
           <span class="tag">phase: pre</span>
           <span class="tag">predicate: AST</span>
         </div>
@@ -988,11 +988,11 @@ test ... ok (124 passed)
     </article>
 
     <!-- ─── 2.3 dbg in src ─── -->
-    <article class="rule" data-rank="warn" id="dbg">
+    <article class="rule" data-level="warn" id="dbg">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: pre</span>
           <span class="tag">audit: yes</span>
         </div>
@@ -1033,18 +1033,18 @@ test ... ok (124 passed)
     </article>
 
     <!-- ─── 2.4 Public fn takes &String ─── -->
-    <article class="rule" data-rank="warn" id="string-ref">
+    <article class="rule" data-level="warn" id="string-ref">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: post</span>
           <span class="tag">predicate: AST</span>
         </div>
         <h3 class="rule-id">warn-rust-public-fn-takes-string-ref</h3>
         <p class="rule-summary">
-          Public function takes a <code>&amana;String</code> parameter
-          where <code>&amana;str</code> would accept a strictly larger
+          Public function takes a <code>&amp;String</code> parameter
+          where <code>&amp;str</code> would accept a strictly larger
           set of callers.
         </p>
         <div class="rule-body">
@@ -1064,11 +1064,11 @@ test ... ok (124 passed)
             </div>
           </div>
           <p class="rule-why">
-            <strong>Why</strong> A <code>&amana;str</code> accepts string
+            <strong>Why</strong> A <code>&amp;str</code> accepts string
             literals, slices into existing buffers, and the result of
             <code>.as_str()</code> on a <code>String</code>. A
-            <code>&amana;String</code> forces every caller to first own a
-            <code>String</code> — a needless alstate requirement at
+            <code>&amp;String</code> forces every caller to first own a
+            <code>String</code> — a needless allocation requirement at
             an API boundary.
           </p>
         </div>
@@ -1076,23 +1076,23 @@ test ... ok (124 passed)
     </article>
 
     <!-- ─── 2.5 Public fn takes &Vec<T> ─── -->
-    <article class="rule" data-rank="warn" id="vec-ref">
+    <article class="rule" data-level="warn" id="vec-ref">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: post</span>
           <span class="tag">predicate: AST</span>
         </div>
         <h3 class="rule-id">warn-rust-public-fn-takes-vec-ref</h3>
         <p class="rule-summary">
-          Public function takes a <code>&amana;Vec&lt;T&gt;</code> where
-          <code>&amana;[T]</code> would accept slices, arrays, and Vecs.
+          Public function takes a <code>&amp;Vec&lt;T&gt;</code> where
+          <code>&amp;[T]</code> would accept slices, arrays, and Vecs.
         </p>
         <div class="rule-body">
           <div class="rule-example">
             <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/game/state.rs</span></div>
+              <div class="ex-label">From the field <span class="path">src/world/state.rs</span></div>
 <pre><span class="k">pub fn</span> apply_events(&<span class="k">mut self</span>, events: &<span class="em">Vec&lt;Event&gt;</span>) {
     <span class="k">for</span> event <span class="k">in</span> events {
         <span class="k">self</span>.apply(event);
@@ -1114,11 +1114,11 @@ test ... ok (124 passed)
     </article>
 
     <!-- ─── 2.6 Param-count high ─── -->
-    <article class="rule" data-rank="warn" id="param-count">
+    <article class="rule" data-level="warn" id="param-count">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: post</span>
           <span class="tag">audit: yes</span>
           <span class="tag">threshold: 5</span>
@@ -1146,12 +1146,12 @@ test ... ok (124 passed)
             <div class="arrow" aria-hidden="true">→</div>
             <div class="ex ex-good">
               <div class="ex-label">refactored</div>
-<pre><span class="k">pub struct</span> HandValues { <span class="k">pub</span> score: <span class="k">u32</span>, <span class="k">pub</span> max_score: <span class="k">u32</span>, <span class="k">pub</span> rank: <span class="k">u32</span>, <span class="k">pub</span> priority: <span class="k">i32</span> }
+<pre><span class="k">pub struct</span> HandStats { <span class="k">pub</span> score: <span class="k">u32</span>, <span class="k">pub</span> max_score: <span class="k">u32</span>, <span class="k">pub</span> rank: <span class="k">u32</span>, <span class="k">pub</span> priority: <span class="k">i32</span> }
 
 <span class="k">pub fn</span> new(
     id: ActorId,
     name: String,
-    values: HandValues,
+    values: HandStats,
     strategy: Strategy,   <span class="c">// holds actions + members</span>
 ) -> Self { ... }</pre>
             </div>
@@ -1160,18 +1160,18 @@ test ... ok (124 passed)
             <strong>Why</strong> Long parameter lists correlate with
             god-functions and make call sites stateal and brittle.
             Grouping related params into named structs improves
-            readeffect and gives a place for invariants to live.
+            readability and gives a place for invariants to live.
           </p>
         </div>
       </div>
     </article>
 
     <!-- ─── 2.7 Deref for non-pointer type ─── -->
-    <article class="rule" data-rank="warn" id="deref">
+    <article class="rule" data-level="warn" id="deref">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: pre</span>
           <span class="tag">audit: yes</span>
         </div>
@@ -1197,7 +1197,7 @@ test ... ok (124 passed)
 <span class="k">impl</span> HandView {
     <span class="k">pub fn</span> hand(&<span class="k">self</span>) -> &Hand { &<span class="k">self</span>.inner }
 }
-    <span class="c">// escoreose specific methods explicitly</span>
+    <span class="c">// expose specific methods explicitly</span>
     <span class="k">pub fn</span> name(&<span class="k">self</span>) -> &<span class="k">str</span> { <span class="k">self</span>.inner.name() }
 }</pre>
             </div>
@@ -1207,11 +1207,11 @@ test ... ok (124 passed)
     </article>
 
     <!-- ─── 2.8 Cargo workspace ─── -->
-    <article class="rule" data-rank="warn" id="cargo">
+    <article class="rule" data-level="warn" id="cargo">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: pre</span>
           <span class="tag">on Bash content</span>
         </div>
@@ -1254,11 +1254,11 @@ $ cargo test -p core hand::</pre>
     </article>
 
     <!-- ─── 2.9 Clone-heavy ─── -->
-    <article class="rule" data-rank="warn" id="clone">
+    <article class="rule" data-level="warn" id="clone">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: pre</span>
           <span class="tag">predicate: AST</span>
           <span class="tag">threshold: 3</span>
@@ -1300,12 +1300,12 @@ $ cargo test -p core hand::</pre>
       </div>
     </article>
 
-    <!-- ─── 2.10 Emanaty test ─── -->
-    <article class="rule" data-rank="warn" id="empty-test">
+    <!-- ─── 2.10 Empty test ─── -->
+    <article class="rule" data-level="warn" id="empty-test">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: post</span>
           <span class="tag">predicate: AST</span>
         </div>
@@ -1340,11 +1340,11 @@ $ cargo test -p core hand::</pre>
     </article>
 
     <!-- ─── 2.11 sync .await ─── -->
-    <article class="rule" data-rank="block" id="sync-await">
+    <article class="rule" data-level="block" id="sync-await">
       <div class="rule-mark" aria-hidden="true">✕</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag tag-level">BLOCK</span>
           <span class="tag">phase: pre</span>
           <span class="tag">audit: yes</span>
           <span class="tag">×2 variants</span>
@@ -1402,11 +1402,11 @@ $ cargo test -p core hand::</pre>
     </article>
 
     <!-- ─── 2.12 Manual err return (audit) ─── -->
-    <article class="rule" data-rank="audit" id="manual-err">
+    <article class="rule" data-level="audit" id="manual-err">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag tag-level">AUDIT</span>
           <span class="tag">phase: audit</span>
           <span class="tag">silent at hook</span>
         </div>
@@ -1442,11 +1442,11 @@ $ cargo test -p core hand::</pre>
     </article>
 
     <!-- ─── 2.14 Newtype id (audit) ─── -->
-    <article class="rule" data-rank="audit" id="newtype-id">
+    <article class="rule" data-level="audit" id="newtype-id">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag tag-level">AUDIT</span>
           <span class="tag">phase: audit</span>
           <span class="tag">×2 variants</span>
         </div>
@@ -1499,11 +1499,11 @@ $ cargo test -p core hand::</pre>
     </article>
 
     <!-- ─── 2.15 If-let opportunity (audit) ─── -->
-    <article class="rule" data-rank="audit" id="if-let">
+    <article class="rule" data-level="audit" id="if-let">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag tag-level">AUDIT</span>
           <span class="tag">phase: audit</span>
           <span class="tag">×2 variants</span>
         </div>
@@ -1544,11 +1544,11 @@ $ cargo test -p core hand::</pre>
     </article>
 
     <!-- ─── 2.16 File LOC (audit) ─── -->
-    <article class="rule" data-rank="audit" id="file-loc">
+    <article class="rule" data-level="audit" id="file-loc">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag tag-level">AUDIT</span>
           <span class="tag">phase: audit</span>
           <span class="tag">threshold: 800</span>
         </div>
@@ -1563,7 +1563,7 @@ $ cargo test -p core hand::</pre>
               <div class="ex-label">audit output</div>
 <pre>$ phr-mcp audit --rule audit-file-loc-high
 
-Rule                 Rank  Hits  Files
+Rule                 Level  Hits  Files
 audit-file-loc-high  warn      3      3
   src/core/event_pipeline.rs   lines: 1
   src/core/play/turn_resolver.rs  lines: 1
@@ -1574,7 +1574,7 @@ audit-file-loc-high  warn      3      3
               <div class="ex-label">a plan, not a fix</div>
 <pre><span class="c">// Split event_pipeline.rs (1418 LOC) into:</span>
 src/core/event_pipeline/
-├── mod.rs                  <span class="c">// 80 LOC: the trait, re-escoreorts</span>
+├── mod.rs                  <span class="c">// 80 LOC: the trait, re-exports</span>
 ├── queue.rs                <span class="c">// 220 LOC: the ring buffer</span>
 ├── dispatch.rs             <span class="c">// 410 LOC: the dispatch table</span>
 ├── consequences.rs         <span class="c">// 340 LOC: side-effect drainage</span>
@@ -1593,11 +1593,11 @@ src/core/event_pipeline/
     </article>
 
     <!-- ─── 2.17 #![deny(warnings)] attribute (block) ─── -->
-    <article class="rule" data-rank="block" id="deny-warnings">
+    <article class="rule" data-level="block" id="deny-warnings">
       <div class="rule-mark" aria-hidden="true">✕</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag tag-level">BLOCK</span>
           <span class="tag">phase: pre</span>
           <span class="tag">audit: yes</span>
           <a class="tag tag-source"
@@ -1645,11 +1645,11 @@ src/core/event_pipeline/
     </article>
 
     <!-- ─── 2.18 Public fn takes &Box<T> (warn) ─── -->
-    <article class="rule" data-rank="warn" id="box-ref">
+    <article class="rule" data-level="warn" id="box-ref">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: pre</span>
           <span class="tag">audit: yes</span>
           <a class="tag tag-source"
@@ -1659,9 +1659,9 @@ src/core/event_pipeline/
         <h3 class="rule-id">warn-public-fn-takes-box-ref</h3>
         <p class="rule-summary">
           Detects parameter types of the form
-          <code>&amana;Box&lt;T&gt;</code>. The borrow of an owned pointer
+          <code>&amp;Box&lt;T&gt;</code>. The borrow of an owned pointer
           adds a useless layer of indirection;
-          <code>&amana;T</code> conveys the same intent without the
+          <code>&amp;T</code> conveys the same intent without the
           wrapper.
         </p>
         <div class="rule-body">
@@ -1681,8 +1681,8 @@ src/core/event_pipeline/
             </div>
           </div>
           <p class="rule-why">
-            <strong>Why</strong> A <code>&amana;Box&lt;T&gt;</code> can
-            always be obtained from a <code>&amana;T</code> via
+            <strong>Why</strong> A <code>&amp;Box&lt;T&gt;</code> can
+            always be obtained from a <code>&amp;T</code> via
             auto-deref, but the reverse forces every caller to pre-wrap
             their value in a <code>Box</code> regardless of where it
             actually lives. Source:
@@ -1693,12 +1693,12 @@ src/core/event_pipeline/
       </div>
     </article>
 
-    <!-- ─── 2.19 Emanaty .expect() message (warn) ─── -->
-    <article class="rule" data-rank="warn" id="expect-empty">
+    <!-- ─── 2.19 Empty .expect() message (warn) ─── -->
+    <article class="rule" data-level="warn" id="expect-empty">
       <div class="rule-mark" aria-hidden="true">!</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">WARN</span>
+          <span class="tag tag-level">WARN</span>
           <span class="tag">phase: pre</span>
           <span class="tag">audit: yes</span>
         </div>
@@ -1739,11 +1739,11 @@ src/core/event_pipeline/
     </article>
 
     <!-- ─── 2.20 Rc<RefCell<T>> in src/ (audit) ─── -->
-    <article class="rule" data-rank="audit" id="rc-refcell">
+    <article class="rule" data-level="audit" id="rc-refcell">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag tag-level">AUDIT</span>
           <span class="tag">phase: audit</span>
           <span class="tag">predicate: substring</span>
           <a class="tag tag-source"
@@ -1763,10 +1763,10 @@ src/core/event_pipeline/
               <div class="ex-label">audit output</div>
 <pre>$ phr-mcp audit --rule audit-rc-refcell-in-src
 
-Rule                      Rank  Hits  Files
+Rule                      Level  Hits  Files
 audit-rc-refcell-in-src   warn      4      2
-  src/game/region.rs        lines: 18, 42
-  src/game/graph.rs         lines: 7, 91</pre>
+  src/world/region.rs        lines: 18, 42
+  src/world/graph.rs         lines: 7, 91</pre>
             </div>
             <div class="arrow" aria-hidden="true">→</div>
             <div class="ex ex-good">
@@ -1778,7 +1778,7 @@ audit-rc-refcell-in-src   warn      4      2
 <span class="k">pub struct</span> RegionId(<span class="k">u32</span>);
 
 <span class="c">// or: precompute the graph, treat it as immutable</span>
-<span class="c">// or: move mutability into a single owner, pass &amana;mut</span></pre>
+<span class="c">// or: move mutability into a single owner, pass &amp;mut</span></pre>
             </div>
           </div>
           <p class="rule-why">
@@ -1795,11 +1795,11 @@ audit-rc-refcell-in-src   warn      4      2
     </article>
 
     <!-- ─── 2.21 String concat with + & (audit) ─── -->
-    <article class="rule" data-rank="audit" id="string-concat">
+    <article class="rule" data-level="audit" id="string-concat">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag tag-level">AUDIT</span>
           <span class="tag">phase: audit</span>
           <span class="tag">predicate: substring</span>
           <a class="tag tag-source"
@@ -1808,7 +1808,7 @@ audit-rc-refcell-in-src   warn      4      2
         </div>
         <h3 class="rule-id">audit-string-concat-with-plus</h3>
         <p class="rule-summary">
-          Flags the <code>" + &amana;</code> shape — string-literal
+          Flags the <code>" + &amp;</code> shape — string-literal
           concatenated with a borrowed string. A signal that
           <code>format!</code> would be clearer.
         </p>
@@ -1816,20 +1816,20 @@ audit-rc-refcell-in-src   warn      4      2
           <div class="rule-example">
             <div class="ex ex-bad">
               <div class="ex-label">avoid</div>
-<pre><span class="k">let</span> msg = <span class="s">"player "</span> + &name + <span class="s">" rolled "</span> + &roll.to_string();</pre>
+<pre><span class="k">let</span> msg = <span class="s">"hand "</span> + &name + <span class="s">" drew "</span> + &card.to_string();</pre>
             </div>
             <div class="arrow" aria-hidden="true">→</div>
             <div class="ex ex-good">
               <div class="ex-label">prefer</div>
-<pre><span class="k">let</span> msg = <span class="k">format!</span>(<span class="s">"player {} rolled {}"</span>, name, roll);</pre>
+<pre><span class="k">let</span> msg = <span class="k">format!</span>(<span class="s">"hand {} drew {}"</span>, name, card);</pre>
             </div>
           </div>
           <p class="rule-why">
             <strong>Why</strong> Plus-chained string concatenation
             produces a sequence of intermediate <code>String</code>
-            alstates and forces awkward <code>.to_string()</code>
+            allocations and forces awkward <code>.to_string()</code>
             calls on non-string arguments. <code>format!</code> reads as
-            a temanalate, allocates once, and accepts anything that
+            a template, allocates once, and accepts anything that
             implements <code>Display</code>. Source:
             <a href="https://rust-unofficial.github.io/patterns/idioms/concat-format.html">rust-unofficial/patterns
             §Idioms (concat-format)</a>.
@@ -1839,11 +1839,11 @@ audit-rc-refcell-in-src   warn      4      2
     </article>
 
     <!-- ─── 2.23 env::set_var( in src/ (audit) ─── -->
-    <article class="rule" data-rank="audit" id="env-set-var">
+    <article class="rule" data-level="audit" id="env-set-var">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag tag-level">AUDIT</span>
           <span class="tag">phase: audit</span>
           <span class="tag">predicate: substring</span>
           <a class="tag tag-source"
@@ -1890,11 +1890,11 @@ audit-rc-refcell-in-src   warn      4      2
     </article>
 
     <!-- ─── 2.22 #[allow(dead_code)] in src/ (audit) ─── -->
-    <article class="rule" data-rank="audit" id="allow-dead-code">
+    <article class="rule" data-level="audit" id="allow-dead-code">
       <div class="rule-mark" aria-hidden="true">○</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">AUDIT</span>
+          <span class="tag tag-level">AUDIT</span>
           <span class="tag">phase: audit</span>
           <span class="tag">predicate: substring</span>
         </div>
@@ -1903,7 +1903,7 @@ audit-rc-refcell-in-src   warn      4      2
           Flags <code>#[allow(dead_code)]</code> attributes in
           <code>src/</code>. The compiler is telling you something; the
           attribute silences it without addressing the underlying
-          exception of why the code exists.
+          question of why the code exists.
         </p>
         <div class="rule-body">
           <div class="rule-example">
@@ -1959,11 +1959,11 @@ audit-rc-refcell-in-src   warn      4      2
     </p>
 
     <!-- ─── 3.1 Rhai inline eval string (block) ─── -->
-    <article class="rule" data-rank="block" id="rhai-eval">
+    <article class="rule" data-level="block" id="rhai-eval">
       <div class="rule-mark" aria-hidden="true">✕</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag tag-level">BLOCK</span>
           <span class="tag">phase: pre</span>
           <span class="tag">predicate: AST</span>
         </div>
@@ -2003,11 +2003,11 @@ audit-rc-refcell-in-src   warn      4      2
     </article>
 
     <!-- ─── 3.2 Rhai print() in script (block) ─── -->
-    <article class="rule" data-rank="block" id="rhai-print">
+    <article class="rule" data-level="block" id="rhai-print">
       <div class="rule-mark" aria-hidden="true">✕</div>
       <div>
         <div class="rule-tags">
-          <span class="tag tag-rank">BLOCK</span>
+          <span class="tag tag-level">BLOCK</span>
           <span class="tag">phase: pre</span>
           <span class="tag">audit: yes</span>
         </div>
@@ -2022,19 +2022,19 @@ audit-rc-refcell-in-src   warn      4      2
           <div class="rule-example">
             <div class="ex ex-bad">
               <div class="ex-label">avoid <span class="path">scripts/save.rhai</span></div>
-<pre><span class="k">fn</span> execute(player, slot) {
-    <span class="em">print</span>(`Saving game for ${player} to slot ${slot}`);
-    save_state(player, slot);
+<pre><span class="k">fn</span> execute(actor, slot) {
+    <span class="em">print</span>(`Saving state for ${actor} to slot ${slot}`);
+    save_state(actor, slot);
 }</pre>
             </div>
             <div class="arrow" aria-hidden="true">→</div>
             <div class="ex ex-good">
               <div class="ex-label">use the host-registered channel</div>
-<pre><span class="c">// Whatever your Engine escoreoses via register_fn:</span>
+<pre><span class="c">// Whatever your Engine exposes via register_fn:</span>
 <span class="c">// log / emit / notify / response_append / etc.</span>
-<span class="k">fn</span> execute(player, slot) {
-    log(`Saving game for ${player} to slot ${slot}`);
-    save_state(player, slot);
+<span class="k">fn</span> execute(actor, slot) {
+    log(`Saving state for ${actor} to slot ${slot}`);
+    save_state(actor, slot);
 }</pre>
             </div>
           </div>
@@ -2042,7 +2042,7 @@ audit-rc-refcell-in-src   warn      4      2
             <strong>Why</strong> Output from a shipped script should
             flow through the same path as the rest of the
             application's output — to be captured, replayed, formatted,
-            or addressed to a specific surface (player chat, server
+            or addressed to a specific surface (user chat, server
             log, audit trail). <code>print</code> escapes to stdout,
             which is usually nowhere useful.
           </p>
@@ -2063,7 +2063,7 @@ audit-rc-refcell-in-src   warn      4      2
     </header>
 
     <p class="pack-intro">
-      Smaller language packs ship with minimal seeds. Comanaose them with
+      Smaller language packs ship with minimal seeds. Compose them with
       <code>--packs llm,python</code> or similar. The intent is a
       starting point; downstream projects are expected to grow their
       own rules over time.
@@ -2120,10 +2120,10 @@ audit-rc-refcell-in-src   warn      4      2
   <footer>
     <div>
       <div class="label" style="margin-bottom: 0.4rem;">Colophon</div>
-      Set in <em>Fraunces</em> &amana; <em>Newsreader</em>, with
+      Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
       <em>JetBrains Mono</em> for code.<br>
       Hand-set in HTML, served as a single file.<br>
-      Pairs with <a href="./escorelainer.html">the escorelainer</a> ·
+      Pairs with <a href="./explainer.html">the explainer</a> ·
       v 0.6.0 · 2026
     </div>
     <div class="folio">

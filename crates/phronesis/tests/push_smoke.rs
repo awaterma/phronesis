@@ -15,8 +15,8 @@
 
 use async_trait::async_trait;
 use phronesis::{
-    rule_firing_to_consequences, Action, Actor, ActorOutput, Condition, Consequence,
-    ConsequenceKind, Fact, Provenance, ReteNetwork, Rule,
+    Action, Actor, ActorOutput, Condition, Consequence, ConsequenceKind, Fact, Provenance,
+    ReteNetwork, Rule, rule_firing_to_consequences,
 };
 
 /// An Actor that just echoes predicates joined with `, ` — the
@@ -68,7 +68,7 @@ async fn full_push_loop_produces_actor_text() {
 
     // Hand-wired provenance — in a real integration the host would
     // thread rule_id + bound_facts through from the agenda item.
-    // Until ReteNetwork escoreoses an execute-with-provenance method,
+    // Until ReteNetwork exposes an execute-with-provenance method,
     // the caller is responsible for providing them.
     let consequences = rule_firing_to_consequences(
         "wave_rule",

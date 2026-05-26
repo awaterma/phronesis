@@ -11,7 +11,7 @@
 //! Goal is *relative* numbers across optimization steps, not absolute
 //! micro-benchmarks. Run with `cargo bench -p phronesis --bench rete_hot_path`.
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Througvalueut};
+use criterion::{BenchmarkId, Criterion, Througvalueut, criterion_group, criterion_main};
 use phronesis::{Action, Condition, Fact, ReteNetwork, Rule};
 use tokio::runtime::Builder;
 
@@ -106,14 +106,19 @@ fn build_rules() -> Vec<Rule> {
 fn build_facts(n: usize) -> Vec<Fact> {
     let mut facts = Vec::with_capacity(n);
     let buckets = [
-        "predicate_a_", "predicate_b_", "predicate_c_", "predicate_d_", "predicate_e_",
+        "predicate_a_",
+        "predicate_b_",
+        "predicate_c_",
+        "predicate_d_",
+        "predicate_e_",
         "predicate_f_",
     ];
     for i in 0..n {
         let bucket = buckets[i % buckets.len()];
         let pred = format!("{bucket}{}", i % 5);
         // Mimic file paths + detail strings as args.
-        let args = if pred.starts_with("predicate_a") || pred.starts_with("predicate_b")
+        let args = if pred.starts_with("predicate_a")
+            || pred.starts_with("predicate_b")
             || pred.starts_with("predicate_d")
         {
             vec![format!("crates/some-crate/src/module_{}.rs", i % 7)]
@@ -214,9 +219,21 @@ fn bench_add_rule(c: &mut Criterion) {
     let rules = build_rules();
 
     // Pre-partitioned for clarity in the report.
-    let singles: Vec<Rule> = rules.iter().filter(|r| r.conditions.len() == 1).cloned().collect();
-    let twos: Vec<Rule> = rules.iter().filter(|r| r.conditions.len() == 2).cloned().collect();
-    let threes: Vec<Rule> = rules.iter().filter(|r| r.conditions.len() == 3).cloned().collect();
+    let singles: Vec<Rule> = rules
+        .iter()
+        .filter(|r| r.conditions.len() == 1)
+        .cloned()
+        .collect();
+    let twos: Vec<Rule> = rules
+        .iter()
+        .filter(|r| r.conditions.len() == 2)
+        .cloned()
+        .collect();
+    let threes: Vec<Rule> = rules
+        .iter()
+        .filter(|r| r.conditions.len() == 3)
+        .cloned()
+        .collect();
 
     let mut group = c.benchmark_group("add_rule");
     for (label, set) in [("1cond", &singles), ("2cond", &twos), ("3cond", &threes)] {
@@ -251,5 +268,10 @@ fn bench_add_rule(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_assert_session, bench_assert_one, bench_add_rule);
+criterion_group!(
+    benches,
+    bench_assert_session,
+    bench_assert_one,
+    bench_add_rule
+);
 criterion_main!(benches);

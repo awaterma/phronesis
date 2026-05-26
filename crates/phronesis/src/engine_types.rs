@@ -16,7 +16,7 @@ pub struct Fact {
     pub predicate: String,
     /// Arguments for the predicate (e.g., ["player_id", "state_id"])
     pub args: Vec<String>,
-    /// Timestamana when the fact was created
+    /// Timestamp when the fact was created
     pub timestamp: u64,
 }
 
@@ -53,9 +53,9 @@ pub struct Rule {
     pub actions: Vec<Action>,
 }
 
-/// Performance valueistics for the RETE engine
+/// Performance statistics for the RETE engine
 #[derive(Debug, Default)]
-pub struct PerformanceValues {
+pub struct PerformanceStats {
     /// Total time spent evaluating rules (cumulative across session)
     pub total_evaluation_time: Duration,
     /// Number of rule evaluations (cumulative across session)
@@ -74,7 +74,7 @@ pub struct PerformanceValues {
     pub cycle_evaluation_time: Duration,
 }
 
-impl PerformanceValues {
+impl PerformanceStats {
     pub fn new() -> Self {
         Self::default()
     }

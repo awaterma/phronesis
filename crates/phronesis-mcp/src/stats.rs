@@ -18,24 +18,24 @@ pub struct StatsOpts {
 
 /// Aggregated view across one or more log entries.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Values {
+pub struct Stats {
     /// Human-readable window label for headers/JSON, e.g. `"7d"` or `"all time"`.
     pub window_label: String,
     /// Unix seconds at which the snapshot was produced.
     pub generated_at: u64,
     /// One entry per rule that fired at least once in the window, sorted by
     /// `blocked + warned` descending.
-    pub per_rule: Vec<RuleValues>,
+    pub per_rule: Vec<RuleStats>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct RuleValues {
+pub struct RuleStats {
     pub rule_id: RuleId,
     pub blocked: u32,
     pub warned: u32,
     /// Most recent fire timestamp (unix seconds). `0` when the rule never
-    /// fired — but rules with zero fires aren't included in `Values.per_rule`,
-    /// so this is always > 0 for any returned `RuleValues`.
+    /// fired — but rules with zero fires aren't included in `Stats.per_rule`,
+    /// so this is always > 0 for any returned `RuleStats`.
     pub last_fired_ts: u64,
 }
 
@@ -59,19 +59,19 @@ pub fn parse_since(s: &str) -> Option<u64> {
     n.checked_mul(secs_per_unit)
 }
 
-/// Build a `Values` snapshot from a slice of log entries. Walks each
+/// Build a `Stats` snapshot from a slice of log entries. Walks each
 /// entry's `consequences` array and increments the matching rule's
 /// counters. Entries with no consequences, and consequences whose
 /// `action_type` is neither `constraint_violation` nor `constraint_warning`,
 /// contribute nothing.
 ///
 /// `opts.since_secs` and `opts.rule_filter` are applied here.
-/// `opts.now_secs` is propagated into `Values.generated_at` so callers can
+/// `opts.now_secs` is propagated into `Stats.generated_at` so callers can
 /// pin output for tests.
-pub fn aggregate(entries: &[LogEntry], opts: &StatsOpts) -> Values {
+pub fn aggregate(entries: &[LogEntry], opts: &StatsOpts) -> Stats {
     use std::collections::HashMap;
 
-    let mut by_id: HashMap<String, RuleValues> = HashMap::new();
+    let mut by_id: HashMap<String, RuleStats> = HashMap::new();
     let cutoff = opts
         .since_secs
         .map(|w| opts.now_secs.saturating_sub(w))
@@ -94,7 +94,7 @@ pub fn aggregate(entries: &[LogEntry], opts: &StatsOpts) -> Values {
                 }
             }
             let action_type = c.get("action_type").and_then(|v| v.as_str()).unwrap_or("");
-            let row = by_id.entry(rule_id.to_string()).or_insert(RuleValues {
+            let row = by_id.entry(rule_id.to_string()).or_insert(RuleStats {
                 rule_id: rule_id.into(),
                 blocked: 0,
                 warned: 0,
@@ -113,7 +113,7 @@ pub fn aggregate(entries: &[LogEntry], opts: &StatsOpts) -> Values {
 
     // Drop rules whose only consequences were unknown action types (they
     // hit `or_insert` above but never got a counter bump).
-    let mut per_rule: Vec<RuleValues> = by_id
+    let mut per_rule: Vec<RuleStats> = by_id
         .into_values()
         .filter(|r| r.blocked + r.warned > 0)
         .collect();
@@ -123,7 +123,7 @@ pub fn aggregate(entries: &[LogEntry], opts: &StatsOpts) -> Values {
             .then_with(|| a.rule_id.cmp(&b.rule_id))
     });
 
-    Values {
+    Stats {
         window_label: window_label(opts.since_secs),
         generated_at: opts.now_secs,
         per_rule,
@@ -150,7 +150,7 @@ fn window_label(since_secs: Option<u64>) -> String {
 /// Render a human-readable table summary. Columns are width-padded to the
 /// longest rule_id in the snapshot so the policy looks clean in a
 /// terminal.
-pub fn render_table(values: &Values) -> String {
+pub fn render_table(values: &Stats) -> String {
     if values.per_rule.is_empty() {
         return "no phronesis activity recorded yet\n".to_string();
     }
@@ -207,10 +207,10 @@ fn humanize_ago(secs: u64) -> String {
 
 use serde_json::json;
 
-/// Render the same `Values` snapshot as a JSON object. Stable key order
+/// Render the same `Stats` snapshot as a JSON object. Stable key order
 /// inside the envelope is `window`, `generated_at`, `totals`, `rules`.
 /// Per-rule keys: `rule_id`, `blocked`, `warned`, `last_fired_ts`.
-pub fn render_json(values: &Values) -> String {
+pub fn render_json(values: &Stats) -> String {
     let total_blocked: u32 = values.per_rule.iter().map(|r| r.blocked).sum();
     let total_warned: u32 = values.per_rule.iter().map(|r| r.warned).sum();
     let rules: Vec<_> = values
@@ -372,7 +372,10 @@ mod tests {
             hook_entry(
                 3,
                 "f",
-                json!([cons("mid", "constraint_warning"), cons("mid", "constraint_warning"),]),
+                json!([
+                    cons("mid", "constraint_warning"),
+                    cons("mid", "constraint_warning"),
+                ]),
             ),
         ];
         let values = aggregate(
@@ -493,8 +496,8 @@ mod tests {
         assert_eq!(window_label(Some(90)), "90s");
     }
 
-    fn rule_value(id: &str, blocked: u32, warned: u32, last: u64) -> RuleValues {
-        RuleValues {
+    fn rule_value(id: &str, blocked: u32, warned: u32, last: u64) -> RuleStats {
+        RuleStats {
             rule_id: id.into(),
             blocked,
             warned,
@@ -504,7 +507,7 @@ mod tests {
 
     #[test]
     fn render_table_renders_empty_message() {
-        let values = Values {
+        let values = Stats {
             window_label: "all time".to_string(),
             generated_at: 1_700_000_000,
             per_rule: vec![],
@@ -515,7 +518,7 @@ mod tests {
 
     #[test]
     fn render_table_includes_header_and_rows_and_totals() {
-        let values = Values {
+        let values = Stats {
             window_label: "7d".to_string(),
             generated_at: 1_700_000_000,
             per_rule: vec![
@@ -541,7 +544,7 @@ mod tests {
 
     #[test]
     fn render_table_humanizes_last_fired() {
-        let values = Values {
+        let values = Stats {
             window_label: "all time".to_string(),
             generated_at: 1_700_000_000,
             per_rule: vec![rule_value("r", 1, 0, 1_700_000_000 - 120)],
@@ -552,7 +555,7 @@ mod tests {
 
     #[test]
     fn render_json_shape_for_populated_values() {
-        let values = Values {
+        let values = Stats {
             window_label: "7d".to_string(),
             generated_at: 1_700_000_000,
             per_rule: vec![
@@ -576,7 +579,7 @@ mod tests {
 
     #[test]
     fn render_json_shape_for_empty_values() {
-        let values = Values {
+        let values = Stats {
             window_label: "all time".to_string(),
             generated_at: 1_700_000_000,
             per_rule: vec![],

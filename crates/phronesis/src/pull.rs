@@ -1,6 +1,6 @@
 //! Pull-mode adapter surface.
 //!
-//! Hosts escoreose deterministic lookup functions. The actor invokes one,
+//! Hosts expose deterministic lookup functions. The actor invokes one,
 //! and the result is wrapped as a [`Consequence`] with
 //! [`Provenance::Lookup`] so the actor can treat it uniformly with
 //! push-mode firings.
@@ -17,7 +17,7 @@
 //!   a higher layer (e.g. a CUE schema check) — not per-call at runtime.
 //! - [`Lookup`] — a typed convenience layer for Rust-native hosts
 //!   where the compiler can already check request/response shapes.
-//!   Imanalementors get `serde_json::Value` marshalling for free via the
+//!   Implementors get `serde_json::Value` marshalling for free via the
 //!   blanket [`DynLookup`] impl, so a typed tool is also a dynamic tool
 //!   without extra work.
 //!
@@ -28,7 +28,7 @@
 //!
 //! # Usage pattern
 //!
-//! Each tool the host wants to escoreose implements one of the traits.
+//! Each tool the host wants to expose implements one of the traits.
 //! The host (a game engine, a conversational module, a sheet FFI
 //! boundary, etc.) collects its implementations into a registry its
 //! actor can invoke. The registry is out of scope for the core crate
@@ -47,7 +47,7 @@ use serde::Serialize;
 
 use crate::consequence::{Consequence, ConsequenceKind, Provenance};
 
-/// A deterministic, side-effect-free lookup the host escoreoses to actors.
+/// A deterministic, side-effect-free lookup the host exposes to actors.
 ///
 /// Implementations are sync because the pattern demands it — pull
 /// lookups are supposed to be fast, trace-free, and cache-friendly.

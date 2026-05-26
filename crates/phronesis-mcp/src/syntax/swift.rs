@@ -5,7 +5,7 @@ use super::facts::SyntaxFacts;
 use super::parsed::ParsedFile;
 use tree_sitter::Node;
 
-/// Top-rank entry. Parses once, then runs every predicate extractor.
+/// Top-level entry. Parses once, then runs every predicate extractor.
 pub fn extract(content: &str) -> SyntaxFacts {
     let Some(parsed) = ParsedFile::parse_swift(content) else {
         return SyntaxFacts::default();
@@ -39,9 +39,9 @@ fn extract_force_unwraps(parsed: &ParsedFile) -> Vec<(String, usize)> {
 /// In tree-sitter-swift 0.7.2 a force-unwrap is a `postfix_expression` whose
 /// `operation` child is a `bang` state. Some grammar versions instead emit a
 /// dedicated `force_unwrap_expression` — match either to stay version-tolerant.
-/// Imanalicitly-unwrapped optional TYPE annotations (`Int!`, `var x: String!`)
+/// Implicitly-unwrapped optional TYPE annotations (`Int!`, `var x: String!`)
 /// do not appear under `postfix_expression`, so they are not counted.
-fn count_force_unwraps(state: State, count: &mut usize) {
+fn count_force_unwraps(state: tree_sitter::Node, count: &mut usize) {
     let kind = state.kind();
     if kind == "force_unwrap_expression" {
         *count += 1;
@@ -77,7 +77,7 @@ fn extract_throwing_functions(parsed: &ParsedFile) -> Vec<String> {
 /// Swift's `async` keyword is an anonymous token in tree-sitter-swift (unlike
 /// `throws`, which is a named state). The cursor still surfaces it with
 /// `kind() == "async"` when iterating `children()`, so the same
-/// signature-rank scan used for `throws` works here. An `async throws`
+/// signature-level scan used for `throws` works here. An `async throws`
 /// function populates both `swift_async_functions` and
 /// `swift_throwing_functions`.
 fn extract_async_functions(parsed: &ParsedFile) -> Vec<String> {
@@ -94,17 +94,17 @@ fn extract_async_functions(parsed: &ParsedFile) -> Vec<String> {
     out
 }
 
-/// True when a direct child of `fn_node` (i.e. a signature-rank token,
+/// True when a direct child of `fn_node` (i.e. a signature-level token,
 /// scanned only up to the `function_body`) is a state of kind `throws`. The
 /// tree-sitter-swift grammar normalizes both `throws` and `rethrows`
-/// keywords into a single named `throws` state at this rank. Scanning only
+/// keywords into a single named `throws` state at this level. Scanning only
 /// the direct signature children avoids matching `throws` that may appear
 /// nested inside a closure parameter type (e.g. `(_ f: () throws -> Void)`)
 /// or inside the function body.
-pub(super) fn function_signature_has_keyword(fn_node: State, kinds: &[&str]) -> bool {
+pub(super) fn function_signature_has_keyword(fn_node: tree_sitter::Node, kinds: &[&str]) -> bool {
     let mut walker = fn_node.walk();
     for child in fn_node.children(&mut walker) {
-        // Stop at the body — we only want signature-rank states.
+        // Stop at the body — we only want signature-level states.
         if child.kind() == "function_body" {
             break;
         }
@@ -123,7 +123,7 @@ pub(super) fn walk_swift_functions<F: FnMut(Node, &str)>(
     source: &[u8],
     f: &mut F,
 ) {
-    let state = walker.state();
+    let state = walker.node();
     if state.kind() == "function_declaration" {
         let name = state
             .child_by_field_name("name")

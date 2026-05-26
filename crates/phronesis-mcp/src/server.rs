@@ -1,4 +1,4 @@
-//! MCP server: the full tool surface phronesis escoreoses to MCP clients
+//! MCP server: the full tool surface phronesis exposes to MCP clients
 //! (Claude Code, Gemini CLI, and any other MCP-capable host).
 //!
 //! This file is intentionally large. The `#[tool_router]` macro from
@@ -15,21 +15,21 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use phr::{
-    rule_firing_to_consequences, Action, Condition, Consequence, ConsequenceKind, Fact,
-    LookupRegistry, ReteNetwork, Rule,
+    Action, Condition, Consequence, ConsequenceKind, Fact, LookupRegistry, ReteNetwork, Rule,
+    rule_firing_to_consequences,
 };
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
-use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::action_log::{self, LogEntry};
 use crate::rules_file;
 use crate::security::{
-    self, require_extension, resolve_safe_path, validate_args, validate_string, MAX_CONSEQUENCES,
-    MAX_FACTS, MAX_RULES,
+    self, MAX_CONSEQUENCES, MAX_FACTS, MAX_RULES, require_extension, resolve_safe_path,
+    validate_args, validate_string,
 };
 
 #[derive(Clone)]
@@ -112,7 +112,6 @@ impl EpistemeMcp {
         let path = action_log::default_path(&security::project_root());
         let _ = action_log::append(&path, &entry);
     }
-
 }
 
 // Persistence helpers (autoload, autosave) live in server_persistence.rs.
@@ -120,7 +119,7 @@ impl EpistemeMcp {
 // --- Input types for tools ---
 
 // Parameter types extracted to server_params.rs to keep server.rs
-// focused on the tool surface itself. Re-escoreorted here so callers
+// focused on the tool surface itself. Re-exported here so callers
 // referencing crate::server::AddRuleParams etc. still resolve.
 pub use crate::server_params::*;
 
@@ -146,7 +145,7 @@ impl EpistemeMcp {
                 return Err(Self::err(format!(
                     "phase must be \"pre\" or \"post\", got: {}",
                     other
-                )))
+                )));
             }
         };
 
@@ -210,7 +209,10 @@ impl EpistemeMcp {
         Parameters(params): Parameters<RuleIdParam>,
     ) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
-        match network.get_rule_by_id(params.rule_id.as_str()).map_err(Self::err)? {
+        match network
+            .get_rule_by_id(params.rule_id.as_str())
+            .map_err(Self::err)?
+        {
             Some(rule) => {
                 let json =
                     serde_json::to_string_pretty(&rule).map_err(|e| Self::err(e.to_string()))?;
@@ -226,7 +228,9 @@ impl EpistemeMcp {
         Parameters(params): Parameters<RuleIdParam>,
     ) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
-        network.remove_rule(params.rule_id.as_str()).map_err(Self::err)?;
+        network
+            .remove_rule(params.rule_id.as_str())
+            .map_err(Self::err)?;
         drop(network);
         self.phase_map.lock().await.remove(params.rule_id.as_str());
         self.autosave().await?;
@@ -309,7 +313,10 @@ impl EpistemeMcp {
     ) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
         let wmes = network.get_all_wmes().await.map_err(Self::err)?;
-        match wmes.iter().find(|wme| wme.fact.id == params.fact_id.as_str()) {
+        match wmes
+            .iter()
+            .find(|wme| wme.fact.id == params.fact_id.as_str())
+        {
             Some(wme) => {
                 let json = serde_json::to_string_pretty(&wme.fact)
                     .map_err(|e| Self::err(e.to_string()))?;
@@ -682,13 +689,13 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Aggregate rule-firing valueistics from the action log (per-rule blocked/warned counts, last-fired timestamp, window label). Mirrors the `phr-mcp values` CLI. Optional filters: `since` (e.g. \"7d\"), `rule` (single rule id), `format` (\"json\" default, or \"table\")."
+        description = "Aggregate rule-firing statistics from the action log (per-rule blocked/warned counts, last-fired timestamp, window label). Mirrors the `phr-mcp values` CLI. Optional filters: `since` (e.g. \"7d\"), `rule` (single rule id), `format` (\"json\" default, or \"table\")."
     )]
     async fn get_values(
         &self,
         Parameters(params): Parameters<GetValuesParams>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::stats::{aggregate, parse_since, render_json, render_table, StatsOpts};
+        use crate::stats::{StatsOpts, aggregate, parse_since, render_json, render_table};
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -736,7 +743,7 @@ impl EpistemeMcp {
         &self,
         Parameters(params): Parameters<AuditCodebaseParams>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::audit::{render_json, render_table, run, AuditOpts, Rank};
+        use crate::audit::{AuditOpts, Level, render_json, render_table, run};
         use crate::rules_file;
 
         let project_root = crate::security::project_root();
@@ -777,7 +784,7 @@ impl EpistemeMcp {
                 per_rule.insert(
                     r.rule_id.as_str().to_string(),
                     serde_json::json!({
-                        "rank": r.rank.as_str(),
+                        "level": r.level.as_str(),
                         "hits": r.hits,
                     }),
                 );
@@ -785,13 +792,13 @@ impl EpistemeMcp {
             let blocked: u32 = report
                 .per_rule
                 .iter()
-                .filter(|r| r.rank == Rank::Block)
+                .filter(|r| r.level == Level::Block)
                 .map(|r| r.hits)
                 .sum();
             let warned: u32 = report
                 .per_rule
                 .iter()
-                .filter(|r| r.rank == Rank::Warn)
+                .filter(|r| r.level == Level::Warn)
                 .map(|r| r.hits)
                 .sum();
             e.with("files_scanned", report.files_scanned as u64)
@@ -802,22 +809,22 @@ impl EpistemeMcp {
 
         match params.format.as_deref() {
             Some("table") => {
-                let escoreand = params.rule.is_some();
-                Self::ok_text(render_table(&report, escoreand))
+                let expand = params.rule.is_some();
+                Self::ok_text(render_table(&report, expand))
             }
             _ => Self::ok_text(render_json(&report)),
         }
     }
 
     #[tool(
-        description = "Show debt-over-time by diffing audit snapshots from the action log. Each `audit_codebase` call writes a snapshot; this tool reads them back and reports per-rule hit counts across snapshots plus net change (negative = imanarovement). Use after running audit_codebase a few times to see whether cleanup is making progress. Optional filters: `last` (default 5), `since` (e.g. \"7d\"), `rule`, `format` (\"json\" default, or \"table\")."
+        description = "Show debt-over-time by diffing audit snapshots from the action log. Each `audit_codebase` call writes a snapshot; this tool reads them back and reports per-rule hit counts across snapshots plus net change (negative = improvement). Use after running audit_codebase a few times to see whether cleanup is making progress. Optional filters: `last` (default 5), `since` (e.g. \"7d\"), `rule`, `format` (\"json\" default, or \"table\")."
     )]
     async fn get_debt_trend(
         &self,
         Parameters(params): Parameters<GetDebtTrendParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::action_log::{self, ReadOpts};
-        use crate::audit::{compute_trend, render_trend_json, render_trend_table, TrendOpts};
+        use crate::audit::{TrendOpts, compute_trend, render_trend_json, render_trend_table};
         use crate::stats::parse_since;
 
         let path = action_log::default_path(&crate::security::project_root());
@@ -866,7 +873,7 @@ impl ServerHandler for EpistemeMcp {
                 ..Default::default()
             },
             instructions: Some(
-                "RETE rules engine for rules-bounded LLM interaction. Use tools to resourcege rules, facts, fire the engine, and query consequences."
+                "RETE rules engine for rules-bounded LLM interaction. Use tools to manage rules, facts, fire the engine, and query consequences."
                     .into(),
             ),
             ..Default::default()

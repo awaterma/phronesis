@@ -6,12 +6,12 @@
 //! 2. Prove the adapter fits the shape of a representative host-side
 //!    tool response (schemaVersion, kind, available, found, camelCase)
 //!    without taking a dependency on any particular host. If this test
-//!    ever needs to change, the contract phronesis escoreoses to host-side
+//!    ever needs to change, the contract phronesis exposes to host-side
 //!    tools has moved.
 
 use phronesis::{
-    dyn_lookup_as_consequence, lookup_as_consequence, Consequence, ConsequenceKind, DynLookup,
-    Lookup, Provenance,
+    Consequence, ConsequenceKind, DynLookup, Lookup, Provenance, dyn_lookup_as_consequence,
+    lookup_as_consequence,
 };
 use serde::{Deserialize, Serialize};
 
@@ -145,8 +145,11 @@ fn typed_lookup_is_automatically_a_dyn_lookup() {
 #[test]
 fn dyn_lookup_as_consequence_round_trips_untyped() {
     let tool: Box<dyn DynLookup> = Box::new(FakeCardLookup);
-    let c =
-        dyn_lookup_as_consequence(tool.as_ref(), serde_json::Value::String("king_hearts".into())).unwrap();
+    let c = dyn_lookup_as_consequence(
+        tool.as_ref(),
+        serde_json::Value::String("king_hearts".into()),
+    )
+    .unwrap();
 
     assert_eq!(c.kind, ConsequenceKind::Snapshot);
     assert_eq!(c.predicate, "card");

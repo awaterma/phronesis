@@ -16,8 +16,8 @@
 use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
-use phronesis::{Action, Condition, Fact, ReteNetwork, Rule, WorkingMemoryElement};
 use phronesis::production;
+use phronesis::{Action, Condition, Fact, ReteNetwork, Rule, WorkingMemoryElement};
 use tokio::runtime::Builder;
 
 fn build_rules() -> Vec<Rule> {
@@ -92,13 +92,18 @@ fn build_rules() -> Vec<Rule> {
 fn build_facts(n: usize) -> Vec<Fact> {
     let mut facts = Vec::with_capacity(n);
     let buckets = [
-        "predicate_a_", "predicate_b_", "predicate_c_", "predicate_d_", "predicate_e_",
+        "predicate_a_",
+        "predicate_b_",
+        "predicate_c_",
+        "predicate_d_",
+        "predicate_e_",
         "predicate_f_",
     ];
     for i in 0..n {
         let bucket = buckets[i % buckets.len()];
         let pred = format!("{bucket}{}", i % 5);
-        let args = if pred.starts_with("predicate_a") || pred.starts_with("predicate_b")
+        let args = if pred.starts_with("predicate_a")
+            || pred.starts_with("predicate_b")
             || pred.starts_with("predicate_d")
         {
             vec![format!("crates/some-crate/src/module_{}.rs", i % 7)]
@@ -141,11 +146,7 @@ impl std::ops::AddAssign for Sections {
 
 /// Replicates `ReteNetwork::assert_fact` step-by-step with timers.
 /// Returns per-section nanoseconds.
-fn assert_fact_timed(
-    net: &ReteNetwork,
-    fact: Fact,
-    fired: &mut HashSet<String>,
-) -> Sections {
+fn assert_fact_timed(net: &ReteNetwork, fact: Fact, fired: &mut HashSet<String>) -> Sections {
     let mut s = Sections::default();
     let total_start = Instant::now();
 
@@ -187,8 +188,7 @@ fn assert_fact_timed(
         let prod = net.production_network.lock().unwrap();
         let mut agenda = net.agenda.lock().unwrap();
         for activation in p_state_activations {
-            let wme_ids: Vec<String> =
-                activation.token.wmes.iter().map(|w| w.id.clone()).collect();
+            let wme_ids: Vec<String> = activation.token.wmes.iter().map(|w| w.id.clone()).collect();
             let key = format!("{}:{}", activation.rule_id, wme_ids.join(","));
             if fired.contains(&key) {
                 continue;
@@ -206,7 +206,12 @@ fn assert_fact_timed(
                         .filter_map(|w| wm.get(&w.id).cloned())
                         .collect::<Vec<_>>()
                 };
-                agenda.add_item(rule, wme_list, activation.token.bindings, activation.salience);
+                agenda.add_item(
+                    rule,
+                    wme_list,
+                    activation.token.bindings,
+                    activation.salience,
+                );
                 fired.insert(key);
             }
         }
@@ -275,10 +280,7 @@ fn pct(part: Duration, whole: Duration) -> f64 {
 }
 
 fn main() {
-    let rt = Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    let rt = Builder::new_current_thread().enable_all().build().unwrap();
     let rules = build_rules();
 
     for &preload in &[0usize, 50, 200, 500, 1000] {

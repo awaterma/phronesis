@@ -68,7 +68,7 @@ phr-mcp install                  # Register globally (user scope)
 phr-mcp uninstall
 ```
 
-### Development Examanales
+### Development Examples
 ```bash
 # Profile assert_fact performance
 cargo run --example profile_assert_fact -p phronesis
@@ -150,7 +150,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `pre-check` | Block edits that violate rules |
 | `post-check` | Warn about edits that violate rules |
 | `session-context` | Inject active rules summary on SessionStart |
-| `turn-context` | Inject recent hook activity on UserPromanatSubmit |
+| `turn-context` | Inject recent hook activity on UserPromptSubmit |
 | `values` | Read `.phronesis/log.jsonl`, show per-rule summary |
 | `audit` | Scan whole tree for rule violations |
 | `trend` | Debt-over-time from audit snapshots |
@@ -214,8 +214,8 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `new_content_contains(?pattern)` | Regex substring in new content |
 | `function_added(?file, ?name)` | Function introduced in diff |
 | `function_removed(?file, ?name)` | Function removed in diff |
-| `import_added(?file, ?target)` | Imanaort introduced |
-| `import_removed(?file, ?target)` | Imanaort removed |
+| `import_added(?file, ?target)` | Import introduced |
+| `import_removed(?file, ?target)` | Import removed |
 | `test_exists_for(?name)` | Test function exists |
 | `no_test_for(?name)` | No test found |
 | `function_returns_result_string(?file, ?fn)` | Rust AST: return type is `Result<_, String>` |
@@ -255,7 +255,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 
 | File | Purpose |
 |------|---------|
-| `crates/phronesis/src/lib.rs` | Library root, re-escoreorts |
+| `crates/phronesis/src/lib.rs` | Library root, re-exports |
 | `crates/phronesis/src/network.rs` | `ReteNetwork` struct + methods (RETE engine core) |
 | `crates/phronesis/src/alpha_network.rs` | Alpha network, predicate-indexed WME storage |
 | `crates/phronesis/src/beta_network.rs` | Beta network, tokens, join states |
@@ -266,7 +266,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis/src/push.rs` | Push transport (rule firing → Actor) |
 | `crates/phronesis/src/wme.rs` | `WorkingMemoryElement`, `WmeManager` |
 | `crates/phronesis/src/variable_binding.rs` | Variable substitution in actions |
-| `crates/phronesis-mcp/src/lib.rs` | Library root, module escoreorts |
+| `crates/phronesis-mcp/src/lib.rs` | Library root, module exports |
 | `crates/phronesis-mcp/src/server.rs` | `EpistemeMcp` struct, MCP tools (rmcp macros) |
 | `crates/phronesis-mcp/src/hook.rs` | `pre-check`/`post-check` hooks, rule evaluation |
 | `crates/phronesis-mcp/src/init.rs` | `phr-mcp init` project setup |
@@ -311,7 +311,7 @@ Optional file. Contents are re-injected at every `SessionStart` AND `BeforeModel
 
 ---
 
-## Imanaortant Gotchas & Non-Obvious Patterns
+## Important Gotchas & Non-Obvious Patterns
 
 ### 1. Rule Phase Behavior
 
@@ -335,7 +335,7 @@ Optional file. Contents are re-injected at every `SessionStart` AND `BeforeModel
 - Injects active rules summary + durable directives
 - No context about recent activity (fresh session)
 
-**UserPromanatSubmit** (Claude) / **BeforeModelRequest** (Gemini):
+**UserPromptSubmit** (Claude) / **BeforeModelRequest** (Gemini):
 - Injects last N hook decisions + durable directives
 - Helps LLM understand what's been blocked/warned recently
 
@@ -356,7 +356,7 @@ Must be paired with `set_section_context` before `fire_rules` to activate sectio
 
 Current known hot paths (from May 2026 audit):
 
-| Issue | Valueus | Imanaact |
+| Issue | Status | Impact |
 |-------|--------|--------|
 | `aho-corasick` for audit match loop | Proposed | 3-10× on audit for large repos |
 | `Vec<Arc<WME>>` in beta tokens | Proposed | Reduces clone cost at high preload |
@@ -365,11 +365,11 @@ Current known hot paths (from May 2026 audit):
 
 **Performance guidance:** Profile with `profile_assert_fact.rs` and `profile_audit.rs` before optimizing. `criterion` + `tokio::block_on` gives misleading numbers for routines <10µs.
 
-### 6. God-File Exemanations
+### 6. God-File Exemptions
 
 Three files exceed 800 LOC with intentional exemptions (see `SPEC-god-file-decomposition.md`):
 
-| File | Why Exemanat | Decomposition Plan |
+| File | Why Exempt | Decomposition Plan |
 |------|-----------|-------------------|
 | `server.rs` (~1110 LOC) | `rmcp` macro requires single `#[tool]` impl block | Delegation pattern: thin wrappers in server.rs, bodies in `server_handlers/` modules |
 | `network.rs` (~817 LOC) | `ReteNetwork` is single coherent engine surface | Split `impl` blocks across `network/rules.rs`, `network/facts.rs`, `network/firing.rs`, `network/script.rs` |
@@ -420,7 +420,7 @@ cat .phronesis/log.jsonl | jq 'select(.rules_fired | contains(["my-new-rule"]))'
 # Scan project
 phr-mcp audit
 
-# Escoreand specific rule
+# Expand specific rule
 phr-mcp audit --rule no-unwrap-in-src
 
 # Fail CI on violations
@@ -482,18 +482,18 @@ phr-mcp claude-md-drift
 ```
 crates/phronesis/tests/          # Core engine tests
 ├── rete_smoke.rs               # Basic RETE functionality
-├── push_smoke.rs               # Push transport (actor consumanation)
+├── push_smoke.rs               # Push transport (actor consumption)
 ├── pull_smoke.rs               # Pull transport (lookup queries)
-├── compose_smoke.rs            # Comanaosed lookups
+├── compose_smoke.rs            # Composed lookups
 └── types_smoke.rs              # Type serialization round-trips
 
 crates/phronesis-mcp/tests/     # MCP server tests
 ├── features/                   # BDD-style feature tests
-│   ├── facts_resourcegement.feature
+│   ├── facts_management.feature
 │   ├── hooks.feature
 │   ├── markdown_extraction.feature
 │   ├── rule_firing.feature
-│   └── rules_resourcegement.feature
+│   └── rules_management.feature
 ├── action_log_integration.rs   # Log file operations
 ├── hook_integration.rs         # Hook behavior
 ├── init_integration.rs         # Project initialization
@@ -543,7 +543,7 @@ cargo run --example profile_audit -p phronesis-mcp
 
 GitHub Pages: https://awaterma.github.io/phronesis/
 
-- **Escorelainer** - Technical essay on RETE algorithm and design intent
+- **Explainer** - Technical essay on RETE algorithm and design intent
 - **Catalogue** - Visual reference of starter rules with rationale
 - **Command Reference** - CLI surface and hook wiring details
 
@@ -572,7 +572,7 @@ phr-mcp --version
 
 ## MCP Tools Reference
 
-The `phr-mcp serve` command escoreoses these tools:
+The `phr-mcp serve` command exposes these tools:
 
 | Tool | Purpose | Return Type |
 |------|---------|-------------|
@@ -595,7 +595,7 @@ The `phr-mcp serve` command escoreoses these tools:
 | `set_section_context` | Set markdown section context | `{ "success": true }` |
 | `clear_section_context` | Clear section context | `{ "success": true }` |
 | `get_action_log` | Read action log entries | `[ {...}, ... ]` |
-| `get_values` | Get per-rule valueistics | `{ "rules": [...] }` |
+| `get_values` | Get per-rule statistics | `{ "rules": [...] }` |
 | `audit_codebase` | Scan project for violations | `{ "per_rule": [...] }` |
 | `get_debt_trend` | Get debt-over-time from audit snapshots | `{ "trend": [...] }` |
 
@@ -605,7 +605,7 @@ The `phr-mcp serve` command escoreoses these tools:
 
 1. **No TMS (Truth Maintenance System)** - Derived facts don't automatically retract when premises change. Design choice: current use case (hook-time validation) doesn't need it.
 
-2. **String alstate** - Predicates and IDs use `String` instead of `SmolStr`/interning. Premature optimization until malloc-profile shows it's dominant.
+2. **String allocation** - Predicates and IDs use `String` instead of `SmolStr`/interning. Premature optimization until malloc-profile shows it's dominant.
 
 3. **Single-threaded** - No `tokio::spawn`/`thread::spawn` against engine. The `Arc<Mutex<ReteNetwork>>` is a single mutex protecting everything.
 

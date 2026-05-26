@@ -1,4 +1,4 @@
-//! Comanaosition tests: a rule fires, its action invokes a registered
+//! Composition tests: a rule fires, its action invokes a registered
 //! tool, and the result lands as a Consequence with provenance
 //! recording both the rule and the tool.
 //!
@@ -7,8 +7,8 @@
 //! for the thesis.
 
 use phronesis::{
-    invoke_rule_driven_lookups, try_invoke_rule_driven_lookups, Action, ConsequenceKind, DynLookup,
-    LookupRegistry, Provenance,
+    Action, ConsequenceKind, DynLookup, LookupRegistry, Provenance, invoke_rule_driven_lookups,
+    try_invoke_rule_driven_lookups,
 };
 
 /// A toy pull-mode tool. Given a card id as input, returns a small
@@ -109,7 +109,7 @@ fn unregistered_action_passes_through() {
     // or direct execution).
     let actions = vec![Action {
         action_type: "update_score".to_string(),
-        params: vec!["player".into(), "5".into()],
+        params: vec!["actor".into(), "5".into()],
     }];
 
     let (consequences, remaining) =
@@ -365,8 +365,8 @@ fn try_invoke_aborts_on_first_failure() {
     //
     // We instrument both tools with invocation counters so we can pin
     // (b) directly rather than inferring it from the error field.
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct OkTool {
         calls: Arc<AtomicUsize>,

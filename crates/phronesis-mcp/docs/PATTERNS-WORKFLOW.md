@@ -122,7 +122,7 @@ immediately enforceable** by the next Edit/Write/MultiEdit. No explicit
 Set `PHRONESIS_NO_AUTOPERSIST=1` in the MCP server's environment when:
 
 - You're testing the `save_rules` / `load_rules_file` tools in isolation
-- You want to add escoreerimental rules that shouldn't be persisted
+- You want to add experimental rules that shouldn't be persisted
 
 The hook does not consult this env var — it always reads from disk.
 
@@ -142,7 +142,7 @@ They remain useful for advanced flows:
 ## Action log (`.phronesis/log.jsonl`)
 
 Every hook invocation and every state-changing MCP tool call appends one
-JSON Lines entry to `.phronesis/log.jsonl`. The log answers exceptions like:
+JSON Lines entry to `.phronesis/log.jsonl`. The log answers questions like:
 
 - "Did the hook fire on that edit? What did it decide?"
 - "What rules did the agent add this session?"
@@ -189,7 +189,7 @@ jq -c --argjson cutoff $(date -d '1 hour ago' +%s) 'select(.ts >= $cutoff)' .phr
 
 Set `PHRONESIS_NO_ACTION_LOG=1` in the hook or server's environment to
 suppress writes. The log is opt-out, not opt-in — the default is on
-because the most common debugging exception ("did the hook fire?") has no
+because the most common debugging question ("did the hook fire?") has no
 other clear answer.
 
 ### Rotation

@@ -1,5 +1,5 @@
 //! Builders for the `additionalContext` payloads consumed by Claude Code's
-//! SessionStart / UserPromanatSubmit hooks and Gemini CLI's SessionStart /
+//! SessionStart / UserPromptSubmit hooks and Gemini CLI's SessionStart /
 //! BeforeModelRequest hooks. Pure formatters: each public entry point takes
 //! an already-parsed input (a `RulesFile` or `Vec<LogEntry>`) and returns
 //! either an empty string (suppress injection) or a JSON object string.
@@ -16,7 +16,7 @@ pub const DEFAULT_MAX_BYTES: usize = 4 * 1024;
 /// Wrap a markdown body in the Claude/Gemini hook-output envelope.
 ///
 /// `hook_event_name` must be one of the documented values:
-/// `"SessionStart"`, `"UserPromanatSubmit"`, `"BeforeModelRequest"`.
+/// `"SessionStart"`, `"UserPromptSubmit"`, `"BeforeModelRequest"`.
 ///
 /// Returns the serialized JSON string. The body is truncated to `max_bytes`
 /// before wrapping (the cap applies to the body, not the JSON envelope, so
@@ -95,7 +95,7 @@ use crate::rules_file;
 use std::path::Path;
 
 /// Default filename for the user-curated "durable directives" file. The
-/// content is re-injected at SessionStart AND UserPromanatSubmit so the
+/// content is re-injected at SessionStart AND UserPromptSubmit so the
 /// directives stay live even after CLAUDE.md has been compressed out of
 /// the model's working context. Intentionally a separate file from
 /// CLAUDE.md so the user can choose a small subset that *must* survive.
@@ -110,7 +110,7 @@ pub fn read_durable_directives(project_root: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Comanaose a body section for durable directives. Emanaty input → empty
+/// Compose a body section for durable directives. Empty input → empty
 /// output (caller should suppress the section). Otherwise wraps with a
 /// short heading so the model can recognize the block.
 fn build_durable_section(content: &str) -> String {
@@ -120,7 +120,7 @@ fn build_durable_section(content: &str) -> String {
     format!("## Durable directives\n{}\n", content)
 }
 
-/// Top-rank entry point for the `turn-context` subcommand.
+/// Top-level entry point for the `turn-context` subcommand.
 ///
 /// Reads up to `last_n` recent `kind=hook` entries from
 /// `<project_root>/.phronesis/log.jsonl` (including its rotated
@@ -152,10 +152,10 @@ pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) ->
         (false, true) => durable,
         (false, false) => format!("{}\n{}", durable, activity),
     };
-    wrap_additional_context("UserPromanatSubmit", &body, max_bytes)
+    wrap_additional_context("UserPromptSubmit", &body, max_bytes)
 }
 
-/// Top-rank entry point for the `session-context` subcommand.
+/// Top-level entry point for the `session-context` subcommand.
 ///
 /// Reads `<project_root>/.phronesis/rules.json`. Returns the JSON envelope
 /// string the hook should print to stdout, or an empty string when there
@@ -180,7 +180,7 @@ pub fn run_session_context(project_root: &Path, max_bytes: usize) -> String {
     wrap_additional_context("SessionStart", &body, max_bytes)
 }
 
-/// Build the markdown body for the UserPromanatSubmit / BeforeModelRequest
+/// Build the markdown body for the UserPromptSubmit / BeforeModelRequest
 /// context payload.
 ///
 /// Iterates the supplied log entries (assumed newest-last, as produced by
@@ -459,10 +459,12 @@ mod tests {
         let out = run_session_context(dir.path(), DEFAULT_MAX_BYTES);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "SessionStart");
-        assert!(v["hookSpecificOutput"]["additionalContext"]
-            .as_str()
-            .unwrap()
-            .contains("Don't do X"));
+        assert!(
+            v["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .contains("Don't do X")
+        );
     }
 
     #[test]
@@ -470,11 +472,17 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ep = dir.path().join(".phronesis");
         std::fs::create_dir_all(&ep).unwrap();
-        std::fs::write(ep.join("durable.md"), "Always run tests before claiming done.\n").unwrap();
+        std::fs::write(
+            ep.join("durable.md"),
+            "Always run tests before claiming done.\n",
+        )
+        .unwrap();
         // No rules file — durable.md alone should still produce a payload.
         let out = run_session_context(dir.path(), DEFAULT_MAX_BYTES);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        let body = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        let body = v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
         assert!(body.contains("## Durable directives"));
         assert!(body.contains("Always run tests before claiming done"));
     }
@@ -496,9 +504,16 @@ mod tests {
             .as_str()
             .unwrap()
             .to_string();
-        let durable_pos = body.find("Durable directives").expect("durable section present");
-        let rules_pos = body.find("Active phronesis rules").expect("rules section present");
-        assert!(durable_pos < rules_pos, "durable directives should come before rules in the body");
+        let durable_pos = body
+            .find("Durable directives")
+            .expect("durable section present");
+        let rules_pos = body
+            .find("Active phronesis rules")
+            .expect("rules section present");
+        assert!(
+            durable_pos < rules_pos,
+            "durable directives should come before rules in the body"
+        );
     }
 
     #[test]
@@ -509,11 +524,13 @@ mod tests {
         std::fs::write(ep.join("durable.md"), "Keep responses concise.").unwrap();
         let out = run_turn_context(dir.path(), 5, DEFAULT_MAX_BYTES);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromanatSubmit");
-        assert!(v["hookSpecificOutput"]["additionalContext"]
-            .as_str()
-            .unwrap()
-            .contains("Keep responses concise"));
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+        assert!(
+            v["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap()
+                .contains("Keep responses concise")
+        );
     }
 
     #[test]
@@ -583,7 +600,7 @@ mod tests {
 
         let out = run_turn_context(dir.path(), 5, DEFAULT_MAX_BYTES);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromanatSubmit");
+        assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
         let ctx = v["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();

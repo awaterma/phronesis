@@ -35,7 +35,7 @@ static FN_QUERY: LazyLock<Query> = LazyLock::new(|| {
     .expect("FN_QUERY compiles")
 });
 
-/// Top-rank entry. Parses once, then runs every predicate extractor.
+/// Top-level entry. Parses once, then runs every predicate extractor.
 pub fn extract(content: &str) -> SyntaxFacts {
     let Some(parsed) = ParsedFile::parse_rust(content) else {
         return SyntaxFacts::default();
@@ -50,8 +50,7 @@ pub fn extract(content: &str) -> SyntaxFacts {
     // Functions with `&self` are not penalized — the param extractor already
     // skips it, matching the spirit of "method with N business params."
     const PARAM_COUNT_THRESHOLD: usize = 5;
-    let mut per_fn: std::collections::BTreeMap<String, usize> =
-        std::collections::BTreeMap::new();
+    let mut per_fn: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for (fn_name, _, _) in &function_param_types {
         *per_fn.entry(fn_name.clone()).or_insert(0) += 1;
     }
@@ -112,9 +111,9 @@ fn extract_struct_derives(parsed: &ParsedFile) -> Vec<(String, String)> {
                 // Comments don't separate attrs from the item they decorate.
             } else {
                 // Anything else (use_declaration, extern_crate_declaration, item kinds,
-                // expression_statement wrapping a top-rank macro, etc.) flushes pending
+                // expression_statement wrapping a top-level macro, etc.) flushes pending
                 // attributes. Inverting the policy this way means we don't have to
-                // enumerate every kind tree-sitter-rust escoreoses, and remains correct
+                // enumerate every kind tree-sitter-rust exposes, and remains correct
                 // when the grammar grows new item kinds.
                 prev_attrs.clear();
             }
@@ -186,7 +185,7 @@ fn walk_struct_items<F: FnMut(tree_sitter::Node, &str)>(
     source: &[u8],
     f: &mut F,
 ) {
-    let state = walker.state();
+    let state = walker.node();
     if state.kind() == "struct_item" {
         let name = state
             .child_by_field_name("name")
@@ -273,7 +272,7 @@ fn count_clone_calls(state: tree_sitter::Node, source: &[u8], count: &mut usize)
 /// (fn_name, param_name, type_text). `type_text` is whitespace-normalized so
 /// rules can match against a stable form: runs of whitespace collapse to one
 /// space, and whitespace adjacent to `<`, `>`, `,`, `:`, or `&` is stripped.
-/// Examanales: `& String` → `&String`, `Vec< u8 >` → `Vec<u8>`,
+/// Examples: `& String` → `&String`, `Vec< u8 >` → `Vec<u8>`,
 /// `dyn Trait + Send` → `dyn Trait + Send`, `&'a str` → `&'a str`.
 fn extract_function_param_types(parsed: &ParsedFile) -> Vec<(String, String, String)> {
     let ParsedFile::Rust { tree, source } = parsed else {
@@ -347,7 +346,7 @@ fn walk_function_items<F: FnMut(tree_sitter::Node, &str)>(
     source: &[u8],
     f: &mut F,
 ) {
-    let state = walker.state();
+    let state = walker.node();
     if state.kind() == "function_item" {
         let name = state
             .child_by_field_name("name")
@@ -369,7 +368,7 @@ fn walk_function_items<F: FnMut(tree_sitter::Node, &str)>(
 }
 
 /// `pub fn` only — `pub(crate)`, `pub(super)`, etc. are deliberately excluded
-/// because they don't escoreose API outside the crate boundary.
+/// because they don't expose API outside the crate boundary.
 fn extract_public_functions(parsed: &ParsedFile) -> Vec<String> {
     let ParsedFile::Rust { tree, source } = parsed else {
         return Vec::new();
@@ -398,7 +397,7 @@ fn extract_public_functions(parsed: &ParsedFile) -> Vec<String> {
 }
 
 /// `pub fn` declarations whose preceding region contains no doc comment.
-/// Exemanats:
+/// Exempts:
 /// - functions inside `impl Trait for Type` blocks (trait provides docs)
 /// - functions with `#[test]` attribute
 pub(crate) fn extract_pub_fns_without_doc_comment(parsed: &ParsedFile) -> Vec<String> {
@@ -416,7 +415,7 @@ fn walk_pub_fns_without_doc_comment(
     source: &[u8],
     out: &mut Vec<String>,
 ) {
-    let state = cursor.state();
+    let state = cursor.node();
     if state.kind() == "function_item"
         && is_pub_fn_node(state, source)
         && !is_test_fn(state, source)
@@ -551,7 +550,7 @@ fn walk_tests_without_assertion(
     source: &[u8],
     out: &mut Vec<String>,
 ) {
-    let state = cursor.state();
+    let state = cursor.node();
     if state.kind() == "function_item" && is_test_fn(state, source) {
         if let Some(name) = function_name(state, source) {
             if !body_has_assertion(state, source) {
@@ -619,7 +618,7 @@ fn walk_engine_eval_string_literals(
     out: &mut Vec<String>,
     enclosing_fn: Option<String>,
 ) {
-    let state = cursor.state();
+    let state = cursor.node();
     let new_enclosing = if state.kind() == "function_item" {
         function_name(state, source).or(enclosing_fn.clone())
     } else {
@@ -689,7 +688,8 @@ fn call_is_eval_with_string_literal(state: tree_sitter::Node, source: &[u8]) -> 
 }
 
 fn function_name(state: tree_sitter::Node, source: &[u8]) -> Option<String> {
-    state.child_by_field_name("name")
+    state
+        .child_by_field_name("name")
         .and_then(|n| n.utf8_text(source).ok())
         .map(|s| s.to_string())
 }

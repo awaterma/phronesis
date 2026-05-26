@@ -19,24 +19,24 @@ use phr::RuleId;
 // ── Public types ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Rank {
+pub enum Level {
     Block,
     Warn,
 }
 
-impl Rank {
+impl Level {
     fn from_action_type(s: &str) -> Option<Self> {
         match s {
-            "constraint_violation" => Some(Rank::Block),
-            "constraint_warning" => Some(Rank::Warn),
+            "constraint_violation" => Some(Level::Block),
+            "constraint_warning" => Some(Level::Warn),
             _ => None,
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Rank::Block => "block",
-            Rank::Warn => "warn",
+            Level::Block => "block",
+            Level::Warn => "warn",
         }
     }
 }
@@ -54,14 +54,14 @@ pub struct AuditReport {
     pub generated_at: u64,
     pub scan_duration_ms: u64,
     pub files_scanned: u32,
-    /// Sorted by `(rank desc, hits desc, rule_id asc)`.
+    /// Sorted by `(level desc, hits desc, rule_id asc)`.
     pub per_rule: Vec<RuleAudit>,
 }
 
 #[derive(Debug, Clone)]
 pub struct RuleAudit {
     pub rule_id: RuleId,
-    pub rank: Rank,
+    pub level: Level,
     pub hits: u32,
     pub files: Vec<FileAudit>,
 }
@@ -133,7 +133,7 @@ fn is_whole_file_rule(rule: &DiskRule) -> bool {
         .all(|c| c.predicate != "new_content_contains")
 }
 
-/// True if the file's top-rank `//!` doc-comment carries an exemption
+/// True if the file's top-level `//!` doc-comment carries an exemption
 /// marker for `rule_id`. Looks for a line of the form
 /// `//! phronesis-allow: <rule-id>[ <free-form reason>]` anywhere in the
 /// leading run of `//!` doc-comment lines (allowing blank lines between).
@@ -215,8 +215,8 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
     };
     let files_scanned = files.len() as u32;
 
-    // per_rule[rule_id] -> (rank, BTreeMap<path -> Vec<line>>)
-    let mut accum: BTreeMap<String, (Rank, BTreeMap<PathBuf, Vec<u32>>)> = BTreeMap::new();
+    // per_rule[rule_id] -> (level, BTreeMap<path -> Vec<line>>)
+    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, Vec<u32>>)> = BTreeMap::new();
 
     for path in &files {
         let content = match std::fs::read_to_string(path) {
@@ -250,18 +250,16 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
             if !rule_applies_to_file(rule, path, effective_line_count) {
                 continue;
             }
-            // File-rank exemption: a file with a top-of-file `//! phronesis-allow:
+            // File-level exemption: a file with a top-of-file `//! phronesis-allow:
             // <rule-id>` doc-comment is exempt from that rule, when the rule
             // opts in via `doc_excepted: true`. Lets an intentional god-file
             // (e.g. a coherent MCP tool surface) document its size choice
             // rather than be split mechanically.
-            if rule.doc_excepted.unwrap_or(false)
-                && file_exempts_rule(&lines, &rule.id)
-            {
+            if rule.doc_excepted.unwrap_or(false) && file_exempts_rule(&lines, &rule.id) {
                 continue;
             }
             for action in &rule.actions {
-                let Some(rank) = Rank::from_action_type(&action.action_type) else {
+                let Some(level) = Level::from_action_type(&action.action_type) else {
                     continue;
                 };
 
@@ -270,7 +268,7 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                 if is_whole_file_rule(rule) {
                     let entry = accum
                         .entry(rule.id.clone())
-                        .or_insert_with(|| (rank, BTreeMap::new()));
+                        .or_insert_with(|| (level, BTreeMap::new()));
                     entry.1.entry(path.clone()).or_default().push(1);
                     continue;
                 }
@@ -308,7 +306,7 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                     }
                     let entry = accum
                         .entry(rule.id.clone())
-                        .or_insert_with(|| (rank, BTreeMap::new()));
+                        .or_insert_with(|| (level, BTreeMap::new()));
                     entry.1.entry(path.clone()).or_default().extend(hit_lines);
                 }
             }
@@ -317,7 +315,7 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
 
     let mut per_rule: Vec<RuleAudit> = accum
         .into_iter()
-        .map(|(rule_id, (rank, by_path))| {
+        .map(|(rule_id, (level, by_path))| {
             let files: Vec<FileAudit> = by_path
                 .into_iter()
                 .map(|(path, lines)| FileAudit { path, lines })
@@ -325,7 +323,7 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
             let hits: u32 = files.iter().map(|f| f.lines.len() as u32).sum();
             RuleAudit {
                 rule_id: rule_id.into(),
-                rank,
+                level,
                 hits,
                 files,
             }
@@ -334,9 +332,9 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
 
     per_rule.sort_by(|a, b| {
         // Block > Warn
-        let lvl = match (a.rank, b.rank) {
-            (Rank::Block, Rank::Warn) => std::cmp::Ordering::Less,
-            (Rank::Warn, Rank::Block) => std::cmp::Ordering::Greater,
+        let lvl = match (a.level, b.level) {
+            (Level::Block, Level::Warn) => std::cmp::Ordering::Less,
+            (Level::Warn, Level::Block) => std::cmp::Ordering::Greater,
             _ => std::cmp::Ordering::Equal,
         };
         lvl.then_with(|| b.hits.cmp(&a.hits))
@@ -384,10 +382,7 @@ pub struct AuditSectionTimes {
 /// times via [`AuditSectionTimes`]. Kept in tree as a permanent diagnostic
 /// (analogous to the criterion bench in `phronesis`); no behavior change vs
 /// `run`. Call this from a probe binary; production callers use `run`.
-pub fn run_profiled(
-    rules: &RulesFile,
-    opts: &AuditOpts,
-) -> (AuditReport, AuditSectionTimes) {
+pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditSectionTimes) {
     use std::collections::BTreeMap;
     use std::time::Instant;
 
@@ -411,7 +406,7 @@ pub fn run_profiled(
     times.discover = t.elapsed();
     times.files_scanned = files.len() as u32;
 
-    let mut accum: BTreeMap<String, (Rank, BTreeMap<PathBuf, Vec<u32>>)> = BTreeMap::new();
+    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, Vec<u32>>)> = BTreeMap::new();
 
     for path in &files {
         let t = Instant::now();
@@ -449,13 +444,13 @@ pub fn run_profiled(
                 continue;
             }
             for action in &rule.actions {
-                let Some(rank) = Rank::from_action_type(&action.action_type) else {
+                let Some(level) = Level::from_action_type(&action.action_type) else {
                     continue;
                 };
                 if is_whole_file_rule(rule) {
                     let entry = accum
                         .entry(rule.id.clone())
-                        .or_insert_with(|| (rank, BTreeMap::new()));
+                        .or_insert_with(|| (level, BTreeMap::new()));
                     entry.1.entry(path.clone()).or_default().push(1);
                     continue;
                 }
@@ -488,7 +483,7 @@ pub fn run_profiled(
                     }
                     let entry = accum
                         .entry(rule.id.clone())
-                        .or_insert_with(|| (rank, BTreeMap::new()));
+                        .or_insert_with(|| (level, BTreeMap::new()));
                     entry.1.entry(path.clone()).or_default().extend(hit_lines);
                 }
             }
@@ -499,7 +494,7 @@ pub fn run_profiled(
     let t = Instant::now();
     let mut per_rule: Vec<RuleAudit> = accum
         .into_iter()
-        .map(|(rule_id, (rank, by_path))| {
+        .map(|(rule_id, (level, by_path))| {
             let files: Vec<FileAudit> = by_path
                 .into_iter()
                 .map(|(path, lines)| FileAudit { path, lines })
@@ -507,16 +502,16 @@ pub fn run_profiled(
             let hits: u32 = files.iter().map(|f| f.lines.len() as u32).sum();
             RuleAudit {
                 rule_id: rule_id.into(),
-                rank,
+                level,
                 hits,
                 files,
             }
         })
         .collect();
     per_rule.sort_by(|a, b| {
-        let lvl = match (a.rank, b.rank) {
-            (Rank::Block, Rank::Warn) => std::cmp::Ordering::Less,
-            (Rank::Warn, Rank::Block) => std::cmp::Ordering::Greater,
+        let lvl = match (a.level, b.level) {
+            (Level::Block, Level::Warn) => std::cmp::Ordering::Less,
+            (Level::Warn, Level::Block) => std::cmp::Ordering::Greater,
             _ => std::cmp::Ordering::Equal,
         };
         lvl.then_with(|| b.hits.cmp(&a.hits))
@@ -552,7 +547,7 @@ pub fn discover_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
     builder.follow_links(false);
     // `.phronesisignore` (gitignore-values) lets projects exclude paths from
     // audit without affecting git tracking. Honored at root and at any
-    // descendant directory rank.
+    // descendant directory level.
     builder.add_custom_ignore_filename(".phronesisignore");
     for result in builder.build() {
         let entry = match result {
@@ -596,18 +591,18 @@ pub struct DebtTrend {
     pub snapshots_considered: u32,
     pub first_snapshot_ts: u64,
     pub last_snapshot_ts: u64,
-    /// Sorted by `net_change` ascending (biggest imanarovements first).
+    /// Sorted by `net_change` ascending (biggest improvements first).
     pub rules: Vec<RuleTrend>,
 }
 
 #[derive(Debug, Clone)]
 pub struct RuleTrend {
     pub rule_id: RuleId,
-    pub rank: Rank,
+    pub level: Level,
     pub history: Vec<TrendPoint>,
     pub first_hits: u32,
     pub last_hits: u32,
-    /// `last_hits - first_hits`. Negative = imanarovement.
+    /// `last_hits - first_hits`. Negative = improvement.
     pub net_change: i32,
 }
 
@@ -619,7 +614,7 @@ pub struct TrendPoint {
     pub hits: Option<u32>,
 }
 
-/// Comanaute a debt-over-time view from a slice of audit log entries.
+/// Compute a debt-over-time view from a slice of audit log entries.
 /// `entries` may contain non-`audit_codebase` events; they're skipped.
 /// Snapshots are taken in chronological order; `last`/`since_secs` slice
 /// the most recent window. Rules absent from a snapshot get a `None`
@@ -674,7 +669,7 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
         .ts;
 
     // Collect every rule id seen across the windowed snapshots, respecting the rule filter.
-    let mut rule_ids: BTreeMap<String, Rank> = BTreeMap::new();
+    let mut rule_ids: BTreeMap<String, Level> = BTreeMap::new();
     for snap in &snapshots {
         let Some(per_rule) = snap.data.get("per_rule").and_then(|v| v.as_object()) else {
             continue;
@@ -685,18 +680,18 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
                     continue;
                 }
             }
-            let rank_str = v.get("rank").and_then(|x| x.as_str()).unwrap_or("");
-            let rank = match rank_str {
-                "warn" => Rank::Warn,
-                _ => Rank::Block,
+            let rank_str = v.get("level").and_then(|x| x.as_str()).unwrap_or("");
+            let level = match rank_str {
+                "warn" => Level::Warn,
+                _ => Level::Block,
             };
-            rule_ids.entry(id.clone()).or_insert(rank);
+            rule_ids.entry(id.clone()).or_insert(level);
         }
     }
 
     let mut rules: Vec<RuleTrend> = rule_ids
         .into_iter()
-        .map(|(rule_id, rank)| {
+        .map(|(rule_id, level)| {
             let history: Vec<TrendPoint> = snapshots
                 .iter()
                 .map(|snap| {
@@ -717,7 +712,7 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
             let net_change = (last_hits as i32) - (first_hits as i32);
             RuleTrend {
                 rule_id: rule_id.into(),
-                rank,
+                level,
                 history,
                 first_hits,
                 last_hits,
@@ -726,7 +721,7 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
         })
         .collect();
 
-    // Sort: imanarovements first (most-negative net_change), then by rule id.
+    // Sort: improvements first (most-negative net_change), then by rule id.
     rules.sort_by(|a, b| {
         a.net_change
             .cmp(&b.net_change)
@@ -747,8 +742,8 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
 use serde_json::json;
 
 /// Render an `AuditReport` as a human-readable terminal table.
-/// `escoreand` switches from per-rule summary to per-file detail with line numbers.
-pub fn render_table(report: &AuditReport, escoreand: bool) -> String {
+/// `expand` switches from per-rule summary to per-file detail with line numbers.
+pub fn render_table(report: &AuditReport, expand: bool) -> String {
     if report.per_rule.is_empty() {
         return format!(
             "no audit violations found ({} files scanned in {}ms)\n",
@@ -766,7 +761,7 @@ pub fn render_table(report: &AuditReport, escoreand: bool) -> String {
 
     let mut out = String::new();
     out.push_str(&format!(
-        "{:<id_width$}  Rank  Hits  Files\n",
+        "{:<id_width$}  Level  Hits  Files\n",
         "Rule",
         id_width = id_width
     ));
@@ -774,12 +769,12 @@ pub fn render_table(report: &AuditReport, escoreand: bool) -> String {
         out.push_str(&format!(
             "{:<id_width$}  {:<5}  {:>4}  {:>5}\n",
             r.rule_id,
-            r.rank.as_str(),
+            r.level.as_str(),
             r.hits,
             r.files.len(),
             id_width = id_width,
         ));
-        if escoreand {
+        if expand {
             for f in &r.files {
                 let lines_str = f
                     .lines
@@ -799,13 +794,13 @@ pub fn render_table(report: &AuditReport, escoreand: bool) -> String {
     let total_blocked: u32 = report
         .per_rule
         .iter()
-        .filter(|r| r.rank == Rank::Block)
+        .filter(|r| r.level == Level::Block)
         .map(|r| r.hits)
         .sum();
     let total_warned: u32 = report
         .per_rule
         .iter()
-        .filter(|r| r.rank == Rank::Warn)
+        .filter(|r| r.level == Level::Warn)
         .map(|r| r.hits)
         .sum();
     out.push('\n');
@@ -822,18 +817,18 @@ pub fn render_table(report: &AuditReport, escoreand: bool) -> String {
 
 /// Render an `AuditReport` as JSON. Stable shape: `{generated_at,
 /// scan_duration_ms, files_scanned, totals:{blocked,warned,rules},
-/// rules:[{rule_id, rank, hits, files:[{path,lines}]}]}`.
+/// rules:[{rule_id, level, hits, files:[{path,lines}]}]}`.
 pub fn render_json(report: &AuditReport) -> String {
     let total_blocked: u32 = report
         .per_rule
         .iter()
-        .filter(|r| r.rank == Rank::Block)
+        .filter(|r| r.level == Level::Block)
         .map(|r| r.hits)
         .sum();
     let total_warned: u32 = report
         .per_rule
         .iter()
-        .filter(|r| r.rank == Rank::Warn)
+        .filter(|r| r.level == Level::Warn)
         .map(|r| r.hits)
         .sum();
     let rules: Vec<_> = report
@@ -852,7 +847,7 @@ pub fn render_json(report: &AuditReport) -> String {
                 .collect();
             json!({
                 "rule_id": r.rule_id,
-                "rank": r.rank.as_str(),
+                "level": r.level.as_str(),
                 "hits": r.hits,
                 "files": files,
             })
@@ -962,7 +957,7 @@ pub fn render_trend_json(trend: &DebtTrend) -> String {
                 .collect();
             json!({
                 "rule_id": r.rule_id,
-                "rank": r.rank.as_str(),
+                "level": r.level.as_str(),
                 "history": history,
                 "first_hits": r.first_hits,
                 "last_hits": r.last_hits,
@@ -996,9 +991,9 @@ fn days_to_ymd(z: i64) -> (i32, u32, u32) {
     let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
     let y = yoe as i64 + era * 400;
     let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mana = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mana + 2) / 5 + 1) as u32;
-    let m = if mana < 10 { mana + 3 } else { mana - 9 } as u32;
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let y = if m <= 2 { y + 1 } else { y };
     (y as i32, m, d)
 }
@@ -1050,7 +1045,7 @@ mod tests {
         assert_eq!(report.per_rule.len(), 1);
         assert_eq!(report.per_rule[0].rule_id, "no-unwrap");
         assert_eq!(report.per_rule[0].hits, 1);
-        assert_eq!(report.per_rule[0].rank, Rank::Block);
+        assert_eq!(report.per_rule[0].level, Level::Block);
         assert_eq!(report.per_rule[0].files.len(), 1);
         assert_eq!(report.per_rule[0].files[0].lines, vec![1]);
     }
@@ -1162,7 +1157,10 @@ mod tests {
                 rule_filter: None,
             },
         );
-        assert!(report.per_rule.is_empty(), "doc-comment above stacked attributes should still exempt");
+        assert!(
+            report.per_rule.is_empty(),
+            "doc-comment above stacked attributes should still exempt"
+        );
     }
 
     #[test]
@@ -1194,7 +1192,10 @@ mod tests {
                 rule_filter: None,
             },
         );
-        assert!(report.per_rule.is_empty(), "documented exception should be skipped even with blank line");
+        assert!(
+            report.per_rule.is_empty(),
+            "documented exception should be skipped even with blank line"
+        );
     }
 
     #[test]
@@ -1229,7 +1230,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Two hits: one in production (line 1) and one inside a #[cfg(test)]
         // module. Only the production hit should be reported.
-        let content = "fn prod() { x.clone(); }\n\n#[cfg(test)]\nmod tests {\n    fn t() { y.clone(); }\n}\n";
+        let content =
+            "fn prod() { x.clone(); }\n\n#[cfg(test)]\nmod tests {\n    fn t() { y.clone(); }\n}\n";
         std::fs::write(dir.path().join("a.rs"), content).unwrap();
         let rules = RulesFile {
             rules: vec![rule("warn-clone", ".clone()", "constraint_warning")],
@@ -1244,8 +1246,11 @@ mod tests {
         );
         assert_eq!(report.per_rule.len(), 1, "rule must fire on production hit");
         assert_eq!(report.per_rule[0].hits, 1, "test-block hit must be skipped");
-        assert_eq!(report.per_rule[0].files[0].lines, vec![1],
-            "reported line should be the production line, not shifted by stripping");
+        assert_eq!(
+            report.per_rule[0].files[0].lines,
+            vec![1],
+            "reported line should be the production line, not shifted by stripping"
+        );
     }
 
     #[test]
@@ -1295,10 +1300,12 @@ mod tests {
         assert_eq!(report.per_rule.len(), 1);
         assert_eq!(report.per_rule[0].hits, 1, "only big.rs should fire");
         assert_eq!(report.per_rule[0].files.len(), 1);
-        assert!(report.per_rule[0].files[0]
-            .path
-            .to_string_lossy()
-            .ends_with("big.rs"));
+        assert!(
+            report.per_rule[0].files[0]
+                .path
+                .to_string_lossy()
+                .ends_with("big.rs")
+        );
         assert_eq!(report.per_rule[0].files[0].lines, vec![1]);
     }
 
@@ -1352,10 +1359,12 @@ mod tests {
         // Only plain.rs should fire; exempt.rs carries the marker.
         assert_eq!(report.per_rule.len(), 1);
         assert_eq!(report.per_rule[0].hits, 1);
-        assert!(report.per_rule[0].files[0]
-            .path
-            .to_string_lossy()
-            .ends_with("plain.rs"));
+        assert!(
+            report.per_rule[0].files[0]
+                .path
+                .to_string_lossy()
+                .ends_with("plain.rs")
+        );
     }
 
     #[test]
@@ -1401,7 +1410,11 @@ mod tests {
                 rule_filter: None,
             },
         );
-        assert_eq!(report.per_rule.len(), 1, "marker for a different rule must not exempt this one");
+        assert_eq!(
+            report.per_rule.len(),
+            1,
+            "marker for a different rule must not exempt this one"
+        );
     }
 
     #[test]
@@ -1496,7 +1509,7 @@ mod tests {
                 rule_filter: None,
             },
         );
-        assert_eq!(report.per_rule[0].rank, Rank::Warn);
+        assert_eq!(report.per_rule[0].level, Level::Warn);
         assert_eq!(report.per_rule[0].hits, 2);
     }
 
@@ -1674,7 +1687,7 @@ mod tests {
             },
         );
         assert_eq!(report.per_rule.len(), 1);
-        assert_eq!(report.per_rule[0].rank, Rank::Warn);
+        assert_eq!(report.per_rule[0].level, Level::Warn);
     }
 
     #[test]
@@ -1806,15 +1819,15 @@ mod tests {
         let snaps = vec![
             audit_entry(
                 1_700_000_000,
-                json!({"no-unwrap": {"rank":"block","hits":18}}),
+                json!({"no-unwrap": {"level":"block","hits":18}}),
             ),
             audit_entry(
                 1_700_500_000,
-                json!({"no-unwrap": {"rank":"block","hits":14}}),
+                json!({"no-unwrap": {"level":"block","hits":14}}),
             ),
             audit_entry(
                 1_701_000_000,
-                json!({"no-unwrap": {"rank":"block","hits":10}}),
+                json!({"no-unwrap": {"level":"block","hits":10}}),
             ),
         ];
         let trend = compute_trend(&snaps, &TrendOpts::default());
@@ -1822,7 +1835,7 @@ mod tests {
         assert_eq!(trend.rules.len(), 1);
         let r = &trend.rules[0];
         assert_eq!(r.rule_id, "no-unwrap");
-        assert_eq!(r.rank, Rank::Block);
+        assert_eq!(r.level, Level::Block);
         assert_eq!(r.first_hits, 18);
         assert_eq!(r.last_hits, 10);
         assert_eq!(r.net_change, -8);
@@ -1832,10 +1845,10 @@ mod tests {
     #[test]
     fn compute_trend_respects_last_limit() {
         let snaps = vec![
-            audit_entry(1, json!({"r": {"rank":"block","hits":1}})),
-            audit_entry(2, json!({"r": {"rank":"block","hits":2}})),
-            audit_entry(3, json!({"r": {"rank":"block","hits":3}})),
-            audit_entry(4, json!({"r": {"rank":"block","hits":4}})),
+            audit_entry(1, json!({"r": {"level":"block","hits":1}})),
+            audit_entry(2, json!({"r": {"level":"block","hits":2}})),
+            audit_entry(3, json!({"r": {"level":"block","hits":3}})),
+            audit_entry(4, json!({"r": {"level":"block","hits":4}})),
         ];
         let trend = compute_trend(
             &snaps,
@@ -1854,11 +1867,11 @@ mod tests {
         let snaps = vec![
             audit_entry(
                 1,
-                json!({"a":{"rank":"block","hits":1},"b":{"rank":"block","hits":5}}),
+                json!({"a":{"level":"block","hits":1},"b":{"level":"block","hits":5}}),
             ),
             audit_entry(
                 2,
-                json!({"a":{"rank":"block","hits":2},"b":{"rank":"block","hits":6}}),
+                json!({"a":{"level":"block","hits":2},"b":{"level":"block","hits":6}}),
             ),
         ];
         let trend = compute_trend(
@@ -1875,10 +1888,10 @@ mod tests {
     #[test]
     fn compute_trend_handles_rule_appearing_mid_series() {
         let snaps = vec![
-            audit_entry(1, json!({"a":{"rank":"block","hits":10}})),
+            audit_entry(1, json!({"a":{"level":"block","hits":10}})),
             audit_entry(
                 2,
-                json!({"a":{"rank":"block","hits":8},"b":{"rank":"warn","hits":3}}),
+                json!({"a":{"level":"block","hits":8},"b":{"level":"warn","hits":3}}),
             ),
         ];
         let trend = compute_trend(&snaps, &TrendOpts::default());
@@ -1897,22 +1910,22 @@ mod tests {
         let snaps = vec![
             audit_entry(
                 1,
-                json!({"big-imanarove":{"rank":"block","hits":50},"regress":{"rank":"block","hits":5}}),
+                json!({"big-improve":{"level":"block","hits":50},"regress":{"level":"block","hits":5}}),
             ),
             audit_entry(
                 2,
-                json!({"big-imanarove":{"rank":"block","hits":20},"regress":{"rank":"block","hits":8}}),
+                json!({"big-improve":{"level":"block","hits":20},"regress":{"level":"block","hits":8}}),
             ),
         ];
         let trend = compute_trend(&snaps, &TrendOpts::default());
-        // big-imanarove (-30) should come before regress (+3)
-        assert_eq!(trend.rules[0].rule_id, "big-imanarove");
+        // big-improve (-30) should come before regress (+3)
+        assert_eq!(trend.rules[0].rule_id, "big-improve");
         assert_eq!(trend.rules[1].rule_id, "regress");
     }
 
     #[test]
     fn compute_trend_only_one_snapshot_yields_zero_net_change() {
-        let snaps = vec![audit_entry(1, json!({"r":{"rank":"block","hits":5}}))];
+        let snaps = vec![audit_entry(1, json!({"r":{"level":"block","hits":5}}))];
         let trend = compute_trend(&snaps, &TrendOpts::default());
         assert_eq!(trend.snapshots_considered, 1);
         assert_eq!(trend.rules[0].net_change, 0);
@@ -1928,7 +1941,7 @@ mod tests {
             per_rule: vec![
                 RuleAudit {
                     rule_id: "no-unwrap-in-src".into(),
-                    rank: Rank::Block,
+                    level: Level::Block,
                     hits: 10,
                     files: vec![
                         FileAudit {
@@ -1943,7 +1956,7 @@ mod tests {
                 },
                 RuleAudit {
                     rule_id: "warn-clone-heavy".into(),
-                    rank: Rank::Warn,
+                    level: Level::Warn,
                     hits: 5,
                     files: vec![FileAudit {
                         path: PathBuf::from("src/parser.rs"),
@@ -1969,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn render_table_escoreand_shows_files_and_lines() {
+    fn render_table_expand_shows_files_and_lines() {
         let out = render_table(&make_report(), true);
         assert!(out.contains("src/engine.rs"));
         assert!(out.contains("42"));
@@ -1998,7 +2011,7 @@ mod tests {
             rules: vec![
                 RuleTrend {
                     rule_id: "no-unwrap".into(),
-                    rank: Rank::Block,
+                    level: Level::Block,
                     history: vec![
                         TrendPoint {
                             ts: 1_700_000_000,
@@ -2019,7 +2032,7 @@ mod tests {
                 },
                 RuleTrend {
                     rule_id: "warn-clone-heavy".into(),
-                    rank: Rank::Warn,
+                    level: Level::Warn,
                     history: vec![
                         TrendPoint {
                             ts: 1_700_000_000,
@@ -2084,7 +2097,7 @@ mod tests {
             last_snapshot_ts: 1_701_000_000,
             rules: vec![RuleTrend {
                 rule_id: "r".into(),
-                rank: Rank::Block,
+                level: Level::Block,
                 history: vec![TrendPoint {
                     ts: 1_701_000_000,
                     hits: Some(5),
@@ -2110,7 +2123,7 @@ mod tests {
         let rules = v["rules"].as_array().unwrap();
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0]["rule_id"], "no-unwrap");
-        assert_eq!(rules[0]["rank"], "block");
+        assert_eq!(rules[0]["level"], "block");
         assert_eq!(rules[0]["first_hits"], 18);
         assert_eq!(rules[0]["last_hits"], 10);
         assert_eq!(rules[0]["net_change"], -8);
@@ -2130,7 +2143,7 @@ mod tests {
         assert_eq!(v["totals"]["rules"], 2);
         let rules = v["rules"].as_array().unwrap();
         assert_eq!(rules[0]["rule_id"], "no-unwrap-in-src");
-        assert_eq!(rules[0]["rank"], "block");
+        assert_eq!(rules[0]["level"], "block");
         assert_eq!(rules[0]["hits"], 10);
         let files = rules[0]["files"].as_array().unwrap();
         assert_eq!(files.len(), 2);

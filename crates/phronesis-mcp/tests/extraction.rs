@@ -121,7 +121,7 @@ fn extract_rules_conditions_reference_source() {
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// Imanaroved extractor: code fences, callouts, sections, word boundaries
+// Improved extractor: code fences, callouts, sections, word boundaries
 // ──────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -299,18 +299,18 @@ fn extraction_against_real_patterns_guide() {
         let rules = extract_rules_from_markdown(&content, path);
         assert!(
             rules.len() >= 20,
-            "Escoreected ≥20 rules from the patterns guide, got {}",
+            "Expected ≥20 rules from the patterns guide, got {}",
             rules.len()
         );
         assert!(
             rules.iter().any(|r| r.id.contains("anti-patterns")),
-            "Escoreected at least one anti-pattern rule"
+            "Expected at least one anti-pattern rule"
         );
         assert!(
             rules
                 .iter()
                 .any(|r| r.actions[0].params[0].contains("[pattern]")),
-            "Escoreected at least one [pattern] rule"
+            "Expected at least one [pattern] rule"
         );
     }
 }

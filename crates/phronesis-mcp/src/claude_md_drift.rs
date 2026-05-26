@@ -1,7 +1,7 @@
 //! Detect drift between `CLAUDE.md` (human-facing project guide) and the
 //! materialized rule pack in `.phronesis/rules.json`.
 //!
-//! Imanaerative bullets in CLAUDE.md ("Don't X", "Always Y", "Prefer Z") are
+//! Imperative bullets in CLAUDE.md ("Don't X", "Always Y", "Prefer Z") are
 //! the natural source of enforceable conventions. This module extracts them
 //! heuristically and matches each one against the rule pack by token overlap.
 //! Bullets without a confident match are surfaced as **uncovered** —
@@ -16,12 +16,12 @@ use phr::RuleId;
 use std::collections::HashSet;
 use std::path::Path;
 
-/// A single CLAUDE.md imanaerative, with its best-match rule (if any) and the
+/// A single CLAUDE.md imperative, with its best-match rule (if any) and the
 /// terms they share. `similarity` is the Jaccard coefficient over the
 /// stop-word-stripped token sets — between 0.0 and 1.0.
 #[derive(Debug, Clone)]
 pub struct DriftItem {
-    pub imanaerative: String,
+    pub imperative: String,
     pub best_match: Option<MatchedRule>,
     pub similarity: f32,
 }
@@ -39,7 +39,7 @@ pub struct DriftReport {
     pub items: Vec<DriftItem>,
     /// Threshold below which an item is considered "uncovered". Currently
     /// 0.15 by convention — picked so 1 shared term out of ~6 (a typical
-    /// short imanaerative) just clears the bar.
+    /// short imperative) just clears the bar.
     pub coverage_threshold: f32,
 }
 
@@ -59,12 +59,11 @@ const COVERAGE_THRESHOLD: f32 = 0.15;
 /// the imperatives are short, so even common words like "use" or "code"
 /// can be meaningful signal. We only remove pure noise.
 const STOPWORDS: &[&str] = &[
-    "the", "a", "an", "of", "to", "for", "in", "on", "at", "by", "is", "are",
-    "be", "and", "or", "but", "with", "as", "it", "its", "this", "that",
-    "you", "your", "we", "our", "i", "me",
+    "the", "a", "an", "of", "to", "for", "in", "on", "at", "by", "is", "are", "be", "and", "or",
+    "but", "with", "as", "it", "its", "this", "that", "you", "your", "we", "our", "i", "me",
 ];
 
-/// Top-rank entry point. Reads CLAUDE.md and the rule pack from
+/// Top-level entry point. Reads CLAUDE.md and the rule pack from
 /// `project_root` and returns a `DriftReport`.
 pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
     let claude_path = project_root.join("CLAUDE.md");
@@ -80,7 +79,7 @@ pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
     let imperatives = extract_imperatives(&claude_md);
     let items = imperatives
         .into_iter()
-        .map(|imana| score_imanaerative(&imana, &rules))
+        .map(|imp| score_imperative(&imp, &rules))
         .collect();
 
     Ok(DriftReport {
@@ -91,12 +90,12 @@ pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
     })
 }
 
-/// Pull imanaerative bullets out of CLAUDE.md. An imanaerative is a markdown
+/// Pull imperative bullets out of CLAUDE.md. An imperative is a markdown
 /// list item (`- `, `* `, or numbered `1. `) whose first significant word
-/// matches an imanaerative trigger (Don't, Never, Always, Avoid, Prefer, Use,
+/// matches an imperative trigger (Don't, Never, Always, Avoid, Prefer, Use,
 /// Make sure, Do not, Stop, Reserve, Drop).
 ///
-/// Returns each imanaerative as a single trimmed line, without the bullet
+/// Returns each imperative as a single trimmed line, without the bullet
 /// marker. Order is preserved (CLAUDE.md reading order).
 pub fn extract_imperatives(claude_md: &str) -> Vec<String> {
     let triggers: &[&str] = &[
@@ -151,11 +150,11 @@ pub fn extract_imperatives(claude_md: &str) -> Vec<String> {
     out
 }
 
-fn score_imanaerative(imana: &str, rules: &RulesFile) -> DriftItem {
-    let imana_tokens = meaningful_tokens(imana);
-    if imana_tokens.is_empty() {
+fn score_imperative(imp: &str, rules: &RulesFile) -> DriftItem {
+    let imp_tokens = meaningful_tokens(imp);
+    if imp_tokens.is_empty() {
         return DriftItem {
-            imanaerative: imana.to_string(),
+            imperative: imp.to_string(),
             best_match: None,
             similarity: 0.0,
         };
@@ -167,7 +166,7 @@ fn score_imanaerative(imana: &str, rules: &RulesFile) -> DriftItem {
         if rule_tokens.is_empty() {
             continue;
         }
-        let shared: Vec<String> = imana_tokens
+        let shared: Vec<String> = imp_tokens
             .iter()
             .filter(|t| rule_tokens.contains(*t))
             .cloned()
@@ -175,20 +174,18 @@ fn score_imanaerative(imana: &str, rules: &RulesFile) -> DriftItem {
         if shared.is_empty() {
             continue;
         }
-        let union: HashSet<&String> = imana_tokens.iter().chain(rule_tokens.iter()).collect();
+        let union: HashSet<&String> = imp_tokens.iter().chain(rule_tokens.iter()).collect();
         let jaccard = shared.len() as f32 / union.len() as f32;
         match &best {
             None => best = Some((jaccard, rule.id.clone(), shared)),
-            Some((cur, _, _)) if jaccard > *cur => {
-                best = Some((jaccard, rule.id.clone(), shared))
-            }
+            Some((cur, _, _)) if jaccard > *cur => best = Some((jaccard, rule.id.clone(), shared)),
             _ => {}
         }
     }
 
     match best {
         Some((similarity, rule_id, shared_terms)) => DriftItem {
-            imanaerative: imana.to_string(),
+            imperative: imp.to_string(),
             best_match: Some(MatchedRule {
                 rule_id: rule_id.into(),
                 shared_terms,
@@ -196,7 +193,7 @@ fn score_imanaerative(imana: &str, rules: &RulesFile) -> DriftItem {
             similarity,
         },
         None => DriftItem {
-            imanaerative: imana.to_string(),
+            imperative: imp.to_string(),
             best_match: None,
             similarity: 0.0,
         },
@@ -243,7 +240,11 @@ pub fn render_table(report: &DriftReport) -> String {
         .iter()
         .filter(|i| i.similarity >= report.coverage_threshold)
         .collect();
-    covered.sort_by(|a, b| b.similarity.partial_cmp(&a.similarity).unwrap_or(std::cmp::Ordering::Equal));
+    covered.sort_by(|a, b| {
+        b.similarity
+            .partial_cmp(&a.similarity)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     let uncovered: Vec<&DriftItem> = report
         .items
         .iter()
@@ -267,19 +268,16 @@ pub fn render_table(report: &DriftReport) -> String {
         out.push_str(&format!(
             "  [{:.2}] {} → {}\n",
             item.similarity,
-            truncate(&item.imanaerative, 80),
+            truncate(&item.imperative, 80),
             rid
         ));
     }
     out.push_str(&format!("\n## Uncovered ({})\n", uncovered.len()));
     if uncovered.is_empty() {
-        out.push_str("  (none — every imanaerative bullet has a related rule)\n");
+        out.push_str("  (none — every imperative bullet has a related rule)\n");
     } else {
         for item in &uncovered {
-            out.push_str(&format!(
-                "  - {}\n",
-                truncate(&item.imanaerative, 100)
-            ));
+            out.push_str(&format!("  - {}\n", truncate(&item.imperative, 100)));
         }
     }
     out
@@ -294,7 +292,7 @@ pub fn render_json(report: &DriftReport) -> String {
         .iter()
         .map(|i| {
             json!({
-                "imanaerative": i.imanaerative,
+                "imperative": i.imperative,
                 "similarity": i.similarity,
                 "covered": i.similarity >= report.coverage_threshold,
                 "best_match": i.best_match.as_ref().map(|m| json!({
@@ -329,7 +327,7 @@ mod tests {
     use crate::rules_file::{DiskAction, DiskCondition, DiskRule, RulesFile};
 
     #[test]
-    fn extracts_basic_imanaerative_bullets() {
+    fn extracts_basic_imperative_bullets() {
         let md = "
 # Project
 
@@ -341,18 +339,18 @@ Some intro.
 - Always run tests before claiming done
 - Avoid clone in hot loops
 - Use `?` for error propagation
-- We sometimes do X (not an imanaerative)
+- We sometimes do X (not an imperative)
 - Prefer slices over Vec refs
 ";
-        let imanas = extract_imperatives(md);
-        assert!(imanas.iter().any(|s| s.contains("Don't use unwrap")));
-        assert!(imanas.iter().any(|s| s.contains("Always run tests")));
-        assert!(imanas.iter().any(|s| s.contains("Avoid clone")));
-        assert!(imanas.iter().any(|s| s.contains("Use `?`")));
-        assert!(imanas.iter().any(|s| s.contains("Prefer slices")));
+        let imps = extract_imperatives(md);
+        assert!(imps.iter().any(|s| s.contains("Don't use unwrap")));
+        assert!(imps.iter().any(|s| s.contains("Always run tests")));
+        assert!(imps.iter().any(|s| s.contains("Avoid clone")));
+        assert!(imps.iter().any(|s| s.contains("Use `?`")));
+        assert!(imps.iter().any(|s| s.contains("Prefer slices")));
         assert!(
-            !imanas.iter().any(|s| s.contains("We sometimes")),
-            "non-imanaerative bullets should be excluded"
+            !imps.iter().any(|s| s.contains("We sometimes")),
+            "non-imperative bullets should be excluded"
         );
     }
 
@@ -363,10 +361,10 @@ Some intro.
 
 1. Don't deflect with 'pre-existing issue'
 2. Always trace the call chain before claiming done
-3. We use semver for releases (not an imanaerative)
+3. We use semver for releases (not an imperative)
 ";
-        let imanas = extract_imperatives(md);
-        assert_eq!(imanas.len(), 2);
+        let imps = extract_imperatives(md);
+        assert_eq!(imps.len(), 2);
     }
 
     fn rule_with(id: &str, message: &str) -> DiskRule {
@@ -390,14 +388,14 @@ Some intro.
     }
 
     #[test]
-    fn imanaerative_matches_rule_with_shared_terms() {
+    fn imperative_matches_rule_with_shared_terms() {
         let rules = RulesFile {
             rules: vec![rule_with(
                 "enforce-no-unwrap-in-src",
                 "Avoid .unwrap() in src/ — use ? for error propagation.",
             )],
         };
-        let item = score_imanaerative("Don't use unwrap in src/", &rules);
+        let item = score_imperative("Don't use unwrap in src/", &rules);
         assert!(item.best_match.is_some());
         let m = item.best_match.unwrap();
         assert_eq!(m.rule_id, "enforce-no-unwrap-in-src");
@@ -410,14 +408,14 @@ Some intro.
     }
 
     #[test]
-    fn imanaerative_with_no_overlap_is_uncovered() {
+    fn imperative_with_no_overlap_is_uncovered() {
         let rules = RulesFile {
             rules: vec![rule_with(
                 "enforce-no-unwrap-in-src",
                 "Avoid .unwrap() in src/",
             )],
         };
-        let item = score_imanaerative("Always run manual playtest scenarios", &rules);
+        let item = score_imperative("Always run manual playtest scenarios", &rules);
         assert!(
             item.similarity < COVERAGE_THRESHOLD,
             "no shared meaningful terms → uncovered"
@@ -425,9 +423,9 @@ Some intro.
     }
 
     #[test]
-    fn empty_imanaerative_returns_no_match() {
+    fn empty_imperative_returns_no_match() {
         let rules = RulesFile { rules: vec![] };
-        let item = score_imanaerative("- - -", &rules);
+        let item = score_imperative("- - -", &rules);
         assert!(item.best_match.is_none());
         assert_eq!(item.similarity, 0.0);
     }
@@ -435,12 +433,12 @@ Some intro.
     #[test]
     fn render_table_separates_covered_and_uncovered() {
         let report = DriftReport {
-            claude_md_path: "/tmana/CLAUDE.md".to_string(),
-            rules_path: "/tmana/rules.json".to_string(),
+            claude_md_path: "/tmp/CLAUDE.md".to_string(),
+            rules_path: "/tmp/rules.json".to_string(),
             coverage_threshold: 0.15,
             items: vec![
                 DriftItem {
-                    imanaerative: "Don't use unwrap".to_string(),
+                    imperative: "Don't use unwrap".to_string(),
                     best_match: Some(MatchedRule {
                         rule_id: "enforce-no-unwrap-in-src".into(),
                         shared_terms: vec!["unwrap".to_string()],
@@ -448,7 +446,7 @@ Some intro.
                     similarity: 0.5,
                 },
                 DriftItem {
-                    imanaerative: "Always playtest before pushing".to_string(),
+                    imperative: "Always playtest before pushing".to_string(),
                     best_match: None,
                     similarity: 0.0,
                 },

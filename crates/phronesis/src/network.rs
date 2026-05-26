@@ -1,4 +1,4 @@
-//! The `ReteNetwork` — the posinating surface that wires alpha and
+//! The `ReteNetwork` — the coordinating surface that wires alpha and
 //! beta networks, the agenda, and the script evaluator into a single
 //! engine instance. Hosts interact with phronesis primarily through
 //! this type.
@@ -20,7 +20,7 @@ use crate::agenda::Agenda;
 use crate::alpha_network::AlphaNetwork;
 use crate::beta_network::BetaNetwork;
 use crate::consequence::Consequence;
-use crate::engine_types::{Action, Condition, Fact, PerformanceValues, Rule};
+use crate::engine_types::{Action, Condition, Fact, PerformanceStats, Rule};
 use crate::production::ProductionNetwork;
 use crate::script_evaluator::ScriptEvaluator;
 use crate::wme::{WmeManager, WorkingMemoryElement};
@@ -34,10 +34,10 @@ pub struct ReteNetwork {
     pub agenda: Arc<Mutex<Agenda>>,
     pub production_network: Arc<Mutex<ProductionNetwork>>,
     /// Performance tracking (interior mutability via Mutex)
-    performance_values: Arc<Mutex<PerformanceValues>>,
+    performance_stats: Arc<Mutex<PerformanceStats>>,
     /// Track activations that have already been added to the agenda to avoid duplicates
     fired_activations: Arc<Mutex<HashSet<String>>>,
-    /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-score-progression)
+    /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-xp-progression)
     script_evaluator: ScriptEvaluator,
 }
 
@@ -55,7 +55,7 @@ impl ReteNetwork {
             beta_network: Arc::new(Mutex::new(BetaNetwork::new())),
             agenda: Arc::new(Mutex::new(Agenda::new())),
             production_network: Arc::new(Mutex::new(ProductionNetwork::new())),
-            performance_values: Arc::new(Mutex::new(PerformanceValues::new())),
+            performance_stats: Arc::new(Mutex::new(PerformanceStats::new())),
             fired_activations: Arc::new(Mutex::new(HashSet::new())),
             script_evaluator: ScriptEvaluator::new(),
         }
@@ -170,7 +170,7 @@ impl ReteNetwork {
 
         // Record metrics
         {
-            let mut values = self.performance_values.lock().map_err(|e| e.to_string())?;
+            let mut values = self.performance_stats.lock().map_err(|e| e.to_string())?;
             values.record_assertion(start.elapsed());
         }
 
@@ -316,7 +316,10 @@ impl ReteNetwork {
         // profiling showed was ~80% of assert_fact's total cost.
         let candidates: Vec<crate::production::SingleCondRuleEntry> = {
             let production_network = self.production_network.lock().map_err(|e| e.to_string())?;
-            match production_network.single_cond_index.get(&wme.fact.predicate) {
+            match production_network
+                .single_cond_index
+                .get(&wme.fact.predicate)
+            {
                 Some(entries) => entries.clone(),
                 None => return Ok(()),
             }
@@ -373,7 +376,7 @@ impl ReteNetwork {
     /// FIXED: Now handles both single-condition (alpha only) and multi-condition (beta) rules
     /// NOTE: This does a full scan - prefer update_agenda_for_wme() for incremental updates
     pub async fn update_agenda(&self) -> Result<(), String> {
-        // tracing::debug imported at module rank
+        // tracing::debug imported at module level
 
         // Use the persistent fired_activations set
         let mut fired_activations = self.fired_activations.lock().map_err(|e| e.to_string())?;
@@ -489,8 +492,12 @@ impl ReteNetwork {
 
                         let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
 
-                        debug!("Adding multi-condition rule '{}' to agenda with {} WMEs and bindings {:?}",
-                               rule.id, wme_list.len(), token.bindings);
+                        debug!(
+                            "Adding multi-condition rule '{}' to agenda with {} WMEs and bindings {:?}",
+                            rule.id,
+                            wme_list.len(),
+                            token.bindings
+                        );
                         agenda.add_item(
                             rule.clone(),
                             wme_list,
@@ -545,7 +552,10 @@ impl ReteNetwork {
                 .script
                 .as_ref()
                 .ok_or_else(|| format!("Script condition missing script in rule '{}'", rule.id))?;
-            match self.script_evaluator.evaluate(script, &facts, &bindings_map) {
+            match self
+                .script_evaluator
+                .evaluate(script, &facts, &bindings_map)
+            {
                 Ok(true) => continue,
                 Ok(false) => {
                     debug!("Script condition blocked rule '{}': {}", rule.id, script);
@@ -616,7 +626,7 @@ impl ReteNetwork {
 
         // Record metrics
         {
-            let mut values = self.performance_values.lock().map_err(|e| e.to_string())?;
+            let mut values = self.performance_stats.lock().map_err(|e| e.to_string())?;
             values.record_evaluation(start.elapsed());
         }
 
@@ -624,7 +634,7 @@ impl ReteNetwork {
     }
 
     /// Drain the agenda by firing each item through `fire_agenda_item`,
-    /// producing `Consequence`s rather than raw `Action`s. New high-rank
+    /// producing `Consequence`s rather than raw `Action`s. New high-level
     /// entry point for callers that want rule_id + bindings on every fire.
     /// The legacy `execute_all_agenda_items` path stays available.
     pub fn fire_all_consequences(&self) -> Result<Vec<Consequence>, String> {
@@ -653,15 +663,15 @@ impl ReteNetwork {
         }
 
         {
-            let mut values = self.performance_values.lock().map_err(|e| e.to_string())?;
+            let mut values = self.performance_stats.lock().map_err(|e| e.to_string())?;
             values.record_evaluation(start.elapsed());
         }
 
         Ok(all)
     }
 
-    /// Get performance valueistics and log them
-    pub fn log_performance_values(&self) {
+    /// Get performance statistics and log them
+    pub fn log_performance_stats(&self) {
         let rules_count = self
             .production_network
             .lock()
@@ -672,24 +682,24 @@ impl ReteNetwork {
             .lock()
             .map(|wm| wm.get_all().len())
             .unwrap_or(0);
-        if let Ok(values) = self.performance_values.lock() {
+        if let Ok(values) = self.performance_stats.lock() {
             values.log_summary(rules_count, facts_count);
         }
     }
 
     /// Reset per-cycle performance counters
     pub fn reset_cycle_values(&self) {
-        if let Ok(mut values) = self.performance_values.lock() {
+        if let Ok(mut values) = self.performance_stats.lock() {
             values.reset_cycle();
         }
     }
 
-    /// Get a copy of performance valueistics
-    pub fn get_performance_values(&self) -> Option<PerformanceValues> {
-        self.performance_values
+    /// Get a copy of performance statistics
+    pub fn get_performance_stats(&self) -> Option<PerformanceStats> {
+        self.performance_stats
             .lock()
             .ok()
-            .map(|s| PerformanceValues {
+            .map(|s| PerformanceStats {
                 total_evaluation_time: s.total_evaluation_time,
                 evaluation_count: s.evaluation_count,
                 total_assertion_time: s.total_assertion_time,
@@ -738,7 +748,7 @@ impl ReteNetwork {
             "task_started",
             "subtask_completed",
             "module_standing",
-            "agent_trust_rank",
+            "agent_trust_level",
             "hidden_debt_found",
             "artifact_generated",
             "goal_reached",
@@ -748,7 +758,7 @@ impl ReteNetwork {
             "platform_selected",
             "policy_violation",
             "policy_compliant_action",
-            "compliance_rank",
+            "compliance_level",
             "directory_audited",
             "task_failed",
         ];

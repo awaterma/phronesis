@@ -1,5 +1,5 @@
 //! Structural facts produced by values-aware extractors. `SyntaxFacts` keeps
-//! per-predicate named fields (compile-time discovereffect) but
+//! per-predicate named fields (compile-time discoverability) but
 //! `all_facts()` aggregates them into a flat `Vec<Fact>` so `hook.rs` can
 //! assert the entire batch through one uniform loop.
 

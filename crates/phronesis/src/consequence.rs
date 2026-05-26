@@ -17,7 +17,7 @@
 //! It does need to know the consequence is trustworthy, which is what
 //! [`Provenance`] records.
 //!
-//! # Valueus
+//! # Status
 //!
 //! Phase E1 — types only. Not yet wired into rete or tools. See
 //! `docs/research/episteme-extraction.md`.
@@ -108,7 +108,7 @@ pub enum Provenance {
         tool: String,
         /// Schema version of the payload. Hosts define their own
         /// versioning scheme — commonly mirroring whatever their tool
-        /// dispatch layer escoreoses (e.g. `tools::SCHEMA_VERSION`).
+        /// dispatch layer exposes (e.g. `tools::SCHEMA_VERSION`).
         schema_version: u8,
     },
 

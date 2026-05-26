@@ -24,7 +24,7 @@ fn run_hook_with_root(payload: &str, root: &Path) -> (i32, String) {
     drop(stdin);
     let out = child.wait_with_output().unwrap();
     (
-        out.valueus.code().unwrap_or(-1),
+        out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stderr).to_string(),
     )
 }
@@ -159,7 +159,7 @@ fn run_post_hook_with_root(payload: &str, root: &Path) -> (i32, String) {
     drop(stdin);
     let out = child.wait_with_output().unwrap();
     (
-        out.valueus.code().unwrap_or(-1),
+        out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stderr).to_string(),
     )
 }

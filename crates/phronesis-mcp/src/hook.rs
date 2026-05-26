@@ -10,9 +10,9 @@ use thiserror::Error;
 use crate::action_log::{self, LogEntry};
 use crate::diff_extract;
 use crate::security::{
-    self, read_file_capped, read_stdin_capped, resolve_safe_path, MAX_FACT_CONTENT_BYTES,
+    self, MAX_FACT_CONTENT_BYTES, read_file_capped, read_stdin_capped, resolve_safe_path,
 };
-use crate::stats;
+use crate::syntax;
 
 #[derive(Debug, Error)]
 enum RulesLoadError {
@@ -618,11 +618,10 @@ fn extract_multiedit_field(input: &serde_json::Value, field: &str) -> Option<Str
 // Fact-assertion family moved to hook_facts.rs for focus; brought
 // back into this module via paths used at call sites below.
 use crate::hook_facts::{
-    assert_common_facts, assert_diff_facts, assert_values_facts, assert_test_facts,
+    assert_common_facts, assert_diff_facts, assert_test_facts, assert_values_facts,
     check_content_patterns, check_missing_patterns, collect_content_patterns,
     collect_missing_patterns,
 };
-
 
 /// Record a hook event to `.phronesis/log.jsonl`. Best-effort: log failures
 /// are intentionally swallowed because we never want logging to alter the
@@ -650,7 +649,7 @@ fn log_hook_event(
     let _ = action_log::append(&path, &entry);
 }
 
-pub(crate) use crate::hook_logged::{split_messages_by_action_type, LoggedConsequence};
+pub(crate) use crate::hook_logged::{LoggedConsequence, split_messages_by_action_type};
 
 #[cfg(test)]
 mod tests {
@@ -1099,7 +1098,7 @@ mod tests {
         let out = filter_new_or_increased_clone_counts(&new, Some(&old));
         assert!(
             out.is_empty(),
-            "count went down — partial imanarovement should not fire"
+            "count went down — partial improvement should not fire"
         );
     }
 
@@ -1196,10 +1195,7 @@ mod tests {
 
     #[test]
     fn extract_new_content_gemini_write_file_missing_content_is_none() {
-        let payload = make_payload(
-            "write_file",
-            serde_json::json!({ "file_path": "f.rs" }),
-        );
+        let payload = make_payload("write_file", serde_json::json!({ "file_path": "f.rs" }));
         assert_eq!(extract_new_content(&payload, "write_file"), None);
     }
 

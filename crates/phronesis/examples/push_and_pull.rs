@@ -20,7 +20,7 @@
 //! `&[Consequence]`. That uniformity is the load-bearing property.
 
 use async_trait::async_trait;
-use phronesis::{lookup_as_consequence, Actor, ActorOutput, Consequence, ConsequenceKind, Lookup};
+use phronesis::{Actor, ActorOutput, Consequence, ConsequenceKind, Lookup, lookup_as_consequence};
 
 /// The simplest possible Actor. Renders each consequence's predicate
 /// and provenance source on one line. Deterministic, no LLM.
@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
         "hand.card_played",
         vec!["fact-42".into()],
         ConsequenceKind::Event,
-        &serde_json::json!({ "player": "alice", "score_delta": -3 }),
+        &serde_json::json!({ "actor": "alice", "score_delta": -3 }),
     )?;
 
     // Pull: invoke a deterministic Lookup and wrap the result.

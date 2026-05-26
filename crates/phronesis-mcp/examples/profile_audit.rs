@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use phronesis_mcp::audit::{run_profiled, AuditOpts};
+use phronesis_mcp::audit::{AuditOpts, run_profiled};
 use phronesis_mcp::rules_file;
 
 fn pp(ns: std::time::Duration) -> String {
@@ -66,11 +66,8 @@ fn main() {
     let (report, times) = run_profiled(&rules, &opts);
 
     let total = times.total;
-    let inner_sum = times.discover
-        + times.read_files
-        + times.keep_mask
-        + times.match_loop
-        + times.report_build;
+    let inner_sum =
+        times.discover + times.read_files + times.keep_mask + times.match_loop + times.report_build;
     let unaccounted = total.saturating_sub(inner_sum);
 
     println!();
@@ -115,5 +112,8 @@ fn main() {
     );
     println!("  TOTAL               {:>9}", pp(total));
     println!();
-    println!("  hits across all rules: {}", report.per_rule.iter().map(|r| r.hits).sum::<u32>());
+    println!(
+        "  hits across all rules: {}",
+        report.per_rule.iter().map(|r| r.hits).sum::<u32>()
+    );
 }

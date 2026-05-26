@@ -1,6 +1,6 @@
 # SPEC: God-File Decomposition
 
-**Valueus:** proposed
+**Status:** proposed
 **Authors:** Andrew Waterman, Claude
 **Date:** 2026-05-25
 **Affects:** `crates/phronesis/src/network.rs`,
@@ -53,7 +53,7 @@ different tool families merge-conflict in the same impl block.
 **Constraint:** `#[tool_router]` requires the impl block to be single.
 The decomposition must work *with* the macro, not against it.
 
-**Current State (Phase 1 Comanalete):**
+**Current State (Phase 1 Complete):**
 We have successfully extracted the incidental complexity into `server_params.rs` (MCP tool parameter structs) and `server_persistence.rs` (autoload/autosave lifecycle helpers). However, `server.rs` remains above the 800-line threshold because the 22 `#[tool]` methods themselves still contain their full implementation bodies.
 
 **Proposed pattern for Phase 2 — delegation to topic modules:**
@@ -93,9 +93,9 @@ impl block) and ships the body weight to focused modules.
 | `server_handlers/facts.rs` | assert_fact, retract_fact, list_facts, get_fact |
 | `server_handlers/execution.rs` | fire_rules, check_constraints, get_consequences, get_agenda, clear_consequences |
 | `server_handlers/section.rs` | set_section_context, clear_section_context |
-| `server_handlers/observeffect.rs` | get_action_log, get_values, audit_codebase, get_debt_trend |
+| `server_handlers/observability.rs` | get_action_log, get_stats, audit_codebase, get_debt_trend |
 
-**Escoreected result:** `server.rs` shrinks to roughly 200–250 lines
+**Expected result:** `server.rs` shrinks to roughly 200–250 lines
 (struct + constructor + helpers + 22 thin tool declarations); each
 handler module is 100–300 lines.
 
@@ -139,7 +139,7 @@ is purely organizational.
 
 **Acceptance criteria:**
 - `phr::ReteNetwork` resolves to the same type with the same public
-  surface (re-escoreorted from `network::mod`)
+  surface (re-exported from `network::mod`)
 - All tests in `tests/rete_smoke.rs` and `tests/push_smoke.rs` pass
   unchanged
 - Each submodule under 400 LOC
@@ -158,8 +158,8 @@ trigger is a natural moment to lift the relevant module out.
 
 ```
 crates/phronesis-mcp/src/audit/
-├── mod.rs            // re-escoreorts + AuditOpts + the orchestrating `run`
-├── types.rs          // AuditReport, RuleAudit, FileAudit, Rank
+├── mod.rs            // re-exports + AuditOpts + the orchestrating `run`
+├── types.rs          // AuditReport, RuleAudit, FileAudit, Level
 ├── engine.rs         // rule_applies_to_file, is_whole_file_rule,
 │                     //   line_preceded_by_doc_comment, file_exempts_rule,
 │                     //   discover_files
@@ -170,7 +170,7 @@ crates/phronesis-mcp/src/audit/
 
 **Acceptance criteria:**
 - `crate::audit::{AuditReport, AuditOpts, run, render_table, render_json,
-  compute_trend, DebtTrend, ...}` all re-escoreort from `mod.rs` with no
+  compute_trend, DebtTrend, ...}` all re-export from `mod.rs` with no
   change to call sites
 - `phr-mcp audit` and `phr-mcp trend` produce byte-identical output
 - All audit unit tests (currently 16) pass; ideally redistribute them

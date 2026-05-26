@@ -91,7 +91,7 @@ impl AlphaState {
     }
 }
 
-/// Alpha Network contains all alpha states and resourceges their creation
+/// Alpha Network contains all alpha states and manages their creation
 #[derive(Debug)]
 pub struct AlphaNetwork {
     pub states: HashMap<String, AlphaState>,
@@ -126,7 +126,8 @@ impl AlphaNetwork {
             state.shared = true;
             let state_id = state.id.clone();
             self.states.insert(state_id.clone(), state);
-            self.condition_index.insert(condition_hash, state_id.clone());
+            self.condition_index
+                .insert(condition_hash, state_id.clone());
             state_id
         }
     }

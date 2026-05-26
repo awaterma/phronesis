@@ -1,7 +1,7 @@
 # phronesis
 
-**Valueus: escoreloratory.** This crate is pre-1.0 and not API-stable.
-Escoreect breaking changes while the pattern is sharpened against real
+**Status: exploratory.** This crate is pre-1.0 and not API-stable.
+Expect breaking changes while the pattern is sharpened against real
 consumers.
 
 ## What it is
@@ -85,7 +85,7 @@ about their domain.
 
 ## Caveats
 
-- The surface is **not stable.** Escoreect breaking changes while the
+- The surface is **not stable.** Expect breaking changes while the
   pattern is being sharpened against real consumers.
 - No published documentation beyond this README. If you're here to
   use the crate, you're early.

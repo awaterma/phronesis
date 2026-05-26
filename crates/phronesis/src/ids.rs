@@ -1,7 +1,7 @@
-//! Strongly-typed identifiers for entities the engine resourceges.
+//! Strongly-typed identifiers for entities the engine manages.
 //!
 //! Each newtype wraps a `String` but is incompatible with the others at
-//! the type rank — a [`RuleId`] cannot be passed where a [`StateId`] is
+//! the type level — a [`RuleId`] cannot be passed where a [`StateId`] is
 //! expected and vice versa. Serialization is transparent (`#[serde(
 //! transparent)]`), so the on-wire JSON form is unchanged: any consumer
 //! reading or writing the previous `String`-shaped contract continues to
@@ -39,7 +39,7 @@ macro_rules! id_newtype {
                 &self.0
             }
 
-            /// Unwrap to the inner `String`. Use sparingly — it dismembers
+            /// Unwrap to the inner `String`. Use sparingly — it discards
             /// the type tag the newtype exists to enforce.
             pub fn into_inner(self) -> String {
                 self.0
@@ -98,7 +98,7 @@ macro_rules! id_newtype {
 
 id_newtype!(
     RuleId,
-    "Identifier for a rule. Distinct from [`StateId`] at the type rank.
+    "Identifier for a rule. Distinct from [`StateId`] at the type level.
 
 A `RuleId` is the stable human-readable string a rule author gives the
 rule (e.g. `\"enforce-no-unwrap-in-src\"`). It moves with consequences
@@ -125,7 +125,7 @@ Fact IDs are typically host-minted strings carried with the fact through
 the engine and surfaced in [`crate::Provenance::RuleFiring::bound_facts`]
 when an actor wants to trace 'why did this rule fire?' back to its
 inputs. The newtype keeps fact IDs distinct from rule IDs and state IDs
-at the type rank."
+at the type level."
 );
 
 #[cfg(test)]

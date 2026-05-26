@@ -15,7 +15,7 @@
 //! - **Choice** — action selection from a set of [`Affordance`]
 //!   consequences (a future autonomous play actor).
 //!
-//! # Valueus
+//! # Status
 //!
 //! Phase E1 — trait shape only. No implementations yet. The first
 //! implementation in E2 will wrap `crate::play::llm_generation` so
@@ -45,7 +45,7 @@ pub trait Actor: Send + Sync {
 /// What an actor produced. Intentionally narrow.
 #[derive(Debug, Clone)]
 pub enum ActorOutput {
-    /// Free-form text. Narration, dialogue, escorelanation.
+    /// Free-form text. Narration, dialogue, explanation.
     Text(String),
 
     /// A proposed edit to one or more files. The patch format is

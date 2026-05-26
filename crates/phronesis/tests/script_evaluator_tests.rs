@@ -1,7 +1,7 @@
 //! Unit tests for ScriptEvaluator
 
+use phronesis::{Fact, ScriptEvaluator};
 use std::collections::HashMap;
-use phronesis::{ScriptEvaluator, Fact};
 
 #[test]
 fn facts_contain_basic_match() {
@@ -22,11 +22,7 @@ fn facts_contain_basic_match() {
     ];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "facts_contain('greet', ['alice'])",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("facts_contain('greet', ['alice'])", &facts, &bindings);
     assert!(result.is_ok());
     assert!(result.unwrap());
 }
@@ -34,21 +30,15 @@ fn facts_contain_basic_match() {
 #[test]
 fn facts_contain_no_match() {
     let evaluator = ScriptEvaluator::new();
-    let facts = vec![
-        Fact {
-            id: "1".to_string(),
-            predicate: "greet".to_string(),
-            args: vec!["alice".to_string()],
-            timestamp: 0,
-        },
-    ];
+    let facts = vec![Fact {
+        id: "1".to_string(),
+        predicate: "greet".to_string(),
+        args: vec!["alice".to_string()],
+        timestamp: 0,
+    }];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "facts_contain('farewell', ['bob'])",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("facts_contain('farewell', ['bob'])", &facts, &bindings);
     assert!(result.is_ok());
     assert!(!result.unwrap());
 }
@@ -56,21 +46,15 @@ fn facts_contain_no_match() {
 #[test]
 fn facts_contain_wildcard_match() {
     let evaluator = ScriptEvaluator::new();
-    let facts = vec![
-        Fact {
-            id: "1".to_string(),
-            predicate: "greet".to_string(),
-            args: vec!["alice".to_string()],
-            timestamp: 0,
-        },
-    ];
+    let facts = vec![Fact {
+        id: "1".to_string(),
+        predicate: "greet".to_string(),
+        args: vec!["alice".to_string()],
+        timestamp: 0,
+    }];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "facts_contain('greet', ['*'])",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("facts_contain('greet', ['*'])", &facts, &bindings);
     assert!(result.is_ok());
     assert!(result.unwrap());
 }
@@ -78,21 +62,15 @@ fn facts_contain_wildcard_match() {
 #[test]
 fn facts_contain_negation() {
     let evaluator = ScriptEvaluator::new();
-    let facts = vec![
-        Fact {
-            id: "1".to_string(),
-            predicate: "greet".to_string(),
-            args: vec!["alice".to_string()],
-            timestamp: 0,
-        },
-    ];
+    let facts = vec![Fact {
+        id: "1".to_string(),
+        predicate: "greet".to_string(),
+        args: vec!["alice".to_string()],
+        timestamp: 0,
+    }];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "!facts_contain('farewell', ['bob'])",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("!facts_contain('farewell', ['bob'])", &facts, &bindings);
     assert!(result.is_ok());
     assert!(result.unwrap());
 }
@@ -122,11 +100,7 @@ fn facts_count_basic() {
     ];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "facts_count('greet', ['*']) >= 3",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("facts_count('greet', ['*']) >= 3", &facts, &bindings);
     assert!(result.is_ok());
     assert!(result.unwrap());
 }
@@ -150,11 +124,7 @@ fn facts_count_with_wildcard() {
     ];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "facts_count('greet', ['*']) >= 2",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("facts_count('greet', ['*']) >= 2", &facts, &bindings);
     assert!(result.is_ok());
     assert!(!result.unwrap());
 }
@@ -179,32 +149,38 @@ fn facts_count_comparison_operators() {
     let bindings = HashMap::new();
 
     // Test >
-    assert!(evaluator.evaluate("facts_count('greet', ['*']) > 1", &facts, &bindings).unwrap());
+    assert!(
+        evaluator
+            .evaluate("facts_count('greet', ['*']) > 1", &facts, &bindings)
+            .unwrap()
+    );
     // Test ==
-    assert!(evaluator.evaluate("facts_count('greet', ['*']) == 2", &facts, &bindings).unwrap());
+    assert!(
+        evaluator
+            .evaluate("facts_count('greet', ['*']) == 2", &facts, &bindings)
+            .unwrap()
+    );
     // Test <
-    assert!(evaluator.evaluate("facts_count('greet', ['*']) < 5", &facts, &bindings).unwrap());
+    assert!(
+        evaluator
+            .evaluate("facts_count('greet', ['*']) < 5", &facts, &bindings)
+            .unwrap()
+    );
 }
 
 #[test]
 fn variable_substitution() {
     let evaluator = ScriptEvaluator::new();
-    let facts = vec![
-        Fact {
-            id: "1".to_string(),
-            predicate: "greet".to_string(),
-            args: vec!["alice".to_string()],
-            timestamp: 0,
-        },
-    ];
+    let facts = vec![Fact {
+        id: "1".to_string(),
+        predicate: "greet".to_string(),
+        args: vec!["alice".to_string()],
+        timestamp: 0,
+    }];
     let mut bindings = HashMap::new();
     bindings.insert("?name".to_string(), "alice".to_string());
 
-    let result = evaluator.evaluate(
-        "facts_contain('greet', ['?name'])",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("facts_contain('greet', ['?name'])", &facts, &bindings);
     assert!(result.is_ok());
     assert!(result.unwrap());
 }
@@ -215,11 +191,7 @@ fn malformed_expression() {
     let facts = vec![];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "unknown_function('test')",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("unknown_function('test')", &facts, &bindings);
     assert!(result.is_err());
 }
 
@@ -229,11 +201,7 @@ fn malformed_facts_contain() {
     let facts = vec![];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "facts_contain('test')",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("facts_contain('test')", &facts, &bindings);
     assert!(result.is_err());
 }
 
@@ -243,10 +211,6 @@ fn malformed_facts_count() {
     let facts = vec![];
     let bindings = HashMap::new();
 
-    let result = evaluator.evaluate(
-        "facts_count('test')",
-        &facts,
-        &bindings,
-    );
+    let result = evaluator.evaluate("facts_count('test')", &facts, &bindings);
     assert!(result.is_err());
 }

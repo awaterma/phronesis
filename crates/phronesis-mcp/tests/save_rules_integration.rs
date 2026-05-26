@@ -1,5 +1,5 @@
 //! End-to-end tests for `save_rules` and `load_rules_file` driven through the
-//! MCP stdio server in a subprocess. Each test owns its own temana directory and
+//! MCP stdio server in a subprocess. Each test owns its own temp directory and
 //! passes it as the project root via `PHRONESIS_PROJECT_ROOT`, isolating the
 //! environment from other tests.
 
@@ -239,7 +239,7 @@ fn save_rules_dry_run_does_not_write() {
 }
 
 #[test]
-fn save_rules_replace_mode_dismembers_disk_only() {
+fn save_rules_replace_mode_discards_disk_only() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
     std::fs::write(

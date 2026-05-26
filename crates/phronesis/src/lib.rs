@@ -18,7 +18,7 @@
 //!   code-generation layer.
 //! - **Pull**: actor asks → deterministic lookup returns a [`Consequence`].
 //!   Typically backed by a registry of tool implementations the host
-//!   escoreoses to its agent.
+//!   exposes to its agent.
 //!
 //! The crate defines the types and the engine; integration with any
 //! particular host (an MCP server, a game engine, a sheet-FFI bridge,
@@ -45,14 +45,14 @@ pub use agenda::*;
 pub use alpha_network::*;
 pub use beta_network::*;
 pub use compose::{
-    invoke_rule_driven_lookups, try_invoke_rule_driven_lookups, LookupRegistry, ToolInvocationError,
+    LookupRegistry, ToolInvocationError, invoke_rule_driven_lookups, try_invoke_rule_driven_lookups,
 };
 pub use consequence::{Consequence, ConsequenceKind, Provenance};
-pub use engine_types::{Action, Condition, Fact, PerformanceValues, Rule};
-pub use ids::{FactId, StateId, RuleId};
+pub use engine_types::{Action, Condition, Fact, PerformanceStats, Rule};
+pub use ids::{FactId, RuleId, StateId};
 pub use network::*;
 pub use production::*;
-pub use pull::{dyn_lookup_as_consequence, lookup_as_consequence, DynLookup, Lookup};
+pub use pull::{DynLookup, Lookup, dyn_lookup_as_consequence, lookup_as_consequence};
 pub use push::rule_firing_to_consequences;
 pub use script_evaluator::ScriptEvaluator;
 pub use variable_binding::{Bindings, Token};

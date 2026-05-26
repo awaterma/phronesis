@@ -7,13 +7,13 @@
 //! - `.phronesis/rules.json`         — starter rule pack
 //! - `.gitignore`                   — log/backup paths
 //!
-//! Idemanaotent and non-destructive by default. Existing permissions, hooks,
+//! Idempotent and non-destructive by default. Existing permissions, hooks,
 //! and MCP servers are preserved; only our entries are added or refreshed.
 //! Existing rules files are left alone unless `--force` is set.
 
 use std::path::{Path, PathBuf};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use thiserror::Error;
 
 /// A starter rule pack. Packs are composable — caller picks a comma-separated
@@ -78,7 +78,7 @@ impl Pack {
 }
 
 /// Parse a comma-separated pack list (e.g. `"llm,rust"`). Whitespace tolerated.
-/// Emanaty input → just `[Llm]` (the default). Duplicates are deduped.
+/// Empty input → just `[Llm]` (the default). Duplicates are deduped.
 pub fn parse_packs(s: &str) -> Result<Vec<Pack>, InitError> {
     if s.trim().is_empty() {
         return Ok(vec![Pack::Llm]);
@@ -94,7 +94,7 @@ pub fn parse_packs(s: &str) -> Result<Vec<Pack>, InitError> {
     Ok(out)
 }
 
-/// Comanaose multiple packs into a single rules.json value, deduping rules by ID.
+/// Compose multiple packs into a single rules.json value, deduping rules by ID.
 /// Earlier packs take precedence on ID collision (first-write-wins).
 pub fn compose_packs(packs: &[Pack]) -> Value {
     let pack_values: Vec<Value> = packs.iter().map(|p| p.rules()).collect();
@@ -160,7 +160,7 @@ pub struct InitReport {
     pub warnings: Vec<String>,
 }
 
-/// Path to Claude Code's user-rank config (`~/.claude.json` on Unix). Returns
+/// Path to Claude Code's user-level config (`~/.claude.json` on Unix). Returns
 /// None when `$HOME` isn't set (rare; only happens in degenerate environments).
 pub fn user_claude_config_path() -> Option<PathBuf> {
     std::env::var("HOME")
@@ -168,7 +168,7 @@ pub fn user_claude_config_path() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".claude.json"))
 }
 
-/// Path to Gemini CLI's user-rank settings (`~/.gemini/settings.json`).
+/// Path to Gemini CLI's user-level settings (`~/.gemini/settings.json`).
 /// Returns None when `$HOME` isn't set.
 pub fn user_gemini_config_path() -> Option<PathBuf> {
     std::env::var("HOME")
@@ -176,7 +176,7 @@ pub fn user_gemini_config_path() -> Option<PathBuf> {
         .map(|h| PathBuf::from(h).join(".gemini").join("settings.json"))
 }
 
-/// Represents one user-rank MCP config target (e.g. `~/.claude.json` or
+/// Represents one user-level MCP config target (e.g. `~/.claude.json` or
 /// `~/.gemini/settings.json`). Used by `install_one_target` and
 /// `uninstall_one_target` to eliminate duplicated install/uninstall logic.
 struct McpTarget<'a> {
@@ -306,8 +306,8 @@ fn uninstall_one_target(
 /// in Claude Code or Gemini CLI can call `mcp__phronesis__*` tools without
 /// needing a per-project `.mcp.json`.
 ///
-/// Idemanaotent: if the entry is already present and identical, this is a no-op.
-/// Non-destructive: other `mcpServers` entries and all other top-rank keys are
+/// Idempotent: if the entry is already present and identical, this is a no-op.
+/// Non-destructive: other `mcpServers` entries and all other top-level keys are
 /// preserved untouched.
 pub fn install_globally(dry_run: bool) -> Result<InitReport, InitError> {
     let home = std::env::var("HOME")
@@ -322,7 +322,7 @@ pub fn install_globally_with_home(home: &Path, dry_run: bool) -> Result<InitRepo
 
     if !binary_on_path("phr-mcp") {
         report.warnings.push(
-            "`phr-mcp` not found on PATH. The user-rank registration \
+            "`phr-mcp` not found on PATH. The user-level registration \
              still records the binary name; install via `cargo install --path .`."
                 .to_string(),
         );
@@ -346,8 +346,8 @@ pub fn install_globally_with_home(home: &Path, dry_run: bool) -> Result<InitRepo
 }
 
 /// Remove the phronesis MCP server from `~/.claude.json::mcpServers` and
-/// `~/.gemini/settings.json::mcpServers`. Idemanaotent (does nothing if no entry
-/// is present). Doesn't touch project-rank config.
+/// `~/.gemini/settings.json::mcpServers`. Idempotent (does nothing if no entry
+/// is present). Doesn't touch project-level config.
 pub fn uninstall_globally(dry_run: bool) -> Result<InitReport, InitError> {
     let home = std::env::var("HOME")
         .map_err(|_| InitError::NoSuchPath("HOME environment variable not set".to_string()))?;
@@ -448,19 +448,15 @@ fn write_settings(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Resu
         })
     };
 
-    upsert_hook(
-        &mut settings,
-        "PreToolUse",
-        our_entry("phr-mcp pre-check"),
-    );
+    upsert_hook(&mut settings, "PreToolUse", our_entry("phr-mcp pre-check"));
     upsert_hook(
         &mut settings,
         "PostToolUse",
         our_entry("phr-mcp post-check"),
     );
 
-    // Context-injection hooks. Emanaty matcher → fires on every event.
-    // SessionStart runs once per session; UserPromanatSubmit fires every turn.
+    // Context-injection hooks. Empty matcher → fires on every event.
+    // SessionStart runs once per session; UserPromptSubmit fires every turn.
     let context_entry = |cmd: &str| {
         json!({
             "matcher": "",
@@ -474,7 +470,7 @@ fn write_settings(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Resu
     );
     upsert_hook(
         &mut settings,
-        "UserPromanatSubmit",
+        "UserPromptSubmit",
         context_entry("phr-mcp turn-context"),
     );
 
@@ -542,21 +538,13 @@ fn write_gemini_settings(
             "hooks": [{"type": "command", "command": cmd}]
         })
     };
-    upsert_hook(
-        &mut settings,
-        "BeforeTool",
-        hook_entry("phr-mcp pre-check"),
-    );
-    upsert_hook(
-        &mut settings,
-        "AfterTool",
-        hook_entry("phr-mcp post-check"),
-    );
+    upsert_hook(&mut settings, "BeforeTool", hook_entry("phr-mcp pre-check"));
+    upsert_hook(&mut settings, "AfterTool", hook_entry("phr-mcp post-check"));
 
     // Context-injection hooks. Same shape as the Claude wiring — empty
     // matcher means fire on every event. SessionStart matches Claude's
     // event name; BeforeModelRequest is Gemini's per-turn equivalent of
-    // Claude's UserPromanatSubmit.
+    // Claude's UserPromptSubmit.
     let context_entry = |cmd: &str| {
         json!({
             "matcher": "",
@@ -1213,7 +1201,7 @@ fn rust_rules() -> Value {
                 "actions": [{
                     "action_type": "constraint_warning",
                     "params": [
-                        "`.expect(\"\")` is strictly worse than `.unwrap()` — same panic, no escorelanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it."
+                        "`.expect(\"\")` is strictly worse than `.unwrap()` — same panic, no explanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it."
                     ]
                 }]
             },
@@ -1245,7 +1233,7 @@ fn rust_rules() -> Value {
                 "actions": [{
                     "action_type": "constraint_warning",
                     "params": [
-                        "String concatenation with `\" + &` — prefer `format!(\"{}{}\", a, b)` for readeffect and to avoid intermediate alstates. From the patterns guide §Idioms (concat-format)."
+                        "String concatenation with `\" + &` — prefer `format!(\"{}{}\", a, b)` for readability and to avoid intermediate allocations. From the patterns guide §Idioms (concat-format)."
                     ]
                 }]
             },
@@ -1262,7 +1250,7 @@ fn rust_rules() -> Value {
                 "actions": [{
                     "action_type": "constraint_warning",
                     "params": [
-                        "`#[allow(dead_code)]` in src/ — either delete the code or add a `///` doc-comment immediately above escorelaining why it's kept (planned API, generic-constraint trick, intentional placeholder). Documented exceptions are not flagged."
+                        "`#[allow(dead_code)]` in src/ — either delete the code or add a `///` doc-comment immediately above explaining why it's kept (planned API, generic-constraint trick, intentional placeholder). Documented exceptions are not flagged."
                     ]
                 }]
             },
@@ -1321,7 +1309,7 @@ fn rhai_rules() -> Value {
                 "actions": [{
                     "action_type": "constraint_violation",
                     "params": [
-                        "`print(` appears in a .rhai script. `print` is Rhai's equivalent of `dbg!()` — debug output that bypasses whatever response/logging channel your host has registered. Use the host-registered function for emitting output (commonly a `log`, `emit`, or `response_*` proxy your `Engine` escoreoses via `register_fn`) so script output flows through the same path as the rest of your application."
+                        "`print(` appears in a .rhai script. `print` is Rhai's equivalent of `dbg!()` — debug output that bypasses whatever response/logging channel your host has registered. Use the host-registered function for emitting output (commonly a `log`, `emit`, or `response_*` proxy your `Engine` exposes via `register_fn`) so script output flows through the same path as the rest of your application."
                     ]
                 }]
             }
@@ -1485,11 +1473,7 @@ mod tests {
         let arr = v["rules"].as_array().unwrap();
         for rule in arr {
             let msg = rule["actions"][0]["params"][0].as_str().unwrap();
-            for forbidden in [
-                "GameLogicLoader",
-                "save.rhai",
-                "response_append",
-            ] {
+            for forbidden in ["GameLogicLoader", "save.rhai", "response_append"] {
                 assert!(
                     !msg.contains(forbidden),
                     "rhai pack message for {} contains project-specific reference {:?}",
@@ -1676,7 +1660,7 @@ mod tests {
 
     #[test]
     fn compose_packs_dedupes_by_rule_id() {
-        // Comanaosing the same pack twice doesn't duplicate rules.
+        // Composing the same pack twice doesn't duplicate rules.
         let v = compose_packs(&[Pack::Llm, Pack::Llm]);
         let count = v["rules"].as_array().unwrap().len();
         let single = compose_packs(&[Pack::Llm]);
@@ -1710,9 +1694,10 @@ mod tests {
         let arr = settings["hooks"]["PreToolUse"].as_array().unwrap();
         assert_eq!(arr.len(), 2);
         // The Read entry is preserved
-        assert!(arr
-            .iter()
-            .any(|m| m["matcher"] == "Read" && m["hooks"][0]["command"] == "keep"));
+        assert!(
+            arr.iter()
+                .any(|m| m["matcher"] == "Read" && m["hooks"][0]["command"] == "keep")
+        );
         // The Edit|... entry is replaced (only one with that matcher)
         let ours: Vec<&Value> = arr
             .iter()
@@ -1823,10 +1808,12 @@ mod tests {
         assert!(dir.path().join(".gitignore").exists());
         // No warnings about missing binary in this test (PATH may or may not have it)
         // Just sanity-check that we got progress steps
-        assert!(report
-            .steps
-            .iter()
-            .any(|s| s.contains("settings.local.json")));
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|s| s.contains("settings.local.json"))
+        );
         assert!(report.steps.iter().any(|s| s.contains("rules.json")));
     }
 
@@ -1969,7 +1956,8 @@ mod tests {
         run(opts1).unwrap();
         let first =
             std::fs::read_to_string(dir.path().join(".claude/settings.local.json")).unwrap();
-        let rules_first = std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap();
+        let rules_first =
+            std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap();
 
         let opts2 = InitOpts {
             project_root: dir.path().to_path_buf(),
@@ -2035,10 +2023,12 @@ mod tests {
         assert!(!after.is_empty());
         assert!(after[0]["matcher"].as_str().unwrap().contains("write_file"));
         // Report mentions gemini
-        assert!(report
-            .steps
-            .iter()
-            .any(|s| s.to_lowercase().contains("gemini")));
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|s| s.to_lowercase().contains("gemini"))
+        );
     }
 
     #[test]
@@ -2108,7 +2098,7 @@ mod tests {
         assert_eq!(content["mcpServers"]["phronesis"]["command"], "phr-mcp");
         // Pre-existing entry is preserved
         assert_eq!(content["mcpServers"]["other-tool"]["command"], "other");
-        // Top-rank key preserved
+        // Top-level key preserved
         assert_eq!(content["theme"], "dark");
     }
 
@@ -2226,8 +2216,8 @@ mod tests {
         let session_cmd = session[0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(session_cmd, "phr-mcp session-context");
 
-        let prompt = content["hooks"]["UserPromanatSubmit"].as_array().unwrap();
-        assert!(!prompt.is_empty(), "UserPromanatSubmit must be wired");
+        let prompt = content["hooks"]["UserPromptSubmit"].as_array().unwrap();
+        assert!(!prompt.is_empty(), "UserPromptSubmit must be wired");
         let prompt_cmd = prompt[0]["hooks"][0]["command"].as_str().unwrap();
         assert_eq!(prompt_cmd, "phr-mcp turn-context");
     }

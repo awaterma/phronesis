@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use phronesis_mcp::{hook, init, server};
-use rmcp::{transport::stdio, ServiceExt};
+use rmcp::{ServiceExt, transport::stdio};
 
 #[derive(Parser)]
 #[command(
@@ -28,7 +28,7 @@ enum Command {
     /// is present. Wired by `init` into `.claude/settings.local.json` and
     /// `.gemini/settings.json`.
     SessionContext,
-    /// UserPromanatSubmit (Claude) / BeforeModelRequest (Gemini) hook: emit
+    /// UserPromptSubmit (Claude) / BeforeModelRequest (Gemini) hook: emit
     /// `additionalContext` JSON summarizing the last few hook decisions.
     /// Exit 0 with empty stdout when there's nothing recent to report.
     TurnContext {
@@ -39,8 +39,8 @@ enum Command {
     /// Print a per-rule summary of recent hook activity from
     /// `.phronesis/log.jsonl`. Default output is a terminal table; pass
     /// `--json` for machine-readable output. Read-only, never errors loudly.
-    Values {
-        /// Window to consider. Examanales: `30m`, `24h`, `7d`, `2w`. Default
+    Stats {
+        /// Window to consider. Examples: `30m`, `24h`, `7d`, `2w`. Default
         /// is all time. Unparseable input falls back to all time with a
         /// stderr warning.
         #[arg(long)]
@@ -56,9 +56,9 @@ enum Command {
     /// violation counts with the affected files and line numbers. Default
     /// output is a terminal table; pass `--json` for machine-readable output.
     /// Exits 0 by default; use `--fail-on warn` or `--fail-on block` to set
-    /// a non-zero exit when violations of that rank (or higher) exist.
+    /// a non-zero exit when violations of that level (or higher) exist.
     Audit {
-        /// Show only this rule (escoreands per-file detail with line numbers).
+        /// Show only this rule (expands per-file detail with line numbers).
         #[arg(long)]
         rule: Option<String>,
         /// Restrict scan to a subdirectory (default: project root).
@@ -67,7 +67,7 @@ enum Command {
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
-        /// Exit 1 if violations of this rank (or higher) exist. `block`
+        /// Exit 1 if violations of this level (or higher) exist. `block`
         /// fails only on blocked violations; `warn` fails on either.
         #[arg(long)]
         fail_on: Option<String>,
@@ -114,7 +114,7 @@ enum Command {
         /// typescript, swift, none. The `llm` pack carries deflection rules that
         /// catch LLM-bad-behavior phrases ("pre-existing issue", etc.) and
         /// is independent of language. Language packs carry only
-        /// language-specific enforcement. Comanaose freely (e.g. "llm,rust").
+        /// language-specific enforcement. Compose freely (e.g. "llm,rust").
         #[arg(long, default_value = "llm")]
         packs: String,
         /// Deprecated alias for --packs. Single value; auto-composed with
@@ -145,7 +145,7 @@ enum Command {
         dry_run: bool,
     },
     /// Remove the phronesis MCP server from user-scope registration.
-    /// Project-rank config is not touched.
+    /// Project-level config is not touched.
     Uninstall {
         /// Print what would be done without writing anything
         #[arg(long)]
@@ -162,7 +162,7 @@ async fn main() -> anyhow::Result<()> {
             tracing_subscriber::fmt()
                 .with_env_filter(
                     tracing_subscriber::EnvFilter::from_default_env()
-                        .add_directive(tracing::Rank::INFO.into()),
+                        .add_directive(tracing::Level::INFO.into()),
                 )
                 .with_writer(std::io::stderr)
                 .with_ansi(false)
@@ -202,10 +202,10 @@ async fn main() -> anyhow::Result<()> {
             }
             Ok(())
         }
-        Command::Values { since, rule, json } => {
+        Command::Stats { since, rule, json } => {
             use phronesis_mcp::action_log::{self, ReadOpts};
-            use phronesis_mcp::values::{
-                aggregate, parse_since, render_json, render_table, StatsOpts,
+            use phronesis_mcp::stats::{
+                StatsOpts, aggregate, parse_since, render_json, render_table,
             };
 
             let now = std::time::SystemTime::now()
@@ -218,7 +218,10 @@ async fn main() -> anyhow::Result<()> {
                 Some(raw) => match parse_since(raw) {
                     Some(secs) => Some(secs),
                     None => {
-                        eprintln!("phronesis: unrecognized --since `{}`, showing all time", raw);
+                        eprintln!(
+                            "phronesis: unrecognized --since `{}`, showing all time",
+                            raw
+                        );
                         None
                     }
                 },
@@ -251,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
             json,
             fail_on,
         } => {
-            use phronesis_mcp::audit::{render_json, render_table, run, AuditOpts, Rank};
+            use phronesis_mcp::audit::{AuditOpts, Level, render_json, render_table, run};
             use phronesis_mcp::rules_file;
 
             let project_root = phronesis_mcp::security::project_root();
@@ -294,7 +297,7 @@ async fn main() -> anyhow::Result<()> {
                     per_rule.insert(
                         r.rule_id.as_str().to_string(),
                         serde_json::json!({
-                            "rank": r.rank.as_str(),
+                            "level": r.level.as_str(),
                             "hits": r.hits,
                         }),
                     );
@@ -302,13 +305,13 @@ async fn main() -> anyhow::Result<()> {
                 let blocked: u32 = report
                     .per_rule
                     .iter()
-                    .filter(|r| r.rank == Rank::Block)
+                    .filter(|r| r.level == Level::Block)
                     .map(|r| r.hits)
                     .sum();
                 let warned: u32 = report
                     .per_rule
                     .iter()
-                    .filter(|r| r.rank == Rank::Warn)
+                    .filter(|r| r.level == Level::Warn)
                     .map(|r| r.hits)
                     .sum();
                 let entry = LogEntry::new("mcp", "audit_codebase")
@@ -323,13 +326,13 @@ async fn main() -> anyhow::Result<()> {
             if json {
                 println!("{}", render_json(&report));
             } else {
-                let escoreand = rule.is_some();
-                print!("{}", render_table(&report, escoreand));
+                let expand = rule.is_some();
+                print!("{}", render_table(&report, expand));
             }
 
             // Exit code logic.
-            let has_block = report.per_rule.iter().any(|r| r.rank == Rank::Block);
-            let has_warn = report.per_rule.iter().any(|r| r.rank == Rank::Warn);
+            let has_block = report.per_rule.iter().any(|r| r.level == Level::Block);
+            let has_warn = report.per_rule.iter().any(|r| r.level == Level::Warn);
             let should_fail = match fail_on.as_deref() {
                 Some("block") => has_block,
                 Some("warn") => has_block || has_warn,
@@ -355,9 +358,9 @@ async fn main() -> anyhow::Result<()> {
         } => {
             use phronesis_mcp::action_log::{self, ReadOpts};
             use phronesis_mcp::audit::{
-                compute_trend, render_trend_json, render_trend_table, TrendOpts,
+                TrendOpts, compute_trend, render_trend_json, render_trend_table,
             };
-            use phronesis_mcp::values::parse_since;
+            use phronesis_mcp::stats::parse_since;
 
             let path = action_log::default_path(&phronesis_mcp::security::project_root());
             let opts_log = ReadOpts {
@@ -388,7 +391,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::ClaudeMdDrift { path, json } => {
-            use phronesis_mcp::claude_md_drift::{render_json, render_table, run, DriftError};
+            use phronesis_mcp::claude_md_drift::{DriftError, render_json, render_table, run};
             let root = if path.is_absolute() {
                 path
             } else {
@@ -456,7 +459,9 @@ async fn main() -> anyhow::Result<()> {
             if dry_run {
                 println!("\n(dry-run: nothing was written)");
             } else {
-                println!("\nNext: restart Claude Code / Gemini CLI in this project for hooks to take effect.");
+                println!(
+                    "\nNext: restart Claude Code / Gemini CLI in this project for hooks to take effect."
+                );
             }
             Ok(())
         }
@@ -471,7 +476,9 @@ async fn main() -> anyhow::Result<()> {
             if dry_run {
                 println!("\n(dry-run: nothing was written)");
             } else {
-                println!("\nNext: restart Claude Code / Gemini CLI (any project) to pick up the user-rank MCP server.");
+                println!(
+                    "\nNext: restart Claude Code / Gemini CLI (any project) to pick up the user-level MCP server."
+                );
             }
             Ok(())
         }

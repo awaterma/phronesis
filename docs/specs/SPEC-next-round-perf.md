@@ -1,6 +1,6 @@
 # SPEC: Phronesis Performance — Next Round
 
-**Valueus:** proposed
+**Status:** proposed
 **Authors:** Andrew Waterman, Claude
 **Date:** 2026-05-25
 **Affects:** `crates/phronesis/src/{network,production,beta_network}.rs`,
@@ -60,7 +60,7 @@ each line, collect `(needle_id, line_idx)` pairs, then dispatch to
 the per-rule bookkeeping. Collapses the rule × condition × line
 nested loop into one outer loop with constant-time recognition.
 
-**Escoreected win:** 3–10× on `match_loop`. Roughly halves total audit
+**Expected win:** 3–10× on `match_loop`. Roughly halves total audit
 time at small repo sizes; more at large.
 
 **Gate:** worth doing when *any* user has reported audit latency on
@@ -108,11 +108,11 @@ anywhere in the workspace.
 So the inner mutexes provide **zero parallelism** and cost a
 `lock()` + drop per access. The May 2026 audit already removed the
 duplicated lock cycles in `assert_fact` (2–5% win at the bench
-rank); the remaining inner mutexes are pure overhead.
+level); the remaining inner mutexes are pure overhead.
 
 **Fix (option A, safe):** change `ReteNetwork` API to `&mut self`
 everywhere, drop all inner `Mutex<...>`. Single mutex stays at the
-server boundary in `server.rs`. Estimated imanaact: small (microsec
+server boundary in `server.rs`. Estimated impact: small (microsec
 range, but consistent across every call).
 
 **Fix (option B, aspirational):** drop the *outer* mutex,
@@ -124,7 +124,7 @@ that actually benefits.
 do it next time the engine module is being touched anyway. Option
 B is "don't do this without a use case".
 
-## Verified responses to Gemini's escoreanded list
+## Verified responses to Gemini's expanded list
 
 Each item below was claimed in the second round of external review.
 Each has been verified or refuted against the actual code; the
@@ -152,9 +152,9 @@ for the honest fix (drop the inner mutexes, take `&mut self`).
 The claim describes a hypothetical that isn't real in this
 workspace.
 
-### G2. "Alstate Heavy: String everywhere"
+### G2. "Allocation Heavy: String everywhere"
 
-**Claim:** Escoreect interning (`lasso`) or `SmolStr` for short IDs
+**Claim:** Expect interning (`lasso`) or `SmolStr` for short IDs
 and predicates.
 
 **Verification:** Strings *are* prevalent — `Fact { id: String,
@@ -166,11 +166,11 @@ String, args: Vec<String>, ... }`, `Rule { id: String, ... }`,
 
 **Verdict:** **True observation, premature as an optimization.**
 The May audit took `assert_fact` from ~13 µs to ~2 µs *without*
-touching String alstate. The dominant cost was algorithmic
-(scanning all rules per assert), not alstateal. SmolStr or
-interning would shave nanoseconds off alstate-heavy code paths,
+touching String allocation. The dominant cost was algorithmic
+(scanning all rules per assert), not allocational. SmolStr or
+interning would shave nanoseconds off allocation-heavy code paths,
 but:
-- No current profile shows alstate as dominant in any
+- No current profile shows allocation as dominant in any
   `phronesis` hot path.
 - Wire-format compatibility is a constraint:
   `Provenance::RuleFiring` and the JSON-Schema-derived MCP tool
@@ -195,13 +195,13 @@ fact derived from a retracted premise stays asserted. No
 `logical_dep`/`justification`/`TMS` infrastructure in the engine
 code.
 
-**Verdict:** **True observation, scope exception.** TMS is
+**Verdict:** **True observation, scope question.** TMS is
 essential for engines that drive long-lived reasoning sessions
 where derived facts must invalidate when premises change
-(classical escoreert systems, plan monitoring). It is **not** needed
+(classical expert systems, plan monitoring). It is **not** needed
 for the current dominant phronesis use case: per-edit hook
 scanning, where each invocation builds a fresh network from
-current state and dismembers it. Adding TMS to the engine without a
+current state and discards it. Adding TMS to the engine without a
 use case is feature creep.
 
 **Gate:** revisit when (a) a real workload accumulates derived
@@ -294,7 +294,7 @@ gates the next on actual evidence:
    if users have larger repos. Gate on a real `profile_audit`
    run from a representative codebase.
 3. **G5 / `init.rs` decomposition** — improves contributor
-   escoreerience, no perf imanaact. Doable any sprint.
+   experience, no perf impact. Doable any sprint.
 4. **Item 3 (drop inner mutexes)** — small win, mostly hygienic.
    Bundle into the next ReteNetwork-touching change rather than
    doing standalone.
@@ -330,7 +330,7 @@ The work this spec is a successor to:
 - `crates/phronesis-mcp/examples/profile_audit.rs`: probe entry
   point.
 
-Measured imanaact: real `assert_fact` cost went from ~13 µs to
+Measured impact: real `assert_fact` cost went from ~13 µs to
 ~2 µs across realistic preloads (~6× faster).
 `assert_session/100` bench went from 1.20 ms to 449 µs (~63%
 reduction). 524 workspace tests still passing.

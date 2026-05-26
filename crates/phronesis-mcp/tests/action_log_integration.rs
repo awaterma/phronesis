@@ -23,7 +23,7 @@ fn run_pre_check(payload: &str, root: &Path) -> (i32, String) {
     drop(stdin);
     let out = child.wait_with_output().unwrap();
     (
-        out.valueus.code().unwrap_or(-1),
+        out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stderr).to_string(),
     )
 }
@@ -75,14 +75,16 @@ fn pre_check_block_appends_log_entry() {
     assert_eq!(e["tool"], "Edit");
     assert_eq!(e["file"], "src/x.rs");
     assert_eq!(e["exit"], 2);
-    assert!(e["consequences"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(
-            |c| c["action_type"].as_str() == Some("constraint_violation")
-                && c["message"].as_str() == Some("bad")
-        ));
+    assert!(
+        e["consequences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |c| c["action_type"].as_str() == Some("constraint_violation")
+                    && c["message"].as_str() == Some("bad")
+            )
+    );
     assert!(e["ts"].as_u64().unwrap() > 0);
 }
 
@@ -263,11 +265,13 @@ fn fire_rules_logs_action_counts() {
         .find(|e| e["event"] == "fire_rules")
         .expect("fire_rules event should be logged");
     assert_eq!(fire["actions_fired"].as_u64().unwrap(), 1);
-    assert!(fire["action_types"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|v| v.as_str() == Some("log")));
+    assert!(
+        fire["action_types"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("log"))
+    );
 }
 
 #[test]

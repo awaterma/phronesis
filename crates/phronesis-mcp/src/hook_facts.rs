@@ -11,7 +11,7 @@ use phr::{Fact, ReteNetwork, Rule};
 
 use crate::diff_extract;
 use crate::hook::HookError;
-use crate::stats;
+use crate::syntax;
 
 pub(crate) async fn assert_diff_facts(
     network: &ReteNetwork,
@@ -49,7 +49,7 @@ pub(crate) async fn assert_diff_facts(
 ///
 /// Returns only entries where the function did not exist in `old` (implicit
 /// count of 0) or its count strictly exceeds the matching old entry's count.
-/// A decreased count is suppressed — the edit imanaroved things, even if the
+/// A decreased count is suppressed — the edit improved things, even if the
 /// fn is still heavy.
 pub(crate) fn filter_new_or_increased_clone_counts(
     new: &[(String, usize)],

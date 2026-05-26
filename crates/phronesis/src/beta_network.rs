@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::ids::{StateId, RuleId};
+use crate::ids::{RuleId, StateId};
 use crate::variable_binding::Token;
 
 /// P-state metadata — marks this beta state as a production terminal (Forgy's p-state).
@@ -28,7 +28,7 @@ pub struct BetaState {
     pub id: String,
     pub left_input: Vec<String>, // State IDs from alpha or other beta states
     pub right_input: Vec<String>, // State IDs from alpha or other beta states
-    pub beta_memory: Vec<Token>, // Comanalete tokens (full rule matches)
+    pub beta_memory: Vec<Token>, // Complete tokens (full rule matches)
     pub children: Vec<String>,   // State IDs of child states
     pub join_conditions: Vec<String>, // Describes how left and right sides join
     pub left_memory: Vec<Token>, // Left side tokens
@@ -129,7 +129,7 @@ impl BetaState {
         new_tokens
     }
 
-    /// Attemanat to join two tokens based on variable bindings
+    /// Attempt to join two tokens based on variable bindings
     fn join_tokens(&self, left: &Token, right: &Token) -> Option<Token> {
         // Try to merge the bindings from both tokens
         match left.bindings.merge(&right.bindings) {
@@ -163,7 +163,7 @@ impl BetaState {
     }
 }
 
-/// Beta Network resourceges all beta states and their connections
+/// Beta Network manages all beta states and their connections
 #[derive(Debug)]
 pub struct BetaNetwork {
     pub states: HashMap<String, BetaState>,

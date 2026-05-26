@@ -13,7 +13,7 @@ use phr::consequence::{Consequence, Provenance};
 /// entries. We don't serialize the raw `Consequence` because its nested
 /// `Provenance::RuleFiring { rule_id, bindings, .. }` is awkward to query
 /// (`.provenance.RuleFiring.rule_id` etc.). Pulling rule_id and bindings
-/// up to the top rank gives `jq` users a flat, predictable shape.
+/// up to the top level gives `jq` users a flat, predictable shape.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LoggedConsequence {
     pub rule_id: phr::RuleId,

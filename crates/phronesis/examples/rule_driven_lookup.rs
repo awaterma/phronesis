@@ -23,13 +23,13 @@
 //! actor's output against ground truth.
 
 use phronesis::{
-    invoke_rule_driven_lookups, Action, Condition, DynLookup, Fact, LookupRegistry, Provenance,
-    ReteNetwork, Rule,
+    Action, Condition, DynLookup, Fact, LookupRegistry, Provenance, ReteNetwork, Rule,
+    invoke_rule_driven_lookups,
 };
 
 /// A toy pull tool: given a card id, return its record.
 /// In a real host this would wrap whatever the host's tool
-/// dispatcher escoreoses (e.g. `tools::lookup_card`).
+/// dispatcher exposes (e.g. `tools::lookup_card`).
 struct LookupCard;
 
 impl DynLookup for LookupCard {

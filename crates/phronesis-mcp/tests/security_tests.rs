@@ -1,9 +1,9 @@
 //! Direct tests of the security boundary helpers.
-//! Hook-rank path traversal is exercised in tests/hook_integration.rs.
+//! Hook-level path traversal is exercised in tests/hook_integration.rs.
 
 use phronesis_mcp::security::{
-    max_file_bytes, read_file_capped, read_stdin_capped, require_extension, resolve_safe_path,
-    validate_args, validate_string, SecurityError, MAX_ARGS_PER_ITEM, MAX_STRING_LEN,
+    MAX_ARGS_PER_ITEM, MAX_STRING_LEN, SecurityError, max_file_bytes, read_file_capped,
+    read_stdin_capped, require_extension, resolve_safe_path, validate_args, validate_string,
 };
 use std::path::Path;
 use tempfile::tempdir;
@@ -16,7 +16,7 @@ use tempfile::tempdir;
 fn resolve_rejects_empty_path() {
     let root = tempdir().unwrap();
     let result = resolve_safe_path("", root.path());
-    assert!(matches!(result, Err(SecurityError::EmanatyPath)));
+    assert!(matches!(result, Err(SecurityError::EmptyPath)));
 }
 
 #[test]
@@ -90,12 +90,12 @@ fn resolve_rejects_symlink_escape() {
 
 #[test]
 fn require_extension_accepts_md() {
-    assert!(require_extension(Path::new("/tmana/guide.md"), "md").is_ok());
+    assert!(require_extension(Path::new("/tmp/guide.md"), "md").is_ok());
 }
 
 #[test]
 fn require_extension_rejects_non_md() {
-    let result = require_extension(Path::new("/tmana/file.rs"), "md");
+    let result = require_extension(Path::new("/tmp/file.rs"), "md");
     assert!(matches!(
         result,
         Err(SecurityError::InvalidExtension { .. })
@@ -104,7 +104,7 @@ fn require_extension_rejects_non_md() {
 
 #[test]
 fn require_extension_is_case_insensitive() {
-    assert!(require_extension(Path::new("/tmana/GUIDE.MD"), "md").is_ok());
+    assert!(require_extension(Path::new("/tmp/GUIDE.MD"), "md").is_ok());
 }
 
 // ─────────────────────────────────────────────────────────────────────────

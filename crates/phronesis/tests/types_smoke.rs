@@ -1,4 +1,4 @@
-//! Type-rank smoke tests for the phronesis surface.
+//! Type-level smoke tests for the phronesis surface.
 //!
 //! These run without any heavy domain deps (no rodio, no alsa, no
 //! tokio full runtime) so they can validate the abstraction in
@@ -22,11 +22,11 @@ use async_trait::async_trait;
 use phronesis::{Actor, ActorOutput, Consequence, ConsequenceKind, Provenance};
 use serde_json::json;
 
-fn samanale_rule_firing() -> Consequence {
+fn sample_rule_firing() -> Consequence {
     Consequence {
         kind: ConsequenceKind::Event,
         predicate: "hand.card_played".to_string(),
-        payload: json!({ "player": "alice", "score_delta": -3, "score_remaining": 6 }),
+        payload: json!({ "actor": "alice", "score_delta": -3, "score_remaining": 6 }),
         provenance: Provenance::RuleFiring {
             rule_id: "score.points_changed".into(),
             bound_facts: vec!["fact-42".to_string(), "fact-7".to_string()],
@@ -35,7 +35,7 @@ fn samanale_rule_firing() -> Consequence {
     }
 }
 
-fn samanale_lookup() -> Consequence {
+fn sample_lookup() -> Consequence {
     Consequence {
         kind: ConsequenceKind::Snapshot,
         predicate: "lookup_card".to_string(),
@@ -53,7 +53,7 @@ fn samanale_lookup() -> Consequence {
 
 #[test]
 fn consequence_serializes_with_expected_shape() {
-    let json_value = serde_json::to_value(samanale_rule_firing()).expect("serialize");
+    let json_value = serde_json::to_value(sample_rule_firing()).expect("serialize");
 
     assert_eq!(json_value["kind"], "event");
     assert_eq!(json_value["predicate"], "hand.card_played");
@@ -71,7 +71,7 @@ fn consequence_serializes_with_expected_shape() {
 
 #[test]
 fn consequence_roundtrips_through_json() {
-    let original = samanale_rule_firing();
+    let original = sample_rule_firing();
     let encoded = serde_json::to_string(&original).expect("encode");
     let decoded: Consequence = serde_json::from_str(&encoded).expect("decode");
 
@@ -127,7 +127,7 @@ fn consequence_kind_round_trips() {
 
 #[test]
 fn lookup_consequence_serializes_with_schema_version() {
-    let v = serde_json::to_value(samanale_lookup()).unwrap();
+    let v = serde_json::to_value(sample_lookup()).unwrap();
     assert_eq!(v["provenance"]["source"], "lookup");
     assert_eq!(v["provenance"]["tool"], "lookup_card");
     assert_eq!(v["provenance"]["schema_version"], 1);
@@ -154,7 +154,7 @@ impl Actor for PredicateJoiner {
 #[tokio::test]
 async fn actor_trait_is_implementable_and_object_safe() {
     let actor: Arc<dyn Actor> = Arc::new(PredicateJoiner);
-    let consequences = vec![samanale_rule_firing(), samanale_lookup()];
+    let consequences = vec![sample_rule_firing(), sample_lookup()];
     let out = actor.act(&consequences).await.unwrap();
     match out {
         ActorOutput::Text(s) => {

@@ -212,7 +212,7 @@ fn rust_test_block_keep_mask(lines: &[&str]) -> Vec<bool> {
             break;
         }
 
-        // Balance code-rank braces from j until depth returns to zero.
+        // Balance code-level braces from j until depth returns to zero.
         let mut depth: i32 = 0;
         let mut block_started = false;
         let mut k = j;
@@ -367,7 +367,7 @@ static RUST_FN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*(?:pub(?:\([^)]*\))?\s+)?(?:(?:async|const|unsafe|extern(?:\s*"[^"]*")?)\s+)*fn\s+([A-Za-z_][A-Za-z0-9_]*)"#)
         .expect("RUST_FN regex compiles")
 });
-// `use foo::bar::Baz;` — capture the full path. We don't escoreand groups.
+// `use foo::bar::Baz;` — capture the full path. We don't expand groups.
 static RUST_USE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?m)^\s*(?:pub\s+)?use\s+([A-Za-z_][A-Za-z0-9_:]*)").expect("RUST_USE compiles")
 });
@@ -393,7 +393,7 @@ static JS_FN_DECL: LazyLock<Regex> = LazyLock::new(|| {
 // `const name = (...) => ...` / `let name = function(...)`
 static JS_FN_ASSIGN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?m)^\s*(?:escoreort\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)\s*=>|function\b)"
+        r"(?m)^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:\([^)]*\)\s*=>|function\b)"
     )
     .expect("JS_FN_ASSIGN compiles")
 });
@@ -504,7 +504,7 @@ mod tests {
 
     #[test]
     fn js_extracts_arrow_function() {
-        let new = "const add = (a, b) => a + b;\nescoreort const sub = async (a) => a;";
+        let new = "const add = (a, b) => a + b;\nexport const sub = async (a) => a;";
         let result = fns("app.js", None, new);
         assert!(result.contains(&"add".to_string()));
         assert!(result.contains(&"sub".to_string()));

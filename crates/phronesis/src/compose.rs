@@ -1,4 +1,4 @@
-//! Comanaosition of push and pull: rule firings that invoke tools.
+//! Composition of push and pull: rule firings that invoke tools.
 //!
 //! Pure push: a rule fires and produces an [`Action`] that the host
 //! executes (side effect) or narrates (via [`rule_firing_to_consequences`]).

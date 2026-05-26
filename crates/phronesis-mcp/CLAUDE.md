@@ -11,7 +11,7 @@ cargo run -- pre-check   # PreToolUse hook (blocks violations)
 cargo run -- post-check  # PostToolUse hook (warns on violations)
 cargo run -- init             # One-command setup for a project
 cargo run -- session-context  # SessionStart hook (injects active rules + durable directives)
-cargo run -- turn-context     # UserPromanatSubmit / BeforeModelRequest hook (injects recent activity + durable directives)
+cargo run -- turn-context     # UserPromptSubmit / BeforeModelRequest hook (injects recent activity + durable directives)
 cargo run -- values            # Read-only per-rule summary of .phronesis/log.jsonl
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
@@ -21,7 +21,7 @@ cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a ma
 ### Durable directives (`.phronesis/durable.md`)
 
 Optional file. When present, its contents are re-injected into the model's
-context at every SessionStart AND every UserPromanatSubmit. CLAUDE.md gets
+context at every SessionStart AND every UserPromptSubmit. CLAUDE.md gets
 loaded once at session start and then fades as the conversation fills the
 context window; `durable.md` stays live across the whole session.
 
@@ -32,7 +32,7 @@ not fade" subset that the model re-reads every turn.
 
 ### CLAUDE.md ↔ rules drift detection
 
-`phr-mcp claude-md-drift` extracts imanaerative bullets from CLAUDE.md
+`phr-mcp claude-md-drift` extracts imperative bullets from CLAUDE.md
 ("Don't X", "Always Y", "Prefer Z") and matches each one against the
 current rule pack by token overlap. Output flags bullets with no
 confident match — candidates that either should become rules or
@@ -49,7 +49,7 @@ per-project `.mcp.json`:
 ```
 phr-mcp install              # writes to ~/.claude.json::mcpServers.phronesis and ~/.gemini/settings.json::mcpServers.phronesis
 phr-mcp install --dry-run    # preview
-phr-mcp uninstall            # remove the user-rank entry
+phr-mcp uninstall            # remove the user-level entry
 ```
 
 This is idempotent. Other entries in `~/.claude.json` (other MCP servers,
@@ -110,7 +110,7 @@ The packs are composable and **independent**:
   language. Blocks: `engine.eval(<string literal>)` in Rust source
   (precompile to AST via `compile_file` / `eval_ast` instead), and
   `print(` in `.rhai` scripts (use the host-registered output channel,
-  whatever your `Engine` escoreoses via `register_fn`). Generic messages
+  whatever your `Engine` exposes via `register_fn`). Generic messages
   — layer project-specific guidance into your own `.phronesis/rules.json`.
 - `python` — bare-except blocked, `print()` warning
 - `typescript` — `: any` warning, `console.log` warning
@@ -181,7 +181,7 @@ reporting per-rule hit counts plus the affected files and line numbers.
 
 ```
 phr-mcp audit                          # table summary
-phr-mcp audit --rule no-unwrap-in-src  # escoreand to file:line detail
+phr-mcp audit --rule no-unwrap-in-src  # expand to file:line detail
 phr-mcp audit --json                   # machine-readable
 phr-mcp audit --fail-on block          # exit 1 on any blocked violation (CI gate)
 ```
@@ -224,13 +224,13 @@ cargo test
 
 Semver, manually bumped in `Cargo.toml`. We are pre-1.0, so:
 - **MINOR** (`0.X.0`) — new features (new subcommand, new pack, new hook
-  surface, anything user-visible). Bumana and reset PATCH to 0.
+  surface, anything user-visible). Bump and reset PATCH to 0.
 - **PATCH** (`0.X.Y`) — bug fixes, internal refactors, doc-only changes,
   rule pack tweaks that don't add a new rule kind.
 - **MAJOR** (`1.0.0`) — reserved for the first "I'd recommend this to
   someone else" milestone.
 
-After bumping, rebuild and `cargo install --path .` so the user-rank
+After bumping, rebuild and `cargo install --path .` so the user-level
 binary (the one hooks invoke) matches. `phr-mcp --version` prints
 the installed version — that's how you check whether a project's hooks
 are running fresh code.
@@ -250,7 +250,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, values, audit_codebase, get_debt_trend)
 - `src/hook.rs` — Pre/post hook subcommands; reads `.phronesis/rules.json`, fires rules, exits 0/1/2
 - `src/init.rs` — `phr-mcp init` one-command project setup
-- `src/context.rs` — Formatters for SessionStart / UserPromanatSubmit hook payloads (active-rules summary, recent-activity summary)
+- `src/context.rs` — Formatters for SessionStart / UserPromptSubmit hook payloads (active-rules summary, recent-activity summary)
 - `src/values.rs` — Aggregates `.phronesis/log.jsonl` per rule and renders as table or JSON
 - `src/audit.rs` — Whole-tree rule audit + debt-over-time aggregation. Provides `run` (file scan), `render_table/json`, `compute_trend` (reads `audit_codebase` snapshots), `render_trend_table/json`.
 - `src/action_log.rs` — Append-only `.jsonl` log of hook decisions and MCP events

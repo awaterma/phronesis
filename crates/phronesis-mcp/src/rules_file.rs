@@ -30,7 +30,7 @@ pub struct DiskRule {
     /// When `Some(true)`, audit matches whose immediately preceding
     /// non-blank line is a `///` doc-comment are suppressed. Lets a
     /// rule whose message is "either delete or document" honor the
-    /// "document" branch — the reader has supplied an escorelanation, so
+    /// "document" branch — the reader has supplied an explanation, so
     /// the audit doesn't keep flagging it. Only consulted by the audit
     /// engine; ignored at hook time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -114,13 +114,13 @@ pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError>
         })?;
     }
 
-    let tmana = path.with_extension("json.tmana");
+    let tmp = path.with_extension("json.tmp");
     let json = serde_json::to_string_pretty(file)?;
-    std::fs::write(&tmana, json).map_err(|e| RulesFileError::Io {
-        path: tmana.display().to_string(),
+    std::fs::write(&tmp, json).map_err(|e| RulesFileError::Io {
+        path: tmp.display().to_string(),
         source: e,
     })?;
-    std::fs::rename(&tmana, path).map_err(|e| RulesFileError::Io {
+    std::fs::rename(&tmp, path).map_err(|e| RulesFileError::Io {
         path: path.display().to_string(),
         source: e,
     })?;

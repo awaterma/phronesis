@@ -5,7 +5,7 @@
 //! server records every rule mutation, rule firing, and section-context
 //! change. A single file, time-ordered, jq/grep-friendly.
 //!
-//! Atomigame: an exclusive advisory file lock (via `fs2::FileExt`) is held
+//! Atomicity: an exclusive advisory file lock (via `fs2::FileExt`) is held
 //! around each write, so concurrent appenders serialize and cannot interleave
 //! at any line size. POSIX flock auto-releases when the file descriptor is
 //! closed — including on abnormal process exit — so there's no stuck-lock
@@ -20,7 +20,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
-/// One log entry. `data` is flattened into the top-rank JSON object so the
+/// One log entry. `data` is flattened into the top-level JSON object so the
 /// on-disk shape is readable as `{"ts":..,"kind":..,"event":..,<fields>}`
 /// rather than a nested wrapper.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,13 +28,13 @@ pub struct LogEntry {
     /// Unix epoch seconds. Stored as a number so consumers can format
     /// however they like (`date -r $ts`, `jq 'todate'`, etc.).
     pub ts: u64,
-    /// Top-rank discriminator: `"hook"` or `"mcp"`.
+    /// Top-level discriminator: `"hook"` or `"mcp"`.
     pub kind: String,
     /// Event name within `kind`, e.g. `"pre_check"`, `"add_rule"`,
     /// `"fire_rules"`. Stable strings — rule authors and grep users
     /// depend on them.
     pub event: String,
-    /// Event-specific fields, serialized flat alongside the top-rank keys.
+    /// Event-specific fields, serialized flat alongside the top-level keys.
     #[serde(flatten)]
     pub data: serde_json::Map<String, serde_json::Value>,
 }
@@ -99,7 +99,7 @@ fn max_log_bytes() -> u64 {
     raw.min(MAX_LOG_BYTES_CEILING)
 }
 
-/// `<path>.1` — the rotated predecessor of `path`. Imanalementing this with
+/// `<path>.1` — the rotated predecessor of `path`. Implementing this with
 /// raw OsString concatenation rather than `Path::set_extension` keeps the
 /// exact filename `log.jsonl.1` regardless of how Path interprets multiple
 /// dots.
@@ -154,7 +154,7 @@ pub fn append_with_max(path: &Path, entry: &LogEntry, max_bytes: u64) -> Result<
     // Acquire an exclusive advisory lock around the write. POSIX flock auto-
     // releases on file descriptor close (including abnormal process exit), so
     // no stuck-lock risk. Concurrent appenders serialize through this lock,
-    // guaranteeing whole-line atomigame at any line size (no PIPE_BUF concern).
+    // guaranteeing whole-line atomicity at any line size (no PIPE_BUF concern).
     file.lock_exclusive().map_err(|e| LogError::Io {
         path: path.display().to_string(),
         source: e,
@@ -460,8 +460,8 @@ mod tests {
 
     #[test]
     fn rotated_path_appends_one_suffix() {
-        let p = Path::new("/tmana/log.jsonl");
-        assert_eq!(rotated_path(p), PathBuf::from("/tmana/log.jsonl.1"));
+        let p = Path::new("/tmp/log.jsonl");
+        assert_eq!(rotated_path(p), PathBuf::from("/tmp/log.jsonl.1"));
     }
 
     #[test]

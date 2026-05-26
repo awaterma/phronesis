@@ -1,7 +1,7 @@
 //! Unit tests for variable_binding module
 
-use phronesis::{Bindings, Condition, Fact, Token};
 use phronesis::wme::WorkingMemoryElement;
+use phronesis::{Bindings, Condition, Fact, Token};
 
 #[test]
 fn bindings_add_valid() {
@@ -166,51 +166,44 @@ fn token_new() {
 
 #[test]
 fn token_new_with_wme() {
-    let wme = WorkingMemoryElement::new(
-        Fact {
-            id: "1".to_string(),
-            predicate: "greet".to_string(),
-            args: vec!["alice".to_string()],
-            timestamp: 0,
-        },
-    );
+    let wme = WorkingMemoryElement::new(Fact {
+        id: "1".to_string(),
+        predicate: "greet".to_string(),
+        args: vec!["alice".to_string()],
+        timestamp: 0,
+    });
     let token = Token::new_with_wme(wme);
     assert_eq!(token.wmes.len(), 1);
 }
 
 #[test]
 fn token_new_with_bindings() {
-    let wmes = vec![
-        WorkingMemoryElement::new(
-            Fact {
-                id: "1".to_string(),
-                predicate: "greet".to_string(),
-                args: vec!["alice".to_string()],
-                timestamp: 0,
-            },
-        ),
-    ];
+    let wmes = vec![WorkingMemoryElement::new(Fact {
+        id: "1".to_string(),
+        predicate: "greet".to_string(),
+        args: vec!["alice".to_string()],
+        timestamp: 0,
+    })];
     let mut bindings = Bindings::new();
     bindings.add_binding("?who", "alice").unwrap();
 
     let token = Token::new_with_bindings(wmes, bindings);
     assert_eq!(token.wmes.len(), 1);
-    assert_eq!(token.bindings.get_binding("?who"), Some(&"alice".to_string()));
+    assert_eq!(
+        token.bindings.get_binding("?who"),
+        Some(&"alice".to_string())
+    );
 }
 
 #[test]
 fn token_extend_with_binding() {
     let token = Token::new_with_bindings(
-        vec![
-            WorkingMemoryElement::new(
-                Fact {
-                    id: "1".to_string(),
-                    predicate: "greet".to_string(),
-                    args: vec!["alice".to_string()],
-                    timestamp: 0,
-                },
-            ),
-        ],
+        vec![WorkingMemoryElement::new(Fact {
+            id: "1".to_string(),
+            predicate: "greet".to_string(),
+            args: vec!["alice".to_string()],
+            timestamp: 0,
+        })],
         {
             let mut b = Bindings::new();
             b.add_binding("?who", "alice").unwrap();
@@ -218,14 +211,12 @@ fn token_extend_with_binding() {
         },
     );
 
-    let new_wme = WorkingMemoryElement::new(
-        Fact {
-            id: "2".to_string(),
-            predicate: "farewell".to_string(),
-            args: vec!["bob".to_string()],
-            timestamp: 0,
-        },
-    );
+    let new_wme = WorkingMemoryElement::new(Fact {
+        id: "2".to_string(),
+        predicate: "farewell".to_string(),
+        args: vec!["bob".to_string()],
+        timestamp: 0,
+    });
 
     let mut additional_bindings = Bindings::new();
     additional_bindings.add_binding("?target", "bob").unwrap();
@@ -234,7 +225,13 @@ fn token_extend_with_binding() {
     assert!(result.is_ok());
     let extended = result.unwrap();
     assert_eq!(extended.wmes.len(), 2);
-    assert_eq!(extended.bindings.get_binding("?who"), Some(&"alice".to_string()));
-    assert_eq!(extended.bindings.get_binding("?target"), Some(&"bob".to_string()));
+    assert_eq!(
+        extended.bindings.get_binding("?who"),
+        Some(&"alice".to_string())
+    );
+    assert_eq!(
+        extended.bindings.get_binding("?target"),
+        Some(&"bob".to_string())
+    );
     assert!(extended.parent.is_some());
 }

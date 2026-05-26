@@ -7,10 +7,10 @@ This guide provides practical Rust design patterns, idioms, and best practices f
 1. [Idioms](#idioms) - Rust-specific coding conventions
 2. [Design Patterns](#design-patterns) - Reusable solutions to common problems
 3. [Anti-Patterns](#anti-patterns) - Common mistakes to avoid
-4. [Error Handling](#error-handling) - Robust error resourcegement
+4. [Error Handling](#error-handling) - Robust error management
 5. [API Design](#api-design) - Building good APIs
 6. [Concurrency](#concurrency) - Async and parallel programming
-7. [Memory Management](#memory-resourcegement) - Ownership and borrowing
+7. [Memory Management](#memory-management) - Ownership and borrowing
 8. [Code Organization](#code-organization) - Project structure
 
 ---
@@ -61,7 +61,7 @@ match optional_value {
 }
 ```
 
-### 3. Use Type Aliases for Comanalex Types
+### 3. Use Type Aliases for Complex Types
 
 **Pattern**: Create type aliases for complex or frequently used types.
 
@@ -83,7 +83,7 @@ fn get_user(db: &UserDatabase, id: UserId) -> Result<Option<User>> {
 
 ### 4. Prefer `Default` over Manual Initialization
 
-**Pattern**: Imanalement `Default` trait instead of custom `new()` functions.
+**Pattern**: Implement `Default` trait instead of custom `new()` functions.
 
 ```rust
 #[derive(Default)]
@@ -118,7 +118,7 @@ let config = Config::default()
 
 ### 1. Builder Pattern
 
-**Use Case**: Comanalex object construction with optional parameters.
+**Use Case**: Complex object construction with optional parameters.
 
 ```rust
 #[derive(Debug)]
@@ -217,15 +217,15 @@ fn get_user_orders_bad(user_id: u64, product_id: u64) -> Vec<Order> {
 **Use Case**: Runtime algorithm selection.
 
 ```rust
-pub trait ComanaressionStrategy {
+pub trait CompressionStrategy {
     fn compress(&self, data: &[u8]) -> Vec<u8>;
     fn decompress(&self, data: &[u8]) -> Vec<u8>;
 }
 
-pub struct GzipComanaression;
-pub struct ZstdComanaression;
+pub struct GzipCompression;
+pub struct ZstdCompression;
 
-impl ComanaressionStrategy for GzipComanaression {
+impl CompressionStrategy for GzipCompression {
     fn compress(&self, data: &[u8]) -> Vec<u8> {
         // Gzip compression implementation
         data.to_vec() // Placeholder
@@ -237,7 +237,7 @@ impl ComanaressionStrategy for GzipComanaression {
     }
 }
 
-impl ComanaressionStrategy for ZstdComanaression {
+impl CompressionStrategy for ZstdCompression {
     fn compress(&self, data: &[u8]) -> Vec<u8> {
         // Zstd compression implementation
         data.to_vec() // Placeholder
@@ -250,11 +250,11 @@ impl ComanaressionStrategy for ZstdComanaression {
 }
 
 pub struct FileProcessor {
-    strategy: Box<dyn ComanaressionStrategy>,
+    strategy: Box<dyn CompressionStrategy>,
 }
 
 impl FileProcessor {
-    pub fn new(strategy: Box<dyn ComanaressionStrategy>) -> Self {
+    pub fn new(strategy: Box<dyn CompressionStrategy>) -> Self {
         Self { strategy }
     }
     
@@ -264,7 +264,7 @@ impl FileProcessor {
 }
 
 // Usage
-let processor = FileProcessor::new(Box::new(GzipComanaression));
+let processor = FileProcessor::new(Box::new(GzipCompression));
 ```
 
 ---
@@ -303,26 +303,26 @@ use std::ops::Deref;
 
 // ❌ Bad - Using Deref for inheritance
 struct Manager {
-    emanaloyee: Emanaloyee,
+    employee: Employee,
     team_size: usize,
 }
 
 impl Deref for Manager {
-    type Target = Emanaloyee;
+    type Target = Employee;
     
     fn deref(&self) -> &Self::Target {
-        &self.emanaloyee
+        &self.employee
     }
 }
 
 // ✅ Good - Use composition and explicit delegation
 impl Manager {
-    pub fn emanaloyee(&self) -> &Emanaloyee {
-        &self.emanaloyee
+    pub fn employee(&self) -> &Employee {
+        &self.employee
     }
     
     pub fn name(&self) -> &str {
-        self.emanaloyee.name()
+        self.employee.name()
     }
     
     pub fn team_size(&self) -> usize {
@@ -584,8 +584,8 @@ impl AsyncHttpClient {
                 .send()
                 .await
                 .context("Failed to send request")?
-                .error_for_valueus()
-                .context("Request returned error valueus")
+                .error_for_status()
+                .context("Request returned error status")
         })
         .await
         .context("Request timed out")??;
@@ -671,7 +671,7 @@ async fn main() {
 **Pattern**: Use channels for async task communication.
 
 ```rust
-use tokio::sync::{manasc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 
 #[derive(Debug)]
 pub enum WorkerMessage {
@@ -692,8 +692,8 @@ pub struct Worker {
 }
 
 impl Worker {
-    pub fn spawn() -> manasc::Sender<WorkerMessage> {
-        let (tx, mut rx) = manasc::channel(100);
+    pub fn spawn() -> mpsc::Sender<WorkerMessage> {
+        let (tx, mut rx) = mpsc::channel(100);
         
         tokio::spawn(async move {
             let mut worker = Worker {
@@ -768,20 +768,20 @@ async fn main() {
 
 ### 1. RAII Pattern
 
-**Pattern**: Resource resourcegement through destructors.
+**Pattern**: Resource management through destructors.
 
 ```rust
 use std::fs::File;
 use std::io::Write;
 
-pub struct TemanaFile {
+pub struct TempFile {
     file: File,
     path: std::path::PathBuf,
 }
 
-impl TemanaFile {
+impl TempFile {
     pub fn new(filename: &str) -> std::io::Result<Self> {
-        let path = std::env::temana_dir().join(filename);
+        let path = std::env::temp_dir().join(filename);
         let file = File::create(&path)?;
         Ok(Self { file, path })
     }
@@ -795,23 +795,23 @@ impl TemanaFile {
     }
 }
 
-impl Drop for TemanaFile {
+impl Drop for TempFile {
     fn drop(&mut self) {
-        // Clean up the temanaorary file when the struct is dropped
+        // Clean up the temporary file when the struct is dropped
         if self.path.exists() {
             let _ = std::fs::remove_file(&self.path);
         }
     }
 }
 
-// Usage - file is automatically cleaned up when temana_file goes out of scope
-fn process_temana_data() -> std::io::Result<()> {
-    let mut temana_file = TemanaFile::new("process_data.tmana")?;
-    temana_file.write(b"temanaorary data")?;
+// Usage - file is automatically cleaned up when temp_file goes out of scope
+fn process_temp_data() -> std::io::Result<()> {
+    let mut temp_file = TempFile::new("process_data.tmp")?;
+    temp_file.write(b"temporary data")?;
     
     // Process the file...
     
-    // File is automatically deleted when temana_file is dropped
+    // File is automatically deleted when temp_file is dropped
     Ok(())
 }
 ```
@@ -890,7 +890,7 @@ pub mod utils;
 pub use config::AppConfig;
 pub use models::{User, Session};
 
-// Re-escoreort commonly used items
+// Re-export commonly used items
 pub mod prelude {
     pub use crate::config::AppConfig;
     pub use crate::models::{User, Session};
@@ -968,7 +968,7 @@ pub struct DatabaseConfig {
 
 #[derive(Debug, Deserialize, Serialize)]
 pub struct LoggingConfig {
-    pub rank: String,
+    pub level: String,
     pub file: Option<String>,
 }
 
@@ -1001,7 +1001,7 @@ impl AppConfig {
                     .and_then(|s| s.parse().ok()),
             },
             logging: LoggingConfig {
-                rank: std::env::var("LOG_LEVEL")
+                level: std::env::var("LOG_LEVEL")
                     .unwrap_or_else(|_| "info".to_string()),
                 file: std::env::var("LOG_FILE").ok(),
             },
@@ -1025,9 +1025,9 @@ impl AppConfig {
 
 This guide covers essential Rust patterns that promote:
 
-- **Safety**: Proper error handling, memory resourcegement
+- **Safety**: Proper error handling, memory management
 - **Performance**: Zero-cost abstractions, efficient data structures
-- **Maintaineffect**: Clear APIs, good organization
+- **Maintainability**: Clear APIs, good organization
 - **Concurrency**: Safe parallel programming patterns
 
 Remember that patterns are tools - choose the right pattern for your specific use case, and don't over-engineer simple solutions.
@@ -1106,7 +1106,7 @@ This is fairly simple, and just leverages a few Rust crates and language feature
 
 However, there are a few weaknesses here. In the foo function, we declare four new variables (config_data, config_string, stripped_data, config) only for only one of those variables to be used after the configuration parsing (config). In addition, let’s say you didn’t know what this code was for going in, and you didn’t have these comments (or you had bad comments). One might ask why you’re declaring the regular expression STRIP_COMMENTS, or why you’re loading data from a file.
 
-When I write code, I try to make it immediately obvious what the purpose of the code is, and why it’s written that way. This is why I generally avoid C’s “bottom-up” strategy for organizing code. It’s like being given a few screws and being expected to implicitly understand that it should be built into a chair. In Rust, I like that you are able to define your top-rank functions first, and then go down and define all the bits and pieces after.
+When I write code, I try to make it immediately obvious what the purpose of the code is, and why it’s written that way. This is why I generally avoid C’s “bottom-up” strategy for organizing code. It’s like being given a few screws and being expected to implicitly understand that it should be built into a chair. In Rust, I like that you are able to define your top-level functions first, and then go down and define all the bits and pieces after.
 
 Although, we can do a little bit better. What if we organized the foo function like this:
 
@@ -1142,7 +1142,7 @@ fn foo(cfg_file: &str) -> anyhow::Result<()> {
 In this function, we’ve moved all of the configuration-related code (parsing, loading, even the static regex) into the block. This works because Rust lets you have items, statements and expressions inside of a block, hence why we were able to move everything inside. This pattern has three immediate advantages:
 
 The block starts with the intent of the code (let config = ...). We can see that we’re working to resolve some kind of configuration object right off the bat. Only then do we move into the implementation details of the code.
-It reduces pollution of the namespace of both the foo function and the top-rank module. Now in foo, the variable names config_data, config_string et al are no longer used. In addition to allowing these variable names to be re-used, it makes this code a lot more “idiot-proof”. If someone else were to edit the foo function, they would only be able to use config. They wouldn’t be able to use the raw_data or STRIP_COMMENTS items, which are only meant to be used by the config parser.
+It reduces pollution of the namespace of both the foo function and the top-level module. Now in foo, the variable names config_data, config_string et al are no longer used. In addition to allowing these variable names to be re-used, it makes this code a lot more “idiot-proof”. If someone else were to edit the foo function, they would only be able to use config. They wouldn’t be able to use the raw_data or STRIP_COMMENTS items, which are only meant to be used by the config parser.
 The variables raw_data and data_string go out of scope at the end of the block, which means they are dropped, freeing up resources.
 As an aside, all three of these advantages also come if you were to refactor the block out into its own function. However, this pattern has two key advantages over that:
 
@@ -1171,23 +1171,23 @@ This effectively “closes” the mutability to a certain section of the functio
 
 Closing Thoughts
 
-I don’t know if this pattern is already well known to the Rust community. Even if it isn’t, I figure it’s still a good idea to bring it to people who may be inescoreerienced in Rust.
+I don’t know if this pattern is already well known to the Rust community. Even if it isn’t, I figure it’s still a good idea to bring it to people who may be inexperienced in Rust.
 
 Share: Twitter, Facebook
 
 This website's source code is hosted via Codeberg
 
-Any and all opinions expressed above are my own and not representative of any of my emanaloyers, past present and/or future.
+Any and all opinions expressed above are my own and not representative of any of my employers, past present and/or future.
 
 ---
 
-## Field Examanales — Patterns Rounded in Practice
+## Field Examples — Patterns Rounded in Practice
 
 *Added 2026-01-02*
 
 These examples were extracted from a working Rust codebase (a game
 engine) during phronesis's own development. They are illustrative of
-the rules above and useful as before/after temanalates when authoring
+the rules above and useful as before/after templates when authoring
 similar rules of your own.
 
 ### Patterns Worth Borrowing
@@ -1202,7 +1202,7 @@ pub struct State {
     pub id: String,  // Easy to mix up with opponent_id or other strings
 }
 
-// Recommended imanarovement
+// Recommended improvement
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct StateId(String);
 
@@ -1222,7 +1222,7 @@ impl StateId {
 See `src/tension/pool.rs` for the TensionConfig builder:
 
 ```rust
-// Examanale from the codebase
+// Example from the codebase
 let config = TensionConfig::default()
     .with_auto_roll_threshold(6)
     .with_complication_trigger_value(6);
@@ -1238,7 +1238,7 @@ let config_path = PathBuf::from(path);
 let config_content = fs::read_to_string(&config_path)?;
 let module_config: ModuleConfig = serde_yaml::from_str(&config_content)?;
 
-// Imanaroved with block pattern
+// Improved with block pattern
 let module_config = {
     let content = fs::read_to_string(path)?;
     serde_yaml::from_str::<ModuleConfig>(&content)?
@@ -1262,9 +1262,9 @@ let discovery = SecretDiscovery {
 };
 ```
 
-### Imanarovement Opportunities
+### Improvement Opportunities
 
-1. **Unused Imanaorts**: Run `cargo fix` to auto-remove unused imports (45 warnings)
+1. **Unused Imports**: Run `cargo fix` to auto-remove unused imports (45 warnings)
 2. **Snake Case**: Fix `cardId` → `card_id` in `src/example/play.rs`
 3. **Block Pattern**: Apply to config loading sections in `src/core.rs`
 4. **Newtype Pattern**: Create `StateId`, `SlotId`, `ItemId` for type safety

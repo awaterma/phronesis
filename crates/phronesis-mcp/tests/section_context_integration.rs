@@ -97,10 +97,12 @@ fn set_section_context_asserts_markdown_rule_fact() {
     );
     let fired = c.tool("fire_rules", serde_json::json!({}));
     assert_eq!(fired["actions_fired"], 1);
-    assert!(fired["actions"][0]["params"][0]
-        .as_str()
-        .unwrap()
-        .contains("thiserror"));
+    assert!(
+        fired["actions"][0]["params"][0]
+            .as_str()
+            .unwrap()
+            .contains("thiserror")
+    );
 }
 
 #[test]

@@ -133,7 +133,7 @@ pub struct GetValuesParams {
     /// as `phr-mcp values --rule`.
     #[serde(default)]
     pub rule: Option<String>,
-    /// Rendering format. `"json"` (default) returns the structured Values
+    /// Rendering format. `"json"` (default) returns the structured Stats
     /// payload — best for programmatic callers. `"table"` returns a
     /// human-readable terminal table.
     #[serde(default)]
@@ -172,4 +172,3 @@ pub struct GetDebtTrendParams {
     #[serde(default)]
     pub format: Option<String>,
 }
-

@@ -30,7 +30,7 @@ fn run_hook_in(subcommand: &str, payload: &str, cwd: Option<&Path>) -> (i32, Str
 
     let output = child.wait_with_output().expect("failed to wait");
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let code = output.valueus.code().unwrap_or(-1);
+    let code = output.status.code().unwrap_or(-1);
     (code, stderr)
 }
 
@@ -229,7 +229,7 @@ fn run_hook_with_root(payload: &str, root: &Path) -> (i32, String) {
     drop(stdin);
     let out = child.wait_with_output().unwrap();
     (
-        out.valueus.code().unwrap_or(-1),
+        out.status.code().unwrap_or(-1),
         String::from_utf8_lossy(&out.stderr).to_string(),
     )
 }

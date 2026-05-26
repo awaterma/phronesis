@@ -87,7 +87,7 @@ pub struct SingleCondRuleEntry {
     pub condition: Condition,
 }
 
-/// Production Network resourceges all production states
+/// Production Network manages all production states
 #[derive(Debug)]
 pub struct ProductionNetwork {
     pub states: Vec<ProductionState>,
@@ -227,13 +227,17 @@ impl ProductionNetwork {
     /// preserved on `Provenance::RuleFiring`. Newer caller path; the existing
     /// `execute_agenda_item` is retained for callers that only want `Action`s.
     pub fn fire_agenda_item(&self, agenda_item: &AgendaItem) -> Result<Vec<Consequence>, String> {
-        let state = match self.states.iter().find(|n| n.rule.id == agenda_item.rule.id) {
+        let state = match self
+            .states
+            .iter()
+            .find(|n| n.rule.id == agenda_item.rule.id)
+        {
             Some(n) => n,
             None => {
                 return Err(format!(
                     "Production state for rule {} not found",
                     agenda_item.rule.id
-                ))
+                ));
             }
         };
 
@@ -410,7 +414,9 @@ mod fire_agenda_item_tests {
             }],
             actions: vec![RuleAction {
                 action_type: "constraint_violation".to_string(),
-                params: vec!["`?fn` in ?file returns Result<_, String>. Use thiserror.".to_string()],
+                params: vec![
+                    "`?fn` in ?file returns Result<_, String>. Use thiserror.".to_string(),
+                ],
             }],
         }
     }
