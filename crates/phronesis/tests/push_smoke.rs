@@ -122,7 +122,7 @@ async fn push_consequences_carry_provenance_with_bound_facts() {
 async fn payload_preserves_action_type_and_params() {
     let actions = vec![Action {
         action_type: "play_card".to_string(),
-        params: vec!["deck".to_string(), "face_up".to_string()],
+        params: vec!["ace_spades".to_string(), "face_up".to_string()],
     }];
 
     let consequences =
@@ -130,7 +130,7 @@ async fn payload_preserves_action_type_and_params() {
     let payload = &consequences[0].payload;
 
     assert_eq!(payload["action_type"], "play_card");
-    assert_eq!(payload["params"][0], "deck");
+    assert_eq!(payload["params"][0], "ace_spades");
     assert_eq!(payload["params"][1], "face_up");
 }
 

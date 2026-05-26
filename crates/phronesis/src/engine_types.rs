@@ -25,7 +25,7 @@ pub struct Fact {
 pub struct Condition {
     /// Predicate to match
     pub predicate: String,
-    /// Arguments with possible variables (e.g., ["?user", "deck"])
+    /// Arguments with possible variables (e.g., ["?user", "active"])
     pub args: Vec<String>,
     /// Optional Rhai script for complex condition evaluation
     pub script: Option<String>,

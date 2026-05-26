@@ -64,22 +64,22 @@ pub struct Consequence {
 #[serde(rename_all = "snake_case")]
 pub enum ConsequenceKind {
     /// Something happened in the game. The actor's job is to express it.
-    /// e.g. cost taken, Opponent moved, card resolved.
+    /// e.g. a rule violation surfaced, a fact retracted, a card played.
     Event,
 
     /// A bounded snapshot of state. The actor may read it; it does not
-    /// represent a change. e.g. character sheet, card card, opponent
-    /// value block.
+    /// represent a change. e.g. a config snapshot, the current rule
+    /// pack, a card-in-hand listing.
     Snapshot,
 
-    /// A constraint or invariant the actor must respect. e.g. "this Opponent
-    /// will not lie about their name", "this code must remain backwards
-    /// compatible".
+    /// A constraint or invariant the actor must respect. e.g. "this code
+    /// must remain backwards compatible", "this response must not include
+    /// secrets".
     Constraint,
 
-    /// A concrete option the actor may choose among. e.g. "the player
-    /// can play, retreat, or parley", "the patch can target file A
-    /// or file B".
+    /// A concrete option the actor may choose among. e.g. "the patch can
+    /// target file A or file B", "the next card may be drawn or
+    /// discarded".
     Affordance,
 }
 
