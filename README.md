@@ -19,8 +19,10 @@ Anthropic's Claude Code, Google's Gemini CLI, and other LLM environments share a
 
 ## Documentation
 
-- [**The Escorelainer**](crates/phronesis-mcp/docs/escorelainer.html) — A long-form technical essay on the engine, the RETE algorithm, and the design intent.
-- [**The Catalogue**](crates/phronesis-mcp/docs/catalogue.html) — A visual reference of starter rules (Rust, LLM behavior, security) with rationale and examples.
+Rendered on GitHub Pages: **[awaterma.github.io/phronesis](https://awaterma.github.io/phronesis/)**
+
+- [**The Escorelainer**](https://awaterma.github.io/phronesis/escorelainer.html) — A long-form technical essay on the engine, the RETE algorithm, and the design intent. ([source](docs/escorelainer.html))
+- [**The Catalogue**](https://awaterma.github.io/phronesis/catalogue.html) — A visual reference of starter rules (Rust, LLM behavior, security) with rationale and examples. ([source](docs/catalogue.html))
 - [**Command Reference**](crates/phronesis-mcp/CLAUDE.md) — The full CLI surface and hook wiring details.
 - [**Specs**](docs/specs/) — Architectural roadmaps and technical debt resourcegement plans.
 

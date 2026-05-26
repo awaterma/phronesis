@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Phronesis · Documentation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..700&family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,400..600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --paper:        #F2EDDD;
+    --paper-deep:   #E8DFC6;
+    --ink:          #1A1510;
+    --ink-soft:     #3A2F22;
+    --mute:         #6E5F4A;
+    --rule:         #C8BC9F;
+    --accent:       #B23A1B;
+    --measure: 56ch;
+  }
+  html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
+  body {
+    font-family: 'Newsreader', Georgia, serif;
+    font-size: 1.125rem;
+    line-height: 1.55;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    padding: 4rem 1.5rem;
+  }
+  main { max-width: var(--measure); }
+  h1 {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 600;
+    font-size: clamp(2rem, 5vw, 3rem);
+    margin: 0 0 0.25em;
+    letter-spacing: -0.02em;
+  }
+  .sub {
+    font-style: italic;
+    color: var(--ink-soft);
+    margin: 0 0 2.5rem;
+  }
+  ul.docs { list-style: none; padding: 0; margin: 0; }
+  ul.docs li { padding: 1.25rem 0; border-bottom: 1px solid var(--rule); }
+  ul.docs li:last-child { border-bottom: 0; }
+  ul.docs a {
+    font-family: 'Fraunces', Georgia, serif;
+    font-weight: 500;
+    font-size: 1.4rem;
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid currentColor;
+  }
+  ul.docs p { margin: 0.4em 0 0; color: var(--mute); font-size: 1rem; }
+  footer {
+    margin-top: 3rem;
+    color: var(--mute);
+    font-size: 0.95rem;
+  }
+  footer a { color: var(--accent); }
+</style>
+</head>
+<body>
+  <main>
+    <h1>Phronesis</h1>
+    <p class="sub">Practical rank for LLM-assisted work — durable rules, evaluated outside the context window.</p>
+
+    <ul class="docs">
+      <li>
+        <a href="./escorelainer.html">The Escorelainer →</a>
+        <p>A long-form essay on the engine, the RETE algorithm, and the design intent behind moving guidance out of conversation context.</p>
+      </li>
+      <li>
+        <a href="./catalogue.html">The Catalogue →</a>
+        <p>A visual reference of the starter rule packs — Rust enforcement, LLM-behavior nudges, Rhai script hygiene — with rationale and worked examples.</p>
+      </li>
+    </ul>
+
+    <footer>
+      Source: <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
+    </footer>
+  </main>
+</body>
+</html>
