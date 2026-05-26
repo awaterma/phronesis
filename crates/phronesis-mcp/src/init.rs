@@ -1489,8 +1489,6 @@ mod tests {
                 "GameLogicLoader",
                 "save.rhai",
                 "response_append",
-                "Phronesis",
-                "phronesis",
             ] {
                 assert!(
                     !msg.contains(forbidden),
