@@ -15,7 +15,7 @@ fn run_init(args: &[&str], cwd: &Path) -> Output {
 }
 
 #[test]
-fn init_creates_all_four_files_in_fresh_project() {
+fn init_creates_all_five_files_in_fresh_project() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&[], dir.path());
     assert!(
@@ -27,6 +27,7 @@ fn init_creates_all_four_files_in_fresh_project() {
     assert!(dir.path().join(".claude/settings.local.json").exists());
     assert!(dir.path().join(".mcp.json").exists());
     assert!(dir.path().join(".phronesis/rules.json").exists());
+    assert!(dir.path().join(".phronesis/durable.md").exists());
     assert!(dir.path().join(".gitignore").exists());
 
     // Verify the rules file has the minimal starter pack (3 deflection rules)
@@ -41,6 +42,31 @@ fn init_creates_all_four_files_in_fresh_project() {
         .map(|r| r["id"].as_str().unwrap())
         .collect();
     assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+
+    // Verify the durable.md template nudges the model toward the drift tools.
+    let durable = std::fs::read_to_string(dir.path().join(".phronesis/durable.md")).unwrap();
+    assert!(durable.contains("get_claude_md_drift"));
+    assert!(durable.contains("get_memory_drift"));
+}
+
+#[test]
+fn init_preserves_existing_durable_md() {
+    let dir = tempfile::tempdir().unwrap();
+    // Pre-populate durable.md with the user's own content. init must not
+    // clobber it.
+    std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+    let original = "# my team's directives\n\n- do X\n- don't Y\n";
+    std::fs::write(dir.path().join(".phronesis/durable.md"), original).unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let after = std::fs::read_to_string(dir.path().join(".phronesis/durable.md")).unwrap();
+    assert_eq!(after, original, "init must not overwrite existing durable.md");
 }
 
 #[test]

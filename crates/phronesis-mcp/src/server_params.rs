@@ -172,3 +172,22 @@ pub struct GetDebtTrendParams {
     #[serde(default)]
     pub format: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct GetClaudeMdDriftParams {
+    /// `"json"` (default) or `"table"`.
+    #[serde(default)]
+    pub format: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct GetMemoryDriftParams {
+    /// Override the memory-directory location. Defaults to
+    /// `~/.claude/projects/<encoded-cwd>/memory/` — the per-project
+    /// auto-memory directory the Claude Code harness maintains.
+    #[serde(default)]
+    pub memory_dir: Option<String>,
+    /// `"json"` (default) or `"table"`.
+    #[serde(default)]
+    pub format: Option<String>,
+}

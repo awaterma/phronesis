@@ -16,6 +16,7 @@ cargo run -- values            # Read-only per-rule summary of .phronesis/log.js
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
+cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
 ```
 
 ### Durable directives (`.phronesis/durable.md`)
@@ -30,15 +31,32 @@ survive context compression — typically a few hundred words. CLAUDE.md
 remains the human-facing onmaping doc; `durable.md` is the "this must
 not fade" subset that the model re-reads every turn.
 
-### CLAUDE.md ↔ rules drift detection
+### Drift detection — CLAUDE.md and auto-memory ↔ rules
 
-`phr-mcp claude-md-drift` extracts imperative bullets from CLAUDE.md
-("Don't X", "Always Y", "Prefer Z") and matches each one against the
-current rule pack by token overlap. Output flags bullets with no
-confident match — candidates that either should become rules or
-should be marked as "non-lintable by design" so future audits
-don't re-flag them. Heuristic by design (no LLM call), so treat the
-output as a starting point for human triage rather than ground truth.
+Two CLI tools (also exposed as MCP tools, so the model can invoke
+them in conversation) surface the gap between prose guidance and
+enforced rules:
+
+`phr-mcp claude-md-drift` (MCP: `get_claude_md_drift`) extracts
+imperative bullets from CLAUDE.md ("Don't X", "Always Y", "Prefer Z")
+and matches each one against the current rule pack by token overlap.
+Output flags bullets with no confident match — candidates that
+either should become rules or should be marked as "non-lintable by
+design" so future audits don't re-flag them.
+
+`phr-mcp memory-drift` (MCP: `get_memory_drift`) walks Claude Code's
+per-project auto-memory directory (default
+`~/.claude/projects/<encoded-cwd>/memory/`), parses the YAML
+frontmatter on each entry, and classifies it into one of three
+buckets per `docs/specs/SPEC-memory-to-rules.md`: `actionable`
+(should become a rule), `ambient` (should be in durable.md), or
+`personal` (stays in MEMORY.md). Non-personal entries are scored
+against rules.json and durable.md by token overlap; uncovered ones
+are surfaced for porting. `--suggest` emits draft rule JSON on
+stderr.
+
+Both tools are heuristic (no LLM call) — output is a triage list,
+not ground truth.
 
 ## One-time global install (recommended)
 
@@ -117,10 +135,11 @@ The packs are composable and **independent**:
 - `swift` — Swift-specific advisories: force-unwrap warning, try! warning
 - `none` — empty rules array (hooks still wired)
 
-`init` writes/merges five files:
+`init` writes/merges six files:
 - `.claude/settings.local.json` — hook config (preserves existing permissions/hooks)
 - `.mcp.json` — MCP server registration
 - `.phronesis/rules.json` — starter rule pack (left alone on re-run unless --force)
+- `.phronesis/durable.md` — default re-injected directives, including drift-discipline nudges that point the model at `get_claude_md_drift` / `get_memory_drift`. Left alone on re-run; edit in place to customize.
 - `.gemini/settings.json` — MCP server registration + BeforeTool/AfterTool hooks for Gemini CLI
 - `.gitignore` — log/backup paths
 
@@ -247,7 +266,9 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 ## Architecture
 
 - `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, values, audit_codebase, get_debt_trend)
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, values, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift)
+- `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.
+- `src/memory_drift.rs` — Walks the Claude Code auto-memory directory, classifies entries by `metadata.type`, and scores them against rules.json + durable.md.
 - `src/hook.rs` — Pre/post hook subcommands; reads `.phronesis/rules.json`, fires rules, exits 0/1/2
 - `src/init.rs` — `phr-mcp init` one-command project setup
 - `src/context.rs` — Formatters for SessionStart / UserPromptSubmit hook payloads (active-rules summary, recent-activity summary)

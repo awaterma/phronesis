@@ -858,6 +858,87 @@ impl EpistemeMcp {
             _ => Self::ok_text(render_trend_json(&trend)),
         }
     }
+
+    #[tool(
+        description = "Detect drift between CLAUDE.md imperatives and the current rule pack. Heuristic: extracts bullets like \"Don't X\" / \"Always Y\" / \"Prefer Z\" from CLAUDE.md and matches each against rule contents by token overlap. Returns each bullet with its best-match rule (if any) and a Jaccard similarity score; bullets below the coverage threshold are candidates that should become enforced rules. Read-only. Use this when the user mentions CLAUDE.md, project conventions, or asks whether guidance is enforced. Optional `format` param: \"json\" (default) or \"table\"."
+    )]
+    async fn get_claude_md_drift(
+        &self,
+        Parameters(params): Parameters<GetClaudeMdDriftParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::claude_md_drift::{DriftError, render_json, render_table, run};
+
+        let root = security::project_root();
+        let report = match run(&root) {
+            Ok(r) => r,
+            Err(DriftError::ClaudeMdMissing(p)) => {
+                return Err(Self::err(format!("CLAUDE.md not found at {}", p)));
+            }
+            Err(e) => return Err(Self::err(e.to_string())),
+        };
+
+        let uncovered = report
+            .items
+            .iter()
+            .filter(|i| i.similarity < report.coverage_threshold)
+            .count();
+        Self::log_event("get_claude_md_drift", |e| {
+            e.with("items_total", report.items.len() as u64)
+                .with("items_uncovered", uncovered as u64)
+        });
+
+        match params.format.as_deref() {
+            Some("table") => Self::ok_text(render_table(&report)),
+            _ => Self::ok_text(render_json(&report)),
+        }
+    }
+
+    #[tool(
+        description = "Detect drift between Claude Code's auto-memory store and the phronesis rule pack / durable directives. Walks `~/.claude/projects/<encoded-cwd>/memory/`, parses frontmatter on each `.md` file, and classifies each entry into one of three buckets: `actionable` (port to a rule), `ambient` (port to durable.md), or `personal` (stays in MEMORY.md). Non-personal entries are scored by token overlap against rules.json and durable.md; uncovered entries are candidates for porting. Read-only, heuristic, no LLM call. Use this when the user mentions memory, durable guidance, or asks whether a saved preference is enforced. Optional `memory_dir` overrides the default location. Optional `format` param: \"json\" (default) or \"table\"."
+    )]
+    async fn get_memory_drift(
+        &self,
+        Parameters(params): Parameters<GetMemoryDriftParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::memory_drift::{
+            DriftError, default_memory_dir, render_json, render_table, run_with_dir,
+        };
+
+        let root = security::project_root();
+        let memory_dir = match params.memory_dir.as_deref() {
+            Some(p) => std::path::PathBuf::from(p),
+            None => default_memory_dir(&root),
+        };
+
+        let report = match run_with_dir(&root, &memory_dir) {
+            Ok(r) => r,
+            Err(DriftError::MemoryDirMissing(p)) => {
+                return Err(Self::err(format!(
+                    "memory directory not found at {} — Claude Code creates this directory on first save; pass `memory_dir` to point elsewhere",
+                    p
+                )));
+            }
+            Err(e) => return Err(Self::err(e.to_string())),
+        };
+
+        let actionable_uncovered = report
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(i.bucket, crate::memory_drift::Bucket::Actionable)
+                    && i.similarity < report.coverage_threshold
+            })
+            .count();
+        Self::log_event("get_memory_drift", |e| {
+            e.with("items_total", report.items.len() as u64)
+                .with("actionable_uncovered", actionable_uncovered as u64)
+        });
+
+        match params.format.as_deref() {
+            Some("table") => Self::ok_text(render_table(&report)),
+            _ => Self::ok_text(render_json(&report)),
+        }
+    }
 }
 
 #[tool_handler]

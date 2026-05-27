@@ -396,6 +396,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
     }
     if !opts.hooks_only {
         write_rules_file(&root, &opts, &mut report)?;
+        write_durable_md(&root, &opts, &mut report)?;
     }
     if !opts.rules_only && !opts.hooks_only {
         update_gitignore(&root, &opts, &mut report)?;
@@ -613,6 +614,71 @@ fn write_rules_file(
         "+ wrote .phronesis/rules.json ({} {} rule(s))",
         count, label
     ));
+    Ok(())
+}
+
+/// Default `.phronesis/durable.md` template. Re-injected into the
+/// model's context at every SessionStart and UserPromptSubmit, so the
+/// nudges below survive context-window decay. Tuned to be terse — the
+/// whole file ships in every turn, so spend tokens carefully.
+const DEFAULT_DURABLE_MD: &str = r#"# Durable Directives
+
+Re-injected at every SessionStart and UserPromptSubmit by phronesis.
+Contents do not fade with context-window compression.
+
+## Drift discipline
+
+Two heuristic tools surface the gap between prose guidance and
+enforced rules. They are cheap, deterministic, and worth running
+whenever the user asks about rules, memory, durable guidance, or
+project conventions:
+
+- `mcp__phronesis__get_claude_md_drift` — bullets in `CLAUDE.md`
+  that no current rule covers. Candidates for rule porting or for
+  marking "non-lintable by design."
+- `mcp__phronesis__get_memory_drift` — entries in the auto-memory
+  store that have no matching rule or `durable.md` paragraph.
+  Actionable entries (named tool calls / commands) should become
+  rules; ambient ones (project-shared prose) should be added here.
+
+Treat the output as a triage list, not authoritative ground truth —
+the scoring is token-overlap Jaccard, no semantic match. When the
+user says "remember X" or "make a rule for X", check drift first to
+see whether the gap is real.
+
+## Project-specific guidance
+
+(Add team-specific directives below. Anything written here is
+re-read by the model every turn and so is safe from context-window
+fade.)
+"#;
+
+fn write_durable_md(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Result<(), InitError> {
+    let path = root.join(".phronesis").join("durable.md");
+
+    if path.exists() {
+        report.steps.push(
+            "= .phronesis/durable.md already exists — leaving unchanged (edit in place to customize)"
+                .to_string(),
+        );
+        return Ok(());
+    }
+
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would write .phronesis/durable.md (default drift-discipline notes)".to_string());
+        return Ok(());
+    }
+
+    ensure_parent(&path)?;
+    std::fs::write(&path, DEFAULT_DURABLE_MD).map_err(|e| InitError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    report
+        .steps
+        .push("+ wrote .phronesis/durable.md (default drift-discipline notes)".to_string());
     Ok(())
 }
 
