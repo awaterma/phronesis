@@ -1,9 +1,11 @@
 pub mod action_log;
 pub mod audit;
 pub mod claude_md_drift;
+pub mod clock_facts;
 pub mod context;
 pub mod diff_extract;
 pub mod hook;
+pub mod memory_drift;
 pub(crate) mod hook_facts;
 pub(crate) mod hook_logged;
 pub mod init;

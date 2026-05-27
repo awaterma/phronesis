@@ -102,6 +102,31 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Detect drift between Claude Code's auto-memory store and the
+    /// phronesis rule pack / durable directives file. Classifies each
+    /// memory by frontmatter `metadata.type` and scores it against
+    /// existing rules and `durable.md` by token overlap. Surfaces
+    /// actionable memories without rule coverage and ambient memories
+    /// without durable.md coverage. Read-only; always exits 0.
+    #[command(name = "memory-drift")]
+    MemoryDrift {
+        /// Project root (defaults to current directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Memory directory override. Defaults to
+        /// `~/.claude/projects/<encoded-cwd>/memory/`.
+        #[arg(long)]
+        memory_dir: Option<PathBuf>,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Emit draft phronesis-rule JSON for each uncovered actionable
+        /// memory, on stderr. Drafts include a `// TODO: pick a substring`
+        /// placeholder for the condition predicate — the operator picks
+        /// the right predicate after review.
+        #[arg(long)]
+        suggest: bool,
+    },
     /// One-command setup for a project. Writes hook config, MCP server
     /// registration, a starter rules file, and updates .gitignore.
     /// Also reachable as `setup` and `configure`.
@@ -410,6 +435,60 @@ async fn main() -> anyhow::Result<()> {
                 }
                 Err(DriftError::ClaudeMdMissing(p)) => {
                     eprintln!("error: CLAUDE.md not found at {}", p);
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::MemoryDrift {
+            path,
+            memory_dir,
+            json,
+            suggest,
+        } => {
+            use phronesis_mcp::memory_drift::{
+                DriftError, default_memory_dir, render_json, render_table, run_with_dir,
+                suggest_rule,
+            };
+            let root = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .map(|p| p.join(&path))
+                    .unwrap_or(path)
+            };
+            let dir = memory_dir.unwrap_or_else(|| default_memory_dir(&root));
+            match run_with_dir(&root, &dir) {
+                Ok(report) => {
+                    if json {
+                        println!("{}", render_json(&report));
+                    } else {
+                        print!("{}", render_table(&report));
+                    }
+                    if suggest {
+                        let drafts: Vec<String> = report
+                            .items
+                            .iter()
+                            .filter_map(suggest_rule)
+                            .collect();
+                        if !drafts.is_empty() {
+                            eprintln!("\n--- draft rules for uncovered actionable memories ---\n");
+                            for draft in drafts {
+                                eprintln!("{}\n", draft);
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                Err(DriftError::MemoryDirMissing(p)) => {
+                    eprintln!("error: memory directory not found at {}", p);
+                    eprintln!(
+                        "hint: Claude Code creates this directory on first save; \
+                         try `--memory-dir <path>` to point elsewhere."
+                    );
                     std::process::exit(1);
                 }
                 Err(e) => {

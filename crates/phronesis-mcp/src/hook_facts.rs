@@ -256,6 +256,22 @@ pub(crate) async fn assert_common_facts(
     for fact in facts {
         network.assert_fact(fact).await?;
     }
+
+    // Clock facts (business-hours-local, weekday-local, hour-local) — let
+    // rules condition on when the hook is firing. Cheap; read the local
+    // clock once per invocation.
+    for cf in crate::clock_facts::now() {
+        let fact_id = format!("{}_{}", cf.predicate, cf.args.join("_"));
+        network
+            .assert_fact(Fact {
+                id: fact_id,
+                predicate: cf.predicate.to_string(),
+                args: cf.args,
+                timestamp: 0,
+            })
+            .await?;
+    }
+
     Ok(())
 }
 
