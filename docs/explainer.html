@@ -47,7 +47,7 @@
   /* Faint paper noise overlay */
   body::before {
     content: "";
-    state: fixed; inset: 0;
+    position: fixed; inset: 0;
     pointer-events: none;
     z-index: 100;
     opacity: 0.045;
@@ -133,7 +133,7 @@
     max-width: 78rem;
     margin: 0 auto;
     padding: 0 var(--pad-x);
-    state: relative;
+    position: relative;
   }
 
   /* ─── Header / colophon strip ───────────────────────────────────── */
@@ -173,7 +173,7 @@
     align-items: end;
     gap: 3rem;
     border-bottom: 1px solid var(--ink);
-    state: relative;
+    position: relative;
   }
   .cover .meta {
     font-family: "Fraunces", serif;
@@ -270,7 +270,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    state: relative;
+    position: relative;
   }
   .seal svg { width: 100%; height: 100%; }
   @media (max-width: 720px) {
@@ -282,7 +282,7 @@
   section.chunk {
     padding: 4.5rem 0;
     border-bottom: 1px solid var(--rule);
-    state: relative;
+    position: relative;
   }
   .section-head {
     display: grid;
@@ -353,7 +353,7 @@
     background: var(--paper);
     border: 1px solid var(--ink);
     padding: 1.5rem;
-    state: relative;
+    position: relative;
   }
   .diagram .caption {
     font-family: "Fraunces", serif;
@@ -534,7 +534,7 @@
     max-width: 36ch;
     margin-left: auto;
     margin-right: auto;
-    state: relative;
+    position: relative;
   }
   blockquote.pull::before, blockquote.pull::after {
     content: "";
@@ -609,9 +609,9 @@
         guidance alive across a long working session.
       </p>
       <p class="byline">
-        <span class="author primary"><a href="mailto:andrew@waterman.dev">Andrew Waterman</a></span>
-        <span class="secondary"><span class="with">with</span> Claude <span class="dot">·</span> Anthropic</span>
-        <span class="affil">2026</span>
+        <span class="author primary">Claude</span>
+        <span class="secondary"><span class="with">with</span> <a href="mailto:andrew@waterman.dev">Andrew Waterman</a></span>
+        <span class="affil">Phronesis &amp; the rules <span class="dot">·</span> 2026</span>
       </p>
     </div>
 

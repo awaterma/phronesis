@@ -42,7 +42,7 @@
   /* Subtle paper noise */
   body::before {
     content: "";
-    state: fixed; inset: 0;
+    position: fixed; inset: 0;
     pointer-events: none;
     z-index: 100;
     opacity: 0.05;
@@ -335,7 +335,7 @@
     display: grid;
     grid-template-columns: 4rem minmax(0, 1fr);
     gap: 1.75rem;
-    state: relative;
+    position: relative;
   }
   .rule:last-child { border-bottom: 1px solid var(--ink); }
   .rule-mark {
@@ -2123,6 +2123,8 @@ audit-rc-refcell-in-src   warn      4      2
       Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
       <em>JetBrains Mono</em> for code.<br>
       Hand-set in HTML, served as a single file.<br>
+      By <strong>Phronesis &amp; the rules</strong> — Claude with
+      <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>.<br>
       Pairs with <a href="./explainer.html">the explainer</a> ·
       v 0.6.0 · 2026
     </div>
