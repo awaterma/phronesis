@@ -6,8 +6,85 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use phr::{Action, Condition, Rule};
+use serde::de::{self};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+/// One clause in a v2 rule's `when` array: a leaf condition or an OR group.
+#[derive(Debug, Clone)]
+pub enum WhenClause {
+    Leaf(DiskCondition),
+    Or(Vec<WhenClause>),
+}
+
+impl<'de> Deserialize<'de> for WhenClause {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A clause is always a single-key JSON object. If the key is "or",
+        // it's a disjunction; otherwise the key is a predicate name.
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let obj = value
+            .as_object()
+            .ok_or_else(|| de::Error::custom("when-clause must be a JSON object"))?;
+        if obj.len() != 1 {
+            return Err(de::Error::custom(
+                "when-clause must have exactly one key (a predicate name or \"or\")",
+            ));
+        }
+        let (key, val) = obj.iter().next().expect("len checked == 1");
+
+        if key == "or" {
+            let arr = val
+                .as_array()
+                .ok_or_else(|| de::Error::custom("\"or\" value must be an array of clauses"))?;
+            let alts: Result<Vec<WhenClause>, _> = arr
+                .iter()
+                .map(|v| serde_json::from_value::<WhenClause>(v.clone()).map_err(de::Error::custom))
+                .collect();
+            return Ok(WhenClause::Or(alts?));
+        }
+
+        // Leaf condition. Key is the predicate name.
+        let predicate = key.clone();
+        let (args, script) = if predicate == "__script__" {
+            let s = val
+                .as_str()
+                .ok_or_else(|| de::Error::custom("__script__ value must be a string"))?;
+            (Vec::new(), Some(s.to_string()))
+        } else {
+            let args = match val {
+                serde_json::Value::String(s) => vec![s.clone()],
+                // A boolean is a zero-arg presence marker: the predicate name is
+                // what matters, not the value (true or false). Both yield empty args.
+                serde_json::Value::Bool(_) => Vec::new(),
+                serde_json::Value::Array(items) => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for it in items {
+                        let s = it.as_str().ok_or_else(|| {
+                            de::Error::custom("predicate arg array must contain strings")
+                        })?;
+                        out.push(s.to_string());
+                    }
+                    out
+                }
+                other => {
+                    return Err(de::Error::custom(format!(
+                        "predicate value must be string, array, or bool; got {}",
+                        other
+                    )));
+                }
+            };
+            (args, None)
+        };
+        Ok(WhenClause::Leaf(DiskCondition {
+            predicate,
+            args,
+            script,
+        }))
+    }
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DiskRule {
@@ -441,5 +518,92 @@ mod tests {
         assert_eq!(r.audit, None);
         let out = serde_json::to_string(&r).unwrap();
         assert!(!out.contains("\"audit\""));
+    }
+
+    #[test]
+    fn v2_leaf_condition_single_string_arg() {
+        let json = r#"{ "new_content_contains": ".unwrap()" }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Leaf(c) => {
+                assert_eq!(c.predicate, "new_content_contains");
+                assert_eq!(c.args, vec![".unwrap()".to_string()]);
+                assert_eq!(c.script, None);
+            }
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn v2_leaf_condition_multi_arg_array() {
+        let json = r#"{ "function_param_count_high": ["?file", "?fn", "?count"] }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Leaf(c) => {
+                assert_eq!(c.predicate, "function_param_count_high");
+                assert_eq!(
+                    c.args,
+                    vec!["?file".to_string(), "?fn".to_string(), "?count".to_string()]
+                );
+            }
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn v2_leaf_condition_zero_arg_bool() {
+        let json = r#"{ "some_zero_arg_predicate": true }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Leaf(c) => {
+                assert_eq!(c.predicate, "some_zero_arg_predicate");
+                assert!(c.args.is_empty());
+            }
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn v2_script_condition() {
+        let json = r#"{ "__script__": "rank > 5" }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Leaf(c) => {
+                assert_eq!(c.predicate, "__script__");
+                assert_eq!(c.script, Some("rank > 5".to_string()));
+            }
+            _ => panic!("expected Leaf"),
+        }
+    }
+
+    #[test]
+    fn v2_or_clause() {
+        let json = r#"{ "or": [ { "new_content_contains": "cargo test" }, { "new_content_contains": "cargo nextest" } ] }"#;
+        let clause: WhenClause = serde_json::from_str(json).unwrap();
+        match clause {
+            WhenClause::Or(alts) => {
+                assert_eq!(alts.len(), 2);
+                match &alts[0] {
+                    WhenClause::Leaf(c) => {
+                        assert_eq!(c.predicate, "new_content_contains");
+                        assert_eq!(c.args, vec!["cargo test".to_string()]);
+                    }
+                    _ => panic!("expected Leaf in or[0]"),
+                }
+                match &alts[1] {
+                    WhenClause::Leaf(c) => assert_eq!(c.args, vec!["cargo nextest".to_string()]),
+                    _ => panic!("expected Leaf in or[1]"),
+                }
+            }
+            _ => panic!("expected Or"),
+        }
+    }
+
+    #[test]
+    fn v2_clause_rejects_malformed_inputs() {
+        assert!(serde_json::from_str::<WhenClause>(r#""just_a_string""#).is_err());
+        assert!(serde_json::from_str::<WhenClause>(r#"{"a": true, "b": true}"#).is_err());
+        assert!(serde_json::from_str::<WhenClause>(r#"{"or": "not_an_array"}"#).is_err());
+        assert!(serde_json::from_str::<WhenClause>(r#"{"pred": 42}"#).is_err());
     }
 }
