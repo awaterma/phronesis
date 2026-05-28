@@ -1123,4 +1123,35 @@ mod tests {
         assert!(text.contains("\"block\""));
         assert!(!text.contains("\"action_type\""));
     }
+
+    #[test]
+    fn load_rules_preserves_script_condition() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        let rf = RulesFile {
+            rules: vec![DiskRule {
+                id: "s".into(),
+                phase: "pre".into(),
+                priority: 1,
+                conditions: vec![DiskCondition {
+                    predicate: "__script__".into(),
+                    args: vec![],
+                    script: Some("rank > 5".into()),
+                }],
+                actions: vec![DiskAction {
+                    action_type: "constraint_warning".into(),
+                    params: vec!["m".into()],
+                }],
+                silent: None,
+                audit: None,
+                doc_excepted: None,
+            }],
+        };
+        write_atomic(&path, &rf).unwrap();
+        let loaded = read(&path).unwrap();
+        assert_eq!(
+            loaded.rules[0].conditions[0].script,
+            Some("rank > 5".to_string())
+        );
+    }
 }

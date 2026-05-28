@@ -1,9 +1,6 @@
-use std::collections::HashMap;
-use std::path::Path;
 use std::process;
 
-use phr::consequence::{Consequence, Provenance};
-use phr::{Action, Condition, Fact, ReteNetwork, Rule};
+use phr::{Fact, ReteNetwork, Rule};
 use serde::Deserialize;
 use thiserror::Error;
 
@@ -12,22 +9,11 @@ use crate::diff_extract;
 use crate::security::{
     self, MAX_FACT_CONTENT_BYTES, read_file_capped, read_stdin_capped, resolve_safe_path,
 };
-use crate::syntax;
 
 #[derive(Debug, Error)]
 enum RulesLoadError {
-    #[error("io error reading {path}: {source}")]
-    Io {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("rules file at {path} is malformed: {source}")]
-    Malformed {
-        path: String,
-        #[source]
-        source: serde_json::Error,
-    },
+    #[error("rules file at {path} could not be loaded: {message}")]
+    Load { path: String, message: String },
 }
 
 /// Hook-internal error type. Currently wraps engine `String` errors; future
@@ -58,32 +44,6 @@ struct HookPayload {
     #[serde(default)]
     #[allow(dead_code)]
     tool_output: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RulesFile {
-    rules: Vec<HookRule>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HookRule {
-    id: String,
-    phase: String,
-    priority: i32,
-    conditions: Vec<HookCondition>,
-    actions: Vec<HookAction>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HookCondition {
-    predicate: String,
-    args: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct HookAction {
-    action_type: String,
-    params: Vec<String>,
 }
 
 /// Print `{}` to stdout and exit 0.
@@ -495,43 +455,16 @@ fn load_rules(phase: &str) -> Result<Option<Vec<Rule>>, RulesLoadError> {
     if !path_buf.exists() {
         return Ok(None);
     }
-
-    let path_display = path_buf.display().to_string();
-    let content = std::fs::read_to_string(&path_buf).map_err(|e| RulesLoadError::Io {
-        path: path_display.clone(),
-        source: e,
+    let rules_file = crate::rules_file::read(&path_buf).map_err(|e| RulesLoadError::Load {
+        path: path_buf.display().to_string(),
+        message: e.to_string(),
     })?;
-    let rules_file: RulesFile =
-        serde_json::from_str(&content).map_err(|e| RulesLoadError::Malformed {
-            path: path_display,
-            source: e,
-        })?;
 
     let rules: Vec<Rule> = rules_file
         .rules
         .into_iter()
         .filter(|r| r.phase == phase)
-        .map(|r| Rule {
-            id: r.id,
-            priority: r.priority,
-            conditions: r
-                .conditions
-                .into_iter()
-                .map(|c| Condition {
-                    predicate: c.predicate,
-                    args: c.args,
-                    script: None,
-                })
-                .collect(),
-            actions: r
-                .actions
-                .into_iter()
-                .map(|a| Action {
-                    action_type: a.action_type,
-                    params: a.params,
-                })
-                .collect(),
-        })
+        .map(|r| crate::rules_file::rule_from_disk(&r).0)
         .collect();
 
     if rules.is_empty() {
@@ -655,6 +588,9 @@ pub(crate) use crate::hook_logged::{LoggedConsequence, split_messages_by_action_
 mod tests {
     use super::*;
     use crate::hook_facts::filter_new_or_increased_clone_counts;
+    use phr::Condition;
+    use phr::consequence::Consequence;
+    use std::collections::HashMap;
 
     fn make_payload(tool_name: &str, input: serde_json::Value) -> HookPayload {
         HookPayload {
