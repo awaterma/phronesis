@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+use anyhow::anyhow;
 use phr::{Action, Condition, Rule};
 use serde::de::{self};
 use serde::{Deserialize, Serialize};
@@ -83,6 +84,178 @@ impl<'de> Deserialize<'de> for WhenClause {
             args,
             script,
         }))
+    }
+}
+
+/// On-disk v2 rule form. OR-bearing; expanded to flat `DiskRule`s by `unfold_or`.
+#[derive(Debug, Clone)]
+pub struct SourceRule {
+    pub id: String,
+    pub phase: String,
+    pub priority: i32,
+    pub when: Vec<WhenClause>,
+    pub then: DiskAction,
+    pub silent: Option<bool>,
+    pub audit: Option<bool>,
+    pub doc_excepted: Option<bool>,
+}
+
+/// Map a v2 `then` object (`{"block": "msg"}`) to an internal action.
+/// `block`→constraint_violation, `warn`→constraint_warning, `log`→log,
+/// anything else passes through as its own action_type (forward-compat).
+fn parse_then_action(value: &serde_json::Value) -> anyhow::Result<DiskAction> {
+    let obj = value
+        .as_object()
+        .ok_or_else(|| anyhow!("then must be a JSON object"))?;
+    if obj.len() != 1 {
+        return Err(anyhow!("then must have exactly one verb key"));
+    }
+    let (verb, msg_val) = obj.iter().next().expect("len==1");
+    let msg = msg_val
+        .as_str()
+        .ok_or_else(|| anyhow!("then message must be a string"))?
+        .to_string();
+    let action_type = match verb.as_str() {
+        "block" => "constraint_violation",
+        "warn" => "constraint_warning",
+        "log" => "log",
+        other => other,
+    }
+    .to_string();
+    Ok(DiskAction {
+        action_type,
+        params: vec![msg],
+    })
+}
+
+/// Inverse of `parse_then_action`: internal action → v2 verb object.
+// used by Serialize in Task 1.3
+#[allow(dead_code)]
+fn action_to_then(action: &DiskAction) -> serde_json::Value {
+    let verb = match action.action_type.as_str() {
+        "constraint_violation" => "block",
+        "constraint_warning" => "warn",
+        "log" => "log",
+        other => other,
+    };
+    let msg = action.params.first().cloned().unwrap_or_default();
+    serde_json::json!({ verb: msg })
+}
+
+impl<'de> Deserialize<'de> for SourceRule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = serde_json::Value::deserialize(deserializer)?;
+        let obj = v
+            .as_object()
+            .ok_or_else(|| de::Error::custom("rule must be a JSON object"))?;
+
+        let id = obj
+            .get("id")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| de::Error::custom("rule missing string `id`"))?
+            .to_string();
+        let phase = obj
+            .get("phase")
+            .and_then(|x| x.as_str())
+            .unwrap_or("pre")
+            .to_string();
+        let priority = obj.get("priority").and_then(|x| x.as_i64()).unwrap_or(0) as i32;
+        let silent = obj.get("silent").and_then(|x| x.as_bool());
+        let audit = obj.get("audit").and_then(|x| x.as_bool());
+        let doc_excepted = obj.get("doc_excepted").and_then(|x| x.as_bool());
+
+        // Conditions: v2 `when` takes precedence; fall back to v1 `conditions`.
+        let when: Vec<WhenClause> = if let Some(when_val) = obj.get("when") {
+            let arr = when_val
+                .as_array()
+                .ok_or_else(|| de::Error::custom("`when` must be an array"))?;
+            arr.iter()
+                .map(|c| serde_json::from_value::<WhenClause>(c.clone()).map_err(de::Error::custom))
+                .collect::<Result<_, _>>()?
+        } else if let Some(cond_val) = obj.get("conditions") {
+            // v1 legacy: each is {predicate, args, script?}.
+            let arr = cond_val
+                .as_array()
+                .ok_or_else(|| de::Error::custom("`conditions` must be an array"))?;
+            arr.iter()
+                .map(|c| {
+                    let co = c
+                        .as_object()
+                        .ok_or_else(|| de::Error::custom("v1 condition must be an object"))?;
+                    let predicate = co
+                        .get("predicate")
+                        .and_then(|x| x.as_str())
+                        .ok_or_else(|| de::Error::custom("v1 condition missing `predicate`"))?
+                        .to_string();
+                    let args = co
+                        .get("args")
+                        .and_then(|x| x.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str().map(String::from))
+                                .collect::<Vec<_>>()
+                        })
+                        .unwrap_or_default();
+                    let script = co.get("script").and_then(|x| x.as_str()).map(String::from);
+                    Ok(WhenClause::Leaf(DiskCondition {
+                        predicate,
+                        args,
+                        script,
+                    }))
+                })
+                .collect::<Result<_, _>>()?
+        } else {
+            return Err(de::Error::custom(
+                "rule has neither `when` nor `conditions`",
+            ));
+        };
+
+        // Action: v2 `then` takes precedence; fall back to v1 `actions[0]`.
+        let then: DiskAction = if let Some(then_val) = obj.get("then") {
+            parse_then_action(then_val).map_err(de::Error::custom)?
+        } else if let Some(actions_val) = obj.get("actions") {
+            let first = actions_val
+                .as_array()
+                .and_then(|a| a.first())
+                .ok_or_else(|| de::Error::custom("v1 `actions` must be a non-empty array"))?;
+            let ao = first
+                .as_object()
+                .ok_or_else(|| de::Error::custom("v1 action must be an object"))?;
+            let action_type = ao
+                .get("action_type")
+                .and_then(|x| x.as_str())
+                .ok_or_else(|| de::Error::custom("v1 action missing `action_type`"))?
+                .to_string();
+            let params = ao
+                .get("params")
+                .and_then(|x| x.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
+            DiskAction {
+                action_type,
+                params,
+            }
+        } else {
+            return Err(de::Error::custom("rule has neither `then` nor `actions`"));
+        };
+
+        Ok(SourceRule {
+            id,
+            phase,
+            priority,
+            when,
+            then,
+            silent,
+            audit,
+            doc_excepted,
+        })
     }
 }
 
@@ -605,5 +778,52 @@ mod tests {
         assert!(serde_json::from_str::<WhenClause>(r#"{"a": true, "b": true}"#).is_err());
         assert!(serde_json::from_str::<WhenClause>(r#"{"or": "not_an_array"}"#).is_err());
         assert!(serde_json::from_str::<WhenClause>(r#"{"pred": 42}"#).is_err());
+    }
+
+    #[test]
+    fn v2_action_block() {
+        let json = r#"{ "block": "no unwrap" }"#;
+        let a = parse_then_action(&serde_json::from_str(json).unwrap()).unwrap();
+        assert_eq!(a.action_type, "constraint_violation");
+        assert_eq!(a.params, vec!["no unwrap".to_string()]);
+    }
+
+    #[test]
+    fn v2_action_warn_and_log() {
+        let w = parse_then_action(&serde_json::from_str(r#"{ "warn": "m" }"#).unwrap()).unwrap();
+        assert_eq!(w.action_type, "constraint_warning");
+        let l = parse_then_action(&serde_json::from_str(r#"{ "log": "m" }"#).unwrap()).unwrap();
+        assert_eq!(l.action_type, "log");
+    }
+
+    #[test]
+    fn source_rule_parses_v2() {
+        let json = r#"{
+            "id": "r1", "phase": "pre", "priority": 10, "audit": true,
+            "when": [ { "new_content_contains": ".unwrap()" }, { "file_path_matches": "src" } ],
+            "then": { "block": "no unwrap" }
+        }"#;
+        let sr: SourceRule = serde_json::from_str(json).unwrap();
+        assert_eq!(sr.id, "r1");
+        assert_eq!(sr.when.len(), 2);
+        assert_eq!(sr.then.action_type, "constraint_violation");
+        assert_eq!(sr.audit, Some(true));
+    }
+
+    #[test]
+    fn source_rule_parses_v1_legacy() {
+        let json = r#"{
+            "id": "r1", "phase": "pre", "priority": 10,
+            "conditions": [ {"predicate":"new_content_contains","args":[".unwrap()"]} ],
+            "actions": [ {"action_type":"constraint_violation","params":["no unwrap"]} ]
+        }"#;
+        let sr: SourceRule = serde_json::from_str(json).unwrap();
+        assert_eq!(sr.id, "r1");
+        assert_eq!(sr.when.len(), 1);
+        match &sr.when[0] {
+            WhenClause::Leaf(c) => assert_eq!(c.predicate, "new_content_contains"),
+            _ => panic!("expected leaf"),
+        }
+        assert_eq!(sr.then.action_type, "constraint_violation");
     }
 }
