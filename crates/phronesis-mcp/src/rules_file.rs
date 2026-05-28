@@ -319,7 +319,7 @@ impl Serialize for SourceRule {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct DiskRule {
     pub id: String,
     pub phase: String,
@@ -329,13 +329,11 @@ pub struct DiskRule {
     /// When `Some(true)`, this rule is hidden from `session-context`
     /// output. Escape hatch for noisy packs. The engine itself ignores
     /// this field — it only affects the SessionStart summary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub silent: Option<bool>,
     /// When `Some(true)`, this rule participates in whole-tree audits
     /// (`audit_codebase` / `phr-mcp audit`). Rules without it are
     /// skipped — typically the LLM-deflection pack and any diff-only
     /// rule whose predicates don't make sense over current file state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audit: Option<bool>,
     /// When `Some(true)`, audit matches whose immediately preceding
     /// non-blank line is a `///` doc-comment are suppressed. Lets a
@@ -343,25 +341,23 @@ pub struct DiskRule {
     /// "document" branch — the reader has supplied an explanation, so
     /// the audit doesn't keep flagging it. Only consulted by the audit
     /// engine; ignored at hook time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc_excepted: Option<bool>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct DiskCondition {
     pub predicate: String,
     pub args: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct DiskAction {
     pub action_type: String,
     pub params: Vec<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Clone)]
 pub struct RulesFile {
     pub rules: Vec<DiskRule>,
 }
@@ -382,6 +378,8 @@ pub enum RulesFileError {
     },
     #[error("serialization error: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error("rules file at {path} could not be expanded: {message}")]
+    Unfold { path: String, message: String },
 }
 
 /// Default state of the rules file under the project root.
@@ -393,29 +391,81 @@ pub fn default_path(project_root: &Path) -> PathBuf {
 /// file does not exist (the "no rules configured" case). Returns `Err` when the
 /// file exists but is unreadable or malformed.
 pub fn read(path: &Path) -> Result<RulesFile, RulesFileError> {
+    let sources = read_source(path)?;
+    let mut flat = Vec::new();
+    for sr in &sources {
+        let expanded = unfold_or(sr).map_err(|e| RulesFileError::Unfold {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        })?;
+        flat.extend(expanded);
+    }
+    Ok(RulesFile { rules: flat })
+}
+
+/// Parse the file into OR-bearing `SourceRule`s without unfolding. Used by
+/// migration (which preserves OR on disk).
+pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
     if !path.exists() {
-        return Ok(RulesFile { rules: vec![] });
+        return Ok(vec![]);
     }
     let content = std::fs::read_to_string(path).map_err(|e| RulesFileError::Io {
         path: path.display().to_string(),
         source: e,
     })?;
-    serde_json::from_str(&content).map_err(|e| RulesFileError::Malformed {
+    #[derive(Deserialize)]
+    struct Wrapper {
+        rules: Vec<SourceRule>,
+    }
+    let w: Wrapper = serde_json::from_str(&content).map_err(|e| RulesFileError::Malformed {
         path: path.display().to_string(),
         source: e,
-    })
+    })?;
+    Ok(w.rules)
+}
+
+/// Expand a SourceRule's OR clauses into flat, OR-free DiskRules.
+/// COMMIT 1 STUB: errors if any OR is present. Real expansion lands in Commit 2.
+pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
+    let mut conditions = Vec::new();
+    for clause in &source.when {
+        match clause {
+            WhenClause::Leaf(c) => conditions.push(c.clone()),
+            WhenClause::Or(_) => {
+                return Err(anyhow!(
+                    "rule `{}` uses `or`, not yet supported (Commit 2)",
+                    source.id
+                ));
+            }
+        }
+    }
+    Ok(vec![DiskRule {
+        id: source.id.clone(),
+        phase: source.phase.clone(),
+        priority: source.priority,
+        conditions,
+        actions: vec![source.then.clone()],
+        silent: source.silent,
+        audit: source.audit,
+        doc_excepted: source.doc_excepted,
+    }])
 }
 
 /// Atomically write a rules file to `path`. Creates parent directories if needed
-/// and preserves a single `.bak` of the previous contents.
+/// and preserves a single `.bak` of the previous contents. Emits v2 shape.
 pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError> {
+    let sources: Vec<SourceRule> = file.rules.iter().map(diskrule_to_source).collect();
+    write_source(path, &sources)
+}
+
+/// Write OR-bearing SourceRules to disk in v2 shape. Used by migration.
+pub fn write_source(path: &Path, sources: &[SourceRule]) -> Result<(), RulesFileError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| RulesFileError::Io {
             path: parent.display().to_string(),
             source: e,
         })?;
     }
-
     if path.exists() {
         let bak = path.with_extension("json.bak");
         std::fs::copy(path, &bak).map_err(|e| RulesFileError::Io {
@@ -423,9 +473,12 @@ pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError>
             source: e,
         })?;
     }
-
+    #[derive(Serialize)]
+    struct Wrapper<'a> {
+        rules: &'a [SourceRule],
+    }
+    let json = serde_json::to_string_pretty(&Wrapper { rules: sources })?;
     let tmp = path.with_extension("json.tmp");
-    let json = serde_json::to_string_pretty(file)?;
     std::fs::write(&tmp, json).map_err(|e| RulesFileError::Io {
         path: tmp.display().to_string(),
         source: e,
@@ -435,6 +488,24 @@ pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError>
         source: e,
     })?;
     Ok(())
+}
+
+/// Flat DiskRule → SourceRule (all-Leaf when, single then). Inverse of the
+/// no-OR case of unfold_or; used by the writer.
+fn diskrule_to_source(d: &DiskRule) -> SourceRule {
+    SourceRule {
+        id: d.id.clone(),
+        phase: d.phase.clone(),
+        priority: d.priority,
+        when: d.conditions.iter().cloned().map(WhenClause::Leaf).collect(),
+        then: d.actions.first().cloned().unwrap_or(DiskAction {
+            action_type: "log".to_string(),
+            params: vec![String::new()],
+        }),
+        silent: d.silent,
+        audit: d.audit,
+        doc_excepted: d.doc_excepted,
+    }
 }
 
 /// Convert an in-memory `Rule` plus a phase string into the disk form.
@@ -710,47 +781,105 @@ mod tests {
         assert!(matches!(result, Err(RulesFileError::Malformed { .. })));
     }
 
+    /// DiskRule field round-trip via write_atomic + read (now through SourceRule/v2).
     #[test]
     fn disk_rule_round_trips_silent_field() {
-        let json =
-            r#"{"id":"r1","phase":"pre","priority":1,"conditions":[],"actions":[],"silent":true}"#;
-        let r: DiskRule = serde_json::from_str(json).unwrap();
-        assert_eq!(r.silent, Some(true));
-        // Re-serialize round-trip preserves the field.
-        let out = serde_json::to_string(&r).unwrap();
-        assert!(out.contains("\"silent\":true"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        let rf = RulesFile {
+            rules: vec![DiskRule {
+                id: "r1".into(),
+                phase: "pre".into(),
+                priority: 1,
+                conditions: vec![],
+                actions: vec![DiskAction {
+                    action_type: "log".into(),
+                    params: vec!["m".into()],
+                }],
+                silent: Some(true),
+                audit: None,
+                doc_excepted: None,
+            }],
+        };
+        write_atomic(&path, &rf).unwrap();
+        let reread = read(&path).unwrap();
+        assert_eq!(reread.rules[0].silent, Some(true));
     }
 
     #[test]
     fn disk_rule_without_silent_field_omits_it_on_serialize() {
-        let json = r#"{"id":"r1","phase":"pre","priority":1,"conditions":[],"actions":[]}"#;
-        let r: DiskRule = serde_json::from_str(json).unwrap();
-        assert_eq!(r.silent, None);
-        let out = serde_json::to_string(&r).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        let rf = RulesFile {
+            rules: vec![DiskRule {
+                id: "r1".into(),
+                phase: "pre".into(),
+                priority: 1,
+                conditions: vec![],
+                actions: vec![DiskAction {
+                    action_type: "log".into(),
+                    params: vec!["m".into()],
+                }],
+                silent: None,
+                audit: None,
+                doc_excepted: None,
+            }],
+        };
+        write_atomic(&path, &rf).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
         assert!(
-            !out.contains("\"silent\""),
+            !text.contains("\"silent\""),
             "absent flag must not appear in re-serialized JSON: {}",
-            out
+            text
         );
     }
 
     #[test]
     fn disk_rule_round_trips_audit_field() {
-        let json =
-            r#"{"id":"r1","phase":"pre","priority":1,"conditions":[],"actions":[],"audit":true}"#;
-        let r: DiskRule = serde_json::from_str(json).unwrap();
-        assert_eq!(r.audit, Some(true));
-        let out = serde_json::to_string(&r).unwrap();
-        assert!(out.contains("\"audit\":true"));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        let rf = RulesFile {
+            rules: vec![DiskRule {
+                id: "r1".into(),
+                phase: "pre".into(),
+                priority: 1,
+                conditions: vec![],
+                actions: vec![DiskAction {
+                    action_type: "log".into(),
+                    params: vec!["m".into()],
+                }],
+                silent: None,
+                audit: Some(true),
+                doc_excepted: None,
+            }],
+        };
+        write_atomic(&path, &rf).unwrap();
+        let reread = read(&path).unwrap();
+        assert_eq!(reread.rules[0].audit, Some(true));
     }
 
     #[test]
     fn disk_rule_without_audit_field_omits_it_on_serialize() {
-        let json = r#"{"id":"r1","phase":"pre","priority":1,"conditions":[],"actions":[]}"#;
-        let r: DiskRule = serde_json::from_str(json).unwrap();
-        assert_eq!(r.audit, None);
-        let out = serde_json::to_string(&r).unwrap();
-        assert!(!out.contains("\"audit\""));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        let rf = RulesFile {
+            rules: vec![DiskRule {
+                id: "r1".into(),
+                phase: "pre".into(),
+                priority: 1,
+                conditions: vec![],
+                actions: vec![DiskAction {
+                    action_type: "log".into(),
+                    params: vec!["m".into()],
+                }],
+                silent: None,
+                audit: None,
+                doc_excepted: None,
+            }],
+        };
+        write_atomic(&path, &rf).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("\"audit\""));
     }
 
     #[test]
@@ -919,5 +1048,79 @@ mod tests {
         let out = serde_json::to_value(&sr).unwrap();
         assert!(out["when"][0]["or"].is_array());
         assert_eq!(out["when"][0]["or"][0]["new_content_contains"], "a");
+    }
+
+    #[test]
+    fn read_parses_v2_file_to_flat_diskrules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        std::fs::write(
+            &path,
+            r#"{ "rules": [
+            { "id": "r1", "phase": "pre", "priority": 10,
+              "when": [ { "new_content_contains": ".unwrap()" } ],
+              "then": { "block": "no unwrap" } }
+        ] }"#,
+        )
+        .unwrap();
+        let file = read(&path).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        assert_eq!(
+            file.rules[0].conditions[0].predicate,
+            "new_content_contains"
+        );
+        assert_eq!(file.rules[0].actions[0].action_type, "constraint_violation");
+    }
+
+    #[test]
+    fn read_parses_v1_legacy_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        std::fs::write(
+            &path,
+            r#"{ "rules": [
+            { "id": "r1", "phase": "pre", "priority": 10,
+              "conditions": [ {"predicate":"new_content_contains","args":[".unwrap()"]} ],
+              "actions": [ {"action_type":"constraint_violation","params":["no unwrap"]} ] }
+        ] }"#,
+        )
+        .unwrap();
+        let file = read(&path).unwrap();
+        assert_eq!(file.rules.len(), 1);
+        assert_eq!(
+            file.rules[0].conditions[0].predicate,
+            "new_content_contains"
+        );
+    }
+
+    #[test]
+    fn write_atomic_emits_v2() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        let rf = RulesFile {
+            rules: vec![DiskRule {
+                id: "r1".into(),
+                phase: "pre".into(),
+                priority: 10,
+                conditions: vec![DiskCondition {
+                    predicate: "new_content_contains".into(),
+                    args: vec![".unwrap()".into()],
+                    script: None,
+                }],
+                actions: vec![DiskAction {
+                    action_type: "constraint_violation".into(),
+                    params: vec!["no unwrap".into()],
+                }],
+                silent: None,
+                audit: Some(true),
+                doc_excepted: None,
+            }],
+        };
+        write_atomic(&path, &rf).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"when\""));
+        assert!(text.contains("\"then\""));
+        assert!(text.contains("\"block\""));
+        assert!(!text.contains("\"action_type\""));
     }
 }
