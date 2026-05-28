@@ -17,6 +17,7 @@ cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
 cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
+cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shape to the v2 shape
 ```
 
 ### Durable directives (`.phronesis/durable.md`)
@@ -231,6 +232,78 @@ phr-mcp trend --since 30d    # all snapshots in the last month
 phr-mcp trend --rule no-unwrap-in-src
 ```
 
+## Rule file format (v2)
+
+Rules are stored in `.phronesis/rules.json`. The current (v2) shape uses readable
+`when`/`then`/predicate-as-key syntax. Both v1 and v2 files are parsed on load;
+only v2 is written. Existing v1 files continue to work — run `migrate-rules` to
+convert them.
+
+### Condition shape — `when`
+
+Each element of `when` is a single-key object: `{ "<predicate>": <arg> }`.
+
+- **String** — one argument: `{ "new_content_contains": ".unwrap()" }`
+- **Array** — two or more arguments: `{ "function_param_count_high": ["?file", "?fn", "?count"] }`
+- **`true`** — zero arguments (predicate has no parameters): `{ "some_flag_predicate": true }`
+- **`__script__`** — inline Rhai expression: `{ "__script__": "rank > 5" }`
+
+### Action shape — `then`
+
+`then` is a single-key object mapping an action verb to its message string:
+
+| Verb | Internal action type |
+|------|---------------------|
+| `block` | `constraint_violation` — hook exits 2, Claude sees the message |
+| `warn` | `constraint_warning` — hook exits 1, advisory |
+| `log` | `log` — recorded in the log, not surfaced to the model |
+
+Any other verb is passed through as its own `action_type` for forward compatibility.
+
+### Full example
+
+```json
+{
+  "id": "enforce-no-unwrap-in-src",
+  "phase": "pre",
+  "priority": 10,
+  "audit": true,
+  "when": [
+    { "new_content_contains": ".unwrap()" },
+    { "file_path_matches": "src" }
+  ],
+  "then": { "block": "Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable." }
+}
+```
+
+### `or` operator
+
+An `or` clause inside `when` expresses disjunction:
+
+```json
+{ "or": [ { "new_content_contains": "cargo test" }, { "new_content_contains": "cargo nextest" } ] }
+```
+
+At load time, `read()` expands `or` into separate OR-free rules using disjunctive
+normal form (DNF). A rule with an OR fires if **any** branch matches. Expanded
+rules get deterministic ids like `<base-id>#or0`, `<base-id>#or1`, etc. Multiple
+OR positions produce a cartesian product of variants.
+
+`not` is **not** supported yet — planned for a later release.
+
+### `migrate-rules`
+
+Converts a v1 rules.json (using `conditions`/`actions`/`predicate`/`action_type` keys)
+to v2 in place. Preserves `or` clauses on disk without expanding them.
+
+```
+phr-mcp migrate-rules <path>            # convert in place (backs up to .bak)
+phr-mcp migrate-rules --dry-run <path>  # print converted JSON to stdout; write nothing
+phr-mcp migrate-rules --check <path>    # exit 0 if already v2, exit 1 if needs migration (no writes; CI gate)
+```
+
+Idempotent — running on an already-v2 file re-writes it in canonical form (no loss).
+
 ## Development
 
 ```
@@ -265,7 +338,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`
+- `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`, `migrate-rules`
 - `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift)
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.
 - `src/memory_drift.rs` — Walks the Claude Code auto-memory directory, classifies entries by `metadata.type`, and scores them against rules.json + durable.md.
@@ -275,7 +348,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/stats.rs` — Aggregates `.phronesis/log.jsonl` per rule and renders as table or JSON
 - `src/audit.rs` — Whole-tree rule audit + debt-over-time aggregation. Provides `run` (file scan), `render_table/json`, `compute_trend` (reads `audit_codebase` snapshots), `render_trend_table/json`.
 - `src/action_log.rs` — Append-only `.jsonl` log of hook decisions and MCP events
-- `src/rules_file.rs` — Disk format for rules.json (atomic write, merge, phase round-trip)
+- `src/rules_file.rs` — Disk format for rules.json: v2 `SourceRule`/`WhenClause` types, v1+v2 deserialization, `unfold_or` (DNF expansion), `read`/`write_atomic`/`read_source`/`write_source`
 - `src/security.rs` — Path canonicalization, size caps, input validators
 - `src/diff_extract.rs` — Regex-based diff facts (function_added, import_added, etc.)
 - `src/syntax/` — Tree-sitter-based AST predicates (function_returns_result_string)
