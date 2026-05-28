@@ -102,6 +102,20 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Convert a rules.json file from the v1 (predicate/args/action_type)
+    /// shape to the v2 (when/then/predicate-as-key) shape. Preserves `or`
+    /// clauses on disk (does not expand them). Idempotent.
+    #[command(name = "migrate-rules")]
+    MigrateRules {
+        /// Path to the rules.json file to convert.
+        path: PathBuf,
+        /// Print the converted JSON to stdout; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Exit 0 if already v2, 1 if v1 (no writes). For CI gating.
+        #[arg(long)]
+        check: bool,
+    },
     /// Detect drift between Claude Code's auto-memory store and the
     /// phronesis rule pack / durable directives file. Classifies each
     /// memory by frontmatter `metadata.type` and scores it against
@@ -442,6 +456,61 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+        Command::MigrateRules {
+            path,
+            dry_run,
+            check,
+        } => {
+            use phronesis_mcp::rules_file::{self, SourceRule};
+
+            // Read raw to detect shape: a rule with "conditions" is v1.
+            let raw = std::fs::read_to_string(&path)
+                .map_err(|e| anyhow::anyhow!("cannot read {}: {}", path.display(), e))?;
+            let parsed: serde_json::Value = serde_json::from_str(&raw)
+                .map_err(|e| anyhow::anyhow!("malformed rules file: {}", e))?;
+            let is_v1 = parsed
+                .get("rules")
+                .and_then(|r| r.as_array())
+                .map(|arr| arr.iter().any(|r| r.get("conditions").is_some()))
+                .unwrap_or(false);
+
+            if check {
+                if is_v1 {
+                    eprintln!(
+                        "{}: pre-v2 schema — run `phr-mcp migrate-rules` to convert",
+                        path.display()
+                    );
+                    std::process::exit(1);
+                } else {
+                    eprintln!("{}: already v2", path.display());
+                    std::process::exit(0);
+                }
+            }
+
+            // Parse to SourceRules (preserves OR), re-emit as v2.
+            let sources: Vec<SourceRule> =
+                rules_file::read_source(&path).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+            if dry_run {
+                #[derive(serde::Serialize)]
+                struct Wrapper<'a> {
+                    rules: &'a [SourceRule],
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&Wrapper { rules: &sources })?
+                );
+                return Ok(());
+            }
+
+            rules_file::write_source(&path, &sources).map_err(|e| anyhow::anyhow!("{}", e))?;
+            println!(
+                "migrated {} ({} rule(s)) to v2",
+                path.display(),
+                sources.len()
+            );
+            Ok(())
         }
         Command::MemoryDrift {
             path,
