@@ -606,3 +606,37 @@ fn pre_check_log_entry_distinguishes_violations_from_warnings() {
     assert_eq!(vs, vec!["hard"]);
     assert_eq!(ws, vec!["soft"]);
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// OR operator — end-to-end through rules_file::read → unfold_or → hook
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn or_rule_fires_on_either_branch() {
+    // A v2 rules.json with an OR clause: fires when EITHER branch matches.
+    // The payload matches ONLY the second branch ("cargo nextest"), not the
+    // first ("cargo test"): "cargo nextest run" does not contain the
+    // substring "cargo test".
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{
+            "id": "block-test-cmd", "phase": "pre", "priority": 5,
+            "when": [ { "or": [
+                { "new_content_contains": "cargo test" },
+                { "new_content_contains": "cargo nextest" }
+            ] } ],
+            "then": { "block": "use the workspace test runner" }
+        }]}"#,
+    );
+    let payload = r#"{
+        "tool_name": "Bash",
+        "tool_input": { "command": "cargo nextest run" }
+    }"#;
+    let (code, stderr) = run_hook_with_root(payload, dir.path());
+    assert_eq!(code, 2, "OR second branch must block; stderr: {stderr}");
+    assert!(
+        stderr.contains("workspace test runner"),
+        "block message must appear in stderr: {stderr}",
+    );
+}
