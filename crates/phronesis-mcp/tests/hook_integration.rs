@@ -151,8 +151,8 @@ fn post_check_rejects_dot_dot_traversal_in_file_path() {
         dir.path(),
         r#"{"rules":[{
             "id":"any","phase":"post","priority":1,
-            "conditions":[{"predicate":"hook_phase","args":["post"]}],
-            "actions":[{"action_type":"log","params":["ok"]}]
+            "when":[{"hook_phase":"post"}],
+            "then":{"log":"ok"}
         }]}"#,
     );
     let payload = r#"{
@@ -175,8 +175,8 @@ fn post_check_rejects_absolute_path_outside_root() {
         dir.path(),
         r#"{"rules":[{
             "id":"any","phase":"post","priority":1,
-            "conditions":[{"predicate":"hook_phase","args":["post"]}],
-            "actions":[{"action_type":"log","params":["ok"]}]
+            "when":[{"hook_phase":"post"}],
+            "then":{"log":"ok"}
         }]}"#,
     );
     let outside = tempfile::tempdir().unwrap();
@@ -205,14 +205,11 @@ fn post_check_rejects_absolute_path_outside_root() {
 fn tdd_rules() -> &'static str {
     r#"{"rules":[{
         "id":"tdd-required","phase":"pre","priority":10,
-        "conditions":[
-            {"predicate":"function_added","args":["?file","?fn"]},
-            {"predicate":"no_test_for","args":["?fn"]}
+        "when":[
+            {"function_added":["?file","?fn"]},
+            {"no_test_for":"?fn"}
         ],
-        "actions":[{
-            "action_type":"constraint_violation",
-            "params":["Write a failing test for `?fn` before implementing it in ?file"]
-        }]
+        "then":{"block":"Write a failing test for `?fn` before implementing it in ?file"}
     }]}"#
 }
 
@@ -333,8 +330,8 @@ fn post_check_allows_relative_path_inside_root() {
         dir.path(),
         r#"{"rules":[{
             "id":"any","phase":"post","priority":1,
-            "conditions":[{"predicate":"hook_phase","args":["post"]}],
-            "actions":[{"action_type":"log","params":["ok"]}]
+            "when":[{"hook_phase":"post"}],
+            "then":{"log":"ok"}
         }]}"#,
     );
     let inside = dir.path().join("file.rs");
@@ -358,11 +355,11 @@ fn pre_check_blocks_multiedit_introducing_unwrap() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-unwrap","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":[".unwrap()"]},
-                {"predicate":"file_path_matches","args":["src"]}
+            "when":[
+                {"new_content_contains":".unwrap()"},
+                {"file_path_matches":"src"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["no unwrap"]}]
+            "then":{"block":"no unwrap"}
         }]}"#,
     );
     // MultiEdit with two edits — the second introduces `.unwrap()`.
@@ -392,11 +389,11 @@ fn pre_check_allows_clean_multiedit() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-unwrap","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":[".unwrap()"]},
-                {"predicate":"file_path_matches","args":["src"]}
+            "when":[
+                {"new_content_contains":".unwrap()"},
+                {"file_path_matches":"src"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["no unwrap"]}]
+            "then":{"block":"no unwrap"}
         }]}"#,
     );
     let payload = r#"{
@@ -424,10 +421,10 @@ fn pre_check_blocks_pre_existing_issue_in_bash_command() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-blame-deflection","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":["pre-existing issue"]}
+            "when":[
+                {"new_content_contains":"pre-existing issue"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["Don't deflect with 'pre-existing issue' — fix it or call it out as scope"]}]
+            "then":{"block":"Don't deflect with the pre-existing-phrase — fix it or call it out as scope"}
         }]}"#,
     );
     let payload = r#"{
@@ -448,10 +445,10 @@ fn pre_check_allows_clean_bash_command() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-blame-deflection","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":["pre-existing issue"]}
+            "when":[
+                {"new_content_contains":"pre-existing issue"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["nope"]}]
+            "then":{"block":"nope"}
         }]}"#,
     );
     let payload = r#"{
@@ -474,14 +471,11 @@ fn pre_check_warning_rule_exits_one_and_allows() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-magic-number","phase":"pre","priority":5,
-            "conditions":[
-                {"predicate":"new_content_contains","args":["12345"]},
-                {"predicate":"file_path_matches","args":["src"]}
+            "when":[
+                {"new_content_contains":"12345"},
+                {"file_path_matches":"src"}
             ],
-            "actions":[{
-                "action_type":"constraint_warning",
-                "params":["Consider extracting the magic number"]
-            }]
+            "then":{"warn":"Consider extracting the magic number"}
         }]}"#,
     );
     let payload = r#"{
@@ -508,19 +502,19 @@ fn pre_check_violation_wins_over_warning() {
         r#"{"rules":[
             {
               "id":"block-unwrap","phase":"pre","priority":10,
-              "conditions":[
-                {"predicate":"new_content_contains","args":[".unwrap()"]},
-                {"predicate":"file_path_matches","args":["src"]}
+              "when":[
+                {"new_content_contains":".unwrap()"},
+                {"file_path_matches":"src"}
               ],
-              "actions":[{"action_type":"constraint_violation","params":["no unwrap"]}]
+              "then":{"block":"no unwrap"}
             },
             {
               "id":"warn-magic","phase":"pre","priority":5,
-              "conditions":[
-                {"predicate":"new_content_contains","args":["12345"]},
-                {"predicate":"file_path_matches","args":["src"]}
+              "when":[
+                {"new_content_contains":"12345"},
+                {"file_path_matches":"src"}
               ],
-              "actions":[{"action_type":"constraint_warning","params":["magic number"]}]
+              "then":{"warn":"magic number"}
             }
         ]}"#,
     );
@@ -548,11 +542,11 @@ fn pre_check_only_warnings_is_exit_one_not_two() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-only","phase":"pre","priority":5,
-            "conditions":[
-                {"predicate":"new_content_contains","args":["TODO:"]},
-                {"predicate":"file_path_matches","args":["src"]}
+            "when":[
+                {"new_content_contains":"TODO:"},
+                {"file_path_matches":"src"}
             ],
-            "actions":[{"action_type":"constraint_warning","params":["TODO in src"]}]
+            "then":{"warn":"TODO in src"}
         }]}"#,
     );
     let payload = r#"{
@@ -573,13 +567,13 @@ fn pre_check_log_entry_distinguishes_violations_from_warnings() {
         r#"{"rules":[
             {
               "id":"block","phase":"pre","priority":10,
-              "conditions":[{"predicate":"new_content_contains","args":["BAD"]}],
-              "actions":[{"action_type":"constraint_violation","params":["hard"]}]
+              "when":[{"new_content_contains":"BAD"}],
+              "then":{"block":"hard"}
             },
             {
               "id":"warn","phase":"pre","priority":5,
-              "conditions":[{"predicate":"new_content_contains","args":["MEH"]}],
-              "actions":[{"action_type":"constraint_warning","params":["soft"]}]
+              "when":[{"new_content_contains":"MEH"}],
+              "then":{"warn":"soft"}
             }
         ]}"#,
     );
@@ -639,4 +633,34 @@ fn or_rule_fires_on_either_branch() {
         stderr.contains("workspace test runner"),
         "block message must appear in stderr: {stderr}",
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// v1 backward-compatibility: the hook must still load and fire v1-shape rules
+// ─────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn v1_legacy_rules_still_load() {
+    // Explicit v1-shape rules.json (conditions/actions/predicate/action_type).
+    // The read path must parse this, unfold it, and fire the rule — proving
+    // backward compatibility at the integration layer.
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{
+            "id":"v1-compat","phase":"pre","priority":10,
+            "conditions":[
+                {"predicate":"new_content_contains","args":[".unwrap()"]},
+                {"predicate":"file_path_matches","args":["src"]}
+            ],
+            "actions":[{"action_type":"constraint_violation","params":["v1 rule fired"]}]
+        }]}"#,
+    );
+    let payload = r#"{
+        "tool_name": "Edit",
+        "tool_input": {"file_path":"src/x.rs","old_string":"a","new_string":"foo.unwrap()"}
+    }"#;
+    let (code, stderr) = run_hook_with_root(payload, dir.path());
+    assert_eq!(code, 2, "v1 rule must still block; stderr: {}", stderr);
+    assert!(stderr.contains("v1 rule fired"), "stderr: {}", stderr);
 }

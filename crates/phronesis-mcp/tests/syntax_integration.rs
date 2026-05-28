@@ -43,13 +43,10 @@ fn result_string_rule_blocks_offending_function() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-string-error","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"function_returns_result_string","args":["?file","?fn"]}
+            "when":[
+                {"function_returns_result_string":["?file","?fn"]}
             ],
-            "actions":[{
-                "action_type":"constraint_violation",
-                "params":["Function `?fn` in ?file uses Result<_, String>. Define a thiserror enum."]
-            }]
+            "then":{"block":"Function `?fn` in ?file uses Result<_, String>. Define a thiserror enum."}
         }]}"#,
     );
 
@@ -81,13 +78,10 @@ fn result_string_rule_allows_proper_error_type() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-string-error","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"function_returns_result_string","args":["?file","?fn"]}
+            "when":[
+                {"function_returns_result_string":["?file","?fn"]}
             ],
-            "actions":[{
-                "action_type":"constraint_violation",
-                "params":["bad: ?fn"]
-            }]
+            "then":{"block":"bad: ?fn"}
         }]}"#,
     );
 
@@ -120,13 +114,10 @@ fn result_string_rule_ignores_test_blocks() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-string-error","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"function_returns_result_string","args":["?file","?fn"]}
+            "when":[
+                {"function_returns_result_string":["?file","?fn"]}
             ],
-            "actions":[{
-                "action_type":"constraint_violation",
-                "params":["bad: ?fn"]
-            }]
+            "then":{"block":"bad: ?fn"}
         }]}"#,
     );
 
@@ -189,14 +180,11 @@ fn public_fn_with_string_ref_warns() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-pub-str-ref","phase":"post","priority":10,
-            "conditions":[
-                {"predicate":"function_is_public","args":["?file","?fn"]},
-                {"predicate":"function_param_type","args":["?file","?fn","?param","&String"]}
+            "when":[
+                {"function_is_public":["?file","?fn"]},
+                {"function_param_type":["?file","?fn","?param","&String"]}
             ],
-            "actions":[{
-                "action_type":"constraint_warning",
-                "params":["Public fn takes &String — prefer &str"]
-            }]
+            "then":{"warn":"Public fn takes &String — prefer &str"}
         }]}"#,
     );
 
@@ -227,14 +215,11 @@ fn public_fn_with_vec_ref_warns() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-pub-vec-ref","phase":"post","priority":10,
-            "conditions":[
-                {"predicate":"function_is_public","args":["?file","?fn"]},
-                {"predicate":"function_param_is_vec_ref","args":["?file","?fn","?param"]}
+            "when":[
+                {"function_is_public":["?file","?fn"]},
+                {"function_param_is_vec_ref":["?file","?fn","?param"]}
             ],
-            "actions":[{
-                "action_type":"constraint_warning",
-                "params":["Public fn takes &Vec<T> — prefer &[T]"]
-            }]
+            "then":{"warn":"Public fn takes &Vec<T> — prefer &[T]"}
         }]}"#,
     );
 
@@ -265,13 +250,10 @@ fn clone_count_warning_fires() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-clone-count","phase":"post","priority":5,
-            "conditions":[
-                {"predicate":"function_clone_count","args":["?file","?fn","?count"]}
+            "when":[
+                {"function_clone_count":["?file","?fn","?count"]}
             ],
-            "actions":[{
-                "action_type":"constraint_warning",
-                "params":["clone usage detected — review for borrows"]
-            }]
+            "then":{"warn":"clone usage detected — review for borrows"}
         }]}"#,
     );
 
@@ -306,13 +288,10 @@ fn struct_derives_warning_fires() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-clone-without-debug","phase":"post","priority":5,
-            "conditions":[
-                {"predicate":"struct_derives","args":["?file","?struct","Clone"]}
+            "when":[
+                {"struct_derives":["?file","?struct","Clone"]}
             ],
-            "actions":[{
-                "action_type":"constraint_warning",
-                "params":["Cloneable struct — consider Debug too"]
-            }]
+            "then":{"warn":"Cloneable struct — consider Debug too"}
         }]}"#,
     );
 
@@ -343,13 +322,10 @@ fn swift_force_unwrap_warning_fires() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-force-unwrap","phase":"post","priority":10,
-            "conditions":[
-                {"predicate":"function_uses_force_unwrap","args":["?file","?fn","?count"]}
+            "when":[
+                {"function_uses_force_unwrap":["?file","?fn","?count"]}
             ],
-            "actions":[{
-                "action_type":"constraint_warning",
-                "params":["force-unwrap detected — prefer guard let"]
-            }]
+            "then":{"warn":"force-unwrap detected — prefer guard let"}
         }]}"#,
     );
 
@@ -384,13 +360,10 @@ fn swift_throws_predicate_fires() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-throws","phase":"post","priority":5,
-            "conditions":[
-                {"predicate":"function_throws","args":["?file","?fn"]}
+            "when":[
+                {"function_throws":["?file","?fn"]}
             ],
-            "actions":[{
-                "action_type":"constraint_warning",
-                "params":["throwing function added"]
-            }]
+            "then":{"warn":"throwing function added"}
         }]}"#,
     );
 
@@ -425,13 +398,10 @@ fn log_entry_records_rule_id_and_bindings_per_consequence() {
         dir.path(),
         r#"{"rules":[{
             "id":"rust-error-thiserror-for-libraries","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"function_returns_result_string","args":["?file","?fn"]}
+            "when":[
+                {"function_returns_result_string":["?file","?fn"]}
             ],
-            "actions":[{
-                "action_type":"constraint_violation",
-                "params":["`?fn` in ?file returns Result<_, String>"]
-            }]
+            "then":{"block":"`?fn` in ?file returns Result<_, String>"}
         }]}"#,
     );
 
@@ -483,8 +453,8 @@ fn warn_cargo_build_without_workspace_fires_on_bash() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-cargo-build-without-workspace","phase":"pre","priority":3,
-            "conditions":[{"predicate":"cargo_command_lacks_workspace","args":["?cmd"]}],
-            "actions":[{"action_type":"constraint_warning","params":["use `--workspace`"]}]
+            "when":[{"cargo_command_lacks_workspace":"?cmd"}],
+            "then":{"warn":"use `--workspace`"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Bash","tool_input":{"command":"cargo build"}}"#;
@@ -502,11 +472,11 @@ fn block_await_on_sync_execute_all_agenda_items_blocks_edit() {
         dir.path(),
         r#"{"rules":[{
             "id":"block-await-on-sync-execute-all-agenda-items","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":["execute_all_agenda_items().await"]},
-                {"predicate":"file_extension_is","args":["rs"]}
+            "when":[
+                {"new_content_contains":"execute_all_agenda_items().await"},
+                {"file_extension_is":"rs"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["execute_all_agenda_items is sync"]}]
+            "then":{"block":"execute_all_agenda_items is sync"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"","new_string":"let _ = network.execute_all_agenda_items().await;"}}"#;
@@ -524,11 +494,11 @@ fn block_await_on_sync_fire_all_consequences_blocks_edit() {
         dir.path(),
         r#"{"rules":[{
             "id":"block-await-on-sync-fire-all-consequences","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":["fire_all_consequences().await"]},
-                {"predicate":"file_extension_is","args":["rs"]}
+            "when":[
+                {"new_content_contains":"fire_all_consequences().await"},
+                {"file_extension_is":"rs"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["fire_all_consequences is sync"]}]
+            "then":{"block":"fire_all_consequences is sync"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"","new_string":"let _ = network.fire_all_consequences().await;"}}"#;
@@ -551,8 +521,8 @@ fn warn_clone_heavy_fires_at_threshold_3() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-clone-heavy","phase":"post","priority":5,
-            "conditions":[{"predicate":"function_clone_count_high","args":["?file","?fn","?count"]}],
-            "actions":[{"action_type":"constraint_warning","params":["clone-heavy"]}]
+            "when":[{"function_clone_count_high":["?file","?fn","?count"]}],
+            "then":{"warn":"clone-heavy"}
         }]}"#,
     );
     // 3 clones triggers the rule
@@ -575,8 +545,8 @@ fn warn_clone_heavy_does_not_fire_below_threshold() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-clone-heavy","phase":"post","priority":5,
-            "conditions":[{"predicate":"function_clone_count_high","args":["?file","?fn","?count"]}],
-            "actions":[{"action_type":"constraint_warning","params":["clone-heavy"]}]
+            "when":[{"function_clone_count_high":["?file","?fn","?count"]}],
+            "then":{"warn":"clone-heavy"}
         }]}"#,
     );
     // 2 clones — below threshold
@@ -594,8 +564,8 @@ fn warn_pub_fn_missing_doc_fires_on_naked_pub_fn() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-pub-fn-missing-doc","phase":"post","priority":3,
-            "conditions":[{"predicate":"pub_fn_without_doc_comment","args":["?file","?fn"]}],
-            "actions":[{"action_type":"constraint_warning","params":["needs doc"]}]
+            "when":[{"pub_fn_without_doc_comment":["?file","?fn"]}],
+            "then":{"warn":"needs doc"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Write","tool_input":{"file_path":"src/lib.rs","content":"pub fn naked() {}"}}"#;
@@ -616,8 +586,8 @@ fn warn_empty_test_fires_on_test_with_no_assertions() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-empty-test","phase":"post","priority":5,
-            "conditions":[{"predicate":"test_without_assertion","args":["?file","?fn"]}],
-            "actions":[{"action_type":"constraint_warning","params":["empty test"]}]
+            "when":[{"test_without_assertion":["?file","?fn"]}],
+            "then":{"warn":"empty test"}
         }]}"#,
     );
     let payload = r##"{"tool_name":"Write","tool_input":{"file_path":"src/lib.rs","content":"#[test]\nfn empty() {\n}"}}"##;
@@ -635,11 +605,11 @@ fn block_rhai_inline_eval_string_blocks_edit() {
         dir.path(),
         r#"{"rules":[{
             "id":"block-rhai-inline-eval-string","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"engine_eval_string_literal","args":["?file","?fn"]},
-                {"predicate":"file_extension_is","args":["rs"]}
+            "when":[
+                {"engine_eval_string_literal":["?file","?fn"]},
+                {"file_extension_is":"rs"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["use precompiled AST"]}]
+            "then":{"block":"use precompiled AST"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"","new_string":"fn host() { let engine = rhai::Engine::new(); let _: i64 = engine.eval(\"40+2\").unwrap(); }"}}"#;
@@ -661,11 +631,11 @@ fn block_rhai_print_in_script_blocks_edit() {
         dir.path(),
         r#"{"rules":[{
             "id":"block-rhai-print-in-script","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":["print("]},
-                {"predicate":"file_extension_is","args":["rhai"]}
+            "when":[
+                {"new_content_contains":"print("},
+                {"file_extension_is":"rhai"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["use response_append instead of print"]}]
+            "then":{"block":"use response_append instead of print"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Write","tool_input":{"file_path":"scripts/example/test.rhai","content":"print(\"hello\")"}}"#;
@@ -681,8 +651,8 @@ fn warn_cargo_with_p_flag_does_not_fire() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-cargo-build-without-workspace","phase":"pre","priority":3,
-            "conditions":[{"predicate":"cargo_command_lacks_workspace","args":["?cmd"]}],
-            "actions":[{"action_type":"constraint_warning","params":["use workspace"]}]
+            "when":[{"cargo_command_lacks_workspace":"?cmd"}],
+            "then":{"warn":"use workspace"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Bash","tool_input":{"command":"cargo build -p mycrate"}}"#;
@@ -697,8 +667,8 @@ fn warn_cargo_with_bin_flag_does_not_fire() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-cargo-build-without-workspace","phase":"pre","priority":3,
-            "conditions":[{"predicate":"cargo_command_lacks_workspace","args":["?cmd"]}],
-            "actions":[{"action_type":"constraint_warning","params":["use workspace"]}]
+            "when":[{"cargo_command_lacks_workspace":"?cmd"}],
+            "then":{"warn":"use workspace"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Bash","tool_input":{"command":"cargo test --bin server"}}"#;
@@ -726,8 +696,8 @@ fn unrelated() {}
         dir.path(),
         r#"{"rules":[{
             "id":"warn-clone-heavy","phase":"pre","priority":5,
-            "conditions":[{"predicate":"function_clone_count_high","args":["?file","?fn","?count"]}],
-            "actions":[{"action_type":"constraint_warning","params":["clone-heavy"]}]
+            "when":[{"function_clone_count_high":["?file","?fn","?count"]}],
+            "then":{"warn":"clone-heavy"}
         }]}"#,
     );
 
@@ -769,8 +739,8 @@ fn warn_clone_heavy_fires_when_count_increases() {
         dir.path(),
         r#"{"rules":[{
             "id":"warn-clone-heavy","phase":"pre","priority":5,
-            "conditions":[{"predicate":"function_clone_count_high","args":["?file","?fn","?count"]}],
-            "actions":[{"action_type":"constraint_warning","params":["clone-heavy"]}]
+            "when":[{"function_clone_count_high":["?file","?fn","?count"]}],
+            "then":{"warn":"clone-heavy"}
         }]}"#,
     );
 

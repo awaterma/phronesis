@@ -197,8 +197,8 @@ fn save_rules_merge_preserves_disk_only_rules() {
         rules_path(dir.path()),
         r#"{"rules":[
             {"id":"on-disk","phase":"pre","priority":1,
-             "conditions":[{"predicate":"p","args":["a"]}],
-             "actions":[{"action_type":"log","params":["m"]}]}
+             "when":[{"p":"a"}],
+             "then":{"log":"m"}}
         ]}"#,
     )
     .unwrap();
@@ -246,8 +246,8 @@ fn save_rules_replace_mode_discards_disk_only() {
         rules_path(dir.path()),
         r#"{"rules":[
             {"id":"orphan","phase":"pre","priority":1,
-             "conditions":[{"predicate":"p","args":["a"]}],
-             "actions":[{"action_type":"log","params":["m"]}]}
+             "when":[{"p":"a"}],
+             "then":{"log":"m"}}
         ]}"#,
     )
     .unwrap();
@@ -307,11 +307,11 @@ fn load_rules_file_hydrates_from_disk() {
         rules_path(dir.path()),
         r#"{"rules":[
             {"id":"a","phase":"pre","priority":1,
-             "conditions":[{"predicate":"p","args":["x"]}],
-             "actions":[{"action_type":"log","params":["m"]}]},
+             "when":[{"p":"x"}],
+             "then":{"log":"m"}},
             {"id":"b","phase":"post","priority":2,
-             "conditions":[{"predicate":"p","args":["y"]}],
-             "actions":[{"action_type":"log","params":["m"]}]}
+             "when":[{"p":"y"}],
+             "then":{"log":"m"}}
         ]}"#,
     )
     .unwrap();
@@ -334,8 +334,8 @@ fn load_rules_file_skips_existing_ids() {
         rules_path(dir.path()),
         r#"{"rules":[
             {"id":"a","phase":"pre","priority":1,
-             "conditions":[{"predicate":"p","args":["x"]}],
-             "actions":[{"action_type":"log","params":["m"]}]}
+             "when":[{"p":"x"}],
+             "then":{"log":"m"}}
         ]}"#,
     )
     .unwrap();
@@ -471,8 +471,8 @@ fn autoload_hydrates_in_memory_state_at_startup() {
         rules_path(dir.path()),
         r#"{"rules":[
             {"id":"pre-loaded","phase":"pre","priority":7,
-             "conditions":[{"predicate":"p","args":["x"]}],
-             "actions":[{"action_type":"log","params":["m"]}]}
+             "when":[{"p":"x"}],
+             "then":{"log":"m"}}
         ]}"#,
     )
     .unwrap();
@@ -516,8 +516,8 @@ fn no_autopersist_env_var_disables_both_directions() {
         rules_path(dir.path()),
         r#"{"rules":[
             {"id":"on-disk","phase":"pre","priority":1,
-             "conditions":[{"predicate":"p","args":["x"]}],
-             "actions":[{"action_type":"log","params":["m"]}]}
+             "when":[{"p":"x"}],
+             "then":{"log":"m"}}
         ]}"#,
     )
     .unwrap();

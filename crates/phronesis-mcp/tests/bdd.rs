@@ -177,12 +177,10 @@ async fn given_pre_check_rules_file(world: &mut World, pattern: String) {
             "id": "block-pattern",
             "phase": "pre",
             "priority": 10,
-            "conditions": [
-                { "predicate": "new_content_contains", "args": [pattern] }
+            "when": [
+                { "new_content_contains": pattern }
             ],
-            "actions": [
-                { "action_type": "constraint_violation", "params": ["Blocked: forbidden pattern detected"] }
-            ]
+            "then": { "block": "Blocked: forbidden pattern detected" }
         }]
     });
     std::fs::write(
@@ -207,12 +205,10 @@ async fn given_post_check_rules_file(world: &mut World, required_pattern: String
             "id": "require-pattern",
             "phase": "post",
             "priority": 10,
-            "conditions": [
-                { "predicate": "file_missing_pattern", "args": [required_pattern] }
+            "when": [
+                { "file_missing_pattern": required_pattern }
             ],
-            "actions": [
-                { "action_type": "constraint_violation", "params": ["Required pattern missing from file"] }
-            ]
+            "then": { "block": "Required pattern missing from file" }
         }]
     });
     std::fs::write(

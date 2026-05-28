@@ -53,11 +53,11 @@ fn pre_check_block_appends_log_entry() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-unwrap","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":[".unwrap()"]},
-                {"predicate":"file_path_matches","args":["src"]}
+            "when":[
+                {"new_content_contains":".unwrap()"},
+                {"file_path_matches":"src"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["bad"]}]
+            "then":{"block":"bad"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Edit","tool_input":{
@@ -95,11 +95,11 @@ fn pre_check_allow_appends_log_entry_with_exit_zero() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-unwrap","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":[".unwrap()"]},
-                {"predicate":"file_path_matches","args":["src"]}
+            "when":[
+                {"new_content_contains":".unwrap()"},
+                {"file_path_matches":"src"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["bad"]}]
+            "then":{"block":"bad"}
         }]}"#,
     );
     let payload = r#"{"tool_name":"Edit","tool_input":{
@@ -363,11 +363,11 @@ fn get_action_log_filters_only_nonzero_exit() {
         dir.path(),
         r#"{"rules":[{
             "id":"no-unwrap","phase":"pre","priority":10,
-            "conditions":[
-                {"predicate":"new_content_contains","args":[".unwrap()"]},
-                {"predicate":"file_path_matches","args":["src"]}
+            "when":[
+                {"new_content_contains":".unwrap()"},
+                {"file_path_matches":"src"}
             ],
-            "actions":[{"action_type":"constraint_violation","params":["bad"]}]
+            "then":{"block":"bad"}
         }]}"#,
     );
     // One allow (exit 0)
