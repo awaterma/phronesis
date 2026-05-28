@@ -689,11 +689,11 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Aggregate rule-firing statistics from the action log (per-rule blocked/warned counts, last-fired timestamp, window label). Mirrors the `phr-mcp values` CLI. Optional filters: `since` (e.g. \"7d\"), `rule` (single rule id), `format` (\"json\" default, or \"table\")."
+        description = "Aggregate rule-firing statistics from the action log (per-rule blocked/warned counts, last-fired timestamp, window label). Mirrors the `phr-mcp stats` CLI. Optional filters: `since` (e.g. \"7d\"), `rule` (single rule id), `format` (\"json\" default, or \"table\")."
     )]
-    async fn get_values(
+    async fn get_stats(
         &self,
-        Parameters(params): Parameters<GetValuesParams>,
+        Parameters(params): Parameters<GetStatsParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::stats::{StatsOpts, aggregate, parse_since, render_json, render_table};
 
@@ -715,24 +715,24 @@ impl EpistemeMcp {
         let entries =
             action_log::read_recent(&path, &opts_log).map_err(|e| Self::err(e.to_string()))?;
 
-        let values_opts = StatsOpts {
+        let stats_opts = StatsOpts {
             since_secs,
             rule_filter: params.rule.clone(),
             now_secs: now,
         };
-        let values = aggregate(&entries, &values_opts);
+        let stats = aggregate(&entries, &stats_opts);
 
-        Self::log_event("get_values", |e| {
+        Self::log_event("get_stats", |e| {
             e.with("since", params.since.clone().unwrap_or_default())
                 .with("rule", params.rule.clone().unwrap_or_default())
-                .with("per_rule_count", values.per_rule.len() as u64)
+                .with("per_rule_count", stats.per_rule.len() as u64)
         });
 
         let format = params.format.as_deref().unwrap_or("json");
         match format {
-            "table" => Self::ok_text(render_table(&values)),
+            "table" => Self::ok_text(render_table(&stats)),
             // Default + any other value: JSON.
-            _ => Self::ok_text(render_json(&values)),
+            _ => Self::ok_text(render_json(&stats)),
         }
     }
 
@@ -1198,4 +1198,65 @@ pub fn strip_directive_prefix(line: &str) -> Option<&str> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tool_registration_tests {
+    use super::*;
+
+    /// Regression: the stats tool was once registered as `get_values` (a
+    /// leftover from a codebase-wide `Stats` → `Values` rename). The CLI
+    /// subcommand was correctly reverted to `phr-mcp stats`, but the MCP
+    /// method name was missed in the same pass, leaving the user-facing
+    /// surface inconsistent. This test guards against the mismatch
+    /// reappearing — the MCP tool name must match the CLI subcommand.
+    #[test]
+    fn stats_tool_registered_as_get_stats_not_get_values() {
+        let mcp = EpistemeMcp::new();
+        assert!(
+            mcp.tool_router.has_route("get_stats"),
+            "get_stats tool must be registered (matches `phr-mcp stats` CLI). Registered tools: {:?}",
+            mcp.tool_router.list_all().iter().map(|t| t.name.to_string()).collect::<Vec<_>>()
+        );
+        assert!(
+            !mcp.tool_router.has_route("get_values"),
+            "get_values must NOT be registered — the surface uses `stats`, not `values`"
+        );
+    }
+
+    /// Positive coverage: the drift-detection MCP tools shipped in 0.7.0
+    /// remain registered. Guards against the SPEC-vs-code gap reappearing
+    /// (where `memory_drift` shipped only as CLI without the MCP wrapper).
+    #[test]
+    fn drift_detection_tools_are_registered() {
+        let mcp = EpistemeMcp::new();
+        assert!(
+            mcp.tool_router.has_route("get_claude_md_drift"),
+            "get_claude_md_drift tool must be registered"
+        );
+        assert!(
+            mcp.tool_router.has_route("get_memory_drift"),
+            "get_memory_drift tool must be registered"
+        );
+    }
+
+    /// Broader regression: no MCP tool should carry the `values` naming
+    /// the broken sweep introduced. Catches future drift in either
+    /// direction.
+    #[test]
+    fn no_registered_tool_uses_values_naming() {
+        let mcp = EpistemeMcp::new();
+        let stragglers: Vec<String> = mcp
+            .tool_router
+            .list_all()
+            .iter()
+            .map(|t| t.name.to_string())
+            .filter(|n| n.contains("values"))
+            .collect();
+        assert!(
+            stragglers.is_empty(),
+            "no MCP tool should carry 'values' in its name — the surface uses 'stats'. Found: {:?}",
+            stragglers
+        );
+    }
 }

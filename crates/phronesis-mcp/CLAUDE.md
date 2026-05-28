@@ -12,7 +12,7 @@ cargo run -- post-check  # PostToolUse hook (warns on violations)
 cargo run -- init             # One-command setup for a project
 cargo run -- session-context  # SessionStart hook (injects active rules + durable directives)
 cargo run -- turn-context     # UserPromptSubmit / BeforeModelRequest hook (injects recent activity + durable directives)
-cargo run -- values            # Read-only per-rule summary of .phronesis/log.jsonl
+cargo run -- stats             # Read-only per-rule summary of .phronesis/log.jsonl
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
@@ -177,14 +177,14 @@ only. `.phronesis/rules.json` and `.gitignore` are left exactly as they were.
 
 ### Looking at activity
 
-`phr-mcp values` reads `.phronesis/log.jsonl` and prints a per-rule
+`phr-mcp stats` reads `.phronesis/log.jsonl` and prints a per-rule
 summary of blocked/warned counts and the last time each rule fired.
 
 ```
-phr-mcp values                 # all time, terminal table
-phr-mcp values --since 7d      # last week only
-phr-mcp values --rule no-unwrap-in-src
-phr-mcp values --json          # machine-readable, pipeable into jq
+phr-mcp stats                 # all time, terminal table
+phr-mcp stats --since 7d      # last week only
+phr-mcp stats --rule no-unwrap-in-src
+phr-mcp stats --json          # machine-readable, pipeable into jq
 ```
 
 Read-only. Useful for spotting noisy rules to silence (`silent: true` on
@@ -266,18 +266,18 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 ## Architecture
 
 - `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, values, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift)
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift)
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.
 - `src/memory_drift.rs` — Walks the Claude Code auto-memory directory, classifies entries by `metadata.type`, and scores them against rules.json + durable.md.
 - `src/hook.rs` — Pre/post hook subcommands; reads `.phronesis/rules.json`, fires rules, exits 0/1/2
 - `src/init.rs` — `phr-mcp init` one-command project setup
 - `src/context.rs` — Formatters for SessionStart / UserPromptSubmit hook payloads (active-rules summary, recent-activity summary)
-- `src/values.rs` — Aggregates `.phronesis/log.jsonl` per rule and renders as table or JSON
+- `src/stats.rs` — Aggregates `.phronesis/log.jsonl` per rule and renders as table or JSON
 - `src/audit.rs` — Whole-tree rule audit + debt-over-time aggregation. Provides `run` (file scan), `render_table/json`, `compute_trend` (reads `audit_codebase` snapshots), `render_trend_table/json`.
 - `src/action_log.rs` — Append-only `.jsonl` log of hook decisions and MCP events
 - `src/rules_file.rs` — Disk format for rules.json (atomic write, merge, phase round-trip)
 - `src/security.rs` — Path canonicalization, size caps, input validators
 - `src/diff_extract.rs` — Regex-based diff facts (function_added, import_added, etc.)
-- `src/values/` — Tree-sitter-based AST predicates (function_returns_result_string)
+- `src/syntax/` — Tree-sitter-based AST predicates (function_returns_result_string)
 - `docs/RUST-PATTERNS-GUIDE.md` — Rust coding standards (source for `extract_rules`)
 - `docs/PATTERNS-WORKFLOW.md` — End-user workflow guide

@@ -123,14 +123,14 @@ pub struct SetSectionContextParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct GetValuesParams {
+pub struct GetStatsParams {
     /// Time window like `30m`, `24h`, `7d`, `2w`. Omit (or pass an
     /// unrecognized value) for an all-time aggregate. Matches the
-    /// `phr-mcp values --since` CLI flag.
+    /// `phr-mcp stats --since` CLI flag.
     #[serde(default)]
     pub since: Option<String>,
     /// When set, restrict aggregation to a single rule id. Same semantics
-    /// as `phr-mcp values --rule`.
+    /// as `phr-mcp stats --rule`.
     #[serde(default)]
     pub rule: Option<String>,
     /// Rendering format. `"json"` (default) returns the structured Stats
@@ -162,7 +162,7 @@ pub struct GetDebtTrendParams {
     #[serde(default)]
     pub last: Option<u32>,
     /// Time window like `30m`, `24h`, `7d`. Overrides `last` when set.
-    /// Same values as `get_values --since`.
+    /// Same values as `get_stats --since`.
     #[serde(default)]
     pub since: Option<String>,
     /// Restrict to a single rule id.
