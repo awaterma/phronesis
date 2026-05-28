@@ -43,6 +43,15 @@ fn init_creates_all_five_files_in_fresh_project() {
         .collect();
     assert!(ids.contains(&"enforce-no-pre-existing-issue"));
 
+    // Verify the emitted rules use v2 shape (when/then, no action_type)
+    let raw = std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap();
+    assert!(raw.contains("\"when\""), "init must emit v2 `when`");
+    assert!(raw.contains("\"then\""), "init must emit v2 `then`");
+    assert!(
+        !raw.contains("\"action_type\""),
+        "init must not emit v1 `action_type`"
+    );
+
     // Verify the durable.md template nudges the model toward the drift tools.
     let durable = std::fs::read_to_string(dir.path().join(".phronesis/durable.md")).unwrap();
     assert!(durable.contains("get_claude_md_drift"));

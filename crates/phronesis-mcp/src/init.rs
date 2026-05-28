@@ -843,73 +843,55 @@ fn deflection_rules() -> Value {
                 "id": "enforce-no-pre-existing-issue",
                 "phase": "pre",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["pre-existing issue"]}
+                "when": [
+                    {"new_content_contains": "pre-existing issue"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Don't deflect with 'pre-existing issue'. Either fix it as part of this change, defer with a clear rationale, or drop the disclaimer."]
-                }]
+                "then": {"block": "Don't deflect with 'pre-existing issue'. Either fix it as part of this change, defer with a clear rationale, or drop the disclaimer."}
             },
             {
                 "id": "enforce-no-not-from-our-changes",
                 "phase": "pre",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["not from our changes"]}
+                "when": [
+                    {"new_content_contains": "not from our changes"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Drop the 'not from our changes' disclaimer. Name the issue and decide: fix or defer."]
-                }]
+                "then": {"block": "Drop the 'not from our changes' disclaimer. Name the issue and decide: fix or defer."}
             },
             {
                 "id": "enforce-no-not-caused-by-our",
                 "phase": "pre",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["not caused by our"]}
+                "when": [
+                    {"new_content_contains": "not caused by our"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Drop the 'not caused by our' disclaimer. Own the fix or own the decision to defer."]
-                }]
+                "then": {"block": "Drop the 'not caused by our' disclaimer. Own the fix or own the decision to defer."}
             },
             {
                 "id": "enforce-no-should-work-claim",
                 "phase": "pre",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["should work now"]}
+                "when": [
+                    {"new_content_contains": "should work now"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Avoid claiming a fix is complete without evidence. Run the verification (test, manual exercise, traced call chain) before reporting, or explicitly label the work 'untested' so the human knows to check."]
-                }]
+                "then": {"block": "Avoid claiming a fix is complete without evidence. Run the verification (test, manual exercise, traced call chain) before reporting, or explicitly label the work 'untested' so the human knows to check."}
             },
             {
                 "id": "enforce-no-should-be-fixed-claim",
                 "phase": "pre",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["should be fixed"]}
+                "when": [
+                    {"new_content_contains": "should be fixed"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Don't make repair claims without verifying. Run the failing case end-to-end before reporting a fix; otherwise mark it 'untested' so the user knows to verify."]
-                }]
+                "then": {"block": "Don't make repair claims without verifying. Run the failing case end-to-end before reporting a fix; otherwise mark it 'untested' so the user knows to verify."}
             },
             {
                 "id": "nudge-verify-before-commit",
                 "phase": "pre",
                 "priority": 5,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["git commit -m"]}
+                "when": [
+                    {"new_content_contains": "git commit -m"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode."]
-                }]
+                "then": {"warn": "About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode."}
             }
         ]
     })
@@ -923,108 +905,84 @@ fn rust_rules() -> Value {
                 "phase": "pre",
                 "priority": 10,
                 "audit": true,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":[".unwrap()"]},
-                    {"predicate":"file_path_matches","args":["src"]}
+                "when": [
+                    {"new_content_contains": ".unwrap()"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable."]
-                }]
+                "then": {"block": "Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable."}
             },
             {
                 "id": "enforce-no-todo-in-src",
                 "phase": "pre",
                 "priority": 10,
                 "audit": true,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["todo!()"]},
-                    {"predicate":"file_path_matches","args":["src"]}
+                "when": [
+                    {"new_content_contains": "todo!()"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Don't ship todo!() in src/ — finish the implementation or split it into a tracked task."]
-                }]
+                "then": {"block": "Don't ship todo!() in src/ — finish the implementation or split it into a tracked task."}
             },
             {
                 "id": "enforce-no-panic-in-src",
                 "phase": "pre",
                 "priority": 10,
                 "audit": true,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["panic!("]},
-                    {"predicate":"file_path_matches","args":["src"]}
+                "when": [
+                    {"new_content_contains": "panic!("},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Avoid panic!() in src/ — return a Result and let the caller decide."]
-                }]
+                "then": {"block": "Avoid panic!() in src/ — return a Result and let the caller decide."}
             },
             {
                 "id": "enforce-no-unimplemented-in-src",
                 "phase": "pre",
                 "priority": 10,
                 "audit": true,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["unimplemented!()"]},
-                    {"predicate":"file_path_matches","args":["src"]}
+                "when": [
+                    {"new_content_contains": "unimplemented!()"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Avoid unimplemented!() in src/ — implement the path or remove it."]
-                }]
+                "then": {"block": "Avoid unimplemented!() in src/ — implement the path or remove it."}
             },
             {
                 "id": "enforce-no-result-string-error",
                 "phase": "pre",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"function_returns_result_string","args":["?file","?fn"]}
+                "when": [
+                    {"function_returns_result_string": ["?file", "?fn"]}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["`?fn` in ?file returns Result<_, String>. Define a proper error enum with thiserror."]
-                }]
+                "then": {"block": "`?fn` in ?file returns Result<_, String>. Define a proper error enum with thiserror."}
             },
             {
                 "id": "warn-dbg-in-src",
                 "phase": "pre",
                 "priority": 5,
                 "audit": true,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["dbg!("]},
-                    {"predicate":"file_path_matches","args":["src"]}
+                "when": [
+                    {"new_content_contains": "dbg!("},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["dbg!() in src/ — remove before committing, or use tracing::debug!() for diagnostics that stay."]
-                }]
+                "then": {"warn": "dbg!() in src/ — remove before committing, or use tracing::debug!() for diagnostics that stay."}
             },
             {
                 "id": "warn-rust-public-fn-takes-string-ref",
                 "phase": "post",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"function_is_public","args":["?file","?fn"]},
-                    {"predicate":"function_param_type","args":["?file","?fn","?param","&String"]}
+                "when": [
+                    {"function_is_public": ["?file", "?fn"]},
+                    {"function_param_type": ["?file", "?fn", "?param", "&String"]}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["Public `?fn` takes `?param: &String` — prefer `&str` for ergonomics and to avoid forcing callers to own a String."]
-                }]
+                "then": {"warn": "Public `?fn` takes `?param: &String` — prefer `&str` for ergonomics and to avoid forcing callers to own a String."}
             },
             {
                 "id": "warn-rust-function-param-count-high",
                 "phase": "post",
                 "priority": 5,
                 "audit": true,
-                "conditions": [
-                    {"predicate":"function_param_count_high","args":["?file","?fn","?count"]}
+                "when": [
+                    {"function_param_count_high": ["?file", "?fn", "?count"]}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["Function `?fn` in ?file has ?count parameters. Consider grouping related params into a struct (builder/options pattern) or splitting the function — long signatures correlate with God-function debt."]
-                }]
+                "then": {"warn": "Function `?fn` in ?file has ?count parameters. Consider grouping related params into a struct (builder/options pattern) or splitting the function — long signatures correlate with God-function debt."}
             },
             {
                 "id": "audit-file-loc-high",
@@ -1032,280 +990,194 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "doc_excepted": true,
-                "conditions": [
-                    {"predicate":"file_extension_is","args":["rs"]},
-                    {"predicate":"file_path_matches","args":["src"]},
-                    {"predicate":"file_line_count_above","args":["800"]}
+                "when": [
+                    {"file_extension_is": "rs"},
+                    {"file_path_matches": "src"},
+                    {"file_line_count_above": "800"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["File exceeds 800 lines — consider splitting into focused submodules. Long files correlate with God-object debt and slow down navigation. (Scoped to src/; test blocks excluded from the count; a top-of-file `//! phronesis-allow: audit-file-loc-high <reason>` doc-comment exempts intentional god-files.)"]
-                }]
+                "then": {"warn": "File exceeds 800 lines — consider splitting into focused submodules. Long files correlate with God-object debt and slow down navigation. (Scoped to src/; test blocks excluded from the count; a top-of-file `//! phronesis-allow: audit-file-loc-high <reason>` doc-comment exempts intentional god-files.)"}
             },
             {
                 "id": "warn-rust-public-fn-takes-vec-ref",
                 "phase": "post",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"function_is_public","args":["?file","?fn"]},
-                    {"predicate":"function_param_is_vec_ref","args":["?file","?fn","?param"]}
+                "when": [
+                    {"function_is_public": ["?file", "?fn"]},
+                    {"function_param_is_vec_ref": ["?file", "?fn", "?param"]}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["Public `?fn` takes `?param: &Vec<T>` — prefer `&[T]` for ergonomics; a slice accepts arrays, slices, and Vecs alike. From the patterns guide §API Design 1."]
-                }]
+                "then": {"warn": "Public `?fn` takes `?param: &Vec<T>` — prefer `&[T]` for ergonomics; a slice accepts arrays, slices, and Vecs alike. From the patterns guide §API Design 1."}
             },
             {
                 "id": "warn-cargo-build-without-workspace",
                 "phase": "pre",
                 "priority": 3,
-                "conditions": [
-                    {"predicate": "cargo_command_lacks_workspace", "args": ["?cmd"]}
+                "when": [
+                    {"cargo_command_lacks_workspace": "?cmd"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "Running `?cmd` without `--workspace` only checks part of the workspace. Use `cargo <subcommand> --workspace --tests --examples` to catch sibling-crate breakage, or pass `-p <crate>` if scope was intentional."
-                    ]
-                }]
+                "then": {"warn": "Running `?cmd` without `--workspace` only checks part of the workspace. Use `cargo <subcommand> --workspace --tests --examples` to catch sibling-crate breakage, or pass `-p <crate>` if scope was intentional."}
             },
             {
                 "id": "block-await-on-sync-execute-all-agenda-items",
                 "phase": "pre",
                 "priority": 10,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["execute_all_agenda_items().await"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": "execute_all_agenda_items().await"},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_violation",
-                    "params": [
-                        "`execute_all_agenda_items()` is sync as of the 039 refactor — drop the `.await`. Cargo will reject the call site as `Result<Vec<Action>, String> is not a future`."
-                    ]
-                }]
+                "then": {"block": "`execute_all_agenda_items()` is sync as of the 039 refactor — drop the `.await`. Cargo will reject the call site as `Result<Vec<Action>, String> is not a future`."}
             },
             {
                 "id": "block-await-on-sync-fire-all-consequences",
                 "phase": "pre",
                 "priority": 10,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["fire_all_consequences().await"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": "fire_all_consequences().await"},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_violation",
-                    "params": [
-                        "`fire_all_consequences()` is sync — drop the `.await`. Cargo will reject as `Result<Vec<Consequence>, ReteError> is not a future`."
-                    ]
-                }]
+                "then": {"block": "`fire_all_consequences()` is sync — drop the `.await`. Cargo will reject as `Result<Vec<Consequence>, ReteError> is not a future`."}
             },
             {
                 "id": "warn-clone-heavy",
                 "phase": "pre",
                 "priority": 5,
-                "conditions": [
-                    {"predicate": "function_clone_count_high", "args": ["?file", "?fn", "?count"]}
+                "when": [
+                    {"function_clone_count_high": ["?file", "?fn", "?count"]}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "`?fn` in ?file calls .clone() ?count times — review whether references or borrowed slices would work."
-                    ]
-                }]
+                "then": {"warn": "`?fn` in ?file calls .clone() ?count times — review whether references or borrowed slices would work."}
             },
             {
                 "id": "warn-empty-test",
                 "phase": "post",
                 "priority": 5,
-                "conditions": [
-                    {"predicate": "test_without_assertion", "args": ["?file", "?fn"]}
+                "when": [
+                    {"test_without_assertion": ["?file", "?fn"]}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "Test `?fn` in ?file has no assertions or `?` propagation — a placeholder test that always passes hides regressions."
-                    ]
-                }]
+                "then": {"warn": "Test `?fn` in ?file has no assertions or `?` propagation — a placeholder test that always passes hides regressions."}
             },
             {
                 "id": "warn-deref-for-non-pointer-type",
                 "phase": "pre",
                 "priority": 5,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["impl Deref for"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": "impl Deref for"},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "`impl Deref for` — Deref polymorphism is an anti-pattern for non-pointer types. Reserve Deref for smart-pointer wrappers (Box/Arc/Rc); for other types, prefer explicit delegation methods so the API surface is intentional."
-                    ]
-                }]
+                "then": {"warn": "`impl Deref for` — Deref polymorphism is an anti-pattern for non-pointer types. Reserve Deref for smart-pointer wrappers (Box/Arc/Rc); for other types, prefer explicit delegation methods so the API surface is intentional."}
             },
             {
                 "id": "audit-manual-err-return",
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["=> return Err("]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": "=> return Err("},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "Manual `=> return Err(...)` in a match arm — the `?` operator usually replaces this whole shape. Surface during one-time audit sweeps; deliberately silent at hook time so in-progress refactors aren't blocked."
-                    ]
-                }]
+                "then": {"warn": "Manual `=> return Err(...)` in a match arm — the `?` operator usually replaces this whole shape. Surface during one-time audit sweeps; deliberately silent at hook time so in-progress refactors aren't blocked."}
             },
             {
                 "id": "audit-newtype-id-string",
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["_id: String"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]},
-                    {"predicate": "file_path_matches", "args": ["src"]}
+                "when": [
+                    {"new_content_contains": "_id: String"},
+                    {"file_extension_is": "rs"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "Field named `*_id: String` — consider a newtype like `StateId(String)` for type safety so one ID kind can't be passed where another is expected. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)"
-                    ]
-                }]
+                "then": {"warn": "Field named `*_id: String` — consider a newtype like `StateId(String)` for type safety so one ID kind can't be passed where another is expected. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)"}
             },
             {
                 "id": "audit-newtype-id-u64",
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["_id: u64"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]},
-                    {"predicate": "file_path_matches", "args": ["src"]}
+                "when": [
+                    {"new_content_contains": "_id: u64"},
+                    {"file_extension_is": "rs"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "Field named `*_id: u64` — consider a newtype like `UserId(u64)` to prevent mixing different ID types. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)"
-                    ]
-                }]
+                "then": {"warn": "Field named `*_id: u64` — consider a newtype like `UserId(u64)` to prevent mixing different ID types. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)"}
             },
             {
                 "id": "audit-if-let-opportunity-none-empty",
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["None => {}"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": "None => {}"},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "`match` with a `None => {}` arm — `if let Some(x) = ...` is usually clearer. From the patterns guide §Idioms 2."
-                    ]
-                }]
+                "then": {"warn": "`match` with a `None => {}` arm — `if let Some(x) = ...` is usually clearer. From the patterns guide §Idioms 2."}
             },
             {
                 "id": "audit-if-let-opportunity-err-empty",
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["Err(_) => {}"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": "Err(_) => {}"},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "`match` arm `Err(_) => {}` silently swallows errors. Either handle the error (log/return) or use `if let Ok(x) = ...` to make the intent explicit."
-                    ]
-                }]
+                "then": {"warn": "`match` arm `Err(_) => {}` silently swallows errors. Either handle the error (log/return) or use `if let Ok(x) = ...` to make the intent explicit."}
             },
             {
                 "id": "block-deny-warnings-attribute",
                 "phase": "pre",
                 "priority": 10,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["#![deny(warnings)]"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": "#![deny(warnings)]"},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_violation",
-                    "params": [
-                        "`#![deny(warnings)]` breaks builds on toolchain upgrades, since each rustc release introduces new warnings. Move the policy to CI with `RUSTFLAGS=\"-D warnings\"` instead. From the patterns guide §Anti-patterns (deny-warnings)."
-                    ]
-                }]
+                "then": {"block": "`#![deny(warnings)]` breaks builds on toolchain upgrades, since each rustc release introduces new warnings. Move the policy to CI with `RUSTFLAGS=\"-D warnings\"` instead. From the patterns guide §Anti-patterns (deny-warnings)."}
             },
             {
                 "id": "warn-public-fn-takes-box-ref",
                 "phase": "pre",
                 "priority": 5,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": [": &Box<"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": ": &Box<"},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "Parameter type `&Box<T>` adds a useless layer of indirection — prefer `&T` directly. From the patterns guide §Idioms (borrowed-types-for-arguments)."
-                    ]
-                }]
+                "then": {"warn": "Parameter type `&Box<T>` adds a useless layer of indirection — prefer `&T` directly. From the patterns guide §Idioms (borrowed-types-for-arguments)."}
             },
             {
                 "id": "warn-expect-with-empty-message",
                 "phase": "pre",
                 "priority": 5,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": [".expect(\"\")"]},
-                    {"predicate": "file_path_matches", "args": ["src"]}
+                "when": [
+                    {"new_content_contains": ".expect(\"\")"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "`.expect(\"\")` is strictly worse than `.unwrap()` — same panic, no explanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it."
-                    ]
-                }]
+                "then": {"warn": "`.expect(\"\")` is strictly worse than `.unwrap()` — same panic, no explanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it."}
             },
             {
                 "id": "audit-rc-refcell-in-src",
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["Rc<RefCell<"]},
-                    {"predicate": "file_path_matches", "args": ["src"]}
+                "when": [
+                    {"new_content_contains": "Rc<RefCell<"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "`Rc<RefCell<T>>` is the textbook 'fighting the borrow checker' shape — often a signal that an arena, index-based references, or a redesigned ownership model would be a better fit. Confirm intent."
-                    ]
-                }]
+                "then": {"warn": "`Rc<RefCell<T>>` is the textbook 'fighting the borrow checker' shape — often a signal that an arena, index-based references, or a redesigned ownership model would be a better fit. Confirm intent."}
             },
             {
                 "id": "audit-string-concat-with-plus",
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["\" + &"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"new_content_contains": "\" + &"},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "String concatenation with `\" + &` — prefer `format!(\"{}{}\", a, b)` for readability and to avoid intermediate allocations. From the patterns guide §Idioms (concat-format)."
-                    ]
-                }]
+                "then": {"warn": "String concatenation with `\" + &` — prefer `format!(\"{}{}\", a, b)` for readability and to avoid intermediate allocations. From the patterns guide §Idioms (concat-format)."}
             },
             {
                 "id": "audit-allow-dead-code-in-src",
@@ -1313,32 +1185,22 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "doc_excepted": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["#[allow(dead_code)]"]},
-                    {"predicate": "file_path_matches", "args": ["src"]}
+                "when": [
+                    {"new_content_contains": "#[allow(dead_code)]"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "`#[allow(dead_code)]` in src/ — either delete the code or add a `///` doc-comment immediately above explaining why it's kept (planned API, generic-constraint trick, intentional placeholder). Documented exceptions are not flagged."
-                    ]
-                }]
+                "then": {"warn": "`#[allow(dead_code)]` in src/ — either delete the code or add a `///` doc-comment immediately above explaining why it's kept (planned API, generic-constraint trick, intentional placeholder). Documented exceptions are not flagged."}
             },
             {
                 "id": "audit-env-set-var-in-src",
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["env::set_var("]},
-                    {"predicate": "file_path_matches", "args": ["src"]}
+                "when": [
+                    {"new_content_contains": "env::set_var("},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_warning",
-                    "params": [
-                        "`env::set_var(` in src/ — mutating process environment variables is unsound under concurrent reads (which is why edition 2024 marks the call unsafe). Verify the call site is genuinely single-threaded, or refactor to pass configuration explicitly through function arguments / a context struct. Tests where you control the thread count are usually fine; library code almost never is."
-                    ]
-                }]
+                "then": {"warn": "`env::set_var(` in src/ — mutating process environment variables is unsound under concurrent reads (which is why edition 2024 marks the call unsafe). Verify the call site is genuinely single-threaded, or refactor to pass configuration explicitly through function arguments / a context struct. Tests where you control the thread count are usually fine; library code almost never is."}
             }
         ]
     })
@@ -1356,32 +1218,22 @@ fn rhai_rules() -> Value {
                 "id": "block-rhai-inline-eval-string",
                 "phase": "pre",
                 "priority": 10,
-                "conditions": [
-                    {"predicate": "engine_eval_string_literal", "args": ["?file", "?fn"]},
-                    {"predicate": "file_extension_is", "args": ["rs"]}
+                "when": [
+                    {"engine_eval_string_literal": ["?file", "?fn"]},
+                    {"file_extension_is": "rs"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_violation",
-                    "params": [
-                        "`?fn` in ?file calls `engine.eval(<string literal>)`. Inline string-eval can't be tested independently of the surrounding Rust code and bypasses any script registry. Move the script to a `.rhai` file and load it via `engine.compile_file(...)` (or `compile(...)` on `include_str!`-ed content) so the AST can be cached, values-checked at build time, and exercised in isolation."
-                    ]
-                }]
+                "then": {"block": "`?fn` in ?file calls `engine.eval(<string literal>)`. Inline string-eval can't be tested independently of the surrounding Rust code and bypasses any script registry. Move the script to a `.rhai` file and load it via `engine.compile_file(...)` (or `compile(...)` on `include_str!`-ed content) so the AST can be cached, values-checked at build time, and exercised in isolation."}
             },
             {
                 "id": "block-rhai-print-in-script",
                 "phase": "pre",
                 "priority": 10,
                 "audit": true,
-                "conditions": [
-                    {"predicate": "new_content_contains", "args": ["print("]},
-                    {"predicate": "file_extension_is", "args": ["rhai"]}
+                "when": [
+                    {"new_content_contains": "print("},
+                    {"file_extension_is": "rhai"}
                 ],
-                "actions": [{
-                    "action_type": "constraint_violation",
-                    "params": [
-                        "`print(` appears in a .rhai script. `print` is Rhai's equivalent of `dbg!()` — debug output that bypasses whatever response/logging channel your host has registered. Use the host-registered function for emitting output (commonly a `log`, `emit`, or `response_*` proxy your `Engine` exposes via `register_fn`) so script output flows through the same path as the rest of your application."
-                    ]
-                }]
+                "then": {"block": "`print(` appears in a .rhai script. `print` is Rhai's equivalent of `dbg!()` — debug output that bypasses whatever response/logging channel your host has registered. Use the host-registered function for emitting output (commonly a `log`, `emit`, or `response_*` proxy your `Engine` exposes via `register_fn`) so script output flows through the same path as the rest of your application."}
             }
         ]
     })
@@ -1394,26 +1246,20 @@ fn python_rules() -> Value {
                 "id": "warn-print-in-src",
                 "phase": "pre",
                 "priority": 5,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["print("]},
-                    {"predicate":"file_path_matches","args":["src"]}
+                "when": [
+                    {"new_content_contains": "print("},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["print() in src/ — consider logging.info()/debug() instead. Remove debug prints before committing."]
-                }]
+                "then": {"warn": "print() in src/ — consider logging.info()/debug() instead. Remove debug prints before committing."}
             },
             {
                 "id": "enforce-no-bare-except",
                 "phase": "pre",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["except:"]}
+                "when": [
+                    {"new_content_contains": "except:"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_violation",
-                    "params":["Don't use bare `except:` — catch specific exception types. Bare except swallows KeymapInterrupt and SystemExit."]
-                }]
+                "then": {"block": "Don't use bare `except:` — catch specific exception types. Bare except swallows KeymapInterrupt and SystemExit."}
             }
         ]
     })
@@ -1426,27 +1272,21 @@ fn typescript_rules() -> Value {
                 "id": "warn-any-in-src",
                 "phase": "pre",
                 "priority": 5,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":[": any"]},
-                    {"predicate":"file_path_matches","args":["src"]}
+                "when": [
+                    {"new_content_contains": ": any"},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":[": any in src/ — narrow the type. Use `unknown` if you really don't know, then refine with type guards."]
-                }]
+                "then": {"warn": ": any in src/ — narrow the type. Use `unknown` if you really don't know, then refine with type guards."}
             },
             {
                 "id": "warn-console-log-in-src",
                 "phase": "pre",
                 "priority": 5,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["console.log("]},
-                    {"predicate":"file_path_matches","args":["src"]}
+                "when": [
+                    {"new_content_contains": "console.log("},
+                    {"file_path_matches": "src"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["console.log in src/ — remove before committing, or use a proper logger."]
-                }]
+                "then": {"warn": "console.log in src/ — remove before committing, or use a proper logger."}
             }
         ]
     })
@@ -1459,25 +1299,19 @@ fn swift_rules() -> Value {
                 "id": "warn-swift-force-unwrap",
                 "phase": "post",
                 "priority": 10,
-                "conditions": [
-                    {"predicate":"function_uses_force_unwrap","args":["?file","?fn","?count"]}
+                "when": [
+                    {"function_uses_force_unwrap": ["?file", "?fn", "?count"]}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["Function `?fn` in ?file uses ?count force-unwrap(s). Prefer guard let or if let; reserve ! for invariants you can document."]
-                }]
+                "then": {"warn": "Function `?fn` in ?file uses ?count force-unwrap(s). Prefer guard let or if let; reserve ! for invariants you can document."}
             },
             {
                 "id": "warn-swift-try-bang",
                 "phase": "pre",
                 "priority": 5,
-                "conditions": [
-                    {"predicate":"new_content_contains","args":["try!"]}
+                "when": [
+                    {"new_content_contains": "try!"}
                 ],
-                "actions": [{
-                    "action_type":"constraint_warning",
-                    "params":["try! crashes on error — prefer try with do/catch, or try? when an Optional result is acceptable."]
-                }]
+                "then": {"warn": "try! crashes on error — prefer try with do/catch, or try? when an Optional result is acceptable."}
             }
         ]
     })
@@ -1542,7 +1376,14 @@ mod tests {
         let v = Pack::Rhai.rules();
         let arr = v["rules"].as_array().unwrap();
         for rule in arr {
-            let msg = rule["actions"][0]["params"][0].as_str().unwrap();
+            // v2 shape: message is in rule["then"]["block"] or rule["then"]["warn"]
+            let then = &rule["then"];
+            let msg = then
+                .get("block")
+                .or_else(|| then.get("warn"))
+                .or_else(|| then.get("log"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             for forbidden in ["GameLogicLoader", "save.rhai", "response_append"] {
                 assert!(
                     !msg.contains(forbidden),
@@ -1669,17 +1510,24 @@ mod tests {
                 .find(|r| r["id"] == id)
                 .unwrap_or_else(|| panic!("rust pack must include {id}"))
         };
-        assert_eq!(
-            by_id("block-deny-warnings-attribute")["actions"][0]["action_type"],
-            "constraint_violation"
+        // v2 shape: severity is the key in rule["then"]
+        assert!(
+            by_id("block-deny-warnings-attribute")["then"]
+                .get("block")
+                .is_some(),
+            "block-deny-warnings-attribute must use 'block' verb"
         );
-        assert_eq!(
-            by_id("warn-public-fn-takes-box-ref")["actions"][0]["action_type"],
-            "constraint_warning"
+        assert!(
+            by_id("warn-public-fn-takes-box-ref")["then"]
+                .get("warn")
+                .is_some(),
+            "warn-public-fn-takes-box-ref must use 'warn' verb"
         );
-        assert_eq!(
-            by_id("warn-expect-with-empty-message")["actions"][0]["action_type"],
-            "constraint_warning"
+        assert!(
+            by_id("warn-expect-with-empty-message")["then"]
+                .get("warn")
+                .is_some(),
+            "warn-expect-with-empty-message must use 'warn' verb"
         );
         for id in [
             "audit-rc-refcell-in-src",
