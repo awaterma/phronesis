@@ -424,31 +424,97 @@ pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
     Ok(w.rules)
 }
 
-/// Expand a SourceRule's OR clauses into flat, OR-free DiskRules.
-/// COMMIT 1 STUB: errors if any OR is present. Real expansion lands in Commit 2.
+/// Expand a SourceRule's OR clauses into flat, OR-free DiskRules via
+/// disjunctive-normal-form (DNF) expansion. Each OR position contributes
+/// one alternative per (flattened) branch; the cartesian product across
+/// all positions yields the output rules. Child ids are suffixed
+/// deterministically: `#or0`, `#or1`, or `#or0-or1` for multi-position
+/// products. A single-product result (no OR, or a single-element OR)
+/// retains the original id unchanged.
 pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
-    let mut conditions = Vec::new();
-    for clause in &source.when {
+    // For each `when` position, compute the list of condition-alternatives.
+    // A Leaf has exactly one alternative (no suffix contribution).
+    // An Or contributes one alternative per flattened branch.
+    fn alternatives(clause: &WhenClause, rule_id: &str) -> anyhow::Result<Vec<Vec<DiskCondition>>> {
         match clause {
-            WhenClause::Leaf(c) => conditions.push(c.clone()),
-            WhenClause::Or(_) => {
-                return Err(anyhow!(
-                    "rule `{}` uses `or`, not yet supported (Commit 2)",
-                    source.id
-                ));
+            WhenClause::Leaf(c) => Ok(vec![vec![c.clone()]]),
+            WhenClause::Or(alts) => {
+                if alts.is_empty() {
+                    anyhow::bail!("rule `{}` has an empty `or` (unsatisfiable)", rule_id);
+                }
+                let mut out = Vec::new();
+                for alt in alts {
+                    // Flatten nested OR by recursion: each branch yields its own alternatives.
+                    let branch = alternatives(alt, rule_id)?;
+                    out.extend(branch);
+                }
+                Ok(out)
             }
         }
     }
-    Ok(vec![DiskRule {
-        id: source.id.clone(),
-        phase: source.phase.clone(),
-        priority: source.priority,
-        conditions,
-        actions: vec![source.then.clone()],
-        silent: source.silent,
-        audit: source.audit,
-        doc_excepted: source.doc_excepted,
-    }])
+
+    // Per-position alternative sets. Leaf positions have one alternative (no
+    // index pushed to path); OR positions with >1 branch push an alt index.
+    let mut position_alts: Vec<Vec<Vec<DiskCondition>>> = Vec::new();
+    let mut is_or_position: Vec<bool> = Vec::new();
+    for clause in &source.when {
+        let alts = alternatives(clause, &source.id)?;
+        is_or_position.push(matches!(clause, WhenClause::Or(_)) && alts.len() > 1);
+        position_alts.push(alts);
+    }
+
+    // Cartesian product. Track the chosen alt index at each OR position for id.
+    let mut results: Vec<(Vec<usize>, Vec<DiskCondition>)> = vec![(Vec::new(), Vec::new())];
+    for (pos, alts) in position_alts.iter().enumerate() {
+        let mut next = Vec::new();
+        for (idx_path, conds) in &results {
+            for (alt_idx, alt_conds) in alts.iter().enumerate() {
+                let mut new_path = idx_path.clone();
+                if is_or_position[pos] {
+                    new_path.push(alt_idx);
+                }
+                let mut new_conds = conds.clone();
+                new_conds.extend(alt_conds.clone());
+                next.push((new_path, new_conds));
+            }
+        }
+        results = next;
+    }
+
+    if results.len() > 32 {
+        eprintln!(
+            "phronesis: rule `{}` expands to {} rules via OR — consider simplifying",
+            source.id,
+            results.len()
+        );
+    }
+
+    let multiple = results.len() > 1;
+    Ok(results
+        .into_iter()
+        .map(|(idx_path, conditions)| {
+            let id = if multiple && !idx_path.is_empty() {
+                let suffix = idx_path
+                    .iter()
+                    .map(|i| format!("or{}", i))
+                    .collect::<Vec<_>>()
+                    .join("-");
+                format!("{}#{}", source.id, suffix)
+            } else {
+                source.id.clone()
+            };
+            DiskRule {
+                id,
+                phase: source.phase.clone(),
+                priority: source.priority,
+                conditions,
+                actions: vec![source.then.clone()],
+                silent: source.silent,
+                audit: source.audit,
+                doc_excepted: source.doc_excepted,
+            }
+        })
+        .collect())
 }
 
 /// Atomically write a rules file to `path`. Creates parent directories if needed
@@ -1122,6 +1188,102 @@ mod tests {
         assert!(text.contains("\"then\""));
         assert!(text.contains("\"block\""));
         assert!(!text.contains("\"action_type\""));
+    }
+
+    fn leaf(pred: &str, arg: &str) -> WhenClause {
+        WhenClause::Leaf(DiskCondition {
+            predicate: pred.into(),
+            args: vec![arg.into()],
+            script: None,
+        })
+    }
+    fn src(id: &str, when: Vec<WhenClause>) -> SourceRule {
+        SourceRule {
+            id: id.into(),
+            phase: "pre".into(),
+            priority: 1,
+            when,
+            then: DiskAction {
+                action_type: "log".into(),
+                params: vec!["m".into()],
+            },
+            silent: None,
+            audit: None,
+            doc_excepted: None,
+        }
+    }
+
+    #[test]
+    fn unfold_no_or_passthrough() {
+        let s = src("r", vec![leaf("a", "1"), leaf("b", "2")]);
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "r");
+        assert_eq!(out[0].conditions.len(), 2);
+    }
+
+    #[test]
+    fn unfold_single_or_two_alternatives() {
+        let s = src(
+            "r",
+            vec![
+                WhenClause::Or(vec![leaf("a", "1"), leaf("b", "2")]),
+                leaf("c", "3"),
+            ],
+        );
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].id, "r#or0");
+        assert_eq!(out[1].id, "r#or1");
+        // Each carries the non-OR leaf c.
+        assert!(out[0].conditions.iter().any(|c| c.predicate == "c"));
+        assert!(out[0].conditions.iter().any(|c| c.predicate == "a"));
+        assert!(out[1].conditions.iter().any(|c| c.predicate == "b"));
+    }
+
+    #[test]
+    fn unfold_multi_or_cartesian() {
+        let s = src(
+            "r",
+            vec![
+                WhenClause::Or(vec![leaf("a", "1"), leaf("b", "2")]),
+                WhenClause::Or(vec![leaf("c", "3"), leaf("d", "4")]),
+            ],
+        );
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 4);
+        let ids: Vec<&str> = out.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["r#or0-or0", "r#or0-or1", "r#or1-or0", "r#or1-or1"]
+        );
+    }
+
+    #[test]
+    fn unfold_nested_or_flattens() {
+        let s = src(
+            "r",
+            vec![WhenClause::Or(vec![
+                leaf("a", "1"),
+                WhenClause::Or(vec![leaf("b", "2"), leaf("c", "3")]),
+            ])],
+        );
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 3); // a, b, c
+    }
+
+    #[test]
+    fn unfold_empty_or_errors() {
+        let s = src("r", vec![WhenClause::Or(vec![])]);
+        assert!(unfold_or(&s).is_err());
+    }
+
+    #[test]
+    fn unfold_single_element_or_degenerates() {
+        let s = src("r", vec![WhenClause::Or(vec![leaf("a", "1")])]);
+        let out = unfold_or(&s).unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, "r"); // no suffix when only one product
     }
 
     #[test]
