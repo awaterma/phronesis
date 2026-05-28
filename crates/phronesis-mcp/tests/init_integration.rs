@@ -66,7 +66,10 @@ fn init_preserves_existing_durable_md() {
     );
 
     let after = std::fs::read_to_string(dir.path().join(".phronesis/durable.md")).unwrap();
-    assert_eq!(after, original, "init must not overwrite existing durable.md");
+    assert_eq!(
+        after, original,
+        "init must not overwrite existing durable.md"
+    );
 }
 
 #[test]

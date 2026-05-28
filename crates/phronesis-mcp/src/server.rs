@@ -1216,7 +1216,11 @@ mod tool_registration_tests {
         assert!(
             mcp.tool_router.has_route("get_stats"),
             "get_stats tool must be registered (matches `phr-mcp stats` CLI). Registered tools: {:?}",
-            mcp.tool_router.list_all().iter().map(|t| t.name.to_string()).collect::<Vec<_>>()
+            mcp.tool_router
+                .list_all()
+                .iter()
+                .map(|t| t.name.to_string())
+                .collect::<Vec<_>>()
         );
         assert!(
             !mcp.tool_router.has_route("get_values"),

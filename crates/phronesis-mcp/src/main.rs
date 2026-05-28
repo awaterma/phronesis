@@ -469,11 +469,8 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", render_table(&report));
                     }
                     if suggest {
-                        let drafts: Vec<String> = report
-                            .items
-                            .iter()
-                            .filter_map(suggest_rule)
-                            .collect();
+                        let drafts: Vec<String> =
+                            report.items.iter().filter_map(suggest_rule).collect();
                         if !drafts.is_empty() {
                             eprintln!("\n--- draft rules for uncovered actionable memories ---\n");
                             for draft in drafts {

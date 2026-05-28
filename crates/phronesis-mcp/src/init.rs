@@ -653,7 +653,11 @@ re-read by the model every turn and so is safe from context-window
 fade.)
 "#;
 
-fn write_durable_md(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Result<(), InitError> {
+fn write_durable_md(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
     let path = root.join(".phronesis").join("durable.md");
 
     if path.exists() {
@@ -665,9 +669,9 @@ fn write_durable_md(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Re
     }
 
     if opts.dry_run {
-        report
-            .steps
-            .push("+ would write .phronesis/durable.md (default drift-discipline notes)".to_string());
+        report.steps.push(
+            "+ would write .phronesis/durable.md (default drift-discipline notes)".to_string(),
+        );
         return Ok(());
     }
 

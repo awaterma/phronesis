@@ -76,7 +76,11 @@ fn weekday_name(weekday: Weekday) -> &'static str {
 }
 
 fn bool_str(b: bool) -> String {
-    if b { "true".to_string() } else { "false".to_string() }
+    if b {
+        "true".to_string()
+    } else {
+        "false".to_string()
+    }
 }
 
 #[cfg(test)]
