@@ -129,8 +129,6 @@ fn parse_then_action(value: &serde_json::Value) -> anyhow::Result<DiskAction> {
 }
 
 /// Inverse of `parse_then_action`: internal action → v2 verb object.
-// used by Serialize in Task 1.3
-#[allow(dead_code)]
 fn action_to_then(action: &DiskAction) -> serde_json::Value {
     let verb = match action.action_type.as_str() {
         "constraint_violation" => "block",
@@ -256,6 +254,68 @@ impl<'de> Deserialize<'de> for SourceRule {
             audit,
             doc_excepted,
         })
+    }
+}
+
+impl Serialize for WhenClause {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let v = match self {
+            WhenClause::Or(alts) => {
+                let arr: Vec<serde_json::Value> = alts
+                    .iter()
+                    .map(|c| serde_json::to_value(c).unwrap_or(serde_json::Value::Null))
+                    .collect();
+                serde_json::json!({ "or": arr })
+            }
+            WhenClause::Leaf(c) => {
+                if let Some(script) = &c.script {
+                    serde_json::json!({ "__script__": script })
+                } else {
+                    let value = match c.args.len() {
+                        0 => serde_json::Value::Bool(true),
+                        1 => serde_json::Value::String(c.args[0].clone()),
+                        _ => serde_json::Value::Array(
+                            c.args
+                                .iter()
+                                .cloned()
+                                .map(serde_json::Value::String)
+                                .collect(),
+                        ),
+                    };
+                    serde_json::json!({ c.predicate.clone(): value })
+                }
+            }
+        };
+        v.serialize(serializer)
+    }
+}
+
+impl Serialize for SourceRule {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeMap;
+        // Pinned key order: id, phase, priority, [audit, silent, doc_excepted], when, then.
+        let mut map = serializer.serialize_map(None)?;
+        map.serialize_entry("id", &self.id)?;
+        map.serialize_entry("phase", &self.phase)?;
+        map.serialize_entry("priority", &self.priority)?;
+        if let Some(a) = self.audit {
+            map.serialize_entry("audit", &a)?;
+        }
+        if let Some(s) = self.silent {
+            map.serialize_entry("silent", &s)?;
+        }
+        if let Some(d) = self.doc_excepted {
+            map.serialize_entry("doc_excepted", &d)?;
+        }
+        map.serialize_entry("when", &self.when)?;
+        map.serialize_entry("then", &action_to_then(&self.then))?;
+        map.end()
     }
 }
 
@@ -825,5 +885,39 @@ mod tests {
             _ => panic!("expected leaf"),
         }
         assert_eq!(sr.then.action_type, "constraint_violation");
+    }
+
+    #[test]
+    fn source_rule_serializes_v2_round_trip() {
+        let json = r#"{
+            "id": "r1", "phase": "pre", "priority": 10, "audit": true,
+            "when": [ { "new_content_contains": ".unwrap()" }, { "file_path_matches": "src" } ],
+            "then": { "block": "no unwrap" }
+        }"#;
+        let sr: SourceRule = serde_json::from_str(json).unwrap();
+        let out = serde_json::to_value(&sr).unwrap();
+        // Re-parse the serialized form; must be identical SourceRule.
+        let sr2: SourceRule = serde_json::from_value(out.clone()).unwrap();
+        assert_eq!(sr2.id, "r1");
+        assert_eq!(sr2.when.len(), 2);
+        assert_eq!(sr2.then.action_type, "constraint_violation");
+        // Spot-check the emitted shape is v2, not v1.
+        assert!(out.get("when").is_some());
+        assert!(out.get("conditions").is_none());
+        assert_eq!(out["then"]["block"], "no unwrap");
+        assert_eq!(out["when"][0]["new_content_contains"], ".unwrap()");
+    }
+
+    #[test]
+    fn source_rule_serializes_or_clause() {
+        let json = r#"{
+            "id": "r1", "phase": "pre", "priority": 5,
+            "when": [ { "or": [ { "new_content_contains": "a" }, { "new_content_contains": "b" } ] } ],
+            "then": { "warn": "m" }
+        }"#;
+        let sr: SourceRule = serde_json::from_str(json).unwrap();
+        let out = serde_json::to_value(&sr).unwrap();
+        assert!(out["when"][0]["or"].is_array());
+        assert_eq!(out["when"][0]["or"][0]["new_content_contains"], "a");
     }
 }
