@@ -22,7 +22,6 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::*;
 use rmcp::{ErrorData as McpError, ServerHandler, tool, tool_handler, tool_router};
-use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::action_log::{self, LogEntry};
@@ -869,13 +868,10 @@ impl EpistemeMcp {
         use crate::claude_md_drift::{DriftError, render_json, render_table, run};
 
         let root = security::project_root();
-        let report = match run(&root) {
-            Ok(r) => r,
-            Err(DriftError::ClaudeMdMissing(p)) => {
-                return Err(Self::err(format!("CLAUDE.md not found at {}", p)));
-            }
-            Err(e) => return Err(Self::err(e.to_string())),
-        };
+        let report = run(&root).map_err(|e| match e {
+            DriftError::ClaudeMdMissing(p) => Self::err(format!("CLAUDE.md not found at {}", p)),
+            other => Self::err(other.to_string()),
+        })?;
 
         let uncovered = report
             .items
@@ -910,16 +906,13 @@ impl EpistemeMcp {
             None => default_memory_dir(&root),
         };
 
-        let report = match run_with_dir(&root, &memory_dir) {
-            Ok(r) => r,
-            Err(DriftError::MemoryDirMissing(p)) => {
-                return Err(Self::err(format!(
-                    "memory directory not found at {} — Claude Code creates this directory on first save; pass `memory_dir` to point elsewhere",
-                    p
-                )));
-            }
-            Err(e) => return Err(Self::err(e.to_string())),
-        };
+        let report = run_with_dir(&root, &memory_dir).map_err(|e| match e {
+            DriftError::MemoryDirMissing(p) => Self::err(format!(
+                "memory directory not found at {} — Claude Code creates this directory on first save; pass `memory_dir` to point elsewhere",
+                p
+            )),
+            other => Self::err(other.to_string()),
+        })?;
 
         let actionable_uncovered = report
             .items

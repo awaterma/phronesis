@@ -21,6 +21,7 @@
 //! authoritative ground truth.
 
 use crate::rules_file::{self, DiskRule, RulesFile};
+use phr::RuleId;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -60,7 +61,7 @@ pub struct DriftItem {
 #[derive(Debug, Clone)]
 pub enum MatchedTarget {
     Rule {
-        rule_id: String,
+        rule_id: RuleId,
         shared_terms: Vec<String>,
     },
     DurableParagraph {
@@ -317,7 +318,7 @@ fn score_entry(entry: MemoryEntry, rules: &RulesFile, durable_md: &str) -> Drift
             let candidate = (
                 jaccard,
                 MatchedTarget::Rule {
-                    rule_id: rule.id.clone(),
+                    rule_id: rule.id.clone().into(),
                     shared_terms: shared,
                 },
             );
@@ -512,7 +513,7 @@ pub fn render_json(report: &DriftReport) -> String {
                     shared_terms,
                 } => serde_json::json!({
                     "kind": "rule",
-                    "rule_id": rule_id,
+                    "rule_id": rule_id.as_str(),
                     "shared_terms": shared_terms,
                 }),
                 MatchedTarget::DurableParagraph {
