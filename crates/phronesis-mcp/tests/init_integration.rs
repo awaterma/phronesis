@@ -712,17 +712,38 @@ fn init_gitignore_carves_out_wiki_exception() {
     assert!(out.status.success());
 
     let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-    // Broad ignore still present.
-    assert!(gi.contains(".phronesis/"));
-    // Un-ignore lines for the wiki tree.
-    assert!(gi.contains("!.phronesis/wiki/"));
-    assert!(gi.contains("!.phronesis/wiki/**"));
-    // The un-ignore appears AFTER the broad ignore (gitignore rule order matters).
-    let broad = gi.find(".phronesis/").unwrap();
-    let unignore = gi.find("!.phronesis/wiki/").unwrap();
+    let lines: Vec<&str> = gi.lines().map(str::trim).collect();
+
+    // Broad ignore must be `.phronesis/*` (with the `*`) — NOT `.phronesis/`,
+    // which would prevent git from listing the dir at all, making the
+    // un-ignore inert. Verified empirically: `.phronesis/` keeps wiki/
+    // ignored; `.phronesis/*` lets the un-ignore land.
+    let broad_idx = lines
+        .iter()
+        .position(|l| *l == ".phronesis/*")
+        .expect("init must write a standalone `.phronesis/*` broad-ignore line");
+    let un_dir_idx = lines
+        .iter()
+        .position(|l| *l == "!.phronesis/wiki/")
+        .expect("init must write `!.phronesis/wiki/` un-ignore line");
+    let un_glob_idx = lines
+        .iter()
+        .position(|l| *l == "!.phronesis/wiki/**")
+        .expect("init must write `!.phronesis/wiki/**` un-ignore line");
+
+    // Gitignore semantics: un-ignores only take effect when they follow
+    // the broad ignore. Order must be: broad, then both un-ignores.
     assert!(
-        broad < unignore,
-        "un-ignore must come after the broad ignore"
+        broad_idx < un_dir_idx,
+        "broad ignore must precede !.phronesis/wiki/ ({} vs {})",
+        broad_idx,
+        un_dir_idx
+    );
+    assert!(
+        broad_idx < un_glob_idx,
+        "broad ignore must precede !.phronesis/wiki/** ({} vs {})",
+        broad_idx,
+        un_glob_idx
     );
 }
 

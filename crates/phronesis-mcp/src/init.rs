@@ -629,7 +629,7 @@ Contents do not fade with context-window compression.
 
 ## Drift discipline
 
-Two heuristic tools surface the gap between prose guidance and
+Three heuristic tools surface the gap between prose guidance and
 enforced rules. They are cheap, deterministic, and worth running
 whenever the user asks about rules, memory, durable guidance, or
 project conventions:
@@ -641,6 +641,10 @@ project conventions:
   store that have no matching rule or `durable.md` paragraph.
   Actionable entries (named tool calls / commands) should become
   rules; ambient ones (project-shared prose) should be added here.
+- `mcp__phronesis__get_wiki_drift` — ADR-style decisions under
+  `.phronesis/wiki/decisions/` that no rule enforces. Decisions
+  with explicit `enforces: [rule-id]` frontmatter resolve
+  deterministically; others fall through to Jaccard matching.
 
 Treat the output as a triage list, not authoritative ground truth —
 the scoring is token-overlap Jaccard, no semantic match. When the
@@ -751,6 +755,12 @@ fn update_gitignore(
         ".phronesis/log.jsonl",
         ".phronesis/log.jsonl.1",
         ".phronesis/rules.json.bak",
+        // Broad ignore of .phronesis/ contents, then carve the wiki tree
+        // back in. `.phronesis/*` (with the trailing `*`) — NOT
+        // `.phronesis/` — because the latter prevents git from listing
+        // the dir at all, making the un-ignore inert. Order matters:
+        // un-ignores must come after the broad ignore.
+        ".phronesis/*",
         "!.phronesis/wiki/",
         "!.phronesis/wiki/**",
     ];
