@@ -2,7 +2,7 @@
 //! `.phronesis/wiki/decisions/` and the current rule pack. Heuristic
 //! by design (no LLM call); output is a triage list.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use phr::RuleId;
 use thiserror::Error;
@@ -198,10 +198,137 @@ fn meaningful_tokens(s: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
+/// Truncate a string for terminal display, appending `…` when truncated.
+fn truncate(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(n.saturating_sub(1)).collect();
+        format!("{}…", head)
+    }
+}
+
+fn bucket_label(b: Bucket) -> &'static str {
+    match b {
+        Bucket::Covered => "covered",
+        Bucket::LikelyCovered => "likely-covered",
+        Bucket::Uncovered => "uncovered",
+        Bucket::Superseded => "superseded",
+    }
+}
+
+pub fn render_table(report: &DriftReport) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("Wiki:  {}\n", report.wiki_dir));
+    out.push_str(&format!("Rules: {}\n\n", report.rules_path));
+
+    if report.items.is_empty() {
+        out.push_str("No decisions found.\n");
+        return out;
+    }
+
+    out.push_str(&format!(
+        "{:<28}  {:<14}  {:<10}  Match\n",
+        "Decision", "Bucket", "Similarity"
+    ));
+    out.push_str(&format!(
+        "{:-<28}  {:-<14}  {:-<10}  {:-<40}\n",
+        "", "", "", ""
+    ));
+
+    for item in &report.items {
+        let id = truncate(&item.decision.frontmatter.id, 28);
+        let bucket = bucket_label(item.bucket);
+        let match_desc = match &item.best_match {
+            Some(m) => format!("→ rule {}", m.rule_id.as_str()),
+            None => "(no match)".to_string(),
+        };
+        out.push_str(&format!(
+            "{:<28}  {:<14}  {:<10.2}  {}\n",
+            id, bucket, item.similarity, match_desc,
+        ));
+    }
+    out
+}
+
+pub fn render_json(report: &DriftReport) -> String {
+    let items: Vec<serde_json::Value> = report
+        .items
+        .iter()
+        .map(|item| {
+            let best_match = item.best_match.as_ref().map(|m| {
+                serde_json::json!({
+                    "rule_id": m.rule_id.as_str(),
+                    "shared_terms": m.shared_terms,
+                })
+            });
+            serde_json::json!({
+                "id": item.decision.frontmatter.id,
+                "date": item.decision.frontmatter.date,
+                "status": item.decision.frontmatter.status,
+                "bucket": bucket_label(item.bucket),
+                "similarity": item.similarity,
+                "best_match": best_match,
+                "file": item.decision.path.display().to_string(),
+            })
+        })
+        .collect();
+
+    // Round coverage_threshold to two decimal places so the JSON value is
+    // a clean double (e.g. 0.15) rather than the f32→f64 representation
+    // artifact (0.15000000596046448).
+    let threshold = (report.coverage_threshold as f64 * 100.0).round() / 100.0;
+    serde_json::to_string_pretty(&serde_json::json!({
+        "wiki_dir": report.wiki_dir,
+        "rules_path": report.rules_path,
+        "coverage_threshold": threshold,
+        "items": items,
+    }))
+    .unwrap_or_else(|_| String::from("{}"))
+}
+
+/// Emit a draft v2 rule JSON for an Uncovered decision. The condition
+/// carries a TODO placeholder — the operator picks the actual predicate
+/// and substring at review time. Returns None for Covered, LikelyCovered,
+/// and Superseded — only uncovered items get suggestions.
+pub fn suggest_rule(item: &DriftItem) -> Option<String> {
+    if item.bucket != Bucket::Uncovered {
+        return None;
+    }
+    let rule_id = format!("decision-{}", item.decision.frontmatter.id);
+    // Use the first imperative-looking sentence from the body as the message
+    // if we can find one, else fall back to a generic line. Cheap heuristic:
+    // first non-blank line of the body.
+    let message = item
+        .decision
+        .body
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty() && !line.starts_with('#'))
+        .unwrap_or("(decision body was empty — fill in a rule message)")
+        .to_string();
+
+    let suggestion = serde_json::json!({
+        "id": rule_id,
+        "phase": "pre",
+        "priority": 5,
+        "when": [
+            { "new_content_contains": "// TODO: pick a substring or command to match" }
+        ],
+        "then": { "warn": message },
+        "_source": {
+            "decision_id": item.decision.frontmatter.id,
+            "decision_file": item.decision.path.display().to_string(),
+        }
+    });
+    Some(serde_json::to_string_pretty(&suggestion).unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use tempfile::TempDir;
 
     /// Build a project root with: a .phronesis/ dir containing a v2-shaped
@@ -344,5 +471,97 @@ mod tests {
         assert!((report.coverage_threshold - COVERAGE_THRESHOLD).abs() < f32::EPSILON);
         assert!(report.wiki_dir.contains("decisions"));
         assert!(report.rules_path.contains("rules.json"));
+    }
+
+    #[test]
+    fn render_table_includes_all_buckets() {
+        let (tmp, dec) = fixture_project(&["existing-rule"]);
+        write_decision(
+            &dec,
+            "covered.md",
+            "---\nid: a\ndate: 2026-05-01\nstatus: accepted\nenforces:\n  - existing-rule\n---\n",
+        );
+        write_decision(
+            &dec,
+            "uncovered.md",
+            "---\nid: b\ndate: 2026-04-01\nstatus: accepted\n---\northogonal zzz\n",
+        );
+        write_decision(
+            &dec,
+            "old.md",
+            "---\nid: c\ndate: 2025-01-01\nstatus: superseded\n---\n",
+        );
+        let report = run_with_dir(tmp.path(), &dec).unwrap();
+        let table = render_table(&report);
+        assert!(table.contains("covered"));
+        assert!(table.contains("uncovered"));
+        assert!(table.contains("superseded"));
+        // Decision ids appear in the table.
+        assert!(table.contains("a"));
+        assert!(table.contains("b"));
+        assert!(table.contains("c"));
+    }
+
+    #[test]
+    fn render_json_is_valid_and_has_expected_shape() {
+        let (tmp, dec) = fixture_project(&["existing-rule"]);
+        write_decision(
+            &dec,
+            "x.md",
+            "---\nid: a\ndate: 2026-05-01\nstatus: accepted\nenforces:\n  - existing-rule\n---\nbody\n",
+        );
+        let report = run_with_dir(tmp.path(), &dec).unwrap();
+        let json = render_json(&report);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert!(v["items"].is_array());
+        assert_eq!(v["items"][0]["id"], "a");
+        assert_eq!(v["items"][0]["bucket"], "covered");
+        assert_eq!(v["items"][0]["best_match"]["rule_id"], "existing-rule");
+        assert_eq!(v["coverage_threshold"].as_f64().unwrap(), 0.15);
+    }
+
+    #[test]
+    fn suggest_rule_emits_template_for_uncovered_only() {
+        let (tmp, dec) = fixture_project(&["unrelated-rule"]);
+        write_decision(
+            &dec,
+            "x.md",
+            "---\nid: my-decision\ndate: 2026-05-29\nstatus: accepted\n---\nuncovered content qqq\n",
+        );
+        let report = run_with_dir(tmp.path(), &dec).unwrap();
+        let item = &report.items[0];
+        assert_eq!(item.bucket, Bucket::Uncovered);
+        let suggestion = suggest_rule(item).expect("uncovered → suggestion");
+        let v: serde_json::Value = serde_json::from_str(&suggestion).unwrap();
+        assert_eq!(v["id"], "decision-my-decision");
+        assert_eq!(v["phase"], "pre");
+        // Has a TODO placeholder so the operator picks the predicate.
+        let cond_arg = v["when"][0].as_object().unwrap().values().next().unwrap();
+        assert!(cond_arg.as_str().unwrap().contains("TODO"));
+    }
+
+    #[test]
+    fn suggest_rule_returns_none_for_covered_and_superseded() {
+        // Covered case.
+        let (tmp, dec) = fixture_project(&["r"]);
+        write_decision(
+            &dec,
+            "x.md",
+            "---\nid: a\ndate: 2026-01-01\nstatus: accepted\nenforces:\n  - r\n---\n",
+        );
+        let report = run_with_dir(tmp.path(), &dec).unwrap();
+        assert_eq!(report.items[0].bucket, Bucket::Covered);
+        assert!(suggest_rule(&report.items[0]).is_none());
+
+        // Superseded case.
+        let (tmp2, dec2) = fixture_project(&[]);
+        write_decision(
+            &dec2,
+            "old.md",
+            "---\nid: old\ndate: 2025-01-01\nstatus: superseded\n---\n",
+        );
+        let report2 = run_with_dir(tmp2.path(), &dec2).unwrap();
+        assert_eq!(report2.items[0].bucket, Bucket::Superseded);
+        assert!(suggest_rule(&report2.items[0]).is_none());
     }
 }
