@@ -397,6 +397,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
     if !opts.hooks_only {
         write_rules_file(&root, &opts, &mut report)?;
         write_durable_md(&root, &opts, &mut report)?;
+        write_wiki_scaffold(&root, &opts, &mut report)?;
     }
     if !opts.rules_only && !opts.hooks_only {
         update_gitignore(&root, &opts, &mut report)?;
@@ -686,6 +687,60 @@ fn write_durable_md(
     Ok(())
 }
 
+const WIKI_DECISIONS_README: &str = "\
+# `.phronesis/wiki/decisions/`
+
+ADR-style decision pages. Each file is one decision (e.g. \
+`2026-05-29-card-game-terminology.md`). The first block is YAML \
+frontmatter (`id`, `date`, `status`, optional `enforces`, \
+`superseded_by`, `tags`). The body uses Context / Decision / \
+Enforcement / Consequences sections.
+
+Run `phr-mcp wiki-drift` to see which decisions lack rule coverage.
+Create new pages with `phr-mcp decision new <slug>`.
+
+This directory is tracked in git (un-ignored from the broader \
+`.phronesis/` ignore) because decisions are project knowledge. \
+The rest of `.phronesis/` (rules.json, log.jsonl, etc.) stays \
+gitignored.
+";
+
+fn write_wiki_scaffold(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    let dir = root.join(".phronesis").join("wiki").join("decisions");
+    let readme = dir.join("README.md");
+
+    if readme.exists() {
+        report.steps.push(
+            "= .phronesis/wiki/decisions/README.md already exists — leaving unchanged".to_string(),
+        );
+        return Ok(());
+    }
+
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would create .phronesis/wiki/decisions/ + README.md".to_string());
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(&dir).map_err(|e| InitError::Io {
+        path: dir.display().to_string(),
+        source: e,
+    })?;
+    std::fs::write(&readme, WIKI_DECISIONS_README).map_err(|e| InitError::Io {
+        path: readme.display().to_string(),
+        source: e,
+    })?;
+    report
+        .steps
+        .push("+ created .phronesis/wiki/decisions/ + README.md".to_string());
+    Ok(())
+}
+
 fn update_gitignore(
     root: &Path,
     opts: &InitOpts,
@@ -696,6 +751,8 @@ fn update_gitignore(
         ".phronesis/log.jsonl",
         ".phronesis/log.jsonl.1",
         ".phronesis/rules.json.bak",
+        "!.phronesis/wiki/",
+        "!.phronesis/wiki/**",
     ];
     let existing = if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| InitError::Io {

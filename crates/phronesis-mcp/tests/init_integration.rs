@@ -667,3 +667,74 @@ fn install_uninstall_round_trip_preserves_other_state() {
     // No phronesis entry
     assert!(after["mcpServers"].get("phronesis").is_none());
 }
+
+#[test]
+fn init_creates_wiki_decisions_directory_and_readme() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let dec = dir.path().join(".phronesis/wiki/decisions");
+    assert!(dec.is_dir(), "decisions dir should be created");
+    let readme = dec.join("README.md");
+    assert!(readme.is_file(), "README.md should be created");
+    let body = std::fs::read_to_string(&readme).unwrap();
+    assert!(body.to_lowercase().contains("decision"));
+    assert!(body.contains("frontmatter") || body.contains("frontmatter"));
+}
+
+#[test]
+fn init_preserves_existing_wiki_readme() {
+    let dir = tempfile::tempdir().unwrap();
+    let dec = dir.path().join(".phronesis/wiki/decisions");
+    std::fs::create_dir_all(&dec).unwrap();
+    let original = "# my custom README\n\nproject-specific notes\n";
+    std::fs::write(dec.join("README.md"), original).unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success());
+
+    let after = std::fs::read_to_string(dec.join("README.md")).unwrap();
+    assert_eq!(
+        after, original,
+        "init must not overwrite an existing README"
+    );
+}
+
+#[test]
+fn init_gitignore_carves_out_wiki_exception() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success());
+
+    let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    // Broad ignore still present.
+    assert!(gi.contains(".phronesis/"));
+    // Un-ignore lines for the wiki tree.
+    assert!(gi.contains("!.phronesis/wiki/"));
+    assert!(gi.contains("!.phronesis/wiki/**"));
+    // The un-ignore appears AFTER the broad ignore (gitignore rule order matters).
+    let broad = gi.find(".phronesis/").unwrap();
+    let unignore = gi.find("!.phronesis/wiki/").unwrap();
+    assert!(
+        broad < unignore,
+        "un-ignore must come after the broad ignore"
+    );
+}
+
+#[test]
+fn init_gitignore_idempotent_on_second_run() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(&[], dir.path());
+    let first = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    run_init(&[], dir.path());
+    let second = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert_eq!(
+        first, second,
+        "gitignore must not duplicate entries on re-run"
+    );
+}
