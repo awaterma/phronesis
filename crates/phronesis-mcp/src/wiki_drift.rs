@@ -287,6 +287,30 @@ pub fn render_json(report: &DriftReport) -> String {
     .unwrap_or_else(|_| String::from("{}"))
 }
 
+/// Pull the first non-blank, non-heading line from the `## Decision`
+/// section of the body. Returns `None` if no such section exists or if
+/// the section is empty. This is the *what*; `## Context` is the *why*.
+fn extract_decision_section_line(body: &str) -> Option<String> {
+    let mut in_decision = false;
+    for line in body.lines() {
+        let trimmed = line.trim();
+        if trimmed.eq_ignore_ascii_case("## decision") {
+            in_decision = true;
+            continue;
+        }
+        if in_decision {
+            // Hit the next heading → section is over.
+            if trimmed.starts_with("##") {
+                break;
+            }
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Emit a draft v2 rule JSON for an Uncovered decision. The condition
 /// carries a TODO placeholder — the operator picks the actual predicate
 /// and substring at review time. Returns None for Covered, LikelyCovered,
@@ -296,17 +320,19 @@ pub fn suggest_rule(item: &DriftItem) -> Option<String> {
         return None;
     }
     let rule_id = format!("decision-{}", item.decision.frontmatter.id);
-    // Use the first imperative-looking sentence from the body as the message
-    // if we can find one, else fall back to a generic line. Cheap heuristic:
-    // first non-blank line of the body.
-    let message = item
-        .decision
-        .body
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && !line.starts_with('#'))
-        .unwrap_or("(decision body was empty — fill in a rule message)")
-        .to_string();
+    // Extract the rule message from the ## Decision section if present,
+    // else fall back to the first non-blank, non-heading line in the body.
+    // The Decision section holds the *what*; Context holds the *why*.
+    let message = extract_decision_section_line(&item.decision.body)
+        .or_else(|| {
+            item.decision
+                .body
+                .lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty() && !line.starts_with('#'))
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_else(|| "(decision body was empty — fill in a rule message)".to_string());
 
     let suggestion = serde_json::json!({
         "id": rule_id,
@@ -537,6 +563,66 @@ mod tests {
         // Has a TODO placeholder so the operator picks the predicate.
         let cond_arg = v["when"][0].as_object().unwrap().values().next().unwrap();
         assert!(cond_arg.as_str().unwrap().contains("TODO"));
+    }
+
+    #[test]
+    fn suggest_rule_message_comes_from_decision_section_not_context() {
+        let (tmp, dec) = fixture_project(&["unrelated-rule"]);
+        write_decision(
+            &dec,
+            "x.md",
+            "---\nid: my-decision\ndate: 2026-05-29\nstatus: accepted\n---\n\
+             # Commit timing\n\n\
+             ## Context\n\n\
+             Open-source development happens alongside salaried work.\n\n\
+             ## Decision\n\n\
+             Only commit after 5pm Pacific on weekdays.\n\n\
+             ## Consequences\n\n\
+             Some work must be staged.\n",
+        );
+        let report = run_with_dir(tmp.path(), &dec).unwrap();
+        let item = &report.items[0];
+        assert_eq!(item.bucket, Bucket::Uncovered);
+        let suggestion = suggest_rule(item).expect("uncovered → suggestion");
+        let v: serde_json::Value = serde_json::from_str(&suggestion).unwrap();
+        let msg = v["then"]["warn"].as_str().unwrap();
+        // Must come from ## Decision, NOT ## Context.
+        assert!(
+            msg.contains("5pm Pacific"),
+            "expected Decision section text, got: {msg}"
+        );
+        assert!(
+            !msg.contains("salaried"),
+            "must not pick Context section text, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn suggest_rule_falls_back_when_no_decision_section() {
+        let (tmp, dec) = fixture_project(&["unrelated-rule"]);
+        write_decision(
+            &dec,
+            "x.md",
+            "---\nid: flat\ndate: 2026-05-29\nstatus: accepted\n---\n\
+             # No sections here\n\n\
+             Just a flat body with no headings.\n",
+        );
+        let report = run_with_dir(tmp.path(), &dec).unwrap();
+        let item = &report.items[0];
+        let suggestion = suggest_rule(item).expect("uncovered → suggestion");
+        let v: serde_json::Value = serde_json::from_str(&suggestion).unwrap();
+        let msg = v["then"]["warn"].as_str().unwrap();
+        assert!(
+            msg.contains("flat body"),
+            "should fall back to first non-blank non-heading line, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn extract_decision_section_line_skips_blank_lines() {
+        let body = "## Context\n\nSome context.\n\n## Decision\n\n\nThe actual decision.\n\n## Consequences\n";
+        let line = extract_decision_section_line(body).unwrap();
+        assert_eq!(line, "The actual decision.");
     }
 
     #[test]
