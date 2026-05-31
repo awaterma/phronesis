@@ -1,3 +1,14 @@
+//! `phr-mcp` CLI entry point.
+//!
+//! Clap declares every subcommand on one `Command` enum so `--help`
+//! lists them coherently and `main()` dispatches each. Keeping the
+//! whole CLI surface in one file mirrors how typical Rust binaries
+//! are structured; splitting per-subcommand would scatter the
+//! `Command` enum and break the single dispatch site.
+//!
+//! phronesis-allow: audit-file-loc-high (coherent CLI surface — all
+//! subcommand declarations + dispatch live together by design)
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};

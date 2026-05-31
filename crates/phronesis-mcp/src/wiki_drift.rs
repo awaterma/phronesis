@@ -355,7 +355,6 @@ mod tests {
         fs::write(phr.join("rules.json"), rules_json).unwrap();
         let dec_dir = phr.join("wiki").join("decisions");
         fs::create_dir_all(&dec_dir).unwrap();
-        let project_root = dir.path().to_path_buf();
         (dir, dec_dir)
     }
 
