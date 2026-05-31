@@ -141,6 +141,26 @@ enum Command {
         #[arg(long)]
         suggest: bool,
     },
+    /// Detect drift between ADR-style decision documents in
+    /// `.phronesis/wiki/decisions/` and the current rule pack.
+    /// Heuristic — explicit `enforces:` frontmatter lookups beat
+    /// Jaccard fallback. Read-only; always exits 0 on success.
+    #[command(name = "wiki-drift")]
+    WikiDrift {
+        /// Project root (defaults to current directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Override the decisions directory. Defaults to
+        /// `<project_root>/.phronesis/wiki/decisions/`.
+        #[arg(long)]
+        wiki_dir: Option<PathBuf>,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Emit draft v2 rule JSON for each uncovered decision, on stderr.
+        #[arg(long)]
+        suggest: bool,
+    },
     /// One-command setup for a project. Writes hook config, MCP server
     /// registration, a starter rules file, and updates .gitignore.
     /// Also reachable as `setup` and `configure`.
@@ -554,6 +574,56 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!(
                         "hint: Claude Code creates this directory on first save; \
                          try `--memory-dir <path>` to point elsewhere."
+                    );
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::WikiDrift {
+            path,
+            wiki_dir,
+            json,
+            suggest,
+        } => {
+            use phronesis_mcp::wiki;
+            use phronesis_mcp::wiki_drift::{
+                DriftError, render_json, render_table, run_with_dir, suggest_rule,
+            };
+            let root = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .map(|p| p.join(&path))
+                    .unwrap_or(path)
+            };
+            let dir = wiki_dir.unwrap_or_else(|| wiki::default_wiki_dir(&root).join("decisions"));
+            match run_with_dir(&root, &dir) {
+                Ok(report) => {
+                    if json {
+                        println!("{}", render_json(&report));
+                    } else {
+                        print!("{}", render_table(&report));
+                    }
+                    if suggest {
+                        let drafts: Vec<String> =
+                            report.items.iter().filter_map(suggest_rule).collect();
+                        if !drafts.is_empty() {
+                            eprintln!("\n--- draft rules for uncovered decisions ---\n");
+                            for draft in drafts {
+                                eprintln!("{}\n", draft);
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                Err(DriftError::Wiki(phronesis_mcp::wiki::WikiError::DirMissing(p))) => {
+                    eprintln!("error: wiki decisions directory not found at {}", p);
+                    eprintln!(
+                        "hint: run `phr-mcp init` to create it, or pass `--wiki-dir <path>`."
                     );
                     std::process::exit(1);
                 }
