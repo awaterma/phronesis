@@ -16,3 +16,4 @@ pub mod server_params;
 pub(crate) mod server_persistence;
 pub mod stats;
 pub mod syntax;
+pub mod wiki;
