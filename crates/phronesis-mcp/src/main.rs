@@ -1,6 +1,12 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+
+/// ISO-8601 date string for the local clock (YYYY-MM-DD). Uses chrono,
+/// which is already a phronesis-mcp dep (clock_facts).
+fn today_iso() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
 use phronesis_mcp::{hook, init, server};
 use rmcp::{ServiceExt, transport::stdio};
 
@@ -161,6 +167,11 @@ enum Command {
         #[arg(long)]
         suggest: bool,
     },
+    /// Wiki-related helpers (scaffold a new ADR-style decision page).
+    Decision {
+        #[command(subcommand)]
+        cmd: DecisionCmd,
+    },
     /// One-command setup for a project. Writes hook config, MCP server
     /// registration, a starter rules file, and updates .gitignore.
     /// Also reachable as `setup` and `configure`.
@@ -209,6 +220,19 @@ enum Command {
         /// Print what would be done without writing anything
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum DecisionCmd {
+    /// Scaffold a new decision page at
+    /// `.phronesis/wiki/decisions/<today>-<slug>.md`.
+    New {
+        /// Kebab-case slug for the decision. Must match `[a-z0-9-]+`.
+        slug: String,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
     },
 }
 
@@ -633,6 +657,79 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::Decision { cmd } => match cmd {
+            DecisionCmd::New { slug, path } => {
+                use phronesis_mcp::wiki;
+                let root = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .map(|p| p.join(&path))
+                        .unwrap_or(path)
+                };
+                // Validate slug: kebab-case, alphanumeric + hyphen, non-empty.
+                let valid = !slug.is_empty()
+                    && slug
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                if !valid {
+                    eprintln!(
+                        "error: invalid slug `{}`. Slugs must match `[a-z0-9-]+` (kebab-case).",
+                        slug
+                    );
+                    std::process::exit(1);
+                }
+
+                let date = today_iso();
+                let dir = wiki::default_wiki_dir(&root).join("decisions");
+                let filename = format!("{}-{}.md", date, slug);
+                let dest = dir.join(&filename);
+                if dest.exists() {
+                    eprintln!(
+                        "error: {} already exists; refusing to overwrite.",
+                        dest.display()
+                    );
+                    std::process::exit(1);
+                }
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| anyhow::anyhow!("create {}: {}", dir.display(), e))?;
+
+                let template = format!(
+                    "---\n\
+                     id: {slug}\n\
+                     date: {date}\n\
+                     status: proposed\n\
+                     enforces: []\n\
+                     superseded_by: null\n\
+                     tags: []\n\
+                     ---\n\
+                     \n\
+                     # {slug}\n\
+                     \n\
+                     ## Context\n\
+                     \n\
+                     What problem are we solving / what observations led here?\n\
+                     \n\
+                     ## Decision\n\
+                     \n\
+                     What we decided.\n\
+                     \n\
+                     ## Enforcement\n\
+                     \n\
+                     - (none yet — add `enforces:` rule ids in frontmatter when a rule lands)\n\
+                     \n\
+                     ## Consequences\n\
+                     \n\
+                     What follows from this.\n",
+                    slug = slug,
+                    date = date,
+                );
+                std::fs::write(&dest, template)
+                    .map_err(|e| anyhow::anyhow!("write {}: {}", dest.display(), e))?;
+                println!("created {}", dest.display());
+                Ok(())
+            }
+        },
         Command::Init {
             path,
             packs,
