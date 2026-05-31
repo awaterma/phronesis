@@ -7,6 +7,29 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use thiserror::Error;
 
+/// Lifecycle status for a decision page. Spec defines exactly three values;
+/// parsing into an enum makes typos (`Superseded`, `deprecated`, `draft`) a
+/// load-time error instead of letting them silently fall through the drift
+/// scoring as if they were `accepted`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecisionStatus {
+    Proposed,
+    Accepted,
+    Superseded,
+}
+
+impl DecisionStatus {
+    /// Wire-format string used in JSON output and table rendering.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DecisionStatus::Proposed => "proposed",
+            DecisionStatus::Accepted => "accepted",
+            DecisionStatus::Superseded => "superseded",
+        }
+    }
+}
+
 /// Structured YAML frontmatter at the top of every decision page.
 /// See SPEC-wiki-drift.md §"Decision page schema".
 #[derive(Debug, Clone, Deserialize)]
@@ -14,7 +37,7 @@ use thiserror::Error;
 pub struct DecisionFrontmatter {
     pub id: String,
     pub date: String,
-    pub status: String,
+    pub status: DecisionStatus,
     #[serde(default)]
     pub enforces: Vec<String>,
     #[serde(default)]
@@ -170,7 +193,7 @@ mod tests {
         let d = parse_decision_file(&p).expect("parse");
         assert_eq!(d.frontmatter.id, "card-game-vocab");
         assert_eq!(d.frontmatter.date, "2026-05-29");
-        assert_eq!(d.frontmatter.status, "accepted");
+        assert_eq!(d.frontmatter.status, DecisionStatus::Accepted);
         assert!(d.frontmatter.enforces.is_empty());
         assert!(d.frontmatter.superseded_by.is_none());
         assert!(d.body.contains("## Decision"));
@@ -260,6 +283,23 @@ mod tests {
             &dir,
             "x.md",
             "---\nid: x\ndate: 2026-01-01\nstatus: accepted\nstauts: typo\n---\n",
+        );
+        assert!(matches!(
+            parse_decision_file(&p),
+            Err(WikiError::Frontmatter { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_decision_unknown_status_value_errors() {
+        // Status is enum-typed (proposed/accepted/superseded). Typos like
+        // `Superseded` or `deprecated` must fail loudly, not silently fall
+        // through to active-drift scoring.
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "x.md",
+            "---\nid: x\ndate: 2026-01-01\nstatus: Superseded\n---\n",
         );
         assert!(matches!(
             parse_decision_file(&p),

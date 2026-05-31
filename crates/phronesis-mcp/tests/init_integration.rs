@@ -780,6 +780,119 @@ fn init_gitignore_migrates_legacy_bare_phronesis_line() {
 }
 
 #[test]
+fn init_gitignore_migration_dedupes_when_target_already_present() {
+    // Mixed state: legacy bare `.phronesis/` AND modern `.phronesis/*` both
+    // present (a hand-edited partial-migration). After init, exactly one
+    // `.phronesis/*` line — the migration must not produce a duplicate.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(
+        &gi_path,
+        "/target\n.phronesis/\n.phronesis/log.jsonl\n.phronesis/*\n",
+    )
+    .unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success(), "init must succeed: {out:?}");
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    let count = gi.lines().filter(|l| l.trim() == ".phronesis/*").count();
+    assert_eq!(
+        count, 1,
+        "exactly one `.phronesis/*` line expected; got:\n{gi}"
+    );
+    assert!(
+        !gi.lines().any(|l| l.trim() == ".phronesis/"),
+        "legacy bare line must be gone; got:\n{gi}"
+    );
+}
+
+#[test]
+fn init_gitignore_migration_only_no_missing_entries() {
+    // Covers the `migrated > 0 && missing.empty()` write-anyway branch.
+    // The file already contains every modern entry plus the legacy bare
+    // line — only the migration runs, but the file MUST be re-written.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(
+        &gi_path,
+        "/target\n\
+         .phronesis/\n\
+         .phronesis/log.jsonl\n\
+         .phronesis/log.jsonl.1\n\
+         .phronesis/rules.json.bak\n\
+         .phronesis/*\n\
+         !.phronesis/wiki/\n\
+         !.phronesis/wiki/**\n",
+    )
+    .unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success(), "init must succeed: {out:?}");
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    assert!(
+        !gi.lines().any(|l| l.trim() == ".phronesis/"),
+        "legacy bare line must be removed even when no entries are missing"
+    );
+}
+
+#[test]
+fn init_gitignore_preserves_no_trailing_newline_state_when_migration_only() {
+    // Original file has no trailing newline. After a migration-only run
+    // (no appended entries), the file must still not have a spurious
+    // trailing newline introduced.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    // No trailing newline.
+    std::fs::write(
+        &gi_path,
+        "/target\n\
+         .phronesis/\n\
+         .phronesis/log.jsonl\n\
+         .phronesis/log.jsonl.1\n\
+         .phronesis/rules.json.bak\n\
+         .phronesis/*\n\
+         !.phronesis/wiki/\n\
+         !.phronesis/wiki/**",
+    )
+    .unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success(), "init must succeed: {out:?}");
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    assert!(
+        !gi.ends_with("\n\n"),
+        "must not introduce blank trailing newline"
+    );
+    // Migration still happened.
+    assert!(
+        !gi.lines().any(|l| l.trim() == ".phronesis/"),
+        "legacy bare line must still be migrated"
+    );
+}
+
+#[test]
+fn init_gitignore_dry_run_reports_migration_distinctly() {
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(&gi_path, ".phronesis/\n").unwrap();
+
+    let out = run_init(&["--dry-run"], dir.path());
+    assert!(out.status.success(), "dry-run init must succeed: {out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("would migrate"),
+        "dry-run must surface the migration distinctly:\n{stdout}"
+    );
+
+    // And no actual write happened.
+    let after = std::fs::read_to_string(&gi_path).unwrap();
+    assert_eq!(after, ".phronesis/\n", "dry-run must not write");
+}
+
+#[test]
 fn init_gitignore_idempotent_on_second_run() {
     let dir = tempfile::tempdir().unwrap();
     run_init(&[], dir.path());

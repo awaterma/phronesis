@@ -8,7 +8,7 @@ use phr::RuleId;
 use thiserror::Error;
 
 use crate::rules_file::{self, DiskRule};
-use crate::wiki::{self, Decision};
+use crate::wiki::{self, Decision, DecisionStatus};
 
 const COVERAGE_THRESHOLD: f32 = 0.15;
 
@@ -89,7 +89,7 @@ fn score_decision(
     rule_id_set: &std::collections::HashSet<&str>,
 ) -> DriftItem {
     // Superseded decisions are history; exclude from active drift scoring.
-    if decision.frontmatter.status == "superseded" {
+    if matches!(decision.frontmatter.status, DecisionStatus::Superseded) {
         return DriftItem {
             decision,
             bucket: Bucket::Superseded,
@@ -265,7 +265,7 @@ pub fn render_json(report: &DriftReport) -> String {
             serde_json::json!({
                 "id": item.decision.frontmatter.id,
                 "date": item.decision.frontmatter.date,
-                "status": item.decision.frontmatter.status,
+                "status": item.decision.frontmatter.status.as_str(),
                 "bucket": bucket_label(item.bucket),
                 "similarity": item.similarity,
                 "best_match": best_match,

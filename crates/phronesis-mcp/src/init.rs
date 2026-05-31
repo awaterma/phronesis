@@ -1,11 +1,15 @@
 //! `phr-mcp init` — one-command setup for a project.
 //!
-//! Writes (or merges) the four config files phr-mcp needs:
+//! Writes (or merges) the config files phr-mcp needs:
 //!
-//! - `.claude/settings.local.json` — hook registrations
-//! - `.mcp.json`                    — MCP server registration
-//! - `.phronesis/rules.json`         — starter rule pack
-//! - `.gitignore`                   — log/backup paths
+//! - `.claude/settings.local.json`             — hook registrations
+//! - `.mcp.json`                                — MCP server registration
+//! - `.gemini/settings.json`                    — Gemini CLI MCP + hooks
+//! - `.phronesis/rules.json`                    — starter rule pack
+//! - `.phronesis/durable.md`                    — re-injected directives
+//! - `.phronesis/wiki/decisions/README.md`     — ADR scaffold
+//! - `.gitignore`                                — log/backup paths +
+//!                                                 wiki carveout
 //!
 //! Idempotent and non-destructive by default. Existing permissions, hooks,
 //! and MCP servers are preserved; only our entries are added or refreshed.
@@ -777,9 +781,14 @@ fn update_gitignore(
     // tells git not to descend into the directory at all, which makes
     // any later `!.phronesis/wiki/**` un-ignore inert. Pre-0.9.0 init
     // wrote the bare form; rewrite it so the carveout takes effect.
+    //
+    // After rewriting, dedupe the lines we manage (broad-ignore and
+    // un-ignore carveouts) preserving first occurrence — a project that
+    // already had `.phronesis/*` *and* the legacy `.phronesis/` would
+    // otherwise end up with two `.phronesis/*` lines side by side.
     let had_trailing_newline = original.ends_with('\n');
     let mut migrated_count = 0usize;
-    let migrated_lines: Vec<String> = original
+    let rewritten: Vec<String> = original
         .lines()
         .map(|line| {
             if line == ".phronesis/" {
@@ -790,6 +799,18 @@ fn update_gitignore(
             }
         })
         .collect();
+
+    let mut seen_managed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut deduped_count = 0usize;
+    let mut migrated_lines: Vec<String> = Vec::with_capacity(rewritten.len());
+    for line in rewritten {
+        let is_managed = line == ".phronesis/*" || line.starts_with("!.phronesis/");
+        if is_managed && !seen_managed.insert(line.clone()) {
+            deduped_count += 1;
+            continue;
+        }
+        migrated_lines.push(line);
+    }
     let mut migrated_content = migrated_lines.join("\n");
     if had_trailing_newline && !migrated_content.is_empty() {
         migrated_content.push('\n');
@@ -802,7 +823,7 @@ fn update_gitignore(
         .copied()
         .collect();
 
-    if missing.is_empty() && migrated_count == 0 {
+    if missing.is_empty() && migrated_count == 0 && deduped_count == 0 {
         report
             .steps
             .push("= .gitignore already contains phronesis entries".to_string());
@@ -814,6 +835,12 @@ fn update_gitignore(
             report.steps.push(format!(
                 "~ would migrate {} bare `.phronesis/` line(s) to `.phronesis/*`",
                 migrated_count
+            ));
+        }
+        if deduped_count > 0 {
+            report.steps.push(format!(
+                "~ would dedupe {} duplicate phronesis line(s)",
+                deduped_count
             ));
         }
         if !missing.is_empty() {
@@ -842,6 +869,12 @@ fn update_gitignore(
         report.steps.push(format!(
             "~ migrated {} bare `.phronesis/` line(s) to `.phronesis/*` (carveout was inert)",
             migrated_count
+        ));
+    }
+    if deduped_count > 0 {
+        report.steps.push(format!(
+            "~ removed {} duplicate phronesis line(s)",
+            deduped_count
         ));
     }
     if !missing.is_empty() {
