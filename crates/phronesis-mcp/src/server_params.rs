@@ -191,3 +191,14 @@ pub struct GetMemoryDriftParams {
     #[serde(default)]
     pub format: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct GetWikiDriftParams {
+    /// Override the decisions directory. Defaults to
+    /// `<project_root>/.phronesis/wiki/decisions/`.
+    #[serde(default)]
+    pub wiki_dir: Option<String>,
+    /// `"json"` (default) or `"table"`.
+    #[serde(default)]
+    pub format: Option<String>,
+}

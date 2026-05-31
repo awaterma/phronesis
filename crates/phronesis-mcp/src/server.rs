@@ -932,6 +932,45 @@ impl EpistemeMcp {
             _ => Self::ok_text(render_json(&report)),
         }
     }
+
+    #[tool(
+        description = "Detect drift between ADR-style decision documents in `.phronesis/wiki/decisions/` and the current rule pack. Each decision is classified as `covered` (an explicit `enforces:` frontmatter entry matches an existing rule), `likely-covered` (Jaccard fuzzy match above 0.15), `uncovered` (drift candidate — should become a rule or be marked superseded), or `superseded` (history, excluded from active drift). Heuristic by design, no LLM call. Use when the user mentions decisions, ADRs, or asks whether a recorded choice is being enforced. Optional `wiki_dir` overrides the default. Optional `format`: \"json\" (default) or \"table\"."
+    )]
+    async fn get_wiki_drift(
+        &self,
+        Parameters(params): Parameters<GetWikiDriftParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::wiki;
+        use crate::wiki_drift::{DriftError, render_json, render_table, run_with_dir};
+
+        let root = security::project_root();
+        let dir = match params.wiki_dir.as_deref() {
+            Some(p) => std::path::PathBuf::from(p),
+            None => wiki::default_wiki_dir(&root).join("decisions"),
+        };
+        let report = run_with_dir(&root, &dir).map_err(|e| match e {
+            DriftError::Wiki(wiki::WikiError::DirMissing(p)) => Self::err(format!(
+                "wiki decisions directory not found at {} — run `phr-mcp init` to create it, or pass `wiki_dir` to point elsewhere",
+                p
+            )),
+            other => Self::err(other.to_string()),
+        })?;
+
+        let uncovered = report
+            .items
+            .iter()
+            .filter(|i| matches!(i.bucket, crate::wiki_drift::Bucket::Uncovered))
+            .count();
+        Self::log_event("get_wiki_drift", |e| {
+            e.with("items_total", report.items.len() as u64)
+                .with("items_uncovered", uncovered as u64)
+        });
+
+        match params.format.as_deref() {
+            Some("table") => Self::ok_text(render_table(&report)),
+            _ => Self::ok_text(render_json(&report)),
+        }
+    }
 }
 
 #[tool_handler]
@@ -1254,6 +1293,16 @@ mod tool_registration_tests {
             stragglers.is_empty(),
             "no MCP tool should carry 'values' in its name — the surface uses 'stats'. Found: {:?}",
             stragglers
+        );
+    }
+
+    /// Regression: `get_wiki_drift` (0.9.0) is registered.
+    #[test]
+    fn wiki_drift_tool_is_registered() {
+        let mcp = EpistemeMcp::new();
+        assert!(
+            mcp.tool_router.has_route("get_wiki_drift"),
+            "get_wiki_drift tool must be registered (matches `phr-mcp wiki-drift` CLI)"
         );
     }
 }
