@@ -764,7 +764,7 @@ fn update_gitignore(
         "!.phronesis/wiki/",
         "!.phronesis/wiki/**",
     ];
-    let existing = if path.exists() {
+    let original = if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| InitError::Io {
             path: path.display().to_string(),
             source: e,
@@ -772,13 +772,37 @@ fn update_gitignore(
     } else {
         String::new()
     };
-    let present_lines: std::collections::HashSet<&str> = existing.lines().collect();
+
+    // Migrate legacy bare `.phronesis/` to `.phronesis/*`. The bare form
+    // tells git not to descend into the directory at all, which makes
+    // any later `!.phronesis/wiki/**` un-ignore inert. Pre-0.9.0 init
+    // wrote the bare form; rewrite it so the carveout takes effect.
+    let had_trailing_newline = original.ends_with('\n');
+    let mut migrated_count = 0usize;
+    let migrated_lines: Vec<String> = original
+        .lines()
+        .map(|line| {
+            if line == ".phronesis/" {
+                migrated_count += 1;
+                ".phronesis/*".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+    let mut migrated_content = migrated_lines.join("\n");
+    if had_trailing_newline && !migrated_content.is_empty() {
+        migrated_content.push('\n');
+    }
+
+    let present_lines: std::collections::HashSet<&str> = migrated_content.lines().collect();
     let missing: Vec<&str> = entries
         .iter()
         .filter(|e| !present_lines.contains(*e))
         .copied()
         .collect();
-    if missing.is_empty() {
+
+    if missing.is_empty() && migrated_count == 0 {
         report
             .steps
             .push("= .gitignore already contains phronesis entries".to_string());
@@ -786,15 +810,23 @@ fn update_gitignore(
     }
 
     if opts.dry_run {
-        report.steps.push(format!(
-            "+ would append {} line(s) to .gitignore: {:?}",
-            missing.len(),
-            missing
-        ));
+        if migrated_count > 0 {
+            report.steps.push(format!(
+                "~ would migrate {} bare `.phronesis/` line(s) to `.phronesis/*`",
+                migrated_count
+            ));
+        }
+        if !missing.is_empty() {
+            report.steps.push(format!(
+                "+ would append {} line(s) to .gitignore: {:?}",
+                missing.len(),
+                missing
+            ));
+        }
         return Ok(());
     }
 
-    let mut new_content = existing.clone();
+    let mut new_content = migrated_content;
     if !new_content.is_empty() && !new_content.ends_with('\n') {
         new_content.push('\n');
     }
@@ -806,9 +838,17 @@ fn update_gitignore(
         path: path.display().to_string(),
         source: e,
     })?;
-    report
-        .steps
-        .push(format!("+ updated .gitignore (+{} entries)", missing.len()));
+    if migrated_count > 0 {
+        report.steps.push(format!(
+            "~ migrated {} bare `.phronesis/` line(s) to `.phronesis/*` (carveout was inert)",
+            migrated_count
+        ));
+    }
+    if !missing.is_empty() {
+        report
+            .steps
+            .push(format!("+ updated .gitignore (+{} entries)", missing.len()));
+    }
     Ok(())
 }
 

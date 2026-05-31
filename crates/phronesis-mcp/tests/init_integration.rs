@@ -748,6 +748,38 @@ fn init_gitignore_carves_out_wiki_exception() {
 }
 
 #[test]
+fn init_gitignore_migrates_legacy_bare_phronesis_line() {
+    // Pre-0.9.0 init wrote a bare `.phronesis/` (no trailing `*`). That form
+    // tells git not to descend into the directory at all, so any later
+    // `!.phronesis/wiki/**` un-ignore is inert. Re-running init on such a
+    // project must rewrite the legacy line to `.phronesis/*` so the carveout
+    // takes effect.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(&gi_path, "/target\n.phronesis/\n.phronesis/log.jsonl\n").unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success(), "init must succeed: {out:?}");
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    let lines: Vec<&str> = gi.lines().map(str::trim).collect();
+
+    assert!(
+        !lines.iter().any(|l| *l == ".phronesis/"),
+        "legacy bare `.phronesis/` must be rewritten; got:\n{gi}"
+    );
+    assert!(
+        lines.iter().any(|l| *l == ".phronesis/*"),
+        "migration must produce `.phronesis/*`; got:\n{gi}"
+    );
+
+    // Pre-existing unrelated content is preserved.
+    assert!(lines.iter().any(|l| *l == "/target"));
+    // Specific log entry that was already present stays put.
+    assert!(lines.iter().any(|l| *l == ".phronesis/log.jsonl"));
+}
+
+#[test]
 fn init_gitignore_idempotent_on_second_run() {
     let dir = tempfile::tempdir().unwrap();
     run_init(&[], dir.path());
