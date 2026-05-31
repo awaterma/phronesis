@@ -102,6 +102,44 @@ pub fn parse_decision_file(path: &Path) -> Result<Decision, WikiError> {
     })
 }
 
+/// Walk a wiki decisions directory and parse every `*.md` file (except
+/// `README.md`). Returns decisions sorted by `date` field, newest first.
+///
+/// Subdirectories are ignored — the convention is flat
+/// `<date>-<slug>.md` files.
+pub fn walk_decisions(wiki_dir: &Path) -> Result<Vec<Decision>, WikiError> {
+    if !wiki_dir.exists() {
+        return Err(WikiError::DirMissing(wiki_dir.display().to_string()));
+    }
+    let entries = std::fs::read_dir(wiki_dir).map_err(|source| WikiError::Io {
+        path: wiki_dir.display().to_string(),
+        source,
+    })?;
+
+    let mut decisions = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| WikiError::Io {
+            path: wiki_dir.display().to_string(),
+            source,
+        })?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        if path.file_name().and_then(|n| n.to_str()) == Some("README.md") {
+            continue;
+        }
+        decisions.push(parse_decision_file(&path)?);
+    }
+
+    // Newest first. String comparison works because dates are ISO YYYY-MM-DD.
+    decisions.sort_by(|a, b| b.frontmatter.date.cmp(&a.frontmatter.date));
+    Ok(decisions)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,5 +265,82 @@ mod tests {
             parse_decision_file(&p),
             Err(WikiError::Frontmatter { .. })
         ));
+    }
+
+    #[test]
+    fn walk_decisions_returns_empty_for_empty_dir() {
+        let dir = TempDir::new().unwrap();
+        let wiki = dir.path().join("decisions");
+        fs::create_dir(&wiki).unwrap();
+        let decisions = walk_decisions(&wiki).unwrap();
+        assert!(decisions.is_empty());
+    }
+
+    #[test]
+    fn walk_decisions_missing_dir_errors() {
+        let dir = TempDir::new().unwrap();
+        let missing = dir.path().join("nope");
+        match walk_decisions(&missing) {
+            Err(WikiError::DirMissing(_)) => {}
+            other => panic!("expected DirMissing, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn walk_decisions_parses_md_files_and_skips_readme() {
+        let dir = TempDir::new().unwrap();
+        let wiki = dir.path().join("decisions");
+        fs::create_dir(&wiki).unwrap();
+        fs::write(wiki.join("README.md"), "# not a decision\n").unwrap();
+        fs::write(
+            wiki.join("2026-05-29-a.md"),
+            "---\nid: a\ndate: 2026-05-29\nstatus: accepted\n---\nbody\n",
+        )
+        .unwrap();
+        fs::write(
+            wiki.join("2026-05-28-b.md"),
+            "---\nid: b\ndate: 2026-05-28\nstatus: accepted\n---\nbody\n",
+        )
+        .unwrap();
+        fs::write(wiki.join("notes.txt"), "non-md, should be skipped").unwrap();
+
+        let decisions = walk_decisions(&wiki).unwrap();
+        // README.md and notes.txt skipped; both .md decisions parsed.
+        let ids: Vec<&str> = decisions
+            .iter()
+            .map(|d| d.frontmatter.id.as_str())
+            .collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"a"));
+        assert!(ids.contains(&"b"));
+    }
+
+    #[test]
+    fn walk_decisions_sorted_by_date_desc() {
+        let dir = TempDir::new().unwrap();
+        let wiki = dir.path().join("decisions");
+        fs::create_dir(&wiki).unwrap();
+        fs::write(
+            wiki.join("c.md"),
+            "---\nid: c\ndate: 2025-01-01\nstatus: accepted\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            wiki.join("a.md"),
+            "---\nid: a\ndate: 2026-06-01\nstatus: accepted\n---\n",
+        )
+        .unwrap();
+        fs::write(
+            wiki.join("b.md"),
+            "---\nid: b\ndate: 2026-03-15\nstatus: accepted\n---\n",
+        )
+        .unwrap();
+        let decisions = walk_decisions(&wiki).unwrap();
+        let dates: Vec<&str> = decisions
+            .iter()
+            .map(|d| d.frontmatter.date.as_str())
+            .collect();
+        // Newest first.
+        assert_eq!(dates, vec!["2026-06-01", "2026-03-15", "2025-01-01"]);
     }
 }
