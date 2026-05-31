@@ -17,6 +17,8 @@ cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
 cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
+cargo run -- wiki-drift      # Heuristic: which .phronesis/wiki/decisions/ ADRs lack rule coverage?
+cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
 cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shape to the v2 shape
 ```
 
@@ -55,6 +57,16 @@ buckets per `docs/specs/SPEC-memory-to-rules.md`: `actionable`
 against rules.json and durable.md by token overlap; uncovered ones
 are surfaced for porting. `--suggest` emits draft rule JSON on
 stderr.
+
+`phr-mcp wiki-drift` (MCP: `get_wiki_drift`) walks
+`.phronesis/wiki/decisions/`, parses ADR-style frontmatter on each
+page, and classifies decisions into `covered` / `likely-covered` /
+`uncovered` / `superseded` against the current rule pack. Explicit
+`enforces: [rule-id]` frontmatter beats the Jaccard fallback —
+authors who list which rules enforce a decision get a deterministic
+match. `--suggest` emits draft v2 rule JSON on stderr for uncovered
+decisions. Pair with `phr-mcp decision new <slug>` to scaffold new
+ADR pages from a template.
 
 Both tools are heuristic (no LLM call) — output is a triage list,
 not ground truth.
@@ -136,13 +148,14 @@ The packs are composable and **independent**:
 - `swift` — Swift-specific advisories: force-unwrap warning, try! warning
 - `none` — empty rules array (hooks still wired)
 
-`init` writes/merges six files:
+`init` writes/merges seven files:
 - `.claude/settings.local.json` — hook config (preserves existing permissions/hooks)
 - `.mcp.json` — MCP server registration
 - `.phronesis/rules.json` — starter rule pack (left alone on re-run unless --force)
-- `.phronesis/durable.md` — default re-injected directives, including drift-discipline nudges that point the model at `get_claude_md_drift` / `get_memory_drift`. Left alone on re-run; edit in place to customize.
+- `.phronesis/durable.md` — default re-injected directives, including drift-discipline nudges that point the model at `get_claude_md_drift` / `get_memory_drift` / `get_wiki_drift`. Left alone on re-run; edit in place to customize.
+- `.phronesis/wiki/decisions/README.md` — wiki scaffold; the directory is un-ignored from the broad `.phronesis/` gitignore. Left alone on re-run.
 - `.gemini/settings.json` — MCP server registration + BeforeTool/AfterTool hooks for Gemini CLI
-- `.gitignore` — log/backup paths
+- `.gitignore` — log/backup paths + `!.phronesis/wiki/**` exception so the decisions tree is versioned
 
 Re-running is idempotent: existing config is preserved; only our entries are added.
 
@@ -339,7 +352,9 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 ## Architecture
 
 - `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`, `migrate-rules`
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift)
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift, get_wiki_drift)
+- `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
+- `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.
 - `src/memory_drift.rs` — Walks the Claude Code auto-memory directory, classifies entries by `metadata.type`, and scores them against rules.json + durable.md.
 - `src/hook.rs` — Pre/post hook subcommands; reads `.phronesis/rules.json`, fires rules, exits 0/1/2
