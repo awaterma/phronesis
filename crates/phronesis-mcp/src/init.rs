@@ -655,6 +655,51 @@ the scoring is token-overlap Jaccard, no semantic match. When the
 user says "remember X" or "make a rule for X", check drift first to
 see whether the gap is real.
 
+## Participatory governance
+
+The model is both governed by rules and a participant in rule
+evolution. Three workflows close the loop:
+
+### Remember → decide → enforce
+
+When the user says "remember X" or "make a rule for X":
+
+1. Check drift tools — is the gap real?
+2. Scaffold a decision: `phr-mcp decision new <slug>`
+3. Fill in Context, Decision, Enforcement, Consequences
+4. If enforceable (code-shape, command pattern):
+   - Propose a rule using available predicates
+     (`new_content_contains`, `file_path_matches`,
+     `file_extension_is`, etc.)
+   - Write it to `.phronesis/rules.json`
+   - Wire `enforces: [rule-id]` in the decision frontmatter
+5. If not enforceable (process, naming, social):
+   - Note in Enforcement that no automated rule is possible
+   - Offer to add prose guidance to this file instead
+6. Ask the human to approve before committing
+
+### Friction-driven proposals
+
+When a rule blocks you 3+ times in the same session for the same
+pattern, pause and assess:
+
+- Use `get_action_log` with `only_nonzero_exit: true` to review
+- If the rule scope is too broad (legitimate code keeps tripping
+  it): propose a decision page that refines the scope — narrower
+  `file_path_matches`, an exclusion, a predicate change. Present
+  the proposal to the human.
+- If you keep hitting it legitimately: the rule is working. Adjust
+  your approach, don't propose weakening enforcement.
+
+### Cross-session knowledge transfer
+
+When you discover something significant — a bug pattern, a design
+insight, a rollout lesson — consider writing a decision page. ADR
+pages in `.phronesis/wiki/decisions/` travel with the repo and are
+available to future sessions. This turns a session-local discovery
+into durable project knowledge. Ask the human before writing —
+not every insight warrants a formal decision.
+
 ## Project-specific guidance
 
 (Add team-specific directives below. Anything written here is
