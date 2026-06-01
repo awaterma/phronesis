@@ -761,6 +761,15 @@ impl ReteNetwork {
             "compliance_level",
             "directory_audited",
             "task_failed",
+            // rulgamr: quest, alignment, and deity state
+            "accomplishment_earned",
+            "location_cleared",
+            "deity_quest_offered",
+            "deity_selected",
+            "quest_failed",
+            "alignment_violation",
+            "deity_favor_level",
+            "alignment_aligned_action",
         ];
 
         if let Ok(wme_manager) = self.wme_manager.lock() {
