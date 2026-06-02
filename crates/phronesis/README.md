@@ -1,91 +1,61 @@
 # phronesis
 
-**Status: exploratory.** This crate is pre-1.0 and not API-stable.
-Expect breaking changes while the pattern is sharpened against real
-consumers.
+A domain-neutral RETE rules engine for durable, context-window-independent
+enforcement of project conventions in LLM-assisted work.
 
-## What it is
+Rules live on disk. They fire deterministically against asserted facts.
+The **consequences** of those firings — not raw state — are what an LLM sees.
 
-A domain-neutral surface for a specific pattern: an LLM (or any other
-consumer) operating as a narrator or actor **within the bounds of
-deterministically-derived consequences**, rather than reasoning about
-raw game state.
+## The pattern
 
-Facts are asserted into a working memory. Rules fire against those
-facts. The *consequences* of those firings — not the raw facts — are
-what the consumer sees. The consumer's output is bounded by what the
-rules vouch for.
+Two transports of the same idea:
 
-Two transports of the same idea live here:
+- **Push** — rule fires -> `Consequence` -> `Actor` consumes it.
+- **Pull** — actor asks -> deterministic `Lookup` returns a `Consequence`.
 
-- **Push**: a rule fires, a `Consequence` is emitted, an `Actor`
-  consumes it.
-- **Pull**: an actor asks, a deterministic `Lookup` returns a
-  `Consequence`.
+The crate defines the types and the engine; integration with any particular
+host (an MCP server, a game engine, a conversational module) lives outside
+this crate.
 
-Both produce the same `Consequence` wire value. Actors don't care
-which transport the consequence came from.
-
-## The shape
+## Quick example
 
 ```rust
-pub struct Consequence {
-    pub kind: ConsequenceKind,      // Event / Snapshot / Constraint / Affordance
-    pub predicate: String,          // e.g. "card.played"
-    pub payload: serde_json::Value, // schema-agnostic body
-    pub provenance: Provenance,     // RuleFiring / Lookup / Asserted
+use phronesis::{Consequence, ConsequenceKind, Lookup, lookup_as_consequence};
+
+// Pull mode: invoke a deterministic Lookup and wrap the result.
+struct AdderTool;
+
+impl Lookup for AdderTool {
+    type Request = (i64, i64);
+    type Response = serde_json::Value;
+
+    fn name(&self) -> &'static str { "adder" }
+    fn schema_version(&self) -> u8 { 1 }
+
+    fn invoke(&self, req: Self::Request) -> anyhow::Result<Self::Response> {
+        let (a, b) = req;
+        Ok(serde_json::json!({ "sum": a + b }))
+    }
 }
 
-#[async_trait]
-pub trait Actor: Send + Sync {
-    async fn act(&self, consequences: &[Consequence]) -> anyhow::Result<ActorOutput>;
-}
-
-pub trait Lookup {
-    type Request;
-    type Response: Serialize;
-    fn name(&self) -> &'static str;
-    fn schema_version(&self) -> u8;
-    fn invoke(&self, req: Self::Request) -> anyhow::Result<Self::Response>;
-}
+let consequence = lookup_as_consequence(&AdderTool, (2, 2)).unwrap();
+assert_eq!(consequence.kind, ConsequenceKind::Observation);
 ```
 
-Plus `DynLookup` (the `Value`-in / `Value`-out honest engine surface)
-and a small RETE implementation for hosts that want one. The core is
-schema-agnostic on purpose: any schema validation belongs in a higher
-layer at module-load time, not per-fact at runtime.
+See `examples/push_and_pull.rs` for the full push + pull pattern.
 
-## Run the example
+## Companion crate
 
-```sh
-cargo run --example push_and_pull -p phronesis
-```
+[`phronesis-mcp`](https://crates.io/crates/phronesis-mcp) wraps this
+engine behind an MCP server and CLI (`phr-mcp`) for use with Claude Code
+and Gemini CLI.
 
-Prints one line per consequence — one from a pretend rule firing, one
-from a deterministic lookup — both consumed by the same `Actor`.
+## Documentation
 
-## What's in this crate
+- [API docs (docs.rs)](https://docs.rs/phronesis)
+- [The Explainer](https://awaterma.github.io/phronesis/explainer.html) — long-form essay on the engine and RETE algorithm
+- [The Catalogue](https://awaterma.github.io/phronesis/catalogue.html) — visual reference of starter rules
 
-| module | purpose |
-| --- | --- |
-| `consequence` | `Consequence`, `ConsequenceKind`, `Provenance` |
-| `actor` | `Actor` trait, `ActorOutput` |
-| `pull` | `Lookup`, `DynLookup`, constructor helpers |
-| `engine_types` | `Fact`, `Condition`, `Action`, `Rule`, `PerformanceValues` |
-| `wme` | `WorkingMemoryElement`, `WmeManager` |
-| `variable_binding` | `Bindings`, `Token` |
-| `alpha_network`, `beta_network`, `agenda`, `production`, `network` | RETE core |
-| `script_evaluator` | hand-rolled DSL for `facts_contain` / `facts_count` |
+## License
 
-The crate is intentionally minimal and carries no domain-specific
-dependencies. Hosting applications (game engines, conversational
-modules, sheet-FFI bridges, the `phronesis-mcp` server in this
-workspace) implement on top of it without the core knowing anything
-about their domain.
-
-## Caveats
-
-- The surface is **not stable.** Expect breaking changes while the
-  pattern is being sharpened against real consumers.
-- No published documentation beyond this README. If you're here to
-  use the crate, you're early.
+MIT
