@@ -11,6 +11,7 @@ homepage = "https://github.com/awaterma/phronesis"
 readme = "README.md"
 keywords = ["mcp", "rules-engine", "llm", "code-quality", "rete"]
 categories = ["development-tools", "command-line-utilities"]
+exclude = ["tests/", "tests/features/"]
 
 [lib]
 name = "phronesis_mcp"
