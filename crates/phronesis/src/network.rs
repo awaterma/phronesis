@@ -282,11 +282,11 @@ impl ReteNetwork {
         // This links the terminal of the beta join chain to its production rule,
         // so activations are created by network topology rather than by scanning.
         // Use the real condition count (excluding __script__) for the check.
-        if let Some(ref terminal_id) = terminal_state_id {
-            if condition_state_ids.len() > 1 {
-                let mut beta_network = self.beta_network.lock().map_err(|e| e.to_string())?;
-                beta_network.mark_as_p_state(terminal_id, rule.id.clone(), salience);
-            }
+        if let Some(ref terminal_id) = terminal_state_id
+            && condition_state_ids.len() > 1
+        {
+            let mut beta_network = self.beta_network.lock().map_err(|e| e.to_string())?;
+            beta_network.mark_as_p_state(terminal_id, rule.id.clone(), salience);
         }
 
         // Add the rule to the production network (with terminal link for retraction path)
@@ -761,6 +761,15 @@ impl ReteNetwork {
             "compliance_level",
             "directory_audited",
             "task_failed",
+            // rulgamr: quest, alignment, and deity state
+            "accomplishment_earned",
+            "location_cleared",
+            "deity_quest_offered",
+            "deity_selected",
+            "quest_failed",
+            "alignment_violation",
+            "deity_favor_level",
+            "alignment_aligned_action",
         ];
 
         if let Ok(wme_manager) = self.wme_manager.lock() {

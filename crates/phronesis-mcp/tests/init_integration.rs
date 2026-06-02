@@ -667,3 +667,240 @@ fn install_uninstall_round_trip_preserves_other_state() {
     // No phronesis entry
     assert!(after["mcpServers"].get("phronesis").is_none());
 }
+
+#[test]
+fn init_creates_wiki_decisions_directory_and_readme() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let dec = dir.path().join(".phronesis/wiki/decisions");
+    assert!(dec.is_dir(), "decisions dir should be created");
+    let readme = dec.join("README.md");
+    assert!(readme.is_file(), "README.md should be created");
+    let body = std::fs::read_to_string(&readme).unwrap();
+    assert!(body.to_lowercase().contains("decision"));
+    assert!(body.contains("frontmatter") || body.contains("frontmatter"));
+}
+
+#[test]
+fn init_preserves_existing_wiki_readme() {
+    let dir = tempfile::tempdir().unwrap();
+    let dec = dir.path().join(".phronesis/wiki/decisions");
+    std::fs::create_dir_all(&dec).unwrap();
+    let original = "# my custom README\n\nproject-specific notes\n";
+    std::fs::write(dec.join("README.md"), original).unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success());
+
+    let after = std::fs::read_to_string(dec.join("README.md")).unwrap();
+    assert_eq!(
+        after, original,
+        "init must not overwrite an existing README"
+    );
+}
+
+#[test]
+fn init_gitignore_carves_out_wiki_exception() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success());
+
+    let gi = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    let lines: Vec<&str> = gi.lines().map(str::trim).collect();
+
+    // Broad ignore must be `.phronesis/*` (with the `*`) — NOT `.phronesis/`,
+    // which would prevent git from listing the dir at all, making the
+    // un-ignore inert. Verified empirically: `.phronesis/` keeps wiki/
+    // ignored; `.phronesis/*` lets the un-ignore land.
+    let broad_idx = lines
+        .iter()
+        .position(|l| *l == ".phronesis/*")
+        .expect("init must write a standalone `.phronesis/*` broad-ignore line");
+    let un_dir_idx = lines
+        .iter()
+        .position(|l| *l == "!.phronesis/wiki/")
+        .expect("init must write `!.phronesis/wiki/` un-ignore line");
+    let un_glob_idx = lines
+        .iter()
+        .position(|l| *l == "!.phronesis/wiki/**")
+        .expect("init must write `!.phronesis/wiki/**` un-ignore line");
+
+    // Gitignore semantics: un-ignores only take effect when they follow
+    // the broad ignore. Order must be: broad, then both un-ignores.
+    assert!(
+        broad_idx < un_dir_idx,
+        "broad ignore must precede !.phronesis/wiki/ ({} vs {})",
+        broad_idx,
+        un_dir_idx
+    );
+    assert!(
+        broad_idx < un_glob_idx,
+        "broad ignore must precede !.phronesis/wiki/** ({} vs {})",
+        broad_idx,
+        un_glob_idx
+    );
+}
+
+#[test]
+fn init_gitignore_migrates_legacy_bare_phronesis_line() {
+    // Pre-0.9.0 init wrote a bare `.phronesis/` (no trailing `*`). That form
+    // tells git not to descend into the directory at all, so any later
+    // `!.phronesis/wiki/**` un-ignore is inert. Re-running init on such a
+    // project must rewrite the legacy line to `.phronesis/*` so the carveout
+    // takes effect.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(&gi_path, "/target\n.phronesis/\n.phronesis/log.jsonl\n").unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success(), "init must succeed: {out:?}");
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    let lines: Vec<&str> = gi.lines().map(str::trim).collect();
+
+    assert!(
+        !lines.iter().any(|l| *l == ".phronesis/"),
+        "legacy bare `.phronesis/` must be rewritten; got:\n{gi}"
+    );
+    assert!(
+        lines.iter().any(|l| *l == ".phronesis/*"),
+        "migration must produce `.phronesis/*`; got:\n{gi}"
+    );
+
+    // Pre-existing unrelated content is preserved.
+    assert!(lines.iter().any(|l| *l == "/target"));
+    // Specific log entry that was already present stays put.
+    assert!(lines.iter().any(|l| *l == ".phronesis/log.jsonl"));
+}
+
+#[test]
+fn init_gitignore_migration_dedupes_when_target_already_present() {
+    // Mixed state: legacy bare `.phronesis/` AND modern `.phronesis/*` both
+    // present (a hand-edited partial-migration). After init, exactly one
+    // `.phronesis/*` line — the migration must not produce a duplicate.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(
+        &gi_path,
+        "/target\n.phronesis/\n.phronesis/log.jsonl\n.phronesis/*\n",
+    )
+    .unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success(), "init must succeed: {out:?}");
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    let count = gi.lines().filter(|l| l.trim() == ".phronesis/*").count();
+    assert_eq!(
+        count, 1,
+        "exactly one `.phronesis/*` line expected; got:\n{gi}"
+    );
+    assert!(
+        !gi.lines().any(|l| l.trim() == ".phronesis/"),
+        "legacy bare line must be gone; got:\n{gi}"
+    );
+}
+
+#[test]
+fn init_gitignore_migration_only_no_missing_entries() {
+    // Covers the `migrated > 0 && missing.empty()` write-anyway branch.
+    // The file already contains every modern entry plus the legacy bare
+    // line — only the migration runs, but the file MUST be re-written.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(
+        &gi_path,
+        "/target\n\
+         .phronesis/\n\
+         .phronesis/log.jsonl\n\
+         .phronesis/log.jsonl.1\n\
+         .phronesis/rules.json.bak\n\
+         .phronesis/*\n\
+         !.phronesis/wiki/\n\
+         !.phronesis/wiki/**\n",
+    )
+    .unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success(), "init must succeed: {out:?}");
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    assert!(
+        !gi.lines().any(|l| l.trim() == ".phronesis/"),
+        "legacy bare line must be removed even when no entries are missing"
+    );
+}
+
+#[test]
+fn init_gitignore_preserves_no_trailing_newline_state_when_migration_only() {
+    // Original file has no trailing newline. After a migration-only run
+    // (no appended entries), the file must still not have a spurious
+    // trailing newline introduced.
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    // No trailing newline.
+    std::fs::write(
+        &gi_path,
+        "/target\n\
+         .phronesis/\n\
+         .phronesis/log.jsonl\n\
+         .phronesis/log.jsonl.1\n\
+         .phronesis/rules.json.bak\n\
+         .phronesis/*\n\
+         !.phronesis/wiki/\n\
+         !.phronesis/wiki/**",
+    )
+    .unwrap();
+
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success(), "init must succeed: {out:?}");
+
+    let gi = std::fs::read_to_string(&gi_path).unwrap();
+    assert!(
+        !gi.ends_with("\n\n"),
+        "must not introduce blank trailing newline"
+    );
+    // Migration still happened.
+    assert!(
+        !gi.lines().any(|l| l.trim() == ".phronesis/"),
+        "legacy bare line must still be migrated"
+    );
+}
+
+#[test]
+fn init_gitignore_dry_run_reports_migration_distinctly() {
+    let dir = tempfile::tempdir().unwrap();
+    let gi_path = dir.path().join(".gitignore");
+    std::fs::write(&gi_path, ".phronesis/\n").unwrap();
+
+    let out = run_init(&["--dry-run"], dir.path());
+    assert!(out.status.success(), "dry-run init must succeed: {out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("would migrate"),
+        "dry-run must surface the migration distinctly:\n{stdout}"
+    );
+
+    // And no actual write happened.
+    let after = std::fs::read_to_string(&gi_path).unwrap();
+    assert_eq!(after, ".phronesis/\n", "dry-run must not write");
+}
+
+#[test]
+fn init_gitignore_idempotent_on_second_run() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(&[], dir.path());
+    let first = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    run_init(&[], dir.path());
+    let second = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert_eq!(
+        first, second,
+        "gitignore must not duplicate entries on re-run"
+    );
+}

@@ -569,7 +569,7 @@
   <header class="colophon" role="banner">
     <div class="left"><a href="./explainer.html">← The Explainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
-    <div class="right">Vol. 0.6.1 — Edition I</div>
+    <div class="right">Vol. 0.9.0 — Edition II</div>
   </header>
 
   <!-- ─── COVER ─── -->
@@ -597,13 +597,13 @@
         <dt>Default packs</dt>
         <dd><span class="num">6</span></dd>
         <dt>Rules shipped</dt>
-        <dd><span class="num">36</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
+        <dd><span class="num">34</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
         <dt>Blocks (pre)</dt>
-        <dd><span class="num">12</span></dd>
-        <dt>Warnings (post)</dt>
-        <dd><span class="num">10</span></dd>
+        <dd><span class="num">13</span></dd>
+        <dt>Warnings (pre/post)</dt>
+        <dd><span class="num">11</span></dd>
         <dt>Audit-only</dt>
-        <dd><span class="num">9</span></dd>
+        <dd><span class="num">10</span></dd>
         <dt>Field examples</dt>
         <dd><span class="num">24</span></dd>
       </dl>
@@ -2111,9 +2111,14 @@ audit-rc-refcell-in-src   warn      4      2
       All three packs are intentionally lean. Phronesis's value scales
       with how well the rules fit the project; canned defaults beyond
       these few would be presumptuous about your codebase. Start with
-      the seeds, run <code>phr-mcp claude-md-drift</code> to find
-      which of your CLAUDE.md imperatives lack a corresponding rule, and
-      grow the pack from there.
+      the seeds, then run the drift detectors to find gaps.
+      <code>phr-mcp claude-md-drift</code> flags CLAUDE.md imperatives
+      without a corresponding rule. <code>phr-mcp memory-drift</code>
+      flags auto-memory entries. <code>phr-mcp wiki-drift</code> flags
+      ADR-style decision pages under <code>.phronesis/wiki/decisions/</code>
+      — decisions with explicit <code>enforces:</code> frontmatter
+      resolve deterministically; the rest fall through to Jaccard
+      matching. Grow the pack from there.
     </p>
   </section>
 
@@ -2126,7 +2131,7 @@ audit-rc-refcell-in-src   warn      4      2
       By <strong>Phronesis &amp; the rules</strong> — Claude with
       <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>.<br>
       Pairs with <a href="./explainer.html">the explainer</a> ·
-      v 0.6.0 · 2026
+      v 0.9.0 · 2026
     </div>
     <div class="folio">
       ⁂<small>End of Catalogue</small>

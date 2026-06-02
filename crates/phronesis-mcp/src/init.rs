@@ -1,11 +1,15 @@
 //! `phr-mcp init` — one-command setup for a project.
 //!
-//! Writes (or merges) the four config files phr-mcp needs:
+//! Writes (or merges) the config files phr-mcp needs:
 //!
-//! - `.claude/settings.local.json` — hook registrations
-//! - `.mcp.json`                    — MCP server registration
-//! - `.phronesis/rules.json`         — starter rule pack
-//! - `.gitignore`                   — log/backup paths
+//! - `.claude/settings.local.json`             — hook registrations
+//! - `.mcp.json`                                — MCP server registration
+//! - `.gemini/settings.json`                    — Gemini CLI MCP + hooks
+//! - `.phronesis/rules.json`                    — starter rule pack
+//! - `.phronesis/durable.md`                    — re-injected directives
+//! - `.phronesis/wiki/decisions/README.md`     — ADR scaffold
+//! - `.gitignore`                                — log/backup paths +
+//!                                                 wiki carveout
 //!
 //! Idempotent and non-destructive by default. Existing permissions, hooks,
 //! and MCP servers are preserved; only our entries are added or refreshed.
@@ -397,6 +401,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
     if !opts.hooks_only {
         write_rules_file(&root, &opts, &mut report)?;
         write_durable_md(&root, &opts, &mut report)?;
+        write_wiki_scaffold(&root, &opts, &mut report)?;
     }
     if !opts.rules_only && !opts.hooks_only {
         update_gitignore(&root, &opts, &mut report)?;
@@ -628,7 +633,7 @@ Contents do not fade with context-window compression.
 
 ## Drift discipline
 
-Two heuristic tools surface the gap between prose guidance and
+Three heuristic tools surface the gap between prose guidance and
 enforced rules. They are cheap, deterministic, and worth running
 whenever the user asks about rules, memory, durable guidance, or
 project conventions:
@@ -640,11 +645,60 @@ project conventions:
   store that have no matching rule or `durable.md` paragraph.
   Actionable entries (named tool calls / commands) should become
   rules; ambient ones (project-shared prose) should be added here.
+- `mcp__phronesis__get_wiki_drift` — ADR-style decisions under
+  `.phronesis/wiki/decisions/` that no rule enforces. Decisions
+  with explicit `enforces: [rule-id]` frontmatter resolve
+  deterministically; others fall through to Jaccard matching.
 
 Treat the output as a triage list, not authoritative ground truth —
 the scoring is token-overlap Jaccard, no semantic match. When the
 user says "remember X" or "make a rule for X", check drift first to
 see whether the gap is real.
+
+## Participatory governance
+
+The model is both governed by rules and a participant in rule
+evolution. Three workflows close the loop:
+
+### Remember → decide → enforce
+
+When the user says "remember X" or "make a rule for X":
+
+1. Check drift tools — is the gap real?
+2. Scaffold a decision: `phr-mcp decision new <slug>`
+3. Fill in Context, Decision, Enforcement, Consequences
+4. If enforceable (code-shape, command pattern):
+   - Propose a rule using available predicates
+     (`new_content_contains`, `file_path_matches`,
+     `file_extension_is`, etc.)
+   - Write it to `.phronesis/rules.json`
+   - Wire `enforces: [rule-id]` in the decision frontmatter
+5. If not enforceable (process, naming, social):
+   - Note in Enforcement that no automated rule is possible
+   - Offer to add prose guidance to this file instead
+6. Ask the human to approve before committing
+
+### Friction-driven proposals
+
+When a rule blocks you 3+ times in the same session for the same
+pattern, pause and assess:
+
+- Use `get_action_log` with `only_nonzero_exit: true` to review
+- If the rule scope is too broad (legitimate code keeps tripping
+  it): propose a decision page that refines the scope — narrower
+  `file_path_matches`, an exclusion, a predicate change. Present
+  the proposal to the human.
+- If you keep hitting it legitimately: the rule is working. Adjust
+  your approach, don't propose weakening enforcement.
+
+### Cross-session knowledge transfer
+
+When you discover something significant — a bug pattern, a design
+insight, a rollout lesson — consider writing a decision page. ADR
+pages in `.phronesis/wiki/decisions/` travel with the repo and are
+available to future sessions. This turns a session-local discovery
+into durable project knowledge. Ask the human before writing —
+not every insight warrants a formal decision.
 
 ## Project-specific guidance
 
@@ -686,6 +740,60 @@ fn write_durable_md(
     Ok(())
 }
 
+const WIKI_DECISIONS_README: &str = "\
+# `.phronesis/wiki/decisions/`
+
+ADR-style decision pages. Each file is one decision (e.g. \
+`2026-05-29-card-game-terminology.md`). The first block is YAML \
+frontmatter (`id`, `date`, `status`, optional `enforces`, \
+`superseded_by`, `tags`). The body uses Context / Decision / \
+Enforcement / Consequences sections.
+
+Run `phr-mcp wiki-drift` to see which decisions lack rule coverage.
+Create new pages with `phr-mcp decision new <slug>`.
+
+This directory is tracked in git (un-ignored from the broader \
+`.phronesis/` ignore) because decisions are project knowledge. \
+The rest of `.phronesis/` (rules.json, log.jsonl, etc.) stays \
+gitignored.
+";
+
+fn write_wiki_scaffold(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    let dir = root.join(".phronesis").join("wiki").join("decisions");
+    let readme = dir.join("README.md");
+
+    if readme.exists() {
+        report.steps.push(
+            "= .phronesis/wiki/decisions/README.md already exists — leaving unchanged".to_string(),
+        );
+        return Ok(());
+    }
+
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would create .phronesis/wiki/decisions/ + README.md".to_string());
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(&dir).map_err(|e| InitError::Io {
+        path: dir.display().to_string(),
+        source: e,
+    })?;
+    std::fs::write(&readme, WIKI_DECISIONS_README).map_err(|e| InitError::Io {
+        path: readme.display().to_string(),
+        source: e,
+    })?;
+    report
+        .steps
+        .push("+ created .phronesis/wiki/decisions/ + README.md".to_string());
+    Ok(())
+}
+
 fn update_gitignore(
     root: &Path,
     opts: &InitOpts,
@@ -696,8 +804,16 @@ fn update_gitignore(
         ".phronesis/log.jsonl",
         ".phronesis/log.jsonl.1",
         ".phronesis/rules.json.bak",
+        // Broad ignore of .phronesis/ contents, then carve the wiki tree
+        // back in. `.phronesis/*` (with the trailing `*`) — NOT
+        // `.phronesis/` — because the latter prevents git from listing
+        // the dir at all, making the un-ignore inert. Order matters:
+        // un-ignores must come after the broad ignore.
+        ".phronesis/*",
+        "!.phronesis/wiki/",
+        "!.phronesis/wiki/**",
     ];
-    let existing = if path.exists() {
+    let original = if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| InitError::Io {
             path: path.display().to_string(),
             source: e,
@@ -705,13 +821,54 @@ fn update_gitignore(
     } else {
         String::new()
     };
-    let present_lines: std::collections::HashSet<&str> = existing.lines().collect();
+
+    // Migrate legacy bare `.phronesis/` to `.phronesis/*`. The bare form
+    // tells git not to descend into the directory at all, which makes
+    // any later `!.phronesis/wiki/**` un-ignore inert. Pre-0.9.0 init
+    // wrote the bare form; rewrite it so the carveout takes effect.
+    //
+    // After rewriting, dedupe the lines we manage (broad-ignore and
+    // un-ignore carveouts) preserving first occurrence — a project that
+    // already had `.phronesis/*` *and* the legacy `.phronesis/` would
+    // otherwise end up with two `.phronesis/*` lines side by side.
+    let had_trailing_newline = original.ends_with('\n');
+    let mut migrated_count = 0usize;
+    let rewritten: Vec<String> = original
+        .lines()
+        .map(|line| {
+            if line == ".phronesis/" {
+                migrated_count += 1;
+                ".phronesis/*".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect();
+
+    let mut seen_managed: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut deduped_count = 0usize;
+    let mut migrated_lines: Vec<String> = Vec::with_capacity(rewritten.len());
+    for line in rewritten {
+        let is_managed = line == ".phronesis/*" || line.starts_with("!.phronesis/");
+        if is_managed && !seen_managed.insert(line.clone()) {
+            deduped_count += 1;
+            continue;
+        }
+        migrated_lines.push(line);
+    }
+    let mut migrated_content = migrated_lines.join("\n");
+    if had_trailing_newline && !migrated_content.is_empty() {
+        migrated_content.push('\n');
+    }
+
+    let present_lines: std::collections::HashSet<&str> = migrated_content.lines().collect();
     let missing: Vec<&str> = entries
         .iter()
         .filter(|e| !present_lines.contains(*e))
         .copied()
         .collect();
-    if missing.is_empty() {
+
+    if missing.is_empty() && migrated_count == 0 && deduped_count == 0 {
         report
             .steps
             .push("= .gitignore already contains phronesis entries".to_string());
@@ -719,15 +876,29 @@ fn update_gitignore(
     }
 
     if opts.dry_run {
-        report.steps.push(format!(
-            "+ would append {} line(s) to .gitignore: {:?}",
-            missing.len(),
-            missing
-        ));
+        if migrated_count > 0 {
+            report.steps.push(format!(
+                "~ would migrate {} bare `.phronesis/` line(s) to `.phronesis/*`",
+                migrated_count
+            ));
+        }
+        if deduped_count > 0 {
+            report.steps.push(format!(
+                "~ would dedupe {} duplicate phronesis line(s)",
+                deduped_count
+            ));
+        }
+        if !missing.is_empty() {
+            report.steps.push(format!(
+                "+ would append {} line(s) to .gitignore: {:?}",
+                missing.len(),
+                missing
+            ));
+        }
         return Ok(());
     }
 
-    let mut new_content = existing.clone();
+    let mut new_content = migrated_content;
     if !new_content.is_empty() && !new_content.ends_with('\n') {
         new_content.push('\n');
     }
@@ -739,9 +910,23 @@ fn update_gitignore(
         path: path.display().to_string(),
         source: e,
     })?;
-    report
-        .steps
-        .push(format!("+ updated .gitignore (+{} entries)", missing.len()));
+    if migrated_count > 0 {
+        report.steps.push(format!(
+            "~ migrated {} bare `.phronesis/` line(s) to `.phronesis/*` (carveout was inert)",
+            migrated_count
+        ));
+    }
+    if deduped_count > 0 {
+        report.steps.push(format!(
+            "~ removed {} duplicate phronesis line(s)",
+            deduped_count
+        ));
+    }
+    if !missing.is_empty() {
+        report
+            .steps
+            .push(format!("+ updated .gitignore (+{} entries)", missing.len()));
+    }
     Ok(())
 }
 

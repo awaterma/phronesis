@@ -192,10 +192,10 @@ impl AlphaNetwork {
         // Create a hash based on the condition structure like we do when creating states
         let condition_hash = format!("{}-{:?}", condition.predicate, condition.args);
 
-        if let Some(state_id) = self.condition_index.get(&condition_hash) {
-            if let Some(state) = self.states.get(state_id) {
-                return state.alpha_memory.iter().collect();
-            }
+        if let Some(state_id) = self.condition_index.get(&condition_hash)
+            && let Some(state) = self.states.get(state_id)
+        {
+            return state.alpha_memory.iter().collect();
         }
 
         // If we don't have a specific state for this condition,

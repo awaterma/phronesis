@@ -1,6 +1,23 @@
+//! `phr-mcp` CLI entry point.
+//!
+//! Clap declares every subcommand on one `Command` enum so `--help`
+//! lists them coherently and `main()` dispatches each. Keeping the
+//! whole CLI surface in one file mirrors how typical Rust binaries
+//! are structured; splitting per-subcommand would scatter the
+//! `Command` enum and break the single dispatch site.
+//!
+//! phronesis-allow: audit-file-loc-high (coherent CLI surface — all
+//! subcommand declarations + dispatch live together by design)
+
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+
+/// ISO-8601 date string for the local clock (YYYY-MM-DD). Uses chrono,
+/// which is already a phronesis-mcp dep (clock_facts).
+fn today_iso() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
 use phronesis_mcp::{hook, init, server};
 use rmcp::{ServiceExt, transport::stdio};
 
@@ -141,6 +158,31 @@ enum Command {
         #[arg(long)]
         suggest: bool,
     },
+    /// Detect drift between ADR-style decision documents in
+    /// `.phronesis/wiki/decisions/` and the current rule pack.
+    /// Heuristic — explicit `enforces:` frontmatter lookups beat
+    /// Jaccard fallback. Read-only; always exits 0 on success.
+    #[command(name = "wiki-drift")]
+    WikiDrift {
+        /// Project root (defaults to current directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Override the decisions directory. Defaults to
+        /// `<project_root>/.phronesis/wiki/decisions/`.
+        #[arg(long)]
+        wiki_dir: Option<PathBuf>,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Emit draft v2 rule JSON for each uncovered decision, on stderr.
+        #[arg(long)]
+        suggest: bool,
+    },
+    /// Wiki-related helpers (scaffold a new ADR-style decision page).
+    Decision {
+        #[command(subcommand)]
+        cmd: DecisionCmd,
+    },
     /// One-command setup for a project. Writes hook config, MCP server
     /// registration, a starter rules file, and updates .gitignore.
     /// Also reachable as `setup` and `configure`.
@@ -189,6 +231,19 @@ enum Command {
         /// Print what would be done without writing anything
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum DecisionCmd {
+    /// Scaffold a new decision page at
+    /// `.phronesis/wiki/decisions/<today>-<slug>.md`.
+    New {
+        /// Kebab-case slug for the decision. Must match `[a-z0-9-]+`.
+        slug: String,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
     },
 }
 
@@ -563,6 +618,129 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Command::WikiDrift {
+            path,
+            wiki_dir,
+            json,
+            suggest,
+        } => {
+            use phronesis_mcp::wiki;
+            use phronesis_mcp::wiki_drift::{
+                DriftError, render_json, render_table, run_with_dir, suggest_rule,
+            };
+            let root = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()
+                    .map(|p| p.join(&path))
+                    .unwrap_or(path)
+            };
+            let dir = wiki_dir.unwrap_or_else(|| wiki::default_wiki_dir(&root).join("decisions"));
+            match run_with_dir(&root, &dir) {
+                Ok(report) => {
+                    if json {
+                        println!("{}", render_json(&report));
+                    } else {
+                        print!("{}", render_table(&report));
+                    }
+                    if suggest {
+                        let drafts: Vec<String> =
+                            report.items.iter().filter_map(suggest_rule).collect();
+                        if !drafts.is_empty() {
+                            eprintln!("\n--- draft rules for uncovered decisions ---\n");
+                            for draft in drafts {
+                                eprintln!("{}\n", draft);
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+                Err(DriftError::Wiki(phronesis_mcp::wiki::WikiError::DirMissing(p))) => {
+                    eprintln!("error: wiki decisions directory not found at {}", p);
+                    eprintln!(
+                        "hint: run `phr-mcp init` to create it, or pass `--wiki-dir <path>`."
+                    );
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            }
+        }
+        Command::Decision { cmd } => match cmd {
+            DecisionCmd::New { slug, path } => {
+                use phronesis_mcp::wiki;
+                let root = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .map(|p| p.join(&path))
+                        .unwrap_or(path)
+                };
+                // Validate slug: kebab-case, alphanumeric + hyphen, non-empty.
+                let valid = !slug.is_empty()
+                    && slug
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+                if !valid {
+                    eprintln!(
+                        "error: invalid slug `{}`. Slugs must match `[a-z0-9-]+` (kebab-case).",
+                        slug
+                    );
+                    std::process::exit(1);
+                }
+
+                let date = today_iso();
+                let dir = wiki::default_wiki_dir(&root).join("decisions");
+                let filename = format!("{}-{}.md", date, slug);
+                let dest = dir.join(&filename);
+                if dest.exists() {
+                    eprintln!(
+                        "error: {} already exists; refusing to overwrite.",
+                        dest.display()
+                    );
+                    std::process::exit(1);
+                }
+                std::fs::create_dir_all(&dir)
+                    .map_err(|e| anyhow::anyhow!("create {}: {}", dir.display(), e))?;
+
+                let template = format!(
+                    "---\n\
+                     id: {slug}\n\
+                     date: {date}\n\
+                     status: proposed\n\
+                     enforces: []\n\
+                     superseded_by: null\n\
+                     tags: []\n\
+                     ---\n\
+                     \n\
+                     # {slug}\n\
+                     \n\
+                     ## Context\n\
+                     \n\
+                     What problem are we solving / what observations led here?\n\
+                     \n\
+                     ## Decision\n\
+                     \n\
+                     What we decided.\n\
+                     \n\
+                     ## Enforcement\n\
+                     \n\
+                     - (none yet — add `enforces:` rule ids in frontmatter when a rule lands)\n\
+                     \n\
+                     ## Consequences\n\
+                     \n\
+                     What follows from this.\n",
+                    slug = slug,
+                    date = date,
+                );
+                std::fs::write(&dest, template)
+                    .map_err(|e| anyhow::anyhow!("write {}: {}", dest.display(), e))?;
+                println!("created {}", dest.display());
+                Ok(())
+            }
+        },
         Command::Init {
             path,
             packs,

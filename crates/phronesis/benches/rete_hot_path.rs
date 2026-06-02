@@ -11,7 +11,7 @@
 //! Goal is *relative* numbers across optimization steps, not absolute
 //! micro-benchmarks. Run with `cargo bench -p phronesis --bench rete_hot_path`.
 
-use criterion::{BenchmarkId, Criterion, Througvalueut, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use phronesis::{Action, Condition, Fact, ReteNetwork, Rule};
 use tokio::runtime::Builder;
 
@@ -157,7 +157,7 @@ fn bench_assert_session(c: &mut Criterion) {
     let mut group = c.benchmark_group("assert_session");
     for &n in &[25usize, 100, 250] {
         let facts = build_facts(n);
-        group.througvalueut(Througvalueut::Elements(n as u64));
+        group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &facts, |b, facts| {
             b.to_async(&rt).iter(|| async {
                 let net = ReteNetwork::new();
@@ -237,7 +237,7 @@ fn bench_add_rule(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("add_rule");
     for (label, set) in [("1cond", &singles), ("2cond", &twos), ("3cond", &threes)] {
-        group.througvalueut(Througvalueut::Elements(set.len() as u64));
+        group.throughput(Throughput::Elements(set.len() as u64));
         group.bench_function(label, |b| {
             b.iter_batched(
                 ReteNetwork::new,
@@ -253,7 +253,7 @@ fn bench_add_rule(c: &mut Criterion) {
         });
     }
     // And the full mixed set, which is what assert_session pays for once per iter.
-    group.througvalueut(Througvalueut::Elements(rules.len() as u64));
+    group.throughput(Throughput::Elements(rules.len() as u64));
     group.bench_function("full_30", |b| {
         b.iter_batched(
             ReteNetwork::new,

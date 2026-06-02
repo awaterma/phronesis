@@ -13,7 +13,9 @@
 .mcp.json
 
 # Local rules cache produced when running phr-mcp here
-.phronesis/
+.phronesis/*
 .phronesis/log.jsonl
 .phronesis/log.jsonl.1
 .phronesis/rules.json.bak
+!.phronesis/wiki/
+!.phronesis/wiki/**

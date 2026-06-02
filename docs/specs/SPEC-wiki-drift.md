@@ -83,21 +83,24 @@ Date-prefix sort gives chronological order on filesystem listing.
 
 ### Gitignore
 
-`.phronesis/` is currently broad-gitignored (`.phronesis/` in
-`.gitignore`). Decisions are project knowledge that *must* be
-versioned — they're the source of truth that other contributors and
-later sessions reference. `phr-mcp init` extends the project's
-`.gitignore` (idempotently) with an un-ignore rule:
+`.phronesis/` is project state that, with one exception, should not
+be tracked. Decisions are that exception — project knowledge that
+*must* be versioned so other contributors and later sessions can
+reference them. `phr-mcp init` extends the project's `.gitignore`
+(idempotently) with:
 
 ```
-.phronesis/
+.phronesis/*
 !.phronesis/wiki/
 !.phronesis/wiki/**
 ```
 
-This carves out the wiki tree as the one exception to the broad
-`.phronesis/` ignore. Existing entries (`log.jsonl`, `rules.json.bak`,
-etc.) keep ignoring correctly.
+Note the trailing `*` on the broad-ignore line. Plain `.phronesis/`
+(no `*`) tells git not to descend into the directory at all, which
+makes the `!.phronesis/wiki/` un-ignore inert (verified empirically).
+`.phronesis/*` ignores the contents while letting the un-ignore
+carve `wiki/` back in. Existing specific entries (`log.jsonl`,
+`rules.json.bak`, etc.) remain as belt-and-braces redundancy.
 
 ### Decision page schema
 

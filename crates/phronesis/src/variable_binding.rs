@@ -31,13 +31,13 @@ impl Bindings {
         }
 
         // Check if the variable already has a different binding
-        if let Some(existing) = self.bindings.get(var) {
-            if existing != value {
-                return Err(format!(
-                    "Variable '{}' already bound to '{}' but trying to bind to '{}'",
-                    var, existing, value
-                ));
-            }
+        if let Some(existing) = self.bindings.get(var)
+            && existing != value
+        {
+            return Err(format!(
+                "Variable '{}' already bound to '{}' but trying to bind to '{}'",
+                var, existing, value
+            ));
         }
 
         self.bindings.insert(var.to_string(), value.to_string());
