@@ -1,11 +1,16 @@
 [package]
 name = "phronesis"
-version = "0.1.0"
+version = "0.9.0"
 edition = "2024"
 rust-version = "1.90"
-description = "Practical-rank surface for rules-bounded LLM interaction."
+description = "A RETE rules engine for durable, context-window-independent enforcement of project conventions in LLM-assisted work."
 license = "MIT"
 authors = ["Andrew Waterman"]
+repository = "https://github.com/awaterma/phronesis"
+homepage = "https://github.com/awaterma/phronesis"
+readme = "../../README.md"
+keywords = ["rules-engine", "rete", "mcp", "llm", "code-quality"]
+categories = ["development-tools", "config"]
 
 # This crate is intentionally minimal. It must not depend on any
 # domain-specific code — its job is to host the abstraction (Consequence,

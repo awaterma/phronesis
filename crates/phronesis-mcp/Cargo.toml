@@ -3,9 +3,14 @@ name = "phronesis-mcp"
 version = "0.9.0"
 edition = "2024"
 rust-version = "1.90"
-description = "MCP server wrapping the phronesis RETE rules engine for rules-bounded LLM interaction"
+description = "MCP server and CLI (phr-mcp) wrapping the phronesis RETE rules engine for durable enforcement of project conventions in LLM-assisted work."
 license = "MIT"
 authors = ["Andrew Waterman"]
+repository = "https://github.com/awaterma/phronesis"
+homepage = "https://github.com/awaterma/phronesis"
+readme = "../../README.md"
+keywords = ["mcp", "rules-engine", "llm", "code-quality", "rete"]
+categories = ["development-tools", "command-line-utilities"]
 
 [lib]
 name = "phronesis_mcp"
@@ -16,7 +21,7 @@ name = "phr-mcp"
 path = "src/main.rs"
 
 [dependencies]
-phr = { path = "../phronesis", package = "phronesis", features = ["schemars"] }
+phr = { version = "0.9.0", path = "../phronesis", package = "phronesis", features = ["schemars"] }
 rmcp = { version = "0.17", features = ["server", "macros", "transport-io", "schemars"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
