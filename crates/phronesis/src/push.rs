@@ -7,7 +7,7 @@
 //!
 //! # The gap this closes
 //!
-//! [`ReteNetwork::execute_all_agenda_items`] returns a `Vec<Action>` —
+//! [`ReteNetwork::execute_all_agenda_items`](crate::network::ReteNetwork::execute_all_agenda_items) returns a `Vec<Action>` —
 //! the instructions produced by the rule firings. Actions are what
 //! the host *does*. [`Consequence`]s are what the host *says* about
 //! what just happened. Both typically move together after a rule

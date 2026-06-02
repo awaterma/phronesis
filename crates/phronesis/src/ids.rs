@@ -9,7 +9,7 @@
 //!
 //! Construction is deliberately ergonomic. `From<String>` and
 //! `From<&str>` accept the common cases at call sites, and the inherent
-//! [`Self::new`] constructor accepts anything `Into<String>`. The point
+//! `new()` constructor accepts anything `Into<String>`. The point
 //! of the newtypes is to catch mixups between *kinds* of IDs — not to
 //! make routine construction painful.
 //!
