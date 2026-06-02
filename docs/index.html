@@ -3,10 +3,11 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Phronesis · Documentation</title>
+<title>Phronesis — Durable Rules for LLM-Assisted Work</title>
+<meta name="description" content="A RETE rules engine that enforces project conventions from disk, outside the LLM context window. Rules fire the same in token 900k as in token 800.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..700&family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,400..600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,30..100;1,9..144,300..700,30..100&family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,400..600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
 <style>
   :root {
     --paper:        #F2EDDD;
@@ -16,72 +17,544 @@
     --mute:         #6E5F4A;
     --rule:         #C8BC9F;
     --accent:       #B23A1B;
-    --measure: 56ch;
+    --accent-deep:  #7E2710;
+    --slate:        #324B4D;
+    --highlight:    #E8D785;
+    --measure: 70ch;
+    --pad-x: clamp(1.25rem, 5vw, 4rem);
   }
-  html, body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
   body {
-    font-family: 'Newsreader', Georgia, serif;
-    font-size: 1.125rem;
-    line-height: 1.55;
-    min-height: 100vh;
-    display: grid;
-    place-items: center;
-    padding: 4rem 1.5rem;
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Newsreader", Georgia, serif;
+    font-size: 18px;
+    line-height: 1.65;
+    font-feature-settings: "kern", "liga", "onum";
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
   }
-  main { max-width: var(--measure); }
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    opacity: 0.045;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+  }
+  h1, h2, h3 {
+    font-family: "Fraunces", "Times New Roman", serif;
+    color: var(--ink);
+    margin: 0;
+    font-feature-settings: "ss01", "ss02", "lnum";
+  }
   h1 {
-    font-family: 'Fraunces', Georgia, serif;
-    font-weight: 600;
-    font-size: clamp(2rem, 5vw, 3rem);
-    margin: 0 0 0.25em;
-    letter-spacing: -0.02em;
+    font-variation-settings: "opsz" 144, "SOFT" 30;
+    font-weight: 350;
+    font-size: clamp(3rem, 9vw, 7rem);
+    letter-spacing: -0.025em;
+    line-height: 0.92;
   }
-  .sub {
+  h1 .it {
     font-style: italic;
-    color: var(--ink-soft);
-    margin: 0 0 2.5rem;
-  }
-  ul.docs { list-style: none; padding: 0; margin: 0; }
-  ul.docs li { padding: 1.25rem 0; border-bottom: 1px solid var(--rule); }
-  ul.docs li:last-child { border-bottom: 0; }
-  ul.docs a {
-    font-family: 'Fraunces', Georgia, serif;
-    font-weight: 500;
-    font-size: 1.4rem;
+    font-variation-settings: "opsz" 144, "SOFT" 80, "wght" 350;
     color: var(--accent);
-    text-decoration: none;
+  }
+  h2 {
+    font-variation-settings: "opsz" 36, "SOFT" 50;
+    font-size: 1.45rem;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
+  }
+  p { margin: 0 0 1.1em; }
+  a { color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor; }
+  a:hover { color: var(--accent-deep); }
+  ::selection { background: var(--highlight); color: var(--ink); }
+
+  code, .mono {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.86em;
+  }
+  p code {
+    background: var(--paper-deep);
+    padding: 0.05em 0.35em;
+    border-radius: 1px;
+    color: var(--ink-soft);
+    font-size: 0.84em;
+  }
+  pre {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 0.82rem;
+    background: var(--paper-deep);
+    border-left: 3px solid var(--accent);
+    padding: 1.1em 1.4em;
+    overflow-x: auto;
+    margin: 1.4em 0;
+    line-height: 1.55;
+    color: var(--ink-soft);
+  }
+  pre .k { color: var(--accent-deep); font-weight: 700; }
+  pre .c { color: var(--mute); font-style: italic; }
+  pre .s { color: var(--slate); }
+
+  .label {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12, "SOFT" 100;
+    font-weight: 600;
+    font-size: 0.72rem;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+
+  .page {
+    max-width: 78rem;
+    margin: 0 auto;
+    padding: 0 var(--pad-x);
+  }
+
+  /* ─── Hero ─── */
+  .hero {
+    padding: 5rem 0 4rem;
+    border-bottom: 1px solid var(--ink);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 3rem;
+  }
+  .hero .meta {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 600;
+    font-size: 0.7rem;
+    letter-spacing: 0.34em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+  .hero .meta .bar { width: 3rem; height: 1px; background: var(--accent); }
+  .hero .subtitle {
+    font-family: "Newsreader", serif;
+    font-style: italic;
+    font-weight: 400;
+    font-size: clamp(1.1rem, 1.6vw, 1.4rem);
+    color: var(--ink-soft);
+    max-width: 42ch;
+    margin-top: 2rem;
+    line-height: 1.45;
+  }
+  .seal {
+    width: 160px; height: 160px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .seal svg { width: 100%; height: 100%; }
+  @media (max-width: 720px) {
+    .hero { grid-template-columns: 1fr; }
+    .seal { width: 120px; height: 120px; justify-self: end; }
+  }
+
+  /* ─── Pull quote ─── */
+  blockquote.pull {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 60, "SOFT" 50, "wght" 350;
+    font-style: italic;
+    font-size: clamp(1.4rem, 2.6vw, 2rem);
+    line-height: 1.25;
+    color: var(--ink);
+    margin: 3rem 0;
+    padding: 0;
+    border: none;
+    text-align: center;
+    max-width: 36ch;
+    margin-left: auto;
+    margin-right: auto;
+  }
+  blockquote.pull::before, blockquote.pull::after {
+    content: "";
+    display: block;
+    width: 4rem;
+    height: 1px;
+    background: var(--accent);
+    margin: 1.5rem auto;
+  }
+  blockquote.pull .it { color: var(--accent); }
+
+  /* ─── Surfaces grid ─── */
+  .surfaces {
+    padding: 3.5rem 0;
+    border-bottom: 1px solid var(--rule);
+  }
+  .surfaces-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 2rem;
+    margin-top: 2rem;
+  }
+  @media (max-width: 880px) { .surfaces-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 520px) { .surfaces-grid { grid-template-columns: 1fr; } }
+  .surface {
+    border-top: 2px solid var(--ink);
+    padding-top: 1.2rem;
+  }
+  .surface h2 { margin-bottom: 0.3rem; }
+  .surface .role {
+    font-family: "Fraunces", serif;
+    font-style: italic;
+    color: var(--accent);
+    font-size: 0.88rem;
+    margin-bottom: 0.8rem;
+    display: block;
+  }
+  .surface p {
+    font-size: 0.92rem;
+    color: var(--ink-soft);
+    margin-bottom: 0;
+  }
+
+  /* ─── Quick start ─── */
+  .quickstart {
+    padding: 3.5rem 0;
+    border-bottom: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+    gap: 3rem;
+    align-items: start;
+  }
+  @media (max-width: 780px) { .quickstart { grid-template-columns: 1fr; } }
+  .quickstart .prose { max-width: var(--measure); }
+  .quickstart .prose h2 {
+    font-variation-settings: "opsz" 96, "SOFT" 40;
+    font-size: clamp(1.8rem, 4vw, 2.8rem);
+    font-weight: 400;
+    letter-spacing: -0.018em;
+    line-height: 1.0;
+    margin-bottom: 1.2rem;
+  }
+  .quickstart .prose h2 .it {
+    font-style: italic;
+    font-variation-settings: "opsz" 96, "SOFT" 80;
+    color: var(--accent-deep);
+  }
+
+  /* ─── Docs links ─── */
+  .docs-section {
+    padding: 3.5rem 0;
+    border-bottom: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3rem;
+  }
+  @media (max-width: 720px) { .docs-section { grid-template-columns: 1fr; } }
+  .doc-card {
+    border-top: 2px solid var(--ink);
+    padding-top: 1.5rem;
+  }
+  .doc-card h2 { margin-bottom: 0.5rem; }
+  .doc-card h2 a {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 36, "SOFT" 40;
+    font-weight: 500;
+    font-size: 1.6rem;
+    color: var(--accent);
     border-bottom: 1px solid currentColor;
   }
-  ul.docs p { margin: 0.4em 0 0; color: var(--mute); font-size: 1rem; }
-  footer {
-    margin-top: 3rem;
-    color: var(--mute);
+  .doc-card h2 a:hover { color: var(--accent-deep); }
+  .doc-card p {
     font-size: 0.95rem;
+    color: var(--ink-soft);
+    margin: 0.5rem 0 0;
+    max-width: 40ch;
+  }
+
+  /* ─── Stats strip ─── */
+  .stats {
+    padding: 2rem 0;
+    border-bottom: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 1rem 3rem;
+  }
+  .stat {
+    text-align: center;
+    min-width: 8rem;
+  }
+  .stat .num {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 96, "SOFT" 30;
+    font-size: 2.4rem;
+    color: var(--accent);
+    line-height: 1;
+    display: block;
+    letter-spacing: -0.02em;
+  }
+  .stat .desc {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 12;
+    font-weight: 600;
+    font-size: 0.68rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--mute);
+    margin-top: 0.3rem;
+    display: block;
+  }
+
+  /* ─── Footer ─── */
+  footer {
+    padding: 3rem 0 4rem;
+    color: var(--mute);
+    font-size: 0.82rem;
+    border-top: 3px double var(--ink);
+    margin-top: 2rem;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 2rem;
+    align-items: end;
   }
   footer a { color: var(--accent); }
+  .folio {
+    font-family: "Fraunces", serif;
+    font-variation-settings: "opsz" 96;
+    font-size: 3rem;
+    color: var(--accent);
+    line-height: 1;
+    text-align: right;
+  }
+  .folio small {
+    font-size: 0.28em;
+    letter-spacing: 0.3em;
+    color: var(--mute);
+    display: block;
+  }
+
+  /* ─── Reveal ─── */
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: none; }
+  }
+  .hero .meta, .hero h1, .hero .subtitle, .hero .seal {
+    animation: rise 1.1s cubic-bezier(.2,.7,.2,1) backwards;
+  }
+  .hero .meta     { animation-delay: 0.05s; }
+  .hero h1        { animation-delay: 0.18s; animation-duration: 1.4s; }
+  .hero .subtitle { animation-delay: 0.55s; }
+  .hero .seal     { animation-delay: 0.4s; animation-duration: 1.3s; }
 </style>
 </head>
 <body>
-  <main>
-    <h1>Phronesis</h1>
-    <p class="sub">Practical wisdom for LLM-assisted work — durable rules, evaluated outside the context window.</p>
 
-    <ul class="docs">
-      <li>
-        <a href="./explainer.html">The Explainer →</a>
-        <p>A long-form essay on the engine, the RETE algorithm, and the design intent behind moving guidance out of conversation context.</p>
-      </li>
-      <li>
-        <a href="./catalogue.html">The Catalogue →</a>
-        <p>A visual reference of the starter rule packs — Rust enforcement, LLM-behavior nudges, Rhai script hygiene — with rationale and worked examples.</p>
-      </li>
-    </ul>
+<div class="page">
 
-    <footer>
-      By <strong>Phronesis &amp; the rules</strong> — Claude with
-      <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>.<br>
-      Source: <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
-    </footer>
-  </main>
+  <!-- ─── HERO ─── -->
+  <section class="hero">
+    <div>
+      <div class="meta">
+        <span class="bar"></span>
+        <span>A Rules Engine for LLM-Assisted Work</span>
+        <span class="bar"></span>
+      </div>
+      <h1>
+        Phronesis <span class="it">&amp;</span><br>
+        the rules<br>
+        that <span class="it">do not</span> fade.
+      </h1>
+      <p class="subtitle">
+        A RETE rules engine that enforces project conventions from
+        disk — outside the LLM context window. Rules fire the same
+        in token nine hundred thousand as they do in token eight
+        hundred.
+      </p>
+    </div>
+
+    <div class="seal" aria-hidden="true">
+      <svg viewBox="-100 -100 200 200">
+        <defs>
+          <path id="circle-text" d="M 0,0 m -76,0 a 76,76 0 1,1 152,0 a 76,76 0 1,1 -152,0"/>
+        </defs>
+        <circle r="90" fill="none" stroke="#B23A1B" stroke-width="1.2"/>
+        <circle r="82" fill="none" stroke="#B23A1B" stroke-width="0.6"/>
+        <circle r="62" fill="none" stroke="#1A1510" stroke-width="1"/>
+        <text font-family="Fraunces, serif" font-size="9" font-weight="600"
+              letter-spacing="3" fill="#B23A1B">
+          <textPath xlink:href="#circle-text" startOffset="0">
+            PHRONESIS · RULES ENGINE · v 0.9 · MCP HOSTED · A DURABLE INSTRUMENT ·
+          </textPath>
+        </text>
+        <g stroke="#1A1510" stroke-width="1" fill="#F2EDDD">
+          <line x1="-30" y1="-20" x2="0" y2="0"/>
+          <line x1="30" y1="-20" x2="0" y2="0"/>
+          <line x1="-15" y1="25" x2="0" y2="0"/>
+          <line x1="15" y1="25" x2="0" y2="0"/>
+          <circle cx="-30" cy="-20" r="5"/>
+          <circle cx="30" cy="-20" r="5"/>
+          <circle cx="-15" cy="25" r="5"/>
+          <circle cx="15" cy="25" r="5"/>
+          <circle cx="0" cy="0" r="7" fill="#B23A1B" stroke="#7E2710"/>
+        </g>
+        <text x="0" y="48" text-anchor="middle"
+              font-family="Fraunces, serif" font-size="7" font-weight="700"
+              letter-spacing="2.5" fill="#1A1510">
+          ⌘ — INST. — ⌘
+        </text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ─── STATS ─── -->
+  <div class="stats">
+    <div class="stat">
+      <span class="num">34</span>
+      <span class="desc">Rules shipped</span>
+    </div>
+    <div class="stat">
+      <span class="num">6</span>
+      <span class="desc">Default packs</span>
+    </div>
+    <div class="stat">
+      <span class="num">4</span>
+      <span class="desc">Enforcement surfaces</span>
+    </div>
+    <div class="stat">
+      <span class="num">3</span>
+      <span class="desc">Drift detectors</span>
+    </div>
+    <div class="stat">
+      <span class="num">0</span>
+      <span class="desc">Context tokens consumed</span>
+    </div>
+  </div>
+
+  <!-- ─── PULL QUOTE ─── -->
+  <blockquote class="pull">
+    A rule is a small <span class="it">refusal</span> the project keeps
+    making, even after it has forgotten the conversation in which it
+    was first imagined.
+  </blockquote>
+
+  <!-- ─── FOUR SURFACES ─── -->
+  <section class="surfaces">
+    <div class="label" style="margin-bottom: 0.6rem;">Four surfaces — one rule format</div>
+    <div class="surfaces-grid">
+      <article class="surface">
+        <h2>Hook-time</h2>
+        <span class="role">block · warn · allow</span>
+        <p>
+          Pre-check rules fire before an Edit, Write, or Bash call.
+          Post-check rules warn after. Evaluated from disk on every
+          tool invocation — no context-window cost.
+        </p>
+      </article>
+      <article class="surface">
+        <h2>Audit</h2>
+        <span class="role">debt · sweep · trend</span>
+        <p>
+          Whole-tree scan against every rule tagged
+          <code>audit: true</code>. Per-rule hit counts with file
+          and line locations. Trend snapshots track debt over time.
+        </p>
+      </article>
+      <article class="surface">
+        <h2>Durable directives</h2>
+        <span class="role">prose · re-inject</span>
+        <p>
+          A markdown file re-injected at every SessionStart and
+          UserPromptSubmit. CLAUDE.md fades; this does not.
+        </p>
+      </article>
+      <article class="surface">
+        <h2>Drift detection</h2>
+        <span class="role">gap · triage · suggest</span>
+        <p>
+          Three heuristic tools compare what the project says
+          (CLAUDE.md, auto-memory, ADR decisions) against what
+          the rules actually enforce. No LLM call — Jaccard overlap.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <!-- ─── QUICK START ─── -->
+  <section class="quickstart">
+    <div class="prose">
+      <h2>Get started — <span class="it">one binary, one rules file.</span></h2>
+      <p>
+        Install from source, run <code>init</code> in your project,
+        and the hooks are wired. Rules fire from disk on every tool
+        call — no daemon, no socket, no shared state. Every invocation
+        is a fresh process that reads, evaluates, and exits.
+      </p>
+      <p>
+        Works with <strong>Claude Code</strong> and <strong>Gemini
+        CLI</strong>. Exposes MCP tools to any MCP-capable client.
+      </p>
+    </div>
+    <div>
+<pre><span class="c"># install</span>
+<span class="k">cargo</span> install --path .
+<span class="k">phr-mcp</span> install                <span class="c"># user-scope MCP</span>
+
+<span class="c"># wire into a project</span>
+<span class="k">cd</span> ~/Git/my-project
+<span class="k">phr-mcp</span> init --packs llm,rust   <span class="c"># hooks + starter rules</span>
+
+<span class="c"># use</span>
+<span class="k">phr-mcp</span> audit                    <span class="c"># sweep existing debt</span>
+<span class="k">phr-mcp</span> trend                    <span class="c"># debt over time</span>
+<span class="k">phr-mcp</span> claude-md-drift          <span class="c"># uncovered CLAUDE.md bullets</span>
+<span class="k">phr-mcp</span> memory-drift             <span class="c"># uncovered auto-memory entries</span>
+<span class="k">phr-mcp</span> wiki-drift               <span class="c"># uncovered ADR decisions</span>
+<span class="k">phr-mcp</span> decision new my-slug     <span class="c"># scaffold an ADR page</span></pre>
+    </div>
+  </section>
+
+  <!-- ─── DOCS ─── -->
+  <section class="docs-section">
+    <article class="doc-card">
+      <h2><a href="./explainer.html">The Explainer &rarr;</a></h2>
+      <p>
+        A long-form essay on the engine, the RETE algorithm, and the
+        design intent behind moving guidance out of conversation
+        context. With diagrams.
+      </p>
+    </article>
+    <article class="doc-card">
+      <h2><a href="./catalogue.html">The Catalogue &rarr;</a></h2>
+      <p>
+        A visual reference of every default rule — LLM-behavior
+        nudges, Rust enforcement, Rhai script hygiene — with
+        rationale and worked examples from the field.
+      </p>
+    </article>
+  </section>
+
+  <!-- ─── FOOTER ─── -->
+  <footer>
+    <div>
+      <div class="label" style="margin-bottom: 0.4rem;">Colophon</div>
+      Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
+      <em>JetBrains Mono</em> for code.<br>
+      By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
+      with Claude.<br>
+      v 0.9.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
+      <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
+    </div>
+    <div class="folio">
+      ⁂
+      <small>Phronesis · v 0.9.0</small>
+    </div>
+  </footer>
+
+</div>
+
 </body>
 </html>
