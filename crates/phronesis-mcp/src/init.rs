@@ -1494,9 +1494,78 @@ fn swift_rules() -> Value {
                 "phase": "pre",
                 "priority": 5,
                 "when": [
-                    {"new_content_contains": "try!"}
+                    {"new_content_contains": "try!"},
+                    {"file_extension_is": "swift"}
                 ],
                 "then": {"warn": "try! crashes on error — prefer try with do/catch, or try? when an Optional result is acceptable."}
+            },
+            {
+                "id": "warn-swift-force-cast",
+                "phase": "pre",
+                "priority": 10,
+                "when": [
+                    {"new_content_contains": "as!"},
+                    {"file_extension_is": "swift"}
+                ],
+                "then": {"warn": "Force-cast `as!` crashes on type mismatch — prefer `as?` with `if let`/`guard let`. Completes the force-bang trio with `!` and `try!`."}
+            },
+            {
+                "id": "audit-swift-fatal-error",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"new_content_contains": "fatalError("},
+                    {"file_extension_is": "swift"}
+                ],
+                "then": {"warn": "`fatalError(` aborts the process — for recoverable conditions prefer a `throws` API and let the caller decide. Reserve `fatalError` for genuinely unreachable invariants (and prefer `precondition`/`assertionFailure` when the intent is a debug-only trap)."}
+            },
+            {
+                "id": "audit-swift-mutable-singleton",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"new_content_contains": "static var shared"},
+                    {"file_extension_is": "swift"}
+                ],
+                "then": {"warn": "`static var shared` is a mutable global — the Singleton pattern (eleev/swift-design-patterns §Creational/Singleton) uses `static let shared` so the instance can't be swapped at runtime. If mutability is intentional, add a comment or move state inside the instance."}
+            },
+            {
+                "id": "audit-swift-legacy-constructor",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"or": [
+                        {"new_content_contains": "CGRectMake("},
+                        {"new_content_contains": "CGSizeMake("},
+                        {"new_content_contains": "CGPointMake("},
+                        {"new_content_contains": "CGVectorMake("},
+                        {"new_content_contains": "UIEdgeInsetsMake("},
+                        {"new_content_contains": "NSMakeRect("},
+                        {"new_content_contains": "NSMakeSize("},
+                        {"new_content_contains": "NSMakePoint("},
+                        {"new_content_contains": "NSMakeRange("}
+                    ]},
+                    {"file_extension_is": "swift"}
+                ],
+                "then": {"warn": "Legacy C-style constructor — prefer the modern Swift initializer (e.g. `CGRect(x:y:width:height:)`, `UIEdgeInsets(top:left:bottom:right:)`). Mirrors SwiftLint's `legacy_constructor` rule."}
+            },
+            {
+                "id": "audit-swift-legacy-random",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"or": [
+                        {"new_content_contains": "arc4random("},
+                        {"new_content_contains": "arc4random_uniform("},
+                        {"new_content_contains": "drand48("}
+                    ]},
+                    {"file_extension_is": "swift"}
+                ],
+                "then": {"warn": "Legacy random API — Swift 4.2+ ships `Int.random(in:)`, `Double.random(in:)`, and `Collection.randomElement()`, which work on all platforms (not just Darwin) and are uniformly distributed without modulo bias. Mirrors SwiftLint's `legacy_random` rule."}
             }
         ]
     })
@@ -1587,6 +1656,12 @@ mod tests {
         assert!(!arr.is_empty(), "swift pack should ship at least one rule");
         let ids: Vec<&str> = arr.iter().map(|r| r["id"].as_str().unwrap()).collect();
         assert!(ids.contains(&"warn-swift-force-unwrap"));
+        assert!(ids.contains(&"warn-swift-try-bang"));
+        assert!(ids.contains(&"warn-swift-force-cast"));
+        assert!(ids.contains(&"audit-swift-fatal-error"));
+        assert!(ids.contains(&"audit-swift-mutable-singleton"));
+        assert!(ids.contains(&"audit-swift-legacy-constructor"));
+        assert!(ids.contains(&"audit-swift-legacy-random"));
     }
 
     #[test]

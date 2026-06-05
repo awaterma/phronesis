@@ -1,6 +1,6 @@
 [package]
 name = "phronesis-mcp"
-version = "0.9.0"
+version = "0.9.1"
 edition = "2024"
 rust-version = "1.90"
 description = "MCP server and CLI (phr-mcp) wrapping the phronesis RETE rules engine for durable enforcement of project conventions in LLM-assisted work."
