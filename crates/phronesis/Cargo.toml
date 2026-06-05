@@ -1,6 +1,6 @@
 [package]
 name = "phronesis"
-version = "0.9.1"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.90"
 description = "A RETE rules engine for durable, context-window-independent enforcement of project conventions in LLM-assisted work."
