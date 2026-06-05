@@ -60,6 +60,11 @@ pub struct SyntaxFacts {
     /// DO recurse because they're continuations of the outer flow.
     /// Args: (fn_name, count). Threshold fixed at 8.
     pub function_let_binding_counts_high: Vec<(String, usize)>,
+    /// Functions with 3 or more *outer-scope* `let mut` declarations.
+    /// Same scope semantics as `function_let_binding_counts_high`
+    /// (halt at child blocks/closures, recurse into if/match/for/while).
+    /// Args: (fn_name, count). Threshold fixed at 3.
+    pub function_let_mut_counts_high: Vec<(String, usize)>,
 
     // ─── Swift ──────────────────────────────────────────────────────
     /// (fn_name, count) — number of force-unwrap (`!`) postfix expressions.

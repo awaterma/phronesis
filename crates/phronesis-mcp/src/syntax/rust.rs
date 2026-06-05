@@ -68,6 +68,7 @@ pub fn extract(content: &str) -> SyntaxFacts {
         function_clone_counts: extract_function_clone_counts(&parsed),
         function_clone_counts_high: extract_function_clone_counts_high(&parsed),
         function_let_binding_counts_high: extract_function_let_binding_counts_high(&parsed),
+        function_let_mut_counts_high: extract_function_let_mut_counts_high(&parsed),
         pub_fns_without_doc_comment: extract_pub_fns_without_doc_comment(&parsed),
         tests_without_assertion: extract_tests_without_assertion(&parsed),
         struct_derives: extract_struct_derives(&parsed),
@@ -366,6 +367,48 @@ pub(crate) fn extract_function_let_binding_counts_high(
             &mut count,
         );
         if count >= LET_BINDING_THRESHOLD {
+            out.push((name.to_string(), count));
+        }
+    });
+    out
+}
+
+/// True when a `let_declaration` node has a `mutable_specifier` child
+/// (i.e., the `mut` keyword is present). Tree-sitter-rust grammar
+/// represents `mut` as a sibling-of-pattern child, not a field.
+fn has_mut_keyword(node: tree_sitter::Node, _source: &[u8]) -> bool {
+    let mut walker = node.walk();
+    for child in node.children(&mut walker) {
+        if child.kind() == "mutable_specifier" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Functions with 3 or more outer-scope `let mut` declarations.
+/// See `count_outer_scope_let_declarations` for scoping semantics.
+pub(crate) fn extract_function_let_mut_counts_high(
+    parsed: &ParsedFile,
+) -> Vec<(String, usize)> {
+    const LET_MUT_THRESHOLD: usize = 3;
+    let ParsedFile::Rust { tree, source } = parsed else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut walker = tree.walk();
+    walk_function_items(&mut walker, source.as_bytes(), &mut |fn_node, name| {
+        let Some(body) = fn_node.child_by_field_name("body") else {
+            return;
+        };
+        let mut count = 0usize;
+        count_outer_scope_let_declarations(
+            body,
+            source.as_bytes(),
+            &has_mut_keyword,
+            &mut count,
+        );
+        if count >= LET_MUT_THRESHOLD {
             out.push((name.to_string(), count));
         }
     });
@@ -1515,6 +1558,56 @@ fn host() {
             facts.function_let_binding_counts_high,
             vec![("flow".to_string(), 8)]
         );
+    }
+
+    #[test]
+    fn let_mut_count_high_fires_at_three() {
+        let code = "fn mutable_heavy() {
+            let mut a = vec![];
+            let mut b = String::new();
+            let mut c = 0;
+            a.push(1); b.push_str(\"x\"); c += 1;
+        }";
+        let facts = extract(code);
+        assert_eq!(
+            facts.function_let_mut_counts_high,
+            vec![("mutable_heavy".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn let_mut_count_high_silent_on_mut_inside_block() {
+        // The `let mut`s are scoped inside a block expression — the
+        // outer function should see them as already-scoped and the rule
+        // must NOT fire.
+        let code = "fn frozen_after() {
+            let result = {
+                let mut a = vec![];
+                let mut b = String::new();
+                let mut c = 0;
+                a.push(1); b.push_str(\"x\"); c += 1;
+                (a, b, c)
+            };
+            use_result(&result);
+        }";
+        let facts = extract(code);
+        assert!(
+            facts.function_let_mut_counts_high.is_empty(),
+            "mut-in-block-adopter must not fire; got {:?}",
+            facts.function_let_mut_counts_high
+        );
+    }
+
+    #[test]
+    fn let_mut_count_high_below_threshold_silent() {
+        // Two `let mut`s — below the threshold of 3.
+        let code = "fn two_muts() {
+            let mut a = vec![];
+            let mut b = String::new();
+            a.push(1); b.push_str(\"x\");
+        }";
+        let facts = extract(code);
+        assert!(facts.function_let_mut_counts_high.is_empty());
     }
 
     #[test]
