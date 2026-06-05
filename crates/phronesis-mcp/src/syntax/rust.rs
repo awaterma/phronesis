@@ -376,6 +376,9 @@ pub(crate) fn extract_function_let_binding_counts_high(
 /// True when a `let_declaration` node has a `mutable_specifier` child
 /// (i.e., the `mut` keyword is present). Tree-sitter-rust grammar
 /// represents `mut` as a sibling-of-pattern child, not a field.
+///
+/// Pattern-internal `mut` (e.g., `let (mut a, mut b) = ...`) is intentionally
+/// not counted; this surfaces only canonical `let mut x` bindings.
 fn has_mut_keyword(node: tree_sitter::Node, _source: &[u8]) -> bool {
     let mut walker = node.walk();
     for child in node.children(&mut walker) {
