@@ -139,6 +139,24 @@ impl SyntaxFacts {
             });
         }
 
+        for (i, (fn_name, count)) in self.function_let_binding_counts_high.iter().enumerate() {
+            out.push(Fact {
+                id: format!("function_let_binding_count_high_{}_{}", fn_name, i),
+                predicate: "function_let_binding_count_high".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, count)) in self.function_let_mut_counts_high.iter().enumerate() {
+            out.push(Fact {
+                id: format!("function_let_mut_count_high_{}_{}", fn_name, i),
+                predicate: "function_let_mut_count_high".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+            });
+        }
+
         for (i, name) in self.pub_fns_without_doc_comment.iter().enumerate() {
             out.push(Fact {
                 id: format!("pub_fn_without_doc_comment_{}_{}", name, i),
@@ -225,5 +243,46 @@ impl SyntaxFacts {
         }
 
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_facts_emits_let_binding_count_high() {
+        let facts = SyntaxFacts {
+            function_let_binding_counts_high: vec![("foo".to_string(), 10)],
+            ..Default::default()
+        };
+        let out = facts.all_facts("/tmp/src.rs");
+        let hit = out
+            .iter()
+            .find(|f| f.predicate == "function_let_binding_count_high");
+        assert!(hit.is_some(), "no function_let_binding_count_high fact emitted");
+        let hit = hit.unwrap();
+        assert_eq!(
+            hit.args,
+            vec!["/tmp/src.rs".to_string(), "foo".to_string(), "10".to_string()]
+        );
+    }
+
+    #[test]
+    fn all_facts_emits_let_mut_count_high() {
+        let facts = SyntaxFacts {
+            function_let_mut_counts_high: vec![("bar".to_string(), 4)],
+            ..Default::default()
+        };
+        let out = facts.all_facts("/tmp/src.rs");
+        let hit = out
+            .iter()
+            .find(|f| f.predicate == "function_let_mut_count_high");
+        assert!(hit.is_some(), "no function_let_mut_count_high fact emitted");
+        let hit = hit.unwrap();
+        assert_eq!(
+            hit.args,
+            vec!["/tmp/src.rs".to_string(), "bar".to_string(), "4".to_string()]
+        );
     }
 }
