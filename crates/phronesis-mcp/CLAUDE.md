@@ -134,7 +134,12 @@ The packs are composable and **independent**:
   (fighting-the-borrow-checker shape), `" + &` string concatenation
   (prefer `format!`), `#[allow(dead_code)]` in src/, `env::set_var(`
   in src/ (unsound under concurrent reads — and unsafe in edition
-  2024). The rust-unofficial/patterns book is the upstream source for
+  2024), functions with 3+ outer-scope `let mut` declarations
+  (block-pattern candidate: erasure of mutability via
+  `let x = { let mut tmp = ...; tmp }`), functions with 8+
+  outer-scope `let` bindings (block-pattern candidate: scope
+  intermediate temporaries into a block). The rust-unofficial/patterns
+  book is the upstream source for
   the borrow-types, deny-warnings, and string-concat rules; the
   Rc/RefCell rule is a more general Rust-idiom observation.
 - `rhai` — discipline for projects that embed the Rhai scripting
