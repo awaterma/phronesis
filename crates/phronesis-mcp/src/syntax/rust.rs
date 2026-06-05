@@ -1512,4 +1512,27 @@ fn host() {
             vec![("flow".to_string(), 8)]
         );
     }
+
+    #[test]
+    fn let_binding_count_high_counts_inside_else_branch() {
+        // The else_clause allow-list entry in the walker is what makes
+        // this work — without it, lets inside `else { ... }` would be
+        // silently skipped because the `block` node's parent is
+        // `else_clause`, not `if_expression`.
+        // 5 outer + 1 in if + 2 in else = 8 → fires.
+        let code = "fn branch_flow(x: i32) {
+            let _a = 1; let _b = 2; let _c = 3; let _d = 4; let _e = 5;
+            if x > 0 {
+                let _f = 6;
+            } else {
+                let _g = 7;
+                let _h = 8;
+            }
+        }";
+        let facts = extract(code);
+        assert_eq!(
+            facts.function_let_binding_counts_high,
+            vec![("branch_flow".to_string(), 8)]
+        );
+    }
 }
