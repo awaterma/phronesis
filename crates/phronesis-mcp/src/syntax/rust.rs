@@ -281,11 +281,15 @@ fn count_clone_calls(state: tree_sitter::Node, source: &[u8], count: &mut usize)
 /// pattern this rule surfaces. Closures own their scope. Nested
 /// functions are walked separately by `walk_function_items`.
 ///
-/// Recursion still descends into `if_expression`, `match_expression`,
-/// `match_arm`, `for_expression`, `while_expression`, `loop_expression`,
-/// and `try_block` (and into the `block` children those constructs
-/// own) because their bodies are continuations of the outer function's
-/// control flow, not isolated scopes.
+/// Recursion still descends into `if_expression`, `else_clause`,
+/// `match_arm`, `match_block`, `for_expression`, `while_expression`,
+/// `loop_expression`, and `try_block` (and into the `block` children
+/// those constructs own) because their bodies are continuations of the
+/// outer function's control flow, not isolated scopes. See the
+/// `matches!` arm below for the canonical list.
+///
+/// Unsafe and async blocks also use `block` under the hood, so they
+/// halt with the same logic — exotic edge case worth knowing about.
 ///
 /// Grammar note (tree-sitter-rust 0.23): the kind is `block`, not
 /// `block_expression`. The function body itself is a `block`, so this
@@ -315,15 +319,15 @@ fn count_outer_scope_let_declarations<F>(
     for child in node.children(&mut walker) {
         // If the child is a `block`, decide whether to recurse based on
         // *our* kind. A `block` whose parent is a control-flow construct
-        // (if/match-arm/for/while/loop/try) is part of the outer flow.
-        // A `block` whose parent is anything else (let_declaration value,
-        // function arg, assignment RHS, …) is in expression position —
-        // the block-pattern shape — and we halt.
+        // (if/else/match-arm/match-block/for/while/loop/try) is part of
+        // the outer flow. A `block` whose parent is anything else
+        // (let_declaration value, function arg, assignment RHS, an
+        // `unsafe`/`async` block, …) is in expression position — the
+        // block-pattern shape — and we halt.
         if child.kind() == "block"
             && !matches!(
                 node.kind(),
-                "function_item"
-                    | "if_expression"
+                "if_expression"
                     | "else_clause"
                     | "match_arm"
                     | "match_block"
