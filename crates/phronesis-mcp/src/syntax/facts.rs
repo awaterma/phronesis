@@ -52,6 +52,19 @@ pub struct SyntaxFacts {
     /// Functions that call `engine.eval(...)` or `engine.eval::<T>(...)` with
     /// a string literal as the first argument. Args: (fn_name,).
     pub engine_eval_string_literals: Vec<String>,
+    /// Functions with 8 or more *outer-scope* `let` declarations.
+    /// Bindings inside child `block_expression` and `closure_expression`
+    /// nodes are NOT counted, so functions that already adopted the
+    /// block pattern (`let x = { let raw = ...; let parsed = ...; ... }`)
+    /// go silent. Conditional and loop bodies (if/match/for/while/loop)
+    /// DO recurse because they're continuations of the outer flow.
+    /// Args: (fn_name, count). Threshold fixed at 8.
+    pub function_let_binding_counts_high: Vec<(String, usize)>,
+    /// Functions with 3 or more *outer-scope* `let mut` declarations.
+    /// Same scope semantics as `function_let_binding_counts_high`
+    /// (halt at child blocks/closures, recurse into if/match/for/while).
+    /// Args: (fn_name, count). Threshold fixed at 3.
+    pub function_let_mut_counts_high: Vec<(String, usize)>,
 
     // ─── Swift ──────────────────────────────────────────────────────
     /// (fn_name, count) — number of force-unwrap (`!`) postfix expressions.
@@ -121,6 +134,24 @@ impl SyntaxFacts {
             out.push(Fact {
                 id: format!("function_clone_count_high_{}_{}", fn_name, i),
                 predicate: "function_clone_count_high".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, count)) in self.function_let_binding_counts_high.iter().enumerate() {
+            out.push(Fact {
+                id: format!("function_let_binding_count_high_{}_{}", fn_name, i),
+                predicate: "function_let_binding_count_high".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, count)) in self.function_let_mut_counts_high.iter().enumerate() {
+            out.push(Fact {
+                id: format!("function_let_mut_count_high_{}_{}", fn_name, i),
+                predicate: "function_let_mut_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
             });
@@ -212,5 +243,46 @@ impl SyntaxFacts {
         }
 
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_facts_emits_let_binding_count_high() {
+        let facts = SyntaxFacts {
+            function_let_binding_counts_high: vec![("foo".to_string(), 10)],
+            ..Default::default()
+        };
+        let out = facts.all_facts("/tmp/src.rs");
+        let hit = out
+            .iter()
+            .find(|f| f.predicate == "function_let_binding_count_high");
+        assert!(hit.is_some(), "no function_let_binding_count_high fact emitted");
+        let hit = hit.unwrap();
+        assert_eq!(
+            hit.args,
+            vec!["/tmp/src.rs".to_string(), "foo".to_string(), "10".to_string()]
+        );
+    }
+
+    #[test]
+    fn all_facts_emits_let_mut_count_high() {
+        let facts = SyntaxFacts {
+            function_let_mut_counts_high: vec![("bar".to_string(), 4)],
+            ..Default::default()
+        };
+        let out = facts.all_facts("/tmp/src.rs");
+        let hit = out
+            .iter()
+            .find(|f| f.predicate == "function_let_mut_count_high");
+        assert!(hit.is_some(), "no function_let_mut_count_high fact emitted");
+        let hit = hit.unwrap();
+        assert_eq!(
+            hit.args,
+            vec!["/tmp/src.rs".to_string(), "bar".to_string(), "4".to_string()]
+        );
     }
 }

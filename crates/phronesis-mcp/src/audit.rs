@@ -14,7 +14,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::rules_file::{DiskRule, RulesFile};
-use phr::RuleId;
+use crate::syntax;
+use phr::{Fact, RuleId};
 
 // ── Public types ────────────────────────────────────────────────────────────
 
@@ -77,9 +78,10 @@ pub struct FileAudit {
 /// Returns `true` if all gate predicates in `rule` pass for `path`, and every
 /// condition uses a predicate that audit can evaluate. Returns `false` if any
 /// gate predicate fails or if any condition uses an unsupported predicate
-/// (one that requires AST analysis or diff context). The `new_content_contains`
-/// predicate is handled separately in the scan loop; it's always considered
-/// "supported" here and skipped.
+/// (one that requires diff context, e.g. `function_added`). Content predicates
+/// (`new_content_contains`) and AST predicates emitted by `SyntaxFacts::all_facts`
+/// are both considered "supported" here and skipped — they're evaluated in the
+/// scan loop.
 fn rule_applies_to_file(rule: &DiskRule, path: &Path, line_count: usize) -> bool {
     for cond in &rule.conditions {
         match cond.predicate.as_str() {
@@ -115,13 +117,53 @@ fn rule_applies_to_file(rule: &DiskRule, path: &Path, line_count: usize) -> bool
                     return false;
                 }
             }
+            other if is_ast_predicate(other) => {
+                // AST predicate — evaluated separately in the scan loop by
+                // matching against facts from `SyntaxFacts::all_facts(path)`.
+                continue;
+            }
             _ => {
-                // Any other predicate — audit can't evaluate it; skip the rule.
+                // Any other predicate (e.g. diff-only predicates like
+                // `function_added`) — audit can't evaluate it; skip the rule.
                 return false;
             }
         }
     }
     true
+}
+
+/// Predicates emitted by `SyntaxFacts::all_facts`. Membership is the
+/// criterion for "audit can evaluate this rule via the syntax extractor."
+/// Kept in sync with `crates/phronesis-mcp/src/syntax/facts.rs`.
+fn is_ast_predicate(predicate: &str) -> bool {
+    matches!(
+        predicate,
+        "function_returns_result_string"
+            | "function_param_type"
+            | "function_param_is_vec_ref"
+            | "function_param_count_high"
+            | "function_clone_count"
+            | "function_clone_count_high"
+            | "function_let_binding_count_high"
+            | "function_let_mut_count_high"
+            | "pub_fn_without_doc_comment"
+            | "test_without_assertion"
+            | "function_is_public"
+            | "function_is_async"
+            | "struct_derives"
+            | "engine_eval_string_literal"
+            | "function_uses_force_unwrap"
+            | "function_throws"
+    )
+}
+
+/// True if `rule` has at least one condition whose predicate is an AST
+/// predicate evaluated via `SyntaxFacts`. Used to decide whether the audit
+/// loop needs to lazily parse the file's syntax.
+fn rule_has_ast_predicate(rule: &DiskRule) -> bool {
+    rule.conditions
+        .iter()
+        .any(|c| is_ast_predicate(&c.predicate))
 }
 
 /// True if `rule` has no content-matching predicates — only gates. For
@@ -244,9 +286,15 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
             None => lines.len(),
         };
 
+        // Lazily parse syntax facts once per file. The parse is non-trivial
+        // (tree-sitter walk) so we defer it until a rule actually needs it,
+        // then cache so subsequent rules reuse the same parse.
+        let mut ast_facts: Option<Vec<Fact>> = None;
+        let path_str = path.to_string_lossy().to_string();
+
         for rule in &audit_rules {
             // Check gate predicates and reject rules that contain unsupported
-            // predicates (most AST and diff-only ones).
+            // predicates (diff-only ones like `function_added`).
             if !rule_applies_to_file(rule, path, effective_line_count) {
                 continue;
             }
@@ -262,6 +310,38 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                 let Some(level) = Level::from_action_type(&action.action_type) else {
                     continue;
                 };
+
+                // AST-predicate path: look up matching facts emitted by
+                // `SyntaxFacts::all_facts` and emit one audit hit per fact.
+                // Block-pattern adopters go silent here automatically because
+                // the extractor halts at child blocks — no fact means no hit.
+                if rule_has_ast_predicate(rule) {
+                    let facts = ast_facts
+                        .get_or_insert_with(|| syntax::extract(&path_str, &content).all_facts(&path_str));
+                    let mut hit_lines: Vec<u32> = Vec::new();
+                    for cond in &rule.conditions {
+                        if !is_ast_predicate(&cond.predicate) {
+                            continue;
+                        }
+                        for _fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
+                            // Default to line 1 — tracking per-fact line spans
+                            // is a defensible follow-up. The fact's args carry
+                            // enough info (fn name, count) for the user to
+                            // grep -n the actual location. The audit renderer
+                            // shows per-file line numbers, not per-hit messages,
+                            // so we don't interpolate ?file/?fn/?count here.
+                            hit_lines.push(1);
+                        }
+                    }
+                    if hit_lines.is_empty() {
+                        continue;
+                    }
+                    let entry = accum
+                        .entry(rule.id.clone())
+                        .or_insert_with(|| (level, BTreeMap::new()));
+                    entry.1.entry(path.clone()).or_default().extend(hit_lines);
+                    continue;
+                }
 
                 // Gate-only rule (e.g. file_line_count_above with no content
                 // match): emit one hit per file at line 1 once gates pass.
@@ -435,6 +515,9 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
             None => lines.len(),
         };
 
+        let mut ast_facts: Option<Vec<Fact>> = None;
+        let path_str = path.to_string_lossy().to_string();
+
         let t = Instant::now();
         for rule in &audit_rules {
             if !rule_applies_to_file(rule, path, effective_line_count) {
@@ -447,6 +530,27 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
                 let Some(level) = Level::from_action_type(&action.action_type) else {
                     continue;
                 };
+                if rule_has_ast_predicate(rule) {
+                    let facts = ast_facts
+                        .get_or_insert_with(|| syntax::extract(&path_str, &content).all_facts(&path_str));
+                    let mut hit_lines: Vec<u32> = Vec::new();
+                    for cond in &rule.conditions {
+                        if !is_ast_predicate(&cond.predicate) {
+                            continue;
+                        }
+                        for _fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
+                            hit_lines.push(1);
+                        }
+                    }
+                    if hit_lines.is_empty() {
+                        continue;
+                    }
+                    let entry = accum
+                        .entry(rule.id.clone())
+                        .or_insert_with(|| (level, BTreeMap::new()));
+                    entry.1.entry(path.clone()).or_default().extend(hit_lines);
+                    continue;
+                }
                 if is_whole_file_rule(rule) {
                     let entry = accum
                         .entry(rule.id.clone())
@@ -1609,9 +1713,11 @@ mod tests {
 
     #[test]
     fn run_skips_rule_with_unsupported_predicate() {
-        // A rule mixing new_content_contains with an AST predicate that audit
-        // can't evaluate must be skipped entirely (not fire on content match
-        // alone, which would be unsafe).
+        // A rule mixing new_content_contains with a predicate that audit
+        // can't evaluate (here `function_added`, which is a diff-context
+        // predicate without a corresponding fact in SyntaxFacts::all_facts)
+        // must be skipped entirely — not fire on content match alone, which
+        // would be unsafe.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("a.rs"), ".unwrap()").unwrap();
         let r = DiskRule {
@@ -1625,7 +1731,7 @@ mod tests {
                     script: None,
                 },
                 DiskCondition {
-                    predicate: "function_returns_result_string".to_string(),
+                    predicate: "function_added".to_string(),
                     args: vec!["?file".to_string(), "?fn".to_string()],
                     script: None,
                 },
@@ -1651,6 +1757,194 @@ mod tests {
             report.per_rule.is_empty(),
             "rule with unsupported predicate must be skipped: {:?}",
             report.per_rule
+        );
+    }
+
+    // ── AST predicate evaluation in audit (Phase 3.5) ─────────────────────────
+
+    fn ast_let_binding_rule() -> DiskRule {
+        DiskRule {
+            id: "audit-rust-let-binding-count-high".to_string(),
+            phase: "audit".to_string(),
+            priority: 3,
+            conditions: vec![DiskCondition {
+                predicate: "function_let_binding_count_high".to_string(),
+                args: vec!["?file".to_string(), "?fn".to_string(), "?count".to_string()],
+                script: None,
+            }],
+            actions: vec![DiskAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec![
+                    "`?fn` in ?file has ?count outer-scope `let` bindings.".to_string(),
+                ],
+            }],
+            silent: None,
+            audit: Some(true),
+            doc_excepted: None,
+        }
+    }
+
+    #[test]
+    fn run_evaluates_ast_predicate_function_let_binding_count_high() {
+        // Positive case: a function with 8+ outer-scope `let` bindings should
+        // produce one audit hit on the let-binding rule.
+        let dir = tempfile::tempdir().unwrap();
+        let src = "\
+fn ladder() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+    let _ = (a, b, c, d, e, f, g, h);
+}
+";
+        std::fs::write(dir.path().join("a.rs"), src).unwrap();
+        let rules = RulesFile {
+            rules: vec![ast_let_binding_rule()],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert_eq!(
+            report.per_rule.len(),
+            1,
+            "expected one rule with hits, got {:?}",
+            report.per_rule,
+        );
+        assert_eq!(report.per_rule[0].rule_id, "audit-rust-let-binding-count-high");
+        assert_eq!(report.per_rule[0].hits, 1);
+        assert_eq!(report.per_rule[0].level, Level::Warn);
+        assert_eq!(report.per_rule[0].files.len(), 1);
+        assert!(
+            report.per_rule[0].files[0]
+                .path
+                .to_string_lossy()
+                .ends_with("a.rs")
+        );
+    }
+
+    #[test]
+    fn run_silences_ast_predicate_on_block_pattern_adopter() {
+        // Silence case (LOAD-BEARING): a function using the block pattern —
+        // `let x = { let a; let b; ...; tmp }` — has 8+ total `let`s but only
+        // one OUTER-scope let. The extractor halts at the child block, so
+        // SyntaxFacts contains no fact for this function, and the audit must
+        // report zero hits. This is the spec's core property; the entire
+        // reason the feature exists.
+        let dir = tempfile::tempdir().unwrap();
+        let src = "\
+fn block_adopter() {
+    let result = {
+        let a = 1;
+        let b = 2;
+        let c = 3;
+        let d = 4;
+        let e = 5;
+        let f = 6;
+        let g = 7;
+        let h = 8;
+        (a, b, c, d, e, f, g, h)
+    };
+    let _ = result;
+}
+";
+        std::fs::write(dir.path().join("a.rs"), src).unwrap();
+        let rules = RulesFile {
+            rules: vec![ast_let_binding_rule()],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert!(
+            report.per_rule.is_empty(),
+            "block-pattern adopter must NOT fire let-binding rule (spec property), got {:?}",
+            report.per_rule,
+        );
+    }
+
+    #[test]
+    fn run_ast_predicate_does_not_fire_on_non_rust_files() {
+        // SyntaxFacts::extract only parses Rust and Swift; other extensions
+        // get a default (empty) SyntaxFacts. A `.py` file with many `let`-ish
+        // lines must not produce hits from a Rust AST predicate.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.py"), "let a = 1\nlet b = 2\nlet c = 3\n").unwrap();
+        let rules = RulesFile {
+            rules: vec![ast_let_binding_rule()],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert!(report.per_rule.is_empty());
+    }
+
+    #[test]
+    fn run_ast_and_content_rules_coexist_on_same_file() {
+        // Regression: adding AST evaluation must not break content predicates.
+        // A file with both a heavy ladder() function AND a `.unwrap()` should
+        // fire both rules independently.
+        let dir = tempfile::tempdir().unwrap();
+        let src = "\
+fn ladder() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+    let _ = foo.unwrap();
+}
+";
+        std::fs::write(dir.path().join("a.rs"), src).unwrap();
+        let rules = RulesFile {
+            rules: vec![
+                ast_let_binding_rule(),
+                rule("no-unwrap", ".unwrap()", "constraint_violation"),
+            ],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        let rule_ids: Vec<&str> = report
+            .per_rule
+            .iter()
+            .map(|r| r.rule_id.as_str())
+            .collect();
+        assert!(
+            rule_ids.contains(&"audit-rust-let-binding-count-high"),
+            "let-binding rule should fire: {:?}",
+            rule_ids
+        );
+        assert!(
+            rule_ids.contains(&"no-unwrap"),
+            "content rule should still fire: {:?}",
+            rule_ids
         );
     }
 

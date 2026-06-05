@@ -1386,6 +1386,26 @@ fn rust_rules() -> Value {
                     {"file_path_matches": "src"}
                 ],
                 "then": {"warn": "`env::set_var(` in src/ — mutating process environment variables is unsound under concurrent reads (which is why edition 2024 marks the call unsafe). Verify the call site is genuinely single-threaded, or refactor to pass configuration explicitly through function arguments / a context struct. Tests where you control the thread count are usually fine; library code almost never is."}
+            },
+            {
+                "id": "audit-rust-let-binding-count-high",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"function_let_binding_count_high": ["?file", "?fn", "?count"]}
+                ],
+                "then": {"warn": "`?fn` in ?file has ?count outer-scope `let` bindings — consider scoping intermediate temporaries into a block (`let result = { let raw = ...; let parsed = ...; ... }`) so only the final value is visible to the rest of the function. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025)."}
+            },
+            {
+                "id": "audit-rust-let-mut-count-high",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"function_let_mut_count_high": ["?file", "?fn", "?count"]}
+                ],
+                "then": {"warn": "`?fn` in ?file has ?count outer-scope `let mut` declarations — consider John Nunley's block pattern: wrap the mutation in `let x = { let mut tmp = ...; ...; tmp }` so the surrounding scope sees an immutable binding. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025)."}
             }
         ]
     })
@@ -1729,6 +1749,27 @@ mod tests {
         assert!(ids.contains(&"warn-rust-public-fn-takes-string-ref"));
         assert!(ids.contains(&"warn-rust-public-fn-takes-vec-ref"));
         assert!(ids.contains(&"warn-deref-for-non-pointer-type"));
+    }
+
+    #[test]
+    fn rust_pack_includes_block_pattern_rules() {
+        let v = Pack::Rust.rules();
+        let ids: Vec<&str> = v["rules"]
+            .as_array()
+            .expect("rules array")
+            .iter()
+            .map(|r| r["id"].as_str().expect("rule id is a string"))
+            .collect();
+        assert!(
+            ids.contains(&"audit-rust-let-binding-count-high"),
+            "expected audit-rust-let-binding-count-high in rust pack, got {:?}",
+            ids
+        );
+        assert!(
+            ids.contains(&"audit-rust-let-mut-count-high"),
+            "expected audit-rust-let-mut-count-high in rust pack, got {:?}",
+            ids
+        );
     }
 
     /// All audit-only rules added in 0.4.0 should carry both `phase: "audit"`

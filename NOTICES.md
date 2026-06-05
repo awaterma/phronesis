@@ -32,12 +32,12 @@ copyleft clause doesn't propagate.
 
 **John Nunley, "Rust's Block Pattern" (December 18, 2025)**
 
-The longer working document mentioned above also incorporates John
-Nunley's blog post introducing the "block pattern" idiom. The
-phronesis distribution of `RUST-PATTERNS-GUIDE.md` is truncated
-before that section and ships no phronesis rule derived from it, but
-the working document credits Nunley as the origin of that idiom and
-we record the debt here for completeness.
+The Rust pack's two audit-phase rules `audit-rust-let-binding-count-
+high` and `audit-rust-let-mut-count-high` are derived directly from
+John Nunley's "Rust's Block Pattern" post. The ADRs at
+`.phronesis/wiki/decisions/2026-06-04-rust-let-{mut,binding}-count-
+high.md` cite the post as their canonical source. Rule warning
+messages link to the post inline.
 
 **Other web sources**
 
