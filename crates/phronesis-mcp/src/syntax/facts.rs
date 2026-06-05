@@ -52,6 +52,14 @@ pub struct SyntaxFacts {
     /// Functions that call `engine.eval(...)` or `engine.eval::<T>(...)` with
     /// a string literal as the first argument. Args: (fn_name,).
     pub engine_eval_string_literals: Vec<String>,
+    /// Functions with 8 or more *outer-scope* `let` declarations.
+    /// Bindings inside child `block_expression` and `closure_expression`
+    /// nodes are NOT counted, so functions that already adopted the
+    /// block pattern (`let x = { let raw = ...; let parsed = ...; ... }`)
+    /// go silent. Conditional and loop bodies (if/match/for/while/loop)
+    /// DO recurse because they're continuations of the outer flow.
+    /// Args: (fn_name, count). Threshold fixed at 8.
+    pub function_let_binding_counts_high: Vec<(String, usize)>,
 
     // ─── Swift ──────────────────────────────────────────────────────
     /// (fn_name, count) — number of force-unwrap (`!`) postfix expressions.

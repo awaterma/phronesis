@@ -67,6 +67,7 @@ pub fn extract(content: &str) -> SyntaxFacts {
         function_param_counts_high,
         function_clone_counts: extract_function_clone_counts(&parsed),
         function_clone_counts_high: extract_function_clone_counts_high(&parsed),
+        function_let_binding_counts_high: extract_function_let_binding_counts_high(&parsed),
         pub_fns_without_doc_comment: extract_pub_fns_without_doc_comment(&parsed),
         tests_without_assertion: extract_tests_without_assertion(&parsed),
         struct_derives: extract_struct_derives(&parsed),
@@ -267,6 +268,104 @@ fn count_clone_calls(state: tree_sitter::Node, source: &[u8], count: &mut usize)
     for child in state.children(&mut walker) {
         count_clone_calls(child, source, count);
     }
+}
+
+/// Recursive walk that respects function-scope boundaries: halts at
+/// nested `function_item` and `closure_expression` nodes, and at any
+/// `block` node that appears in *expression position* (e.g. the value of
+/// a `let_declaration` — the block pattern shape `let x = { ... }`).
+///
+/// Why the expression-position halt: a `let` inside a block expression
+/// used as a value is the very shape we want to *suggest* (the block
+/// pattern), so counting it toward the outer function would punish the
+/// pattern this rule surfaces. Closures own their scope. Nested
+/// functions are walked separately by `walk_function_items`.
+///
+/// Recursion still descends into `if_expression`, `match_expression`,
+/// `match_arm`, `for_expression`, `while_expression`, `loop_expression`,
+/// and `try_block` (and into the `block` children those constructs
+/// own) because their bodies are continuations of the outer function's
+/// control flow, not isolated scopes.
+///
+/// Grammar note (tree-sitter-rust 0.23): the kind is `block`, not
+/// `block_expression`. The function body itself is a `block`, so this
+/// helper expects to be called on the body's children, not on the body
+/// node directly — see `extract_function_let_binding_counts_high`.
+fn count_outer_scope_let_declarations<F>(
+    node: tree_sitter::Node,
+    source: &[u8],
+    matches: &F,
+    count: &mut usize,
+) where
+    F: Fn(tree_sitter::Node, &[u8]) -> bool,
+{
+    // Halt at nested fn / closure — they own their own scope.
+    if node.kind() == "function_item" || node.kind() == "closure_expression" {
+        return;
+    }
+
+    if node.kind() == "let_declaration" && matches(node, source) {
+        *count += 1;
+        // Continue descending — `let x = { let y = ...; }` should still
+        // count `x` at the outer scope. The child-block recurse decision
+        // below keeps `y` from contributing.
+    }
+
+    let mut walker = node.walk();
+    for child in node.children(&mut walker) {
+        // If the child is a `block`, decide whether to recurse based on
+        // *our* kind. A `block` whose parent is a control-flow construct
+        // (if/match-arm/for/while/loop/try) is part of the outer flow.
+        // A `block` whose parent is anything else (let_declaration value,
+        // function arg, assignment RHS, …) is in expression position —
+        // the block-pattern shape — and we halt.
+        if child.kind() == "block"
+            && !matches!(
+                node.kind(),
+                "function_item"
+                    | "if_expression"
+                    | "else_clause"
+                    | "match_arm"
+                    | "match_block"
+                    | "for_expression"
+                    | "while_expression"
+                    | "loop_expression"
+                    | "try_block"
+            )
+        {
+            continue;
+        }
+        count_outer_scope_let_declarations(child, source, matches, count);
+    }
+}
+
+/// Functions with 8 or more outer-scope `let` declarations.
+/// See `count_outer_scope_let_declarations` for scoping semantics.
+pub(crate) fn extract_function_let_binding_counts_high(
+    parsed: &ParsedFile,
+) -> Vec<(String, usize)> {
+    const LET_BINDING_THRESHOLD: usize = 8;
+    let ParsedFile::Rust { tree, source } = parsed else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut walker = tree.walk();
+    walk_function_items(&mut walker, source.as_bytes(), &mut |fn_node, name| {
+        let Some(body) = fn_node.child_by_field_name("body") else {
+            return;
+        };
+        let mut count = 0usize;
+        count_outer_scope_let_declarations(
+            body,
+            source.as_bytes(),
+            &|_, _| true,
+            &mut count,
+        );
+        if count >= LET_BINDING_THRESHOLD {
+            out.push((name.to_string(), count));
+        }
+    });
+    out
 }
 
 /// (fn_name, param_name, type_text). `type_text` is whitespace-normalized so
@@ -1302,6 +1401,115 @@ fn host() {
         assert_eq!(
             facts.tests_without_assertion,
             vec!["documented_empty".to_string()]
+        );
+    }
+
+    #[test]
+    fn let_binding_count_high_fires_on_long_ladder() {
+        let code = "fn parse_config(path: &str) -> Result<Config> {
+            let raw = fs::read(path)?;
+            let s = String::from_utf8(raw)?;
+            let stripped = strip_comments(&s);
+            let json = unescape(&stripped);
+            let parsed = serde_json::from_str(&json)?;
+            let validated = validate(parsed)?;
+            let normalized = normalize(validated);
+            let final_cfg = expand_env(normalized);
+            Ok(final_cfg)
+        }";
+        let facts = extract(code);
+        assert_eq!(
+            facts.function_let_binding_counts_high,
+            vec![("parse_config".to_string(), 8)]
+        );
+    }
+
+    #[test]
+    fn let_binding_count_high_silent_on_block_adopter() {
+        // The same logical work as `let_binding_count_high_fires_on_long_ladder`,
+        // but scoped into a block expression. The block pattern adopter
+        // should NOT fire.
+        let code = "fn parse_config(path: &str) -> Result<Config> {
+            let final_cfg = {
+                let raw = fs::read(path)?;
+                let s = String::from_utf8(raw)?;
+                let stripped = strip_comments(&s);
+                let json = unescape(&stripped);
+                let parsed = serde_json::from_str(&json)?;
+                let validated = validate(parsed)?;
+                let normalized = normalize(validated);
+                expand_env(normalized)
+            };
+            Ok(final_cfg)
+        }";
+        let facts = extract(code);
+        assert!(
+            facts.function_let_binding_counts_high.is_empty(),
+            "block-pattern adopter must not fire; got {:?}",
+            facts.function_let_binding_counts_high
+        );
+    }
+
+    #[test]
+    fn let_binding_count_high_does_not_count_closure_lets() {
+        let code = "fn host() {
+            let _a = 1; let _b = 2; let _c = 3;
+            let _d = 4; let _e = 5; let _f = 6;
+            let _g = 7;
+            let _result = items.iter().map(|x| {
+                let y = x + 1;
+                let z = y * 2;
+                z
+            }).collect::<Vec<_>>();
+        }";
+        // host has 8 outer-scope lets (_a.._g + _result) → fires.
+        // The closure's let y / let z must NOT contribute, otherwise the
+        // count would be 10.
+        let facts = extract(code);
+        assert_eq!(
+            facts.function_let_binding_counts_high,
+            vec![("host".to_string(), 8)]
+        );
+    }
+
+    #[test]
+    fn let_binding_count_high_nested_fn_counts_independently() {
+        // Outer has 2 outer-scope lets (well below threshold);
+        // inner has 8 (at threshold). Only inner fires.
+        let code = "fn outer() {
+            let _x = 1; let _y = 2;
+            fn inner() {
+                let _a = 1; let _b = 2; let _c = 3;
+                let _d = 4; let _e = 5; let _f = 6;
+                let _g = 7; let _h = 8;
+            }
+        }";
+        let facts = extract(code);
+        assert_eq!(
+            facts.function_let_binding_counts_high,
+            vec![("inner".to_string(), 8)]
+        );
+    }
+
+    #[test]
+    fn let_binding_count_high_counts_inside_if_and_match_arms() {
+        // 4 outer + 2 in if + 2 in match = 8 → fires with count 8.
+        // If `if` or `match` halted recursion, the count would be 4.
+        let code = "fn flow(x: i32) {
+            let _a = 1; let _b = 2; let _c = 3; let _d = 4;
+            if x > 0 {
+                let _e = 5;
+                let _f = 6;
+            }
+            match x {
+                0 => { let _g = 7; }
+                _ => { let _h = 8; }
+            }
+        }";
+        let facts = extract(code);
+        assert_eq!(
+            facts.function_let_binding_counts_high,
+            vec![("flow".to_string(), 8)]
         );
     }
 }
