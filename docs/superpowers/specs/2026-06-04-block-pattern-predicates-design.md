@@ -30,10 +30,11 @@ model can read each match and judge.
    silent (the rule does not punish the pattern it surfaces).
 3. Slot into the existing `syntax/` extractor pipeline with no
    structural change to the engine, hook, or audit runner.
-4. Pair with two audit-phase rules in the Rust seed pack, two ADRs,
-   and a paraphrased "Block Pattern" entry in `RUST-PATTERNS-GUIDE.md`
-   that replaces the verbatim Nunley copy currently in the upstream
-   working document.
+4. Pair with two audit-phase rules in the Rust seed pack and two
+   ADRs that cite John Nunley's "Rust's Block Pattern" post
+   (December 2025) directly as the canonical source. The ADRs are
+   the citation surface; rule messages link out to Nunley's post,
+   not to derivative summaries in our own docs.
 
 ## Non-goals
 
@@ -194,7 +195,7 @@ Two new entries in the `rust_rules()` JSON value, both audit-phase:
   "when": [
     {"function_let_binding_count_high": ["?file", "?fn", "?count"]}
   ],
-  "then": {"warn": "`?fn` in ?file has ?count outer-scope `let` bindings — consider scoping intermediate temporaries into a block (`let result = { let raw = ...; let parsed = ...; ... }`) so only the final value is visible to the rest of the function. See RUST-PATTERNS-GUIDE.md §Block Pattern."}
+  "then": {"warn": "`?fn` in ?file has ?count outer-scope `let` bindings — consider scoping intermediate temporaries into a block (`let result = { let raw = ...; let parsed = ...; ... }`) so only the final value is visible to the rest of the function. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025)."}
 }
 ```
 
@@ -272,22 +273,24 @@ Three doc surfaces touched:
      `audit-rust-let-binding-count-high`; cites Nunley's
      "intent-first / namespace cleanliness" benefits.
 
-2. **`crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`** gains a
-   "Block Pattern" entry (2 paragraphs, paraphrased from Nunley's
-   post with link). Replaces the verbatim copy currently in the
-   upstream working document; the working document gets the same
-   paraphrase via a separate commit in the rulgamr repo.
+2. **`NOTICES.md`** keeps the Nunley entry — we are now drawing on
+   his idea (via direct citation in the two new ADRs and rule
+   messages), so the debt is real. Update the entry text to match:
+   instead of saying "phronesis ships no rule derived from it,"
+   reflect that two audit-phase rules now cite the post as their
+   canonical source.
 
-3. **`NOTICES.md`** keeps the Nunley entry — we are now drawing on
-   his idea (via paraphrase + ADR citation), so the debt is real.
-   Update the entry text to match: instead of saying "phronesis
-   ships no rule derived from it," reflect that two audit-phase
-   rules are now derived from the idea.
-
-4. **`crates/phronesis-mcp/README.md`** Rust-pack bullet gets two
+3. **`crates/phronesis-mcp/README.md`** Rust-pack bullet gets two
    line items added: *"audit-only: ... `let mut`-heavy functions
    (block-pattern candidate), `let`-heavy functions (block-pattern
    candidate)."*
+
+`RUST-PATTERNS-GUIDE.md` is deliberately NOT updated — its lineage
+is already mixed (derivative of rust-unofficial/patterns + Nunley +
+miscellaneous web sources) and adding more derivative content would
+deepen that. The ADRs serve as the canonical project-internal
+citation surface for Nunley's idea, pointing readers at the post
+directly.
 
 ## Branch / release strategy
 
