@@ -134,11 +134,11 @@ pub fn append_with_max(path: &Path, entry: &LogEntry, max_bytes: u64) -> Result<
     // rename is atomic and overwrites the destination — concurrent rotators
     // just race-lose harmlessly. If the rename fails (e.g. file vanished),
     // the subsequent append still proceeds against a fresh file.
-    if let Ok(meta) = std::fs::metadata(path) {
-        if meta.len() >= max_bytes {
-            let rotated = rotated_path(path);
-            let _ = std::fs::rename(path, &rotated);
-        }
+    if let Ok(meta) = std::fs::metadata(path)
+        && meta.len() >= max_bytes
+    {
+        let rotated = rotated_path(path);
+        let _ = std::fs::rename(path, &rotated);
     }
 
     let mut line = serde_json::to_string(entry)?;
@@ -194,10 +194,10 @@ pub fn read_recent(path: &Path, opts: &ReadOpts) -> Result<Vec<LogEntry>, LogErr
     let mut all_lines = Vec::new();
 
     let rotated = rotated_path(path);
-    if rotated.exists() {
-        if let Ok(content) = std::fs::read_to_string(&rotated) {
-            all_lines.extend(content.lines().map(String::from));
-        }
+    if rotated.exists()
+        && let Ok(content) = std::fs::read_to_string(&rotated)
+    {
+        all_lines.extend(content.lines().map(String::from));
     }
     if path.exists() {
         let content = std::fs::read_to_string(path).map_err(|e| LogError::Io {
@@ -226,11 +226,11 @@ pub fn read_recent(path: &Path, opts: &ReadOpts) -> Result<Vec<LogEntry>, LogErr
         })
         .collect();
 
-    if let Some(limit) = opts.limit {
-        if entries.len() > limit {
-            let skip = entries.len() - limit;
-            entries.drain(0..skip);
-        }
+    if let Some(limit) = opts.limit
+        && entries.len() > limit
+    {
+        let skip = entries.len() - limit;
+        entries.drain(0..skip);
     }
     Ok(entries)
 }

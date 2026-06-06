@@ -288,11 +288,18 @@ mod tests {
         let hit = out
             .iter()
             .find(|f| f.predicate == "function_let_binding_count_high");
-        assert!(hit.is_some(), "no function_let_binding_count_high fact emitted");
+        assert!(
+            hit.is_some(),
+            "no function_let_binding_count_high fact emitted"
+        );
         let hit = hit.unwrap();
         assert_eq!(
             hit.args,
-            vec!["/tmp/src.rs".to_string(), "foo".to_string(), "10".to_string()]
+            vec![
+                "/tmp/src.rs".to_string(),
+                "foo".to_string(),
+                "10".to_string()
+            ]
         );
     }
 
@@ -310,7 +317,11 @@ mod tests {
         let hit = hit.unwrap();
         assert_eq!(
             hit.args,
-            vec!["/tmp/src.rs".to_string(), "bar".to_string(), "4".to_string()]
+            vec![
+                "/tmp/src.rs".to_string(),
+                "bar".to_string(),
+                "4".to_string()
+            ]
         );
     }
 
@@ -348,8 +359,10 @@ mod tests {
             .iter()
             .map(|f| f.predicate.clone())
             .collect();
-        let listed: std::collections::BTreeSet<String> =
-            SyntaxFacts::PREDICATES.iter().map(|p| p.to_string()).collect();
+        let listed: std::collections::BTreeSet<String> = SyntaxFacts::PREDICATES
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
 
         let missing_from_const: Vec<&String> = emitted.difference(&listed).collect();
         let stale_in_const: Vec<&String> = listed.difference(&emitted).collect();

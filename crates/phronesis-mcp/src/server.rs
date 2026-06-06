@@ -1070,18 +1070,18 @@ pub fn extract_rules_from_markdown(content: &str, source_file: &str) -> Vec<Rule
             continue;
         }
 
-        if let Some(constraint_text) = strip_directive_prefix(trimmed) {
-            if constraint_text.len() >= 10 {
-                rule_idx += 1;
-                rules.push(make_rule(
-                    &source_slug,
-                    rule_idx,
-                    source_file,
-                    current_section.as_deref(),
-                    "directive",
-                    constraint_text,
-                ));
-            }
+        if let Some(constraint_text) = strip_directive_prefix(trimmed)
+            && constraint_text.len() >= 10
+        {
+            rule_idx += 1;
+            rules.push(make_rule(
+                &source_slug,
+                rule_idx,
+                source_file,
+                current_section.as_deref(),
+                "directive",
+                constraint_text,
+            ));
         }
     }
 

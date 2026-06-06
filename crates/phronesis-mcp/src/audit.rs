@@ -311,8 +311,9 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                 // this branch to AND the two predicate kinds together rather
                 // than short-circuiting here.
                 if rule_has_ast_predicate(rule) {
-                    let facts = ast_facts
-                        .get_or_insert_with(|| syntax::extract(&path_str, &content).all_facts(&path_str));
+                    let facts = ast_facts.get_or_insert_with(|| {
+                        syntax::extract(&path_str, &content).all_facts(&path_str)
+                    });
                     let mut hit_lines: Vec<u32> = Vec::new();
                     for cond in &rule.conditions {
                         if !is_ast_predicate(&cond.predicate) {
@@ -363,10 +364,10 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                     };
                     let mut hit_lines: Vec<u32> = Vec::new();
                     for (i, line) in lines.iter().enumerate() {
-                        if let Some(mask) = &keep_mask {
-                            if !mask.get(i).copied().unwrap_or(true) {
-                                continue;
-                            }
+                        if let Some(mask) = &keep_mask
+                            && !mask.get(i).copied().unwrap_or(true)
+                        {
+                            continue;
                         }
                         let count = line.matches(needle.as_str()).count();
                         if count > 0 && doc_excepted && line_preceded_by_doc_comment(&lines, i) {
@@ -528,8 +529,9 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
                 // Mirror of the run() branch — see that copy for the
                 // mixed AST+content rule semantics caveat.
                 if rule_has_ast_predicate(rule) {
-                    let facts = ast_facts
-                        .get_or_insert_with(|| syntax::extract(&path_str, &content).all_facts(&path_str));
+                    let facts = ast_facts.get_or_insert_with(|| {
+                        syntax::extract(&path_str, &content).all_facts(&path_str)
+                    });
                     let mut hit_lines: Vec<u32> = Vec::new();
                     for cond in &rule.conditions {
                         if !is_ast_predicate(&cond.predicate) {
@@ -565,10 +567,10 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
                     };
                     let mut hit_lines: Vec<u32> = Vec::new();
                     for (i, line) in lines.iter().enumerate() {
-                        if let Some(mask) = &keep_mask {
-                            if !mask.get(i).copied().unwrap_or(true) {
-                                continue;
-                            }
+                        if let Some(mask) = &keep_mask
+                            && !mask.get(i).copied().unwrap_or(true)
+                        {
+                            continue;
                         }
                         times.line_matches_evaluated += 1;
                         let count = line.matches(needle.as_str()).count();
@@ -743,11 +745,11 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
     if let Some(since) = opts.since_secs {
         let cutoff = now.saturating_sub(since);
         snapshots.retain(|e| e.ts >= cutoff);
-    } else if let Some(n) = opts.last {
-        if snapshots.len() > n {
-            let skip = snapshots.len() - n;
-            snapshots.drain(0..skip);
-        }
+    } else if let Some(n) = opts.last
+        && snapshots.len() > n
+    {
+        let skip = snapshots.len() - n;
+        snapshots.drain(0..skip);
     }
 
     if snapshots.is_empty() {
@@ -776,10 +778,10 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
             continue;
         };
         for (id, v) in per_rule {
-            if let Some(filter) = opts.rule_filter.as_deref() {
-                if id != filter {
-                    continue;
-                }
+            if let Some(filter) = opts.rule_filter.as_deref()
+                && id != filter
+            {
+                continue;
             }
             let rank_str = v.get("level").and_then(|x| x.as_str()).unwrap_or("");
             let level = match rank_str {
@@ -1771,9 +1773,7 @@ mod tests {
             }],
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
-                params: vec![
-                    "`?fn` in ?file has ?count outer-scope `let` bindings.".to_string(),
-                ],
+                params: vec!["`?fn` in ?file has ?count outer-scope `let` bindings.".to_string()],
             }],
             silent: None,
             audit: Some(true),
@@ -1817,7 +1817,10 @@ fn ladder() {
             "expected one rule with hits, got {:?}",
             report.per_rule,
         );
-        assert_eq!(report.per_rule[0].rule_id, "audit-rust-let-binding-count-high");
+        assert_eq!(
+            report.per_rule[0].rule_id,
+            "audit-rust-let-binding-count-high"
+        );
         assert_eq!(report.per_rule[0].hits, 1);
         assert_eq!(report.per_rule[0].level, Level::Warn);
         assert_eq!(report.per_rule[0].files.len(), 1);
@@ -1928,11 +1931,7 @@ fn ladder() {
                 rule_filter: None,
             },
         );
-        let rule_ids: Vec<&str> = report
-            .per_rule
-            .iter()
-            .map(|r| r.rule_id.as_str())
-            .collect();
+        let rule_ids: Vec<&str> = report.per_rule.iter().map(|r| r.rule_id.as_str()).collect();
         assert!(
             rule_ids.contains(&"audit-rust-let-binding-count-high"),
             "let-binding rule should fire: {:?}",
