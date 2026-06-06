@@ -88,10 +88,10 @@ pub fn aggregate(entries: &[LogEntry], opts: &StatsOpts) -> Stats {
             let Some(rule_id) = c.get("rule_id").and_then(|v| v.as_str()) else {
                 continue;
             };
-            if let Some(filter) = opts.rule_filter.as_deref() {
-                if rule_id != filter {
-                    continue;
-                }
+            if let Some(filter) = opts.rule_filter.as_deref()
+                && rule_id != filter
+            {
+                continue;
             }
             let action_type = c.get("action_type").and_then(|v| v.as_str()).unwrap_or("");
             let row = by_id.entry(rule_id.to_string()).or_insert(RuleStats {

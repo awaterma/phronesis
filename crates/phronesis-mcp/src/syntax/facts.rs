@@ -75,6 +75,34 @@ pub struct SyntaxFacts {
 }
 
 impl SyntaxFacts {
+    /// Predicate names that `all_facts` can emit. Shared with
+    /// `audit::is_ast_predicate` so the audit runner and the fact
+    /// emitter can't drift. A test below proves the list matches every
+    /// emission block in `all_facts`; if you add a new emission block,
+    /// the test fails until you add the predicate name here.
+    pub const PREDICATES: &'static [&'static str] = &[
+        // Rust
+        "function_returns_result_string",
+        "function_param_type",
+        "function_param_is_vec_ref",
+        "function_param_count_high",
+        "function_clone_count",
+        "function_clone_count_high",
+        "function_let_binding_count_high",
+        "function_let_mut_count_high",
+        "pub_fn_without_doc_comment",
+        "test_without_assertion",
+        "function_is_public",
+        "function_is_async",
+        "struct_derives",
+        "engine_eval_string_literal",
+        // Swift
+        "function_uses_force_unwrap",
+        "function_throws",
+        // `function_is_async` appears for both Rust and Swift but is
+        // listed once because it's the same predicate name.
+    ];
+
     /// Flatten every populated field into a `Vec<Fact>` ready for assertion.
     /// `file_path` is the first arg of every fact (matches existing convention).
     pub fn all_facts(&self, file_path: &str) -> Vec<Fact> {
@@ -260,11 +288,18 @@ mod tests {
         let hit = out
             .iter()
             .find(|f| f.predicate == "function_let_binding_count_high");
-        assert!(hit.is_some(), "no function_let_binding_count_high fact emitted");
+        assert!(
+            hit.is_some(),
+            "no function_let_binding_count_high fact emitted"
+        );
         let hit = hit.unwrap();
         assert_eq!(
             hit.args,
-            vec!["/tmp/src.rs".to_string(), "foo".to_string(), "10".to_string()]
+            vec![
+                "/tmp/src.rs".to_string(),
+                "foo".to_string(),
+                "10".to_string()
+            ]
         );
     }
 
@@ -282,7 +317,65 @@ mod tests {
         let hit = hit.unwrap();
         assert_eq!(
             hit.args,
-            vec!["/tmp/src.rs".to_string(), "bar".to_string(), "4".to_string()]
+            vec![
+                "/tmp/src.rs".to_string(),
+                "bar".to_string(),
+                "4".to_string()
+            ]
+        );
+    }
+
+    /// Drift guard: every predicate name `all_facts` actually emits must
+    /// be listed in `SyntaxFacts::PREDICATES`, and vice versa. If you add
+    /// a new emission block in `all_facts` without updating `PREDICATES`,
+    /// this test will fail — pointing you at the file with both call sites.
+    /// Without this guard, `audit::is_ast_predicate` (which reads
+    /// `PREDICATES`) would silently fail to recognize the new predicate
+    /// and the rule using it would never fire under `phr-mcp audit`.
+    #[test]
+    fn predicates_const_matches_all_facts_emission_set() {
+        let mut facts = SyntaxFacts::default();
+        // Populate one entry in every Vec so every emission block fires.
+        facts.functions_returning_result_string = vec!["a".to_string()];
+        facts.function_param_types = vec![("a".to_string(), "b".to_string(), "c".to_string())];
+        facts.vec_ref_params = vec![("a".to_string(), "b".to_string())];
+        facts.function_param_counts_high = vec![("a".to_string(), 5)];
+        facts.function_clone_counts = vec![("a".to_string(), 1)];
+        facts.function_clone_counts_high = vec![("a".to_string(), 3)];
+        facts.function_let_binding_counts_high = vec![("a".to_string(), 8)];
+        facts.function_let_mut_counts_high = vec![("a".to_string(), 3)];
+        facts.pub_fns_without_doc_comment = vec!["a".to_string()];
+        facts.tests_without_assertion = vec!["a".to_string()];
+        facts.public_functions = vec!["a".to_string()];
+        facts.async_functions = vec!["a".to_string()];
+        facts.struct_derives = vec![("S".to_string(), "Debug".to_string())];
+        facts.engine_eval_string_literals = vec!["a".to_string()];
+        facts.swift_force_unwraps = vec![("a".to_string(), 1)];
+        facts.swift_throwing_functions = vec!["a".to_string()];
+        facts.swift_async_functions = vec!["a".to_string()];
+
+        let emitted: std::collections::BTreeSet<String> = facts
+            .all_facts("/tmp/x.rs")
+            .iter()
+            .map(|f| f.predicate.clone())
+            .collect();
+        let listed: std::collections::BTreeSet<String> = SyntaxFacts::PREDICATES
+            .iter()
+            .map(|p| p.to_string())
+            .collect();
+
+        let missing_from_const: Vec<&String> = emitted.difference(&listed).collect();
+        let stale_in_const: Vec<&String> = listed.difference(&emitted).collect();
+
+        assert!(
+            missing_from_const.is_empty(),
+            "all_facts emits predicates not in SyntaxFacts::PREDICATES — add them: {:?}",
+            missing_from_const
+        );
+        assert!(
+            stale_in_const.is_empty(),
+            "SyntaxFacts::PREDICATES lists predicates all_facts no longer emits — remove them: {:?}",
+            stale_in_const
         );
     }
 }

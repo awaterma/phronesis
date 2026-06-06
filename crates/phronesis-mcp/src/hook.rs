@@ -331,8 +331,8 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         // Only assert the full content as a fact when small enough to keep
         // working-memory growth bounded. Pattern checks below still operate on
         // the in-memory slice and emit the targeted predicates.
-        if content.len() <= MAX_FACT_CONTENT_BYTES {
-            if let Err(e) = network
+        if content.len() <= MAX_FACT_CONTENT_BYTES
+            && let Err(e) = network
                 .assert_fact(Fact {
                     id: "file_content".to_string(),
                     predicate: "file_content".to_string(),
@@ -340,10 +340,9 @@ pub async fn run_post_check() -> anyhow::Result<()> {
                     timestamp: 0,
                 })
                 .await
-            {
-                eprintln!("phronesis: WARNING — failed to assert content fact: {}", e);
-                process::exit(1);
-            }
+        {
+            eprintln!("phronesis: WARNING — failed to assert content fact: {}", e);
+            process::exit(1);
         }
 
         if let Err(e) =

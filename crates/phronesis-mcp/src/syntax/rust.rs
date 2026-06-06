@@ -254,16 +254,13 @@ fn count_clone_calls(state: tree_sitter::Node, source: &[u8], count: &mut usize)
     if state.kind() == "function_item" {
         return;
     }
-    if state.kind() == "call_expression" {
-        if let Some(func) = state.child_by_field_name("function") {
-            if func.kind() == "field_expression" {
-                if let Some(field) = func.child_by_field_name("field") {
-                    if field.utf8_text(source).unwrap_or("") == "clone" {
-                        *count += 1;
-                    }
-                }
-            }
-        }
+    if state.kind() == "call_expression"
+        && let Some(func) = state.child_by_field_name("function")
+        && func.kind() == "field_expression"
+        && let Some(field) = func.child_by_field_name("field")
+        && field.utf8_text(source).unwrap_or("") == "clone"
+    {
+        *count += 1;
     }
     let mut walker = state.walk();
     for child in state.children(&mut walker) {
@@ -360,12 +357,7 @@ pub(crate) fn extract_function_let_binding_counts_high(
             return;
         };
         let mut count = 0usize;
-        count_outer_scope_let_declarations(
-            body,
-            source.as_bytes(),
-            &|_, _| true,
-            &mut count,
-        );
+        count_outer_scope_let_declarations(body, source.as_bytes(), &|_, _| true, &mut count);
         if count >= LET_BINDING_THRESHOLD {
             out.push((name.to_string(), count));
         }
@@ -391,9 +383,7 @@ fn has_mut_keyword(node: tree_sitter::Node, _source: &[u8]) -> bool {
 
 /// Functions with 3 or more outer-scope `let mut` declarations.
 /// See `count_outer_scope_let_declarations` for scoping semantics.
-pub(crate) fn extract_function_let_mut_counts_high(
-    parsed: &ParsedFile,
-) -> Vec<(String, usize)> {
+pub(crate) fn extract_function_let_mut_counts_high(parsed: &ParsedFile) -> Vec<(String, usize)> {
     const LET_MUT_THRESHOLD: usize = 3;
     let ParsedFile::Rust { tree, source } = parsed else {
         return Vec::new();
@@ -405,12 +395,7 @@ pub(crate) fn extract_function_let_mut_counts_high(
             return;
         };
         let mut count = 0usize;
-        count_outer_scope_let_declarations(
-            body,
-            source.as_bytes(),
-            &has_mut_keyword,
-            &mut count,
-        );
+        count_outer_scope_let_declarations(body, source.as_bytes(), &has_mut_keyword, &mut count);
         if count >= LET_MUT_THRESHOLD {
             out.push((name.to_string(), count));
         }
@@ -536,10 +521,10 @@ fn extract_public_functions(parsed: &ParsedFile) -> Vec<String> {
                 _ => {}
             }
         }
-        if vis == Some("pub") {
-            if let Some(n) = name {
-                out.push(n.to_string());
-            }
+        if vis == Some("pub")
+            && let Some(n) = name
+        {
+            out.push(n.to_string());
         }
     }
     out
@@ -570,10 +555,9 @@ fn walk_pub_fns_without_doc_comment(
         && !is_test_fn(state, source)
         && !is_inside_trait_impl(state)
         && !has_preceding_doc_comment(state, source)
+        && let Some(name) = function_name(state, source)
     {
-        if let Some(name) = function_name(state, source) {
-            out.push(name);
-        }
+        out.push(name);
     }
     if cursor.goto_first_child() {
         loop {
@@ -700,12 +684,12 @@ fn walk_tests_without_assertion(
     out: &mut Vec<String>,
 ) {
     let state = cursor.node();
-    if state.kind() == "function_item" && is_test_fn(state, source) {
-        if let Some(name) = function_name(state, source) {
-            if !body_has_assertion(state, source) {
-                out.push(name);
-            }
-        }
+    if state.kind() == "function_item"
+        && is_test_fn(state, source)
+        && let Some(name) = function_name(state, source)
+        && !body_has_assertion(state, source)
+    {
+        out.push(name);
     }
     if cursor.goto_first_child() {
         loop {
@@ -774,12 +758,12 @@ fn walk_engine_eval_string_literals(
         enclosing_fn.clone()
     };
 
-    if state.kind() == "call_expression" {
-        if let Some(name) = new_enclosing.as_deref() {
-            if call_is_eval_with_string_literal(state, source) && !out.iter().any(|n| n == name) {
-                out.push(name.to_string());
-            }
-        }
+    if state.kind() == "call_expression"
+        && let Some(name) = new_enclosing.as_deref()
+        && call_is_eval_with_string_literal(state, source)
+        && !out.iter().any(|n| n == name)
+    {
+        out.push(name.to_string());
     }
 
     if cursor.goto_first_child() {

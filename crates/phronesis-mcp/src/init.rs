@@ -8,8 +8,7 @@
 //! - `.phronesis/rules.json`                    — starter rule pack
 //! - `.phronesis/durable.md`                    — re-injected directives
 //! - `.phronesis/wiki/decisions/README.md`     — ADR scaffold
-//! - `.gitignore`                                — log/backup paths +
-//!                                                 wiki carveout
+//! - `.gitignore`                                — log/backup paths + wiki carveout
 //!
 //! Idempotent and non-destructive by default. Existing permissions, hooks,
 //! and MCP servers are preserved; only our entries are added or refreshed.

@@ -134,27 +134,11 @@ fn rule_applies_to_file(rule: &DiskRule, path: &Path, line_count: usize) -> bool
 
 /// Predicates emitted by `SyntaxFacts::all_facts`. Membership is the
 /// criterion for "audit can evaluate this rule via the syntax extractor."
-/// Kept in sync with `crates/phronesis-mcp/src/syntax/facts.rs`.
+/// The source of truth is `SyntaxFacts::PREDICATES`; a test in
+/// `syntax::facts::tests::predicates_const_matches_all_facts_emission_set`
+/// guards against drift between the const and the emission blocks.
 fn is_ast_predicate(predicate: &str) -> bool {
-    matches!(
-        predicate,
-        "function_returns_result_string"
-            | "function_param_type"
-            | "function_param_is_vec_ref"
-            | "function_param_count_high"
-            | "function_clone_count"
-            | "function_clone_count_high"
-            | "function_let_binding_count_high"
-            | "function_let_mut_count_high"
-            | "pub_fn_without_doc_comment"
-            | "test_without_assertion"
-            | "function_is_public"
-            | "function_is_async"
-            | "struct_derives"
-            | "engine_eval_string_literal"
-            | "function_uses_force_unwrap"
-            | "function_throws"
-    )
+    crate::syntax::facts::SyntaxFacts::PREDICATES.contains(&predicate)
 }
 
 /// True if `rule` has at least one condition whose predicate is an AST
@@ -315,9 +299,21 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                 // `SyntaxFacts::all_facts` and emit one audit hit per fact.
                 // Block-pattern adopters go silent here automatically because
                 // the extractor halts at child blocks — no fact means no hit.
+                //
+                // Mixed-rule semantics: if a rule's `when` clause combines an
+                // AST predicate with a content predicate (e.g.
+                // `function_let_binding_count_high` AND `new_content_contains`),
+                // this branch fires on the AST predicate alone and the trailing
+                // `continue` skips the content-evaluation loop below.
+                // Effectively, AST predicates take priority and content
+                // predicates in the same rule are ignored. No rule in the
+                // shipped seed packs mixes them today; if you ship one, change
+                // this branch to AND the two predicate kinds together rather
+                // than short-circuiting here.
                 if rule_has_ast_predicate(rule) {
-                    let facts = ast_facts
-                        .get_or_insert_with(|| syntax::extract(&path_str, &content).all_facts(&path_str));
+                    let facts = ast_facts.get_or_insert_with(|| {
+                        syntax::extract(&path_str, &content).all_facts(&path_str)
+                    });
                     let mut hit_lines: Vec<u32> = Vec::new();
                     for cond in &rule.conditions {
                         if !is_ast_predicate(&cond.predicate) {
@@ -368,10 +364,10 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                     };
                     let mut hit_lines: Vec<u32> = Vec::new();
                     for (i, line) in lines.iter().enumerate() {
-                        if let Some(mask) = &keep_mask {
-                            if !mask.get(i).copied().unwrap_or(true) {
-                                continue;
-                            }
+                        if let Some(mask) = &keep_mask
+                            && !mask.get(i).copied().unwrap_or(true)
+                        {
+                            continue;
                         }
                         let count = line.matches(needle.as_str()).count();
                         if count > 0 && doc_excepted && line_preceded_by_doc_comment(&lines, i) {
@@ -530,9 +526,12 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
                 let Some(level) = Level::from_action_type(&action.action_type) else {
                     continue;
                 };
+                // Mirror of the run() branch — see that copy for the
+                // mixed AST+content rule semantics caveat.
                 if rule_has_ast_predicate(rule) {
-                    let facts = ast_facts
-                        .get_or_insert_with(|| syntax::extract(&path_str, &content).all_facts(&path_str));
+                    let facts = ast_facts.get_or_insert_with(|| {
+                        syntax::extract(&path_str, &content).all_facts(&path_str)
+                    });
                     let mut hit_lines: Vec<u32> = Vec::new();
                     for cond in &rule.conditions {
                         if !is_ast_predicate(&cond.predicate) {
@@ -568,10 +567,10 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
                     };
                     let mut hit_lines: Vec<u32> = Vec::new();
                     for (i, line) in lines.iter().enumerate() {
-                        if let Some(mask) = &keep_mask {
-                            if !mask.get(i).copied().unwrap_or(true) {
-                                continue;
-                            }
+                        if let Some(mask) = &keep_mask
+                            && !mask.get(i).copied().unwrap_or(true)
+                        {
+                            continue;
                         }
                         times.line_matches_evaluated += 1;
                         let count = line.matches(needle.as_str()).count();
@@ -746,11 +745,11 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
     if let Some(since) = opts.since_secs {
         let cutoff = now.saturating_sub(since);
         snapshots.retain(|e| e.ts >= cutoff);
-    } else if let Some(n) = opts.last {
-        if snapshots.len() > n {
-            let skip = snapshots.len() - n;
-            snapshots.drain(0..skip);
-        }
+    } else if let Some(n) = opts.last
+        && snapshots.len() > n
+    {
+        let skip = snapshots.len() - n;
+        snapshots.drain(0..skip);
     }
 
     if snapshots.is_empty() {
@@ -779,10 +778,10 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
             continue;
         };
         for (id, v) in per_rule {
-            if let Some(filter) = opts.rule_filter.as_deref() {
-                if id != filter {
-                    continue;
-                }
+            if let Some(filter) = opts.rule_filter.as_deref()
+                && id != filter
+            {
+                continue;
             }
             let rank_str = v.get("level").and_then(|x| x.as_str()).unwrap_or("");
             let level = match rank_str {
@@ -1774,9 +1773,7 @@ mod tests {
             }],
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
-                params: vec![
-                    "`?fn` in ?file has ?count outer-scope `let` bindings.".to_string(),
-                ],
+                params: vec!["`?fn` in ?file has ?count outer-scope `let` bindings.".to_string()],
             }],
             silent: None,
             audit: Some(true),
@@ -1820,7 +1817,10 @@ fn ladder() {
             "expected one rule with hits, got {:?}",
             report.per_rule,
         );
-        assert_eq!(report.per_rule[0].rule_id, "audit-rust-let-binding-count-high");
+        assert_eq!(
+            report.per_rule[0].rule_id,
+            "audit-rust-let-binding-count-high"
+        );
         assert_eq!(report.per_rule[0].hits, 1);
         assert_eq!(report.per_rule[0].level, Level::Warn);
         assert_eq!(report.per_rule[0].files.len(), 1);
@@ -1931,11 +1931,7 @@ fn ladder() {
                 rule_filter: None,
             },
         );
-        let rule_ids: Vec<&str> = report
-            .per_rule
-            .iter()
-            .map(|r| r.rule_id.as_str())
-            .collect();
+        let rule_ids: Vec<&str> = report.per_rule.iter().map(|r| r.rule_id.as_str()).collect();
         assert!(
             rule_ids.contains(&"audit-rust-let-binding-count-high"),
             "let-binding rule should fire: {:?}",
