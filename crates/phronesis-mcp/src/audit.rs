@@ -1781,6 +1781,29 @@ mod tests {
         }
     }
 
+    /// Mirror of `ast_let_binding_rule` for the let-mut predicate.
+    /// Lets the audit tests exercise the let_mut variant of the
+    /// block-pattern rule pair end-to-end through the AST branch.
+    fn ast_let_mut_rule() -> DiskRule {
+        DiskRule {
+            id: "audit-rust-let-mut-count-high".to_string(),
+            phase: "audit".to_string(),
+            priority: 3,
+            conditions: vec![DiskCondition {
+                predicate: "function_let_mut_count_high".to_string(),
+                args: vec!["?file".to_string(), "?fn".to_string(), "?count".to_string()],
+                script: None,
+            }],
+            actions: vec![DiskAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec!["`?fn` in ?file has ?count outer-scope `let mut` declarations.".to_string()],
+            }],
+            silent: None,
+            audit: Some(true),
+            doc_excepted: None,
+        }
+    }
+
     #[test]
     fn run_evaluates_ast_predicate_function_let_binding_count_high() {
         // Positive case: a function with 8+ outer-scope `let` bindings should
@@ -1941,6 +1964,196 @@ fn ladder() {
             rule_ids.contains(&"no-unwrap"),
             "content rule should still fire: {:?}",
             rule_ids
+        );
+    }
+
+    #[test]
+    fn run_evaluates_ast_predicate_function_let_mut_count_high() {
+        // Mirrors run_evaluates_ast_predicate_function_let_binding_count_high
+        // for the let-mut variant. Closes a previously-untested gap: the audit
+        // branch was generic but only the let-binding rule had end-to-end
+        // coverage through the AST path. A function with 3+ outer-scope
+        // `let mut`s should produce one hit on the let-mut rule.
+        let dir = tempfile::tempdir().unwrap();
+        let src = "\
+fn mut_ladder() {
+    let mut a = vec![];
+    let mut b = String::new();
+    let mut c = 0;
+    a.push(1);
+    b.push_str(\"x\");
+    c += 1;
+    let _ = (a, b, c);
+}
+";
+        std::fs::write(dir.path().join("a.rs"), src).unwrap();
+        let rules = RulesFile {
+            rules: vec![ast_let_mut_rule()],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert_eq!(
+            report.per_rule.len(),
+            1,
+            "expected one rule with hits, got {:?}",
+            report.per_rule,
+        );
+        assert_eq!(
+            report.per_rule[0].rule_id,
+            "audit-rust-let-mut-count-high"
+        );
+        assert_eq!(report.per_rule[0].hits, 1);
+        assert_eq!(report.per_rule[0].level, Level::Warn);
+    }
+
+    #[test]
+    fn run_silences_ast_let_mut_rule_on_block_pattern_adopter() {
+        // Mirror of the binding-rule silence test, but for the let-mut
+        // variant. A function that scopes its `let mut`s inside a block
+        // expression must NOT fire the let-mut rule — the walker halts at
+        // the child block, so SyntaxFacts contains no fact.
+        let dir = tempfile::tempdir().unwrap();
+        let src = "\
+fn mut_adopter() {
+    let result = {
+        let mut a = vec![];
+        let mut b = String::new();
+        let mut c = 0;
+        a.push(1);
+        b.push_str(\"x\");
+        c += 1;
+        (a, b, c)
+    };
+    let _ = result;
+}
+";
+        std::fs::write(dir.path().join("a.rs"), src).unwrap();
+        let rules = RulesFile {
+            rules: vec![ast_let_mut_rule()],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert!(
+            report.per_rule.is_empty(),
+            "block-pattern adopter must NOT fire let-mut rule (spec property), got {:?}",
+            report.per_rule,
+        );
+    }
+
+    #[test]
+    fn run_mixed_ast_and_content_rule_uses_ast_predicate_only() {
+        // Pins the documented behavior in the AST-branch comment: when a
+        // single rule's `when` clause combines an AST predicate AND a
+        // content predicate, the AST branch handles the rule and the
+        // `continue` drops the content predicate. Effectively, AST takes
+        // priority and the content predicate is ignored.
+        //
+        // Two sub-cases prove the property:
+        //  (a) AST signal present, content signal absent → rule still fires
+        //      (proves the content predicate is not required)
+        //  (b) Content signal present, AST signal absent → rule does NOT fire
+        //      (proves the rule doesn't fall through to content evaluation)
+        //
+        // No shipped rule currently mixes the two predicate kinds. This test
+        // exists so the behavior can't drift unnoticed if one ever does, and
+        // so a future change to AND-semantics (instead of AST-priority)
+        // forces an explicit test update.
+        let mixed_rule = || DiskRule {
+            id: "mixed-rule".to_string(),
+            phase: "audit".to_string(),
+            priority: 3,
+            conditions: vec![
+                DiskCondition {
+                    predicate: "function_let_binding_count_high".to_string(),
+                    args: vec!["?file".to_string(), "?fn".to_string(), "?count".to_string()],
+                    script: None,
+                },
+                DiskCondition {
+                    predicate: "new_content_contains".to_string(),
+                    args: vec!["MARKER_NEVER_PRESENT_IN_FIXTURE".to_string()],
+                    script: None,
+                },
+            ],
+            actions: vec![DiskAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec!["mixed rule fired".to_string()],
+            }],
+            silent: None,
+            audit: Some(true),
+            doc_excepted: None,
+        };
+
+        // Sub-case (a): AST signal hits (8 outer-scope lets), content marker
+        // is deliberately absent. AST-priority semantics → rule fires.
+        let dir_a = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir_a.path().join("a.rs"),
+            "\
+fn ladder() {
+    let a = 1; let b = 2; let c = 3; let d = 4;
+    let e = 5; let f = 6; let g = 7; let h = 8;
+    let _ = (a, b, c, d, e, f, g, h);
+}
+",
+        )
+        .unwrap();
+        let report_a = run(
+            &RulesFile {
+                rules: vec![mixed_rule()],
+            },
+            &AuditOpts {
+                project_root: dir_a.path().to_path_buf(),
+                scan_root: dir_a.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert_eq!(
+            report_a.per_rule.len(),
+            1,
+            "AST predicate alone should fire the mixed rule (content predicate is ignored); got {:?}",
+            report_a.per_rule,
+        );
+        assert_eq!(report_a.per_rule[0].rule_id, "mixed-rule");
+
+        // Sub-case (b): content marker present, AST signal absent (short fn).
+        // AST-priority semantics → rule does NOT fire.
+        let dir_b = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir_b.path().join("b.rs"),
+            "\
+// MARKER_NEVER_PRESENT_IN_FIXTURE
+fn short() {
+    let _ = 1;
+}
+",
+        )
+        .unwrap();
+        let report_b = run(
+            &RulesFile {
+                rules: vec![mixed_rule()],
+            },
+            &AuditOpts {
+                project_root: dir_b.path().to_path_buf(),
+                scan_root: dir_b.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert!(
+            report_b.per_rule.is_empty(),
+            "content predicate alone must NOT fire a mixed rule (AST takes priority); got {:?}",
+            report_b.per_rule,
         );
     }
 
