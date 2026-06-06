@@ -569,7 +569,7 @@
   <header class="colophon" role="banner">
     <div class="left"><a href="./explainer.html">← The Explainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
-    <div class="right">Vol. 0.9.0 — Edition II</div>
+    <div class="right">Vol. 0.10.0 — Edition III</div>
   </header>
 
   <!-- ─── COVER ─── -->
@@ -597,7 +597,7 @@
         <dt>Default packs</dt>
         <dd><span class="num">6</span></dd>
         <dt>Rules shipped</dt>
-        <dd><span class="num">34</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
+        <dd><span class="num">41</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
         <dt>Blocks (pre)</dt>
         <dd><span class="num">13</span></dd>
         <dt>Warnings (pre/post)</dt>
@@ -853,7 +853,7 @@ test ... ok (124 passed)
     <header class="pack-head-block">
       <div class="pack-num">§<small>II</small><br>2</div>
       <h2>Pack · Rust — <span class="it">code shape, error handling, debt.</span></h2>
-      <div class="pack-count"><span class="num">27</span>Rules</div>
+      <div class="pack-count"><span class="num">29</span>Rules</div>
     </header>
 
     <p class="pack-intro">
@@ -1932,6 +1932,66 @@ audit-rc-refcell-in-src   warn      4      2
           </p>
         </div>
       </div>
+
+      <div class="rule">
+        <h3 class="rule-id">audit-rust-let-binding-count-high · audit-rust-let-mut-count-high</h3>
+        <p class="rule-summary">
+          Two heuristic audits that surface candidates for John
+          Nunley's <em>block pattern</em>: functions whose top-level
+          <code>let</code> ladder runs eight bindings or longer, or
+          whose top-level <code>let mut</code> declarations reach
+          three or more. Both go silent on functions that have
+          already adopted the pattern.
+        </p>
+        <div class="rule-body">
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">audited</div>
+<pre><span class="k">fn</span> parse_config(path: &<span class="k">str</span>) -&gt; Result&lt;Config&gt; {
+  <span class="k">let</span> raw       = fs::read(path)?;
+  <span class="k">let</span> s         = String::from_utf8(raw)?;
+  <span class="k">let</span> stripped  = strip_comments(&s);
+  <span class="k">let</span> json      = unescape(&stripped);
+  <span class="k">let</span> parsed    = serde_json::from_str(&json)?;
+  <span class="k">let</span> validated = validate(parsed)?;
+  <span class="k">let</span> normalized= normalize(validated);
+  <span class="k">let</span> cfg       = expand_env(normalized);
+  Ok(cfg)
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">block pattern adopter (silent)</div>
+<pre><span class="k">fn</span> parse_config(path: &<span class="k">str</span>) -&gt; Result&lt;Config&gt; {
+  <span class="k">let</span> cfg = {
+    <span class="k">let</span> raw      = fs::read(path)?;
+    <span class="k">let</span> s        = String::from_utf8(raw)?;
+    <span class="k">let</span> stripped = strip_comments(&s);
+    expand_env(normalize(validate(
+      serde_json::from_str(&unescape(&stripped))?
+    )?))
+  };
+  Ok(cfg)
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Nunley's framing: a block expression
+            leads with intent (<code>let cfg = …</code>), keeps
+            intermediate names from polluting the outer scope, and
+            scopes mutability — a <code>let mut</code> inside a block
+            returns an immutable binding to its caller. The audit
+            walker halts at child <code>block</code> /
+            <code>closure</code> / nested-<code>fn</code> nodes, so the
+            rule does not punish the very shape it surfaces.
+            Conditional and loop bodies (<code>if</code>/<code>else</code>/
+            <code>match</code>/<code>for</code>/<code>while</code>/
+            <code>loop</code>) still recurse because they continue the
+            outer flow. Direct citation:
+            <em>John Nunley, “Rust's Block Pattern” (Dec 2025)</em>.
+          </p>
+        </div>
+      </div>
     </article>
   </section>
 
@@ -2059,7 +2119,7 @@ audit-rc-refcell-in-src   warn      4      2
     <header class="pack-head-block">
       <div class="pack-num">§<small>IV</small><br>4</div>
       <h2>Other packs — <span class="it">Python · TypeScript · Swift.</span></h2>
-      <div class="pack-count"><span class="num">6</span>Rules</div>
+      <div class="pack-count"><span class="num">11</span>Rules</div>
     </header>
 
     <p class="pack-intro">
@@ -2098,10 +2158,30 @@ audit-rc-refcell-in-src   warn      4      2
         <h4><span class="lang">Swift</span> · <code>--packs swift</code></h4>
         <span class="brule"><strong>warn</strong> · warn-swift-force-unwrap</span>
         <span class="brule"><strong>warn</strong> · warn-swift-try-bang</span>
+        <span class="brule"><strong>warn</strong> · warn-swift-force-cast</span>
+        <span class="brule"><strong>○</strong> · audit-swift-fatal-error</span>
+        <span class="brule"><strong>○</strong> · audit-swift-mutable-singleton</span>
+        <span class="brule"><strong>○</strong> · audit-swift-legacy-constructor</span>
+        <span class="brule"><strong>○</strong> · audit-swift-legacy-random</span>
         <p>
-          Catches postfix <code>!</code> force-unwraps and
-          <code>try!</code> expressions. Prefer <code>guard let</code> /
-          <code>if let</code> and <code>do { try … } catch</code>.
+          Three <em>force-bang</em> warnings cover the postfix
+          <code>!</code>, <code>try!</code>, and <code>as!</code>
+          escape hatches — prefer <code>guard let</code> /
+          <code>if let</code>, <code>try?</code> with
+          <code>do/catch</code>, and <code>as?</code> binding. Four
+          audit-only rules surface debt: <code>fatalError(</code> sites
+          (prefer <code>throws</code>, <code>precondition</code>, or
+          <code>assertionFailure</code>); <code>static var shared</code>
+          mutable singletons (the canonical pattern uses
+          <code>static let shared</code>); the pre-Swift-3 C-style
+          constructors <code>CGRectMake</code>, <code>UIEdgeInsetsMake</code>,
+          and their siblings (use the labeled Swift initializers); and
+          the pre-Swift-4.2 random APIs <code>arc4random</code>,
+          <code>arc4random_uniform</code>, <code>drand48</code> (use
+          <code>Int.random(in:)</code> / <code>randomElement()</code>).
+          Sourced from
+          <a href="https://github.com/eleev/swift-design-patterns">eleev/swift-design-patterns</a>
+          and SwiftLint's default-enabled rule set.
         </p>
       </div>
 
@@ -2130,7 +2210,7 @@ audit-rc-refcell-in-src   warn      4      2
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
       with Claude.<br>
       Pairs with <a href="./explainer.html">the explainer</a> &middot;
-      v 0.9.0 &middot; 2026 &middot;
+      v 0.10.0 &middot; 2026 &middot;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
