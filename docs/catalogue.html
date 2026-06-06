@@ -1947,48 +1947,43 @@ audit-rc-refcell-in-src   warn      4      2
           <div class="rule-example">
             <div class="ex ex-bad">
               <div class="ex-label">audited</div>
-<pre><span class="k">fn</span> parse_config(path: &<span class="k">str</span>) -&gt; Result&lt;Config&gt; {
-  <span class="k">let</span> raw       = fs::read(path)?;
-  <span class="k">let</span> s         = String::from_utf8(raw)?;
-  <span class="k">let</span> stripped  = strip_comments(&s);
-  <span class="k">let</span> json      = unescape(&stripped);
-  <span class="k">let</span> parsed    = serde_json::from_str(&json)?;
-  <span class="k">let</span> validated = validate(parsed)?;
-  <span class="k">let</span> normalized= normalize(validated);
-  <span class="k">let</span> cfg       = expand_env(normalized);
-  Ok(cfg)
+<pre><span class="k">fn</span> build() {
+  <span class="k">let</span> a = step1();
+  <span class="k">let</span> b = step2(a);
+  <span class="k">let</span> c = step3(b);
+  <span class="k">let</span> d = step4(c);
+  <span class="c">// … eight outer-scope</span>
+  <span class="c">//   lets total</span>
+  use_result(h);
 }</pre>
             </div>
             <div class="arrow" aria-hidden="true">→</div>
             <div class="ex ex-good">
-              <div class="ex-label">block pattern adopter (silent)</div>
-<pre><span class="k">fn</span> parse_config(path: &<span class="k">str</span>) -&gt; Result&lt;Config&gt; {
-  <span class="k">let</span> cfg = {
-    <span class="k">let</span> raw      = fs::read(path)?;
-    <span class="k">let</span> s        = String::from_utf8(raw)?;
-    <span class="k">let</span> stripped = strip_comments(&s);
-    expand_env(normalize(validate(
-      serde_json::from_str(&unescape(&stripped))?
-    )?))
+              <div class="ex-label">block pattern (silent)</div>
+<pre><span class="k">fn</span> build() {
+  <span class="k">let</span> result = {
+    <span class="k">let</span> a = step1();
+    <span class="k">let</span> b = step2(a);
+    <span class="k">let</span> c = step3(b);
+    step4(c)
   };
-  Ok(cfg)
+  use_result(result);
 }</pre>
             </div>
           </div>
           <p class="rule-why">
-            <strong>Why</strong> Nunley's framing: a block expression
-            leads with intent (<code>let cfg = …</code>), keeps
-            intermediate names from polluting the outer scope, and
-            scopes mutability — a <code>let mut</code> inside a block
-            returns an immutable binding to its caller. The audit
-            walker halts at child <code>block</code> /
-            <code>closure</code> / nested-<code>fn</code> nodes, so the
-            rule does not punish the very shape it surfaces.
-            Conditional and loop bodies (<code>if</code>/<code>else</code>/
-            <code>match</code>/<code>for</code>/<code>while</code>/
-            <code>loop</code>) still recurse because they continue the
-            outer flow. Direct citation:
-            <em>John Nunley, “Rust's Block Pattern” (Dec 2025)</em>.
+            <strong>Why</strong> A block expression leads with intent
+            (<code>let result = …</code>), keeps intermediate names
+            from polluting the outer scope, and scopes mutability — a
+            <code>let mut</code> inside a block returns an immutable
+            binding to its caller.
+          </p>
+          <p class="rule-why">
+            The walker halts at child <code>{ … }</code>, closures,
+            and nested <code>fn</code> bodies, so the rule does not
+            punish the very shape it surfaces. Conditional and loop
+            bodies still recurse (they continue the outer flow).
+            Source: <em>John Nunley, &ldquo;Rust&rsquo;s Block Pattern&rdquo; (Dec 2025)</em>.
           </p>
         </div>
       </div>
