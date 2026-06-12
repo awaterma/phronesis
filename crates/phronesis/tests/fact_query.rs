@@ -109,3 +109,58 @@ async fn fact_ids_matching_supports_batch_retract() {
             .is_empty()
     );
 }
+
+#[tokio::test]
+async fn duplicate_fact_id_is_rejected() {
+    let net = seeded().await;
+    let err = net
+        .assert_fact(fact("e1", "equipped", &["mallory", "head", "crown"]))
+        .await
+        .expect_err("duplicate id must be rejected");
+    assert!(err.to_string().contains("e1"), "error names the id: {err}");
+
+    // Original fact is unchanged.
+    let e1 = net.get_fact_by_id("e1").expect("query").expect("e1 exists");
+    assert_eq!(e1.args, vec!["alice", "head", "helm"]);
+    assert_eq!(net.fact_count().expect("count"), 4);
+}
+
+#[tokio::test]
+async fn duplicate_assert_does_not_corrupt_predicate_index() {
+    let net = seeded().await;
+    let _ = net
+        .assert_fact(fact("e1", "equipped", &["mallory", "head", "crown"]))
+        .await;
+    // Before the fix, the rejected duplicate still pushed its id into the
+    // predicate index, so e1 came back twice here.
+    let equipped = net.facts_matching_predicate("equipped").expect("query");
+    assert_eq!(equipped.len(), 3);
+    let e1_hits = equipped.iter().filter(|f| f.id == "e1").count();
+    assert_eq!(e1_hits, 1, "e1 must appear exactly once");
+}
+
+#[tokio::test]
+async fn identical_reassert_is_idempotent_noop() {
+    let net = seeded().await;
+    net.assert_fact(fact("e1", "equipped", &["alice", "head", "helm"]))
+        .await
+        .expect("identical re-assert is a no-op, not an error");
+    assert_eq!(net.fact_count().expect("count"), 4);
+    let equipped = net.facts_matching_predicate("equipped").expect("query");
+    assert_eq!(
+        equipped.iter().filter(|f| f.id == "e1").count(),
+        1,
+        "no duplicate index entry from the no-op"
+    );
+}
+
+#[tokio::test]
+async fn reassert_after_retract_succeeds() {
+    let net = seeded().await;
+    net.retract_fact("e1").await.expect("retract");
+    net.assert_fact(fact("e1", "equipped", &["alice", "head", "circlet"]))
+        .await
+        .expect("re-assert after retract is legal");
+    let e1 = net.get_fact_by_id("e1").expect("query").expect("e1 exists");
+    assert_eq!(e1.args[2], "circlet");
+}

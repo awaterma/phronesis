@@ -48,10 +48,31 @@ impl WmeManager {
         }
     }
 
-    /// Assert a new WME into the working memory
+    /// Assert a new WME into the working memory.
+    ///
+    /// Re-asserting a fact identical to one already present (same id,
+    /// predicate, and args) is an idempotent no-op — hosts like the hook
+    /// assert pattern-derived facts without tracking what they already
+    /// asserted. A duplicate id carrying *different* content is rejected:
+    /// silently overwriting would corrupt the predicate index (the id
+    /// would be listed twice) and mask state bugs in hosts that generate
+    /// fact ids. Retract first to replace a fact.
     pub fn assert(&mut self, wme: WorkingMemoryElement) -> Result<(), String> {
         let wme_id = wme.id.clone();
         let predicate = wme.fact.predicate.clone();
+
+        if let Some(existing) = self.wmes.get(&wme_id) {
+            // Identity is (predicate, args); timestamps may differ between
+            // otherwise-identical assertions and don't change the fact.
+            if existing.fact.predicate == wme.fact.predicate && existing.fact.args == wme.fact.args
+            {
+                return Ok(());
+            }
+            return Err(format!(
+                "duplicate fact id '{}' with different content — retract it first or use a distinct id",
+                wme_id
+            ));
+        }
 
         self.wmes.insert(wme_id.clone(), wme);
 
