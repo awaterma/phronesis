@@ -103,6 +103,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     // Collect substring patterns the rules want scanned — drives the
     // pattern-fact assertion below, so new rules don't require code changes.
     let content_patterns = collect_content_patterns(&rules);
+    let bash_command_patterns = collect_bash_command_patterns(&rules);
 
     let new_content = extract_new_content(&payload, &tool_name);
     let file_path = extract_file_path(&payload);
@@ -141,6 +142,16 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             check_content_patterns(&network, &file_path, content, &content_patterns).await
         {
             eprintln!("phronesis: BLOCKED — pattern check failed: {}", e);
+            process::exit(2);
+        }
+
+        // Command-content regexes apply only to command tools — file
+        // content quoting the same text must not trip command rules.
+        if matches!(tool_name.as_str(), "Bash" | "run_shell_command")
+            && let Err(e) =
+                check_bash_command_patterns(&network, content, &bash_command_patterns).await
+        {
+            eprintln!("phronesis: BLOCKED — command pattern check failed: {}", e);
             process::exit(2);
         }
 
@@ -286,6 +297,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
 
     // Drive pattern scans from the loaded rules' conditions.
     let content_patterns = collect_content_patterns(&rules);
+    let bash_command_patterns = collect_bash_command_patterns(&rules);
     let missing_patterns = collect_missing_patterns(&rules);
 
     let file_path = extract_file_path(&payload);
@@ -329,6 +341,19 @@ pub async fn run_post_check() -> anyhow::Result<()> {
             Err(_) => None,
         }
     };
+
+    // Command tools carry no file_path, so the disk-read above yields no
+    // content for them — their "content" is the command itself, taken from
+    // the payload. Post-phase command rules are advisory (the command
+    // already ran); they warn so the agent can correct course.
+    if matches!(tool_name.as_str(), "Bash" | "run_shell_command")
+        && let Some(command) = extract_new_content(&payload, &tool_name)
+        && let Err(e) =
+            check_bash_command_patterns(&network, &command, &bash_command_patterns).await
+    {
+        eprintln!("phronesis: WARNING — command pattern check failed: {}", e);
+        process::exit(1);
+    }
 
     if let Some(content) = &content_opt {
         // Only assert the full content as a fact when small enough to keep
@@ -554,8 +579,8 @@ fn extract_multiedit_field(input: &serde_json::Value, field: &str) -> Option<Str
 // back into this module via paths used at call sites below.
 use crate::hook_facts::{
     assert_common_facts, assert_diff_facts, assert_test_facts, assert_values_facts,
-    check_content_patterns, check_missing_patterns, collect_content_patterns,
-    collect_missing_patterns,
+    check_bash_command_patterns, check_content_patterns, check_missing_patterns,
+    collect_bash_command_patterns, collect_content_patterns, collect_missing_patterns,
 };
 
 /// Record a hook event to `.phronesis/log.jsonl`. Best-effort: log failures

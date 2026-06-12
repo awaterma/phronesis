@@ -1076,6 +1076,24 @@ fn deflection_rules() -> Value {
                     {"new_content_contains": "git commit -m"}
                 ],
                 "then": {"warn": "About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode."}
+            },
+            {
+                "id": "llm-warn-git-add-all",
+                "phase": "pre",
+                "priority": 5,
+                "when": [
+                    {"bash_command_matches": "(^|[;&|]\\s*)git\\s+add\\s+(-A\\b|\\.($|\\s))"}
+                ],
+                "then": {"warn": "Stage files explicitly — git add -A / git add . sweeps unrelated changes into the commit. List the files you actually changed."}
+            },
+            {
+                "id": "llm-warn-kill-build",
+                "phase": "pre",
+                "priority": 5,
+                "when": [
+                    {"bash_command_matches": "\\b(pkill|killall|kill)\\b[^;|&]*\\b(cargo|rustc)\\b"}
+                ],
+                "then": {"warn": "Builds are I/O-bound: a rustc at 0% CPU is usually in disk-wait, not hung. Give it time or check `ps` state before killing the build."}
             }
         ]
     })

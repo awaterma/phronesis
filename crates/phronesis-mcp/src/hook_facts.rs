@@ -305,6 +305,62 @@ pub(crate) async fn check_content_patterns(
     Ok(())
 }
 
+/// For each `bash_command_matches` regex that matches `command`, assert a
+/// fact carrying the pattern so it alpha-matches the rule's condition arg.
+/// Callers gate this to command tools (Bash / run_shell_command): the
+/// predicate is about the command being run, never about file content
+/// that happens to quote the same text.
+///
+/// An invalid regex is skipped with a stderr warning — a rule-author typo
+/// must never block the project.
+pub(crate) async fn check_bash_command_patterns(
+    network: &ReteNetwork,
+    command: &str,
+    patterns: &[String],
+) -> Result<(), HookError> {
+    for pattern in patterns {
+        let re = match regex::Regex::new(pattern) {
+            Ok(re) => re,
+            Err(e) => {
+                eprintln!(
+                    "phronesis: WARNING — invalid bash_command_matches regex '{}': {}",
+                    pattern, e
+                );
+                continue;
+            }
+        };
+        if re.is_match(command) {
+            let fact_id = format!(
+                "bash_command_matches_{}",
+                sanitize_fact_id_fragment(pattern)
+            );
+            network
+                .assert_fact(Fact {
+                    id: fact_id,
+                    predicate: "bash_command_matches".to_string(),
+                    args: vec![pattern.clone()],
+                    timestamp: 0,
+                })
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Collect every distinct `args[0]` from rules' `bash_command_matches`
+/// conditions — the regex set the hook evaluates against command text.
+pub(crate) fn collect_bash_command_patterns(rules: &[Rule]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    rules
+        .iter()
+        .flat_map(|r| &r.conditions)
+        .filter(|c| c.predicate == "bash_command_matches")
+        .filter_map(|c| c.args.first())
+        .filter(|s| seen.insert((*s).clone()))
+        .cloned()
+        .collect()
+}
+
 /// Make a fact-id-safe fragment from an arbitrary pattern string. Whitespace
 /// and any character that isn't ASCII alphanumeric becomes `_`. Stable for a
 /// given input, but not necessarily reversible — IDs are opaque keys.
