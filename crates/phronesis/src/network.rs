@@ -29,6 +29,11 @@ use tracing::{debug, warn};
 
 #[derive(Debug)]
 pub struct ReteNetwork {
+    /// Working memory. Public for legacy embedders, but **prefer the
+    /// fact-query API** (`facts_snapshot`, `facts_matching`,
+    /// `get_fact_by_id`, `fact_ids_matching`, `fact_count`) over locking
+    /// this directly — the field's internal layout is not a stability
+    /// surface and will go private in a future release.
     pub wme_manager: Arc<Mutex<WmeManager>>,
     pub alpha_network: Arc<Mutex<AlphaNetwork>>,
     pub beta_network: Arc<Mutex<BetaNetwork>>,
