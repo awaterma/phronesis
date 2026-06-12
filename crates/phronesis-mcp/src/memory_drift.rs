@@ -6,11 +6,16 @@
 //! a small YAML frontmatter with `name`, `description`, and a
 //! `metadata.type` of `feedback`, `project`, `user`, or `reference`.
 //!
-//! Memories of type `feedback` or `project` are candidates for porting:
-//! the first as **actionable** phronesis rules that fire at the moment of
-//! action, the second as **ambient** prose in `.phronesis/durable.md`
-//! that is re-injected each turn. Memories of type `user` or `reference`
-//! stay where they are — personal to the operator.
+//! Memories of type `feedback` or `project` are candidates for porting.
+//! Which way they port depends on feasibility, not type: an entry is
+//! **actionable** (→ a phronesis rule that fires at the moment of action)
+//! only when its content carries a predicate-shaped trigger the engine
+//! can actually evaluate — a named command, a file path/extension, a code
+//! literal, or a function-shape signal. Everything else is **ambient**
+//! (→ prose in `.phronesis/durable.md`, re-injected each turn): the
+//! engine has no predicate for operational judgment like "builds are
+//! slow, be patient". Memories of type `user` or `reference` stay where
+//! they are — personal to the operator.
 //!
 //! This module walks the memory directory, classifies each entry, and
 //! scores actionable/ambient entries against the current rule pack and
@@ -238,11 +243,15 @@ fn parse_memory_file(path: &Path, raw: &str) -> Option<MemoryEntry> {
 
 fn classify(entry: &MemoryEntry) -> Bucket {
     match entry.memory_type.as_str() {
-        "feedback" => Bucket::Actionable,
-        "project" => {
-            // Project memories that name a specific tool / command count
-            // as actionable; otherwise ambient.
-            if mentions_tool_call(&entry.body) {
+        // Both feedback and project memories are only "actionable" when the
+        // engine could actually express them: the content must carry a
+        // predicate-shaped trigger (a named command, a file path/extension,
+        // a code literal, or a function-shape signal). Operational judgment
+        // ("builds are slow, be patient") has no predicate to hang a rule
+        // on — it belongs in durable.md, not rules.json.
+        "feedback" | "project" => {
+            let text = format!("{} {}", entry.description, entry.body);
+            if has_predicate_shaped_trigger(&text) {
                 Bucket::Actionable
             } else {
                 Bucket::Ambient
@@ -253,31 +262,63 @@ fn classify(entry: &MemoryEntry) -> Bucket {
     }
 }
 
-/// Heuristic: does the body mention a specific command or tool name
-/// that suggests it's actionable at hook time?
-fn mentions_tool_call(body: &str) -> bool {
-    const TOOL_HINTS: &[&str] = &[
-        "git commit",
-        "git push",
-        "git rebase",
-        "git merge",
-        "cargo ",
-        "npm ",
-        "yarn ",
-        "pnpm ",
-        "rustfmt",
-        "clippy",
-        "gh pr",
-        "gh issue",
-        "Edit",
-        "Write",
-        "Bash",
-        "MultiEdit",
-    ];
-    let lower = body.to_ascii_lowercase();
-    TOOL_HINTS
-        .iter()
-        .any(|hint| lower.contains(&hint.to_ascii_lowercase()))
+/// Feasibility gate for the `Actionable` bucket: does this text plausibly
+/// map onto the predicate vocabulary the engine can evaluate?
+///
+/// The three trigger families mirror the actual predicate surface:
+/// - **command-shaped** → `bash_command_matches` / `cargo_command_lacks_workspace`
+///   (hook.rs): a known workflow command followed by a flag or subcommand.
+///   Requires a real invocation shape — "git add -A" counts, prose like
+///   "don't kill a rustc" (article between verb and target) does not.
+/// - **file-shaped** → `file_path_matches` / `file_extension_is` /
+///   `new_content_contains` (hook_facts.rs): extension tokens, path
+///   segments, or code literals like `.unwrap()` / `todo!(`.
+/// - **function-shaped** → the AST predicates in `syntax/facts.rs`
+///   (`SyntaxFacts::PREDICATES`): function/fn vocabulary paired with a
+///   shape word (param, doc, test, assert, derive, clone, public).
+fn has_predicate_shaped_trigger(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+
+    // Command-shaped: known workflow command + flag or subcommand-like
+    // token (≥2 chars, so "kill a rustc" doesn't count as `kill a`).
+    let command_re = regex::Regex::new(
+        r"(?x)
+        \b(git|cargo|npm|pnpm|yarn|gh|make|rustup|rustfmt|clippy|docker|kubectl|pkill|killall)
+        \s+(-{1,2}[\w][\w-]*|[a-z][a-z0-9_-]+)\b",
+    )
+    .expect("static regex");
+    if command_re.is_match(&lower) {
+        return true;
+    }
+
+    // File-shaped: extension token (".rs"), path segment ("src/", "a/b"),
+    // or code literal (".unwrap()", "todo!(", "dbg!(").
+    let file_re = regex::Regex::new(
+        r#"(?x)
+        \.[a-z]{1,5}\b[/\s,)'"]?   # extension-ish token: .rs, .py, .json
+        | \b\w{2,}/\w{2,}          # path segment: src/lib, docs/specs (not "I/O")
+        | \bsrc/ | \btests?/
+        | \.\w+\(\)                # method literal: .unwrap(), .clone()
+        | \w+!\(                   # macro literal: todo!(, dbg!(
+        "#,
+    )
+    .expect("static regex");
+    if file_re.is_match(&lower) {
+        return true;
+    }
+
+    // Function-shaped: function vocabulary + a shape word the AST
+    // predicates can actually measure.
+    let has_fn_word = regex::Regex::new(r"\b(fn|functions?|methods?)\b")
+        .expect("static regex")
+        .is_match(&lower);
+    let has_shape_word = regex::Regex::new(
+        r"\b(param(eter)?s?|doc(s|umented|umentation)?|tests?|assert\w*|derive[sd]?|clones?|public|pub)\b",
+    )
+    .expect("static regex")
+    .is_match(&lower);
+
+    has_fn_word && has_shape_word
 }
 
 fn score_entry(entry: MemoryEntry, rules: &RulesFile, durable_md: &str) -> DriftItem {
@@ -613,16 +654,72 @@ mod tests {
         assert!(parsed.is_none());
     }
 
-    #[test]
-    fn classifies_feedback_as_actionable() {
-        let entry = MemoryEntry {
+    fn entry_of(memory_type: &str, body: &str) -> MemoryEntry {
+        MemoryEntry {
             file_path: PathBuf::from("/tmp/x.md"),
             name: "x".into(),
             description: "".into(),
-            memory_type: "feedback".into(),
-            body: "".into(),
-        };
+            memory_type: memory_type.into(),
+            body: body.into(),
+        }
+    }
+
+    #[test]
+    fn classifies_feedback_as_actionable() {
+        // Feedback that names a concrete command is predicate-expressible.
+        let entry = entry_of("feedback", "Run `cargo fmt` before every commit.");
         assert_eq!(classify(&entry), Bucket::Actionable);
+    }
+
+    #[test]
+    fn operational_guidance_without_predicate_trigger_is_ambient() {
+        // The field-reported case: operational judgment no predicate can
+        // express. "kill a rustc" is prose describing a situation, not a
+        // command invocation the hook could gate.
+        let entry = entry_of(
+            "feedback",
+            "builds are I/O-bound slow; don't kill a rustc sitting at 0% CPU in disk-wait, it is not hung",
+        );
+        assert_eq!(classify(&entry), Bucket::Ambient);
+    }
+
+    #[test]
+    fn named_command_sequence_is_actionable() {
+        assert_eq!(
+            classify(&entry_of(
+                "feedback",
+                "never run git add -A; stage files explicitly"
+            )),
+            Bucket::Actionable
+        );
+        assert_eq!(
+            classify(&entry_of(
+                "feedback",
+                "always cargo test --workspace before claiming done"
+            )),
+            Bucket::Actionable
+        );
+    }
+
+    #[test]
+    fn code_shape_signal_is_actionable() {
+        assert_eq!(
+            classify(&entry_of(
+                "feedback",
+                "no .unwrap() in src/ — use ? for error propagation"
+            )),
+            Bucket::Actionable
+        );
+    }
+
+    #[test]
+    fn prose_mentioning_edit_verb_is_not_actionable() {
+        // "edit" as an English verb must not be mistaken for the Edit tool.
+        let entry = entry_of(
+            "feedback",
+            "be careful when you edit anything under the documentation tree",
+        );
+        assert_eq!(classify(&entry), Bucket::Ambient);
     }
 
     #[test]
