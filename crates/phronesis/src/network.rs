@@ -736,6 +736,82 @@ impl ReteNetwork {
             .collect())
     }
 
+    // ===== Public fact-query surface (v0.11) =====
+    //
+    // Sync snapshot queries over working memory. These exist so embedding
+    // hosts never need to reach into `wme_manager` directly; the shapes
+    // mirror the real consumer inventory (snapshot-all, predicate filter,
+    // positional-arg filters, id collection for batch retraction, by-id).
+    // Results are owned clones sorted by fact id — deterministic output
+    // for hosts that replay-test against recorded sessions.
+
+    /// Snapshot every fact currently in working memory, sorted by fact id.
+    pub fn facts_snapshot(&self) -> Result<Vec<Fact>, String> {
+        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+        let mut facts: Vec<Fact> = wme_manager
+            .get_all()
+            .into_iter()
+            .map(|wme| wme.fact.clone())
+            .collect();
+        facts.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(facts)
+    }
+
+    /// All facts with the given predicate, sorted by fact id.
+    pub fn facts_matching_predicate(&self, predicate: &str) -> Result<Vec<Fact>, String> {
+        self.facts_matching(predicate, &[])
+    }
+
+    /// Facts with the given predicate whose args match every
+    /// `(position, required value)` filter exactly. A filter position
+    /// beyond a fact's arg list never matches. An empty filter list
+    /// matches every fact with the predicate.
+    pub fn facts_matching(
+        &self,
+        predicate: &str,
+        arg_filters: &[(usize, &str)],
+    ) -> Result<Vec<Fact>, String> {
+        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+        let mut facts: Vec<Fact> = wme_manager
+            .get_by_predicate(predicate)
+            .into_iter()
+            .filter(|wme| {
+                arg_filters
+                    .iter()
+                    .all(|(idx, value)| wme.fact.args.get(*idx).map(String::as_str) == Some(*value))
+            })
+            .map(|wme| wme.fact.clone())
+            .collect();
+        facts.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(facts)
+    }
+
+    /// Ids of facts matching the predicate + arg filters — the shape
+    /// batch retraction wants: collect ids, then `retract_fact` each.
+    pub fn fact_ids_matching(
+        &self,
+        predicate: &str,
+        arg_filters: &[(usize, &str)],
+    ) -> Result<Vec<String>, String> {
+        Ok(self
+            .facts_matching(predicate, arg_filters)?
+            .into_iter()
+            .map(|f| f.id)
+            .collect())
+    }
+
+    /// The fact with the given id, if present.
+    pub fn get_fact_by_id(&self, fact_id: &str) -> Result<Option<Fact>, String> {
+        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+        Ok(wme_manager.get(fact_id).map(|wme| wme.fact.clone()))
+    }
+
+    /// Number of facts currently in working memory.
+    pub fn fact_count(&self) -> Result<usize, String> {
+        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+        Ok(wme_manager.len())
+    }
+
     /// Get all persistent facts (score, goal state, etc.) for save game
     /// Filters out transient facts like time_advanced, movement_completed, etc.
     pub fn get_persistent_facts(&self) -> Vec<Fact> {

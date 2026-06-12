@@ -106,6 +106,16 @@ impl WmeManager {
         }
     }
 
+    /// Number of WMEs currently in working memory
+    pub fn len(&self) -> usize {
+        self.wmes.len()
+    }
+
+    /// Whether working memory holds no WMEs
+    pub fn is_empty(&self) -> bool {
+        self.wmes.is_empty()
+    }
+
     /// Get WMEs by predicate for faster access
     pub fn get_by_predicate(&self, predicate: &str) -> Vec<&WorkingMemoryElement> {
         if let Some(wme_ids) = self.predicate_index.get(predicate) {
