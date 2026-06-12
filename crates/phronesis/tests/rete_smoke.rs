@@ -244,10 +244,7 @@ mod token_conditions_match_tests {
     fn condition_match_multiple_args() {
         let condition = Condition {
             predicate: "greet".to_string(),
-            args: vec!["?who", "?target"]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
+            args: vec!["?who".to_string(), "?target".to_string()],
             script: None,
         };
         let fact = Fact {

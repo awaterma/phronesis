@@ -169,7 +169,10 @@ mod tests {
     fn partial_eq_with_str_works() {
         let id = RuleId::new("foo");
         assert!(id == "foo");
-        assert!(id == "foo".to_string());
+        // Pre-bound so the owned-String PartialEq impl is exercised without
+        // tripping clippy::cmp_owned on an inline temporary.
+        let owned = String::from("foo");
+        assert!(id == owned);
     }
 
     #[test]

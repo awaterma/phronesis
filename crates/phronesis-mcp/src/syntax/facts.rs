@@ -334,25 +334,29 @@ mod tests {
     /// and the rule using it would never fire under `phr-mcp audit`.
     #[test]
     fn predicates_const_matches_all_facts_emission_set() {
-        let mut facts = SyntaxFacts::default();
         // Populate one entry in every Vec so every emission block fires.
-        facts.functions_returning_result_string = vec!["a".to_string()];
-        facts.function_param_types = vec![("a".to_string(), "b".to_string(), "c".to_string())];
-        facts.vec_ref_params = vec![("a".to_string(), "b".to_string())];
-        facts.function_param_counts_high = vec![("a".to_string(), 5)];
-        facts.function_clone_counts = vec![("a".to_string(), 1)];
-        facts.function_clone_counts_high = vec![("a".to_string(), 3)];
-        facts.function_let_binding_counts_high = vec![("a".to_string(), 8)];
-        facts.function_let_mut_counts_high = vec![("a".to_string(), 3)];
-        facts.pub_fns_without_doc_comment = vec!["a".to_string()];
-        facts.tests_without_assertion = vec!["a".to_string()];
-        facts.public_functions = vec!["a".to_string()];
-        facts.async_functions = vec!["a".to_string()];
-        facts.struct_derives = vec![("S".to_string(), "Debug".to_string())];
-        facts.engine_eval_string_literals = vec!["a".to_string()];
-        facts.swift_force_unwraps = vec![("a".to_string(), 1)];
-        facts.swift_throwing_functions = vec!["a".to_string()];
-        facts.swift_async_functions = vec!["a".to_string()];
+        // Exhaustive literal (no `..Default::default()`): adding a field to
+        // SyntaxFacts without populating it here is a compile error, which is
+        // exactly the drift signal this guard exists to produce.
+        let facts = SyntaxFacts {
+            functions_returning_result_string: vec!["a".to_string()],
+            function_param_types: vec![("a".to_string(), "b".to_string(), "c".to_string())],
+            vec_ref_params: vec![("a".to_string(), "b".to_string())],
+            function_param_counts_high: vec![("a".to_string(), 5)],
+            function_clone_counts: vec![("a".to_string(), 1)],
+            function_clone_counts_high: vec![("a".to_string(), 3)],
+            function_let_binding_counts_high: vec![("a".to_string(), 8)],
+            function_let_mut_counts_high: vec![("a".to_string(), 3)],
+            pub_fns_without_doc_comment: vec!["a".to_string()],
+            tests_without_assertion: vec!["a".to_string()],
+            public_functions: vec!["a".to_string()],
+            async_functions: vec!["a".to_string()],
+            struct_derives: vec![("S".to_string(), "Debug".to_string())],
+            engine_eval_string_literals: vec!["a".to_string()],
+            swift_force_unwraps: vec![("a".to_string(), 1)],
+            swift_throwing_functions: vec!["a".to_string()],
+            swift_async_functions: vec!["a".to_string()],
+        };
 
         let emitted: std::collections::BTreeSet<String> = facts
             .all_facts("/tmp/x.rs")

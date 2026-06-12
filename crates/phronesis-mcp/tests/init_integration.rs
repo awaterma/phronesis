@@ -765,18 +765,18 @@ fn init_gitignore_migrates_legacy_bare_phronesis_line() {
     let lines: Vec<&str> = gi.lines().map(str::trim).collect();
 
     assert!(
-        !lines.iter().any(|l| *l == ".phronesis/"),
+        !lines.contains(&".phronesis/"),
         "legacy bare `.phronesis/` must be rewritten; got:\n{gi}"
     );
     assert!(
-        lines.iter().any(|l| *l == ".phronesis/*"),
+        lines.contains(&".phronesis/*"),
         "migration must produce `.phronesis/*`; got:\n{gi}"
     );
 
     // Pre-existing unrelated content is preserved.
-    assert!(lines.iter().any(|l| *l == "/target"));
+    assert!(lines.contains(&"/target"));
     // Specific log entry that was already present stays put.
-    assert!(lines.iter().any(|l| *l == ".phronesis/log.jsonl"));
+    assert!(lines.contains(&".phronesis/log.jsonl"));
 }
 
 #[test]

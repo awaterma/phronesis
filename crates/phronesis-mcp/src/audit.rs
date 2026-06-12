@@ -1796,7 +1796,9 @@ mod tests {
             }],
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
-                params: vec!["`?fn` in ?file has ?count outer-scope `let mut` declarations.".to_string()],
+                params: vec![
+                    "`?fn` in ?file has ?count outer-scope `let mut` declarations.".to_string(),
+                ],
             }],
             silent: None,
             audit: Some(true),
@@ -2004,10 +2006,7 @@ fn mut_ladder() {
             "expected one rule with hits, got {:?}",
             report.per_rule,
         );
-        assert_eq!(
-            report.per_rule[0].rule_id,
-            "audit-rust-let-mut-count-high"
-        );
+        assert_eq!(report.per_rule[0].rule_id, "audit-rust-let-mut-count-high");
         assert_eq!(report.per_rule[0].hits, 1);
         assert_eq!(report.per_rule[0].level, Level::Warn);
     }
