@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Pinned to the workspace MSRV (rust-version in Cargo.toml). This is the
+  # gating job: a fixed toolchain keeps the rustfmt/clippy lint set stable so
+  # CI never breaks from a toolchain release, and it proves the MSRV claim.
+  msrv:
+    name: fmt + clippy + test (MSRV 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  # Forward-compat canary: tests on current stable. No clippy here, so new
+  # stable lints can't fail the build.
+  stable:
+    name: test (stable)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace
