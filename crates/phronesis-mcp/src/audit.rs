@@ -1807,6 +1807,72 @@ mod tests {
     }
 
     #[test]
+    fn run_evaluates_python_and_typescript_ast_predicates() {
+        // End-to-end: the .py/.ts extension dispatch reaches the new
+        // tree-sitter extractors and their predicates audit like the
+        // Rust ones do.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("svc.py"),
+            "def fetch(url):\n    \"\"\"F.\"\"\"\n    try:\n        go(url)\n    except:\n        pass\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("svc.ts"),
+            "function load(a: any): any { return a; }\n",
+        )
+        .unwrap();
+        let mk = |id: &str, predicate: &str, args: Vec<&str>| DiskRule {
+            id: id.to_string(),
+            phase: "audit".to_string(),
+            priority: 3,
+            conditions: vec![DiskCondition {
+                predicate: predicate.to_string(),
+                args: args.into_iter().map(String::from).collect(),
+                script: None,
+            }],
+            actions: vec![DiskAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec![format!("{} hit in ?file", predicate)],
+            }],
+            silent: None,
+            audit: Some(true),
+            doc_excepted: None,
+        };
+        let rules = RulesFile {
+            rules: vec![
+                mk(
+                    "audit-python-bare-except",
+                    "python_bare_except",
+                    vec!["?file", "?fn"],
+                ),
+                mk(
+                    "audit-ts-explicit-any",
+                    "ts_explicit_any",
+                    vec!["?file", "?fn", "?count"],
+                ),
+            ],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        let ids: Vec<&str> = report.per_rule.iter().map(|r| r.rule_id.as_str()).collect();
+        assert!(
+            ids.contains(&"audit-python-bare-except"),
+            "python predicate must audit; got {ids:?}"
+        );
+        assert!(
+            ids.contains(&"audit-ts-explicit-any"),
+            "typescript predicate must audit; got {ids:?}"
+        );
+    }
+
+    #[test]
     fn run_evaluates_ast_predicate_function_let_binding_count_high() {
         // Positive case: a function with 8+ outer-scope `let` bindings should
         // produce one audit hit on the let-binding rule.

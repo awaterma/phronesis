@@ -72,6 +72,28 @@ pub struct SyntaxFacts {
     pub swift_force_unwraps: Vec<(String, usize)>,
     pub swift_throwing_functions: Vec<String>,
     pub swift_async_functions: Vec<String>,
+
+    // ─── Python ─────────────────────────────────────────────────────
+    /// Enclosing function name (or `<module>`) per bare `except:` clause.
+    pub python_bare_excepts: Vec<String>,
+    /// (fn_name, param_name) for defaults that are mutable literals or
+    /// `list()`/`dict()`/`set()` calls — created once at def time.
+    pub python_mutable_default_args: Vec<(String, String)>,
+    /// (fn_name, count) for defs with 6+ parameters (`self`/`cls` excluded).
+    pub python_function_param_counts_high: Vec<(String, usize)>,
+    /// Public `def`s (no leading `_`) whose body lacks a docstring.
+    pub python_functions_missing_docstring: Vec<String>,
+
+    // ─── TypeScript ─────────────────────────────────────────────────
+    /// (fn_name or `<module>`, count) of explicit `any` type annotations.
+    pub ts_explicit_anys: Vec<(String, usize)>,
+    /// (fn_name or `<module>`, count) of non-null assertions (`x!`).
+    pub ts_non_null_assertions: Vec<(String, usize)>,
+    /// File-level count of `@ts-ignore` / `@ts-expect-error` /
+    /// `@ts-nocheck` comments.
+    pub ts_suppression_comment_count: usize,
+    /// (fn_name, count) for functions with 5+ parameters.
+    pub ts_function_param_counts_high: Vec<(String, usize)>,
 }
 
 impl SyntaxFacts {
@@ -101,6 +123,16 @@ impl SyntaxFacts {
         "function_throws",
         // `function_is_async` appears for both Rust and Swift but is
         // listed once because it's the same predicate name.
+        // Python
+        "python_bare_except",
+        "python_mutable_default_arg",
+        "python_function_param_count_high",
+        "python_function_missing_docstring",
+        // TypeScript
+        "ts_explicit_any",
+        "ts_non_null_assertion",
+        "ts_suppression_comment",
+        "ts_function_param_count_high",
     ];
 
     /// Flatten every populated field into a `Vec<Fact>` ready for assertion.
@@ -270,6 +302,81 @@ impl SyntaxFacts {
             });
         }
 
+        for (i, fn_name) in self.python_bare_excepts.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_bare_except_{}_{}", fn_name, i),
+                predicate: "python_bare_except".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, param)) in self.python_mutable_default_args.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_mutable_default_arg_{}_{}_{}", fn_name, param, i),
+                predicate: "python_mutable_default_arg".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), param.clone()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, count)) in self.python_function_param_counts_high.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_function_param_count_high_{}_{}", fn_name, i),
+                predicate: "python_function_param_count_high".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, fn_name) in self.python_functions_missing_docstring.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_function_missing_docstring_{}_{}", fn_name, i),
+                predicate: "python_function_missing_docstring".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, count)) in self.ts_explicit_anys.iter().enumerate() {
+            out.push(Fact {
+                id: format!("ts_explicit_any_{}_{}", fn_name, i),
+                predicate: "ts_explicit_any".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, count)) in self.ts_non_null_assertions.iter().enumerate() {
+            out.push(Fact {
+                id: format!("ts_non_null_assertion_{}_{}", fn_name, i),
+                predicate: "ts_non_null_assertion".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+            });
+        }
+
+        if self.ts_suppression_comment_count > 0 {
+            out.push(Fact {
+                id: "ts_suppression_comment_0".to_string(),
+                predicate: "ts_suppression_comment".to_string(),
+                args: vec![
+                    file_path.to_string(),
+                    self.ts_suppression_comment_count.to_string(),
+                ],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, count)) in self.ts_function_param_counts_high.iter().enumerate() {
+            out.push(Fact {
+                id: format!("ts_function_param_count_high_{}_{}", fn_name, i),
+                predicate: "ts_function_param_count_high".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+            });
+        }
+
         out
     }
 }
@@ -356,6 +463,14 @@ mod tests {
             swift_force_unwraps: vec![("a".to_string(), 1)],
             swift_throwing_functions: vec!["a".to_string()],
             swift_async_functions: vec!["a".to_string()],
+            python_bare_excepts: vec!["a".to_string()],
+            python_mutable_default_args: vec![("a".to_string(), "b".to_string())],
+            python_function_param_counts_high: vec![("a".to_string(), 6)],
+            python_functions_missing_docstring: vec!["a".to_string()],
+            ts_explicit_anys: vec![("a".to_string(), 1)],
+            ts_non_null_assertions: vec![("a".to_string(), 1)],
+            ts_suppression_comment_count: 1,
+            ts_function_param_counts_high: vec![("a".to_string(), 5)],
         };
 
         let emitted: std::collections::BTreeSet<String> = facts

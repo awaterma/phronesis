@@ -1482,6 +1482,36 @@ fn python_rules() -> Value {
                     {"new_content_contains": "except:"}
                 ],
                 "then": {"block": "Don't use bare `except:` — catch specific exception types. Bare except swallows KeymapInterrupt and SystemExit."}
+            },
+            {
+                "id": "audit-python-bare-except",
+                "phase": "audit",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_bare_except": ["?file", "?fn"]}
+                ],
+                "then": {"warn": "Bare `except:` in ?fn (?file) — catch specific exception types so KeyboardInterrupt/SystemExit pass through."}
+            },
+            {
+                "id": "warn-python-mutable-default-arg",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_mutable_default_arg": ["?file", "?fn", "?param"]}
+                ],
+                "then": {"warn": "Mutable default `?param` in ?fn — defaults are created once at def time and shared across calls. Use None and create inside."}
+            },
+            {
+                "id": "audit-python-missing-docstring",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"python_function_missing_docstring": ["?file", "?fn"]}
+                ],
+                "then": {"warn": "Public def ?fn in ?file has no docstring."}
             }
         ]
     })
@@ -1509,6 +1539,36 @@ fn typescript_rules() -> Value {
                     {"file_path_matches": "src"}
                 ],
                 "then": {"warn": "console.log in src/ — remove before committing, or use a proper logger."}
+            },
+            {
+                "id": "warn-ts-explicit-any-ast",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"ts_explicit_any": ["?file", "?fn", "?count"]}
+                ],
+                "then": {"warn": "?count explicit `any` annotation(s) in ?fn (?file) — narrow the type, or use `unknown` and refine with type guards."}
+            },
+            {
+                "id": "warn-ts-suppression-comment",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"ts_suppression_comment": ["?file", "?count"]}
+                ],
+                "then": {"warn": "?count @ts-ignore/@ts-expect-error/@ts-nocheck comment(s) in ?file — each one turns the type checker off somewhere. Fix the type instead."}
+            },
+            {
+                "id": "audit-ts-non-null-assertion",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"ts_non_null_assertion": ["?file", "?fn", "?count"]}
+                ],
+                "then": {"warn": "?count non-null assertion(s) (`x!`) in ?fn (?file) — prefer explicit narrowing or optional chaining."}
             }
         ]
     })

@@ -43,6 +43,8 @@ fs2 = "0.4"
 ignore = "0.4"
 chrono = "0.4"
 dirs = "5"
+tree-sitter-python = "0.25.0"
+tree-sitter-typescript = "0.23.2"
 
 [dev-dependencies]
 cucumber = "0.23"

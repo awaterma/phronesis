@@ -6,8 +6,10 @@
 
 pub mod facts;
 pub mod parsed;
+pub mod python;
 pub mod rust;
 pub mod swift;
+pub mod typescript;
 
 pub use facts::SyntaxFacts;
 
@@ -21,6 +23,9 @@ pub fn extract(file_path: &str, content: &str) -> SyntaxFacts {
     match ext {
         "rs" => rust::extract(content),
         "swift" => swift::extract(content),
+        "py" => python::extract(content),
+        "ts" => typescript::extract(content, false),
+        "tsx" => typescript::extract(content, true),
         _ => SyntaxFacts::default(),
     }
 }
