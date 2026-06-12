@@ -384,6 +384,7 @@ mod execute_agenda_item_substitution_tests {
             bindings,
             salience: 0,
             id: "ai-1".to_string(),
+            seq: 0,
         };
 
         let actions = net.execute_agenda_item(&agenda_item).unwrap();
@@ -431,6 +432,7 @@ mod fire_agenda_item_tests {
             bindings,
             salience: 0,
             id: "ai-1".to_string(),
+            seq: 0,
         }
     }
 

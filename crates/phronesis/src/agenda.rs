@@ -14,6 +14,11 @@ pub struct AgendaItem {
     pub bindings: Bindings, // Variable bindings from pattern matching
     pub salience: i32,      // Priority value
     pub id: String,
+    /// Monotonic insertion sequence — tiebreak so same-salience items
+    /// fire in insertion (FIFO) order instead of BinaryHeap-arbitrary
+    /// order. Deterministic firing is part of the engine's contract.
+    #[serde(default)]
+    pub seq: u64,
 }
 
 impl PartialEq for AgendaItem {
@@ -32,13 +37,19 @@ impl PartialOrd for AgendaItem {
 
 impl Ord for AgendaItem {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.salience.cmp(&other.salience)
+        // Max-heap: higher salience pops first; on ties, the lower seq
+        // (earlier insertion) must pop first, so it compares as greater.
+        self.salience
+            .cmp(&other.salience)
+            .then_with(|| other.seq.cmp(&self.seq))
     }
 }
 
 #[derive(Debug)]
 pub struct Agenda {
     pub items: BinaryHeap<AgendaItem>,
+    /// Next insertion sequence number for FIFO tie-breaking.
+    next_seq: u64,
 }
 
 impl Default for Agenda {
@@ -51,6 +62,7 @@ impl Agenda {
     pub fn new() -> Self {
         Agenda {
             items: BinaryHeap::new(),
+            next_seq: 0,
         }
     }
 
@@ -62,12 +74,15 @@ impl Agenda {
         bindings: Bindings,
         salience: i32,
     ) {
+        let seq = self.next_seq;
+        self.next_seq += 1;
         let agenda_item = AgendaItem {
             rule,
             wme_list,
             bindings,
             salience,
             id: Uuid::new_v4().to_string(),
+            seq,
         };
         self.items.push(agenda_item);
     }
@@ -82,10 +97,10 @@ impl Agenda {
         self.items.peek()
     }
 
-    /// Get all items (sorted by priority)
+    /// Get all items in firing order (salience descending, FIFO on ties)
     pub fn get_all_items(&self) -> Vec<&AgendaItem> {
         let mut items: Vec<&AgendaItem> = self.items.iter().collect();
-        items.sort_by(|a, b| b.salience.cmp(&a.salience)); // Sort descending by salience
+        items.sort_by(|a, b| b.cmp(a)); // same total order pop_next uses
         items
     }
 
