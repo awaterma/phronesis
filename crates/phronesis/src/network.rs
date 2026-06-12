@@ -197,11 +197,23 @@ impl ReteNetwork {
             beta_network.remove_wme_from_network(wme_id);
         }
 
-        // CRITICAL FIX: Clean up fired_activations that reference this WME
-        // This allows rules to fire again if the same fact is re-asserted later
+        // Clean up fired_activations that reference this WME so rules can
+        // fire again if the same fact is re-asserted later. Keys have the
+        // shape "rule_id:wme1,wme2,..." — compare exact id components, not
+        // substrings: retracting "f1" must not clobber the key for "f10".
         {
             let mut fired_activations = self.fired_activations.lock().map_err(|e| e.to_string())?;
-            fired_activations.retain(|key| !key.contains(wme_id));
+            fired_activations.retain(|key| match key.split_once(':') {
+                Some((_, wmes)) => !wmes.split(',').any(|w| w == wme_id),
+                None => true,
+            });
+        }
+
+        // Purge pending agenda items that reference the retracted WME — a
+        // stale activation must not fire with a fact that is no longer true.
+        {
+            let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+            agenda.remove_by_condition(|item| item.wme_list.iter().any(|w| w.id == wme_id));
         }
 
         // Update agenda after removal
