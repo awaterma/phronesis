@@ -31,6 +31,7 @@ pub mod beta_network;
 pub mod compose;
 pub mod consequence;
 pub mod engine_types;
+pub mod error;
 pub mod ids;
 pub mod network;
 pub mod production;
@@ -49,6 +50,7 @@ pub use compose::{
 };
 pub use consequence::{Consequence, ConsequenceKind, Provenance};
 pub use engine_types::{Action, Condition, Fact, PerformanceStats, Rule};
+pub use error::ReteError;
 pub use ids::{FactId, RuleId, StateId};
 pub use network::*;
 pub use production::*;

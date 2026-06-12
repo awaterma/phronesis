@@ -16,13 +16,16 @@ enum RulesLoadError {
     Load { path: String, message: String },
 }
 
-/// Hook-internal error type. Currently wraps engine `String` errors; future
-/// variants (e.g. `FactValidation`, `ContentTooLarge`) can be added without
-/// changing any helper signatures.
+/// Hook-internal error type. Engine failures arrive typed as
+/// [`phr::ReteError`]; the `Engine(String)` variant remains for non-engine
+/// string sources. Future variants (e.g. `FactValidation`,
+/// `ContentTooLarge`) can be added without changing helper signatures.
 #[derive(Debug, Error)]
 pub(crate) enum HookError {
     #[error("RETE engine error: {0}")]
     Engine(String),
+    #[error("RETE engine error: {0}")]
+    Rete(#[from] phr::ReteError),
 }
 
 impl From<String> for HookError {

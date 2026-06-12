@@ -69,8 +69,8 @@ impl EpistemeMcp {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
-    pub(crate) fn err(msg: String) -> McpError {
-        McpError::new(ErrorCode(-1), msg, None::<serde_json::Value>)
+    pub(crate) fn err(msg: impl ToString) -> McpError {
+        McpError::new(ErrorCode(-1), msg.to_string(), None::<serde_json::Value>)
     }
 
     fn validate_rule_params(params: &AddRuleParams) -> Result<(), security::SecurityError> {

@@ -21,6 +21,7 @@ use crate::alpha_network::AlphaNetwork;
 use crate::beta_network::BetaNetwork;
 use crate::consequence::Consequence;
 use crate::engine_types::{Action, Condition, Fact, PerformanceStats, Rule};
+use crate::error::ReteError;
 use crate::production::ProductionNetwork;
 use crate::script_evaluator::ScriptEvaluator;
 use crate::wme::{WmeManager, WorkingMemoryElement};
@@ -62,7 +63,7 @@ impl ReteNetwork {
     }
 
     /// Process a new fact through the RETE network
-    pub async fn assert_fact(&self, fact: Fact) -> Result<(), String> {
+    pub async fn assert_fact(&self, fact: Fact) -> Result<(), ReteError> {
         let start = Instant::now();
 
         let wme = WorkingMemoryElement::new(fact);
@@ -70,26 +71,37 @@ impl ReteNetwork {
 
         // Add WME to working memory
         {
-            let mut wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+            let mut wme_manager = self
+                .wme_manager
+                .lock()
+                .map_err(|_| ReteError::poisoned("wme_manager"))?;
             wme_manager.assert(wme)?;
         }
 
         // Process through alpha network
-        let alpha_match_results = {
-            let mut alpha_network = self.alpha_network.lock().map_err(|e| e.to_string())?;
-            let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
-            alpha_network.process_wme(
-                wme_manager
-                    .get(&wme_id)
-                    .ok_or_else(|| "WME missing after assertion".to_string())?,
-            )
-        };
+        let alpha_match_results =
+            {
+                let mut alpha_network = self
+                    .alpha_network
+                    .lock()
+                    .map_err(|_| ReteError::poisoned("alpha_network"))?;
+                let wme_manager = self
+                    .wme_manager
+                    .lock()
+                    .map_err(|_| ReteError::poisoned("wme_manager"))?;
+                alpha_network.process_wme(wme_manager.get(&wme_id).ok_or_else(|| {
+                    ReteError::Internal("WME missing after assertion".to_string())
+                })?)
+            };
 
         // Process through beta network — p-states create activations directly (Forgy).
         // Hold the beta lock once across all alpha matches instead of re-acquiring
         // per iteration.
         let p_state_activations = {
-            let mut beta_network = self.beta_network.lock().map_err(|e| e.to_string())?;
+            let mut beta_network = self
+                .beta_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("beta_network"))?;
             let mut acts = Vec::new();
             for (state_id, token) in alpha_match_results {
                 acts.extend(beta_network.process_token_from_source(&state_id, token));
@@ -103,9 +115,18 @@ impl ReteNetwork {
         // agenda. wme_manager is left per-iteration because `evaluate_script_conditions`
         // re-enters it and std::sync::Mutex isn't reentrant.
         if !p_state_activations.is_empty() {
-            let mut fired_activations = self.fired_activations.lock().map_err(|e| e.to_string())?;
-            let production_network = self.production_network.lock().map_err(|e| e.to_string())?;
-            let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+            let mut fired_activations = self
+                .fired_activations
+                .lock()
+                .map_err(|_| ReteError::poisoned("fired_activations"))?;
+            let production_network = self
+                .production_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("production_network"))?;
+            let mut agenda = self
+                .agenda
+                .lock()
+                .map_err(|_| ReteError::poisoned("agenda"))?;
 
             for activation in p_state_activations {
                 let wme_ids: Vec<String> =
@@ -138,7 +159,10 @@ impl ReteNetwork {
                     }
 
                     let wme_list = {
-                        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+                        let wme_manager = self
+                            .wme_manager
+                            .lock()
+                            .map_err(|_| ReteError::poisoned("wme_manager"))?;
                         activation
                             .token
                             .wmes
@@ -170,7 +194,10 @@ impl ReteNetwork {
 
         // Record metrics
         {
-            let mut values = self.performance_stats.lock().map_err(|e| e.to_string())?;
+            let mut values = self
+                .performance_stats
+                .lock()
+                .map_err(|_| ReteError::poisoned("performance_stats"))?;
             values.record_assertion(start.elapsed());
         }
 
@@ -178,22 +205,31 @@ impl ReteNetwork {
     }
 
     /// Retract a fact from the RETE network
-    pub async fn retract_fact(&self, wme_id: &str) -> Result<WorkingMemoryElement, String> {
+    pub async fn retract_fact(&self, wme_id: &str) -> Result<WorkingMemoryElement, ReteError> {
         // Remove from working memory
         let removed_wme = {
-            let mut wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+            let mut wme_manager = self
+                .wme_manager
+                .lock()
+                .map_err(|_| ReteError::poisoned("wme_manager"))?;
             wme_manager.retract(wme_id)?
         };
 
         // Update alpha network
         let _affected_alpha_states = {
-            let mut alpha_network = self.alpha_network.lock().map_err(|e| e.to_string())?;
+            let mut alpha_network = self
+                .alpha_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("alpha_network"))?;
             alpha_network.retract_wme(wme_id)
         };
 
         // Update beta network
         {
-            let mut beta_network = self.beta_network.lock().map_err(|e| e.to_string())?;
+            let mut beta_network = self
+                .beta_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("beta_network"))?;
             beta_network.remove_wme_from_network(wme_id);
         }
 
@@ -202,7 +238,10 @@ impl ReteNetwork {
         // shape "rule_id:wme1,wme2,..." — compare exact id components, not
         // substrings: retracting "f1" must not clobber the key for "f10".
         {
-            let mut fired_activations = self.fired_activations.lock().map_err(|e| e.to_string())?;
+            let mut fired_activations = self
+                .fired_activations
+                .lock()
+                .map_err(|_| ReteError::poisoned("fired_activations"))?;
             fired_activations.retain(|key| match key.split_once(':') {
                 Some((_, wmes)) => !wmes.split(',').any(|w| w == wme_id),
                 None => true,
@@ -212,7 +251,10 @@ impl ReteNetwork {
         // Purge pending agenda items that reference the retracted WME — a
         // stale activation must not fire with a fact that is no longer true.
         {
-            let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+            let mut agenda = self
+                .agenda
+                .lock()
+                .map_err(|_| ReteError::poisoned("agenda"))?;
             agenda.remove_by_condition(|item| item.wme_list.iter().any(|w| w.id == wme_id));
         }
 
@@ -223,7 +265,7 @@ impl ReteNetwork {
     }
 
     /// Add a rule to the RETE network
-    pub async fn add_rule(&self, rule: Rule) -> Result<String, String> {
+    pub async fn add_rule(&self, rule: Rule) -> Result<String, ReteError> {
         // Use a default salience value if not specified in the rule priority
         let salience = rule.priority;
 
@@ -232,7 +274,10 @@ impl ReteNetwork {
         // on activations, not matched through the alpha/beta network.
         let mut condition_state_ids = Vec::new();
         {
-            let mut alpha_network = self.alpha_network.lock().map_err(|e| e.to_string())?;
+            let mut alpha_network = self
+                .alpha_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("alpha_network"))?;
 
             for condition in &rule.conditions {
                 if condition.predicate == "__script__" {
@@ -252,7 +297,10 @@ impl ReteNetwork {
             for (i, next_condition_id) in condition_state_ids[1..].iter().enumerate() {
                 // Create a beta join state between the current state and the next condition
                 let join_state_id = {
-                    let mut beta_network = self.beta_network.lock().map_err(|e| e.to_string())?;
+                    let mut beta_network = self
+                        .beta_network
+                        .lock()
+                        .map_err(|_| ReteError::poisoned("beta_network"))?;
                     beta_network.get_or_create_join(
                         current_state_id.clone(),
                         next_condition_id.clone(),
@@ -263,7 +311,10 @@ impl ReteNetwork {
                 // FIX: Connect alpha states to the beta network
                 // For the first join, connect both alpha states to the beta state
                 if i == 0 {
-                    let mut alpha_network = self.alpha_network.lock().map_err(|e| e.to_string())?;
+                    let mut alpha_network = self
+                        .alpha_network
+                        .lock()
+                        .map_err(|_| ReteError::poisoned("alpha_network"))?;
                     // First alpha state feeds left input
                     if let Some(alpha_state) = alpha_network.states.get_mut(&current_state_id) {
                         alpha_state.add_child(join_state_id.clone());
@@ -274,7 +325,10 @@ impl ReteNetwork {
                     }
                 } else {
                     // For subsequent joins, connect the alpha state to right input
-                    let mut alpha_network = self.alpha_network.lock().map_err(|e| e.to_string())?;
+                    let mut alpha_network = self
+                        .alpha_network
+                        .lock()
+                        .map_err(|_| ReteError::poisoned("alpha_network"))?;
                     if let Some(alpha_state) = alpha_network.states.get_mut(next_condition_id) {
                         alpha_state.add_child(join_state_id.clone());
                     }
@@ -297,14 +351,19 @@ impl ReteNetwork {
         if let Some(ref terminal_id) = terminal_state_id
             && condition_state_ids.len() > 1
         {
-            let mut beta_network = self.beta_network.lock().map_err(|e| e.to_string())?;
+            let mut beta_network = self
+                .beta_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("beta_network"))?;
             beta_network.mark_as_p_state(terminal_id, rule.id.clone(), salience);
         }
 
         // Add the rule to the production network (with terminal link for retraction path)
         let state_id = {
-            let mut production_network =
-                self.production_network.lock().map_err(|e| e.to_string())?;
+            let mut production_network = self
+                .production_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("production_network"))?;
             production_network.add_rule_with_terminal(rule, salience, terminal_state_id)
         };
 
@@ -313,9 +372,12 @@ impl ReteNetwork {
 
     /// Incrementally update the agenda for single-condition rules when a new WME is asserted.
     /// Multi-condition rules are handled by p-state activations from beta network propagation.
-    async fn update_agenda_for_wme_single_condition(&self, wme_id: &str) -> Result<(), String> {
+    async fn update_agenda_for_wme_single_condition(&self, wme_id: &str) -> Result<(), ReteError> {
         let wme = {
-            let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+            let wme_manager = self
+                .wme_manager
+                .lock()
+                .map_err(|_| ReteError::poisoned("wme_manager"))?;
             match wme_manager.get(wme_id) {
                 Some(w) => w.clone(),
                 None => return Ok(()),
@@ -327,7 +389,10 @@ impl ReteNetwork {
         // candidates. Replaces the full `states.clone()` + 30-rule scan that
         // profiling showed was ~80% of assert_fact's total cost.
         let candidates: Vec<crate::production::SingleCondRuleEntry> = {
-            let production_network = self.production_network.lock().map_err(|e| e.to_string())?;
+            let production_network = self
+                .production_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("production_network"))?;
             match production_network
                 .single_cond_index
                 .get(&wme.fact.predicate)
@@ -341,7 +406,10 @@ impl ReteNetwork {
             return Ok(());
         }
 
-        let mut fired_activations = self.fired_activations.lock().map_err(|e| e.to_string())?;
+        let mut fired_activations = self
+            .fired_activations
+            .lock()
+            .map_err(|_| ReteError::poisoned("fired_activations"))?;
 
         for entry in candidates {
             if !entry.condition.matches(&wme.fact) {
@@ -370,7 +438,10 @@ impl ReteNetwork {
             }
 
             {
-                let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+                let mut agenda = self
+                    .agenda
+                    .lock()
+                    .map_err(|_| ReteError::poisoned("agenda"))?;
                 debug!(
                     "Adding single-condition rule '{}' to agenda for WME '{}'",
                     entry.rule.id, wme.id
@@ -387,15 +458,21 @@ impl ReteNetwork {
     /// Update the agenda based on current network state
     /// FIXED: Now handles both single-condition (alpha only) and multi-condition (beta) rules
     /// NOTE: This does a full scan - prefer update_agenda_for_wme() for incremental updates
-    pub async fn update_agenda(&self) -> Result<(), String> {
+    pub async fn update_agenda(&self) -> Result<(), ReteError> {
         // tracing::debug imported at module level
 
         // Use the persistent fired_activations set
-        let mut fired_activations = self.fired_activations.lock().map_err(|e| e.to_string())?;
+        let mut fired_activations = self
+            .fired_activations
+            .lock()
+            .map_err(|_| ReteError::poisoned("fired_activations"))?;
 
         // Get all production rules
         let rules = {
-            let production_network = self.production_network.lock().map_err(|e| e.to_string())?;
+            let production_network = self
+                .production_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("production_network"))?;
             production_network.states.clone()
         };
 
@@ -410,7 +487,10 @@ impl ReteNetwork {
                 let real_conds = Self::real_conditions(rule);
                 let condition = real_conds[0];
                 let alpha_matches = {
-                    let alpha_network = self.alpha_network.lock().map_err(|e| e.to_string())?;
+                    let alpha_network = self
+                        .alpha_network
+                        .lock()
+                        .map_err(|_| ReteError::poisoned("alpha_network"))?;
                     alpha_network
                         .get_wmes_by_condition(condition)
                         .into_iter()
@@ -445,7 +525,10 @@ impl ReteNetwork {
                         continue;
                     }
 
-                    let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+                    let mut agenda = self
+                        .agenda
+                        .lock()
+                        .map_err(|_| ReteError::poisoned("agenda"))?;
 
                     debug!(
                         "Adding single-condition rule '{}' to agenda with bindings {:?}",
@@ -464,7 +547,10 @@ impl ReteNetwork {
                 // Multi-condition rule: use the terminal p-state ID to scope to this rule's tokens
                 if let Some(ref terminal_id) = production_state.terminal_state_id {
                     let tokens = {
-                        let beta_network = self.beta_network.lock().map_err(|e| e.to_string())?;
+                        let beta_network = self
+                            .beta_network
+                            .lock()
+                            .map_err(|_| ReteError::poisoned("beta_network"))?;
                         beta_network
                             .states
                             .get(terminal_id)
@@ -494,7 +580,10 @@ impl ReteNetwork {
                         }
 
                         let wme_list = {
-                            let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+                            let wme_manager = self
+                                .wme_manager
+                                .lock()
+                                .map_err(|_| ReteError::poisoned("wme_manager"))?;
                             token
                                 .wmes
                                 .iter()
@@ -502,7 +591,10 @@ impl ReteNetwork {
                                 .collect::<Vec<_>>()
                         };
 
-                        let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+                        let mut agenda = self
+                            .agenda
+                            .lock()
+                            .map_err(|_| ReteError::poisoned("agenda"))?;
 
                         debug!(
                             "Adding multi-condition rule '{}' to agenda with {} WMEs and bindings {:?}",
@@ -533,7 +625,7 @@ impl ReteNetwork {
         &self,
         rule: &Rule,
         bindings: &crate::variable_binding::Bindings,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, ReteError> {
         // Collect script conditions
         let script_conditions: Vec<&Condition> = rule
             .conditions
@@ -547,7 +639,10 @@ impl ReteNetwork {
 
         // Get all current facts from working memory
         let facts: Vec<Fact> = {
-            let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+            let wme_manager = self
+                .wme_manager
+                .lock()
+                .map_err(|_| ReteError::poisoned("wme_manager"))?;
             wme_manager
                 .get_all()
                 .iter()
@@ -563,7 +658,9 @@ impl ReteNetwork {
             let script = condition
                 .script
                 .as_ref()
-                .ok_or_else(|| format!("Script condition missing script in rule '{}'", rule.id))?;
+                .ok_or_else(|| ReteError::ScriptMissing {
+                    rule_id: rule.id.clone(),
+                })?;
             match self
                 .script_evaluator
                 .evaluate(script, &facts, &bindings_map)
@@ -603,34 +700,42 @@ impl ReteNetwork {
     }
 
     /// Execute the next agenda item
-    pub fn execute_next_agenda_item(&self) -> Result<Vec<Action>, String> {
+    pub fn execute_next_agenda_item(&self) -> Result<Vec<Action>, ReteError> {
         let agenda_item = {
-            let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+            let mut agenda = self
+                .agenda
+                .lock()
+                .map_err(|_| ReteError::poisoned("agenda"))?;
             agenda.pop_next()
         };
 
         match agenda_item {
             Some(item) => {
                 let actions = {
-                    let production_network =
-                        self.production_network.lock().map_err(|e| e.to_string())?;
+                    let production_network = self
+                        .production_network
+                        .lock()
+                        .map_err(|_| ReteError::poisoned("production_network"))?;
                     production_network.execute_agenda_item(&item)?
                 };
 
                 Ok(actions)
             }
-            None => Err("No items in agenda".to_string()),
+            None => Err(ReteError::EmptyAgenda),
         }
     }
 
     /// Execute all agenda items
-    pub fn execute_all_agenda_items(&self) -> Result<Vec<Action>, String> {
+    pub fn execute_all_agenda_items(&self) -> Result<Vec<Action>, ReteError> {
         let start = Instant::now();
 
         let mut all_actions = Vec::new();
 
         while {
-            let agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+            let agenda = self
+                .agenda
+                .lock()
+                .map_err(|_| ReteError::poisoned("agenda"))?;
             !agenda.is_empty()
         } {
             all_actions.extend(self.execute_next_agenda_item()?);
@@ -638,7 +743,10 @@ impl ReteNetwork {
 
         // Record metrics
         {
-            let mut values = self.performance_stats.lock().map_err(|e| e.to_string())?;
+            let mut values = self
+                .performance_stats
+                .lock()
+                .map_err(|_| ReteError::poisoned("performance_stats"))?;
             values.record_evaluation(start.elapsed());
         }
 
@@ -649,13 +757,16 @@ impl ReteNetwork {
     /// producing `Consequence`s rather than raw `Action`s. New high-level
     /// entry point for callers that want rule_id + bindings on every fire.
     /// The legacy `execute_all_agenda_items` path stays available.
-    pub fn fire_all_consequences(&self) -> Result<Vec<Consequence>, String> {
+    pub fn fire_all_consequences(&self) -> Result<Vec<Consequence>, ReteError> {
         let start = Instant::now();
         let mut all = Vec::new();
 
         loop {
             let next_item = {
-                let mut agenda = self.agenda.lock().map_err(|e| e.to_string())?;
+                let mut agenda = self
+                    .agenda
+                    .lock()
+                    .map_err(|_| ReteError::poisoned("agenda"))?;
                 if agenda.is_empty() {
                     break;
                 }
@@ -667,15 +778,20 @@ impl ReteNetwork {
             };
 
             let consequences = {
-                let production_network =
-                    self.production_network.lock().map_err(|e| e.to_string())?;
+                let production_network = self
+                    .production_network
+                    .lock()
+                    .map_err(|_| ReteError::poisoned("production_network"))?;
                 production_network.fire_agenda_item(&item)?
             };
             all.extend(consequences);
         }
 
         {
-            let mut values = self.performance_stats.lock().map_err(|e| e.to_string())?;
+            let mut values = self
+                .performance_stats
+                .lock()
+                .map_err(|_| ReteError::poisoned("performance_stats"))?;
             values.record_evaluation(start.elapsed());
         }
 
@@ -724,14 +840,20 @@ impl ReteNetwork {
     }
 
     /// Get all WMEs currently in working memory
-    pub async fn get_all_wmes(&self) -> Result<Vec<WorkingMemoryElement>, String> {
-        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+    pub async fn get_all_wmes(&self) -> Result<Vec<WorkingMemoryElement>, ReteError> {
+        let wme_manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
         Ok(wme_manager.get_all().into_iter().cloned().collect())
     }
 
     /// Get the number of rules in the RETE network
-    pub async fn get_rules_count(&self) -> Result<usize, String> {
-        let production_network = self.production_network.lock().map_err(|e| e.to_string())?;
+    pub async fn get_rules_count(&self) -> Result<usize, ReteError> {
+        let production_network = self
+            .production_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("production_network"))?;
         Ok(production_network.get_rules_count())
     }
 
@@ -739,8 +861,11 @@ impl ReteNetwork {
     pub async fn get_wmes_by_condition(
         &self,
         condition: &Condition,
-    ) -> Result<Vec<WorkingMemoryElement>, String> {
-        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+    ) -> Result<Vec<WorkingMemoryElement>, ReteError> {
+        let wme_manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
         Ok(wme_manager
             .get_by_condition(condition)
             .into_iter()
@@ -758,8 +883,11 @@ impl ReteNetwork {
     // for hosts that replay-test against recorded sessions.
 
     /// Snapshot every fact currently in working memory, sorted by fact id.
-    pub fn facts_snapshot(&self) -> Result<Vec<Fact>, String> {
-        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+    pub fn facts_snapshot(&self) -> Result<Vec<Fact>, ReteError> {
+        let wme_manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
         let mut facts: Vec<Fact> = wme_manager
             .get_all()
             .into_iter()
@@ -770,7 +898,7 @@ impl ReteNetwork {
     }
 
     /// All facts with the given predicate, sorted by fact id.
-    pub fn facts_matching_predicate(&self, predicate: &str) -> Result<Vec<Fact>, String> {
+    pub fn facts_matching_predicate(&self, predicate: &str) -> Result<Vec<Fact>, ReteError> {
         self.facts_matching(predicate, &[])
     }
 
@@ -782,8 +910,11 @@ impl ReteNetwork {
         &self,
         predicate: &str,
         arg_filters: &[(usize, &str)],
-    ) -> Result<Vec<Fact>, String> {
-        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+    ) -> Result<Vec<Fact>, ReteError> {
+        let wme_manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
         let mut facts: Vec<Fact> = wme_manager
             .get_by_predicate(predicate)
             .into_iter()
@@ -804,7 +935,7 @@ impl ReteNetwork {
         &self,
         predicate: &str,
         arg_filters: &[(usize, &str)],
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, ReteError> {
         Ok(self
             .facts_matching(predicate, arg_filters)?
             .into_iter()
@@ -813,14 +944,20 @@ impl ReteNetwork {
     }
 
     /// The fact with the given id, if present.
-    pub fn get_fact_by_id(&self, fact_id: &str) -> Result<Option<Fact>, String> {
-        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+    pub fn get_fact_by_id(&self, fact_id: &str) -> Result<Option<Fact>, ReteError> {
+        let wme_manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
         Ok(wme_manager.get(fact_id).map(|wme| wme.fact.clone()))
     }
 
     /// Number of facts currently in working memory.
-    pub fn fact_count(&self) -> Result<usize, String> {
-        let wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+    pub fn fact_count(&self) -> Result<usize, ReteError> {
+        let wme_manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
         Ok(wme_manager.len())
     }
 
@@ -873,7 +1010,7 @@ impl ReteNetwork {
     }
 
     /// Restore persistent facts from a save game (async version)
-    pub async fn restore_persistent_facts(&self, facts: Vec<Fact>) -> Result<(), String> {
+    pub async fn restore_persistent_facts(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
         for fact in facts {
             self.assert_fact(fact).await?;
         }
@@ -882,8 +1019,11 @@ impl ReteNetwork {
 
     /// Restore persistent facts from a save game (sync version)
     /// This directly inserts into working memory without triggering rule evaluation
-    pub fn restore_persistent_facts_sync(&self, facts: Vec<Fact>) -> Result<(), String> {
-        let mut wme_manager = self.wme_manager.lock().map_err(|e| e.to_string())?;
+    pub fn restore_persistent_facts_sync(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
+        let mut wme_manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
         for fact in facts {
             let wme = WorkingMemoryElement::new(fact);
             wme_manager.assert(wme)?;
@@ -892,8 +1032,11 @@ impl ReteNetwork {
     }
 
     /// Get all rules currently loaded in the network
-    pub fn get_all_rules(&self) -> Result<Vec<Rule>, String> {
-        let production_network = self.production_network.lock().map_err(|e| e.to_string())?;
+    pub fn get_all_rules(&self) -> Result<Vec<Rule>, ReteError> {
+        let production_network = self
+            .production_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("production_network"))?;
         Ok(production_network
             .states
             .iter()
@@ -902,20 +1045,26 @@ impl ReteNetwork {
     }
 
     /// Get a specific rule by its ID
-    pub fn get_rule_by_id(&self, rule_id: &str) -> Result<Option<Rule>, String> {
-        let production_network = self.production_network.lock().map_err(|e| e.to_string())?;
+    pub fn get_rule_by_id(&self, rule_id: &str) -> Result<Option<Rule>, ReteError> {
+        let production_network = self
+            .production_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("production_network"))?;
         Ok(production_network
             .find_by_rule_id(rule_id)
             .map(|pn| pn.rule.clone()))
     }
 
     /// Remove a rule from the production network by its ID
-    pub fn remove_rule(&self, rule_id: &str) -> Result<(), String> {
-        let mut production_network = self.production_network.lock().map_err(|e| e.to_string())?;
+    pub fn remove_rule(&self, rule_id: &str) -> Result<(), ReteError> {
+        let mut production_network = self
+            .production_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("production_network"))?;
         let state_id = production_network
             .rule_index
             .remove(rule_id)
-            .ok_or_else(|| format!("Rule '{}' not found", rule_id))?;
+            .ok_or_else(|| ReteError::RuleNotFound(rule_id.to_string()))?;
         production_network.states.retain(|n| n.id != state_id);
         for entries in production_network.single_cond_index.values_mut() {
             entries.retain(|e| e.rule.id != rule_id);

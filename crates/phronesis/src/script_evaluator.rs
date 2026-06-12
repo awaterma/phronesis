@@ -13,6 +13,7 @@
 //! trait rather than replacing this.
 
 use crate::engine_types::Fact;
+use crate::error::ReteError;
 use std::collections::HashMap;
 
 /// Evaluates Rhai script conditions against the current RETE working memory.
@@ -35,7 +36,7 @@ impl ScriptEvaluator {
         script: &str,
         facts: &[Fact],
         bindings: &HashMap<String, String>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, ReteError> {
         let resolved = self.substitute_variables(script, bindings);
         let (negated, expression) = if let Some(rest) = resolved.strip_prefix('!') {
             (true, rest.trim())
@@ -48,7 +49,10 @@ impl ScriptEvaluator {
         } else if expression.contains("facts_count(") {
             self.evaluate_facts_count_comparison(expression, facts)?
         } else {
-            return Err(format!("Unknown script expression: {}", expression));
+            return Err(ReteError::ScriptEval(format!(
+                "Unknown script expression: {}",
+                expression
+            )));
         };
 
         Ok(if negated { !result } else { result })
@@ -62,11 +66,11 @@ impl ScriptEvaluator {
         result
     }
 
-    fn evaluate_facts_contain(&self, expr: &str, facts: &[Fact]) -> Result<bool, String> {
+    fn evaluate_facts_contain(&self, expr: &str, facts: &[Fact]) -> Result<bool, ReteError> {
         let inner = expr
             .strip_prefix("facts_contain(")
             .and_then(|s| s.strip_suffix(')'))
-            .ok_or_else(|| format!("Malformed facts_contain: {}", expr))?;
+            .ok_or_else(|| ReteError::ScriptEval(format!("Malformed facts_contain: {}", expr)))?;
 
         let (predicate_part, args_part) = self.split_predicate_and_args(inner)?;
 
@@ -83,23 +87,29 @@ impl ScriptEvaluator {
         }))
     }
 
-    fn split_predicate_and_args<'a>(&self, inner: &'a str) -> Result<(&'a str, &'a str), String> {
+    fn split_predicate_and_args<'a>(
+        &self,
+        inner: &'a str,
+    ) -> Result<(&'a str, &'a str), ReteError> {
         if let Some(bracket_start) = inner.find('[') {
-            let comma_pos = inner[..bracket_start]
-                .rfind(',')
-                .ok_or_else(|| format!("No comma separator in: {}", inner))?;
+            let comma_pos = inner[..bracket_start].rfind(',').ok_or_else(|| {
+                ReteError::ScriptEval(format!("No comma separator in: {}", inner))
+            })?;
             Ok((&inner[..comma_pos], &inner[comma_pos + 1..]))
         } else {
-            Err(format!("No args array found in: {}", inner))
+            Err(ReteError::ScriptEval(format!(
+                "No args array found in: {}",
+                inner
+            )))
         }
     }
 
-    fn parse_args_array(&self, s: &str) -> Result<Vec<String>, String> {
+    fn parse_args_array(&self, s: &str) -> Result<Vec<String>, ReteError> {
         let inner = s
             .trim()
             .strip_prefix('[')
             .and_then(|s| s.strip_suffix(']'))
-            .ok_or_else(|| format!("Malformed args array: {}", s))?;
+            .ok_or_else(|| ReteError::ScriptEval(format!("Malformed args array: {}", s)))?;
 
         if inner.trim().is_empty() {
             return Ok(vec![]);
@@ -114,11 +124,15 @@ impl ScriptEvaluator {
     /// Evaluate a `facts_count('predicate', ['arg1', '*']) >= N` expression.
     /// Counts facts matching the predicate and args pattern (with `*` wildcard),
     /// then applies the comparison operator against the threshold.
-    fn evaluate_facts_count_comparison(&self, expr: &str, facts: &[Fact]) -> Result<bool, String> {
+    fn evaluate_facts_count_comparison(
+        &self,
+        expr: &str,
+        facts: &[Fact],
+    ) -> Result<bool, ReteError> {
         // Parse: "facts_count('predicate', ['arg1', '*']) >= 5"
         let fc_start = expr
             .find("facts_count(")
-            .ok_or_else(|| format!("No facts_count in: {}", expr))?;
+            .ok_or_else(|| ReteError::ScriptEval(format!("No facts_count in: {}", expr)))?;
 
         // Find matching closing paren
         let inner_start = fc_start + "facts_count(".len();
@@ -167,14 +181,14 @@ impl ScriptEvaluator {
             "==" => count == threshold,
             "<=" => count <= threshold,
             "<" => count < threshold,
-            _ => Err(format!("Unknown operator: {}", op))?,
+            _ => Err(ReteError::ScriptEval(format!("Unknown operator: {}", op)))?,
         };
 
         Ok(result)
     }
 
     /// Parse a comparison operator and threshold from a string like ">= 5" or "< 10".
-    fn parse_comparison<'a>(&self, s: &'a str) -> Result<(&'a str, usize), String> {
+    fn parse_comparison<'a>(&self, s: &'a str) -> Result<(&'a str, usize), ReteError> {
         let s = s.trim();
         let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
             (">=", r)
@@ -187,13 +201,16 @@ impl ScriptEvaluator {
         } else if let Some(r) = s.strip_prefix('<') {
             ("<", r)
         } else {
-            return Err(format!("No comparison operator found in: {}", s));
+            return Err(ReteError::ScriptEval(format!(
+                "No comparison operator found in: {}",
+                s
+            )));
         };
 
         let threshold: usize = rest
             .trim()
             .parse()
-            .map_err(|_| format!("Invalid threshold number in: {}", s))?;
+            .map_err(|_| ReteError::ScriptEval(format!("Invalid threshold number in: {}", s)))?;
 
         Ok((op, threshold))
     }

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::engine_types::{Condition, Fact};
+use crate::error::ReteError;
 use crate::variable_binding::Bindings;
 
 /// Working Memory Element (WME) represents a fact in the RETE network
@@ -57,7 +58,7 @@ impl WmeManager {
     /// silently overwriting would corrupt the predicate index (the id
     /// would be listed twice) and mask state bugs in hosts that generate
     /// fact ids. Retract first to replace a fact.
-    pub fn assert(&mut self, wme: WorkingMemoryElement) -> Result<(), String> {
+    pub fn assert(&mut self, wme: WorkingMemoryElement) -> Result<(), ReteError> {
         let wme_id = wme.id.clone();
         let predicate = wme.fact.predicate.clone();
 
@@ -68,10 +69,7 @@ impl WmeManager {
             {
                 return Ok(());
             }
-            return Err(format!(
-                "duplicate fact id '{}' with different content — retract it first or use a distinct id",
-                wme_id
-            ));
+            return Err(ReteError::DuplicateFactId(wme_id));
         }
 
         self.wmes.insert(wme_id.clone(), wme);
@@ -86,7 +84,7 @@ impl WmeManager {
     }
 
     /// Retract a WME from the working memory
-    pub fn retract(&mut self, wme_id: &str) -> Result<WorkingMemoryElement, String> {
+    pub fn retract(&mut self, wme_id: &str) -> Result<WorkingMemoryElement, ReteError> {
         if let Some(wme) = self.wmes.remove(wme_id) {
             // Clean up predicate index
             if let Some(ids) = self.predicate_index.get_mut(&wme.fact.predicate) {
@@ -95,7 +93,7 @@ impl WmeManager {
 
             Ok(wme)
         } else {
-            Err(format!("WME with ID {} not found", wme_id))
+            Err(ReteError::FactNotFound(wme_id.to_string()))
         }
     }
 
@@ -179,7 +177,7 @@ impl Condition {
         &self,
         fact: &Fact,
         existing_bindings: &Bindings,
-    ) -> Result<Bindings, String> {
+    ) -> Result<Bindings, ReteError> {
         existing_bindings.can_bind(self, fact)
     }
 }

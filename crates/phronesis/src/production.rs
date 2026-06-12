@@ -6,6 +6,7 @@ use uuid::Uuid;
 use crate::agenda::AgendaItem;
 use crate::consequence::{Consequence, ConsequenceKind, Provenance};
 use crate::engine_types::{Action, Condition, Rule};
+use crate::error::ReteError;
 use crate::variable_binding::Bindings;
 use crate::wme::WorkingMemoryElement;
 use tracing::warn;
@@ -41,7 +42,7 @@ impl ProductionState {
 
     /// Execute the rule's actions given matching WMEs
     /// Substitutes variables in action parameters with values from WME bindings
-    pub fn execute(&self, wme_list: &[WorkingMemoryElement]) -> Result<Vec<Action>, String> {
+    pub fn execute(&self, wme_list: &[WorkingMemoryElement]) -> Result<Vec<Action>, ReteError> {
         use crate::variable_binding::Bindings;
 
         // Extract bindings from the WMEs by matching against rule conditions
@@ -172,15 +173,15 @@ impl ProductionNetwork {
         &self,
         state_id: &str,
         wme_list: &[WorkingMemoryElement],
-    ) -> Result<Vec<Action>, String> {
+    ) -> Result<Vec<Action>, ReteError> {
         match self.states.iter().find(|state| state.id == state_id) {
             Some(state) => state.execute(wme_list),
-            None => Err(format!("Production state with ID {} not found", state_id)),
+            None => Err(ReteError::ProductionStateNotFound(state_id.to_string())),
         }
     }
 
     /// Execute the next agenda item
-    pub fn execute_agenda_item(&self, agenda_item: &AgendaItem) -> Result<Vec<Action>, String> {
+    pub fn execute_agenda_item(&self, agenda_item: &AgendaItem) -> Result<Vec<Action>, ReteError> {
         // Find the corresponding production state
         match self
             .states
@@ -215,9 +216,8 @@ impl ProductionNetwork {
 
                 Ok(substituted_actions)
             }
-            None => Err(format!(
-                "Production state for rule {} not found",
-                agenda_item.rule.id
+            None => Err(ReteError::ProductionStateNotFound(
+                agenda_item.rule.id.clone(),
             )),
         }
     }
@@ -226,7 +226,10 @@ impl ProductionNetwork {
     /// `Consequence` per action with substituted params, rule_id, and bindings
     /// preserved on `Provenance::RuleFiring`. Newer caller path; the existing
     /// `execute_agenda_item` is retained for callers that only want `Action`s.
-    pub fn fire_agenda_item(&self, agenda_item: &AgendaItem) -> Result<Vec<Consequence>, String> {
+    pub fn fire_agenda_item(
+        &self,
+        agenda_item: &AgendaItem,
+    ) -> Result<Vec<Consequence>, ReteError> {
         let state = match self
             .states
             .iter()
@@ -234,9 +237,8 @@ impl ProductionNetwork {
         {
             Some(n) => n,
             None => {
-                return Err(format!(
-                    "Production state for rule {} not found",
-                    agenda_item.rule.id
+                return Err(ReteError::ProductionStateNotFound(
+                    agenda_item.rule.id.clone(),
                 ));
             }
         };

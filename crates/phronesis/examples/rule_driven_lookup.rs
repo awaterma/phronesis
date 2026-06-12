@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!(e))?;
     let actions = network
         .execute_all_agenda_items()
-        .map_err(|e: String| anyhow::anyhow!(e))?;
+        .map_err(anyhow::Error::from)?;
     println!("Rules fired, {} action(s) produced", actions.len());
 
     // Route the actions through the compose layer. The lookup_card

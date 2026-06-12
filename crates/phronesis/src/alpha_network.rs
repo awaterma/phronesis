@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::beta_network::BetaNetwork;
 use crate::engine_types::Condition;
+use crate::error::ReteError;
 use crate::ids::StateId;
 use crate::variable_binding::{Bindings, Token};
 use crate::wme::WorkingMemoryElement;
@@ -64,7 +65,7 @@ impl AlphaState {
     }
 
     /// Send tokens to child beta states
-    pub fn send_tokens_to_children(&self, beta_network: &mut BetaNetwork) -> Result<(), String> {
+    pub fn send_tokens_to_children(&self, beta_network: &mut BetaNetwork) -> Result<(), ReteError> {
         // For each WME in alpha memory, create a token and send to child beta states
         for wme in &self.alpha_memory {
             // Create bindings for this WME
@@ -150,7 +151,7 @@ impl AlphaNetwork {
         &mut self,
         wme: &WorkingMemoryElement,
         beta_network: &mut BetaNetwork,
-    ) -> Result<Vec<String>, String> {
+    ) -> Result<Vec<String>, ReteError> {
         let _matching_state_ids: Vec<String> = Vec::new();
 
         // Process WMEs to identify matching states and get tokens

@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::engine_types::{Condition, Fact};
+use crate::error::ReteError;
 use crate::wme::WorkingMemoryElement;
 use std::collections::HashMap;
 
@@ -25,19 +26,20 @@ impl Bindings {
     }
 
     /// Add a binding from a variable to a value
-    pub fn add_binding(&mut self, var: &str, value: &str) -> Result<(), String> {
+    pub fn add_binding(&mut self, var: &str, value: &str) -> Result<(), ReteError> {
         if !var.starts_with('?') {
-            return Err(format!("'{}' is not a variable (must start with '?')", var));
+            return Err(ReteError::InvalidVariable(var.to_string()));
         }
 
         // Check if the variable already has a different binding
         if let Some(existing) = self.bindings.get(var)
             && existing != value
         {
-            return Err(format!(
-                "Variable '{}' already bound to '{}' but trying to bind to '{}'",
-                var, existing, value
-            ));
+            return Err(ReteError::BindingConflict {
+                variable: var.to_string(),
+                existing: existing.clone(),
+                attempted: value.to_string(),
+            });
         }
 
         self.bindings.insert(var.to_string(), value.to_string());
@@ -50,13 +52,17 @@ impl Bindings {
     }
 
     /// Check if all variables in condition can be consistently bound with current bindings
-    pub fn can_bind(&self, condition: &Condition, fact: &Fact) -> Result<Bindings, String> {
+    pub fn can_bind(&self, condition: &Condition, fact: &Fact) -> Result<Bindings, ReteError> {
         if condition.predicate != fact.predicate {
-            return Err("Predicate mismatch".to_string());
+            return Err(ReteError::ConditionMismatch(
+                "Predicate mismatch".to_string(),
+            ));
         }
 
         if condition.args.len() != fact.args.len() {
-            return Err("Argument count mismatch".to_string());
+            return Err(ReteError::ConditionMismatch(
+                "Argument count mismatch".to_string(),
+            ));
         }
 
         let mut new_bindings = self.clone();
@@ -67,10 +73,11 @@ impl Bindings {
                 if let Some(existing_value) = new_bindings.get_binding(cond_arg) {
                     // Variable already bound - values must match
                     if existing_value != fact_arg {
-                        return Err(format!(
-                            "Variable '{}' bound to '{}' but fact has '{}'",
-                            cond_arg, existing_value, fact_arg
-                        ));
+                        return Err(ReteError::BindingConflict {
+                            variable: cond_arg.clone(),
+                            existing: existing_value.clone(),
+                            attempted: fact_arg.clone(),
+                        });
                     }
                 } else {
                     // Variable not yet bound - create new binding
@@ -79,10 +86,10 @@ impl Bindings {
             } else {
                 // This is a constant - must match exactly
                 if cond_arg != fact_arg {
-                    return Err(format!(
+                    return Err(ReteError::ConditionMismatch(format!(
                         "Constant '{}' does not match fact argument '{}'",
                         cond_arg, fact_arg
-                    ));
+                    )));
                 }
             }
         }
@@ -91,16 +98,17 @@ impl Bindings {
     }
 
     /// Check if two binding sets are consistent and merge them
-    pub fn merge(&self, other: &Bindings) -> Result<Bindings, String> {
+    pub fn merge(&self, other: &Bindings) -> Result<Bindings, ReteError> {
         let mut merged = self.clone();
 
         for (var, value) in &other.bindings {
             if let Some(existing_value) = merged.get_binding(var) {
                 if existing_value != value {
-                    return Err(format!(
-                        "Variable '{}' has conflicting bindings: '{}' vs '{}'",
-                        var, existing_value, value
-                    ));
+                    return Err(ReteError::BindingConflict {
+                        variable: var.clone(),
+                        existing: existing_value.clone(),
+                        attempted: value.clone(),
+                    });
                 }
             } else {
                 merged.bindings.insert(var.clone(), value.clone());
@@ -160,7 +168,7 @@ impl Token {
         &self,
         wme: WorkingMemoryElement,
         additional_bindings: &Bindings,
-    ) -> Result<Token, String> {
+    ) -> Result<Token, ReteError> {
         let new_bindings = self.bindings.merge(additional_bindings)?;
         let mut new_wmes = self.wmes.clone();
         new_wmes.push(wme);
