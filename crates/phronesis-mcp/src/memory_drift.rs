@@ -367,29 +367,32 @@ fn score_entry(entry: MemoryEntry, rules: &RulesFile, durable_md: &str) -> Drift
         }
     }
 
-    // Score against each non-empty paragraph in durable.md.
-    if bucket == Bucket::Ambient {
-        for para in durable_md.split("\n\n") {
-            let para = para.trim();
-            if para.is_empty() {
-                continue;
-            }
-            let para_tokens = meaningful_tokens(para);
-            if para_tokens.is_empty() {
-                continue;
-            }
-            let (jaccard, shared) = jaccard_with_shared(&entry_tokens, &para_tokens);
-            if jaccard > 0.0 {
-                let excerpt = para.chars().take(80).collect::<String>();
-                let candidate = (
-                    jaccard,
-                    MatchedTarget::DurableParagraph {
-                        excerpt,
-                        shared_terms: shared,
-                    },
-                );
-                best = better(best, candidate);
-            }
+    // Score against each non-empty paragraph in durable.md — for BOTH
+    // buckets. An actionable entry the operator chose to port as prose
+    // must still register as covered (the renderer notes "rule still
+    // preferable"); gating this to Ambient made the drift list
+    // non-convergent: ported actionable entries reported "port to a
+    // rule" forever.
+    for para in durable_md.split("\n\n") {
+        let para = para.trim();
+        if para.is_empty() {
+            continue;
+        }
+        let para_tokens = meaningful_tokens(para);
+        if para_tokens.is_empty() {
+            continue;
+        }
+        let (jaccard, shared) = jaccard_with_shared(&entry_tokens, &para_tokens);
+        if jaccard > 0.0 {
+            let excerpt = para.chars().take(80).collect::<String>();
+            let candidate = (
+                jaccard,
+                MatchedTarget::DurableParagraph {
+                    excerpt,
+                    shared_terms: shared,
+                },
+            );
+            best = better(best, candidate);
         }
     }
 
@@ -834,6 +837,122 @@ mod tests {
             similarity: 0.5,
         };
         assert!(suggest_rule(&item).is_none());
+    }
+
+    fn write_durable(project_root: &Path, contents: &str) {
+        let phr_dir = project_root.join(".phronesis");
+        fs::create_dir_all(&phr_dir).expect("create .phronesis");
+        fs::write(phr_dir.join("durable.md"), contents).expect("write durable.md");
+    }
+
+    const PORTED_ENTRY: &str = "---\nname: no-bulk-staging\ndescription: Never use bulk staging.\nmetadata:\n  type: feedback\n---\n\nnever run git add -A; stage files explicitly before commit\n";
+
+    const PORTED_PARAGRAPH: &str = "Never run git add -A or git add . — stage files \
+explicitly so unrelated changes stay out of the commit.";
+
+    #[test]
+    fn ported_paragraph_registers_as_covered_for_any_bucket() {
+        // Convergence: once guidance is ported to durable.md, the drift
+        // list must report it covered — even for an actionable-bucketed
+        // entry. Before the fix, durable.md was only scored for Ambient
+        // entries, so actionable ones stayed at "port to a rule" forever.
+        let project_root = TempDir::new().unwrap();
+        empty_rules_path(project_root.path());
+        write_durable(
+            project_root.path(),
+            &format!(
+                "# Durable directives\n\nUnrelated paragraph about narration tone.\n\n{PORTED_PARAGRAPH}\n"
+            ),
+        );
+        let memory_dir = project_root.path().join("memory");
+        fs::create_dir(&memory_dir).unwrap();
+        write_memory(&memory_dir, "feedback_no_bulk_staging.md", PORTED_ENTRY);
+
+        let report = run_with_dir(project_root.path(), &memory_dir).unwrap();
+        let item = &report.items[0];
+        assert_eq!(
+            item.bucket,
+            Bucket::Actionable,
+            "command-shaped → actionable"
+        );
+        assert!(
+            item.similarity >= report.coverage_threshold,
+            "ported paraphrase must register; similarity {} < threshold {}",
+            item.similarity,
+            report.coverage_threshold
+        );
+        assert!(
+            matches!(
+                item.best_match,
+                Some(MatchedTarget::DurableParagraph { .. })
+            ),
+            "best match must be the durable paragraph: {:?}",
+            item.best_match
+        );
+        let table = render_table(&report);
+        assert!(
+            table.contains("overlap with durable.md"),
+            "suggestion must register the durable coverage:\n{table}"
+        );
+    }
+
+    #[test]
+    fn durable_match_is_per_paragraph_not_whole_file() {
+        // Padding durable.md with unrelated paragraphs must not dilute the
+        // match — scoring is per paragraph, never against the whole file.
+        let project_root = TempDir::new().unwrap();
+        empty_rules_path(project_root.path());
+        let padding: String = (0..12)
+            .map(|i| {
+                format!(
+                    "Paragraph {i} about an unrelated topic: dragons, taverns, \
+initiative order, encumbrance tables, and the moon phase calendar.\n\n"
+                )
+            })
+            .collect();
+        write_durable(
+            project_root.path(),
+            &format!("{padding}{PORTED_PARAGRAPH}\n"),
+        );
+        let memory_dir = project_root.path().join("memory");
+        fs::create_dir(&memory_dir).unwrap();
+        write_memory(&memory_dir, "feedback_no_bulk_staging.md", PORTED_ENTRY);
+
+        let report = run_with_dir(project_root.path(), &memory_dir).unwrap();
+        let item = &report.items[0];
+        assert!(
+            item.similarity >= report.coverage_threshold,
+            "padding must not dilute the per-paragraph match; similarity {}",
+            item.similarity
+        );
+    }
+
+    #[test]
+    fn durable_md_is_read_fresh_per_run() {
+        // Two runs in the same process, durable.md edited between them:
+        // the second run must see the new paragraph. Pins the no-caching
+        // property the MCP server relies on (its handler calls run() per
+        // tool invocation).
+        let project_root = TempDir::new().unwrap();
+        empty_rules_path(project_root.path());
+        write_durable(project_root.path(), "Nothing relevant here.\n");
+        let memory_dir = project_root.path().join("memory");
+        fs::create_dir(&memory_dir).unwrap();
+        write_memory(&memory_dir, "feedback_no_bulk_staging.md", PORTED_ENTRY);
+
+        let before = run_with_dir(project_root.path(), &memory_dir).unwrap();
+        assert!(before.items[0].similarity < before.coverage_threshold);
+
+        write_durable(
+            project_root.path(),
+            &format!("Nothing relevant here.\n\n{PORTED_PARAGRAPH}\n"),
+        );
+        let after = run_with_dir(project_root.path(), &memory_dir).unwrap();
+        assert!(
+            after.items[0].similarity >= after.coverage_threshold,
+            "live edit must be visible on the next call; similarity {}",
+            after.items[0].similarity
+        );
     }
 
     #[test]
