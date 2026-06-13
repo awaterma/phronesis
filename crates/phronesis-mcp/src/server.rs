@@ -775,6 +775,9 @@ impl EpistemeMcp {
             rule_filter: params.rule.clone(),
         };
         let report = run(&rules, &opts);
+        let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
+        let diag =
+            crate::audit::empty_result_diagnostic(&report, audit_tagged_count, &opts.scan_root);
 
         // Write the audit snapshot to the log so get_debt_trend can read it.
         Self::log_event("audit_codebase", |e| {
@@ -806,13 +809,18 @@ impl EpistemeMcp {
                 .with("per_rule", serde_json::Value::Object(per_rule))
         });
 
-        match params.format.as_deref() {
+        let body = match params.format.as_deref() {
             Some("table") => {
                 let expand = params.rule.is_some();
-                Self::ok_text(render_table(&report, expand))
+                render_table(&report, expand)
             }
-            _ => Self::ok_text(render_json(&report)),
-        }
+            _ => render_json(&report),
+        };
+        let response = match diag {
+            Some(msg) => format!("{}\n\n{}", msg, body),
+            None => body,
+        };
+        Self::ok_text(response)
     }
 
     #[tool(

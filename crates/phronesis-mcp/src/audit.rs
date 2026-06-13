@@ -673,6 +673,55 @@ pub fn discover_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
     out
 }
 
+// ── Wrapper diagnostics ─────────────────────────────────────────────────────
+
+/// Explain a no-hits audit result when a recoverable misconfiguration is the
+/// likely cause. Returns `Some(message)` for two cases:
+///
+/// 1. `audit_tagged_count == 0` — rules exist on disk but none carry
+///    `audit: true`, so the walker never starts. The audit's JSON shape
+///    (`{files_scanned: 0, rules: []}`) looks identical to a tool failure
+///    from the outside; this message names the recoverable cause.
+///
+/// 2. `audit_tagged_count > 0 && files_scanned == 0` — rules are opted in
+///    but the walker found nothing under `scan_root`. Almost always an
+///    over-broad `.gitignore` / `.phronesisignore` or a misrouted `path`
+///    argument.
+///
+/// Returns `None` when the report has hits, or when zero hits is the
+/// honest answer (rules opted in, files scanned, nothing matched).
+///
+/// Wrappers route the message to stderr (CLI) or prepend to the response
+/// body (MCP). Audit's structured shape stays unchanged.
+pub fn empty_result_diagnostic(
+    report: &AuditReport,
+    audit_tagged_count: usize,
+    scan_root: &Path,
+) -> Option<String> {
+    if !report.per_rule.is_empty() {
+        return None;
+    }
+    if audit_tagged_count == 0 {
+        return Some(
+            "phronesis: no rules have `audit: true` on disk. rules.json holds rules, \
+             but none are opted into the whole-tree audit — so the walker never starts. \
+             Add `\"audit\": true` to the rules you want surfaced here, or re-run \
+             `phr-mcp init --rules-only --force` to refresh the starter pack."
+                .to_string(),
+        );
+    }
+    if report.files_scanned == 0 {
+        return Some(format!(
+            "phronesis: {} opted-in rule(s) on disk but walked 0 files under {}. \
+             Check `.gitignore` / `.phronesisignore` for over-broad patterns, \
+             or verify the `path` argument resolves to your source tree.",
+            audit_tagged_count,
+            scan_root.display(),
+        ));
+    }
+    None
+}
+
 // ── Trend types and compute_trend ───────────────────────────────────────────
 
 use crate::action_log::LogEntry;
@@ -2718,5 +2767,75 @@ fn short() {
         assert_eq!(files[0]["path"], "src/engine.rs");
         let lines = files[0]["lines"].as_array().unwrap();
         assert_eq!(lines.len(), 3);
+    }
+
+    fn empty_report() -> AuditReport {
+        AuditReport {
+            generated_at: 0,
+            scan_duration_ms: 0,
+            files_scanned: 0,
+            per_rule: Vec::new(),
+        }
+    }
+
+    fn report_with_hits() -> AuditReport {
+        AuditReport {
+            generated_at: 0,
+            scan_duration_ms: 0,
+            files_scanned: 5,
+            per_rule: vec![RuleAudit {
+                rule_id: "r".into(),
+                level: Level::Warn,
+                hits: 1,
+                files: vec![FileAudit {
+                    path: PathBuf::from("a.rs"),
+                    lines: vec![1],
+                }],
+            }],
+        }
+    }
+
+    #[test]
+    fn empty_diagnostic_returns_none_when_report_has_hits() {
+        let r = report_with_hits();
+        assert!(empty_result_diagnostic(&r, 5, Path::new("/proj")).is_none());
+    }
+
+    #[test]
+    fn empty_diagnostic_flags_zero_audit_tagged_rules() {
+        let r = empty_report();
+        let msg = empty_result_diagnostic(&r, 0, Path::new("/proj"))
+            .expect("zero audit-tagged rules must produce a diagnostic");
+        assert!(
+            msg.contains("audit: true"),
+            "message must name the recoverable cause; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_diagnostic_flags_walker_zero_files_when_rules_opted_in() {
+        let r = empty_report();
+        let msg = empty_result_diagnostic(&r, 5, Path::new("/proj/src"))
+            .expect("opted-in rules but zero scanned files must produce a diagnostic");
+        assert!(
+            msg.contains("0 files") && msg.contains("/proj/src"),
+            "message must call out walker scope and scan_root; got: {msg}"
+        );
+        assert!(
+            msg.contains(".gitignore") || msg.contains(".phronesisignore"),
+            "message should point at ignore files as a likely cause; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_diagnostic_silent_for_legitimately_clean_audit() {
+        // Rules opted in, files walked, simply no violations — the honest
+        // zero. No diagnostic; the normal renderer's "no violations" line
+        // covers it.
+        let r = AuditReport {
+            files_scanned: 50,
+            ..empty_report()
+        };
+        assert!(empty_result_diagnostic(&r, 3, Path::new("/proj")).is_none());
     }
 }

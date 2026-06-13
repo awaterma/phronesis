@@ -381,6 +381,12 @@ async fn main() -> anyhow::Result<()> {
                 rule_filter: rule.clone(),
             };
             let report = run(&rules, &opts);
+            let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
+            let diag = phronesis_mcp::audit::empty_result_diagnostic(
+                &report,
+                audit_tagged_count,
+                &opts.scan_root,
+            );
 
             // Write a snapshot entry so `phr-mcp trend` can read it.
             // Matches the shape the MCP `audit_codebase` tool writes.
@@ -419,6 +425,11 @@ async fn main() -> anyhow::Result<()> {
 
             if json {
                 println!("{}", render_json(&report));
+                if let Some(msg) = &diag {
+                    eprintln!("{}", msg);
+                }
+            } else if let Some(msg) = &diag {
+                eprintln!("{}", msg);
             } else {
                 let expand = rule.is_some();
                 print!("{}", render_table(&report, expand));
