@@ -303,14 +303,13 @@ impl EpistemeMcp {
         Parameters(params): Parameters<FactIdParam>,
     ) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
-        let wmes = network.get_all_wmes().await.map_err(Self::err)?;
-        match wmes
-            .iter()
-            .find(|wme| wme.fact.id == params.fact_id.as_str())
+        match network
+            .get_fact_by_id(params.fact_id.as_str())
+            .map_err(Self::err)?
         {
-            Some(wme) => {
-                let json = serde_json::to_string_pretty(&wme.fact)
-                    .map_err(|e| Self::err(e.to_string()))?;
+            Some(fact) => {
+                let json =
+                    serde_json::to_string_pretty(&fact).map_err(|e| Self::err(e.to_string()))?;
                 Self::ok_text(json)
             }
             None => Self::ok_text(format!("Fact '{}' not found", params.fact_id)),
