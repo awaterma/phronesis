@@ -5,6 +5,10 @@
 **/.phronesis/log.jsonl.1
 **/.phronesis/rules.json.bak
 
+# Private cross-project docs — reference rulgamr internals, keep local, never publish
+docs/specs/rulgamr-migration-map.md
+docs/specs/PLAN-v0.11-hardening.md
+
 # Local IDE / agent configs (not part of the project)
 .claude/
 .crush/
