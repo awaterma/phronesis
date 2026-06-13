@@ -1,9 +1,9 @@
 //! Public fact-query API over working memory (v0.11).
 //!
-//! These queries exist so embedding hosts (rulgamr, phr-mcp) never need to
-//! reach into `ReteNetwork::wme_manager` directly. Shapes mirror the
-//! real call-site inventory from rulgamr: snapshot-all, predicate filter,
-//! positional-arg filters, id collection for batch retraction, by-id get.
+//! These queries exist so embedding hosts never need to reach into
+//! `ReteNetwork::wme_manager` directly. Shapes mirror a real consumer's
+//! call-site inventory: snapshot-all, predicate filter, positional-arg
+//! filters, id collection for batch retraction, by-id get.
 
 use phronesis::engine_types::Fact;
 use phronesis::network::ReteNetwork;
@@ -54,7 +54,7 @@ async fn matching_predicate_returns_only_that_predicate() {
 async fn matching_with_positional_filters() {
     let net = seeded().await;
 
-    // predicate + args[0] (the rulgamr "scoped to combat_id/char_id" shape)
+    // predicate + args[0] (the common "scoped to an entity id" shape)
     let alice = net
         .facts_matching("equipped", &[(0, "alice")])
         .expect("query");
