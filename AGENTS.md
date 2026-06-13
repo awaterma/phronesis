@@ -551,7 +551,7 @@ GitHub Pages: https://awaterma.github.io/phronesis/
 
 ## Versioning & Releases
 
-**Current version:** `0.6.1` (workspace-wide)
+**Current version:** `0.11.0` (workspace-wide)
 
 **Semver (pre-1.0):**
 - **MINOR** (`0.X.0`) - New features (subcommand, pack, hook surface, user-visible)
@@ -678,5 +678,5 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 
 ---
 
-*Last updated: 2026-05-25*
-*Based on phronesis v0.6.1*
+*Last updated: 2026-06-13*
+*Based on phronesis v0.11.0*
