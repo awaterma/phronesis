@@ -84,6 +84,38 @@ async fn matching_with_positional_filters() {
 }
 
 #[tokio::test]
+async fn matching_predicate_set_membership() {
+    let net = seeded().await;
+
+    // union of predicates, sorted by fact id
+    let hits = net
+        .facts_matching_predicates(&["equipped", "gold"])
+        .expect("query");
+    assert_eq!(hits.len(), 4);
+    let ids: Vec<&str> = hits.iter().map(|f| f.id.as_str()).collect();
+    assert_eq!(ids, vec!["e1", "e2", "e3", "g1"]);
+
+    // a single-element set
+    let gold = net.facts_matching_predicates(&["gold"]).expect("query");
+    assert_eq!(gold.len(), 1);
+    assert_eq!(gold[0].id, "g1");
+
+    // empty set matches nothing
+    assert!(
+        net.facts_matching_predicates(&[])
+            .expect("query")
+            .is_empty()
+    );
+
+    // a predicate with no facts contributes nothing
+    let mixed = net
+        .facts_matching_predicates(&["gold", "no_such_predicate"])
+        .expect("query");
+    assert_eq!(mixed.len(), 1);
+    assert_eq!(mixed[0].id, "g1");
+}
+
+#[tokio::test]
 async fn get_fact_by_id_and_count() {
     let net = seeded().await;
     let e1 = net.get_fact_by_id("e1").expect("query");

@@ -907,6 +907,25 @@ impl ReteNetwork {
         self.facts_matching(predicate, &[])
     }
 
+    /// All facts whose predicate is in `predicates` (set membership), sorted
+    /// by fact id. Duplicate predicates in the input do not duplicate facts.
+    /// The generic, caller-owned replacement for "give me the facts I treat
+    /// as a category" (e.g. persistent / save-game state).
+    pub fn facts_matching_predicates(&self, predicates: &[&str]) -> Result<Vec<Fact>, ReteError> {
+        let wme_manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
+        let mut facts: Vec<Fact> = predicates
+            .iter()
+            .flat_map(|p| wme_manager.get_by_predicate(p))
+            .map(|wme| wme.fact.clone())
+            .collect();
+        facts.sort_by(|a, b| a.id.cmp(&b.id));
+        facts.dedup_by(|a, b| a.id == b.id);
+        Ok(facts)
+    }
+
     /// Facts with the given predicate whose args match every
     /// `(position, required value)` filter exactly. A filter position
     /// beyond a fact's arg list never matches. An empty filter list
@@ -966,8 +985,15 @@ impl ReteNetwork {
         Ok(wme_manager.len())
     }
 
-    /// Get all persistent facts (score, goal state, etc.) for save game
-    /// Filters out transient facts like time_advanced, movement_completed, etc.
+    /// Get all persistent facts (score, goal state, etc.) for save game.
+    ///
+    /// Deprecated: this hardcodes a consumer-specific predicate list, which
+    /// doesn't belong in a domain-neutral engine. Define your own predicate
+    /// set and call [`ReteNetwork::facts_matching_predicates`] instead.
+    #[deprecated(
+        since = "0.11.0",
+        note = "define your own predicate set and call facts_matching_predicates(&YOUR_SET); this hardcodes consumer-specific predicates and will be removed in 0.12"
+    )]
     pub fn get_persistent_facts(&self) -> Vec<Fact> {
         // Predicates that represent persistent game state
         const PERSISTENT_PREDICATES: &[&str] = &[
@@ -991,7 +1017,7 @@ impl ReteNetwork {
             "compliance_level",
             "directory_audited",
             "task_failed",
-            // rulgamr: quest, alignment, and deity state
+            // consumer-specific game-state predicates (removed in 0.12)
             "accomplishment_earned",
             "location_cleared",
             "deity_quest_offered",

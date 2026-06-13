@@ -1,7 +1,7 @@
 //! Core types for the RETE pattern matching engine
 //!
 //! This module defines the fundamental data structures used by the RETE network
-//! for rule-based card game logic: Facts, Conditions, Actions, and Rules.
+//! for rule-based logic: Facts, Conditions, Actions, and Rules.
 
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -12,9 +12,9 @@ use tracing::info;
 pub struct Fact {
     /// Unique identifier for the fact
     pub id: String,
-    /// Predicate describing the relationship (e.g., "player_at_state")
+    /// Predicate describing the relationship (e.g., "located_at")
     pub predicate: String,
-    /// Arguments for the predicate (e.g., ["player_id", "state_id"])
+    /// Arguments for the predicate (e.g., ["entity_id", "location_id"])
     pub args: Vec<String>,
     /// Timestamp when the fact was created
     pub timestamp: u64,
