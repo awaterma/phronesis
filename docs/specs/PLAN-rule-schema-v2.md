@@ -4,7 +4,7 @@
 
 **Goal:** Ship phronesis-mcp 0.8.0 — a readable `rules.json` wire format (`when`/`then`/predicate-as-key), a first-class `OR` operator expanded at load time, and a `migrate-rules` command, with zero disruption to existing projects.
 
-**Architecture:** All changes live in `crates/phronesis-mcp`. The `phr` library crate is untouched, so library consumers (rulgamr) are unaffected. A new on-disk type `SourceRule` (OR-bearing) is parsed from both v1 and v2 JSON; `unfold_or` expands it into the existing flat `DiskRule` (unchanged shape, so `audit.rs`/`merge`/`rule_from_disk` need no edits). `read()` unfolds; `read_source()` preserves OR for migration; `write_atomic()` emits v2 from flat rules; `write_source()` emits v2 preserving OR.
+**Architecture:** All changes live in `crates/phronesis-mcp`. The `phr` library crate is untouched, so library consumers are unaffected. A new on-disk type `SourceRule` (OR-bearing) is parsed from both v1 and v2 JSON; `unfold_or` expands it into the existing flat `DiskRule` (unchanged shape, so `audit.rs`/`merge`/`rule_from_disk` need no edits). `read()` unfolds; `read_source()` preserves OR for migration; `write_atomic()` emits v2 from flat rules; `write_source()` emits v2 preserving OR.
 
 **Tech Stack:** Rust, serde / serde_json, clap, the existing phronesis-mcp test harness (`cargo test -p phronesis-mcp`).
 
@@ -1453,9 +1453,9 @@ These are operational steps, run once by the user (not part of any commit). They
 
 - [ ] Reinstall the binary: `cargo install --path crates/phronesis-mcp` → `phr-mcp --version` shows 0.8.0.
 - [ ] Migrate this project: `phr-mcp migrate-rules ~/Git/phronesis/.phronesis/rules.json` (the 2 commit-timing custom rules + 34 defaults → v2).
-- [ ] Migrate rulgamr: `phr-mcp migrate-rules ~/Git/rulgamr/.phronesis/rules.json`.
+- [ ] Migrate the consumer: `phr-mcp migrate-rules ~/Git/<consumer>/.phronesis/rules.json`.
 - [ ] Sanity check both: `phr-mcp migrate-rules --check <path>` exits 0 for each.
-- [ ] Confirm rulgamr's `cargo build` is unaffected (no `phr` library change): `cd ~/Git/rulgamr && cargo build`.
+- [ ] Confirm the consumer's `cargo build` is unaffected (no `phr` library change): `cd ~/Git/<consumer> && cargo build`.
 
 ---
 

@@ -2177,7 +2177,7 @@ These create no commits (init writes are local; reinstall is a build artifact). 
 - [ ] Run `phr-mcp init --hooks-only` (or full `phr-mcp init`) on this project to create `.phronesis/wiki/decisions/` + README + the `.gitignore` exception. Existing rules / hooks / durable.md are left alone.
 - [ ] Seed the corpus: run `phr-mcp decision new card-game-terminology` (or any meaningful slug), open the file, fill in Context / Decision / Enforcement / Consequences. Optionally add `enforces: [block-commit-during-business-hours, block-push-during-business-hours]` to the commit-timing decision.
 - [ ] Run `phr-mcp wiki-drift` to see initial coverage status.
-- [ ] (Optional) Same for `~/Git/rulgamr` — `phr-mcp init --hooks-only` to scaffold there too.
+- [ ] (Optional) Same for `~/Git/<consumer>` — `phr-mcp init --hooks-only` to scaffold there too.
 
 ---
 

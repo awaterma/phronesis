@@ -264,7 +264,7 @@ After installing 0.9.0:
    them. Manual; one-time. The SPECs themselves stay in `docs/specs/`
    as implementation plans.
 3. Run `phr-mcp wiki-drift` to see what's covered vs uncovered.
-4. (Future) Same for `~/Git/rulgamr`.
+4. (Future) Same for `~/Git/<consumer>`.
 
 ## Open questions
 

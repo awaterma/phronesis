@@ -8,9 +8,14 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 - **Public fact-query API** on `ReteNetwork` — `facts_snapshot`,
-  `facts_matching_predicate`, `facts_matching` (positional-arg filters),
-  `fact_ids_matching`, `get_fact_by_id`, `fact_count`. Sync, owned results
-  sorted by fact id, so embedding hosts need not reach into `wme_manager`.
+  `facts_matching_predicate`, `facts_matching_predicates` (predicate-set
+  membership), `facts_matching` (positional-arg filters), `fact_ids_matching`,
+  `get_fact_by_id`, `fact_count`. Sync, owned results sorted by fact id, so
+  embedding hosts need not reach into `wme_manager`.
+- **Richer `list_facts` MCP tool** — the existing `predicate` filter plus new
+  `predicates` (set membership) and `arg_filters` (positional `arg = value`)
+  params, backed by the fact-query API. Lets coding agents query working
+  memory by predicate set or argument, not just list-all.
 - **`bash_command_matches` predicate** — regex rules over Bash/command-tool
   text, gated to command tools (file content quoting the same text never
   fires). Ships two LLM-pack guard rules (stage-explicitly, don't-kill-build).
@@ -39,6 +44,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   index (the same fact was returned twice from `get_by_predicate`).
 - **Same-salience agenda items fire in FIFO (insertion) order.** Previously
   tie order was `BinaryHeap`-arbitrary; firing order is now deterministic.
+
+### Deprecated
+- **`ReteNetwork::get_persistent_facts`** — it hardcodes consumer-specific
+  predicates, which don't belong in a domain-neutral engine. Define your own
+  predicate set and call `facts_matching_predicates(&YOUR_SET)`. Slated for
+  removal in 0.12.
 
 ### Fixed
 - **Retraction purges stale agenda items** referencing the retracted fact, so

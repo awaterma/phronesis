@@ -31,11 +31,11 @@ work and a `phr`-library API change — that is a separate future spec
   argument table.
 - First-class `{"or": [...]}` so disjunction is expressible without
   hand-duplicating rules.
-- Zero disruption to existing projects (this repo, `~/Git/rulgamr`,
+- Zero disruption to existing projects (this repo, `~/Git/<consumer>`,
   any other `phr-mcp init`'d project) that have v1-shape rules.json on
   disk and share the globally-installed binary.
 - No change to the `phr` library crate, so library consumers
-  (rulgamr depends on `phr` as a path dependency) are unaffected by a
+  (the consumer depends on `phr` as a path dependency) are unaffected by a
   `cargo build`.
 
 ## Out of scope (deferred to later specs)
@@ -291,14 +291,14 @@ isolates the bulk-mechanical diff so it doesn't obscure logic changes.
 2. `phr-mcp migrate-rules ~/Git/phronesis/.phronesis/rules.json` —
    converts this project's 36 rules (incl. the 2 commit-timing
    customs) to v2.
-3. `phr-mcp migrate-rules ~/Git/rulgamr/.phronesis/rules.json` —
-   converts rulgamr's 34 default-pack rules.
+3. `phr-mcp migrate-rules ~/Git/<consumer>/.phronesis/rules.json` —
+   converts the consumer's 34 default-pack rules.
 4. Both projects work throughout: the both-shapes parser reads their
    existing v1 files even before migration. Migration only makes the
    on-disk shape current.
 
-rulgamr's `cargo build` is unaffected — only `phronesis-mcp` changes;
-rulgamr depends on `phr`, which is untouched.
+the consumer's `cargo build` is unaffected — only `phronesis-mcp` changes;
+the consumer depends on `phr`, which is untouched.
 
 ## Open questions
 

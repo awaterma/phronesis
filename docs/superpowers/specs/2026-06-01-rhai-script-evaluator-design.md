@@ -8,7 +8,7 @@
 
 Phronesis's `ScriptEvaluator` claims Rhai support in its docstrings but is actually a hand-rolled parser supporting only two primitives: `facts_contain` and `facts_count`. The `__script__` condition plumbing in the RETE network is correctly wired (conditions are evaluated before agenda insertion, unsupported syntax blocks the rule), but any script beyond these two patterns fails with "Unknown script expression."
 
-Downstream consumers like rulgamr need expressive guard conditions (inventory checks, numeric comparisons on fact arguments, boolean combinators) that can't be expressed with the current DSL. They've worked around this by pre-filtering facts in Rust before asserting them — shifting guard logic out of the rule engine entirely.
+Downstream consumers need expressive guard conditions (inventory checks, numeric comparisons on fact arguments, boolean combinators) that can't be expressed with the current DSL. They've worked around this by pre-filtering facts in Rust before asserting them — shifting guard logic out of the rule engine entirely.
 
 ## Design Decisions
 
@@ -169,4 +169,4 @@ Full RETE round-trip — the test that doesn't exist today:
 - Changing any existing rule in `.phronesis/rules.json`
 - Migrating `phronesis-mcp`'s own rules to use Rhai scripts
 - Rhai helper functions (e.g., `has_fact()` convenience) — future enhancement
-- Rulgamr migration to Rhai conditions — that's rulgamr's P5/P6 work, blocked on this landing
+- The consumer migration to Rhai conditions — that's the consumer's P5/P6 work, blocked on this landing
