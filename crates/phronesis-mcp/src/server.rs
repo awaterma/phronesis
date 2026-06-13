@@ -284,23 +284,15 @@ impl EpistemeMcp {
         Self::ok_text(format!("Retracted: {}", json))
     }
 
-    #[tool(description = "List all facts in working memory, optionally filtered by predicate")]
+    #[tool(
+        description = "List or query facts in working memory. No params → all facts. `predicate` → facts with that predicate, optionally narrowed by `arg_filters` (positional arg = value constraints). `predicates` → facts whose predicate is in the set. Results are sorted by fact id."
+    )]
     async fn list_facts(
         &self,
         Parameters(params): Parameters<PredicateFilter>,
     ) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
-        let wmes = network.get_all_wmes().await.map_err(Self::err)?;
-        let facts: Vec<_> = wmes
-            .iter()
-            .filter(|wme| {
-                params
-                    .predicate
-                    .as_ref()
-                    .is_none_or(|p| wme.fact.predicate == *p)
-            })
-            .map(|wme| &wme.fact)
-            .collect();
+        let facts = select_facts(&network, &params).map_err(Self::err)?;
         let json = serde_json::to_string_pretty(&facts).map_err(|e| Self::err(e.to_string()))?;
         Self::ok_text(json)
     }
@@ -1238,6 +1230,96 @@ pub fn strip_directive_prefix(line: &str) -> Option<&str> {
     }
 
     None
+}
+
+/// Dispatch a `list_facts` query to the engine's 0.11 fact-query API.
+/// Precedence: predicate set → single predicate (+ optional positional arg
+/// filters) → all facts. Pulled out as a pure function so the dispatch is
+/// unit-testable without the MCP `CallToolResult` envelope.
+fn select_facts(
+    network: &phr::ReteNetwork,
+    params: &PredicateFilter,
+) -> Result<Vec<phr::Fact>, phr::ReteError> {
+    if let Some(predicates) = &params.predicates {
+        let refs: Vec<&str> = predicates.iter().map(String::as_str).collect();
+        network.facts_matching_predicates(&refs)
+    } else if let Some(predicate) = &params.predicate {
+        let filters: Vec<(usize, &str)> = params
+            .arg_filters
+            .iter()
+            .flatten()
+            .map(|f| (f.index, f.value.as_str()))
+            .collect();
+        network.facts_matching(predicate, &filters)
+    } else {
+        network.facts_snapshot()
+    }
+}
+
+#[cfg(test)]
+mod list_facts_query_tests {
+    use super::*;
+
+    fn fact(id: &str, predicate: &str, args: &[&str]) -> phr::Fact {
+        phr::Fact {
+            id: id.into(),
+            predicate: predicate.into(),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            timestamp: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn select_facts_dispatches_all_three_query_shapes() {
+        let net = phr::ReteNetwork::new();
+        for f in [
+            fact("e1", "equipped", &["alice", "head"]),
+            fact("e2", "equipped", &["bob", "head"]),
+            fact("g1", "gold", &["alice", "30"]),
+        ] {
+            net.assert_fact(f).await.unwrap();
+        }
+
+        // no params → every fact
+        let all = select_facts(
+            &net,
+            &PredicateFilter {
+                predicate: None,
+                predicates: None,
+                arg_filters: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(all.len(), 3);
+
+        // single predicate + positional arg filter
+        let alice_equipped = select_facts(
+            &net,
+            &PredicateFilter {
+                predicate: Some("equipped".into()),
+                predicates: None,
+                arg_filters: Some(vec![ArgFilter {
+                    index: 0,
+                    value: "alice".into(),
+                }]),
+            },
+        )
+        .unwrap();
+        assert_eq!(alice_equipped.len(), 1);
+        assert_eq!(alice_equipped[0].id, "e1");
+
+        // predicate set membership
+        let set = select_facts(
+            &net,
+            &PredicateFilter {
+                predicate: None,
+                predicates: Some(vec!["equipped".into(), "gold".into()]),
+                arg_filters: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(set.len(), 3);
+    }
 }
 
 #[cfg(test)]

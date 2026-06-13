@@ -72,10 +72,30 @@ pub struct FactIdParam {
     pub fact_id: phr::FactId,
 }
 
+/// One positional-argument constraint for a fact query: the fact's arg at
+/// `index` must exactly equal `value`.
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ArgFilter {
+    /// Zero-based position in the fact's `args`.
+    pub index: usize,
+    /// Required value at that position (exact match).
+    pub value: String,
+}
+
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct PredicateFilter {
+    /// Match facts with this single predicate. Omit (and omit `predicates`)
+    /// to return every fact.
     #[serde(default)]
     pub predicate: Option<String>,
+    /// Match facts whose predicate is in this set (membership). Takes
+    /// precedence over `predicate`/`arg_filters` when given.
+    #[serde(default)]
+    pub predicates: Option<Vec<String>>,
+    /// Positional argument constraints; all must match. Applied together with
+    /// a single `predicate` (ignored when `predicates` is used).
+    #[serde(default)]
+    pub arg_filters: Option<Vec<ArgFilter>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
