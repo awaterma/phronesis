@@ -1481,7 +1481,7 @@ fn python_rules() -> Value {
                 "when": [
                     {"new_content_contains": "except:"}
                 ],
-                "then": {"block": "Don't use bare `except:` — catch specific exception types. Bare except swallows KeymapInterrupt and SystemExit."}
+                "then": {"block": "Don't use bare `except:` — catch specific exception types. Bare except swallows KeyboardInterrupt and SystemExit."}
             },
             {
                 "id": "audit-python-bare-except",
