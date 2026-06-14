@@ -112,9 +112,11 @@ The packs are composable and **independent**:
 - `llm` — LLM-behavior rules. Blocks the deflection family (disclaimers
   that shift blame to pre-existing code or to "the test environment")
   plus unverified completion claims. Warns on `git commit -m` to nudge
-  end-to-end verification before reporting done. These rules fire from
-  disk at every hook invocation, so they remain active even when
-  CLAUDE.md content has been compressed out of conversation context.
+  end-to-end verification before reporting done, on a sweeping
+  `git add -A` / `git add .`, and on `pkill`/`kill` of a `cargo`/`rustc`
+  build (the last two via the `bash_command_matches` regex predicate).
+  These rules fire from disk at every hook invocation, so they remain
+  active even when CLAUDE.md content has been compressed out of context.
 - `rust` — Rust code-shape enforcement. Blocks: `.unwrap()` /
   `todo!()` / `panic!()` / `unimplemented!()` in src/,
   `Result<_, String>` returns,
@@ -148,8 +150,12 @@ The packs are composable and **independent**:
   `print(` in `.rhai` scripts (use the host-registered output channel,
   whatever your `Engine` exposes via `register_fn`). Generic messages
   — layer project-specific guidance into your own `.phronesis/rules.json`.
-- `python` — bare-except blocked, `print()` warning
-- `typescript` — `: any` warning, `console.log` warning
+- `python` — bare-except blocked, `print()` warning, mutable-default-arg
+  warning, plus tree-sitter AST audits (bare-`except:` by enclosing
+  function, public `def`s missing a docstring)
+- `typescript` — `: any` and `console.log` warnings, plus tree-sitter AST
+  rules (explicit `any`, `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`
+  suppressions, non-null `!` assertions)
 - `swift` — Swift-specific advisories: force-unwrap warning, try! warning
 - `none` — empty rules array (hooks still wired)
 
@@ -371,6 +377,6 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/rules_file.rs` — Disk format for rules.json: v2 `SourceRule`/`WhenClause` types, v1+v2 deserialization, `unfold_or` (DNF expansion), `read`/`write_atomic`/`read_source`/`write_source`
 - `src/security.rs` — Path canonicalization, size caps, input validators
 - `src/diff_extract.rs` — Regex-based diff facts (function_added, import_added, etc.)
-- `src/syntax/` — Tree-sitter-based AST predicates (function_returns_result_string)
+- `src/syntax/` — Tree-sitter AST predicates for Rust, Swift, Python, and TypeScript (e.g. function_returns_result_string, python_bare_except, ts_explicit_any)
 - `docs/RUST-PATTERNS-GUIDE.md` — Rust coding standards (source for `extract_rules`)
 - `docs/PATTERNS-WORKFLOW.md` — End-user workflow guide

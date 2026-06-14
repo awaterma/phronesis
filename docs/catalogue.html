@@ -569,7 +569,7 @@
   <header class="colophon" role="banner">
     <div class="left"><a href="./explainer.html">← The Explainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
-    <div class="right">Vol. 0.10.0 — Edition III</div>
+    <div class="right">Vol. 0.11.0 — Edition III</div>
   </header>
 
   <!-- ─── COVER ─── -->
@@ -692,7 +692,7 @@
     <header class="pack-head-block">
       <div class="pack-num">§<small>I</small><br>1</div>
       <h2>Pack · LLM — <span class="it">behavior, not code shape.</span></h2>
-      <div class="pack-count"><span class="num">6</span>Rules</div>
+      <div class="pack-count"><span class="num">8</span>Rules</div>
     </header>
 
     <p class="pack-intro">
@@ -843,6 +843,88 @@ test ... ok (124 passed)
       </div>
     </article>
 
+    <!-- ─── 1.4 Stage explicitly ─── -->
+    <article class="rule" data-level="warn" id="git-add-all">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-level">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">on Bash content</span>
+        </div>
+        <h3 class="rule-id">llm-warn-git-add-all</h3>
+        <p class="rule-summary">
+          Fires when a Bash command runs <code>git add -A</code> or
+          <code>git add .</code> — a nudge to stage the files you actually
+          changed, not whatever happens to be in the tree.
+        </p>
+        <div class="rule-body">
+          <p>
+            Matched by the <code>bash_command_matches</code> predicate (a
+            regex over the command itself, not file content), so it fires on
+            the command tool and ignores an edit that merely mentions the
+            text. Blanket staging is how unrelated changes — debug prints,
+            stray files, a half-finished refactor — slip into a commit.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">trigger</div>
+<pre><span class="c">$ git add -A</span>
+<span class="em">phronesis: WARNING</span> — Stage files explicitly —
+git add -A / git add . sweeps unrelated changes into
+the commit. List the files you actually changed.</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">explicit</div>
+<pre><span class="c">$ git add src/ledger.rs tests/ledger.rs</span></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 1.5 Don't kill the build ─── -->
+    <article class="rule" data-level="warn" id="kill-build">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-level">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">on Bash content</span>
+        </div>
+        <h3 class="rule-id">llm-warn-kill-build</h3>
+        <p class="rule-summary">
+          Fires when a Bash command tries to <code>pkill</code> /
+          <code>kill</code> a <code>cargo</code> or <code>rustc</code>
+          process — a build at 0% CPU is usually in disk-wait, not hung.
+        </p>
+        <div class="rule-body">
+          <p>
+            Also a <code>bash_command_matches</code> rule. Rust builds are
+            I/O-bound; a <code>rustc</code> sitting at 0% CPU is typically
+            waiting on disk, not stuck. Killing it discards incremental
+            progress and usually starts an even slower clean rebuild.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">trigger</div>
+<pre><span class="c">$ pkill -9 rustc</span>
+<span class="em">phronesis: WARNING</span> — Builds are I/O-bound:
+a rustc at 0% CPU is usually in disk-wait, not hung.
+Give it time or check `ps` state before killing.</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">check first</div>
+<pre><span class="c">$ ps -o state= -p $(pgrep rustc)</span>
+D    # uninterruptible sleep = waiting on disk I/O</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </article>
+
   </section>
 
 
@@ -853,7 +935,7 @@ test ... ok (124 passed)
     <header class="pack-head-block">
       <div class="pack-num">§<small>II</small><br>2</div>
       <h2>Pack · Rust — <span class="it">code shape, error handling, debt.</span></h2>
-      <div class="pack-count"><span class="num">29</span>Rules</div>
+      <div class="pack-count"><span class="num">30</span>Rules</div>
     </header>
 
     <p class="pack-intro">
@@ -2114,7 +2196,7 @@ audit-rc-refcell-in-src   warn      4      2
     <header class="pack-head-block">
       <div class="pack-num">§<small>IV</small><br>4</div>
       <h2>Other packs — <span class="it">Python · TypeScript · Swift.</span></h2>
-      <div class="pack-count"><span class="num">11</span>Rules</div>
+      <div class="pack-count"><span class="num">17</span>Rules</div>
     </header>
 
     <p class="pack-intro">
@@ -2130,11 +2212,19 @@ audit-rc-refcell-in-src   warn      4      2
         <h4><span class="lang">Python</span> · <code>--packs python</code></h4>
         <span class="brule"><strong>warn</strong> · warn-print-in-src</span>
         <span class="brule"><strong>block</strong> · enforce-no-bare-except</span>
+        <span class="brule"><strong>warn</strong> · warn-python-mutable-default-arg</span>
+        <span class="brule"><strong>○</strong> · audit-python-bare-except</span>
+        <span class="brule"><strong>○</strong> · audit-python-missing-docstring</span>
         <p>
           Catches <code>print()</code> in <code>src/</code> (use
           <code>logging</code>) and bare <code>except:</code> clauses
-          (which swallow <code>KeymapInterrupt</code> and
+          (which swallow <code>KeyboardInterrupt</code> and
           <code>SystemExit</code> together with everything else).
+          Tree-sitter AST rules add depth: mutable default arguments
+          (<code>def f(x=[])</code> — created once at def time, shared
+          across calls), plus audit-only sweeps for bare <code>except:</code>
+          by enclosing function and public <code>def</code>s missing a
+          docstring.
         </p>
       </div>
 
@@ -2142,10 +2232,17 @@ audit-rc-refcell-in-src   warn      4      2
         <h4><span class="lang">TypeScript</span> · <code>--packs typescript</code></h4>
         <span class="brule"><strong>warn</strong> · warn-any-in-src</span>
         <span class="brule"><strong>warn</strong> · warn-console-log-in-src</span>
+        <span class="brule"><strong>warn</strong> · warn-ts-explicit-any-ast</span>
+        <span class="brule"><strong>warn</strong> · warn-ts-suppression-comment</span>
+        <span class="brule"><strong>○</strong> · audit-ts-non-null-assertion</span>
         <p>
           Catches <code>: any</code> annotations (use <code>unknown</code>
           and narrow with guards) and stray <code>console.log</code>
-          calls in committed source.
+          calls in committed source. Tree-sitter AST rules count explicit
+          <code>any</code> per function, flag
+          <code>@ts-ignore</code>/<code>@ts-expect-error</code>/<code>@ts-nocheck</code>
+          type-checker suppressions, and audit non-null <code>!</code>
+          assertions.
         </p>
       </div>
 
@@ -2205,7 +2302,7 @@ audit-rc-refcell-in-src   warn      4      2
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
       with Claude.<br>
       Pairs with <a href="./explainer.html">the explainer</a> &middot;
-      v 0.10.0 &middot; 2026 &middot;
+      v 0.11.0 &middot; 2026 &middot;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
