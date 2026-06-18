@@ -194,18 +194,31 @@ The fixed, domain-neutral aggregator family:
 
 | Predicate (asserted fact) | Args | Meaning |
 |---|---|---|
-| `journey_count` | `[selector, window, ?count]` | how many records in `window` match `selector` (a tag or `module:NAME`) |
-| `journey_seen` | `[selector, window]` | presence (≥1) — boolean convenience over `journey_count` |
+| `journey_occurrence` | `[selector, window]` | **one fact per matching record** — the unit `facts_count` thresholds over |
+| `journey_count` | `[selector, window, count]` | the count as a single bindable fact (reporting / equality) |
+| `journey_seen` | `[selector, window]` | presence (≥1) — plain boolean fact |
 | `journey_sequence` | `[selectorA, selectorB, window]` | an A record precedes a B record within `window` (ordered co-occurrence) |
-| `journey_since` | `[selector, unit, ?n]` | distance since the last matching record; `unit` ∈ `calls`/`secs` |
-| `journey_distinct` | `[field, window, ?count]` | distinct values of `field` (e.g. `path`) in `window` |
+| `journey_since_ge` | `[selector, k]` | emitted for each `k` ≤ distance-since-last (capped at max `k` any rule references) — `facts_count(...) >= 1` is the threshold test |
+| `journey_distinct` | `[field, window, count]` | distinct values of `field` (e.g. `path`) in `window` |
+
+Count-style aggregators (`*_occurrence`, `*_since_ge`) emit one fact per unit so
+the **existing** `facts_count(...) >= N` DSL does the thresholding; the
+single-value forms (`*_count`, `*_distinct`) are for binding/reporting and
+equality matches. No arithmetic-in-conditions is required anywhere.
 
 **Window encoding** (one token, parsed in `derive.rs`): `5c` = last 5 calls,
 `30m`/`2h`/`7d` = wall-time, `s` = current session, `r` = repo lifetime.
 
-`?count`/`?n` are bound variables, so thresholds are ordinary Rhai — no new
-comparison predicates. Worked example, the "edited auth 3× this session but
-never the tests" rule:
+**Thresholding rides the real DSL, not arithmetic.** The `__script__` layer is
+*not* general Rhai — `script_evaluator.rs` supports only
+`facts_contain('pred',[...])` and `facts_count('pred',[...]) >= N` (after `?n`
+substitution, `n >= 3` becomes `3 >= 3`, which it rejects; see
+SPEC-confidence-scoring §3 and Appendix). So counting works by **emitting one
+`journey_occurrence(selector, window)` fact per matching record**, then
+thresholding with `facts_count`. `journey_count`'s `?count` binding stays for
+reporting / equality matches; numeric thresholds go through `facts_count`.
+
+Worked example, the "edited auth 3× this session but never the tests" rule:
 
 ```json
 {
@@ -213,29 +226,32 @@ never the tests" rule:
   "phase": "pre",
   "priority": 20,
   "when": [
-    { "journey_count": ["auth", "s", "?n"] },
-    { "__script__": "n >= 3" },
-    { "journey_seen": ["tests", "s"] , "negate_hint": "see open questions: not" }
+    { "__script__": "facts_count('journey_occurrence', ['auth','s']) >= 3" },
+    { "__script__": "facts_count('journey_occurrence', ['tests','s']) == 0" }
   ],
   "then": { "warn": "You've edited the auth module 3+ times this session without touching its tests. Add or update coverage before continuing." }
 }
 ```
 
-(The `tests`-absence clause depends on `not`, which the rule schema does not yet
-support — see Open Questions. Until then this rule is expressed as two rules or
-a Rhai check over a `journey_count(["tests","s","?t"])` binding with `t == 0`.)
+(The second clause is the supported way to express absence today —
+`facts_count(... ) == 0` — until first-class `not` lands; see Open Questions.)
 
 `touched destructive sql in last 5 calls`:
 
 ```json
-{ "when": [ { "journey_count": ["sql", "5c", "?n"] }, { "__script__": "n >= 1" } ],
+{ "when": [ { "journey_seen": ["sql", "5c"] } ],
   "then": { "warn": "A SQL/migration edit happened in the last 5 tool calls — double-check it ran against the right database." } }
 ```
 
-`changed public API, haven't built since`:
+(`journey_seen` is the presence form — it asserts a plain boolean fact the
+equality matcher handles directly, no count needed.)
+
+`changed public API, haven't built since` — `journey_since` emits its distance
+as facts the count DSL can threshold (one `journey_since_ge(selector, k)` fact
+for each `k` up to the distance, capped at the largest `k` any rule references):
 
 ```json
-{ "when": [ { "journey_since": ["build", "calls", "?c"] }, { "__script__": "c > 8" } ],
+{ "when": [ { "__script__": "facts_count('journey_since_ge', ['build','8']) >= 1" } ],
   "then": { "warn": "8+ tool calls since the last build/test. Run the build before reporting done." } }
 ```
 
@@ -418,8 +434,9 @@ repo-scale follow-up.
 
 - **`not` support.** Several high-value journey rules ("changed X but *not* its
   tests") need negation, which the rule schema lacks (noted as planned in
-  `CLAUDE.md`). Until then, absence is expressed as `journey_count(... "?n")` +
-  `__script__ "n == 0"`. A first-class `not` is the cleanest fix and is
+  `CLAUDE.md`). Until then, absence is expressed as
+  `facts_count('journey_occurrence', [selector, window]) == 0`. A first-class
+  `not` is the cleanest fix and is
   arguably a prerequisite for the headline use cases — sequence with this
   SPEC's release.
 - **Window encoding.** Packing `5c`/`30m`/`s`/`r` into a string arg is terse
