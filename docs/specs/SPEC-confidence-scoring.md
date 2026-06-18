@@ -160,23 +160,27 @@ signal_pass(subject, "bug:1042")
 ```
 
 Confidence band = how many passed, expressed with the **existing** `facts_count`
-DSL:
+DSL. The gate derivation asserts **only the open subject's** `signal_pass` facts
+into the otherwise-fresh network (§5), so the rules use the wildcard subject
+`['*','*']` and need no `?s` binding — there is exactly one subject in scope:
 
 ```json
-{ "id": "confidence-high", "phase": "pre", "priority": 30,
-  "when": [ { "new_content_matches": "^" },
-            { "__script__": "facts_count('signal_pass', ['?s','*']) >= 3" } ],
-  "then": { "log": "High confidence: compile + tests + known-bug all green." } }
-
 { "id": "confidence-low-blocks-commit", "phase": "pre", "priority": 30,
   "when": [ { "bash_command_matches": "git commit" },
-            { "__script__": "facts_count('signal_pass', ['?s','*']) <= 1" } ],
+            { "__script__": "facts_count('signal_pass', ['*','*']) <= 1" } ],
   "then": { "block": "Low confidence — compile/tests/known-bug not all green. Do not present this as done; resolve the failing signal first." } }
+
+{ "id": "confidence-medium-warns-commit", "phase": "pre", "priority": 29,
+  "when": [ { "bash_command_matches": "git commit" },
+            { "__script__": "facts_count('signal_pass', ['*','*']) == 2" } ],
+  "then": { "warn": "Medium confidence — one grounded signal is missing. Review before presenting as done." } }
 ```
 
-3/3 = high, 2/3 = medium, ≤1 = low. Maps 1:1 to the milestone, needs no engine
-change. *(Note: `?s` must be bound by a preceding subject-bearing condition;
-§5 covers how the gate binds the open subject.)*
+3/3 = high, 2/3 = medium, ≤1 = low. At 3/3 neither rule fires and the commit
+proceeds. Maps 1:1 to the milestone and uses only predicates that exist today
+(`bash_command_matches` is the real regex predicate; `facts_count(...) <op> N`
+is the real DSL). `signal_pass` carries `[subject, signal_name]`, so
+`['*','*']` counts the open subject's passed signals regardless of name.
 
 ### (B) Host-computed band fact — escape hatch for weighting
 

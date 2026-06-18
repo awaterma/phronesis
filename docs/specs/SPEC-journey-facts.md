@@ -126,7 +126,8 @@ exists**:
   "version": 1,
   "taggers": [
     { "tag": "sql",     "when": [ { "or": [
-                                     { "new_content_matches": "(?i)\\b(select|insert into|update|delete from)\\b" },
+                                     { "new_content_contains": "INSERT INTO" },
+                                     { "new_content_contains": "DELETE FROM" },
                                      { "file_path_matches": "migrations/" } ] } ] },
     { "tag": "auth",    "when": [ { "file_path_matches": "src/auth/" } ] },
     { "tag": "tests",   "when": [ { "file_path_matches": "tests/" } ] },
@@ -152,6 +153,11 @@ decomposes into "tagger attaches `sql`" (project-defined, reused engine) +
 `modules` group paths into a named entity so `refactored_module_x` can
 aggregate across the files of a module. Entity identity in v1 is **path-based**
 (normalized, repo-relative); renames are not tracked (open question).
+
+Note: content matching today is **substring-only** (`new_content_contains`);
+the only regex predicate is `bash_command_matches` (commands). A
+case-insensitive content-regex predicate would let `sql` taggers match
+`select`/`update` too — a small follow-up predicate, out of scope here.
 
 ## The journal record
 
