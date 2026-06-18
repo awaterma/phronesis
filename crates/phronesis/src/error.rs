@@ -99,3 +99,86 @@ impl From<ReteError> for String {
         e.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn poisoned_constructs_lock_poisoned() {
+        let e = ReteError::poisoned("agenda");
+        assert_eq!(e, ReteError::LockPoisoned { lock: "agenda" });
+    }
+
+    #[test]
+    fn display_messages_carry_their_payload() {
+        // Each arm should render and mention the salient value, so hosts and
+        // logs get an actionable message. This pins the message contract.
+        let cases: Vec<(ReteError, &str)> = vec![
+            (ReteError::poisoned("net"), "net"),
+            (ReteError::DuplicateFactId("f1".into()), "f1"),
+            (ReteError::FactNotFound("f2".into()), "f2"),
+            (ReteError::RuleNotFound("r1".into()), "r1"),
+            (ReteError::ProductionStateNotFound("p1".into()), "p1"),
+            (ReteError::InvalidVariable("x".into()), "x"),
+            (
+                ReteError::BindingConflict {
+                    variable: "?v".into(),
+                    existing: "a".into(),
+                    attempted: "b".into(),
+                },
+                "?v",
+            ),
+            (ReteError::ConditionMismatch("arity".into()), "arity"),
+            (
+                ReteError::ScriptMissing {
+                    rule_id: "r9".into(),
+                },
+                "r9",
+            ),
+            (ReteError::ScriptEval("bad expr".into()), "bad expr"),
+            (ReteError::Internal("boom".into()), "boom"),
+        ];
+        for (err, needle) in cases {
+            let msg = err.to_string();
+            assert!(
+                msg.contains(needle),
+                "Display for {err:?} should contain {needle:?}, got {msg:?}"
+            );
+            assert!(!msg.is_empty());
+        }
+    }
+
+    #[test]
+    fn empty_agenda_has_a_message() {
+        assert_eq!(ReteError::EmptyAgenda.to_string(), "No items in agenda");
+    }
+
+    #[test]
+    fn binding_conflict_mentions_all_three_values() {
+        let msg = ReteError::BindingConflict {
+            variable: "?v".into(),
+            existing: "a".into(),
+            attempted: "b".into(),
+        }
+        .to_string();
+        assert!(msg.contains("?v") && msg.contains('a') && msg.contains('b'));
+    }
+
+    #[test]
+    fn into_string_shim_matches_display() {
+        let e = ReteError::FactNotFound("z".into());
+        let via_display = e.to_string();
+        let via_from: String = e.into();
+        assert_eq!(via_from, via_display);
+    }
+
+    #[test]
+    fn implements_std_error() {
+        // Exercise the `std::error::Error` impl through a trait object.
+        let e = ReteError::Internal("x".into());
+        let dyn_err: &dyn std::error::Error = &e;
+        assert!(dyn_err.source().is_none());
+        assert!(!dyn_err.to_string().is_empty());
+    }
+}

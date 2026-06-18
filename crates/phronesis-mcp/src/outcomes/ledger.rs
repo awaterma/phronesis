@@ -196,6 +196,18 @@ mod tests {
     }
 
     #[test]
+    fn append_errors_when_outcomes_path_is_a_file() {
+        // If `.phronesis/outcomes` already exists as a *file*, create_dir_all
+        // for the ledger's parent fails — append must surface the IO error.
+        let dir = tempfile::tempdir().unwrap();
+        let phr = dir.path().join(".phronesis");
+        std::fs::create_dir_all(&phr).unwrap();
+        std::fs::write(phr.join("outcomes"), "blocking file").unwrap();
+        let err = append(dir.path(), "u", &[OutcomeFact::build("u", true)]);
+        assert!(matches!(err, Err(LedgerError::Io { .. })));
+    }
+
+    #[test]
     fn subject_cannot_escape_the_outcomes_dir() {
         let dir = tempfile::tempdir().unwrap();
         append(dir.path(), "../../evil", &[OutcomeFact::build("x", true)]).unwrap();

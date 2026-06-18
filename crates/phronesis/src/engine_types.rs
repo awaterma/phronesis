@@ -128,3 +128,67 @@ impl PerformanceStats {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_starts_at_zero() {
+        let s = PerformanceStats::new();
+        assert_eq!(s.assertion_count, 0);
+        assert_eq!(s.evaluation_count, 0);
+        assert_eq!(s.cycle_assertion_count, 0);
+        assert_eq!(s.total_assertion_time, Duration::ZERO);
+    }
+
+    #[test]
+    fn record_assertion_bumps_cumulative_and_cycle() {
+        let mut s = PerformanceStats::new();
+        s.record_assertion(Duration::from_micros(10));
+        s.record_assertion(Duration::from_micros(20));
+        assert_eq!(s.assertion_count, 2);
+        assert_eq!(s.cycle_assertion_count, 2);
+        assert_eq!(s.total_assertion_time, Duration::from_micros(30));
+        assert_eq!(s.cycle_assertion_time, Duration::from_micros(30));
+    }
+
+    #[test]
+    fn record_evaluation_bumps_cumulative_and_cycle() {
+        let mut s = PerformanceStats::new();
+        s.record_evaluation(Duration::from_micros(5));
+        assert_eq!(s.evaluation_count, 1);
+        assert_eq!(s.cycle_evaluation_count, 1);
+        assert_eq!(s.total_evaluation_time, Duration::from_micros(5));
+    }
+
+    #[test]
+    fn reset_cycle_clears_cycle_but_keeps_cumulative() {
+        let mut s = PerformanceStats::new();
+        s.record_assertion(Duration::from_micros(10));
+        s.record_evaluation(Duration::from_micros(7));
+        s.reset_cycle();
+        // Cycle counters cleared...
+        assert_eq!(s.cycle_assertion_count, 0);
+        assert_eq!(s.cycle_assertion_time, Duration::ZERO);
+        assert_eq!(s.cycle_evaluation_count, 0);
+        assert_eq!(s.cycle_evaluation_time, Duration::ZERO);
+        // ...cumulative preserved.
+        assert_eq!(s.assertion_count, 1);
+        assert_eq!(s.evaluation_count, 1);
+    }
+
+    #[test]
+    fn log_summary_handles_zero_and_nonzero_counts() {
+        // Both the divide-by-zero guard and the averaging path must execute
+        // without panicking. (No subscriber installed; this exercises the
+        // pre-`info!` arithmetic, which runs unconditionally.)
+        let empty = PerformanceStats::new();
+        empty.log_summary(0, 0);
+
+        let mut active = PerformanceStats::new();
+        active.record_assertion(Duration::from_micros(40));
+        active.record_evaluation(Duration::from_micros(8));
+        active.log_summary(3, 12);
+    }
+}

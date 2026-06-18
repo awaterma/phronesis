@@ -134,4 +134,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         assert!(settle(dir.path()).is_ok());
     }
+
+    #[test]
+    fn set_errors_when_outcomes_dir_is_blocked_by_a_file() {
+        // `.phronesis/outcomes` exists as a file → create_dir_all fails and
+        // set() surfaces the IO error rather than panicking.
+        let dir = tempfile::tempdir().unwrap();
+        let phr = dir.path().join(".phronesis");
+        std::fs::create_dir_all(&phr).unwrap();
+        std::fs::write(phr.join("outcomes"), "blocking file").unwrap();
+        assert!(matches!(set(dir.path(), "u"), Err(SubjectError::Io { .. })));
+    }
 }
