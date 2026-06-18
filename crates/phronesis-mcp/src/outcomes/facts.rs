@@ -39,8 +39,49 @@ impl OutcomeFact {
     }
 }
 
+impl OutcomeFact {
+    /// `signal_pass(subject, name)` — one atomic "this grounded signal passed"
+    /// fact (approach A in SPEC §3). `name` is `"compile"` / `"tests"` /
+    /// `"bug:<id>"`. Gate rules count these with `facts_count`.
+    pub fn signal(subject: &str, name: &str) -> Self {
+        Self {
+            predicate: "signal_pass",
+            args: vec![subject.to_string(), name.to_string()],
+        }
+    }
+}
+
 fn status(passed: bool) -> String {
     if passed { "pass" } else { "fail" }.to_string()
+}
+
+/// The discretized confidence band — what the gate and the report speak in.
+/// Gate rules in approach A count `signal_pass` facts directly; this is the
+/// host-side rendering of the same thresholds (reporting / approach B).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Band {
+    High,
+    Medium,
+    Low,
+}
+
+impl Band {
+    /// 3+ passed signals = high, 2 = medium, ≤1 = low (SPEC §3).
+    pub fn from_signal_count(passed: usize) -> Self {
+        match passed {
+            0 | 1 => Band::Low,
+            2 => Band::Medium,
+            _ => Band::High,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Band::High => "high",
+            Band::Medium => "medium",
+            Band::Low => "low",
+        }
+    }
 }
 
 #[cfg(test)]
@@ -80,5 +121,23 @@ mod tests {
         let f = OutcomeFact::test("u", 5, 0);
         assert_eq!(f.args[2], "0");
         assert_eq!(f.args[3], "5");
+    }
+
+    #[test]
+    fn signal_carries_subject_and_name() {
+        let f = OutcomeFact::signal("u", "compile");
+        assert_eq!(f.predicate, "signal_pass");
+        assert_eq!(f.args, vec!["u".to_string(), "compile".to_string()]);
+    }
+
+    #[test]
+    fn band_thresholds() {
+        assert_eq!(Band::from_signal_count(0), Band::Low);
+        assert_eq!(Band::from_signal_count(1), Band::Low);
+        assert_eq!(Band::from_signal_count(2), Band::Medium);
+        assert_eq!(Band::from_signal_count(3), Band::High);
+        assert_eq!(Band::from_signal_count(4), Band::High);
+        assert_eq!(Band::High.as_str(), "high");
+        assert_eq!(Band::Low.as_str(), "low");
     }
 }
