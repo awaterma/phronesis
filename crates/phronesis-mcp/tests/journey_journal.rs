@@ -151,3 +151,97 @@ fn concurrent_appends_serialize() {
     assert_eq!(recs.len(), 400, "all appends preserved");
     // Each line parsed as a record — no interleaved partials.
 }
+
+#[test]
+fn append_errors_when_events_path_is_a_directory() {
+    // OpenOptions::append on a path that's already a directory yields an Io
+    // error — exercises the second `.map_err(...)` in `append`.
+    let dir = tempfile::tempdir().unwrap();
+    let journey_dir = dir.path().join(".phronesis").join("journey");
+    std::fs::create_dir_all(&journey_dir).unwrap();
+    std::fs::create_dir(journey_dir.join("events.jsonl")).unwrap();
+    let err = journal::append(
+        dir.path(),
+        &rec(1, 1000, "Edit", "src/a.rs", &["auth"], None),
+    )
+    .unwrap_err();
+    match &err {
+        journal::JournalError::Io { path, .. } => {
+            assert!(path.contains("events.jsonl"), "path = {path}");
+        }
+        other => panic!("expected JournalError::Io, got {other:?}"),
+    }
+}
+
+#[test]
+fn append_errors_when_phronesis_is_a_file() {
+    // create_dir_all on .phronesis/journey/ fails when .phronesis exists as a
+    // regular file. Exercises the JournalError::Io path in `append`.
+    let dir = tempfile::tempdir().unwrap();
+    let phr = dir.path().join(".phronesis");
+    std::fs::write(&phr, b"not a dir").unwrap();
+    let err = journal::append(
+        dir.path(),
+        &rec(1, 1000, "Edit", "src/a.rs", &["auth"], None),
+    )
+    .unwrap_err();
+    // Confirm we get the Io variant with a path that points at the journey dir.
+    match &err {
+        journal::JournalError::Io { path, .. } => {
+            assert!(path.contains(".phronesis"), "path = {path}");
+        }
+        other => panic!("expected JournalError::Io, got {other:?}"),
+    }
+    // Display impl is rendered via `?`/format; assert it's nonempty and mentions io.
+    let s = format!("{err}");
+    assert!(s.contains("io"), "display = {s}");
+}
+
+#[test]
+fn read_recent_errors_when_events_is_a_directory() {
+    // Opening events.jsonl with read_to_string yields a non-NotFound Io error
+    // when the path exists as a directory — exercises the catch-all Err arm
+    // in `read_recent`.
+    let dir = tempfile::tempdir().unwrap();
+    let journey_dir = dir.path().join(".phronesis").join("journey");
+    std::fs::create_dir_all(&journey_dir).unwrap();
+    // Make events.jsonl a directory rather than a file.
+    std::fs::create_dir(journey_dir.join("events.jsonl")).unwrap();
+    let err = journal::read_recent(dir.path(), 10).unwrap_err();
+    match &err {
+        journal::JournalError::Io { path, .. } => {
+            assert!(path.contains("events.jsonl"), "path = {path}");
+        }
+        other => panic!("expected JournalError::Io, got {other:?}"),
+    }
+}
+
+#[test]
+fn read_recent_subject_propagates_io_error() {
+    // read_recent_subject delegates to read_recent — the same directory-as-file
+    // trick surfaces the `?` propagation site.
+    let dir = tempfile::tempdir().unwrap();
+    let journey_dir = dir.path().join(".phronesis").join("journey");
+    std::fs::create_dir_all(&journey_dir).unwrap();
+    std::fs::create_dir(journey_dir.join("events.jsonl")).unwrap();
+    let err = journal::read_recent_subject(dir.path(), "u1", 5).unwrap_err();
+    assert!(matches!(err, journal::JournalError::Io { .. }));
+}
+
+#[test]
+fn journal_error_display_renders_both_variants() {
+    // Io variant — formatted via thiserror.
+    let io = journal::JournalError::Io {
+        path: "/tmp/some-path".to_string(),
+        source: std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+    };
+    let s = format!("{io}");
+    assert!(s.contains("/tmp/some-path"));
+    assert!(s.contains("denied"));
+
+    // Json variant — synthesize a serde_json::Error.
+    let json_err = serde_json::from_str::<JournalRecord>("not json").unwrap_err();
+    let je: journal::JournalError = json_err.into();
+    let s = format!("{je}");
+    assert!(s.contains("json"));
+}
