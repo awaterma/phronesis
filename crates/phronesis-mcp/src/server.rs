@@ -1001,6 +1001,38 @@ impl EpistemeMcp {
     }
 
     #[tool(
+        description = "Return the journey_* facts that would be asserted right now against `.phronesis/journey/events.jsonl` and the loaded rules — the agent's trajectory at a glance. Optionally pass `explain_rule` to filter to a single rule's referenced facts. Mirrors the `phr-mcp journey` CLI; reads the journey journal + journey.json + rules.json. JSON array of `{predicate, selector, window, extra, rules}` rows."
+    )]
+    async fn get_journey(
+        &self,
+        Parameters(params): Parameters<GetJourneyParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::journey_cli;
+        let root = security::project_root();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let sid_path = root.join(".phronesis").join("journey").join("session");
+        let sid = std::fs::read_to_string(&sid_path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| format!("s-{}-fallback", chrono::Local::now().format("%Y-%m-%d")));
+        let rows = journey_cli::compute(&root, params.explain_rule.as_deref(), now, &sid)
+            .await
+            .map_err(|e| Self::err(e.to_string()))?;
+        Self::log_event("get_journey", |e| {
+            e.with("rows", rows.len() as u64).with(
+                "explain_rule",
+                params.explain_rule.clone().unwrap_or_default(),
+            )
+        });
+        let json = journey_cli::render_json(&rows).map_err(|e| Self::err(e.to_string()))?;
+        Self::ok_text(json)
+    }
+
+    #[tool(
         description = "Declare a confidence work unit ('subject') — e.g. a cross-language translation or a discrete suggestion — and return its current confidence report. Sets the open subject so subsequent build/test runs accrue grounded signals to it (the explicit-subject path; the implicit path mints a unit automatically). Returns JSON `{subject, summary, band, signals}`. Confidence is opt-in per project via `.phronesis/confidence.json`."
     )]
     async fn submit_suggestion(
@@ -1450,6 +1482,16 @@ mod tool_registration_tests {
             stragglers.is_empty(),
             "no MCP tool should carry 'values' in its name — the surface uses 'stats'. Found: {:?}",
             stragglers
+        );
+    }
+
+    /// Regression: `get_journey` (0.13.0) is registered.
+    #[test]
+    fn journey_tool_is_registered() {
+        let mcp = EpistemeMcp::new();
+        assert!(
+            mcp.tool_router.has_route("get_journey"),
+            "get_journey tool must be registered (matches `phr-mcp journey` CLI)"
         );
     }
 

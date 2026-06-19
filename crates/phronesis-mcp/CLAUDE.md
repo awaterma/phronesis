@@ -16,6 +16,7 @@ cargo run -- stats             # Read-only per-rule summary of .phronesis/log.js
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- confidence       # Confidence band + grounded signals for the open work unit
+cargo run -- journey   # what journey_* facts assert right now
 cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
 cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
 cargo run -- wiki-drift      # Heuristic: which .phronesis/wiki/decisions/ ADRs lack rule coverage?
@@ -158,6 +159,7 @@ The packs are composable and **independent**:
   rules (explicit `any`, `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`
   suppressions, non-null `!` assertions)
 - `swift` — Swift-specific advisories: force-unwrap warning, try! warning
+- `journey` — project-defined taggers + journey_* aggregator facts (cross-call temporal predicates)
 - `none` — empty rules array (hooks still wired)
 
 `init` writes/merges seven files:
@@ -364,7 +366,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 ## Architecture
 
 - `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`, `migrate-rules`
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift, get_wiki_drift, get_confidence, submit_suggestion)
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift, get_wiki_drift, get_confidence, submit_suggestion, get_journey)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.
@@ -381,11 +383,23 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/syntax/` — Tree-sitter AST predicates for Rust, Swift, Python, and TypeScript (e.g. function_returns_result_string, python_bare_except, ts_explicit_any)
 - `src/outcomes/` — Confidence scoring (SPEC-confidence-scoring). Grounded
   `build_outcome`/`test_outcome`/`bug_check_outcome` facts behind a
-  per-toolchain adapter (`cargo` first), a per-subject ledger
-  (`.phronesis/outcomes/`), and `signal_pass` derivation. The hook captures
-  outcomes at post-check and asserts signals at pre-check so gate rules
-  (`facts_count('signal_pass', ['*','*']) <op> N`) block/warn a `git commit` by
-  confidence band. Opt-in via `.phronesis/confidence.json`; known bugs in
-  `.phronesis/bugs.json`; report via `phr-mcp confidence`.
+  per-toolchain adapter (`cargo` first), reading per-subject history from
+  the journey journal (keyed by subject), and `signal_pass` derivation. The
+  hook captures outcomes at post-check (stamping `subject` + `outcome:*`
+  tags on the journal record) and asserts signals at pre-check so gate
+  rules (`facts_count('signal_pass', ['*','*']) <op> N`) block/warn a
+  `git commit` by confidence band. Opt-in via
+  `.phronesis/confidence.json`; known bugs in `.phronesis/bugs.json`;
+  report via `phr-mcp confidence`.
+- `src/journey/` — Journey facts (SPEC-journey-facts). Durable per-call
+  journal at `.phronesis/journey/events.jsonl` plus project-defined taggers
+  in `.phronesis/journey.json`; derivation recomputes `journey_*`
+  aggregator facts from a bounded suffix of the journal every pre- and
+  post-check, so rules can match cross-call temporal patterns (auth
+  churn over a session, recent SQL in the last 5 calls, build staleness)
+  without any in-memory accumulation. The outcomes storage layer above
+  also lives here — folded in at 0.13.0 so there's one storage seam.
+  Surface: `phr-mcp journey [--json] [--explain <rule-id>]` and the
+  `get_journey` MCP tool.
 - `docs/RUST-PATTERNS-GUIDE.md` — Rust coding standards (source for `extract_rules`)
 - `docs/PATTERNS-WORKFLOW.md` — End-user workflow guide

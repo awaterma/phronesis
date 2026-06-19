@@ -296,12 +296,21 @@ each lands a recognizable pattern in long agent runs.
   "phase": "pre",
   "priority": 25,
   "when": [
+    { "journey_seen": ["auth","s"] },
     { "__script__": "facts_count('journey_occurrence', ['auth','s']) >= 3" },
     { "__script__": "facts_count('journey_occurrence', ['tests','s']) == 0" }
   ],
   "then": { "warn": "You've edited the auth module 3+ times this session without touching its tests. Add or update coverage before continuing." }
 }
 ```
+
+> **Why the `journey_seen` anchor:** the current engine's `add_rule` filters
+> `__script__` conditions out of alpha-network state creation
+> (`crates/phronesis/src/network.rs:280-293`). A rule whose `when` is entirely
+> `__script__` clauses has no terminal state and never reaches the agenda.
+> The `journey_seen` clause provides a non-script leaf that anchors the
+> rule; it is logically a no-op here because count ≥ 3 implies presence.
+> A first-class fix — letting pure-script rules fire — is a follow-up item.
 
 The composite shows journey rules are **composable through ordinary `when`
 conjunction** — no special "but not" syntax. Selector validation makes the

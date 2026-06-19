@@ -18,6 +18,24 @@ use clap::{Parser, Subcommand};
 fn today_iso() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
+
+/// Read the active session id from `.phronesis/journey/session`. Falls back
+/// to a date-bucket when the file is missing or empty. Mirrors the
+/// hook-internal `current_sid` so the `journey` CLI sees the same window
+/// view the hook sees.
+fn read_sid(project_root: &std::path::Path) -> String {
+    let path = project_root
+        .join(".phronesis")
+        .join("journey")
+        .join("session");
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let s = s.trim();
+        if !s.is_empty() {
+            return s.to_string();
+        }
+    }
+    format!("s-{}-fallback", today_iso())
+}
 use phronesis_mcp::{hook, init, server};
 use rmcp::{ServiceExt, transport::stdio};
 
@@ -80,6 +98,19 @@ enum Command {
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
+    },
+    /// Render the `journey_*` facts a derivation pass would assert against
+    /// the current `.phronesis/journey/events.jsonl` and `.phronesis/rules.json`
+    /// — a "why did this fire" view. Default output is a terminal table; pass
+    /// `--json` for machine-readable output. `--explain <rule-id>` filters to
+    /// the facts that specific rule references.
+    Journey {
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Filter facts to those a specific rule references.
+        #[arg(long, value_name = "RULE-ID")]
+        explain: Option<String>,
     },
     /// Audit the project tree against opted-in rules. Reports per-rule
     /// violation counts with the affected files and line numbers. Default
@@ -386,6 +417,37 @@ async fn main() -> anyhow::Result<()> {
                         println!("No open work unit. Run a build/test under the hook first.");
                     }
                 }
+            }
+            Ok(())
+        }
+        Command::Journey { json, explain } => {
+            use phronesis_mcp::journey_cli;
+            let root = phronesis_mcp::security::project_root();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            // Reuse the hook's sid resolution shape: read .phronesis/journey/session,
+            // fall back to a date bucket. Inlined here because hook::current_sid
+            // is private (and intentionally so — the hook owns its session reads).
+            let sid = read_sid(&root);
+            let rows = match journey_cli::compute(&root, explain.as_deref(), now, &sid).await {
+                Ok(r) => r,
+                Err(e) => {
+                    eprintln!("error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+            if json {
+                match journey_cli::render_json(&rows) {
+                    Ok(s) => println!("{}", s),
+                    Err(e) => {
+                        eprintln!("error: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                print!("{}", journey_cli::render_table(&rows));
             }
             Ok(())
         }

@@ -1,6 +1,6 @@
 //! Append-only per-call journal at `.phronesis/journey/events.jsonl`.
 //!
-//! Same flock discipline as `action_log` / `outcomes::ledger`: an exclusive
+//! Same flock discipline as `action_log`: an exclusive
 //! advisory file lock (via `fs2::FileExt`) is held around each write, so
 //! concurrent appenders serialize and cannot interleave at any line size.
 //! POSIX flock auto-releases when the file descriptor is closed — including on
