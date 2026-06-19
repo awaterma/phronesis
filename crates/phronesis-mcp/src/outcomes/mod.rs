@@ -37,3 +37,53 @@ use std::path::Path;
 pub fn enabled(root: &Path) -> bool {
     root.join(".phronesis").join("confidence.json").exists()
 }
+
+/// A read-only confidence snapshot for the `confidence` CLI / a report tool.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfidenceReport {
+    pub subject: String,
+    pub band: Band,
+    /// Names of the passed signals (`compile`, `tests`, `bug:<id>`).
+    pub signals: Vec<String>,
+}
+
+/// Build the confidence report for `subject_override`, or the currently open
+/// work unit when `None`. Returns `None` when there is no subject to report on.
+pub fn report(root: &Path, subject_override: Option<&str>) -> Option<ConfidenceReport> {
+    let subject = subject_override
+        .map(str::to_string)
+        .or_else(|| subject::current(root))?;
+    let sigs = signals(root, &subject).unwrap_or_default();
+    let names = sigs.iter().map(|f| f.args[1].clone()).collect();
+    Some(ConfidenceReport {
+        subject,
+        band: Band::from_signal_count(sigs.len()),
+        signals: names,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_none_without_subject() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(report(dir.path(), None).is_none());
+    }
+
+    #[test]
+    fn report_reflects_ledger_signals() {
+        let dir = tempfile::tempdir().unwrap();
+        ledger::append(
+            dir.path(),
+            "u",
+            &[OutcomeFact::build("u", true), OutcomeFact::test("u", 3, 0)],
+        )
+        .unwrap();
+        let r = report(dir.path(), Some("u")).expect("report");
+        assert_eq!(r.subject, "u");
+        assert_eq!(r.band, Band::Medium);
+        assert_eq!(r.signals, vec!["compile", "tests"]);
+    }
+}

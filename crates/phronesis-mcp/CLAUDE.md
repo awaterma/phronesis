@@ -15,6 +15,7 @@ cargo run -- turn-context     # UserPromptSubmit / BeforeModelRequest hook (inje
 cargo run -- stats             # Read-only per-rule summary of .phronesis/log.jsonl
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
+cargo run -- confidence       # Confidence band + grounded signals for the open work unit
 cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
 cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
 cargo run -- wiki-drift      # Heuristic: which .phronesis/wiki/decisions/ ADRs lack rule coverage?
@@ -378,5 +379,13 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/security.rs` — Path canonicalization, size caps, input validators
 - `src/diff_extract.rs` — Regex-based diff facts (function_added, import_added, etc.)
 - `src/syntax/` — Tree-sitter AST predicates for Rust, Swift, Python, and TypeScript (e.g. function_returns_result_string, python_bare_except, ts_explicit_any)
+- `src/outcomes/` — Confidence scoring (SPEC-confidence-scoring). Grounded
+  `build_outcome`/`test_outcome`/`bug_check_outcome` facts behind a
+  per-toolchain adapter (`cargo` first), a per-subject ledger
+  (`.phronesis/outcomes/`), and `signal_pass` derivation. The hook captures
+  outcomes at post-check and asserts signals at pre-check so gate rules
+  (`facts_count('signal_pass', ['*','*']) <op> N`) block/warn a `git commit` by
+  confidence band. Opt-in via `.phronesis/confidence.json`; known bugs in
+  `.phronesis/bugs.json`; report via `phr-mcp confidence`.
 - `docs/RUST-PATTERNS-GUIDE.md` — Rust coding standards (source for `extract_rules`)
 - `docs/PATTERNS-WORKFLOW.md` — End-user workflow guide
