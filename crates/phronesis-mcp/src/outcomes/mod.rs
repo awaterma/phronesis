@@ -17,6 +17,7 @@
 //! done-claim / commit.
 
 pub mod adapter;
+pub mod bugs;
 pub mod cargo;
 pub mod derive;
 pub mod facts;

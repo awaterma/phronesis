@@ -62,6 +62,23 @@ pub fn signals_from(subject: &str, entries: &[LedgerEntry]) -> Vec<OutcomeFact> 
         }
     }
 
+    // bug:<id> — each known bug whose latest check is "fixed". BTreeMap keeps
+    // the output deterministic (the contract derivation relies on).
+    let mut bug_latest: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+    for e in entries
+        .iter()
+        .filter(|e| e.predicate == "bug_check_outcome")
+    {
+        if let (Some(id), Some(status)) = (e.args.get(1), e.args.get(2)) {
+            bug_latest.insert(id.as_str(), status.as_str());
+        }
+    }
+    for (id, status) in bug_latest {
+        if status == "fixed" {
+            out.push(OutcomeFact::signal(subject, &format!("bug:{id}")));
+        }
+    }
+
     out
 }
 
@@ -134,6 +151,29 @@ mod tests {
     #[test]
     fn empty_ledger_yields_no_signals() {
         assert!(signals_from("u", &[]).is_empty());
+    }
+
+    #[test]
+    fn fixed_bug_adds_a_bug_signal_three_of_three_is_high() {
+        let entries = vec![
+            entry("build_outcome", &["u", "pass"]),
+            entry("test_outcome", &["u", "5", "0", "5"]),
+            entry("bug_check_outcome", &["u", "1042", "fixed"]),
+        ];
+        let s = signals_from("u", &entries);
+        assert_eq!(names(&s), vec!["compile", "tests", "bug:1042"]);
+        assert_eq!(Band::from_signal_count(s.len()), Band::High);
+    }
+
+    #[test]
+    fn open_bug_check_is_not_a_signal_and_latest_wins() {
+        let entries = vec![
+            entry("build_outcome", &["u", "pass"]),
+            // first fixed, then re-checked open → latest (open) wins, no signal
+            entry("bug_check_outcome", &["u", "1042", "fixed"]),
+            entry("bug_check_outcome", &["u", "1042", "open"]),
+        ];
+        assert_eq!(names(&signals_from("u", &entries)), vec!["compile"]);
     }
 
     #[test]

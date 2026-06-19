@@ -29,6 +29,22 @@ static TEST_RESULT: LazyLock<Regex> = LazyLock::new(|| {
 static COMPILE_ERROR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"error\[E\d+\]").expect("COMPILE_ERROR regex is valid"));
 
+/// A per-test result line: `test path::name ... ok` / `... FAILED`. Anchored to
+/// line start (multiline) so the `test result:` summary line never matches.
+static TEST_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^test (\S+) \.\.\. (ok|FAILED)").expect("TEST_LINE regex is valid")
+});
+
+/// Per-test results parsed from cargo test output: `(test_name, passed)`. Used
+/// by the known-bug registry to detect a specific bug-test going green.
+/// `ignored`/`measured` lines are not results and are skipped.
+pub fn per_test_results(output: &str) -> Vec<(String, bool)> {
+    TEST_LINE
+        .captures_iter(output)
+        .map(|c| (c[1].to_string(), &c[2] == "ok"))
+        .collect()
+}
+
 pub struct CargoAdapter;
 
 impl CargoAdapter {
@@ -159,6 +175,20 @@ mod tests {
         let facts = CargoAdapter.parse("u", "cargo test", out);
         let t = test_fact(&facts).expect("test_outcome present");
         assert_eq!(t.args, vec!["u", "8", "1", "9"]);
+    }
+
+    #[test]
+    fn per_test_results_parses_names_and_status() {
+        let out = "running 3 tests\ntest mod_a::ok_one ... ok\ntest mod_b::fails ... FAILED\ntest mod_c::ignored_one ... ignored\ntest result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out\n";
+        let results = per_test_results(out);
+        assert_eq!(
+            results,
+            vec![
+                ("mod_a::ok_one".to_string(), true),
+                ("mod_b::fails".to_string(), false),
+            ],
+            "ok/FAILED parsed; ignored and the summary line excluded"
+        );
     }
 
     #[test]

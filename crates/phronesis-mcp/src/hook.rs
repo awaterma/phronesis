@@ -537,6 +537,18 @@ fn capture_outcomes(payload: &HookPayload, tool_name: &str) {
     let output = extract_tool_output_text(payload);
     let facts = outcomes::extract(&subject, &command, &output);
     let _ = outcomes::ledger::append(&root, &subject, &facts);
+
+    // Known-bug (TDD) signal: if this run named individual tests, score the
+    // open bugs whose test went green with no regressions in this run.
+    let per_test = outcomes::cargo::per_test_results(&output);
+    if !per_test.is_empty() {
+        let bugs = outcomes::bugs::load(&root);
+        if !bugs.is_empty() {
+            let no_regressions = per_test.iter().all(|(_, passed)| *passed);
+            let bug_facts = outcomes::bugs::check(&subject, &bugs, &per_test, no_regressions);
+            let _ = outcomes::ledger::append(&root, &subject, &bug_facts);
+        }
+    }
 }
 
 /// Pre-check side of confidence scoring: assert the open work unit's

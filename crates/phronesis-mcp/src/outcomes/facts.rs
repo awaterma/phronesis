@@ -49,6 +49,16 @@ impl OutcomeFact {
             args: vec![subject.to_string(), name.to_string()],
         }
     }
+
+    /// `bug_check_outcome(subject, bug_id, status)` — the TDD known-bug signal.
+    /// `status` ∈ `fixed` (the bug's test went green with no regressions) /
+    /// `open` (still red) / `regressed`.
+    pub fn bug_check(subject: &str, bug_id: &str, status: &str) -> Self {
+        Self {
+            predicate: "bug_check_outcome",
+            args: vec![subject.to_string(), bug_id.to_string(), status.to_string()],
+        }
+    }
 }
 
 fn status(passed: bool) -> String {

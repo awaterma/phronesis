@@ -196,6 +196,35 @@ fn failing_cargo_test_keeps_commit_blocked() {
 }
 
 #[test]
+fn catching_known_bug_reaches_high_and_commit_passes_clean() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    std::fs::write(
+        phr_dir(dir.path()).join("bugs.json"),
+        r#"[{"bug_id":"1042","test":"auth::rejects_expired","status":"open"}]"#,
+    )
+    .unwrap();
+
+    // cargo test: the known-bug test passes, nothing fails → compile + tests +
+    // bug = 3 signals = high.
+    let test_payload = r#"{
+        "tool_name":"Bash",
+        "tool_input":{"command":"cargo test"},
+        "tool_output":{"stdout":"running 2 tests\ntest auth::rejects_expired ... ok\ntest other::thing ... ok\ntest result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"}
+    }"#;
+    let (code, _) = run_hook("post-check", test_payload, dir.path());
+    assert_eq!(code, 0);
+
+    // 3/3 signals → neither low nor medium fires → commit proceeds clean.
+    let (code, stderr) = run_hook("pre-check", COMMIT_PAYLOAD, dir.path());
+    assert_eq!(
+        code, 0,
+        "3 signals (incl. known-bug) should pass clean; stderr: {stderr}"
+    );
+}
+
+#[test]
 fn commit_settles_the_work_unit() {
     let dir = tempfile::tempdir().unwrap();
     enable_confidence(dir.path());
