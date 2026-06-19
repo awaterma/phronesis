@@ -364,7 +364,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 ## Architecture
 
 - `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`, `migrate-rules`
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift, get_wiki_drift)
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift, get_wiki_drift, get_confidence, submit_suggestion)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.

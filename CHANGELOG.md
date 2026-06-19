@@ -23,6 +23,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   - Known-bug registry in `.phronesis/bugs.json`.
   - `phr-mcp confidence [--subject <id>] [--json]` — read-only band/signals
     report for the open work unit.
+  - `phr-mcp init --packs confidence` — writes the commit-gate rules plus the
+    `.phronesis/confidence.json` opt-in marker and `.phronesis/bugs.json`
+    registry, and carves both back into `.gitignore` as tracked config.
+  - MCP tools `get_confidence` (band/signals report) and `submit_suggestion`
+    (declare an explicit work unit, e.g. a translation, and accrue signals to
+    it).
   - **Opt-in per project** via `.phronesis/confidence.json`; fail-open
     throughout, so projects that haven't enabled it are unaffected.
 
