@@ -140,6 +140,44 @@ fn action_to_then(action: &DiskAction) -> serde_json::Value {
     serde_json::json!({ verb: msg })
 }
 
+impl SourceRule {
+    /// Build a `SourceRule` whose `then` action is the sentinel `tag` verb
+    /// and whose message is the tag itself. The journey tagger uses this
+    /// constructor to ride the existing rule-firing path without any new
+    /// matching code: every tagger compiles into one or more flat `DiskRule`s
+    /// via `unfold_or`, loads into a throwaway `ReteNetwork`, and emits a
+    /// `tag`-action consequence whose `message` is the tag name when its
+    /// `when` matches.
+    ///
+    /// Errors bubble back as `RulesFileError::Unfold` carrying the serde
+    /// parse error — keeps the journey config malformed-paths surface a
+    /// single, named error variant.
+    pub fn synthetic_tagger(tag: &str, when: &[serde_json::Value]) -> Result<Self, RulesFileError> {
+        let id = format!("tagger:{}", tag);
+        let when_clauses: Vec<WhenClause> = when
+            .iter()
+            .map(|v| serde_json::from_value::<WhenClause>(v.clone()))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| RulesFileError::Unfold {
+                path: id.clone(),
+                message: e.to_string(),
+            })?;
+        Ok(SourceRule {
+            id,
+            phase: "tag".to_string(),
+            priority: 0,
+            when: when_clauses,
+            then: DiskAction {
+                action_type: "tag".to_string(),
+                params: vec![tag.to_string()],
+            },
+            silent: None,
+            audit: None,
+            doc_excepted: None,
+        })
+    }
+}
+
 impl<'de> Deserialize<'de> for SourceRule {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where

@@ -7,3 +7,4 @@
 //! (journal bytes, ts, sid).
 
 pub mod journal;
+pub mod tagger;
