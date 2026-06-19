@@ -8,6 +8,7 @@ pub mod hook;
 pub(crate) mod hook_facts;
 pub(crate) mod hook_logged;
 pub mod init;
+pub mod journey;
 pub mod memory_drift;
 pub mod outcomes;
 pub mod rules_file;
