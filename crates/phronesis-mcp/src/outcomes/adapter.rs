@@ -25,6 +25,12 @@ fn registry() -> Vec<Box<dyn OutcomeAdapter>> {
     vec![Box::new(CargoAdapter)]
 }
 
+/// Does any registered adapter recognize this command? Lets callers skip
+/// opening a work unit for irrelevant commands (e.g. `ls`).
+pub fn handles(command: &str) -> bool {
+    registry().iter().any(|a| a.handles(command))
+}
+
 /// Extract neutral outcome facts from a tool call's `command` + `output`, keyed
 /// by `subject`. Returns empty when no adapter recognizes the command — a
 /// non-build/test command produces no grounded signal, which is correct.

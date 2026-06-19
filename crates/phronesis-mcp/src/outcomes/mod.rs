@@ -23,6 +23,16 @@ pub mod facts;
 pub mod ledger;
 pub mod subject;
 
-pub use adapter::extract;
+pub use adapter::{extract, handles};
 pub use derive::{band, signals};
 pub use facts::{Band, OutcomeFact};
+
+use std::path::Path;
+
+/// Confidence scoring is **opt-in per project**: active only when
+/// `.phronesis/confidence.json` exists (written by `init --packs confidence`).
+/// Until then the ledger and gate stay dormant, so projects that haven't
+/// enabled it see no behavior change and no `.phronesis/outcomes/` directory.
+pub fn enabled(root: &Path) -> bool {
+    root.join(".phronesis").join("confidence.json").exists()
+}
