@@ -203,11 +203,14 @@ enum Command {
         /// Project root (defaults to current directory).
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Comma-separated starter packs. Available: llm, rust, python,
-        /// typescript, swift, none. The `llm` pack carries deflection rules that
-        /// catch LLM-bad-behavior phrases ("pre-existing issue", etc.) and
-        /// is independent of language. Language packs carry only
-        /// language-specific enforcement. Compose freely (e.g. "llm,rust").
+        /// Comma-separated starter packs. Available: llm, rust, rhai, python,
+        /// typescript, swift, confidence, none. The `llm` pack carries
+        /// deflection rules that catch LLM-bad-behavior phrases ("pre-existing
+        /// issue", etc.) and is independent of language. Language packs carry
+        /// only language-specific enforcement. The `confidence` pack adds the
+        /// commit-gating rules plus a .phronesis/confidence.json opt-in marker
+        /// and a .phronesis/bugs.json registry. Compose freely (e.g.
+        /// "llm,rust,confidence").
         #[arg(long, default_value = "llm")]
         packs: String,
         /// Deprecated alias for --packs. Single value; auto-composed with

@@ -37,6 +37,7 @@ pub enum Pack {
     Python,
     TypeScript,
     Swift,
+    Confidence,
     None,
 }
 
@@ -50,6 +51,7 @@ impl Pack {
             "python" | "py" => Ok(Self::Python),
             "typescript" | "ts" | "javascript" | "js" => Ok(Self::TypeScript),
             "swift" => Ok(Self::Swift),
+            "confidence" => Ok(Self::Confidence),
             "none" => Ok(Self::None),
             other => Err(InitError::UnknownPack(other.to_string())),
         }
@@ -64,6 +66,7 @@ impl Pack {
             Self::Python => python_rules(),
             Self::TypeScript => typescript_rules(),
             Self::Swift => swift_rules(),
+            Self::Confidence => confidence_rules(),
         }
     }
 
@@ -75,6 +78,7 @@ impl Pack {
             Self::Python => "python",
             Self::TypeScript => "typescript",
             Self::Swift => "swift",
+            Self::Confidence => "confidence",
             Self::None => "none",
         }
     }
@@ -125,7 +129,9 @@ pub fn compose_packs(packs: &[Pack]) -> Value {
 
 #[derive(Debug, Error)]
 pub enum InitError {
-    #[error("unknown pack `{0}`; valid: llm, rust, python, typescript, swift, none")]
+    #[error(
+        "unknown pack `{0}`; valid: llm, rust, rhai, python, typescript, swift, confidence, none"
+    )]
     UnknownPack(String),
     #[error("project root does not exist: {0}")]
     NoSuchPath(String),
@@ -401,6 +407,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
         write_rules_file(&root, &opts, &mut report)?;
         write_durable_md(&root, &opts, &mut report)?;
         write_wiki_scaffold(&root, &opts, &mut report)?;
+        write_confidence_scaffold(&root, &opts, &mut report)?;
     }
     if !opts.rules_only && !opts.hooks_only {
         update_gitignore(&root, &opts, &mut report)?;
@@ -793,13 +800,62 @@ fn write_wiki_scaffold(
     Ok(())
 }
 
+/// Default `.phronesis/confidence.json` — the opt-in marker that activates
+/// confidence scoring for the project.
+const CONFIDENCE_JSON: &str = "{\n  \"version\": 1\n}\n";
+
+/// Default `.phronesis/bugs.json` — the known-bug registry, empty to start.
+/// Each entry: `{ "bug_id": "...", "test": "module::test_name", "status": "open" }`.
+const CONFIDENCE_BUGS_JSON: &str = "[]\n";
+
+/// Write the confidence opt-in marker + known-bug registry when the
+/// `confidence` pack is selected. Idempotent (leaves existing files alone).
+fn write_confidence_scaffold(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    if !opts.packs.contains(&Pack::Confidence) {
+        return Ok(());
+    }
+    let phr = root.join(".phronesis");
+    for (name, contents) in [
+        ("confidence.json", CONFIDENCE_JSON),
+        ("bugs.json", CONFIDENCE_BUGS_JSON),
+    ] {
+        let path = phr.join(name);
+        if path.exists() {
+            report.steps.push(format!(
+                "= .phronesis/{name} already exists — leaving unchanged"
+            ));
+            continue;
+        }
+        if opts.dry_run {
+            report
+                .steps
+                .push(format!("+ would create .phronesis/{name}"));
+            continue;
+        }
+        std::fs::create_dir_all(&phr).map_err(|e| InitError::Io {
+            path: phr.display().to_string(),
+            source: e,
+        })?;
+        std::fs::write(&path, contents).map_err(|e| InitError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        report.steps.push(format!("+ created .phronesis/{name}"));
+    }
+    Ok(())
+}
+
 fn update_gitignore(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
 ) -> Result<(), InitError> {
     let path = root.join(".gitignore");
-    let entries = [
+    let mut entries = vec![
         ".phronesis/log.jsonl",
         ".phronesis/log.jsonl.1",
         ".phronesis/rules.json.bak",
@@ -812,6 +868,12 @@ fn update_gitignore(
         "!.phronesis/wiki/",
         "!.phronesis/wiki/**",
     ];
+    // Confidence config is project knowledge (track it); the per-subject
+    // outcome ledger under .phronesis/outcomes/ stays ignored via `.phronesis/*`.
+    if opts.packs.contains(&Pack::Confidence) {
+        entries.push("!.phronesis/confidence.json");
+        entries.push("!.phronesis/bugs.json");
+    }
     let original = if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| InitError::Io {
             path: path.display().to_string(),
@@ -1019,6 +1081,38 @@ fn upsert_hook(settings: &mut Value, event: &str, new_entry: Value) {
 // ─────────────────────────────────────────────────────────────────────
 // Starter packs
 // ─────────────────────────────────────────────────────────────────────
+
+/// Confidence-scoring gate rules (SPEC-confidence-scoring §3, approach A).
+/// They count the open work unit's passed `signal_pass` facts (asserted by the
+/// pre-check hook) and gate a `git commit` by band: ≤1 signal blocks, exactly 2
+/// warns, 3 passes clean. Paired with the `.phronesis/confidence.json` opt-in
+/// marker + `.phronesis/bugs.json` registry written by `write_confidence_scaffold`.
+fn confidence_rules() -> Value {
+    json!({
+        "rules": [
+            {
+                "id": "confidence-low-blocks-commit",
+                "phase": "pre",
+                "priority": 30,
+                "when": [
+                    {"bash_command_matches": "git commit"},
+                    {"__script__": "facts_count('signal_pass', ['*','*']) <= 1"}
+                ],
+                "then": {"block": "Low confidence — compile/tests/known-bug not all green. Run the build and tests and resolve failing signals before committing."}
+            },
+            {
+                "id": "confidence-medium-warns-commit",
+                "phase": "pre",
+                "priority": 29,
+                "when": [
+                    {"bash_command_matches": "git commit"},
+                    {"__script__": "facts_count('signal_pass', ['*','*']) == 2"}
+                ],
+                "then": {"warn": "Medium confidence — one grounded signal is missing. Review before presenting this as done."}
+            }
+        ]
+    })
+}
 
 fn deflection_rules() -> Value {
     json!({
