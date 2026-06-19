@@ -6,5 +6,6 @@
 //! decay is the sliding window; determinism is a pure function of
 //! (journal bytes, ts, sid).
 
+pub mod derive;
 pub mod journal;
 pub mod tagger;
