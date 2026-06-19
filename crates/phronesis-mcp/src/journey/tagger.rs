@@ -40,7 +40,7 @@ const TAG_ACTION: &str = "tag";
 /// risk-surface vocabulary (taggers) and the named-entity surface
 /// (modules). Both are project-defined; the engine itself stays
 /// vocabulary-neutral.
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct TaggerConfig {
     #[serde(default = "default_version")]
     pub version: u32,
@@ -53,6 +53,21 @@ pub struct TaggerConfig {
     /// serialize/deserialize — it's pure runtime state.
     #[serde(skip)]
     compiled: OnceLock<Vec<Rule>>,
+}
+
+impl Default for TaggerConfig {
+    /// The fail-open shape: schema version 1, no taggers, no modules.
+    /// `load_config` returns this when `.phronesis/journey.json` is
+    /// missing or malformed and the hook reaches for a default — see
+    /// `journey::load_config` and SPEC §"Fail-open."
+    fn default() -> Self {
+        Self {
+            version: 1,
+            taggers: Vec::new(),
+            modules: Vec::new(),
+            compiled: OnceLock::new(),
+        }
+    }
 }
 
 impl Clone for TaggerConfig {

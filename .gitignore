@@ -4,6 +4,7 @@
 **/.phronesis/log.jsonl
 **/.phronesis/log.jsonl.1
 **/.phronesis/rules.json.bak
+**/.phronesis/journey/
 
 # Private cross-project docs — keep local, never publish
 docs/specs/*-migration-map.md

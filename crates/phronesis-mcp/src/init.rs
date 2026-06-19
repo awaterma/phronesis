@@ -38,6 +38,7 @@ pub enum Pack {
     TypeScript,
     Swift,
     Confidence,
+    Journey,
     None,
 }
 
@@ -52,6 +53,7 @@ impl Pack {
             "typescript" | "ts" | "javascript" | "js" => Ok(Self::TypeScript),
             "swift" => Ok(Self::Swift),
             "confidence" => Ok(Self::Confidence),
+            "journey" => Ok(Self::Journey),
             "none" => Ok(Self::None),
             other => Err(InitError::UnknownPack(other.to_string())),
         }
@@ -67,6 +69,11 @@ impl Pack {
             Self::TypeScript => typescript_rules(),
             Self::Swift => swift_rules(),
             Self::Confidence => confidence_rules(),
+            // Journey ships no starter rules in v1 — the project defines its
+            // own risk surface via `journey.json` and adds journey_* rules to
+            // rules.json. The pack's contribution is the journey.json starter
+            // config + gitignore carveout, written by `write_journey_scaffold`.
+            Self::Journey => json!({"rules": []}),
         }
     }
 
@@ -79,6 +86,7 @@ impl Pack {
             Self::TypeScript => "typescript",
             Self::Swift => "swift",
             Self::Confidence => "confidence",
+            Self::Journey => "journey",
             Self::None => "none",
         }
     }
@@ -130,7 +138,7 @@ pub fn compose_packs(packs: &[Pack]) -> Value {
 #[derive(Debug, Error)]
 pub enum InitError {
     #[error(
-        "unknown pack `{0}`; valid: llm, rust, rhai, python, typescript, swift, confidence, none"
+        "unknown pack `{0}`; valid: llm, rust, rhai, python, typescript, swift, confidence, journey, none"
     )]
     UnknownPack(String),
     #[error("project root does not exist: {0}")]
@@ -408,6 +416,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
         write_durable_md(&root, &opts, &mut report)?;
         write_wiki_scaffold(&root, &opts, &mut report)?;
         write_confidence_scaffold(&root, &opts, &mut report)?;
+        write_journey_scaffold(&root, &opts, &mut report)?;
     }
     if !opts.rules_only && !opts.hooks_only {
         update_gitignore(&root, &opts, &mut report)?;
@@ -849,6 +858,58 @@ fn write_confidence_scaffold(
     Ok(())
 }
 
+/// Starter `.phronesis/journey.json` — schema version, one example tagger
+/// (`build` matches `cargo (build|check|test)`), empty `modules`. Authors
+/// extend it with their project's risk surface (auth, sql, payments, …)
+/// per SPEC-journey-facts §"The project-defined seam".
+const JOURNEY_JSON: &str = r#"{
+  "version": 1,
+  "taggers": [
+    { "tag": "build", "when": [ { "bash_command_matches": "cargo (build|check|test)" } ] }
+  ],
+  "modules": []
+}
+"#;
+
+/// Write `.phronesis/journey.json` when the `journey` pack is selected.
+/// Idempotent — leaves an existing file alone so a project's customized
+/// tagger vocabulary isn't clobbered by a re-run.
+fn write_journey_scaffold(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    if !opts.packs.contains(&Pack::Journey) {
+        return Ok(());
+    }
+    let phr = root.join(".phronesis");
+    let path = phr.join("journey.json");
+    if path.exists() {
+        report
+            .steps
+            .push("= .phronesis/journey.json already exists — leaving unchanged".to_string());
+        return Ok(());
+    }
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would create .phronesis/journey.json".to_string());
+        return Ok(());
+    }
+    std::fs::create_dir_all(&phr).map_err(|e| InitError::Io {
+        path: phr.display().to_string(),
+        source: e,
+    })?;
+    std::fs::write(&path, JOURNEY_JSON).map_err(|e| InitError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    report
+        .steps
+        .push("+ created .phronesis/journey.json".to_string());
+    Ok(())
+}
+
 fn update_gitignore(
     root: &Path,
     opts: &InitOpts,
@@ -873,6 +934,12 @@ fn update_gitignore(
     if opts.packs.contains(&Pack::Confidence) {
         entries.push("!.phronesis/confidence.json");
         entries.push("!.phronesis/bugs.json");
+    }
+    // Journey config is project knowledge (track it); the journal under
+    // .phronesis/journey/ (events.jsonl, session, seq) stays ignored via
+    // `.phronesis/*` — local state only.
+    if opts.packs.contains(&Pack::Journey) {
+        entries.push("!.phronesis/journey.json");
     }
     let original = if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| InitError::Io {

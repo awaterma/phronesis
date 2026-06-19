@@ -11,12 +11,14 @@
 //! - **tests** — summed across the per-binary `test result:` lines cargo
 //!   prints (one per test binary / doc-test run).
 
+use std::path::Path;
 use std::sync::LazyLock;
 
 use regex::Regex;
 
 use crate::outcomes::adapter::OutcomeAdapter;
 use crate::outcomes::facts::OutcomeFact;
+use crate::outcomes::{bugs, subject as subject_mod};
 
 /// `test result: ok. 12 passed; 0 failed; …` — captures passed and failed.
 static TEST_RESULT: LazyLock<Regex> = LazyLock::new(|| {
@@ -88,6 +90,117 @@ impl OutcomeAdapter for CargoAdapter {
         }
         facts
     }
+}
+
+/// Map a `build_outcome` fact's `pass`/`fail` arg to the outcome tag the
+/// journal record stamps.
+fn build_tag(fact: &OutcomeFact) -> Option<&'static str> {
+    match fact.args.get(1).map(|s| s.as_str()) {
+        Some("pass") => Some("outcome:compile_ok"),
+        Some("fail") => Some("outcome:compile_error"),
+        _ => None,
+    }
+}
+
+/// Map a `test_outcome` fact (`[subject, passed, failed, total]`) to a tag.
+/// `total > 0 && failed == 0` is a pass; otherwise fail.
+fn test_tag(fact: &OutcomeFact) -> Option<&'static str> {
+    let failed = fact.args.get(2)?.parse::<usize>().ok()?;
+    let total = fact.args.get(3)?.parse::<usize>().ok()?;
+    if total > 0 && failed == 0 {
+        Some("outcome:test_pass")
+    } else if total > 0 {
+        Some("outcome:test_fail")
+    } else {
+        None
+    }
+}
+
+/// Post-check side of confidence scoring at the journey-fold-in seam:
+/// translate a Bash tool call (`command` + `output`) into the outcome tags
+/// the journal record stamps, plus the resolved `subject` so per-subject
+/// reads still work. Pure with respect to the filesystem *except* for the
+/// `subject` lifecycle ops (`subject::open` / `subject::settle`), which the
+/// confidence subsystem still owns.
+///
+/// Behavior matches the pre-fold-in `capture_outcomes`:
+/// - `git commit` settles the open subject and emits no tags (the commit's
+///   post-check doesn't record an outcome — it concludes a unit).
+/// - Non-handled commands (`ls`, etc.) return `(empty, None)`.
+/// - Confidence not enabled → `(empty, None)` (opt-in guard preserved).
+/// - Handled commands open/reuse a subject, parse the output, return tags
+///   from build/test/bug results and the subject so the hook stamps both.
+///
+/// Returns: `(outcome_tags, subject)`.
+pub fn extract_from(
+    project_root: &Path,
+    tool_name: &str,
+    command_opt: Option<&str>,
+    output: &str,
+) -> (Vec<String>, Option<String>) {
+    if !matches!(tool_name, "Bash" | "run_shell_command") {
+        return (Vec::new(), None);
+    }
+    if !crate::outcomes::enabled(project_root) {
+        return (Vec::new(), None);
+    }
+    let Some(command) = command_opt else {
+        return (Vec::new(), None);
+    };
+    if command.contains("git commit") {
+        let _ = subject_mod::settle(project_root);
+        return (Vec::new(), None);
+    }
+    if !crate::outcomes::adapter::handles(command) {
+        return (Vec::new(), None);
+    }
+    let subject = match subject_mod::open(project_root) {
+        Ok(s) => s,
+        Err(_) => return (Vec::new(), None),
+    };
+
+    let outcome_facts = crate::outcomes::adapter::extract(&subject, command, output);
+
+    let mut tags: Vec<String> = Vec::new();
+    for f in &outcome_facts {
+        match f.predicate {
+            "build_outcome" => {
+                if let Some(t) = build_tag(f) {
+                    tags.push(t.to_string());
+                }
+            }
+            "test_outcome" => {
+                if let Some(t) = test_tag(f) {
+                    tags.push(t.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Known-bug TDD signal: if this run named individual tests, score open
+    // bugs and emit one `outcome:bug_caught:<id>` per bug whose test went
+    // green with no regressions. The `:<id>` suffix preserves the bug
+    // identity so per-subject `signals` can reconstruct the same shape the
+    // ledger produced.
+    let per_test = per_test_results(output);
+    if !per_test.is_empty() {
+        let known = bugs::load(project_root);
+        if !known.is_empty() {
+            let no_regressions = per_test.iter().all(|(_, passed)| *passed);
+            let bug_facts = bugs::check(&subject, &known, &per_test, no_regressions);
+            for f in &bug_facts {
+                // bug_check_outcome args: [subject, bug_id, status]
+                if let (Some(id), Some(status)) = (f.args.get(1), f.args.get(2))
+                    && status == "fixed"
+                {
+                    tags.push(format!("outcome:bug_caught:{}", id));
+                }
+            }
+        }
+    }
+
+    (tags, Some(subject))
 }
 
 #[cfg(test)]

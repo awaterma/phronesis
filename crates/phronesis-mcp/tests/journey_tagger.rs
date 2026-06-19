@@ -123,8 +123,11 @@ async fn or_dnf_expansion_fires_for_either_branch() {
 
 #[test]
 fn tagger_config_default_constructs_empty() {
+    // The hand-written `impl Default` pins version=1 so a fail-open default
+    // matches the v1 schema; load_config returns this on a NotFound or
+    // malformed `.phronesis/journey.json`.
     let c = TaggerConfig::default();
-    assert_eq!(c.version, 0); // Default::default() for u32 is 0; serde fills 1 from disk
+    assert_eq!(c.version, 1);
     assert!(c.taggers.is_empty());
     assert!(c.modules.is_empty());
     // resolve_module on default config matches nothing.

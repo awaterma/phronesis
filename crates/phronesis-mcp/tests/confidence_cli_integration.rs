@@ -1,5 +1,7 @@
 //! `phr-mcp confidence` CLI tests — the read-only band/signals report over
-//! `.phronesis/outcomes/`.
+//! the journey journal (per-subject reads via outcome:* tags). 0.13.0
+//! folds the standalone `.phronesis/outcomes/<subject>.jsonl` ledger into
+//! the journey journal; the seeding helper writes the new shape.
 
 use std::path::Path;
 use std::process::Command;
@@ -16,27 +18,46 @@ fn run(args: &[&str], root: &Path) -> (i32, String) {
     )
 }
 
-fn seed(root: &Path, subject: &str, entries: &[&str]) {
-    let outcomes = root.join(".phronesis").join("outcomes");
+/// Seed the journey journal with one record per outcome tag, plus mint the
+/// open subject. Each `tag` is an `outcome:*` string; the helper expands it
+/// into a JournalRecord whose `subject` is set so `read_recent_subject`
+/// returns the records.
+fn seed_journey(root: &Path, subject: &str, set_current: bool, tags: &[&str]) {
+    let phr = root.join(".phronesis");
+    let outcomes = phr.join("outcomes");
     std::fs::create_dir_all(&outcomes).unwrap();
-    std::fs::write(outcomes.join("current"), subject).unwrap();
-    std::fs::write(
-        outcomes.join(format!("{subject}.jsonl")),
-        entries.join("\n"),
-    )
-    .unwrap();
+    if set_current {
+        std::fs::write(outcomes.join("current"), subject).unwrap();
+    }
+    let journey = phr.join("journey");
+    std::fs::create_dir_all(&journey).unwrap();
+    let mut lines = Vec::new();
+    for (i, tag) in tags.iter().enumerate() {
+        let line = serde_json::json!({
+            "v": 1,
+            "ts": (i as u64) + 1,
+            "sid": "s-test",
+            "seq": (i as u64) + 1,
+            "tool": "Bash",
+            "path": "<cmd>",
+            "tags": [tag],
+            "subject": subject,
+        })
+        .to_string();
+        lines.push(line);
+    }
+    let body = lines.join("\n") + "\n";
+    std::fs::write(journey.join("events.jsonl"), body).unwrap();
 }
 
 #[test]
 fn reports_band_and_signals_for_open_unit() {
     let dir = tempfile::tempdir().unwrap();
-    seed(
+    seed_journey(
         dir.path(),
         "u",
-        &[
-            r#"{"ts":0,"predicate":"build_outcome","args":["u","pass"]}"#,
-            r#"{"ts":0,"predicate":"test_outcome","args":["u","9","0","9"]}"#,
-        ],
+        true,
+        &["outcome:compile_ok", "outcome:test_pass"],
     );
     let (code, stdout) = run(&["confidence"], dir.path());
     assert_eq!(code, 0);
@@ -50,11 +71,7 @@ fn reports_band_and_signals_for_open_unit() {
 #[test]
 fn json_output_is_machine_readable() {
     let dir = tempfile::tempdir().unwrap();
-    seed(
-        dir.path(),
-        "u",
-        &[r#"{"ts":0,"predicate":"build_outcome","args":["u","pass"]}"#],
-    );
+    seed_journey(dir.path(), "u", true, &["outcome:compile_ok"]);
     let (code, stdout) = run(&["confidence", "--json"], dir.path());
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
@@ -74,14 +91,11 @@ fn no_open_unit_is_reported_gracefully() {
 #[test]
 fn subject_override_targets_a_specific_unit() {
     let dir = tempfile::tempdir().unwrap();
-    // open unit is "u", but we query "other"
-    seed(dir.path(), "u", &[]);
+    // open unit is "u" (empty), and we query "other" — seed only its records.
+    seed_journey(dir.path(), "other", false, &["outcome:compile_ok"]);
+    // Mint "u" as the current open unit to mirror the original test shape.
     let outcomes = dir.path().join(".phronesis").join("outcomes");
-    std::fs::write(
-        outcomes.join("other.jsonl"),
-        "{\"ts\":0,\"predicate\":\"build_outcome\",\"args\":[\"other\",\"pass\"]}",
-    )
-    .unwrap();
+    std::fs::write(outcomes.join("current"), "u").unwrap();
     let (code, stdout) = run(&["confidence", "--subject", "other", "--json"], dir.path());
     assert_eq!(code, 0);
     let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();

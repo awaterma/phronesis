@@ -1,4 +1,4 @@
-//! Derive confidence signals from a subject's outcome ledger.
+//! Derive confidence signals from a subject's journey journal entries.
 //!
 //! Approach A (SPEC-confidence-scoring §3): each grounded signal that passed
 //! becomes one atomic `signal_pass(subject, name)` fact; gate rules count them
@@ -6,37 +6,103 @@
 //! re-run reflects the current state, so an earlier red run does not keep a
 //! stale signal alive. This is the per-invocation re-derivation the stateless
 //! hook model relies on.
+//!
+//! Storage: post-0.13.0, the per-subject outcome ledger has folded into the
+//! journey journal (SPEC-journey-facts §"Subject and the outcomes fold-in").
+//! `signals` reads `journey::journal::read_recent_subject` and reconstructs
+//! the predicate shape `signals_from` expects from each record's outcome tags.
 
 use std::path::Path;
 
+use crate::journey::journal::{self, JournalRecord};
 use crate::outcomes::facts::{Band, OutcomeFact};
-use crate::outcomes::ledger::{self, LedgerEntry};
 
-/// Read `subject`'s ledger and return the `signal_pass` facts it supports now.
-pub fn signals(root: &Path, subject: &str) -> Result<Vec<OutcomeFact>, ledger::LedgerError> {
-    let entries = ledger::read(root, subject)?;
+/// A neutral derived entry: same `(predicate, args)` shape the old
+/// `LedgerEntry` carried, recovered from a journal record's outcome tags.
+/// Order in the returned vec is append-order — `signals_from` relies on
+/// "latest of each kind wins" iterating in reverse.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedEntry {
+    pub predicate: String,
+    pub args: Vec<String>,
+}
+
+/// Read `subject`'s journey records and return the `signal_pass` facts they
+/// support now. Public signature unchanged from the pre-fold-in ledger
+/// version — confidence-scoring callers (commit gate, CLI report, MCP tool)
+/// don't change.
+pub fn signals(root: &Path, subject: &str) -> Result<Vec<OutcomeFact>, journal::JournalError> {
+    let records = journal::read_recent_subject(root, subject, journal::SUFFIX_HARD_CAP)?;
+    let entries = entries_from(subject, &records);
     Ok(signals_from(subject, &entries))
 }
 
 /// The confidence band for `subject` from its passed-signal count. Gate rules
 /// (approach A) count `signal_pass` directly; this host-side band is for the
 /// report / CLI / approach B.
-pub fn band(root: &Path, subject: &str) -> Result<Band, ledger::LedgerError> {
+pub fn band(root: &Path, subject: &str) -> Result<Band, journal::JournalError> {
     Ok(Band::from_signal_count(signals(root, subject)?.len()))
 }
 
-fn latest<'a>(entries: &'a [LedgerEntry], predicate: &str) -> Option<&'a LedgerEntry> {
+/// Translate a slice of journey records carrying `outcome:*` tags into the
+/// `(predicate, args)` shape the legacy `signals_from` consumes. Append
+/// order is preserved.
+pub fn entries_from(subject: &str, records: &[JournalRecord]) -> Vec<DerivedEntry> {
+    let mut out = Vec::new();
+    for rec in records {
+        for tag in &rec.tags {
+            match tag.as_str() {
+                "outcome:compile_ok" => out.push(DerivedEntry {
+                    predicate: "build_outcome".to_string(),
+                    args: vec![subject.to_string(), "pass".to_string()],
+                }),
+                "outcome:compile_error" => out.push(DerivedEntry {
+                    predicate: "build_outcome".to_string(),
+                    args: vec![subject.to_string(), "fail".to_string()],
+                }),
+                "outcome:test_pass" => out.push(DerivedEntry {
+                    predicate: "test_outcome".to_string(),
+                    args: vec![
+                        subject.to_string(),
+                        "1".to_string(),
+                        "0".to_string(),
+                        "1".to_string(),
+                    ],
+                }),
+                "outcome:test_fail" => out.push(DerivedEntry {
+                    predicate: "test_outcome".to_string(),
+                    args: vec![
+                        subject.to_string(),
+                        "0".to_string(),
+                        "1".to_string(),
+                        "1".to_string(),
+                    ],
+                }),
+                t if t.starts_with("outcome:bug_caught:") => {
+                    let id = &t["outcome:bug_caught:".len()..];
+                    out.push(DerivedEntry {
+                        predicate: "bug_check_outcome".to_string(),
+                        args: vec![subject.to_string(), id.to_string(), "fixed".to_string()],
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+fn latest<'a>(entries: &'a [DerivedEntry], predicate: &str) -> Option<&'a DerivedEntry> {
     entries.iter().rev().find(|e| e.predicate == predicate)
 }
 
-/// Pure core: derive `signal_pass` facts from ledger entries.
+/// Pure core: derive `signal_pass` facts from derived entries.
 ///
 /// - `compile` — the latest `build_outcome` is `pass`.
 /// - `tests` — the latest `test_outcome` ran at least one test and none failed.
 ///   (`total == 0` means no tests ran, which is not a passing signal.)
-///
-/// The known-bug `bug:<id>` signal is added in a later commit.
-pub fn signals_from(subject: &str, entries: &[LedgerEntry]) -> Vec<OutcomeFact> {
+/// - `bug:<id>` — each known bug whose latest check is `fixed`.
+pub fn signals_from(subject: &str, entries: &[DerivedEntry]) -> Vec<OutcomeFact> {
     let mut out = Vec::new();
 
     if let Some(b) = latest(entries, "build_outcome")
@@ -86,9 +152,8 @@ pub fn signals_from(subject: &str, entries: &[LedgerEntry]) -> Vec<OutcomeFact> 
 mod tests {
     use super::*;
 
-    fn entry(predicate: &str, args: &[&str]) -> LedgerEntry {
-        LedgerEntry {
-            ts: 0,
+    fn entry(predicate: &str, args: &[&str]) -> DerivedEntry {
+        DerivedEntry {
             predicate: predicate.to_string(),
             args: args.iter().map(|s| s.to_string()).collect(),
         }
@@ -96,6 +161,21 @@ mod tests {
 
     fn names(facts: &[OutcomeFact]) -> Vec<String> {
         facts.iter().map(|f| f.args[1].clone()).collect()
+    }
+
+    fn rec(seq: u64, subject: &str, tags: &[&str]) -> JournalRecord {
+        JournalRecord {
+            v: 1,
+            ts: 1000 + seq,
+            sid: "s-test".to_string(),
+            seq,
+            tool: "Bash".to_string(),
+            path: "<cmd>".to_string(),
+            ext: None,
+            module: None,
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            subject: Some(subject.to_string()),
+        }
     }
 
     #[test]
@@ -149,7 +229,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_ledger_yields_no_signals() {
+    fn empty_entries_yields_no_signals() {
         assert!(signals_from("u", &[]).is_empty());
     }
 
@@ -169,7 +249,6 @@ mod tests {
     fn open_bug_check_is_not_a_signal_and_latest_wins() {
         let entries = vec![
             entry("build_outcome", &["u", "pass"]),
-            // first fixed, then re-checked open → latest (open) wins, no signal
             entry("bug_check_outcome", &["u", "1042", "fixed"]),
             entry("bug_check_outcome", &["u", "1042", "open"]),
         ];
@@ -177,14 +256,51 @@ mod tests {
     }
 
     #[test]
-    fn signals_and_band_read_from_disk() {
+    fn entries_from_translates_outcome_tags() {
+        let recs = vec![
+            rec(1, "u", &["outcome:compile_ok"]),
+            rec(2, "u", &["outcome:test_pass"]),
+            rec(3, "u", &["outcome:bug_caught:1042"]),
+        ];
+        let e = entries_from("u", &recs);
+        assert_eq!(e.len(), 3);
+        assert_eq!(e[0].predicate, "build_outcome");
+        assert_eq!(e[0].args, vec!["u", "pass"]);
+        assert_eq!(e[1].predicate, "test_outcome");
+        // synthetic args: passed=1, failed=0, total=1 — the shape signals_from reads.
+        assert_eq!(e[1].args, vec!["u", "1", "0", "1"]);
+        assert_eq!(e[2].predicate, "bug_check_outcome");
+        assert_eq!(e[2].args, vec!["u", "1042", "fixed"]);
+    }
+
+    #[test]
+    fn entries_from_handles_test_fail_and_compile_error() {
+        let recs = vec![
+            rec(1, "u", &["outcome:compile_error"]),
+            rec(2, "u", &["outcome:test_fail"]),
+        ];
+        let e = entries_from("u", &recs);
+        assert_eq!(e[0].args[1], "fail");
+        assert_eq!(e[1].args[2], "1"); // failed > 0
+    }
+
+    #[test]
+    fn entries_from_skips_unrelated_tags() {
+        let recs = vec![rec(1, "u", &["auth", "build", "outcome:compile_ok"])];
+        let e = entries_from("u", &recs);
+        assert_eq!(e.len(), 1, "only outcome:* tags translate");
+    }
+
+    #[test]
+    fn signals_reads_journal_via_subject_filter() {
         let dir = tempfile::tempdir().unwrap();
-        ledger::append(
+        journal::append(
             dir.path(),
-            "u",
-            &[OutcomeFact::build("u", true), OutcomeFact::test("u", 4, 0)],
+            &rec(1, "u", &["outcome:compile_ok", "outcome:test_pass"]),
         )
         .unwrap();
+        // unrelated subject — must not influence
+        journal::append(dir.path(), &rec(2, "v", &["outcome:compile_error"])).unwrap();
         let s = signals(dir.path(), "u").unwrap();
         assert_eq!(names(&s), vec!["compile", "tests"]);
         assert_eq!(band(dir.path(), "u").unwrap(), Band::Medium);

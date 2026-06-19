@@ -21,7 +21,6 @@ pub mod bugs;
 pub mod cargo;
 pub mod derive;
 pub mod facts;
-pub mod ledger;
 pub mod subject;
 
 pub use adapter::{extract, handles};
@@ -73,12 +72,26 @@ mod tests {
     }
 
     #[test]
-    fn report_reflects_ledger_signals() {
+    fn report_reflects_journal_signals() {
+        use crate::journey::journal::{self, JournalRecord};
         let dir = tempfile::tempdir().unwrap();
-        ledger::append(
+        journal::append(
             dir.path(),
-            "u",
-            &[OutcomeFact::build("u", true), OutcomeFact::test("u", 3, 0)],
+            &JournalRecord {
+                v: 1,
+                ts: 0,
+                sid: "s-test".to_string(),
+                seq: 1,
+                tool: "Bash".to_string(),
+                path: "<cmd>".to_string(),
+                ext: None,
+                module: None,
+                tags: vec![
+                    "outcome:compile_ok".to_string(),
+                    "outcome:test_pass".to_string(),
+                ],
+                subject: Some("u".to_string()),
+            },
         )
         .unwrap();
         let r = report(dir.path(), Some("u")).expect("report");

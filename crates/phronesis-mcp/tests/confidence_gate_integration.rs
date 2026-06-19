@@ -71,16 +71,30 @@ fn write_rules(root: &Path) {
     std::fs::write(phr_dir(root).join("rules.json"), GATE_RULES).unwrap();
 }
 
-/// Seed the open work unit and its ledger with the given outcome lines.
-fn seed_ledger(root: &Path, subject: &str, entries: &[&str]) {
+/// Seed the open work unit and its outcome history into the journey journal
+/// — the 0.13.0 fold-in. Each `tag` is an `outcome:*` string; one journal
+/// record per tag.
+fn seed_outcomes(root: &Path, subject: &str, tags: &[&str]) {
     let outcomes = phr_dir(root).join("outcomes");
     std::fs::create_dir_all(&outcomes).unwrap();
     std::fs::write(outcomes.join("current"), subject).unwrap();
-    std::fs::write(
-        outcomes.join(format!("{subject}.jsonl")),
-        entries.join("\n"),
-    )
-    .unwrap();
+    let journey = phr_dir(root).join("journey");
+    std::fs::create_dir_all(&journey).unwrap();
+    let mut lines = Vec::new();
+    for (i, tag) in tags.iter().enumerate() {
+        let rec = serde_json::json!({
+            "v": 1,
+            "ts": (i as u64) + 1,
+            "sid": "s-test",
+            "seq": (i as u64) + 1,
+            "tool": "Bash",
+            "path": "<cmd>",
+            "tags": [tag],
+            "subject": subject,
+        });
+        lines.push(rec.to_string());
+    }
+    std::fs::write(journey.join("events.jsonl"), lines.join("\n") + "\n").unwrap();
 }
 
 const COMMIT_PAYLOAD: &str =
@@ -105,13 +119,10 @@ fn two_signals_warns_but_does_not_block() {
     let dir = tempfile::tempdir().unwrap();
     enable_confidence(dir.path());
     write_rules(dir.path());
-    seed_ledger(
+    seed_outcomes(
         dir.path(),
         "u",
-        &[
-            r#"{"ts":0,"predicate":"build_outcome","args":["u","pass"]}"#,
-            r#"{"ts":0,"predicate":"test_outcome","args":["u","5","0","5"]}"#,
-        ],
+        &["outcome:compile_ok", "outcome:test_pass"],
     );
     let (code, stderr) = run_hook("pre-check", COMMIT_PAYLOAD, dir.path());
     assert_eq!(
@@ -155,13 +166,18 @@ fn post_check_captures_cargo_test_then_commit_warns() {
     let (code, _) = run_hook("post-check", test_payload, dir.path());
     assert_eq!(code, 0);
 
-    // The ledger now holds a passing build+test outcome for the minted unit.
+    // The journey journal now holds the outcome tags for the minted unit.
     let outcomes = dir.path().join(".phronesis/outcomes");
     assert!(outcomes.join("current").exists(), "a work unit was opened");
     let subject = std::fs::read_to_string(outcomes.join("current")).unwrap();
-    let ledger = std::fs::read_to_string(outcomes.join(format!("{subject}.jsonl"))).unwrap();
-    assert!(ledger.contains("build_outcome"), "ledger: {ledger}");
-    assert!(ledger.contains("test_outcome"), "ledger: {ledger}");
+    let journal =
+        std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    assert!(journal.contains("outcome:compile_ok"), "journal: {journal}");
+    assert!(journal.contains("outcome:test_pass"), "journal: {journal}");
+    assert!(
+        journal.contains(&format!("\"subject\":\"{}\"", subject.trim())),
+        "journal subject mismatch: {journal}"
+    );
 
     // Now a commit sees 2 signals → medium → warn (exit 1), not blocked.
     let (code, stderr) = run_hook("pre-check", COMMIT_PAYLOAD, dir.path());
@@ -229,11 +245,7 @@ fn commit_settles_the_work_unit() {
     let dir = tempfile::tempdir().unwrap();
     enable_confidence(dir.path());
     write_rules(dir.path());
-    seed_ledger(
-        dir.path(),
-        "u",
-        &[r#"{"ts":0,"predicate":"build_outcome","args":["u","pass"]}"#],
-    );
+    seed_outcomes(dir.path(), "u", &["outcome:compile_ok"]);
     // Post-check of a commit settles (closes) the open unit.
     let (code, _) = run_hook("post-check", COMMIT_PAYLOAD, dir.path());
     assert_eq!(code, 0);

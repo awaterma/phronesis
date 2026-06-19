@@ -1127,7 +1127,7 @@ pub fn render_trend_json(trend: &DebtTrend) -> String {
     payload.to_string()
 }
 
-fn short_iso_date(ts: u64) -> String {
+pub(crate) fn short_iso_date(ts: u64) -> String {
     // YYYY-MM-DD without pulling chrono.
     let days = (ts / 86_400) as i64;
     let (y, m, d) = days_to_ymd(days);

@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::process;
 
 use phr::{Fact, ReteNetwork, Rule};
@@ -6,6 +7,7 @@ use thiserror::Error;
 
 use crate::action_log::{self, LogEntry};
 use crate::diff_extract;
+use crate::journey;
 use crate::outcomes;
 use crate::security::{
     self, MAX_FACT_CONTENT_BYTES, read_file_capped, read_stdin_capped, resolve_safe_path,
@@ -105,8 +107,9 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     let new_content = extract_new_content(&payload, &tool_name);
     let file_path = extract_file_path(&payload);
 
-    let network = ReteNetwork::new();
+    let mut network = ReteNetwork::new();
 
+    let rules_for_journey: Vec<Rule> = rules.clone();
     for rule in rules {
         if let Err(e) = network.add_rule(rule).await {
             eprintln!("phronesis: BLOCKED — failed to load rule: {}", e);
@@ -118,6 +121,11 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         eprintln!("phronesis: BLOCKED — failed to assert facts: {}", e);
         process::exit(2);
     }
+
+    // Journey facts: recomputed every invocation from the durable journal.
+    // Fail-open — never block on a missing or corrupt journal.
+    let project_root_pre = security::project_root();
+    assert_journey_facts_into(&mut network, &project_root_pre, &rules_for_journey).await;
 
     // Confidence gate: assert the open work unit's grounded signals *before* any
     // command/content facts, so a gate rule's `__script__` count is evaluated
@@ -290,17 +298,24 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         _ => exit_ok(),
     };
 
-    // Confidence: capture grounded build/test outcomes from this command into
-    // the per-subject ledger before the (post) rule machinery. Runs even when
-    // there are no post rules, so the ledger keeps accumulating. Opt-in,
-    // fail-open.
-    capture_outcomes(&payload, &tool_name);
+    // Resolve project root once for the post-check journey paths below.
+    let project_root_post = security::project_root();
+    let file_path_for_journal = extract_file_path(&payload);
 
     let rules = match load_rules("post") {
         Ok(Some(rules)) => rules,
-        Ok(None) => exit_ok(),
+        Ok(None) => {
+            // No post rules — still journal the executed call so future
+            // pre-checks see this in journey aggregators. Journey is
+            // fail-open and best-effort.
+            journey_record_post(&payload, &tool_name, &file_path_for_journal).await;
+            exit_ok();
+        }
         Err(e) => {
             eprintln!("phronesis: WARNING — {}", e);
+            // The call already executed; journal it before exiting with a
+            // warning code.
+            journey_record_post(&payload, &tool_name, &file_path_for_journal).await;
             process::exit(1);
         }
     };
@@ -312,8 +327,9 @@ pub async fn run_post_check() -> anyhow::Result<()> {
 
     let file_path = extract_file_path(&payload);
 
-    let network = ReteNetwork::new();
+    let mut network = ReteNetwork::new();
 
+    let rules_for_journey: Vec<Rule> = rules.clone();
     for rule in rules {
         if let Err(e) = network.add_rule(rule).await {
             eprintln!("phronesis: WARNING — failed to load rule: {}", e);
@@ -325,6 +341,10 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         eprintln!("phronesis: WARNING — failed to assert facts: {}", e);
         process::exit(1);
     }
+
+    // Journey facts: recomputed every invocation from the durable journal,
+    // before update_agenda — fail-open.
+    assert_journey_facts_into(&mut network, &project_root_post, &rules_for_journey).await;
 
     // Validate the file path is inside the project root before reading.
     // An empty file_path means the hook input didn't include one — skip file read.
@@ -459,6 +479,10 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     // preserves which rule emitted which severity for downstream consumers.
     if violations.is_empty() && warnings.is_empty() {
         log_hook_event("post", &tool_name, &file_path, 0, &logged);
+        // Journal the executed call at the tail — see SPEC §"Where it
+        // plugs into the hook" — after the decision is logged, before the
+        // exit.
+        journey_record_post(&payload, &tool_name, &file_path).await;
         exit_ok();
     }
 
@@ -469,6 +493,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         eprintln!("phronesis: WARNING — {}", w);
     }
     log_hook_event("post", &tool_name, &file_path, 1, &logged);
+    journey_record_post(&payload, &tool_name, &file_path).await;
     process::exit(1);
 }
 
@@ -476,11 +501,6 @@ fn read_payload() -> anyhow::Result<HookPayload> {
     let input = read_stdin_capped()?;
     let payload: HookPayload = serde_json::from_str(&input)?;
     Ok(payload)
-}
-
-/// Does this command conclude a unit of work (so its work unit should settle)?
-fn is_commit_command(command: &str) -> bool {
-    command.contains("git commit")
 }
 
 /// Best-effort extraction of a tool call's textual output for outcome parsing.
@@ -505,49 +525,216 @@ fn extract_tool_output_text(payload: &HookPayload) -> String {
     }
 }
 
-/// Post-check side of confidence scoring: turn a build/test command's output
-/// into grounded outcome facts on the open work unit's ledger. Opt-in
-/// (`.phronesis/confidence.json`) and fail-open — a confidence hiccup must
-/// never disturb the post-check result.
-fn capture_outcomes(payload: &HookPayload, tool_name: &str) {
-    if !matches!(tool_name, "Bash" | "run_shell_command") {
-        return;
-    }
+/// Compute the outcome tags + resolved subject for a post-check tool call.
+/// The result is folded into the journey journal record at the post-check
+/// tail (no separate ledger). Returns `(tags, subject)`.
+///
+/// Mirrors what `capture_outcomes` did pre-0.13: subject lifecycle (open on
+/// recognized commands, settle on `git commit`) and outcome parsing. The
+/// storage write is now the single `journey::journal::append` call in the
+/// hook tail.
+fn outcomes_for_journal(payload: &HookPayload, tool_name: &str) -> (Vec<String>, Option<String>) {
     let root = security::project_root();
-    if !outcomes::enabled(&root) {
-        return;
-    }
-    let Some(command) = extract_new_content(payload, tool_name) else {
-        return;
-    };
-    // A commit concludes the work unit; the next build/test opens a fresh one.
-    // (A commit blocked at pre-check never reaches post-check.)
-    if is_commit_command(&command) {
-        let _ = outcomes::subject::settle(&root);
-        return;
-    }
-    // Only mint a work unit for commands an adapter actually understands.
-    if !outcomes::handles(&command) {
-        return;
-    }
-    let subject = match outcomes::subject::open(&root) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
+    let command = extract_new_content(payload, tool_name);
     let output = extract_tool_output_text(payload);
-    let facts = outcomes::extract(&subject, &command, &output);
-    let _ = outcomes::ledger::append(&root, &subject, &facts);
+    outcomes::cargo::extract_from(&root, tool_name, command.as_deref(), &output)
+}
 
-    // Known-bug (TDD) signal: if this run named individual tests, score the
-    // open bugs whose test went green with no regressions in this run.
-    let per_test = outcomes::cargo::per_test_results(&output);
-    if !per_test.is_empty() {
-        let bugs = outcomes::bugs::load(&root);
-        if !bugs.is_empty() {
-            let no_regressions = per_test.iter().all(|(_, passed)| *passed);
-            let bug_facts = outcomes::bugs::check(&subject, &bugs, &per_test, no_regressions);
-            let _ = outcomes::ledger::append(&root, &subject, &bug_facts);
+/// Current epoch seconds — best-effort. Returns 0 on clock-before-epoch (won't
+/// happen on real hardware) so callers don't need to thread errors through
+/// what is fundamentally a stamp.
+fn unix_secs_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Read the active session id from `.phronesis/journey/session`. Falls back
+/// to a date-bucket when the file is missing or empty so journal records
+/// always carry a sid (the `s` window relies on it).
+fn current_sid(project_root: &Path) -> String {
+    let path = project_root
+        .join(".phronesis")
+        .join("journey")
+        .join("session");
+    if let Ok(s) = std::fs::read_to_string(&path) {
+        let s = s.trim();
+        if !s.is_empty() {
+            return s.to_string();
         }
+    }
+    let ts = unix_secs_now();
+    format!("s-{}-fallback", crate::audit::short_iso_date(ts))
+}
+
+/// Read-increment-write `.phronesis/journey/seq` under flock; return the new
+/// value. The seq drives the `c` (last-N-calls) windows the rules can ask
+/// for, so it must monotonically rise across concurrent hook processes.
+///
+/// Best-effort: any IO error returns 0. The journal still appends; ordering
+/// degrades gracefully when many calls share seq=0 (call-window aggregators
+/// use record position, not seq, for windowing). The seq is mostly a debug
+/// aid in v1.
+fn next_seq(project_root: &Path) -> u64 {
+    use fs2::FileExt;
+    use std::fs::OpenOptions;
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let dir = project_root.join(".phronesis").join("journey");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return 0;
+    }
+    let path = dir.join("seq");
+    let mut file = match OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    if file.lock_exclusive().is_err() {
+        return 0;
+    }
+    let mut buf = String::new();
+    let _ = file.read_to_string(&mut buf);
+    let current: u64 = buf.trim().parse().unwrap_or(0);
+    let next = current + 1;
+    let _ = file.seek(SeekFrom::Start(0));
+    let _ = file.set_len(0);
+    let _ = file.write_all(next.to_string().as_bytes());
+    let _ = FileExt::unlock(&file);
+    next
+}
+
+/// Journey wiring at the **tail of `run_post_check`**: tag the call, resolve
+/// its module, fold in outcome tags + subject, append one journal record.
+/// Fail-open: any failure (config parse, tagger error, IO) is swallowed.
+async fn journey_record_post(payload: &HookPayload, tool_name: &str, file_path: &str) {
+    if std::env::var("PHRONESIS_NO_JOURNEY").is_ok() {
+        return;
+    }
+    let project_root = security::project_root();
+
+    let cfg = match journey::load_config(&project_root) {
+        Ok(c) => c,
+        Err(journey::ConfigError::NotFound(_)) => journey::tagger::TaggerConfig::default(),
+        Err(e) => {
+            eprintln!("phronesis: journey config skipped: {}", e);
+            journey::tagger::TaggerConfig::default()
+        }
+    };
+
+    // Common facts the tagger reuses — same shape `assert_common_facts`
+    // already asserts into the live network. Synthesizing here keeps the
+    // tagger pass independent of post-check's error-bailout paths.
+    let facts = tagger_facts(payload, tool_name, file_path);
+
+    let tag_result = journey::tagger::fire(&cfg, &facts)
+        .await
+        .unwrap_or_default();
+    let module = journey::tagger::resolve_module(&cfg, file_path);
+
+    let (outcome_tags, subject) = outcomes_for_journal(payload, tool_name);
+    let mut all_tags = tag_result.tags;
+    all_tags.extend(outcome_tags);
+
+    let ext = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+
+    let record = journey::journal::JournalRecord {
+        v: 1,
+        ts: unix_secs_now(),
+        sid: current_sid(&project_root),
+        seq: next_seq(&project_root),
+        tool: tool_name.to_string(),
+        path: file_path.to_string(),
+        ext,
+        module,
+        tags: all_tags,
+        subject,
+    };
+    let _ = journey::journal::append(&project_root, &record);
+}
+
+/// Build the common point-in-time facts the tagger evaluates against. Mirrors
+/// `assert_common_facts` but produces a `Vec<Fact>` for the throwaway network
+/// the tagger builds; no async I/O. Includes `file_path`, `file_path_matches`
+/// for each path component, `file_extension_is`, `new_content_contains` for
+/// the literal command/content (so `bash_command_matches`-style taggers work
+/// via substring), and `bash_command_matches` for command tools.
+fn tagger_facts(payload: &HookPayload, tool_name: &str, file_path: &str) -> Vec<Fact> {
+    let mut facts: Vec<Fact> = Vec::new();
+    facts.push(Fact {
+        id: "file_path".to_string(),
+        predicate: "file_path".to_string(),
+        args: vec![file_path.to_string()],
+        timestamp: 0,
+    });
+    for part in file_path.split('/') {
+        if !part.is_empty() {
+            facts.push(Fact {
+                id: format!("file_path_matches_{}", part),
+                predicate: "file_path_matches".to_string(),
+                args: vec![part.to_string()],
+                timestamp: 0,
+            });
+        }
+    }
+    if let Some(ext) = file_path
+        .rsplit_once('.')
+        .map(|(_, e)| e.to_ascii_lowercase())
+    {
+        facts.push(Fact {
+            id: format!("file_extension_is_{}", ext),
+            predicate: "file_extension_is".to_string(),
+            args: vec![ext],
+            timestamp: 0,
+        });
+    }
+    if let Some(content) = extract_new_content(payload, tool_name) {
+        // For Bash, also assert `bash_command_matches` for any pattern the
+        // tagger references — but we don't see patterns here, so the tagger
+        // does its own regex match. Assert the raw content fact instead so
+        // substring-based content taggers work.
+        facts.push(Fact {
+            id: "new_content".to_string(),
+            predicate: "new_content".to_string(),
+            args: vec![content.clone()],
+            timestamp: 0,
+        });
+    }
+    facts
+}
+
+/// Journey wiring shared by `run_pre_check` and `run_post_check`: derive the
+/// `journey_*` facts the rules reference, assert them into the live network.
+/// Fail-open: any error is logged and the hook continues without journey
+/// facts (rules that don't reference journey_* are unaffected; rules that do
+/// silently miss this call's enrichment).
+async fn assert_journey_facts_into(network: &mut ReteNetwork, project_root: &Path, rules: &[Rule]) {
+    if std::env::var("PHRONESIS_NO_JOURNEY").is_ok() {
+        return;
+    }
+    let cfg = match journey::load_config(project_root) {
+        Ok(c) => c,
+        Err(journey::ConfigError::NotFound(_)) => journey::tagger::TaggerConfig::default(),
+        Err(e) => {
+            eprintln!("phronesis: journey config skipped: {}", e);
+            journey::tagger::TaggerConfig::default()
+        }
+    };
+    let sid = current_sid(project_root);
+    let now = unix_secs_now();
+    if let Err(e) =
+        journey::derive::assert_facts(network, project_root, rules, &cfg, &sid, now).await
+    {
+        eprintln!("phronesis: journey derivation skipped: {}", e);
     }
 }
 
