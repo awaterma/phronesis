@@ -587,9 +587,14 @@
       </h1>
       <p class="lede">
         A reader's guide to the rules that ship by default in
-        <code>phr-mcp init --packs llm,rust</code>. Each entry
-        carries its predicate, its severity, a one-line distillation,
-        and a worked example drawn from real-world Rust code.
+        <code>phr-mcp init --packs llm,rust,confidence,journey</code>.
+        Each entry carries its predicate, its severity, a one-line
+        distillation, and a worked example drawn from real-world
+        Rust code. The <em>confidence</em> pack adds two gate rules
+        that count grounded build/test/known-bug signals; the
+        <em>journey</em> pack ships taggers and aggregator-fact
+        references that let projects write their own trajectory
+        rules.
       </p>
     </div>
     <div class="values">

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Phronesis — Durable Rules for LLM-Assisted Work</title>
-<meta name="description" content="A RETE rules engine that enforces project conventions from disk, outside the LLM context window. Rules fire the same in token 900k as in token 800.">
+<meta name="description" content="A RETE rules engine that enforces project conventions from disk, outside the LLM context window. Trajectory predicates over a durable journal + a confidence gate that demands compile, tests, and known-bug catch before a commit lands. Rules fire the same in token 900k as in token 800.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,30..100;1,9..144,300..700,30..100&family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,400..600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -372,7 +372,11 @@
         A RETE rules engine that enforces project conventions from
         disk — outside the LLM context window. Rules fire the same
         in token nine hundred thousand as they do in token eight
-        hundred.
+        hundred. Now with <span class="it">trajectory predicates</span>
+        that watch the long run of a session, and a
+        <span class="it">confidence gate</span> that demands the
+        build, the tests, and the known-bug catch all be green
+        before a commit lands.
       </p>
     </div>
 
