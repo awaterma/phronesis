@@ -303,6 +303,27 @@ each lands a recognizable pattern in long agent runs.
 }
 ```
 
+> Earlier drafts required a `journey_seen` anchor leaf because the engine
+> skipped rules whose conditions were all `__script__`. That constraint is
+> gone as of `phr` 0.13.0; pure-script rules now reach the agenda directly.
+>
+> Two contract notes for hosts embedding `phr`:
+>
+> 1. Pure-script rules reach the agenda only through `update_agenda`, not
+>    incrementally on `assert_fact`. Hooks call `update_agenda` before
+>    `fire_all_consequences` (see §"Where it plugs into the hook"), so this
+>    is invisible to phronesis-mcp callers. A host that asserts a fact and
+>    fires without an intervening `update_agenda` will not trigger
+>    pure-script rules. Mixed rules (one or more leaf conditions plus
+>    `__script__` clauses) are unaffected — they ride the alpha/beta
+>    network's incremental path as before.
+> 2. Pure-script rule firing is **fire-once-ever** per rule id, deduped on
+>    the key `<rule_id>:`. This is the right semantics for threshold rules
+>    ("≥3 occurrences this session") and matches how `journey_*` aggregator
+>    facts are recomputed every cycle — re-firing on the same trajectory
+>    would warn repeatedly for the same condition. A future "re-arm on
+>    trajectory change" signal would need an explicit invalidator.
+
 The composite shows journey rules are **composable through ordinary `when`
 conjunction** — no special "but not" syntax. Selector validation makes the
 `== 0` clause safe: a typo on `'tests'` is a load-time rejection, not a

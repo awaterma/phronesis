@@ -231,6 +231,14 @@ pub struct GetConfidenceParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct GetJourneyParams {
+    /// Optional rule id; when set, only return facts that specific rule
+    /// references. Mirrors the `phr-mcp journey --explain` CLI flag.
+    #[serde(default)]
+    pub explain_rule: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct SubmitSuggestionParams {
     /// The work-unit id to open/declare (e.g. a translation: `"xlate-7"`).
     /// Subsequent build/test runs accrue confidence signals to it.

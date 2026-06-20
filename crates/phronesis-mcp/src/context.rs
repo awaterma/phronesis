@@ -163,7 +163,17 @@ pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) ->
 ///
 /// Never panics. Malformed files produce empty output rather than failing
 /// — context injection is best-effort and must not break the model turn.
+///
+/// Side effect: stamps `.phronesis/journey/session` with a fresh session
+/// id if it doesn't already exist. The hook reads this file to label
+/// journal records with a sid the `s` window can filter on. Failures are
+/// swallowed — journey is advisory enrichment.
 pub fn run_session_context(project_root: &Path, max_bytes: usize) -> String {
+    // Stamp `.phronesis/journey/session` so the journal records have a sid
+    // to label on the first hook of the session. Single source of truth in
+    // `journey::current_sid` — see SPEC-journey-facts §sid.
+    let _ = crate::journey::current_sid(project_root);
+
     let path = rules_file::default_path(project_root);
     let rules_body = rules_file::read(&path)
         .map(|rules| build_session_body(&rules))
