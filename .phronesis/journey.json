@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "taggers": [
+    { "tag": "build", "when": [ { "bash_command_matches": "cargo (build|check|test)" } ] }
+  ],
+  "modules": []
+}
