@@ -12,6 +12,14 @@ Anthropic's Claude Code, Google's Gemini CLI, and other LLM environments share a
 
 **Phronesis moves enforcement out of the conversation entirely.** Rules live in `.phronesis/rules.json`, are re-read by hooks at every tool call, and fire from outside the context window. They cannot be compressed away because they were never loaded into context to begin with.
 
+## Subsystems
+
+Beyond the syntactic rule packs, two grounded subsystems extend enforcement past pattern-matching on edits.
+
+**Confidence scoring** ([SPEC-confidence-scoring](docs/specs/)) reads build, test, and known-bug signals from a per-toolchain adapter (cargo first) and gates `git commit` by confidence band — three grounded signals say "this is real," not three syntactic checks. Opt in by writing `.phronesis/confidence.json`; the `confidence` pack ships the commit-gate rules and `phr-mcp confidence` reports the current band.
+
+**Journey facts** ([SPEC-journey-facts](docs/specs/)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
+
 ## The Workspace
 
 - **`phronesis`** ([`crates/phronesis`](crates/phronesis)) — The core library: a high-performance, domain-neutral RETE rules engine (Alpha/Beta networks, P-states, join-sharing) with Consequence/Actor/Provenance primitives.
@@ -36,7 +44,7 @@ cargo install --path crates/phronesis-mcp
 phr-mcp install
 
 # 3. Initialize Phronesis in your project
-cd /your/project && phr-mcp init --packs llm,rust
+cd /your/project && phr-mcp init --packs llm,rust,confidence,journey
 ```
 
 ## Lineage

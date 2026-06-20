@@ -413,15 +413,15 @@
   <!-- ─── STATS ─── -->
   <div class="stats">
     <div class="stat">
-      <span class="num">57</span>
+      <span class="num">59</span>
       <span class="desc">Rules shipped</span>
     </div>
     <div class="stat">
-      <span class="num">6</span>
+      <span class="num">8</span>
       <span class="desc">Default packs</span>
     </div>
     <div class="stat">
-      <span class="num">4</span>
+      <span class="num">6</span>
       <span class="desc">Enforcement surfaces</span>
     </div>
     <div class="stat">
@@ -441,9 +441,9 @@
     was first imagined.
   </blockquote>
 
-  <!-- ─── FOUR SURFACES ─── -->
+  <!-- ─── SIX SURFACES ─── -->
   <section class="surfaces">
-    <div class="label" style="margin-bottom: 0.6rem;">Four surfaces — one rule format</div>
+    <div class="label" style="margin-bottom: 0.6rem;">Six surfaces — one rule format</div>
     <div class="surfaces-grid">
       <article class="surface">
         <h2>Hook-time</h2>
@@ -480,6 +480,29 @@
           the rules actually enforce. No LLM call — Jaccard overlap.
         </p>
       </article>
+      <article class="surface">
+        <h2>Trajectory</h2>
+        <span class="role">journal · derive · cross-call</span>
+        <p>
+          Project-defined taggers stamp executed tool calls;
+          <code>journey_*</code> aggregators (occurrence, count,
+          since-last) over bounded windows let rules match temporal
+          patterns — auth churn over a session, recent SQL in the
+          last five calls, build staleness — without any in-memory
+          accumulation. Recomputed from disk every hook fire.
+        </p>
+      </article>
+      <article class="surface">
+        <h2>Grounded outcomes</h2>
+        <span class="role">compile · test · catch-the-bug</span>
+        <p>
+          A per-toolchain adapter (cargo first) parses build and
+          test output into neutral <code>signal_pass</code> facts;
+          gate rules block or warn a <code>git commit</code> by
+          confidence band. Three grounded signals say "this is
+          real," not three syntactic checks.
+        </p>
+      </article>
     </div>
   </section>
 
@@ -505,7 +528,7 @@
 
 <span class="c"># wire into a project</span>
 <span class="k">cd</span> ~/Git/my-project
-<span class="k">phr-mcp</span> init --packs llm,rust   <span class="c"># hooks + starter rules</span>
+<span class="k">phr-mcp</span> init --packs llm,rust,confidence,journey   <span class="c"># hooks + starter rules</span>
 
 <span class="c"># use</span>
 <span class="k">phr-mcp</span> audit                    <span class="c"># sweep existing debt</span>
@@ -545,12 +568,12 @@
       <em>JetBrains Mono</em> for code.<br>
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
       with Claude.<br>
-      v 0.11.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
+      v 0.13.2 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
       ⁂
-      <small>Phronesis · v 0.11.0</small>
+      <small>Phronesis · v 0.13.2</small>
     </div>
   </footer>
 
