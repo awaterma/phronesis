@@ -330,6 +330,84 @@ fn init_packs_llm_rust_composes_both() {
 }
 
 #[test]
+fn init_packs_confidence_writes_gate_rules_and_scaffold() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "confidence"], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    // Gate rules land in rules.json.
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert!(ids.contains(&"confidence-low-blocks-commit"));
+    assert!(ids.contains(&"confidence-medium-warns-commit"));
+
+    // Opt-in marker + registry are scaffolded.
+    assert!(dir.path().join(".phronesis/confidence.json").exists());
+    assert!(dir.path().join(".phronesis/bugs.json").exists());
+    let bugs: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/bugs.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        bugs.as_array().unwrap().is_empty(),
+        "bugs.json starts empty"
+    );
+
+    // confidence config is carved back in (tracked, not ignored).
+    let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(gitignore.contains("!.phronesis/confidence.json"));
+    assert!(gitignore.contains("!.phronesis/bugs.json"));
+}
+
+#[test]
+fn init_without_confidence_pack_writes_no_scaffold() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "llm"], dir.path());
+    assert!(out.status.success());
+    assert!(!dir.path().join(".phronesis/confidence.json").exists());
+    assert!(!dir.path().join(".phronesis/bugs.json").exists());
+    let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(!gitignore.contains("confidence.json"));
+}
+
+#[test]
+fn init_confidence_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(
+        run_init(&["--packs", "confidence"], dir.path())
+            .status
+            .success()
+    );
+    // Hand-edit the registry, then re-run: must be left untouched.
+    let bugs_path = dir.path().join(".phronesis/bugs.json");
+    std::fs::write(
+        &bugs_path,
+        r#"[{"bug_id":"1","test":"a::b","status":"open"}]"#,
+    )
+    .unwrap();
+    let out = run_init(&["--packs", "confidence"], dir.path());
+    assert!(out.status.success());
+    assert!(
+        std::fs::read_to_string(&bugs_path)
+            .unwrap()
+            .contains("\"bug_id\":\"1\""),
+        "re-run must not clobber an existing bugs.json"
+    );
+}
+
+#[test]
 fn init_default_is_llm_only() {
     // No --packs flag → default is llm only.
     let dir = tempfile::tempdir().unwrap();

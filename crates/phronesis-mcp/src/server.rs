@@ -970,6 +970,60 @@ impl EpistemeMcp {
             _ => Self::ok_text(render_json(&report)),
         }
     }
+
+    #[tool(
+        description = "Report the confidence band (high/medium/low) and the grounded signals (compile / tests / known-bug) for the open work unit, or `subject` if given. Confidence scoring gates `git commit` on whether the suggested code compiles, its tests pass, and any known-bug test went green. Read-only; reflects `.phronesis/outcomes/`. Returns JSON `{subject, band, signals}`, or `{subject: null}` when no work unit is open. Opt-in per project via `.phronesis/confidence.json`."
+    )]
+    async fn get_confidence(
+        &self,
+        Parameters(params): Parameters<GetConfidenceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        match crate::outcomes::report(&root, params.subject.as_deref()) {
+            Some(r) => {
+                Self::log_event("get_confidence", |e| {
+                    e.with("subject", r.subject.clone())
+                        .with("band", r.band.as_str())
+                });
+                let out = serde_json::json!({
+                    "subject": r.subject,
+                    "band": r.band.as_str(),
+                    "signals": r.signals,
+                });
+                Self::ok_text(
+                    serde_json::to_string_pretty(&out).map_err(|e| Self::err(e.to_string()))?,
+                )
+            }
+            None => Self::ok_text(
+                serde_json::json!({ "subject": null, "message": "no open work unit" }).to_string(),
+            ),
+        }
+    }
+
+    #[tool(
+        description = "Declare a confidence work unit ('subject') — e.g. a cross-language translation or a discrete suggestion — and return its current confidence report. Sets the open subject so subsequent build/test runs accrue grounded signals to it (the explicit-subject path; the implicit path mints a unit automatically). Returns JSON `{subject, summary, band, signals}`. Confidence is opt-in per project via `.phronesis/confidence.json`."
+    )]
+    async fn submit_suggestion(
+        &self,
+        Parameters(params): Parameters<SubmitSuggestionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        crate::outcomes::subject::set(&root, &params.subject)
+            .map_err(|e| Self::err(e.to_string()))?;
+        let report = crate::outcomes::report(&root, Some(&params.subject));
+        let band = report.as_ref().map(|r| r.band.as_str()).unwrap_or("low");
+        let signals = report.map(|r| r.signals).unwrap_or_default();
+        Self::log_event("submit_suggestion", |e| {
+            e.with("subject", params.subject.clone()).with("band", band)
+        });
+        let out = serde_json::json!({
+            "subject": params.subject,
+            "summary": params.summary,
+            "band": band,
+            "signals": signals,
+        });
+        Self::ok_text(serde_json::to_string_pretty(&out).map_err(|e| Self::err(e.to_string()))?)
+    }
 }
 
 #[tool_handler]
@@ -1362,6 +1416,20 @@ mod tool_registration_tests {
         assert!(
             mcp.tool_router.has_route("get_memory_drift"),
             "get_memory_drift tool must be registered"
+        );
+    }
+
+    /// The confidence-scoring MCP tools are registered.
+    #[test]
+    fn confidence_tools_are_registered() {
+        let mcp = EpistemeMcp::new();
+        assert!(
+            mcp.tool_router.has_route("get_confidence"),
+            "get_confidence tool must be registered"
+        );
+        assert!(
+            mcp.tool_router.has_route("submit_suggestion"),
+            "submit_suggestion tool must be registered"
         );
     }
 

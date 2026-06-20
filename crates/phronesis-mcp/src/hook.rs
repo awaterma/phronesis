@@ -6,6 +6,7 @@ use thiserror::Error;
 
 use crate::action_log::{self, LogEntry};
 use crate::diff_extract;
+use crate::outcomes;
 use crate::security::{
     self, MAX_FACT_CONTENT_BYTES, read_file_capped, read_stdin_capped, resolve_safe_path,
 };
@@ -39,13 +40,9 @@ struct HookPayload {
     tool_name: Option<String>,
     tool_input: Option<serde_json::Value>,
     /// PostToolUse payloads from Claude Code carry the tool's output here.
-    /// We don't currently inspect it (post-check rules fire on file content,
-    /// not the tool's return value), but we accept the field so the struct
-    /// round-trips the full payload shape Claude Code sends — and so a future
-    /// post-check rule that wants to inspect tool output can do so without
-    /// changing the wire contract.
+    /// Confidence scoring reads it: the captured stdout/stderr of a build/test
+    /// command is the grounded signal an outcome adapter parses.
     #[serde(default)]
-    #[allow(dead_code)]
     tool_output: Option<serde_json::Value>,
 }
 
@@ -121,6 +118,13 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         eprintln!("phronesis: BLOCKED — failed to assert facts: {}", e);
         process::exit(2);
     }
+
+    // Confidence gate: assert the open work unit's grounded signals *before* any
+    // command/content facts, so a gate rule's `__script__` count is evaluated
+    // against the full signal set when its `bash_command_matches` condition is
+    // asserted (the agenda updates incrementally per fact). Opt-in, fail-open —
+    // never blocks an edit on a confidence-subsystem hiccup.
+    assert_confidence_signals(&network).await;
 
     let old_content = extract_old_content(&payload, &tool_name);
 
@@ -285,6 +289,12 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         }
         _ => exit_ok(),
     };
+
+    // Confidence: capture grounded build/test outcomes from this command into
+    // the per-subject ledger before the (post) rule machinery. Runs even when
+    // there are no post rules, so the ledger keeps accumulating. Opt-in,
+    // fail-open.
+    capture_outcomes(&payload, &tool_name);
 
     let rules = match load_rules("post") {
         Ok(Some(rules)) => rules,
@@ -466,6 +476,107 @@ fn read_payload() -> anyhow::Result<HookPayload> {
     let input = read_stdin_capped()?;
     let payload: HookPayload = serde_json::from_str(&input)?;
     Ok(payload)
+}
+
+/// Does this command conclude a unit of work (so its work unit should settle)?
+fn is_commit_command(command: &str) -> bool {
+    command.contains("git commit")
+}
+
+/// Best-effort extraction of a tool call's textual output for outcome parsing.
+/// Claude Code's PostToolUse nests stdout/stderr; fall back to the whole JSON.
+fn extract_tool_output_text(payload: &HookPayload) -> String {
+    match &payload.tool_output {
+        None => String::new(),
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(v) => {
+            let mut parts = Vec::new();
+            for key in ["stdout", "stderr", "output", "result"] {
+                if let Some(s) = v.get(key).and_then(|x| x.as_str()) {
+                    parts.push(s.to_string());
+                }
+            }
+            if parts.is_empty() {
+                v.to_string()
+            } else {
+                parts.join("\n")
+            }
+        }
+    }
+}
+
+/// Post-check side of confidence scoring: turn a build/test command's output
+/// into grounded outcome facts on the open work unit's ledger. Opt-in
+/// (`.phronesis/confidence.json`) and fail-open — a confidence hiccup must
+/// never disturb the post-check result.
+fn capture_outcomes(payload: &HookPayload, tool_name: &str) {
+    if !matches!(tool_name, "Bash" | "run_shell_command") {
+        return;
+    }
+    let root = security::project_root();
+    if !outcomes::enabled(&root) {
+        return;
+    }
+    let Some(command) = extract_new_content(payload, tool_name) else {
+        return;
+    };
+    // A commit concludes the work unit; the next build/test opens a fresh one.
+    // (A commit blocked at pre-check never reaches post-check.)
+    if is_commit_command(&command) {
+        let _ = outcomes::subject::settle(&root);
+        return;
+    }
+    // Only mint a work unit for commands an adapter actually understands.
+    if !outcomes::handles(&command) {
+        return;
+    }
+    let subject = match outcomes::subject::open(&root) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let output = extract_tool_output_text(payload);
+    let facts = outcomes::extract(&subject, &command, &output);
+    let _ = outcomes::ledger::append(&root, &subject, &facts);
+
+    // Known-bug (TDD) signal: if this run named individual tests, score the
+    // open bugs whose test went green with no regressions in this run.
+    let per_test = outcomes::cargo::per_test_results(&output);
+    if !per_test.is_empty() {
+        let bugs = outcomes::bugs::load(&root);
+        if !bugs.is_empty() {
+            let no_regressions = per_test.iter().all(|(_, passed)| *passed);
+            let bug_facts = outcomes::bugs::check(&subject, &bugs, &per_test, no_regressions);
+            let _ = outcomes::ledger::append(&root, &subject, &bug_facts);
+        }
+    }
+}
+
+/// Pre-check side of confidence scoring: assert the open work unit's
+/// `signal_pass` facts so gate rules (`facts_count('signal_pass', ...)`) can
+/// fire. Opt-in and fail-open.
+async fn assert_confidence_signals(network: &ReteNetwork) {
+    let root = security::project_root();
+    if !outcomes::enabled(&root) {
+        return;
+    }
+    let Some(subject) = outcomes::subject::current(&root) else {
+        return;
+    };
+    let signals = match outcomes::signals(&root, &subject) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    for fact in signals {
+        let id = format!("{}:{}", fact.predicate, fact.args.join(":"));
+        let _ = network
+            .assert_fact(Fact {
+                id,
+                predicate: fact.predicate.to_string(),
+                args: fact.args,
+                timestamp: 0,
+            })
+            .await;
+    }
 }
 
 /// Load rules for the given phase.

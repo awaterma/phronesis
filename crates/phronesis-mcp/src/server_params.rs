@@ -222,3 +222,20 @@ pub struct GetWikiDriftParams {
     #[serde(default)]
     pub format: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct GetConfidenceParams {
+    /// Report on a specific subject id instead of the open work unit.
+    #[serde(default)]
+    pub subject: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct SubmitSuggestionParams {
+    /// The work-unit id to open/declare (e.g. a translation: `"xlate-7"`).
+    /// Subsequent build/test runs accrue confidence signals to it.
+    pub subject: String,
+    /// Optional human-readable summary of the suggestion.
+    #[serde(default)]
+    pub summary: Option<String>,
+}

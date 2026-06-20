@@ -4,6 +4,34 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.12.0] - 2026-06-19
+
+### Added
+- **Confidence scoring (first milestone)** — gate LLM output on three grounded
+  outcomes before a `git commit`: does it compile, do the tests pass, does it
+  catch a known bug (a TDD test red on the buggy baseline that goes green).
+  See `docs/specs/SPEC-confidence-scoring.md`.
+  - Domain-neutral outcome facts (`build_outcome`, `test_outcome`,
+    `bug_check_outcome`) behind a per-toolchain **adapter** layer (`cargo`
+    first; pytest/tsc/go later emit the same neutral facts).
+  - A per-subject **ledger** (`.phronesis/outcomes/<subject>.jsonl`) bridges the
+    stateless hook invocations; the pre-check re-derives `signal_pass` facts and
+    gate rules count them with the existing `facts_count(...)` DSL
+    (`<=1` blocks, `==2` warns, 3 passes clean).
+  - Post-check parses a build/test command's captured output into the ledger;
+    a `git commit` settles the open work unit.
+  - Known-bug registry in `.phronesis/bugs.json`.
+  - `phr-mcp confidence [--subject <id>] [--json]` — read-only band/signals
+    report for the open work unit.
+  - `phr-mcp init --packs confidence` — writes the commit-gate rules plus the
+    `.phronesis/confidence.json` opt-in marker and `.phronesis/bugs.json`
+    registry, and carves both back into `.gitignore` as tracked config.
+  - MCP tools `get_confidence` (band/signals report) and `submit_suggestion`
+    (declare an explicit work unit, e.g. a translation, and accrue signals to
+    it).
+  - **Opt-in per project** via `.phronesis/confidence.json`; fail-open
+    throughout, so projects that haven't enabled it are unaffected.
+
 ## [0.11.0] - 2026-06-13
 
 ### Added
