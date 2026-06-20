@@ -569,7 +569,7 @@
   <header class="colophon" role="banner">
     <div class="left"><a href="./explainer.html">← The Explainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
-    <div class="right">Vol. 0.11.0 — Edition III</div>
+    <div class="right">Vol. 0.13.2 — Edition III</div>
   </header>
 
   <!-- ─── COVER ─── -->
@@ -595,13 +595,13 @@
     <div class="values">
       <dl>
         <dt>Default packs</dt>
-        <dd><span class="num">6</span></dd>
+        <dd><span class="num">8</span></dd>
         <dt>Rules shipped</dt>
-        <dd><span class="num">41</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
+        <dd><span class="num">59</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
         <dt>Blocks (pre)</dt>
-        <dd><span class="num">13</span></dd>
+        <dd><span class="num">14</span></dd>
         <dt>Warnings (pre/post)</dt>
-        <dd><span class="num">11</span></dd>
+        <dd><span class="num">12</span></dd>
         <dt>Audit-only</dt>
         <dd><span class="num">10</span></dd>
         <dt>Field examples</dt>
@@ -676,6 +676,19 @@
       <ol>
         <li><a href="#rhai-eval">Inline engine.eval(literal)</a></li>
         <li><a href="#rhai-print">print() in .rhai scripts</a></li>
+      </ol>
+
+      <div class="pack-head">Pack · Confidence</div>
+      <ol>
+        <li><a href="#confidence-low">Low confidence blocks commit</a></li>
+        <li><a href="#confidence-medium">Medium confidence warns commit</a></li>
+      </ol>
+
+      <div class="pack-head">Pack · Journey</div>
+      <ol>
+        <li><a href="#journey-predicates">Aggregator predicates</a></li>
+        <li><a href="#journey-taggers">Project-defined taggers</a></li>
+        <li><a href="#journey-examples">Example rules (project-defined)</a></li>
       </ol>
 
       <div class="pack-head">Other packs</div>
@@ -2190,11 +2203,440 @@ audit-rc-refcell-in-src   warn      4      2
 
 
   <!-- ─── ──────────────────────────────────────────────────────── -->
+  <!-- ─── PACK · CONFIDENCE                                     ── -->
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <section class="pack" id="confidence-pack">
+    <header class="pack-head-block">
+      <div class="pack-num">§<small>IV</small><br>4</div>
+      <h2>Pack · Confidence — <span class="it">grounded outcomes at the commit gate.</span></h2>
+      <div class="pack-count"><span class="num">2</span>Rules</div>
+    </header>
+
+    <p class="pack-intro">
+      The confidence pack is opt-in. <code>phr-mcp init --packs confidence</code>
+      writes <code>.phronesis/confidence.json</code> (the opt-in marker) and a
+      <code>.phronesis/bugs.json</code> registry, then ships two gate rules that
+      count <em>grounded</em> outcome signals before a <code>git commit</code>
+      lands. The signals are not syntactic checks — they are
+      <code>signal_pass</code> facts asserted by the pre-check hook after a
+      per-toolchain adapter (cargo first) has parsed an actual build, an actual
+      test run, and an actual known-bug catch. Three of three is "real"; the
+      pack is conservative about anything less.
+    </p>
+
+    <!-- ─── 4.1 Low confidence blocks commit ─── -->
+    <article class="rule" data-level="block" id="confidence-low">
+      <div class="rule-mark" aria-hidden="true">✕</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-level">BLOCK</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">on Bash content</span>
+          <span class="tag">predicate: script</span>
+        </div>
+        <h3 class="rule-id">confidence-low-blocks-commit</h3>
+        <p class="rule-summary">
+          Blocks a <code>git commit</code> when at most one of the three
+          grounded outcome signals (compile, tests, known-bug) has passed.
+          At least two of the three claims are unverified; the commit waits.
+        </p>
+        <div class="rule-body">
+          <p>
+            The predicate combines a Bash-command match against
+            <code>git commit</code> with a script clause that counts
+            <code>signal_pass</code> facts asserted earlier in the same hook
+            chain. The signals are asserted by an adapter (cargo at v1)
+            that reads real build / test / bug-catch results from the
+            journey journal — they are evidence of work, not promises about it.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">rule shape <span class="path">.phronesis/rules.json</span></div>
+<pre>{
+  <span class="k">"id"</span>: <span class="s">"confidence-low-blocks-commit"</span>,
+  <span class="k">"phase"</span>: <span class="s">"pre"</span>,
+  <span class="k">"priority"</span>: 30,
+  <span class="k">"when"</span>: [
+    { <span class="k">"bash_command_matches"</span>: <span class="s">"git commit"</span> },
+    { <span class="k">"__script__"</span>:
+      <span class="s">"facts_count('signal_pass', ['*','*']) &lt;= 1"</span> }
+  ],
+  <span class="k">"then"</span>: { <span class="k">"block"</span>:
+    <span class="s">"Low confidence — compile/tests/known-bug not all green..."</span> }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">hook output</div>
+<pre><span class="c">$ git​ commit -m "wire up new play ledger"</span>
+<span class="em">phronesis: BLOCKED</span> — Low confidence —
+compile/tests/known-bug not all green. Run the
+build and tests and resolve failing signals
+before committing.
+
+<span class="c"># Resolve: actually run the build + tests; the</span>
+<span class="c"># adapter writes signal_pass facts; re-commit.</span></pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> A passing compile alone is not "done."
+            The gate counts <em>grounded</em> signals — actual outcomes
+            written by the adapter from real tool output — so the band
+            reflects evidence, not language. Opt-in via
+            <code>.phronesis/confidence.json</code>; pair with
+            <code>phr-mcp confidence</code> for the report surface.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 4.2 Medium confidence warns commit ─── -->
+    <article class="rule" data-level="warn" id="confidence-medium">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-level">WARN</span>
+          <span class="tag">phase: pre</span>
+          <span class="tag">on Bash content</span>
+          <span class="tag">predicate: script</span>
+        </div>
+        <h3 class="rule-id">confidence-medium-warns-commit</h3>
+        <p class="rule-summary">
+          Fires when exactly two of the three grounded signals have passed.
+          One gap remains — usually the known-bug check. The commit is
+          allowed; the human is told.
+        </p>
+        <div class="rule-body">
+          <p>
+            Same shape as the low-confidence rule, with the script clause
+            tightened to equality at two signals. The warn band exists for
+            the in-between case: enough evidence to keep moving, not enough
+            to be silent about it.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">rule shape <span class="path">.phronesis/rules.json</span></div>
+<pre>{
+  <span class="k">"id"</span>: <span class="s">"confidence-medium-warns-commit"</span>,
+  <span class="k">"phase"</span>: <span class="s">"pre"</span>,
+  <span class="k">"priority"</span>: 29,
+  <span class="k">"when"</span>: [
+    { <span class="k">"bash_command_matches"</span>: <span class="s">"git commit"</span> },
+    { <span class="k">"__script__"</span>:
+      <span class="s">"facts_count('signal_pass', ['*','*']) == 2"</span> }
+  ],
+  <span class="k">"then"</span>: { <span class="k">"warn"</span>:
+    <span class="s">"Medium confidence — one grounded signal is missing..."</span> }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">hook output</div>
+<pre><span class="c">$ git​ commit -m "extract turn-resolver module"</span>
+<span class="em">phronesis: WARNING</span> — Medium confidence —
+one grounded signal is missing. Review before
+presenting this as done.
+<span class="c"># Commit proceeds; the gap is flagged for the</span>
+<span class="c"># reviewer (usually: the known-bug catch).</span></pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Two of three is not failure — it is a
+            visible gap. The known-bug check is the
+            discipline-establishing piece: it asks the project to keep a
+            <code>bugs.json</code> registry of real failures the
+            test suite is supposed to catch. Warning rather than blocking
+            lets the work flow while making the missing piece legible.
+          </p>
+        </div>
+      </div>
+    </article>
+
+  </section>
+
+
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <!-- ─── PACK · JOURNEY                                        ── -->
+  <!-- ─── ──────────────────────────────────────────────────────── -->
+  <section class="pack" id="journey-pack">
+    <header class="pack-head-block">
+      <div class="pack-num">§<small>V</small><br>5</div>
+      <h2>Pack · Journey — <span class="it">cross-call temporal predicates.</span></h2>
+      <div class="pack-count"><span class="num">0+5</span>Aggregators</div>
+    </header>
+
+    <p class="pack-intro">
+      The journey pack is structurally different from every other pack
+      in this catalogue. It ships <em>no rules</em>. What it ships is a
+      pair of seams: <strong>project-defined taggers</strong> in
+      <code>.phronesis/journey.json</code> that stamp tool calls as they
+      execute, and <strong>aggregator predicates</strong>
+      (<code>journey_*</code>) that the engine derives from a bounded
+      window of the journal at every hook fire. Rules layer on top —
+      composed by the project, not shipped by the pack. The example
+      rules below are taken from
+      <code>docs/specs/SPEC-journey-facts.md</code>; they are
+      illustrative, not preinstalled.
+    </p>
+
+    <!-- ─── 5.1 Aggregator predicates ─── -->
+    <article class="rule" data-level="audit" id="journey-predicates">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-level">REFERENCE</span>
+          <span class="tag">surface: predicate</span>
+          <span class="tag">×5 aggregators</span>
+        </div>
+        <h3 class="rule-id">journey_occurrence · journey_count · journey_seen · journey_since_ge · journey_distinct</h3>
+        <p class="rule-summary">
+          Five predicates over a windowed view of the journey journal.
+          Recomputed every hook fire from disk; no in-memory accumulation.
+        </p>
+        <div class="rule-body">
+          <p>
+            Each predicate takes a <em>selector</em> (a tag name such as
+            <code>auth</code>, <code>build</code>, <code>sql</code>) and a
+            <em>window</em> (see below). The engine derives only what
+            rules actually reference, so unused windows cost nothing.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">predicate reference</div>
+<pre><span class="k">journey_occurrence</span>(selector, window)
+  <span class="c">// one fact per matching record in window;</span>
+  <span class="c">// the unit `facts_count` thresholds + `== 0` over</span>
+
+<span class="k">journey_count</span>(selector, window, count)
+  <span class="c">// the count as a single bindable fact</span>
+  <span class="c">// (reporting / equality matches)</span>
+
+<span class="k">journey_seen</span>(selector, window)
+  <span class="c">// presence (≥1) boolean fact</span>
+
+<span class="k">journey_since_ge</span>(selector, k)
+  <span class="c">// one fact for each k ≤ distance-since-last-match,</span>
+  <span class="c">// capped at the max k any rule references</span>
+
+<span class="k">journey_distinct</span>(field, window, count)
+  <span class="c">// distinct values of `field` (only `path` in v1)</span>
+  <span class="c">// over the window</span></pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">window encoding</div>
+<pre><span class="k">5c</span>    <span class="c">// last 5 tool calls (count-based)</span>
+<span class="k">30m</span>   <span class="c">// last 30 minutes (wall-time)</span>
+<span class="k">2h</span>    <span class="c">// last 2 hours (wall-time)</span>
+<span class="k">7d</span>    <span class="c">// last 7 days (wall-time)</span>
+<span class="k">s</span>     <span class="c">// current session (sid)</span>
+<span class="k">r</span>     <span class="c">// repo lifetime — phase 2, not in v1</span></pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> Many session-level discipline patterns
+            cannot be expressed by looking at a single tool call. "Edited
+            auth three times without touching tests" or "eight calls since
+            the last build" needs a window. The aggregator surface gives
+            rules access to that window without granting them mutable
+            state — the facts are <em>derived</em> from the journal every
+            fire, so there is no accumulator to corrupt and nothing to
+            reset between sessions.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 5.2 Project-defined taggers ─── -->
+    <article class="rule" data-level="audit" id="journey-taggers">
+      <div class="rule-mark" aria-hidden="true">○</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-level">CONFIG</span>
+          <span class="tag">file: .phronesis/journey.json</span>
+        </div>
+        <h3 class="rule-id">Taggers — the project-defined seam</h3>
+        <p class="rule-summary">
+          A tagger says "if the call matches this predicate, stamp it with
+          this tag." Tags are the vocabulary that aggregator predicates
+          aggregate over.
+        </p>
+        <div class="rule-body">
+          <p>
+            <code>phr-mcp init --packs journey</code> writes a starter
+            <code>.phronesis/journey.json</code> with a single tagger for
+            <code>build</code>. Projects extend it. Predicates inside
+            <code>when</code> are the same set the rule engine uses —
+            <code>bash_command_matches</code>, <code>file_path_matches</code>,
+            <code>new_content_contains</code>, <code>or</code>, etc. The
+            tagger surface is therefore the engine surface, reused.
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">default + spec examples <span class="path">.phronesis/journey.json</span></div>
+<pre>{
+  <span class="k">"version"</span>: 1,
+  <span class="k">"taggers"</span>: [
+    { <span class="k">"tag"</span>: <span class="s">"build"</span>,
+      <span class="k">"when"</span>: [
+        { <span class="k">"bash_command_matches"</span>:
+          <span class="s">"cargo (build|check|test)"</span> } ] },
+    { <span class="k">"tag"</span>: <span class="s">"auth"</span>,
+      <span class="k">"when"</span>: [
+        { <span class="k">"file_path_matches"</span>: <span class="s">"src/auth/"</span> } ] },
+    { <span class="k">"tag"</span>: <span class="s">"tests"</span>,
+      <span class="k">"when"</span>: [
+        { <span class="k">"file_path_matches"</span>: <span class="s">"tests/"</span> } ] },
+    { <span class="k">"tag"</span>: <span class="s">"sql"</span>,
+      <span class="k">"when"</span>: [ { <span class="k">"or"</span>: [
+        { <span class="k">"new_content_contains"</span>: <span class="s">"INSERT INTO"</span> },
+        { <span class="k">"new_content_contains"</span>: <span class="s">"DELETE FROM"</span> },
+        { <span class="k">"file_path_matches"</span>: <span class="s">"migrations/"</span> } ] } ] }
+  ],
+  <span class="k">"modules"</span>: [
+    { <span class="k">"name"</span>: <span class="s">"auth"</span>,
+      <span class="k">"paths"</span>: [<span class="s">"src/auth/**"</span>] }
+  ]
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">what rules see</div>
+<pre><span class="c">// After each tool call, the hook evaluates the</span>
+<span class="c">// tagger predicates against the call, stamps</span>
+<span class="c">// matched tags onto the journal record, and</span>
+<span class="c">// appends to .phronesis/journey/events.jsonl.</span>
+
+<span class="c">// At the next hook fire, the engine derives</span>
+<span class="c">// journey_* facts from a bounded suffix of the</span>
+<span class="c">// journal — only for the (selector, window) pairs</span>
+<span class="c">// that loaded rules reference.</span>
+
+<span class="c">// `phr-mcp journey` prints what journey_* facts</span>
+<span class="c">// assert right now; `--explain &lt;rule-id&gt;` shows</span>
+<span class="c">// which records contributed to a fact.</span></pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> The taggers are where a project encodes
+            its own ontology — what counts as "auth," what counts as a
+            "build," what counts as "touching the database." Phronesis
+            ships a starter but the file is the project's to grow. The
+            aggregator predicates above are stable; the tags are not.
+          </p>
+        </div>
+      </div>
+    </article>
+
+    <!-- ─── 5.3 Example rules (project-defined) ─── -->
+    <article class="rule" data-level="warn" id="journey-examples">
+      <div class="rule-mark" aria-hidden="true">!</div>
+      <div>
+        <div class="rule-tags">
+          <span class="tag tag-level">EXAMPLES</span>
+          <span class="tag">not shipped</span>
+          <span class="tag">×4 from the spec</span>
+        </div>
+        <h3 class="rule-id">auth-churn-session · auth-churn-without-tests · sql-recent-call-window · build-staleness</h3>
+        <p class="rule-summary">
+          Four example rules from <code>SPEC-journey-facts.md</code>.
+          They show how the aggregators compose — count thresholds,
+          absence tests via <code>== 0</code>, presence via
+          <code>journey_seen</code>, and distance-since-last via
+          <code>journey_since_ge</code>.
+        </p>
+        <div class="rule-body">
+          <p>
+            None of these are written by <code>init</code>. They are the
+            shape a project's own journey rules tend to take after a
+            week or two of using the journal. The <code>== 0</code> form
+            relies on the 0.13.0 engine fix that lets pure-script rules
+            fire (previously a script-only <code>when</code> would not
+            schedule).
+          </p>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">count signal — auth churn</div>
+<pre>{
+  <span class="k">"id"</span>: <span class="s">"auth-churn-session"</span>,
+  <span class="k">"when"</span>: [
+    { <span class="k">"__script__"</span>:
+      <span class="s">"facts_count('journey_occurrence',</span>
+<span class="s">          ['auth','s']) &gt;= 3"</span> }
+  ],
+  <span class="k">"then"</span>: { <span class="k">"warn"</span>:
+    <span class="s">"You've edited the auth module 3+ times</span>
+<span class="s">     this session..."</span> }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">count + absence — composite (showcase)</div>
+<pre>{
+  <span class="k">"id"</span>: <span class="s">"auth-churn-without-tests"</span>,
+  <span class="k">"when"</span>: [
+    { <span class="k">"__script__"</span>:
+      <span class="s">"facts_count('journey_occurrence',</span>
+<span class="s">          ['auth','s']) &gt;= 3"</span> },
+    { <span class="k">"__script__"</span>:
+      <span class="s">"facts_count('journey_occurrence',</span>
+<span class="s">          ['tests','s']) == 0"</span> }
+  ],
+  <span class="k">"then"</span>: { <span class="k">"warn"</span>: <span class="s">"..."</span> }
+}</pre>
+            </div>
+          </div>
+          <div class="rule-example">
+            <div class="ex ex-bad">
+              <div class="ex-label">presence — recent SQL window</div>
+<pre>{
+  <span class="k">"id"</span>: <span class="s">"sql-recent-call-window"</span>,
+  <span class="k">"when"</span>: [
+    { <span class="k">"journey_seen"</span>: [<span class="s">"sql"</span>, <span class="s">"5c"</span>] }
+  ],
+  <span class="k">"then"</span>: { <span class="k">"warn"</span>:
+    <span class="s">"A SQL/migration edit happened in the</span>
+<span class="s">     last 5 tool calls — verify target</span>
+<span class="s">     database."</span> }
+}</pre>
+            </div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div class="ex ex-good">
+              <div class="ex-label">distance-since-last — build staleness</div>
+<pre>{
+  <span class="k">"id"</span>: <span class="s">"build-staleness"</span>,
+  <span class="k">"when"</span>: [
+    { <span class="k">"__script__"</span>:
+      <span class="s">"facts_count('journey_since_ge',</span>
+<span class="s">          ['build','8']) &gt;= 1"</span> }
+  ],
+  <span class="k">"then"</span>: { <span class="k">"warn"</span>:
+    <span class="s">"8+ tool calls since the last build/test.</span>
+<span class="s">     Run the build before reporting done."</span> }
+}</pre>
+            </div>
+          </div>
+          <p class="rule-why">
+            <strong>Why</strong> These four exercise the four expressive
+            modes a journey rule needs: count threshold, absence,
+            point-in-time presence, and distance-since-last. Once a
+            project has these four shapes wired against its own tag
+            vocabulary, almost any cross-call discipline becomes a small
+            rule rather than a long CLAUDE.md paragraph.
+          </p>
+        </div>
+      </div>
+    </article>
+
+  </section>
+
+
+  <!-- ─── ──────────────────────────────────────────────────────── -->
   <!-- ─── OTHER PACKS                                           ── -->
   <!-- ─── ──────────────────────────────────────────────────────── -->
   <section class="pack" id="other">
     <header class="pack-head-block">
-      <div class="pack-num">§<small>IV</small><br>4</div>
+      <div class="pack-num">§<small>VI</small><br>6</div>
       <h2>Other packs — <span class="it">Python · TypeScript · Swift.</span></h2>
       <div class="pack-count"><span class="num">17</span>Rules</div>
     </header>
@@ -2302,7 +2744,7 @@ audit-rc-refcell-in-src   warn      4      2
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
       with Claude.<br>
       Pairs with <a href="./explainer.html">the explainer</a> &middot;
-      v 0.11.0 &middot; 2026 &middot;
+      v 0.13.2 &middot; 2026 &middot;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
