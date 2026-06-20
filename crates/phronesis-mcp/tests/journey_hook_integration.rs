@@ -249,6 +249,46 @@ fn no_journey_env_var_disables_both_paths() {
 }
 
 #[test]
+fn post_check_uses_tool_response_alias_for_outcomes() {
+    // Claude Code's PostToolUse hook delivers Bash output under
+    // `tool_response`, not `tool_output`. Without the serde alias the hook
+    // sees an empty string, `compiled("")` falls through to true (no error
+    // patterns match), so `outcome:compile_ok` fires spuriously while
+    // `outcome:test_pass` never does — confidence is wedged at "low" no
+    // matter what cargo actually did. This regression test pins the alias.
+    let rules = r#"{"rules":[]}"#;
+    let journey = r#"{"version":1,"taggers":[],"modules":[]}"#;
+    let dir = setup_project(rules, Some(journey));
+    write_session(dir.path(), "s-test");
+
+    // Opt in to confidence so the outcomes adapter runs and stamps tags.
+    let phr = dir.path().join(".phronesis");
+    std::fs::write(phr.join("confidence.json"), r#"{"version":1}"#).unwrap();
+    std::fs::write(phr.join("bugs.json"), "[]").unwrap();
+
+    // Real Claude Code payload shape — `tool_response`, not `tool_output`.
+    let payload = r#"{
+        "tool_name":"Bash",
+        "tool_input":{"command":"cargo test --workspace --lib"},
+        "tool_response":{"stdout":"running 5 tests\ntest result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s\n","stderr":"","interrupted":false}
+    }"#;
+
+    let (code, _, stderr) = run_hook("post-check", payload, dir.path(), false);
+    assert_eq!(code, 0, "post-check stderr: {stderr}");
+
+    let events =
+        std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    assert!(
+        events.contains("\"outcome:compile_ok\""),
+        "compile_ok tag expected: {events}"
+    );
+    assert!(
+        events.contains("\"outcome:test_pass\""),
+        "test_pass tag expected (proves tool_response alias works): {events}"
+    );
+}
+
+#[test]
 fn corrupt_journey_json_is_fail_open() {
     // Malformed journey.json must not block: derive falls back to default
     // config (no taggers, no rule selectors validate against an empty set

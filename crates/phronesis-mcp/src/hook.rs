@@ -41,10 +41,12 @@ impl From<String> for HookError {
 struct HookPayload {
     tool_name: Option<String>,
     tool_input: Option<serde_json::Value>,
-    /// PostToolUse payloads from Claude Code carry the tool's output here.
-    /// Confidence scoring reads it: the captured stdout/stderr of a build/test
-    /// command is the grounded signal an outcome adapter parses.
-    #[serde(default)]
+    /// PostToolUse payloads carry the tool's output here. Claude Code sends
+    /// this field as `tool_response`; Gemini and our own integration tests
+    /// use `tool_output`. The serde alias accepts both so confidence scoring
+    /// sees the captured stdout/stderr of a build/test command regardless of
+    /// which runtime fired the hook.
+    #[serde(default, alias = "tool_response")]
     tool_output: Option<serde_json::Value>,
 }
 
