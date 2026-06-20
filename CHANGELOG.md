@@ -4,6 +4,119 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.13.2] - 2026-06-20
+
+### Fixed
+- **`bash_command_matches` taggers actually fire.** `journey::tagger::tagger_facts`
+  built only file/content facts and relied on a "tagger regex pass" implied by a
+  misleading comment but never implemented. The default `build` tagger
+  (`{ "bash_command_matches": "cargo (build|check|test)" }`) silently no-fired on
+  every `cargo` invocation. `tagger_facts` now walks `taggers[*].when[*]`
+  (including nested `or` clauses) collecting `bash_command_matches` patterns,
+  regex-matches each against the bash command, and asserts one synthetic
+  `bash_command_matches:<pattern>` Fact per match — the same pattern
+  `check_bash_command_patterns` uses for top-level rules
+  (`hook_facts.rs:316`). Surfaced in a live playtest, not in unit tests.
+- **`HookPayload.tool_output` accepts `tool_response` as a serde alias.** Claude
+  Code's PostToolUse hook delivers Bash output under `tool_response`, not
+  `tool_output`. Without the alias, the field was `None` / empty string, so
+  `compiled("")` returned true (no error patterns match → spurious
+  `outcome:compile_ok`) and `TEST_RESULT.captures_iter("")` returned nothing
+  (`outcome:test_pass` never fired). Net effect: confidence-scoring was wedged at
+  "low / compile" for every real `cargo` run, even when tests were green —
+  the whole gate-by-band feature was non-functional in production. Tests and
+  fixtures all passed because they synthesized payloads under `tool_output`;
+  only a live hook payload surfaced it. Backward compatible with Gemini and
+  existing fixtures.
+
+## [0.13.1] - 2026-06-20
+
+### Fixed
+- **Same-day sid fallback collision.** When `.phronesis/journey/session` was
+  missing, the journey fallback was the literal placeholder
+  `s-YYYY-MM-DD-fallback`, collapsing distinct sessions to the same id. Now
+  `journey::current_sid` reads-or-creates atomically in the
+  `context::ensure_session_id` format (`s-YYYY-MM-DD-<6 hex>`); the placeholder
+  is gone.
+- **Triple-duplicated `current_sid` consolidated.** Three independent
+  implementations (in `hook`, `main`, and `server::get_journey`) coalesced into
+  a single `journey::current_sid(project_root)` helper. Same semantics, one
+  source of truth.
+
+### Changed
+- **CLAUDE.md packs list now includes `confidence`** alongside `journey`. The
+  scaffolded CLAUDE.md previously enumerated `journey` only.
+- **`phr-mcp journey` nudges on empty config.** When `.phronesis/journey.json`
+  is missing or empty, the CLI emits a stderr suggestion
+  ("run `phr-mcp init --packs journey` to scaffold one") before falling back
+  to an empty config. The hook stays silent — fail-open is advisory there, not
+  user-facing.
+
+### Fixed (engine)
+- **Pure-script rules now fire.** Rules whose `when` was entirely `__script__`
+  clauses had no alpha state, no terminal id, no p-state — they never reached
+  the agenda, because `__script__` clauses are post-filters on activations and
+  with no other clause there were no activations to filter. `update_agenda`
+  now branches on `real_condition_count == 0` (count of non-`__script__`
+  conditions per loaded rule) and, for pure-script rules, evaluates the script
+  clauses against the current fact base with empty bindings, emitting an
+  activation when every clause passes. Dedupe key is `<rule_id>` —
+  fire-once-ever, the right semantics for threshold rules. Alpha/beta network
+  and the production network shape are unmodified; mixed-script behaviour is
+  unchanged. Surfaced by the journey-facts SPEC's headline
+  `auth-churn-without-tests` rule, which is naturally two `__script__` clauses
+  (`facts_count(...) >= 5` AND `facts_count(...) == 0`). The
+  `journey_seen` anchor leaf added as a workaround is no longer required.
+
+## [0.13.0] - 2026-06-20
+
+### Added
+- **Journey facts (new fact family + new hook stage)** — call-window and
+  session-scale predicates that summarise *trajectory*, not the current diff.
+  Five aggregators over project-defined tags (`journey_occurrence`,
+  `journey_count`, `journey_seen`, `journey_since_ge`, `journey_distinct`)
+  with windowed selectors (`5c` for last 5 calls, `30m`/`2h`/`7d` wall-clock,
+  `s` for session; repo-lifetime `r` is phase 2). Rule-driven derivation;
+  the journal is the substrate, the predicates are recomputed each cycle.
+  See `docs/specs/SPEC-journey-facts.md`.
+  - **Append-only journal** (`.phronesis/journey/events.jsonl`) writes a
+    record per post-check with subject + tags + monotonic seq. Tail-read
+    for hot queries (`SUFFIX_HARD_CAP = 10_000` lines) and per-subject read
+    for outcomes folding.
+  - **Taggers reuse the predicate engine** — `taggers[*].when` clauses are the
+    same DSL as rule conditions. `bash_command_matches`, `new_content_contains`,
+    `file_path_matches` all available. Project-defined via
+    `.phronesis/journey.json`.
+  - **Derivation pass** runs at every pre-check and post-check via
+    `journey::derive::assert_facts`; selector validation rejects malformed
+    journey config without exit-2.
+  - **Outcomes ledger folded into the journey journal** (the notable storage
+    change of 0.13.0). `outcomes/ledger.rs` is gone; `outcomes/cargo.rs` now
+    returns `(tags, subject)` and the hook stamps them on a single journal
+    record. `outcomes/derive::signals` reads via
+    `journey::journal::read_recent_subject`. Confidence-scoring behaviour is
+    byte-identical; the storage is unified.
+  - **`SessionStart` stamps** `.phronesis/journey/session`; pre/post-check
+    read it. `PHRONESIS_NO_JOURNEY=1` disables both paths. Fail-open
+    throughout — corrupt `journey.json` or missing journal degrades to "no
+    journey facts," never exit 2.
+  - **`phr-mcp journey [--json] [--explain <rule-id>]`** renders the
+    `journey_*` facts a derivation pass would assert against the current
+    journal, with `--explain` filtering to a single rule's dependencies.
+  - **MCP tool `get_journey`** mirrors the same table/JSON view so the agent
+    can ask "what does my trajectory look like" mid-conversation.
+  - **`phr-mcp init --packs journey`** writes a starter `journey.json` and
+    ensures it is tracked.
+
+### Changed
+- **Workspace bumps to 0.13.0.** `phr` and `phr-mcp` move together; `phr-mcp`'s
+  `phr` dep bumps to match.
+
+### Notes
+- **Coverage discipline.** The workspace stayed at or above the pre-feature
+  baseline of 85.4% lines across the journey-facts merges; the journal and
+  tagger modules sit near ~90%.
+
 ## [0.12.0] - 2026-06-19
 
 ### Added
@@ -89,10 +202,28 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   shape); operational prose is bucketed *ambient*. Actionable entries now also
   register coverage from `durable.md`, so the drift list converges.
 
+## Known follow-ups (specs landed, implementation deferred)
+
+- **`SPEC-gate-merge-commits.md`** — broaden the confidence gate's
+  `bash_command_matches` pattern from `"git commit"` to
+  `"git (commit|merge|rebase|cherry-pick|revert|pull)"`. Five of six
+  commit-producing porcelain commands currently bypass the gate. Live-tested
+  during the journey-facts merge night. PATCH-shaped change for 0.13.x.
+- **`SPEC-pack-opt-in-facts.md`** — pack-level supersession via zero-arg
+  marker facts. When `confidence` is opted in, assert `confidence_enabled`
+  at hook fire (mirroring `clock_facts`) and condition
+  `nudge-verify-before-commit` on its absence via the existing
+  `facts_count(...) == 0` form. Removes the double-warn on every `git commit`
+  for projects running both `llm` and `confidence` packs. PATCH for 0.13.x.
+
 ## Earlier releases
 
 Pre-0.11 history (0.10.0 and earlier) is recorded in the git log and
 `docs/specs/`. Notably, 0.10.0 added wiki-drift, the block-pattern rules, and
 the v2 rule schema.
 
+[0.13.2]: https://github.com/awaterma/phronesis/releases/tag/v0.13.2
+[0.13.1]: https://github.com/awaterma/phronesis/releases/tag/v0.13.1
+[0.13.0]: https://github.com/awaterma/phronesis/releases/tag/v0.13.0
+[0.12.0]: https://github.com/awaterma/phronesis/releases/tag/v0.12.0
 [0.11.0]: https://github.com/awaterma/phronesis/releases/tag/v0.11.0

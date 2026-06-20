@@ -151,10 +151,16 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `post-check` | Warn about edits that violate rules |
 | `session-context` | Inject active rules summary on SessionStart |
 | `turn-context` | Inject recent hook activity on UserPromptSubmit |
-| `values` | Read `.phronesis/log.jsonl`, show per-rule summary |
+| `stats` | Read `.phronesis/log.jsonl`, show per-rule summary |
 | `audit` | Scan whole tree for rule violations |
 | `trend` | Debt-over-time from audit snapshots |
+| `confidence` | Confidence band + grounded signals for the open work unit |
+| `journey` | `journey_*` facts asserted right now (`--json`/`--explain`) |
 | `claude-md-drift` | Find CLAUDE.md imperatives without matching rules |
+| `memory-drift` | Find auto-memory entries without matching rules |
+| `wiki-drift` | Find ADR decisions without matching rules |
+| `decision new <slug>` | Scaffold an ADR page under `.phronesis/wiki/decisions/` |
+| `migrate-rules <path>` | Convert v1 rules.json to v2 in place |
 | `init` | One-command project setup (hooks + rules) |
 | `install` | Register MCP server at user scope |
 
@@ -270,12 +276,20 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/server.rs` | `EpistemeMcp` struct, MCP tools (rmcp macros) |
 | `crates/phronesis-mcp/src/hook.rs` | `pre-check`/`post-check` hooks, rule evaluation |
 | `crates/phronesis-mcp/src/init.rs` | `phr-mcp init` project setup |
-| `crates/phronesis-mcp/src/context.rs` | SessionStart/BeforeModelRequest payload formatters |
-| `crates/phronesis-mcp/src/values.rs` | Aggregate log entries per rule |
+| `crates/phronesis-mcp/src/context.rs` | SessionStart/BeforeModelRequest payload formatters; `ensure_session_id` |
+| `crates/phronesis-mcp/src/stats.rs` | Aggregate log entries per rule |
 | `crates/phronesis-mcp/src/audit.rs` | Whole-tree audit + debt-over-time |
 | `crates/phronesis-mcp/src/action_log.rs` | Append-only JSONL log |
+| `crates/phronesis-mcp/src/clock_facts.rs` | Wall-clock-derived facts asserted at every hook fire |
 | `crates/phronesis-mcp/src/rules_file.rs` | Disk format for `.phronesis/rules.json` |
 | `crates/phronesis-mcp/src/security.rs` | Path canonicalization, size caps, validators |
+| `crates/phronesis-mcp/src/diff_extract.rs` | Regex-based diff facts (function_added, import_added, etc.) |
+| `crates/phronesis-mcp/src/syntax/` | Tree-sitter AST predicates (rust, swift, python, typescript) |
+| `crates/phronesis-mcp/src/outcomes/` | Confidence scoring — per-toolchain adapter (`cargo` first), per-subject signal derivation, gate-rule input |
+| `crates/phronesis-mcp/src/journey/` | Journey facts — append-only journal, project-defined taggers, rule-driven aggregator derivation |
+| `crates/phronesis-mcp/src/journey_cli.rs` | `phr-mcp journey` rendering glue (table + JSON + `--explain`) |
+| `crates/phronesis-mcp/src/{claude_md,memory,wiki}_drift.rs` | Three heuristic drift detectors (Jaccard overlap, no LLM call) |
+| `crates/phronesis-mcp/src/wiki.rs` | ADR page primitives shared by wiki_drift + decision scaffolding |
 
 ### Action Log (`.phronesis/log.jsonl`)
 
@@ -551,7 +565,7 @@ GitHub Pages: https://awaterma.github.io/phronesis/
 
 ## Versioning & Releases
 
-**Current version:** `0.11.0` (workspace-wide)
+**Current version:** `0.13.2` (workspace-wide)
 
 **Semver (pre-1.0):**
 - **MINOR** (`0.X.0`) - New features (subcommand, pack, hook surface, user-visible)
@@ -679,4 +693,4 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 ---
 
 *Last updated: 2026-06-13*
-*Based on phronesis v0.11.0*
+*Based on phronesis v0.13.2*
