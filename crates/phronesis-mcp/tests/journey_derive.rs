@@ -267,14 +267,12 @@ async fn absence_via_zero_count_fires() {
         ],
         "modules":[]
     }"#);
-    // Anchor on a journey_seen leaf so the engine has a real condition to
-    // join against (pure-__script__ rules don't fire under current engine
-    // semantics). This matches the gate-rule pattern in init.rs::confidence_rules.
+    // Two-script-clause form — pure-__script__ rules reach the agenda
+    // directly as of phr 0.13.0; no anchor leaf needed.
     let rule = Rule {
         id: "auth-without-tests".to_string(),
         priority: 25,
         conditions: vec![
-            leaf_cond("journey_seen", &["auth", "s"]),
             script_cond("facts_count('journey_occurrence', ['auth','s']) >= 3"),
             script_cond("facts_count('journey_occurrence', ['tests','s']) == 0"),
         ],

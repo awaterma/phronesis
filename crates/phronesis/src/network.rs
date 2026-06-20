@@ -548,6 +548,50 @@ impl ReteNetwork {
 
                     fired_activations.insert(activation_key);
                 }
+            } else if real_count == 0 {
+                // Pure-__script__ rule: no leaf condition created an alpha
+                // state, so there are no WMEs to filter. Treat the rule as
+                // "always a candidate": evaluate its script clauses against
+                // the current fact base with empty bindings, and if every
+                // clause passes, emit an empty-WME activation. Dedup via
+                // fired_activations keyed on "rule_id:" — re-fires only
+                // after the key is purged (currently never; matches the
+                // fire-once semantics of single-cond and multi-cond rules
+                // for the same activation key).
+                if rule.conditions.is_empty() {
+                    continue; // No conditions at all — degenerate, skip.
+                }
+                let activation_key = format!("{}:", rule.id);
+                if fired_activations.contains(&activation_key) {
+                    debug!(
+                        "Skipping duplicate pure-script activation: {}",
+                        activation_key
+                    );
+                    continue;
+                }
+
+                let bindings = crate::variable_binding::Bindings::new();
+                let script_passes = self.evaluate_script_conditions(rule, &bindings)?;
+                if !script_passes {
+                    debug!("Pure-script rule '{}' blocked by script condition", rule.id);
+                    continue;
+                }
+
+                let mut agenda = self
+                    .agenda
+                    .lock()
+                    .map_err(|_| ReteError::poisoned("agenda"))?;
+                debug!(
+                    "Adding pure-script rule '{}' to agenda (no WMEs, empty bindings)",
+                    rule.id
+                );
+                agenda.add_item(
+                    rule.clone(),
+                    Vec::new(),
+                    bindings,
+                    production_state.salience,
+                );
+                fired_activations.insert(activation_key);
             } else if real_count > 1 {
                 // Multi-condition rule: use the terminal p-state ID to scope to this rule's tokens
                 if let Some(ref terminal_id) = production_state.terminal_state_id {
@@ -1160,5 +1204,52 @@ mod fire_all_consequences_tests {
         let net = ReteNetwork::new();
         let consequences = net.fire_all_consequences().unwrap();
         assert!(consequences.is_empty());
+    }
+
+    /// Cover the multi-join chain branch in `add_rule` (three leaf
+    /// conditions → two join states; the "subsequent joins" alpha→beta
+    /// wiring path on line ~332).
+    #[tokio::test]
+    async fn three_leaf_condition_rule_fires_via_join_chain() {
+        let net = ReteNetwork::new();
+        let rule = Rule {
+            id: "three-conds".to_string(),
+            priority: 0,
+            conditions: vec![
+                Condition {
+                    predicate: "a".to_string(),
+                    args: vec!["?x".to_string()],
+                    script: None,
+                },
+                Condition {
+                    predicate: "b".to_string(),
+                    args: vec!["?x".to_string()],
+                    script: None,
+                },
+                Condition {
+                    predicate: "c".to_string(),
+                    args: vec!["?x".to_string()],
+                    script: None,
+                },
+            ],
+            actions: vec![RuleAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec!["x=?x".to_string()],
+            }],
+        };
+        net.add_rule(rule).await.unwrap();
+        for (i, p) in ["a", "b", "c"].iter().enumerate() {
+            net.assert_fact(Fact {
+                id: format!("f{i}"),
+                predicate: p.to_string(),
+                args: vec!["v".to_string()],
+                timestamp: 0,
+            })
+            .await
+            .unwrap();
+        }
+        net.update_agenda().await.unwrap();
+        let consequences = net.fire_all_consequences().unwrap();
+        assert_eq!(consequences.len(), 1, "three-cond rule fires on join chain");
     }
 }
