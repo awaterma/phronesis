@@ -108,6 +108,44 @@ fn post_check_journals_executed_call() {
 }
 
 #[test]
+fn post_check_journals_bash_with_build_tag() {
+    // The default `build` tagger from `phr-mcp init --packs journey` keys on
+    // `bash_command_matches: "cargo (build|check|test)"`. Without the synthetic
+    // `bash_command_matches:<pattern>` fact, the tagger silently never fires
+    // because the engine's equality matcher has nothing to match against.
+    // Regression guard: a `cargo check --workspace` Bash call must land the
+    // `build` tag in the journal record.
+    let rules = r#"{"rules":[]}"#;
+    let journey = r#"{
+        "version":1,
+        "taggers":[
+            {"tag":"build","when":[{"bash_command_matches":"cargo (build|check|test)"}]}
+        ],
+        "modules":[]
+    }"#;
+    let dir = setup_project(rules, Some(journey));
+    write_session(dir.path(), "s-test");
+
+    let payload = r#"{
+        "tool_name":"Bash",
+        "tool_input":{ "command": "cargo check --workspace" }
+    }"#;
+    let (code, _stdout, stderr) = run_hook("post-check", payload, dir.path(), false);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let events = dir
+        .path()
+        .join(".phronesis")
+        .join("journey")
+        .join("events.jsonl");
+    let journal = std::fs::read_to_string(&events).expect("events.jsonl written");
+    assert!(
+        journal.contains("\"tags\":[\"build\"]"),
+        "build tag should appear in record: {journal}"
+    );
+}
+
+#[test]
 fn pre_check_blocks_on_journey_rule() {
     // The rule fires when a `sql`-tagged record was seen in the last 5 calls.
     let rules = r#"{
