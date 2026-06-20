@@ -159,6 +159,11 @@ The packs are composable and **independent**:
   rules (explicit `any`, `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`
   suppressions, non-null `!` assertions)
 - `swift` — Swift-specific advisories: force-unwrap warning, try! warning
+- `confidence` — opt-in confidence-band gate (SPEC-confidence-scoring).
+  Writes `.phronesis/confidence.json` (the opt-in marker) and ships three
+  commit-gate rules: low confidence blocks `git commit -m`, medium warns,
+  high passes clean. Pair with `.phronesis/bugs.json` (known-bug
+  registry) and `phr-mcp confidence` for the report surface.
 - `journey` — project-defined taggers + journey_* aggregator facts (cross-call temporal predicates)
 - `none` — empty rules array (hooks still wired)
 

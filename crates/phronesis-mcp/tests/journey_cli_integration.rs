@@ -171,6 +171,38 @@ fn journey_command_explain_unknown_rule_errors() {
 }
 
 #[test]
+fn journey_command_nudges_when_journey_config_missing() {
+    // Project has rules.json but no journey.json. The CLI should still
+    // succeed with empty output (continuing with TaggerConfig::default()),
+    // *and* emit a stderr nudge pointing the operator at the scaffolder.
+    //
+    // Use a rules pack that doesn't reference journey_* facts so the
+    // derive pass with the default empty config has no undefined-selector
+    // complaints to make.
+    let rules_no_journey = r#"{"rules":[
+        {"id":"plain","phase":"pre","priority":10,
+         "when":[{"new_content_contains":"FIXME"}],
+         "then":{"warn":"fixme"}}
+    ]}"#;
+    let dir = tempfile::tempdir().unwrap();
+    let phr = dir.path().join(".phronesis");
+    std::fs::create_dir_all(&phr).unwrap();
+    std::fs::write(phr.join("rules.json"), rules_no_journey).unwrap();
+    // Deliberately no .phronesis/journey.json.
+
+    let (code, stdout, stderr) = run(&["journey", "--json"], dir.path());
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(v.as_array().unwrap().len(), 0, "stdout: {}", stdout);
+    assert!(
+        stderr.contains("no .phronesis/journey.json")
+            && stderr.contains("phr-mcp init --packs journey"),
+        "expected scaffold nudge on stderr, got: {}",
+        stderr
+    );
+}
+
+#[test]
 fn journey_command_handles_missing_journal() {
     let dir = tempfile::tempdir().unwrap();
     // rules + journey.json only — no events.jsonl

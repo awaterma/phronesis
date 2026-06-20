@@ -169,7 +169,10 @@ pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) ->
 /// journal records with a sid the `s` window can filter on. Failures are
 /// swallowed — journey is advisory enrichment.
 pub fn run_session_context(project_root: &Path, max_bytes: usize) -> String {
-    let _ = ensure_session_id(project_root);
+    // Stamp `.phronesis/journey/session` so the journal records have a sid
+    // to label on the first hook of the session. Single source of truth in
+    // `journey::current_sid` — see SPEC-journey-facts §sid.
+    let _ = crate::journey::current_sid(project_root);
 
     let path = rules_file::default_path(project_root);
     let rules_body = rules_file::read(&path)
@@ -243,40 +246,6 @@ pub fn build_turn_body(entries: &[LogEntry], now_secs: u64) -> String {
     out
 }
 
-/// Ensure `.phronesis/journey/session` contains a fresh session id, returning
-/// it. Idempotent: if the file already exists with a non-empty body, that id
-/// is reused (a session boundary is whatever the surrounding runtime calls
-/// SessionStart for — we don't roll a new id mid-session).
-///
-/// Format: `s-YYYY-MM-DD-<6 hex>` per SPEC. The hex is `(epoch_secs as u32) ^
-/// pid`, masked to 24 bits — enough entropy to distinguish concurrent
-/// sessions in the same second.
-pub(crate) fn ensure_session_id(project_root: &Path) -> std::io::Result<String> {
-    let path = project_root
-        .join(".phronesis")
-        .join("journey")
-        .join("session");
-    if let Ok(existing) = std::fs::read_to_string(&path) {
-        let sid = existing.trim();
-        if !sid.is_empty() {
-            return Ok(sid.to_string());
-        }
-    }
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let hex: u32 = (ts as u32) ^ std::process::id();
-    let date = crate::audit::short_iso_date(ts);
-    let sid = format!("s-{}-{:06x}", date, hex & 0x00FF_FFFF);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(&path, &sid)?;
-    Ok(sid)
-}
-
 fn humanize_ago(secs: u64) -> String {
     if secs < 60 {
         format!("{}s", secs)
@@ -292,42 +261,6 @@ fn humanize_ago(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn ensure_session_id_creates_file_with_expected_shape() {
-        let dir = tempfile::tempdir().unwrap();
-        let sid = ensure_session_id(dir.path()).unwrap();
-        assert!(sid.starts_with("s-"), "sid `{}` should be s-prefixed", sid);
-        // s-YYYY-MM-DD-<6 hex>
-        let parts: Vec<&str> = sid.splitn(5, '-').collect();
-        assert_eq!(parts.len(), 5);
-        assert_eq!(parts[0], "s");
-        assert_eq!(parts[1].len(), 4); // YYYY
-        assert_eq!(parts[2].len(), 2); // MM
-        assert_eq!(parts[3].len(), 2); // DD
-        assert_eq!(parts[4].len(), 6); // 6 hex digits
-        assert!(parts[4].chars().all(|c| c.is_ascii_hexdigit()));
-
-        // Persists.
-        let on_disk = std::fs::read_to_string(
-            dir.path()
-                .join(".phronesis")
-                .join("journey")
-                .join("session"),
-        )
-        .unwrap();
-        assert_eq!(on_disk, sid);
-    }
-
-    #[test]
-    fn ensure_session_id_returns_existing() {
-        let dir = tempfile::tempdir().unwrap();
-        let journey = dir.path().join(".phronesis").join("journey");
-        std::fs::create_dir_all(&journey).unwrap();
-        std::fs::write(journey.join("session"), "s-already-set").unwrap();
-        let sid = ensure_session_id(dir.path()).unwrap();
-        assert_eq!(sid, "s-already-set");
-    }
 
     #[test]
     fn wrap_emits_documented_envelope() {

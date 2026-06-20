@@ -13,30 +13,13 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use phronesis_mcp::{hook, init, server};
+
 /// ISO-8601 date string for the local clock (YYYY-MM-DD). Uses chrono,
 /// which is already a phronesis-mcp dep (clock_facts).
 fn today_iso() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }
-
-/// Read the active session id from `.phronesis/journey/session`. Falls back
-/// to a date-bucket when the file is missing or empty. Mirrors the
-/// hook-internal `current_sid` so the `journey` CLI sees the same window
-/// view the hook sees.
-fn read_sid(project_root: &std::path::Path) -> String {
-    let path = project_root
-        .join(".phronesis")
-        .join("journey")
-        .join("session");
-    if let Ok(s) = std::fs::read_to_string(&path) {
-        let s = s.trim();
-        if !s.is_empty() {
-            return s.to_string();
-        }
-    }
-    format!("s-{}-fallback", today_iso())
-}
-use phronesis_mcp::{hook, init, server};
 use rmcp::{ServiceExt, transport::stdio};
 
 #[derive(Parser)]
@@ -427,10 +410,9 @@ async fn main() -> anyhow::Result<()> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            // Reuse the hook's sid resolution shape: read .phronesis/journey/session,
-            // fall back to a date bucket. Inlined here because hook::current_sid
-            // is private (and intentionally so — the hook owns its session reads).
-            let sid = read_sid(&root);
+            // Single source of truth for the sid — read-or-create at
+            // `.phronesis/journey/session` (see `journey::current_sid`).
+            let sid = phronesis_mcp::journey::current_sid(&root);
             let rows = match journey_cli::compute(&root, explain.as_deref(), now, &sid).await {
                 Ok(r) => r,
                 Err(e) => {

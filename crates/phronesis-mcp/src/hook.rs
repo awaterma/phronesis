@@ -550,24 +550,6 @@ fn unix_secs_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// Read the active session id from `.phronesis/journey/session`. Falls back
-/// to a date-bucket when the file is missing or empty so journal records
-/// always carry a sid (the `s` window relies on it).
-fn current_sid(project_root: &Path) -> String {
-    let path = project_root
-        .join(".phronesis")
-        .join("journey")
-        .join("session");
-    if let Ok(s) = std::fs::read_to_string(&path) {
-        let s = s.trim();
-        if !s.is_empty() {
-            return s.to_string();
-        }
-    }
-    let ts = unix_secs_now();
-    format!("s-{}-fallback", crate::audit::short_iso_date(ts))
-}
-
 /// Read-increment-write `.phronesis/journey/seq` under flock; return the new
 /// value. The seq drives the `c` (last-N-calls) windows the rules can ask
 /// for, so it must monotonically rise across concurrent hook processes.
@@ -650,7 +632,7 @@ async fn journey_record_post(payload: &HookPayload, tool_name: &str, file_path: 
     let record = journey::journal::JournalRecord {
         v: 1,
         ts: unix_secs_now(),
-        sid: current_sid(&project_root),
+        sid: journey::current_sid(&project_root),
         seq: next_seq(&project_root),
         tool: tool_name.to_string(),
         path: file_path.to_string(),
@@ -729,7 +711,7 @@ async fn assert_journey_facts_into(network: &mut ReteNetwork, project_root: &Pat
             journey::tagger::TaggerConfig::default()
         }
     };
-    let sid = current_sid(project_root);
+    let sid = journey::current_sid(project_root);
     let now = unix_secs_now();
     if let Err(e) =
         journey::derive::assert_facts(network, project_root, rules, &cfg, &sid, now).await

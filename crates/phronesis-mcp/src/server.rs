@@ -1013,12 +1013,7 @@ impl EpistemeMcp {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let sid_path = root.join(".phronesis").join("journey").join("session");
-        let sid = std::fs::read_to_string(&sid_path)
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| format!("s-{}-fallback", chrono::Local::now().format("%Y-%m-%d")));
+        let sid = crate::journey::current_sid(&root);
         let rows = journey_cli::compute(&root, params.explain_rule.as_deref(), now, &sid)
             .await
             .map_err(|e| Self::err(e.to_string()))?;

@@ -74,7 +74,20 @@ pub async fn compute(
 
     let cfg = match journey::load_config(project_root) {
         Ok(c) => c,
-        Err(journey::ConfigError::NotFound(_)) => TaggerConfig::default(),
+        Err(journey::ConfigError::NotFound(_)) => {
+            // Operator (CLI or MCP) explicitly asked for journey output;
+            // a missing config produces empty rows, which is opaque. Nudge
+            // toward the scaffolder and continue with an empty config. The
+            // hook stays silent — it loads journey advisorily, not on
+            // demand. Malformed config still hard-errors via the
+            // pass-through branch below.
+            eprintln!(
+                "phronesis: no .phronesis/journey.json found — run \
+                 `phr-mcp init --packs journey` to scaffold one. \
+                 Continuing with empty config."
+            );
+            TaggerConfig::default()
+        }
         Err(e) => return Err(JourneyCliError::Config(e)),
     };
 
