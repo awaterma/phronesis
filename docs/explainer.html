@@ -1033,6 +1033,29 @@
       file system, not from anything the engine itself is asked to
       remember.
     </p>
+
+    <p style="max-width: var(--measure);">
+      <span class="label label-ink" style="display: block; margin-bottom: 0.4rem;">A note on pure-script rules.</span>
+      One engine refinement is worth naming, because it is what
+      makes the journey-rule shapes in §5 expressible at all. In
+      earlier versions, the alpha-network was built only from rules
+      that had at least one ordinary leaf condition; rules whose
+      <code>when</code> consisted entirely of <code>__script__</code>
+      clauses (the small expression DSL that handles
+      <code>facts_count(…) &gt;= N</code> and
+      <code>facts_count(…) == 0</code>) were silently skipped at
+      alpha-state creation and never reached the agenda. As of
+      <code>phr</code> 0.13.0, <code>update_agenda</code> walks the
+      production set and emits activations for pure-script rules
+      with empty bindings; the script evaluator then runs against
+      whatever facts have been asserted. Mixed rules — one or more
+      leaf conditions plus a script clause — are unaffected; they
+      ride the incremental alpha/beta path as before. The visible
+      consequence is small but load-bearing: the headline
+      auth-churn-without-tests rule (count <em>and</em> absence,
+      both expressed as script) is now a rule the engine can
+      actually fire.
+    </p>
   </section>
 
   <!-- ─── Pull quote between sections ──────────────────────────────── -->
@@ -1341,10 +1364,296 @@
   <!-- ─── Dingbat ─── -->
   <div class="dingbat">⁘ ⁘ ⁘</div>
 
-  <!-- ─── §5 INTEGRATION ───────────────────────────────────────────── -->
-  <section class="chunk" id="integration">
+  <!-- ─── §5 JOURNEY FACTS ─────────────────────────────────────────── -->
+  <section class="chunk" id="journey">
     <div class="section-head">
       <div class="num">§<small>05</small><br>5</div>
+      <h2>Journey facts — <span class="it">what the trajectory remembers.</span></h2>
+    </div>
+
+    <div class="body-grid">
+      <div class="main">
+        <p>
+          The hook surface described so far is point-in-time: a
+          predicate looks at the current diff, the current file's
+          AST, the wall clock. That is enough to catch <em>don't
+          write <code>.unwrap()</code> in src/</em>. It is not enough
+          to catch the patterns that actually hurt long agent runs,
+          which are temporal and cross-call — <em>you have edited
+          the auth module three times this session and never touched
+          its tests</em>, or <em>a destructive SQL command ran in the
+          last five tool calls</em>, or <em>nothing has been built
+          since the public API changed</em>. The first kind of
+          predicate watches a single tool call. The second kind
+          watches a trajectory.
+        </p>
+        <p>
+          The temptation, when you want to watch a trajectory, is to
+          let the network accumulate facts across invocations.
+          Phronesis refuses that move. A working memory that grows
+          across calls reintroduces the exact state-and-drift
+          problem the project exists to kill — its firing would
+          diverge from invocation to invocation, exactly the
+          property the file-system-resident rules are designed to
+          avoid. Journey facts are therefore <em>never</em>
+          accumulated in the network. They are recomputed every
+          invocation, from a durable append-only journal at
+          <code>.phronesis/journey/events.jsonl</code>, over a
+          bounded window of recent records. State lives on disk;
+          decay is the sliding window; firing stays identical at
+          token nine hundred thousand as at token eight. The hook is,
+          and stays, stateless — and yet it can answer questions
+          about what the agent did three calls ago.
+        </p>
+        <p>
+          That single decision answers four otherwise-difficult
+          questions at once. Where does state live — on disk, in a
+          versioned event log, not in RAM. When does a journey fact
+          stop being true — never explicitly; the next invocation
+          recomputes from scratch and the fact is either present or
+          absent for that window. Is firing deterministic — yes,
+          given the journal bytes and the invocation timestamp, the
+          asserted facts are byte-identical across runs. How does it
+          not blow up at repo scale — each call reads only a bounded
+          suffix of the journal, sized to the largest window any
+          loaded rule references.
+        </p>
+      </div>
+      <aside class="margin">
+        <span class="label">Marginalia, v.</span>
+        Journey facts are the project's first cross-call
+        predicates. They earn that capability without giving up the
+        stateless-hook property, by recomputing from a durable log
+        rather than carrying a working memory between invocations.
+        The design constraint and the headline capability are the
+        same sentence.
+      </aside>
+    </div>
+
+    <div class="body-grid" style="margin-top: 1.5rem;">
+      <div class="main">
+        <h3 style="margin-bottom: 0.6rem;">The four pieces.</h3>
+        <p>
+          The journey layer is small. A <strong>journal</strong>
+          (<code>journey/journal.rs</code>) appends one compact
+          record per executed tool call — tool, path, extension,
+          resolved module, tags, an optional subject — with the same
+          flock-serialized write discipline the action log uses. A
+          <strong>tagger</strong> (<code>journey/tagger.rs</code>)
+          stamps each record with project-defined tags by reusing
+          the ordinary predicate engine: <code>journey.json</code>
+          declares taggers whose <code>when</code> clauses look
+          structurally identical to a rule's, and whose effect is
+          <em>attach this tag to this record</em> instead of
+          <em>block</em> or <em>warn</em>. <strong>Derivation</strong>
+          (<code>journey/derive.rs</code>) runs at the head of every
+          pre- and post-check, scans the loaded rules for
+          <code>journey_*</code> conditions, reads exactly enough of
+          the journal tail to cover the windows those rules
+          reference, and asserts the matching aggregator facts into
+          the otherwise-fresh network. A fourth piece — a
+          <strong>checkpoint</strong> for repo-lifetime counters —
+          is deferred to phase 2; today's windows are bounded in
+          calls, time, or session.
+        </p>
+        <p>
+          The aggregator family is five predicates, fixed and
+          project-neutral. <code>journey_occurrence</code> emits one
+          fact per matching record so the existing
+          <code>facts_count(…) &gt;= N</code> and
+          <code>facts_count(…) == 0</code> DSL handles both
+          threshold and absence. <code>journey_count</code> exposes
+          the count as a single bindable fact for reporting.
+          <code>journey_seen</code> is a plain boolean —
+          presence-of-at-least-one over a window.
+          <code>journey_since_ge</code> emits one fact for each
+          <code>k</code> up to the distance since the last matching
+          record, so <em>has it been at least eight calls since the
+          last build</em> is a count threshold. <code>journey_distinct</code>
+          counts unique values of a field — distinct paths edited in
+          a window, for instance. The selector and the window are
+          arguments; the project supplies the tag names; the
+          aggregators stay neutral.
+        </p>
+        <p>
+          The rules these enable are the point of the exercise.
+          <em>You have edited the auth module three times this
+          session</em> is one count threshold. <em>And you have not
+          touched its tests</em> is the same predicate against a
+          different tag, in the same <code>when</code>, joined by
+          ordinary conjunction — composite journey rules are simply
+          rules with more than one journey condition. <em>A
+          SQL/migration edit happened in the last five tool calls</em>
+          is a single <code>journey_seen</code>. <em>Eight calls
+          since the last build</em> is a <code>journey_since_ge</code>.
+          The full JSON for each of these lives in the catalogue;
+          the point here is that the trajectory has become a
+          first-class subject for rules to talk about. (See
+          <a href="./catalogue.html" style="color: var(--accent); text-decoration: none; border-bottom: 1px solid currentColor;">the
+          catalogue</a> for rule bodies and the headline four.)
+        </p>
+        <p>
+          <span class="label label-ink" style="display: block; margin-bottom: 0.4rem;">Selector validation — the silent-typo guard.</span>
+          One small but important property: a rule that references
+          <code>['tests','s']</code> when the project's
+          <code>journey.json</code> defines the tag as <code>test</code>
+          (singular) would otherwise count zero matching records,
+          satisfy any absence clause, and fire on every invocation
+          — exactly the wrong default for an absence-as-zero-count
+          regime. Derivation therefore walks the loaded rules at
+          load time, collects every tag and module selector
+          referenced under a <code>journey_*</code> condition, and
+          rejects the rule if the selector does not appear in
+          <code>journey.json</code>'s taggers or modules. A typo is a
+          load-time error with a named selector, not a rule that
+          silently always-fires.
+        </p>
+      </div>
+      <aside class="margin">
+        <span class="label">Marginalia, vi.</span>
+        Aggregators are computed only for predicates the loaded
+        rules actually reference. A project with no journey rules
+        loaded pays no derivation cost. The discipline matches the
+        rest of the engine — we never do work for a predicate
+        nobody is asking about.
+      </aside>
+    </div>
+  </section>
+
+  <!-- ─── §6 CONFIDENCE SCORING ─────────────────────────────────────── -->
+  <section class="chunk" id="confidence">
+    <div class="section-head">
+      <div class="num">§<small>06</small><br>6</div>
+      <h2>Confidence scoring — <span class="it">on the slow clock.</span></h2>
+    </div>
+
+    <div class="body-grid">
+      <div class="main">
+        <p>
+          A syntactic predicate can ask <em>does this code look like
+          it compiles?</em> It cannot ask <em>did the build
+          succeed?</em> The distinction matters when the rule is
+          there to ground a claim of done. <em>Trace the call chain
+          end-to-end</em> reads well in a warning string. <em>The
+          tests passed and the known-bug test went from red to
+          green</em> reads as evidence. Confidence scoring is the
+          subsystem that watches for evidence and refuses to let a
+          weak claim reach a commit.
+        </p>
+        <p>
+          It helps to think of two clocks. Edits, diffs, ASTs,
+          regex-over-content — the ordinary point-in-time
+          predicates — are the <strong>fast clock</strong>: they
+          tick on every keystroke and every tool call. Compiles and
+          test runs are the <strong>slow clock</strong>: they
+          happen when the agent actually invokes the toolchain, and
+          they produce real output that says something true. The
+          confidence subsystem listens to the slow clock. It does
+          not try to predict whether a build will pass; it watches
+          the build run, parses its output, and ledgers what
+          actually happened.
+        </p>
+        <p>
+          Three grounded signals are enough to ground a claim.
+          <code>compile_ok</code> — the build adapter parsed a
+          successful <code>cargo build</code> or <code>cargo
+          check</code>. <code>test_pass</code> — the test adapter
+          parsed a green <code>cargo test</code> with no failures.
+          <code>bug_caught</code> — a test named in
+          <code>.phronesis/bugs.json</code> as red on the buggy
+          baseline went red-to-green under the current change, with
+          no new regressions alongside. Three signals out of three
+          is high confidence. Two of three is medium. One or zero is
+          low. The bands are discrete on purpose: the rule language
+          counts facts, it does not do arithmetic; the band is what
+          a rule can match against.
+        </p>
+        <p>
+          The gate fires before a commit, not after it. Phronesis
+          installs two opt-in rules in the <code>confidence</code>
+          pack: one pre-check that blocks the commit when fewer than
+          two signals have passed, one that warns at exactly two.
+          Three passes silently — the commit proceeds, the work is
+          presented as done with grounded evidence behind it. The
+          rules live in <code>rules.json</code>; the band is read
+          from <code>signal_pass</code> facts derived from the open
+          work unit's slow-clock history; the known-bug registry
+          lives in <code>.phronesis/bugs.json</code>, tracked in
+          git as project knowledge. (See the catalogue for the
+          gate-rule JSON.)
+        </p>
+      </div>
+      <aside class="margin">
+        <span class="label">Marginalia, vii.</span>
+        The fast clock catches shape; the slow clock catches truth.
+        A rule that fires on every edit can only see what is being
+        written. A rule that fires on a commit can see what the
+        build said about it.
+      </aside>
+    </div>
+
+    <div class="body-grid" style="margin-top: 1.5rem;">
+      <div class="main">
+        <h3 style="margin-bottom: 0.6rem;">The 0.13.0 fold-in.</h3>
+        <p>
+          The confidence subsystem first shipped in 0.12.0 with its
+          own per-subject ledger at
+          <code>.phronesis/outcomes/&lt;subject&gt;.jsonl</code> —
+          a small append-only log with its own flock discipline,
+          dedicated to outcome events. In 0.13.0 it folded into the
+          journey journal. The cargo adapter now stamps the
+          journal record with a <code>subject</code> field and a
+          set of <code>outcome:*</code> tags
+          (<code>outcome:compile_ok</code>, <code>outcome:test_pass</code>,
+          <code>outcome:bug_caught</code>) instead of writing to a
+          parallel ledger. Per-subject reads become a tail-read of
+          the journal filtered by subject — cheap, because outcome
+          traffic is sparse compared to edit traffic. The result is
+          one storage layer, one flock-serialized append path, and
+          one set of invariants to reason about. Two storage
+          surfaces collapsed into one.
+        </p>
+        <p>
+          <span class="label label-ink" style="display: block; margin-bottom: 0.4rem;">An honest limitation.</span>
+          A playtest of the gate against real merge-night traffic
+          surfaced a hole worth naming. The two confidence rules
+          currently trigger on <code>bash_command_matches: "git
+          commit"</code> — the literal substring. That catches the
+          headline case of an agent typing <code>git commit -m
+          "…"</code>, but five of six commit-producing porcelain
+          commands bypass it: <code>git merge</code>, <code>git
+          rebase</code>, <code>git cherry-pick</code>, <code>git
+          revert</code>, and the default-merge form of <code>git
+          pull</code> all produce commits without containing the
+          literal <code>git commit</code>. The invariant the rules
+          mean to enforce — <em>no commit reaches main without
+          grounded validation</em> — is honored for one shape and
+          quietly violated for the rest. The follow-up
+          (<code>SPEC-gate-merge-commits</code>) widens the pattern
+          to a regex over the full set of commit-producing verbs.
+          A first-class <code>produces_commit</code> predicate would
+          be cleaner still, and is the long-term shape; the regex
+          closes the immediate hole.
+        </p>
+      </div>
+      <aside class="margin">
+        <span class="label">Marginalia, viii.</span>
+        The gap was visible only because the gate had been firing
+        on enough real workflow to expose where it didn't. We
+        prefer that mode of finding holes — by the system trying
+        to do its job and missing — to the alternative of finding
+        them through proof.
+      </aside>
+    </div>
+  </section>
+
+  <!-- ─── Dingbat ─── -->
+  <div class="dingbat">⁘ ⁘ ⁘</div>
+
+  <!-- ─── §7 INTEGRATION ───────────────────────────────────────────── -->
+  <section class="chunk" id="integration">
+    <div class="section-head">
+      <div class="num">§<small>07</small><br>7</div>
       <h2>How it slots in — <span class="it">one binary, one rules file.</span></h2>
     </div>
 
@@ -1375,7 +1684,7 @@
         </p>
       </div>
       <aside class="margin">
-        <span class="label">Marginalia, v.</span>
+        <span class="label">Marginalia, ix.</span>
         The <code>init</code> command is the only operation in the
         entire tool that writes files outside the
         <code>.phronesis/</code> directory itself. Everything else
@@ -1438,10 +1747,10 @@ $ <span class="k">phr-mcp</span> wiki-drift           <span class="c"># which AD
 $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold a new ADR page</span></pre>
   </section>
 
-  <!-- ─── §6 CLOSING ───────────────────────────────────────────────── -->
+  <!-- ─── §8 CLOSING ───────────────────────────────────────────────── -->
   <section class="chunk" id="closing" style="border-bottom: none;">
     <div class="section-head">
-      <div class="num">§<small>06</small><br>6</div>
+      <div class="num">§<small>08</small><br>8</div>
       <h2>A closing note — <span class="it">on what rules cannot do.</span></h2>
     </div>
 
@@ -1474,7 +1783,7 @@ $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold
         </p>
       </div>
       <aside class="margin">
-        <span class="label">Marginalia, vi.</span>
+        <span class="label">Marginalia, x.</span>
         We think of rules as durable scaffolding for habits, not as
         a substitute for them. They catch shape, not behavior; the
         rest is still ours to do.
@@ -1542,13 +1851,13 @@ $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold
       <em>JetBrains Mono</em> for code.<br>
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
       with Claude.<br>
-      v 0.11.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
+      v 0.13.2 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
       <a href="./catalogue.html">the catalogue of rules &rarr;</a> &nbsp;&middot;&nbsp;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
       ⁂
-      <small>End · Vol. 0.11.0</small>
+      <small>End · Vol. 0.13.2</small>
     </div>
   </footer>
 
