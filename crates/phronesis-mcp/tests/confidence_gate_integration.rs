@@ -371,6 +371,75 @@ fn gate_fires_on_git_pull_when_default_merge() {
     assert!(stderr.contains("Low confidence"));
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// SPEC-pack-opt-in-facts: the `nudge-verify-before-commit` rule from the
+// `llm` pack self-deactivates when `.phronesis/confidence.json` exists,
+// to avoid double-warning on every commit. See
+// `docs/specs/SPEC-pack-opt-in-facts.md`.
+// ─────────────────────────────────────────────────────────────────────
+
+/// The nudge rule shipped with the `llm` pack, paired with the SPEC's
+/// absence clause. We don't include the gate rules here — the point of
+/// these tests is to drive *only* the nudge and observe whether the
+/// marker fact silences it.
+const NUDGE_RULES: &str = r#"{
+  "rules": [
+    {
+      "id": "nudge-verify-before-commit",
+      "phase": "pre",
+      "priority": 5,
+      "when": [
+        { "new_content_contains": "git commit -m" },
+        { "__script__": "facts_count('confidence_enabled', []) == 0" }
+      ],
+      "then": { "warn": "About to commit. Trace the call chain end-to-end before reporting done." }
+    }
+  ]
+}"#;
+
+fn write_nudge_rules(root: &Path) {
+    std::fs::write(phr_dir(root).join("rules.json"), NUDGE_RULES).unwrap();
+}
+
+/// Bash payload whose content matches `new_content_contains: "git commit -m"`.
+/// The fact extractor scans `tool_input.command` for the pattern; the
+/// nudge then fires unless its absence clause silences it.
+const NUDGE_TRIGGER_PAYLOAD: &str =
+    r#"{"tool_name":"Bash","tool_input":{"command":"git commit -m \"work\""}}"#;
+
+#[test]
+fn nudge_silent_when_confidence_opted_in() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_nudge_rules(dir.path());
+    let (code, stderr) = run_hook("pre-check", NUDGE_TRIGGER_PAYLOAD, dir.path());
+    assert_eq!(
+        code, 0,
+        "with confidence opted in, the nudge must self-deactivate; stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Trace the call chain"),
+        "nudge body must not appear in stderr; got: {stderr}"
+    );
+}
+
+#[test]
+fn nudge_fires_when_confidence_off() {
+    // No confidence.json -> no confidence_enabled fact -> absence clause
+    // is true -> nudge fires (warn, exit 1).
+    let dir = tempfile::tempdir().unwrap();
+    write_nudge_rules(dir.path());
+    let (code, stderr) = run_hook("pre-check", NUDGE_TRIGGER_PAYLOAD, dir.path());
+    assert_eq!(
+        code, 1,
+        "without confidence, the nudge must warn; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("Trace the call chain"),
+        "expected nudge body in stderr; got: {stderr}"
+    );
+}
+
 #[test]
 fn gate_does_not_fire_on_unrelated_git_command() {
     // Sanity: the broadened regex doesn't over-match observational commands.

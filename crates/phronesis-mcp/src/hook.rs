@@ -6,6 +6,7 @@ use serde::Deserialize;
 use thiserror::Error;
 
 use crate::action_log::{self, LogEntry};
+use crate::clock_facts;
 use crate::diff_extract;
 use crate::journey;
 use crate::outcomes;
@@ -128,6 +129,10 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     // Fail-open — never block on a missing or corrupt journal.
     let project_root_pre = security::project_root();
     assert_journey_facts_into(&mut network, &project_root_pre, &rules_for_journey).await;
+
+    // Pack-marker facts (e.g. `confidence_enabled`) — let rules from one
+    // pack self-deactivate when a superseding pack is opted in.
+    assert_pack_marker_facts(&network, &project_root_pre).await;
 
     // Confidence gate: assert the open work unit's grounded signals *before* any
     // command/content facts, so a gate rule's `__script__` count is evaluated
@@ -347,6 +352,10 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     // Journey facts: recomputed every invocation from the durable journal,
     // before update_agenda — fail-open.
     assert_journey_facts_into(&mut network, &project_root_post, &rules_for_journey).await;
+
+    // Pack-marker facts (e.g. `confidence_enabled`) — let rules from one
+    // pack self-deactivate when a superseding pack is opted in.
+    assert_pack_marker_facts(&network, &project_root_post).await;
 
     // Validate the file path is inside the project root before reading.
     // An empty file_path means the hook input didn't include one — skip file read.
@@ -780,6 +789,31 @@ fn sanitize_pattern(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+/// Pack-marker facts shared by `run_pre_check` and `run_post_check`: assert
+/// a zero-arg fact (e.g. `confidence_enabled`) for each pack the project has
+/// opted into. Lets rules from one pack self-deactivate when a superseding
+/// pack is active. See `docs/specs/SPEC-pack-opt-in-facts.md`.
+async fn assert_pack_marker_facts(network: &ReteNetwork, project_root: &Path) {
+    for marker in clock_facts::pack_markers(project_root) {
+        let fact_id = if marker.args.is_empty() {
+            marker.predicate.to_string()
+        } else {
+            format!("{}_{}", marker.predicate, marker.args.join("_"))
+        };
+        if let Err(e) = network
+            .assert_fact(Fact {
+                id: fact_id,
+                predicate: marker.predicate.to_string(),
+                args: marker.args,
+                timestamp: 0,
+            })
+            .await
+        {
+            eprintln!("phronesis: pack marker assertion skipped: {}", e);
+        }
+    }
 }
 
 /// Journey wiring shared by `run_pre_check` and `run_post_check`: derive the

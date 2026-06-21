@@ -1234,7 +1234,8 @@ fn deflection_rules() -> Value {
                 "phase": "pre",
                 "priority": 5,
                 "when": [
-                    {"new_content_contains": "git commit -m"}
+                    {"new_content_contains": "git commit -m"},
+                    {"__script__": "facts_count('confidence_enabled', []) == 0"}
                 ],
                 "then": {"warn": "About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode."}
             },

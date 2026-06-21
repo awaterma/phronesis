@@ -1,4 +1,4 @@
-//! Wall-clock facts asserted at hook time.
+//! Wall-clock and pack-marker facts asserted at hook time.
 //!
 //! Some rules want to fire based on *when* the tool call is happening,
 //! not just *what* it is. The classic example: a commit-timing rule
@@ -11,6 +11,16 @@
 //! once per hook invocation; the resulting facts are evaluated by the
 //! same equality matcher every other predicate uses, so rules can match
 //! on them without any new engine machinery.
+//!
+//! Pack-marker facts piggyback on the same shape (see `pack_markers`):
+//! a zero-arg fact like `confidence_enabled` is asserted iff the project
+//! has opted into the matching pack (`.phronesis/confidence.json`
+//! exists). Rules from other packs can then self-deactivate via
+//! `facts_count('confidence_enabled', []) == 0` — pack-level
+//! supersession without new engine machinery.  See
+//! `docs/specs/SPEC-pack-opt-in-facts.md`.
+
+use std::path::Path;
 
 use chrono::{Datelike, Local, Timelike, Weekday};
 
@@ -33,6 +43,23 @@ pub struct ClockFact {
 pub fn now() -> Vec<ClockFact> {
     let now = Local::now();
     facts_for(now.weekday(), now.hour())
+}
+
+/// Read on-disk state and return pack-marker facts the hook should
+/// assert. Each marker is a zero-arg fact named after the pack it
+/// signals (e.g. `confidence_enabled`). v1 ships one marker; the family
+/// grows with concrete supersession use-cases.
+///
+/// See `docs/specs/SPEC-pack-opt-in-facts.md`.
+pub fn pack_markers(project_root: &Path) -> Vec<ClockFact> {
+    let mut out = Vec::new();
+    if crate::outcomes::enabled(project_root) {
+        out.push(ClockFact {
+            predicate: "confidence_enabled",
+            args: vec![],
+        });
+    }
+    out
 }
 
 fn facts_for(weekday: Weekday, hour: u32) -> Vec<ClockFact> {
@@ -156,6 +183,31 @@ mod tests {
             facts
                 .iter()
                 .any(|f| f.predicate == "hour_local" && f.args == vec!["17"])
+        );
+    }
+
+    #[test]
+    fn pack_markers_empty_without_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let markers = pack_markers(dir.path());
+        assert!(
+            markers.is_empty(),
+            "no confidence.json → no marker facts; got {markers:?}"
+        );
+    }
+
+    #[test]
+    fn pack_markers_asserts_confidence_enabled_when_opt_in_file_exists() {
+        let dir = tempfile::tempdir().unwrap();
+        let phr = dir.path().join(".phronesis");
+        std::fs::create_dir_all(&phr).unwrap();
+        std::fs::write(phr.join("confidence.json"), "{}").unwrap();
+        let markers = pack_markers(dir.path());
+        assert!(
+            markers
+                .iter()
+                .any(|m| m.predicate == "confidence_enabled" && m.args.is_empty()),
+            "expected zero-arg confidence_enabled marker; got {markers:?}"
         );
     }
 
