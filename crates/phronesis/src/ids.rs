@@ -48,7 +48,12 @@ macro_rules! id_newtype {
 
         impl fmt::Display for $name {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str(&self.0)
+                // Use `pad` (not `write_str`) so format specs like `{:<35}`
+                // are honored — width, alignment, fill all flow through.
+                // `write_str` writes the bytes raw and discards the
+                // formatter state; that quietly broke alignment in every
+                // `phr-mcp stats`-style table that contained a `RuleId`.
+                f.pad(&self.0)
             }
         }
 
