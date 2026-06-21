@@ -1162,7 +1162,7 @@ fn confidence_rules() -> Value {
                 "phase": "pre",
                 "priority": 30,
                 "when": [
-                    {"bash_command_matches": "git commit"},
+                    {"bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)"},
                     {"__script__": "facts_count('signal_pass', ['*','*']) <= 1"}
                 ],
                 "then": {"block": "Low confidence — compile/tests/known-bug not all green. Run the build and tests and resolve failing signals before committing."}
@@ -1172,7 +1172,7 @@ fn confidence_rules() -> Value {
                 "phase": "pre",
                 "priority": 29,
                 "when": [
-                    {"bash_command_matches": "git commit"},
+                    {"bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)"},
                     {"__script__": "facts_count('signal_pass', ['*','*']) == 2"}
                 ],
                 "then": {"warn": "Medium confidence — one grounded signal is missing. Review before presenting this as done."}

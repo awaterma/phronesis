@@ -16,7 +16,7 @@ const GATE_RULES: &str = r#"{
       "phase": "pre",
       "priority": 30,
       "when": [
-        { "bash_command_matches": "git commit" },
+        { "bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)" },
         { "__script__": "facts_count('signal_pass', ['*','*']) <= 1" }
       ],
       "then": { "block": "Low confidence — resolve failing signals before committing." }
@@ -26,7 +26,7 @@ const GATE_RULES: &str = r#"{
       "phase": "pre",
       "priority": 29,
       "when": [
-        { "bash_command_matches": "git commit" },
+        { "bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)" },
         { "__script__": "facts_count('signal_pass', ['*','*']) == 2" }
       ],
       "then": { "warn": "Medium confidence — one grounded signal missing." }
@@ -253,4 +253,139 @@ fn commit_settles_the_work_unit() {
         !dir.path().join(".phronesis/outcomes/current").exists(),
         "git commit should settle the open work unit"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// SPEC-gate-merge-commits: gate fires on every commit-producing porcelain
+// command, not just the literal `git commit`. See
+// `docs/specs/SPEC-gate-merge-commits.md`.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Helper: build a Bash pre-tool payload for a given command.
+fn bash_payload(cmd: &str) -> String {
+    serde_json::json!({
+        "tool_name": "Bash",
+        "tool_input": { "command": cmd },
+    })
+    .to_string()
+}
+
+#[test]
+fn gate_fires_on_git_commit_at_low_confidence() {
+    // Sanity: the broadened regex still matches the original `git commit`.
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    let (code, stderr) = run_hook("pre-check", &bash_payload("git commit -m 'x'"), dir.path());
+    assert_eq!(
+        code, 2,
+        "git commit must still block at low; stderr: {stderr}"
+    );
+    assert!(stderr.contains("Low confidence"));
+}
+
+#[test]
+fn gate_fires_on_git_merge_at_low_confidence() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    let (code, stderr) = run_hook(
+        "pre-check",
+        &bash_payload("git merge --no-ff feature-branch"),
+        dir.path(),
+    );
+    assert_eq!(code, 2, "git merge must block at low; stderr: {stderr}");
+    assert!(stderr.contains("Low confidence"));
+}
+
+#[test]
+fn gate_fires_on_git_merge_at_medium_confidence() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    seed_outcomes(
+        dir.path(),
+        "u",
+        &["outcome:compile_ok", "outcome:test_pass"],
+    );
+    let (code, stderr) = run_hook(
+        "pre-check",
+        &bash_payload("git merge --no-ff feature-branch"),
+        dir.path(),
+    );
+    assert_eq!(
+        code, 1,
+        "git merge at 2 signals must warn; stderr: {stderr}"
+    );
+    assert!(stderr.contains("Medium confidence"));
+}
+
+#[test]
+fn gate_fires_on_git_rebase() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    let (code, stderr) = run_hook("pre-check", &bash_payload("git rebase main"), dir.path());
+    assert_eq!(code, 2, "git rebase must block at low; stderr: {stderr}");
+    assert!(stderr.contains("Low confidence"));
+}
+
+#[test]
+fn gate_fires_on_git_cherry_pick() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    let (code, stderr) = run_hook(
+        "pre-check",
+        &bash_payload("git cherry-pick abc123"),
+        dir.path(),
+    );
+    assert_eq!(
+        code, 2,
+        "git cherry-pick must block at low; stderr: {stderr}"
+    );
+    assert!(stderr.contains("Low confidence"));
+}
+
+#[test]
+fn gate_fires_on_git_revert() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    let (code, stderr) = run_hook("pre-check", &bash_payload("git revert HEAD"), dir.path());
+    assert_eq!(code, 2, "git revert must block at low; stderr: {stderr}");
+    assert!(stderr.contains("Low confidence"));
+}
+
+#[test]
+fn gate_fires_on_git_pull_when_default_merge() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    let (code, stderr) = run_hook(
+        "pre-check",
+        &bash_payload("git pull origin main"),
+        dir.path(),
+    );
+    assert_eq!(code, 2, "git pull must block at low; stderr: {stderr}");
+    assert!(stderr.contains("Low confidence"));
+}
+
+#[test]
+fn gate_does_not_fire_on_unrelated_git_command() {
+    // Sanity: the broadened regex doesn't over-match observational commands.
+    // `git status` and `git log` produce no commits; the gate must stay silent
+    // regardless of signal state.
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+    // Zero signals would normally trip the low-confidence rule if the bash
+    // pattern matched.
+    let (code, stderr) = run_hook("pre-check", &bash_payload("git status"), dir.path());
+    assert_eq!(
+        code, 0,
+        "git status must not trip the gate; stderr: {stderr}"
+    );
+    let (code, stderr) = run_hook("pre-check", &bash_payload("git log --oneline"), dir.path());
+    assert_eq!(code, 0, "git log must not trip the gate; stderr: {stderr}");
 }
