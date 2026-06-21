@@ -16,7 +16,7 @@
 //!    session (`s`) window we read up to the hard cap so the whole
 //!    session is visible; rules that name only call/time windows pay only
 //!    for those.
-//! 4. Bucket the suffix and emit the five v1 aggregator families:
+//! 4. Bucket the suffix and emit the v1 aggregator families:
 //!    - `journey_occurrence(selector, window)` — one fact per matching record
 //!    - `journey_count(selector, window, count)` — one fact per (sel, win)
 //!    - `journey_seen(selector, window)` — one fact iff count ≥ 1
@@ -24,6 +24,10 @@
 //!      capped at max k any rule references for that selector
 //!    - `journey_distinct(field, window, count)` — distinct values of `field`
 //!      (v1: `path`) in `window`
+//!    - `journey_filtered_since_ge(target, counted, k)` — ladder up to
+//!      (count of `counted`-matching records appearing *after* the most
+//!      recent `target`-matching record), capped at max k any rule references
+//!      for that `(target, counted)` pair
 //!
 //! No state survives the call. Determinism: given a fixed (journal bytes,
 //! `current_sid`, `now_ts`) the emitted facts are byte-identical across
@@ -125,6 +129,10 @@ pub struct RuleScan {
     /// `(field, window_token)` pairs for `journey_distinct`. Field in v1
     /// is `path`; other fields are accepted in the scan but emit no facts.
     pub distinct_pairs: BTreeSet<(String, String)>,
+    /// For each `(target_selector, counted_selector)` pair any
+    /// `journey_filtered_since_ge` rule references, the maximum `k`
+    /// referenced. The aggregator ladders 1..=min(max_k, count_after_target).
+    pub filtered_since_max_k: BTreeMap<(String, String), u32>,
 }
 
 impl RuleScan {
@@ -320,6 +328,25 @@ fn record_pair(predicate: &str, args: &[String], scan: &mut RuleScan) -> Result<
                 *entry = k;
             }
         }
+        "journey_filtered_since_ge" => {
+            // args: [target_selector, counted_selector, k]
+            if args.len() < 3 {
+                return Ok(());
+            }
+            let target = args[0].clone();
+            let counted = args[1].clone();
+            let k: u32 = match args[2].parse() {
+                Ok(v) => v,
+                Err(_) => return Ok(()),
+            };
+            let entry = scan
+                .filtered_since_max_k
+                .entry((target, counted))
+                .or_insert(0);
+            if k > *entry {
+                *entry = k;
+            }
+        }
         "journey_distinct" => {
             // args: [field, window, (?n)]
             let (field, win) = take_sel_win(args)?;
@@ -376,6 +403,10 @@ pub fn validate_selectors(
     }
     for s in scan.since_max_k.keys() {
         referenced.insert(s.clone());
+    }
+    for (target, counted) in scan.filtered_since_max_k.keys() {
+        referenced.insert(target.clone());
+        referenced.insert(counted.clone());
     }
 
     for selector in &referenced {
@@ -447,8 +478,9 @@ pub async fn assert_facts(
     let needs_session = scan.references_session();
 
     let needs_since = !scan.since_max_k.is_empty();
+    let needs_filtered_since = !scan.filtered_since_max_k.is_empty();
 
-    let read_n = if needs_session || needs_since || max_seconds > 0 {
+    let read_n = if needs_session || needs_since || needs_filtered_since || max_seconds > 0 {
         // session floor / time window / distance-since-last all need an
         // open-ended look-back; let the hard cap bound the cost and let
         // the per-record filter drop the rest.
@@ -466,6 +498,7 @@ pub async fn assert_facts(
     emit_seen(network, &records, &scan, current_sid, now_ts).await;
     emit_since_ge(network, &records, &scan).await;
     emit_distinct(network, &records, &scan, current_sid, now_ts).await;
+    emit_filtered_since_ge(network, &records, &scan).await;
     Ok(())
 }
 
@@ -661,6 +694,40 @@ async fn emit_distinct(
                 timestamp: 0,
             })
             .await;
+    }
+}
+
+/// `journey_filtered_since_ge` — ladder from 1..=min(max_k, count_after_target),
+/// where `count_after_target` is the number of `counted`-matching records that
+/// appear strictly after the most recent `target`-matching record in the
+/// suffix. Emits nothing when:
+///  * the target selector never matches in the suffix, or
+///  * no `counted`-matching records appear after the most recent target,
+///  * `target == counted` (the "self-after-last-self" suffix is always empty).
+///
+/// Shape mirrors `emit_since_ge`; only the inner counting loop swaps "all
+/// records after target" for "records matching counted after target."
+async fn emit_filtered_since_ge(network: &ReteNetwork, records: &[JournalRecord], scan: &RuleScan) {
+    for ((target, counted), max_k) in &scan.filtered_since_max_k {
+        let Some(target_idx) = records.iter().rposition(|r| matches_selector(r, target)) else {
+            continue;
+        };
+        let count = records[target_idx + 1..]
+            .iter()
+            .filter(|r| matches_selector(r, counted))
+            .count() as u32;
+        let upper = (*max_k).min(count);
+        for k in 1..=upper {
+            let id = format!("journey_filtered_since_ge:{}:{}:{}", target, counted, k);
+            let _ = network
+                .assert_fact(Fact {
+                    id,
+                    predicate: "journey_filtered_since_ge".to_string(),
+                    args: vec![target.clone(), counted.clone(), k.to_string()],
+                    timestamp: 0,
+                })
+                .await;
+        }
     }
 }
 

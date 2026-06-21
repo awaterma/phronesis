@@ -317,18 +317,36 @@ async fn undefined_selector_rejected_at_load() {
 #[tokio::test]
 async fn determinism_contract() {
     let dir = tempfile::tempdir().unwrap();
-    for s in 1..=5u64 {
-        journal::append(dir.path(), &rec(s, 1000 + s, "s-now", &["auth"], None)).unwrap();
+    // build at seq=1, then 3 writes — gives the filtered aggregator a
+    // non-empty ladder to chew on alongside the others.
+    journal::append(dir.path(), &rec(1, 1000, "s-now", &["build"], None)).unwrap();
+    for s in 2..=4u64 {
+        journal::append(dir.path(), &rec(s, 1000 + s, "s-now", &["write"], None)).unwrap();
     }
+    // Plus a couple auth records so journey_occurrence has something to do.
+    journal::append(dir.path(), &rec(5, 1005, "s-now", &["auth"], None)).unwrap();
+    journal::append(dir.path(), &rec(6, 1006, "s-now", &["auth"], None)).unwrap();
+    journal::append(dir.path(), &rec(7, 1007, "s-now", &["auth"], None)).unwrap();
+
     let c = cfg(r#"{
         "version":1,
-        "taggers":[{"tag":"auth","when":[]}],
+        "taggers":[
+            {"tag":"auth","when":[]},
+            {"tag":"build","when":[]},
+            {"tag":"write","when":[]}
+        ],
         "modules":[]
     }"#);
-    let rules = vec![rule_with_script(
-        "auth-churn",
-        vec!["facts_count('journey_occurrence', ['auth','s']) >= 3"],
-    )];
+    let rules = vec![
+        rule_with_script(
+            "auth-churn",
+            vec!["facts_count('journey_occurrence', ['auth','s']) >= 3"],
+        ),
+        rule_with_script(
+            "build-stale-filtered",
+            vec!["facts_count('journey_filtered_since_ge', ['build','write','5']) >= 1"],
+        ),
+    ];
     let mut a = ReteNetwork::new();
     let mut b = ReteNetwork::new();
     assert_facts(&mut a, dir.path(), &rules, &c, "s-now", 2_000)
@@ -351,7 +369,168 @@ async fn determinism_contract() {
     };
     let sa = serialize(&a);
     assert!(!sa.is_empty(), "expected some journey_* facts");
+    assert!(
+        sa.contains("journey_filtered_since_ge(build,write,"),
+        "determinism fixture must exercise the filtered aggregator; got:\n{}",
+        sa,
+    );
     assert_eq!(sa, serialize(&b));
+}
+
+// ---------- journey_filtered_since_ge (SPEC-journey-filtered-since) ----------
+
+#[tokio::test]
+async fn journey_filtered_since_ge_counts_writes_since_build() {
+    let dir = tempfile::tempdir().unwrap();
+    // 5 build records, then 3 write records. Distance counted over `write`
+    // since the most recent `build` is 3 → ladder k=1,2,3 only.
+    for s in 1..=5u64 {
+        journal::append(dir.path(), &rec(s, 1000 + s, "s-now", &["build"], None)).unwrap();
+    }
+    for s in 6..=8u64 {
+        journal::append(dir.path(), &rec(s, 1000 + s, "s-now", &["write"], None)).unwrap();
+    }
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[
+            {"tag":"build","when":[]},
+            {"tag":"write","when":[]}
+        ],
+        "modules":[]
+    }"#);
+    // Rule references max_k=5; actual filtered distance is 3.
+    let rules = vec![rule_with_script(
+        "build-stale-filtered",
+        vec!["facts_count('journey_filtered_since_ge', ['build','write','5']) >= 1"],
+    )];
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, dir.path(), &rules, &c, "s-now", 2_000)
+        .await
+        .unwrap();
+    let facts = journey_facts(&net, "journey_filtered_since_ge");
+    let mut ks: Vec<u32> = facts
+        .iter()
+        .filter(|f| {
+            f.args.first().map(String::as_str) == Some("build")
+                && f.args.get(1).map(String::as_str) == Some("write")
+        })
+        .map(|f| f.args[2].parse::<u32>().unwrap())
+        .collect();
+    ks.sort_unstable();
+    assert_eq!(
+        ks,
+        vec![1, 2, 3],
+        "ladder must stop at the real filtered count, not max_k=5"
+    );
+}
+
+#[tokio::test]
+async fn journey_filtered_since_ge_emits_nothing_when_target_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    // Only write records — no build anywhere.
+    for s in 1..=5u64 {
+        journal::append(dir.path(), &rec(s, 1000 + s, "s-now", &["write"], None)).unwrap();
+    }
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[
+            {"tag":"build","when":[]},
+            {"tag":"write","when":[]}
+        ],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "build-stale-filtered",
+        vec!["facts_count('journey_filtered_since_ge', ['build','write','8']) >= 1"],
+    )];
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, dir.path(), &rules, &c, "s-now", 2_000)
+        .await
+        .unwrap();
+    let facts = journey_facts(&net, "journey_filtered_since_ge");
+    assert!(facts.is_empty(), "no target → no facts");
+}
+
+#[tokio::test]
+async fn journey_filtered_since_ge_emits_nothing_when_no_counted_records_after_target() {
+    let dir = tempfile::tempdir().unwrap();
+    // Writes, then a terminal build → "writes after the last build" is zero.
+    for s in 1..=3u64 {
+        journal::append(dir.path(), &rec(s, 1000 + s, "s-now", &["write"], None)).unwrap();
+    }
+    journal::append(dir.path(), &rec(4, 1004, "s-now", &["build"], None)).unwrap();
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[
+            {"tag":"build","when":[]},
+            {"tag":"write","when":[]}
+        ],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "build-stale-filtered",
+        vec!["facts_count('journey_filtered_since_ge', ['build','write','8']) >= 1"],
+    )];
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, dir.path(), &rules, &c, "s-now", 2_000)
+        .await
+        .unwrap();
+    let facts = journey_facts(&net, "journey_filtered_since_ge");
+    assert!(
+        facts.is_empty(),
+        "target is the last record → zero counted after → no facts"
+    );
+}
+
+#[tokio::test]
+async fn journey_filtered_since_ge_with_target_equals_counted_emits_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    for s in 1..=3u64 {
+        journal::append(dir.path(), &rec(s, 1000 + s, "s-now", &["write"], None)).unwrap();
+    }
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[{"tag":"write","when":[]}],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "self-against-self",
+        vec!["facts_count('journey_filtered_since_ge', ['write','write','5']) >= 1"],
+    )];
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, dir.path(), &rules, &c, "s-now", 2_000)
+        .await
+        .unwrap();
+    let facts = journey_facts(&net, "journey_filtered_since_ge");
+    assert!(
+        facts.is_empty(),
+        "after the last write there are zero further writes by definition"
+    );
+}
+
+#[tokio::test]
+async fn journey_filtered_since_ge_undefined_selector_rejected_at_load() {
+    let dir = tempfile::tempdir().unwrap();
+    // `write` is defined; `bogus` is not.
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[
+            {"tag":"build","when":[]},
+            {"tag":"write","when":[]}
+        ],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "bad-counted",
+        vec!["facts_count('journey_filtered_since_ge', ['build','bogus','5']) >= 1"],
+    )];
+    let mut net = ReteNetwork::new();
+    let err = assert_facts(&mut net, dir.path(), &rules, &c, "s-now", 2_000)
+        .await
+        .unwrap_err();
+    let msg = format!("{}", err);
+    assert!(msg.contains("bad-counted"), "missing rule id: {}", msg);
+    assert!(msg.contains("bogus"), "missing selector: {}", msg);
 }
 
 // ---------- Auxiliary coverage (RuleScan + edge cases) ----------
