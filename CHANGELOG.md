@@ -4,6 +4,90 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.14.0] - 2026-06-21
+
+Dogfooding-driven polish. The 0.13.x patch line was driven by playtest bugs
+visible only after install; 0.14.0 closes the four next-deepest friction
+points the same playtests surfaced. Compiled under
+`docs/specs/SPEC-0.14.0-dogfooding-polish.md`.
+
+### Added
+- **`journey_filtered_since_ge(target, counted, k)` aggregator** — the
+  existing `journey_since_ge` counts distance over every record; a long
+  Bash session could trip "8+ tool calls since build" with no writes.
+  The new aggregator emits a k-ladder up to the count of `counted`
+  records appearing after the most recent `target` record. Rules can now
+  express "8 writes since last build" directly:
+  `facts_count('journey_filtered_since_ge', ['build','write','8']) >= 1`
+  with a `write` tagger keying on
+  `change_type=edit|write|multiedit|replace|write_file`. The existing
+  five aggregators are unchanged. See
+  `docs/specs/SPEC-journey-filtered-since.md`.
+- **`confidence_enabled` zero-arg marker fact** — asserted at every hook
+  fire when `.phronesis/confidence.json` exists, mirroring the
+  `clock_facts.rs::business_hours_local` pattern. Lets rules condition
+  on opt-in state via the existing `facts_count('confidence_enabled',
+  []) == 0` absence form. Generalizable: future packs can ship
+  `journey_enabled`, `wiki_present`, etc. using the same shape. See
+  `docs/specs/SPEC-pack-opt-in-facts.md`.
+
+### Changed
+- **Confidence gate broadens to all commit-producing porcelain commands.**
+  `confidence-low-blocks-commit` and `confidence-medium-warns-commit` now
+  match `bash_command_matches: "git
+  (commit|merge|rebase|cherry-pick|revert|pull)"` instead of the literal
+  `"git commit"`. Closes the gate-bypass-by-merge hole surfaced during
+  the journey-facts merge night (5 of 6 commit-producing commands
+  silently bypassed the gate). See `docs/specs/SPEC-gate-merge-commits.md`.
+- **`nudge-verify-before-commit` self-deactivates when confidence is on.**
+  The rule gained a second `when` clause:
+  `{ "__script__": "facts_count('confidence_enabled', []) == 0" }`. The
+  confidence gate enforces the same call-chain-tracing discipline by
+  counting `signal_pass` facts; the nudge was redundant in that mode and
+  was double-warning on every `git commit`. Projects without confidence
+  are unaffected.
+- **`extract_rules` defaults action `warn`, not `block`.** A live
+  invocation added 27 block-action rules to a project rules.json
+  overnight; with any section context set, every pre-check fired 6
+  simultaneous `constraint_violation`s and exited 2 on every tool call.
+  Block is reserved for known-bad code shapes; pattern reminders are
+  advisory. See `docs/specs/SPEC-extract-rules-defaults.md`.
+- **`extract_rules` strips the bracketed metadata prefix** (`[pattern]`,
+  `[anti_pattern]`, `[context]`, `[problem]`) from the user-facing
+  message. Those were extraction-time discriminators leaking into prose.
+
+### Migration
+- Projects that ran `phr-mcp init --packs confidence` before 0.14.0
+  carry the narrow gate pattern in `.phronesis/rules.json`. Either re-run
+  `phr-mcp init --rules-only --force --packs confidence` (rewrites the
+  rule pack with the broadened pattern, backs up to `.bak`) or
+  hand-edit the two `bash_command_matches` clauses.
+- Projects with the old `nudge-verify-before-commit` rule should add the
+  second `when` clause to opt into the supersession. Same
+  `--rules-only --force` flow works.
+- Projects that already invoked `extract_rules` and want to salvage
+  their extracted rules can apply the in-tree recipe in
+  `docs/specs/SPEC-extract-rules-defaults.md` §"Salvage path." A
+  `phr-mcp migrate-extracted-rules` command is deferred to a follow-up
+  PATCH.
+
+### Deferred (intentional, with specs on disk for future work)
+- **`extract_rules`**: per-pattern marker conditions (Problem 3b),
+  structural-rule skip-list (Problem 4a), and the
+  `migrate-extracted-rules` command. The umbrella spec scopes 0.14.0 to
+  the action/prefix defaults; the rest rides a follow-up PATCH.
+- **Subject inheritance across merge commits.** Real design surface; the
+  `SPEC-gate-merge-commits` open question flags it.
+- **Repo-lifetime journey windows (`r`)** — still phase 2 of
+  `SPEC-journey-facts`.
+
+### Notes
+- **Coverage.** Workspace lines at 86.20%+ across the four implementations,
+  up from the post-0.13.x baseline of 85.94%.
+- **`phr` library version unchanged at 0.13.3.** The engine wasn't
+  touched in 0.14.0; only `phr-mcp` bumps. `phr-mcp`'s `phr` dep stays
+  pinned at `0.13.3`.
+
 ## [0.13.2] - 2026-06-20
 
 ### Fixed
@@ -222,6 +306,8 @@ Pre-0.11 history (0.10.0 and earlier) is recorded in the git log and
 `docs/specs/`. Notably, 0.10.0 added wiki-drift, the block-pattern rules, and
 the v2 rule schema.
 
+[0.14.0]: https://github.com/awaterma/phronesis/releases/tag/v0.14.0
+[0.13.3]: https://github.com/awaterma/phronesis/releases/tag/v0.13.3
 [0.13.2]: https://github.com/awaterma/phronesis/releases/tag/v0.13.2
 [0.13.1]: https://github.com/awaterma/phronesis/releases/tag/v0.13.1
 [0.13.0]: https://github.com/awaterma/phronesis/releases/tag/v0.13.0
