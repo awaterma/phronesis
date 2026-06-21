@@ -76,7 +76,7 @@ Just a regular line that should be ignored.
     assert_eq!(rules.len(), 3);
 
     assert_eq!(rules[0].id, "standards-1");
-    assert_eq!(rules[0].actions[0].action_type, "constraint_violation");
+    assert_eq!(rules[0].actions[0].action_type, "constraint_warning");
     assert!(rules[0].actions[0].params[0].contains("using .unwrap()"));
 
     assert_eq!(rules[1].id, "standards-2");
@@ -171,7 +171,8 @@ fn pattern_callout_is_extracted() {
     let rules = extract_rules_from_markdown(md, "test.md");
     assert_eq!(rules.len(), 1);
     let action = &rules[0].actions[0].params[0];
-    assert!(action.contains("[pattern]"), "got: {}", action);
+    // SPEC-extract-rules-defaults: bracketed prefix is stripped at extraction.
+    assert!(!action.contains("[pattern]"), "got: {}", action);
     assert!(action.contains("Use the ? operator"), "got: {}", action);
 }
 
@@ -183,7 +184,7 @@ fn problem_callout_is_extracted() {
     let rules = extract_rules_from_markdown(md, "test.md");
     assert_eq!(rules.len(), 1);
     let action = &rules[0].actions[0].params[0];
-    assert!(action.contains("[problem]"));
+    assert!(!action.contains("[problem]"));
     assert!(action.contains("Using unwrap()"));
 }
 
@@ -204,7 +205,8 @@ More prose.
     assert_eq!(rules.len(), 2);
     assert!(rules[0].actions[0].params[0].contains("Clone to Satisfy"));
     assert!(rules[1].actions[0].params[0].contains("Overusing"));
-    assert!(rules[0].actions[0].params[0].contains("[anti_pattern]"));
+    // SPEC-extract-rules-defaults: bracketed prefix is stripped at extraction.
+    assert!(!rules[0].actions[0].params[0].contains("[anti_pattern]"));
 }
 
 #[test]
@@ -306,11 +308,98 @@ fn extraction_against_real_patterns_guide() {
             rules.iter().any(|r| r.id.contains("anti-patterns")),
             "Expected at least one anti-pattern rule"
         );
+        // SPEC-extract-rules-defaults: no rule message carries a bracketed
+        // extraction-time discriminator in the user-facing string.
         assert!(
             rules
                 .iter()
-                .any(|r| r.actions[0].params[0].contains("[pattern]")),
-            "Expected at least one [pattern] rule"
+                .all(|r| !r.actions[0].params[0].starts_with("[pattern]")
+                    && !r.actions[0].params[0].starts_with("[anti_pattern]")
+                    && !r.actions[0].params[0].starts_with("[problem]")
+                    && !r.actions[0].params[0].starts_with("[context]")),
+            "No extracted rule should leak a bracketed metadata prefix",
         );
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// SPEC-extract-rules-defaults — scoped slice (0.14.0)
+// ──────────────────────────────────────────────────────────────────────
+
+#[test]
+fn extract_rules_defaults_action_to_warn() {
+    let md = "\
+# Coding Standards
+
+- Avoid using .unwrap() in production code paths
+
+## Idioms
+
+### 1. Use ? for Error Propagation
+
+**Pattern**: Use the ? operator instead of manual error handling.
+
+## Anti-Patterns
+
+**Problem**: Using unwrap() everywhere instead of proper error handling.
+
+### 1. Clone to Satisfy Borrow Checker
+
+Some prose.
+";
+    let rules = extract_rules_from_markdown(md, "guide.md");
+    assert!(
+        rules.len() >= 4,
+        "expected at least 4 rules, got {}",
+        rules.len()
+    );
+    for r in &rules {
+        assert_eq!(
+            r.actions[0].action_type, "constraint_warning",
+            "rule {} had action_type {}, expected constraint_warning (warn)",
+            r.id, r.actions[0].action_type,
+        );
+    }
+}
+
+#[test]
+fn extract_rules_strips_bracketed_prefix() {
+    let md = "\
+## Idioms
+
+### 1. Use ? for Error Propagation
+
+**Pattern**: Use the ? operator instead of manual error handling.
+
+**Use Case**: Complex object construction with optional parameters.
+
+## Anti-Patterns
+
+**Problem**: Using unwrap() everywhere instead of proper error handling.
+
+### 1. Clone to Satisfy Borrow Checker
+
+Some prose.
+";
+    let rules = extract_rules_from_markdown(md, "guide.md");
+    assert!(!rules.is_empty(), "expected some extracted rules");
+    for r in &rules {
+        let msg = &r.actions[0].params[0];
+        for tag in ["[pattern]", "[anti_pattern]", "[context]", "[problem]"] {
+            assert!(
+                !msg.starts_with(tag),
+                "rule {} message leaked prefix {}: {}",
+                r.id,
+                tag,
+                msg,
+            );
+            assert!(
+                !msg.contains(tag),
+                "rule {} message contains bracketed tag {}: {}",
+                r.id,
+                tag,
+                msg,
+            );
+        }
     }
 }

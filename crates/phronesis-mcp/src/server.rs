@@ -1173,7 +1173,7 @@ fn make_rule(
     idx: usize,
     source_file: &str,
     section: Option<&str>,
-    kind: &str,
+    _kind: &str,
     text: &str,
 ) -> Rule {
     let id = match section {
@@ -1184,6 +1184,13 @@ fn make_rule(
     if let Some(s) = section {
         condition_args.push(s.to_string());
     }
+    // SPEC-extract-rules-defaults (scoped slice for 0.14.0):
+    // - Default action is `warn` (constraint_warning), not `block`. Block was
+    //   too sharp for advisory pattern reminders — every pre-check fired every
+    //   rule in a section context simultaneously, blocking the model.
+    // - The bracketed `[<kind>]` prefix is stripped from the user-facing
+    //   message; it was an extraction-time discriminator that leaked into
+    //   the sentence the model reads at hook time.
     Rule {
         id,
         priority: 5,
@@ -1193,8 +1200,8 @@ fn make_rule(
             script: None,
         }],
         actions: vec![Action {
-            action_type: "constraint_violation".to_string(),
-            params: vec![format!("[{}] {}", kind, text)],
+            action_type: "constraint_warning".to_string(),
+            params: vec![text.to_string()],
         }],
     }
 }

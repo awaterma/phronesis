@@ -119,7 +119,6 @@ Feature: Markdown Rules Extraction
       """
     When I extract rules from the document "idioms.md"
     Then 1 rule should be extracted
-    And the extracted rule action text contains "[pattern]"
     And the extracted rule action text contains "Use the ? operator"
 
   Scenario: Problem callouts produce anti-pattern rules
@@ -131,7 +130,7 @@ Feature: Markdown Rules Extraction
       """
     When I extract rules from the document "antipatterns.md"
     Then 1 rule should be extracted
-    And the extracted rule action text contains "[problem]"
+    And the extracted rule action text contains "Using unwrap()"
 
   Scenario: Anti-Patterns section subsections become avoid-rules
     Given a markdown document containing
