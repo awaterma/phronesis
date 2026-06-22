@@ -29,6 +29,7 @@ Beyond the syntactic rule packs, two grounded subsystems extend enforcement past
 
 Rendered on GitHub Pages: **[awaterma.github.io/phronesis](https://awaterma.github.io/phronesis/)**
 
+- [**Loop-Based Agent Programming**](docs/loop-programming-guide.md) — A guide to governing the iterative propose/act/observe loop so it doesn't drift across long sessions.
 - [**The Explainer**](https://awaterma.github.io/phronesis/explainer.html) — A long-form technical essay on the engine, the RETE algorithm, and the design intent. ([source](docs/explainer.html))
 - [**The Catalogue**](https://awaterma.github.io/phronesis/catalogue.html) — A visual reference of starter rules (Rust, LLM behavior, security) with rationale and examples. ([source](docs/catalogue.html))
 - [**Command Reference**](crates/phronesis-mcp/CLAUDE.md) — The full CLI surface and hook wiring details.
