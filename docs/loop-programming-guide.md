@@ -345,49 +345,52 @@ code:
 
 ```
 Rule                                 Blocked  Warned  Last fired
-build-staleness                            0     125  1d ago
-warn-rust-function-param-count-high        0     106  1d ago
-nudge-verify-before-commit                 0      53  1d ago
-build-staleness#or0                        0      23  21h ago
-confidence-medium-warns-commit             0      19  1d ago
-warn-cargo-build-without-workspace         0      14  1d ago
-confidence-low-blocks-commit              11       0  1d ago
-build-staleness#or1                        0       4  21h ago
-enforce-no-result-string-error             2       0  2d ago
-warn-clone-heavy                           0       2  2d ago
-llm-warn-git-add-all                       0       1  2d ago
+build-staleness                            0     125  2d ago
+warn-rust-function-param-count-high        0     115  1h ago
+nudge-verify-before-commit                 0      57  1m ago
+build-staleness#or0                        0      44  1h ago
+confidence-medium-warns-commit             0      22  1m ago
+warn-cargo-build-without-workspace         0      18  1h ago
+confidence-low-blocks-commit              12       0  3m ago
+build-staleness#or1                        0       5  1h ago
+enforce-no-result-string-error             2       0  3d ago
+warn-clone-heavy                           0       2  3d ago
+llm-warn-git-add-all                       0       1  3d ago
 
-Total: 13 blocked, 347 warned across 11 rules (window: 1w)
+Total: 14 blocked, 389 warned across 11 rules (window: 1w)
 ```
 
 Three things to read from that table:
 
 1. **`build-staleness` is the workhorse** (125 warns). The single tagger in
    §4 is doing real work — the loop genuinely does forget to rebuild.
-2. **`confidence-low-blocks-commit` actually blocked 11 commits.** Layer 3 is
-   not theoretical; it intercepted closure 11 times this week alone.
+2. **`confidence-low-blocks-commit` actually blocked 12 commits.** Layer 3 is
+   not theoretical; it intercepted closure 12 times this week alone — the
+   most recent of those, three minutes before this capture, was the commit
+   that landed this very guide (see §8).
 3. The `#or0..#or4` siblings under `build-staleness` are the per-branch fire
    counts for the `or` clause from §5 — useful when debugging which arm of a
    multi-branch rule is doing the matching.
 
-**`phr-mcp confidence`** — current band and grounded signals:
+**`phr-mcp confidence`** — current band and grounded signals. Three real
+captures from this session, in temporal order:
 
 ```
-$ phr-mcp confidence --json
-{
-  "band": "low",
-  "signals": [
-    "compile"
-  ],
-  "subject": "unit-1782061471211714000"
-}
+$ phr-mcp confidence --json   # build was stale; commit attempt would block
+{ "band": "low",    "signals": ["compile"],          "subject": "unit-…" }
+
+$ phr-mcp confidence --json   # after cargo check + cargo test refreshed signals
+{ "band": "medium", "signals": ["compile", "tests"], "subject": "unit-…" }
+
+$ phr-mcp confidence --json   # after the commit settled the unit
+{ "subject": null }
 ```
 
-That's the *real* state of this repo right now. There's a pending Cargo.toml
-modification that breaks compile, so the confidence band has dropped to `low`,
-and `confidence-low-blocks-commit` will refuse to let me commit until it goes
-back to green. The signal isn't a heuristic vibe — it's the actual exit status
-of the last `cargo check`, persisted to `.phronesis/outcomes/`.
+The signal isn't a heuristic vibe — it's the actual exit status of the last
+`cargo check` and the test summary line from the last `cargo test`, captured
+by the post-check hook and persisted to `.phronesis/outcomes/`. A `git commit`
+both settles the open work unit (subject goes `null` between units) and
+opens the next one on the next tool call.
 
 **`phr-mcp journey`** — what journey facts the engine *would* assert against
 the current journal, before any rule fires:
@@ -508,29 +511,42 @@ more." `warn-rust-function-param-count-high` chimed in 106 times on the
 syntactic side, but the *temporal* warning was the one preventing late-loop
 collapse.
 
-**Layer 3 (closure)** intercepted closure 11 separate times.
+**Layer 3 (closure)** intercepted closure 12 separate times.
 `confidence-low-blocks-commit` blocked `git commit` because the
 build-or-test signal in `.phronesis/outcomes/` was red. The companion
-`confidence-medium-warns-commit` warned 19 more times — yellow band, "commit
+`confidence-medium-warns-commit` warned 22 more times — yellow band, "commit
 if you mean to, but the signal is unstable." Across the same window
-`nudge-verify-before-commit` fired 53 times reminding the loop to actually
+`nudge-verify-before-commit` fired 57 times reminding the loop to actually
 run the verification before reaching for the commit verb.
 
-The current state is the cleanest illustration. As of this write,
-`phr-mcp confidence --json` reports:
+The cleanest illustration is the most recent one of those 12 blocks, three
+minutes before the stats capture above: **the commit that landed this very
+guide.** The loop tried `git commit` with a stale red compile signal in
+`.phronesis/outcomes/`, and `confidence-low-blocks-commit` refused:
 
-```json
-{ "band": "low", "signals": ["compile"], "subject": "unit-1782061471211714000" }
+```
+[phr-mcp pre-check]: phronesis: BLOCKED — Low confidence — compile/tests/
+known-bug not all green. Run the build and tests and resolve failing signals
+before committing.
 ```
 
-A pending `Cargo.toml` change broke compile. If the loop tried to commit
-right now, `confidence-low-blocks-commit` would refuse — not because of a
-heuristic, not because of a `CLAUDE.md` paragraph that might have been
-compacted away, but because the recorded exit status of the last `cargo
-check` says the tree is red. The block fires from disk, from outside the
-context window, identically at turn 12 as it would at turn 1,200.
+The agent (running this session) refreshed the signals with `cargo check
+--workspace` and `cargo test -p phronesis-mcp`, which stamped
+`outcome:compile_ok` and `outcome:test_pass` against the open subject. The
+band rose to `medium`, the block fell back to a warn, and the commit landed:
 
-That is the entire premise of the guide in one captured moment.
+```
+$ git log --oneline -1
+5f5e84c docs(loop-guide): rewrite with real captures from this repo
+```
+
+None of this fired from a `CLAUDE.md` paragraph that might have been
+compacted away. It fired from disk, from outside the context window, against
+the recorded exit status of the last `cargo check`. The same mechanism would
+fire identically at turn 12 or at turn 1,200.
+
+That is the entire premise of the guide, captured live — the guide demonstrates
+itself.
 
 ---
 
