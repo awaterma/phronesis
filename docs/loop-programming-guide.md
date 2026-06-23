@@ -16,13 +16,10 @@ and have `phr-mcp` installed. For the full CLI surface, see the
 The agentic loop is simple to describe and hard to keep honest:
 
 ```
-   ┌────────────────────────────────────────────┐
-   │                                              │
-   ▼                                              │
- propose an action ──► tool runs ──► observe result
-   (Edit, Bash, …)                                │
-   │                                              │
-   └──────────────── next turn ───────────────────┘
+   ┌── propose ──► tool runs ──► observe ──┐
+   │   (Edit, Bash…)                       │
+   │                                       │
+   └────────── next turn ◄─────────────────┘
 ```
 
 Every turn appends to the context window: the diff you wrote, the compiler
@@ -30,7 +27,8 @@ output, the test log, the conversation. Your project guidance — `CLAUDE.md`,
 the architectural decisions, the "always run the build before claiming done"
 rule — is read carefully at the *start* of the loop and then steadily buried.
 By iteration two hundred, the directive you most need was last seen clearly
-around token eight hundred, and auto-compaction may have dropped it entirely.
+hundreds of thousands of tokens ago, and auto-compaction may have dropped it
+entirely.
 
 This is **contextual drift**, and it is structural: the longer and more
 productive the loop, the worse it gets. You cannot fix it by writing a better
@@ -99,8 +97,8 @@ them into the same network your syntactic rules use.
 The crucial property: journey facts are **never accumulated in memory**. They
 are recomputed from the durable journal every call, over the window your rules
 actually ask for. So they survive compaction, stay deterministic, and "decay"
-for free — a `changed_auth_3x` condition is true on the call where the window
-holds three auth edits and simply isn't asserted once the window slides past
+for free — a `journey_occurrence` count of 3 holds while the window covers
+three auth edits, and quietly drops to 2 once the window slides past one of
 them. (Full design: [SPEC-journey-facts](specs/SPEC-journey-facts.md).)
 
 Because a `pre-check` runs *before* the current call is journaled, a journey
@@ -113,7 +111,7 @@ rule can **block the current action based on the trajectory that led to it** —
 A loop's most dangerous moment is when it decides it's *done*. The model is
 optimistic; the build may be red. The `confidence` pack gates `git commit` on
 **grounded signals** — actual build, test, and known-bug outcomes read from a
-per-toolchain adapter (cargo first) — not on three syntactic checks:
+per-toolchain adapter (cargo first) — not on syntactic proxies:
 
 - **low** confidence → blocks the commit
 - **medium** → warns
@@ -146,6 +144,19 @@ loop-based work. `init` is idempotent and only adds its own entries — existing
 permissions, hooks, and gitignore lines are preserved. After running it, restart
 Claude Code so it picks up the hooks and the MCP server.
 
+You can sanity-check the install at any time:
+
+```sh
+$ phr-mcp --version
+phr-mcp 0.14.0
+```
+
+Everything in the rest of this guide is drawn from the actual state of this
+repository at the time of writing — the configs, rules, stats, and confidence
+band shown below are what `phr-mcp` reports on this machine, not synthetic
+examples. The point is that you can run the same commands against your own
+project and see equivalent output.
+
 ---
 
 ## 4. Defining your loop's risk surface
@@ -156,28 +167,58 @@ engine is domain-neutral. Instead, *you* define your loop's risk surface in
 rules already use. A **tagger** is a mini-rule whose effect is "stamp this tag
 on the journal record" instead of "block."
 
+The minimum useful surface is one tag. Here is the actual `journey.json` from
+this repository — it is exactly what the `journey` pack ships:
+
 ```json
 {
   "version": 1,
   "taggers": [
+    { "tag": "build", "when": [ { "bash_command_matches": "cargo (build|check|test)" } ] }
+  ],
+  "modules": []
+}
+```
+
+That single tag is enough to power the build-staleness rule in §5, which on
+this repository fired **125 times in the last 7 days** — by far the most active
+warning. Most loop pathologies you'll hit early are *temporal* (you forgot to
+rebuild) rather than *cross-module* (you touched auth without tests). Start
+there.
+
+Once a tag earns its keep, grow the surface. Plausible next additions for a
+Rust project look like this:
+
+```json
+{
+  "taggers": [
     { "tag": "build", "when": [ { "bash_command_matches": "cargo (build|check|test)" } ] },
-    { "tag": "auth",  "when": [ { "file_path_matches": "src/auth/" } ] },
     { "tag": "tests", "when": [ { "file_path_matches": "tests/" } ] },
     { "tag": "sql",   "when": [ { "or": [
-                                   { "new_content_contains": "INSERT INTO" },
-                                   { "new_content_contains": "DELETE FROM" },
-                                   { "file_path_matches": "migrations/" } ] } ] }
+                                    { "new_content_contains": "INSERT INTO" },
+                                    { "new_content_contains": "DELETE FROM" },
+                                    { "file_path_matches": "migrations/" } ] } ] }
   ],
   "modules": [
-    { "name": "auth", "paths": [ "src/auth/**" ] }
+    { "name": "engine", "paths": [ "crates/phronesis-mcp/src/engine/**" ] }
   ]
 }
 ```
 
 Pick the handful of surfaces where churn or absence actually hurts in *your*
 loop: the module you keep re-touching, the test directory you keep forgetting,
-the build command, the destructive operations. Start small — you can add taggers
-as you learn where the loop goes wrong.
+the destructive operations. Adding a tag costs nothing until a rule references
+it — the derivation pass only computes aggregates the loaded rules consume.
+
+> **Selector validation is your typo guard.** A rule that references a tag
+> your `journey.json` doesn't define is **rejected** — the next pre-check
+> exits non-zero with `phronesis: BLOCKED — rule \`<id>\` references
+> undefined selector \`<sel>\` — not in journey.json taggers or modules`,
+> naming both the offending rule and the missing tag. This is safe by
+> default: the dangerous case (absence rules of the form `== 0`) would
+> otherwise fire constantly when the tag is missing, so rejecting at config
+> time keeps that failure mode out of the loop entirely. Wire the tagger up
+> first, then add the rule that depends on it.
 
 ---
 
@@ -204,7 +245,9 @@ current session.
 ### The headline four
 
 These are the patterns worth starting with — each maps to a recognizable
-loop failure mode.
+loop failure mode. Only the fourth (`build`) works with the minimum
+`journey.json` from §4; the `auth`, `tests`, and `sql` selectors require the
+expanded taggers from the same section.
 
 **Auth churn (count over a session):**
 
@@ -246,19 +289,43 @@ loop failure mode.
 
 **Build staleness (distance-since-last — the classic loop pathology):**
 
+This is the rule that actually ships in this repository. It's worth showing in
+full because the production version is more nuanced than the textbook form
+above:
+
 ```json
 {
   "id": "build-staleness",
   "phase": "pre",
-  "when": [ { "__script__": "facts_count('journey_since_ge', ['build','8']) >= 1" } ],
+  "priority": 5,
+  "when": [
+    { "__script__": "facts_count('journey_since_ge', ['build','8']) >= 1" },
+    { "or": [
+        { "change_type": "edit" },
+        { "change_type": "write" },
+        { "change_type": "multiedit" },
+        { "change_type": "replace" },
+        { "change_type": "write_file" }
+    ] }
+  ],
   "then": { "warn": "8+ tool calls since the last build/test. Run the build before reporting done." }
 }
 ```
 
-> **Selector validation is your typo guard.** A rule referencing a tag the
-> project's `journey.json` doesn't define is **rejected at load time**, not
-> silently treated as "zero occurrences" (which would make an `== 0` absence
-> rule fire constantly). Keep your rule selectors and tagger names in sync.
+The trajectory clause (`journey_since_ge`) is only half the rule. Without the
+`change_type` filter on the current call, the warning would fire on every Read,
+Grep, and idle Bash call after the eighth tool call since the last build — the
+agent would be drowning in noise and would learn to ignore it. Restricting to
+edit-shaped tool calls means the warning fires *when it can act on it*:
+"you're about to write more code without rebuilding."
+
+This is the general shape of a good journey rule:
+
+> `<trajectory condition>` **and** `<the current action this trajectory matters
+> for>`.
+
+The trajectory tells you the loop is in a precarious state; the current-call
+clause tells you *this* is the call where intervention helps.
 
 > **Threshold rules fire once per session.** Pure-script rules dedupe on rule
 > id, which is the right semantics for "≥3 occurrences" — you get one warning
@@ -269,17 +336,84 @@ loop failure mode.
 ## 6. Watching the loop
 
 Phronesis gives you read-only surfaces to see what the loop is doing and tune
-your rules:
+your rules. The outputs below are real captures from this repository at the
+time of writing.
 
-```sh
-phr-mcp journey                    # what journey facts assert right now (live trajectory)
-phr-mcp journey --explain <rule>   # which journey facts a rule depends on + current values
-phr-mcp confidence                 # current confidence band + grounded signals
-phr-mcp stats                      # per-rule blocked/warned counts, last-fired time
-phr-mcp stats --since 7d
-phr-mcp audit                      # whole-tree sweep (the hook only sees diffs)
-phr-mcp audit --fail-on block      # CI gate: exit 1 on any blocked violation
-phr-mcp trend                      # is debt going up or down across the loop's lifetime?
+**`phr-mcp stats --since 7d`** — per-rule activity over the last week. This is
+where you discover which rules are pulling their weight and which are dead
+code:
+
+```
+Rule                                 Blocked  Warned  Last fired
+build-staleness                            0     125  1d ago
+warn-rust-function-param-count-high        0     106  1d ago
+nudge-verify-before-commit                 0      53  1d ago
+build-staleness#or0                        0      23  21h ago
+confidence-medium-warns-commit             0      19  1d ago
+warn-cargo-build-without-workspace         0      14  1d ago
+confidence-low-blocks-commit              11       0  1d ago
+build-staleness#or1                        0       4  21h ago
+enforce-no-result-string-error             2       0  2d ago
+warn-clone-heavy                           0       2  2d ago
+llm-warn-git-add-all                       0       1  2d ago
+
+Total: 13 blocked, 347 warned across 11 rules (window: 1w)
+```
+
+Three things to read from that table:
+
+1. **`build-staleness` is the workhorse** (125 warns). The single tagger in
+   §4 is doing real work — the loop genuinely does forget to rebuild.
+2. **`confidence-low-blocks-commit` actually blocked 11 commits.** Layer 3 is
+   not theoretical; it intercepted closure 11 times this week alone.
+3. The `#or0..#or4` siblings under `build-staleness` are the per-branch fire
+   counts for the `or` clause from §5 — useful when debugging which arm of a
+   multi-branch rule is doing the matching.
+
+**`phr-mcp confidence`** — current band and grounded signals:
+
+```
+$ phr-mcp confidence --json
+{
+  "band": "low",
+  "signals": [
+    "compile"
+  ],
+  "subject": "unit-1782061471211714000"
+}
+```
+
+That's the *real* state of this repo right now. There's a pending Cargo.toml
+modification that breaks compile, so the confidence band has dropped to `low`,
+and `confidence-low-blocks-commit` will refuse to let me commit until it goes
+back to green. The signal isn't a heuristic vibe — it's the actual exit status
+of the last `cargo check`, persisted to `.phronesis/outcomes/`.
+
+**`phr-mcp journey`** — what journey facts the engine *would* assert against
+the current journal, before any rule fires:
+
+```
+PREDICATE         ARGS       RULES
+journey_since_ge  build | 1  build-staleness#or0..or4
+journey_since_ge  build | 2  build-staleness#or0..or4
+…
+journey_since_ge  build | 8  build-staleness#or0..or4
+```
+
+This is the "why did this fire" view. Add `--explain <rule-id>` to filter to a
+specific rule's dependencies.
+
+**`phr-mcp audit`** — whole-tree sweep (the hook only sees per-call diffs).
+**`phr-mcp audit --fail-on block`** turns it into a CI gate.
+
+**`phr-mcp trend`** — debt-over-time, diffing successive audit snapshots:
+
+```
+Rule                                 2026-06-20  Δ
+audit-rust-let-binding-count-high            45  0 ·
+audit-rust-let-mut-count-high                29  0 ·
+warn-rust-function-param-count-high          16  0 ·
+…
 ```
 
 `get_journey`, `get_confidence`, and the other MCP tools expose the same views
@@ -293,13 +427,120 @@ shrank.
 
 ---
 
-## 7. Inner loop vs. outer loop
+## 7. Participatory governance: the loop helps evolve its own rules
+
+So far the loop has been a *subject* of governance — rules constrain it from
+outside. But the same loop is also the cheapest place to *discover* new rules:
+it has live evidence of where it slips, where existing rules over-fire, and
+where guidance lives as prose that nobody can enforce.
+
+Phronesis exposes three drift surfaces that close this feedback loop:
+
+- **`phr-mcp claude-md-drift`** — bullets in `CLAUDE.md` that no current rule
+  covers. Candidates for porting to a rule, or for explicitly marking
+  "non-lintable by design."
+- **`phr-mcp memory-drift`** — entries in the agent's auto-memory store that
+  have no matching rule or `durable.md` paragraph. Actionable memories
+  (named commands, named tool calls) should become rules; ambient ones
+  (shared prose) belong in `durable.md`.
+- **`phr-mcp wiki-drift`** — ADR-style decisions under `.phronesis/wiki/decisions/`
+  that no rule enforces. Decisions with explicit `enforces: [rule-id]`
+  frontmatter resolve deterministically; others fall through to a token-overlap
+  fallback.
+
+A snippet of real output from `wiki-drift` on this repo:
+
+```
+Decision                      Bucket          Match
+journey-derivation-scaling    uncovered       (no match)
+no-panic-in-production        covered         → rule enforce-no-todo-in-src
+no-llm-deflection             covered         → rule enforce-no-pre-existing-issue
+borrow-ergonomic-apis         covered         → rule warn-rust-public-fn-takes-string-ref
+…
+```
+
+The "uncovered" rows are the actionable signal: each one is a design decision
+that lives only as prose, with no enforcement teeth. Some of those *should*
+become rules; others are inherently non-lintable and that's fine — but the
+list is concrete instead of speculative.
+
+When the loop hits a real moment of friction or insight, it can participate in
+closing the gap:
+
+1. **Remember → decide → enforce.** When the human says "remember X" or "make a
+   rule for X", check the drift tools first, then scaffold a decision with
+   `phr-mcp decision new <slug>`. Fill in Context / Decision / Enforcement /
+   Consequences. If the decision is mechanically enforceable, propose a rule in
+   `.phronesis/rules.json` and wire `enforces: [rule-id]` into the decision's
+   frontmatter so the next `wiki-drift` run picks it up as covered.
+2. **Friction-driven proposals.** When a rule blocks the loop three or more
+   times in the same session for what looks like a legitimate pattern, pause:
+   either the rule's scope is too broad (propose a narrower `file_path_matches`
+   or an exclusion) or the loop is doing something it shouldn't (adjust the
+   approach, don't weaken the rule).
+3. **Cross-session knowledge transfer.** A discovery that warrants permanence
+   — a bug pattern, a rollout lesson — becomes a decision page. ADRs travel
+   with the repo and outlive any one session's context window.
+
+The bidirectionality is the point: the rules govern the loop *and* the loop
+proposes new rules, with the human ratifying. Drift surfaces are how that
+feedback channel stays in sync.
+
+---
+
+## 8. A worked example: this repository, last week
+
+Pull the trail from §6 together with a concrete narrative. Everything below
+is what `phr-mcp` actually reports about this repository over the last 7 days
+— there is no hypothetical.
+
+**Layer 1 (per-iteration)** kept syntactic discipline cheap and quiet. Two
+`enforce-no-result-string-error` blocks intercepted `Result<_, String>`
+returns before they landed; one `llm-warn-git-add-all` nudge caught a
+`git add -A`; a handful of `warn-clone-heavy` and `warn-dbg-in-src` warnings
+flagged small slips on the way past.
+
+**Layer 2 (trajectory)** was, by volume, the dominant voice in the loop.
+`build-staleness` fired **125 times** — every time the trajectory accumulated
+eight tool calls without a `cargo build|check|test`, and the *current* call
+was an edit. Each fire was a quiet course-correct: "rebuild before you write
+more." `warn-rust-function-param-count-high` chimed in 106 times on the
+syntactic side, but the *temporal* warning was the one preventing late-loop
+collapse.
+
+**Layer 3 (closure)** intercepted closure 11 separate times.
+`confidence-low-blocks-commit` blocked `git commit` because the
+build-or-test signal in `.phronesis/outcomes/` was red. The companion
+`confidence-medium-warns-commit` warned 19 more times — yellow band, "commit
+if you mean to, but the signal is unstable." Across the same window
+`nudge-verify-before-commit` fired 53 times reminding the loop to actually
+run the verification before reaching for the commit verb.
+
+The current state is the cleanest illustration. As of this write,
+`phr-mcp confidence --json` reports:
+
+```json
+{ "band": "low", "signals": ["compile"], "subject": "unit-1782061471211714000" }
+```
+
+A pending `Cargo.toml` change broke compile. If the loop tried to commit
+right now, `confidence-low-blocks-commit` would refuse — not because of a
+heuristic, not because of a `CLAUDE.md` paragraph that might have been
+compacted away, but because the recorded exit status of the last `cargo
+check` says the tree is red. The block fires from disk, from outside the
+context window, identically at turn 12 as it would at turn 1,200.
+
+That is the entire premise of the guide in one captured moment.
+
+---
+
+## 9. Inner loop vs. outer loop
 
 "Loop-based programming" has two meanings, and phronesis serves both:
 
-- **The inner agentic loop** — the per-turn propose/act/observe cycle described
-  throughout this guide. This is phronesis's home turf: per-call hooks,
-  trajectory-aware journey rules, confidence-gated closure.
+- **The inner agentic loop** — the per-turn propose/act/observe cycle this
+  guide has been describing throughout. This is phronesis's home turf: per-call
+  hooks, trajectory-aware journey rules, confidence-gated closure.
 
 - **An outer recurring loop** — running a whole task repeatedly on an interval
   (for example, an unattended job that keeps grinding on a backlog). Phronesis
@@ -307,34 +548,6 @@ shrank.
   block` to gate it, so the recurring loop can't drift past your rules even
   when nobody is watching. The deep integration, though, is the inner loop —
   that is the cycle phronesis exists to keep honest.
-
----
-
-## 8. A worked example: a refactor loop that stays honest
-
-Imagine Claude is refactoring the auth module over a long session. Without
-phronesis, the loop tends to: edit auth, edit auth again, chase a bug, edit
-auth a third time, forget the tests entirely, stop running the build, and
-finally announce "done — the refactor is complete" with a red build.
-
-With the layers above wired up:
-
-1. **Turn 1–3 (layer 1):** every auth edit is checked for `.unwrap()` and
-   friends as it lands. Syntactic slips never accumulate.
-2. **Turn 4 (layer 2):** `auth-churn-without-tests` fires on the *fourth* auth
-   edit — "you've edited auth 3+ times this session without touching its tests."
-   The warning steers the loop toward coverage *before* the bug count grows.
-3. **Turn 12 (layer 2):** twelve edits deep with no recompile, `build-staleness`
-   fires — "8+ tool calls since the last build." The loop rebuilds and catches a
-   break early instead of at the end.
-4. **Closure (layer 3):** Claude reaches for `git commit -m "refactor done"`.
-   The build is red, so the confidence band is low and the commit is **blocked**;
-   the `llm` pack's unverified-completion-claim rule blocks the "done" framing.
-   The loop is forced back to green before it can close.
-
-None of these fired from a `CLAUDE.md` paragraph that might have been compacted
-away. They fired from disk, from outside the context window, identically at
-turn 12 as they would have at turn 1,200.
 
 ---
 
