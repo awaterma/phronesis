@@ -126,9 +126,15 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     }
 
     // Journey facts: recomputed every invocation from the durable journal.
-    // Fail-open — never block on a missing or corrupt journal.
+    // Fail-open on transient I/O; fail-closed on rule/config typos (see
+    // assert_journey_facts_into for the split).
     let project_root_pre = security::project_root();
-    assert_journey_facts_into(&mut network, &project_root_pre, &rules_for_journey).await;
+    if let Err(e) =
+        assert_journey_facts_into(&mut network, &project_root_pre, &rules_for_journey).await
+    {
+        eprintln!("phronesis: BLOCKED — {}", e);
+        process::exit(2);
+    }
 
     // Pack-marker facts (e.g. `confidence_enabled`) — let rules from one
     // pack self-deactivate when a superseding pack is opted in.
@@ -350,8 +356,15 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     }
 
     // Journey facts: recomputed every invocation from the durable journal,
-    // before update_agenda — fail-open.
-    assert_journey_facts_into(&mut network, &project_root_post, &rules_for_journey).await;
+    // before update_agenda. Fail-open on transient I/O; surface config
+    // errors as a post-check warning (the action already happened — the
+    // next pre-check will block until the config is fixed).
+    if let Err(e) =
+        assert_journey_facts_into(&mut network, &project_root_post, &rules_for_journey).await
+    {
+        eprintln!("phronesis: WARNING — {}", e);
+        process::exit(1);
+    }
 
     // Pack-marker facts (e.g. `confidence_enabled`) — let rules from one
     // pack self-deactivate when a superseding pack is opted in.
@@ -818,12 +831,25 @@ async fn assert_pack_marker_facts(network: &ReteNetwork, project_root: &Path) {
 
 /// Journey wiring shared by `run_pre_check` and `run_post_check`: derive the
 /// `journey_*` facts the rules reference, assert them into the live network.
-/// Fail-open: any error is logged and the hook continues without journey
-/// facts (rules that don't reference journey_* are unaffected; rules that do
-/// silently miss this call's enrichment).
-async fn assert_journey_facts_into(network: &mut ReteNetwork, project_root: &Path, rules: &[Rule]) {
+///
+/// Failure policy is split by error category — see
+/// `.phronesis/wiki/decisions/2026-06-23-undefined-selector-rejection.md`:
+///
+/// - **Configuration errors** (`BadWindow`, `UndefinedSelector`) bubble up
+///   to the caller, which fails the hook closed. A typo in `rules.json` or
+///   `journey.json` can't fix itself by retrying, and the most dangerous
+///   shape (absence rules with a missing tagger) fires constantly without
+///   the user noticing if we fail open.
+/// - **I/O errors** (`Journal`) are logged and swallowed. Transient
+///   journal hiccups shouldn't block every edit, and rules that don't
+///   reference `journey_*` are unaffected anyway.
+async fn assert_journey_facts_into(
+    network: &mut ReteNetwork,
+    project_root: &Path,
+    rules: &[Rule],
+) -> Result<(), journey::derive::DeriveError> {
     if std::env::var("PHRONESIS_NO_JOURNEY").is_ok() {
-        return;
+        return Ok(());
     }
     let cfg = match journey::load_config(project_root) {
         Ok(c) => c,
@@ -838,8 +864,12 @@ async fn assert_journey_facts_into(network: &mut ReteNetwork, project_root: &Pat
     if let Err(e) =
         journey::derive::assert_facts(network, project_root, rules, &cfg, &sid, now).await
     {
+        if e.is_config_error() {
+            return Err(e);
+        }
         eprintln!("phronesis: journey derivation skipped: {}", e);
     }
+    Ok(())
 }
 
 /// Pre-check side of confidence scoring: assert the open work unit's

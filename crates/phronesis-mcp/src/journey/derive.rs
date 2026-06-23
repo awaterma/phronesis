@@ -106,6 +106,20 @@ pub enum DeriveError {
     Journal(#[from] journal::JournalError),
 }
 
+impl DeriveError {
+    /// Configuration errors (typos in `rules.json` / `journey.json`) versus
+    /// I/O errors (journal read failures). The hook fails closed on the
+    /// former — no amount of retrying fixes a typo — and fails open on the
+    /// latter so transient I/O doesn't block every edit. See
+    /// `.phronesis/wiki/decisions/2026-06-23-undefined-selector-rejection.md`.
+    pub fn is_config_error(&self) -> bool {
+        matches!(
+            self,
+            DeriveError::BadWindow(_) | DeriveError::UndefinedSelector { .. }
+        )
+    }
+}
+
 // ===== RuleScan =====
 
 /// What the rule pass learned about journey predicates — every

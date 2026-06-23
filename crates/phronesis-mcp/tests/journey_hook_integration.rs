@@ -311,3 +311,101 @@ fn corrupt_journey_json_is_fail_open() {
         "fail-open: corrupt journey.json must not block; stderr: {stderr}"
     );
 }
+
+#[test]
+fn undefined_selector_fails_closed_at_pre_check() {
+    // Configuration error — a rule references a tag the project's
+    // journey.json doesn't define. Before
+    // .phronesis/wiki/decisions/2026-06-23-undefined-selector-rejection.md
+    // this was a stderr-only warn (fail-open), which made absence-style
+    // rules (`facts_count(...) == 0`) silently fire on every call. Must
+    // now fail closed (exit 2 = block) with a message naming the rule and
+    // the missing selector.
+    let rules = r#"{
+        "rules": [
+            {
+                "id": "bogus-auth-rule",
+                "phase": "pre",
+                "when": [ { "__script__": "facts_count('journey_occurrence', ['auth','s']) >= 3" } ],
+                "then": { "warn": "should never load" }
+            }
+        ]
+    }"#;
+    // journey.json with NO `auth` tagger — the rule's selector is undefined.
+    let journey = r#"{
+        "version":1,
+        "taggers":[{"tag":"build","when":[{"bash_command_matches":"cargo build"}]}],
+        "modules":[]
+    }"#;
+    let dir = setup_project(rules, Some(journey));
+    write_session(dir.path(), "s-test");
+
+    let payload = r#"{
+        "tool_name":"Edit",
+        "tool_input":{
+            "file_path":"src/a.rs",
+            "old_string":"",
+            "new_string":"pub fn a() {}"
+        }
+    }"#;
+    let (code, _stdout, stderr) = run_hook("pre-check", payload, dir.path(), false);
+    assert_eq!(
+        code, 2,
+        "fail-closed: undefined-selector rule must block pre-check; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("BLOCKED"),
+        "stderr must carry the BLOCKED prefix: {stderr}"
+    );
+    assert!(
+        stderr.contains("bogus-auth-rule"),
+        "stderr must name the offending rule id: {stderr}"
+    );
+    assert!(
+        stderr.contains("auth"),
+        "stderr must name the missing selector: {stderr}"
+    );
+}
+
+#[test]
+fn undefined_selector_fails_closed_at_post_check_as_warn() {
+    // Post-check counterpart: the action already happened, so we surface
+    // as a warning (exit 1), not a block. The next pre-check will catch
+    // it as a block.
+    let rules = r#"{
+        "rules": [
+            {
+                "id": "bogus-auth-rule",
+                "phase": "post",
+                "when": [ { "__script__": "facts_count('journey_occurrence', ['auth','s']) >= 3" } ],
+                "then": { "warn": "should never load" }
+            }
+        ]
+    }"#;
+    let journey = r#"{
+        "version":1,
+        "taggers":[{"tag":"build","when":[{"bash_command_matches":"cargo build"}]}],
+        "modules":[]
+    }"#;
+    let dir = setup_project(rules, Some(journey));
+    write_session(dir.path(), "s-test");
+
+    let payload = r#"{
+        "tool_name":"Edit",
+        "tool_input":{
+            "file_path":"src/a.rs",
+            "old_string":"",
+            "new_string":"pub fn a() {}"
+        },
+        "tool_response":{}
+    }"#;
+    let (code, _stdout, stderr) = run_hook("post-check", payload, dir.path(), false);
+    assert_eq!(
+        code, 1,
+        "fail-closed-as-warn: post-check on bad selector should warn (exit 1); stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("WARNING"),
+        "stderr must carry the WARNING prefix at post-check: {stderr}"
+    );
+}
