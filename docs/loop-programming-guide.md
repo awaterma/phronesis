@@ -148,7 +148,7 @@ You can sanity-check the install at any time:
 
 ```sh
 $ phr-mcp --version
-phr-mcp 0.14.0
+phr-mcp 0.15.0
 ```
 
 Everything in the rest of this guide is drawn from the actual state of this
