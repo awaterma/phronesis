@@ -19,6 +19,10 @@ use crate::outcomes::facts::OutcomeFact;
 /// (e.g. `auth::tests::rejects_expired_token`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct KnownBug {
+    /// External bug id from `.phronesis/bugs.json`, keyed to the cargo test
+    /// name in `test`. Intentionally a `String` rather than a newtype: it
+    /// crosses the JSON registry boundary (an operator-authored id), so a
+    /// `BugId(String)` would add serde friction without a type-safety payoff.
     pub bug_id: String,
     pub test: String,
     /// `open` (the bug is live; its test should currently fail) or `fixed`.

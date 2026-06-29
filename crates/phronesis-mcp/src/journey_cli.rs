@@ -72,24 +72,24 @@ pub async fn compute(
         .map(|d| rules_file::rule_from_disk(d).0)
         .collect();
 
-    let cfg = match journey::load_config(project_root) {
-        Ok(c) => c,
-        Err(journey::ConfigError::NotFound(_)) => {
+    let cfg = journey::load_config(project_root)
+        .or_else(|e| match e {
             // Operator (CLI or MCP) explicitly asked for journey output;
             // a missing config produces empty rows, which is opaque. Nudge
             // toward the scaffolder and continue with an empty config. The
             // hook stays silent — it loads journey advisorily, not on
-            // demand. Malformed config still hard-errors via the
-            // pass-through branch below.
-            eprintln!(
-                "phronesis: no .phronesis/journey.json found — run \
-                 `phr-mcp init --packs journey` to scaffold one. \
-                 Continuing with empty config."
-            );
-            TaggerConfig::default()
-        }
-        Err(e) => return Err(JourneyCliError::Config(e)),
-    };
+            // demand. Malformed config still hard-errors via `?` below.
+            journey::ConfigError::NotFound(_) => {
+                eprintln!(
+                    "phronesis: no .phronesis/journey.json found — run \
+                     `phr-mcp init --packs journey` to scaffold one. \
+                     Continuing with empty config."
+                );
+                Ok(TaggerConfig::default())
+            }
+            other => Err(other),
+        })
+        .map_err(JourneyCliError::Config)?;
 
     // If an explain rule was requested, ensure it exists in the loaded rules.
     if let Some(rule_id) = explain_rule
@@ -385,5 +385,28 @@ mod tests {
         assert!(v.is_array());
         assert_eq!(v[0]["predicate"], "journey_seen");
         assert_eq!(v[0]["selector"], "sql");
+    }
+
+    /// Characterization for `compute`'s config-error propagation: a malformed
+    /// `.phronesis/journey.json` surfaces as `JourneyCliError::Config`, not as
+    /// a derive/facts error or a panic. Locks the arm that the
+    /// `audit-manual-err-return` sweep targets ahead of a `?`-based refactor.
+    #[tokio::test]
+    async fn compute_surfaces_malformed_journey_config_as_config_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let phr = dir.path().join(".phronesis");
+        std::fs::create_dir_all(&phr).unwrap();
+        // Minimal valid rules file — `compute` reads it before journey config.
+        std::fs::write(phr.join("rules.json"), r#"{"rules": []}"#).unwrap();
+        // Malformed journey config: not a valid `TaggerConfig` JSON.
+        std::fs::write(phr.join("journey.json"), "{ not valid json").unwrap();
+
+        let err = compute(dir.path(), None, 0, "sid")
+            .await
+            .expect_err("malformed journey config must surface as an error");
+        assert!(
+            matches!(err, JourneyCliError::Config(_)),
+            "expected JourneyCliError::Config, got {err:?}"
+        );
     }
 }

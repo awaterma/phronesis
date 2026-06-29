@@ -1447,12 +1447,13 @@ fn rust_rules() -> Value {
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
+                "doc_excepted": true,
                 "when": [
                     {"new_content_contains": "_id: String"},
                     {"file_extension_is": "rs"},
                     {"file_path_matches": "src"}
                 ],
-                "then": {"warn": "Field named `*_id: String` — consider a newtype like `StateId(String)` for type safety so one ID kind can't be passed where another is expected. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)"}
+                "then": {"warn": "Field named `*_id: String` — consider a newtype like `StateId(String)` for type safety so one ID kind can't be passed where another is expected. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt. A `///` doc-comment immediately above the field marks an intentional string ID, e.g. one crossing a JSON registry boundary, as an accepted exception.)"}
             },
             {
                 "id": "audit-newtype-id-u64",
@@ -1572,9 +1573,10 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
+                    {"file_path_matches": "src"},
                     {"function_let_binding_count_high": ["?file", "?fn", "?count"]}
                 ],
-                "then": {"warn": "`?fn` in ?file has ?count outer-scope `let` bindings — consider scoping intermediate temporaries into a block (`let result = { let raw = ...; let parsed = ...; ... }`) so only the final value is visible to the rest of the function. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025)."}
+                "then": {"warn": "`?fn` in ?file has ?count outer-scope `let` bindings — consider scoping intermediate temporaries into a block (`let result = { let raw = ...; let parsed = ...; ... }`) so only the final value is visible to the rest of the function. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025). (Scoped to src/ — examples/benches/tests are not production code and are exempt.)"}
             },
             {
                 "id": "audit-rust-let-mut-count-high",
@@ -1582,9 +1584,10 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
+                    {"file_path_matches": "src"},
                     {"function_let_mut_count_high": ["?file", "?fn", "?count"]}
                 ],
-                "then": {"warn": "`?fn` in ?file has ?count outer-scope `let mut` declarations — consider John Nunley's block pattern: wrap the mutation in `let x = { let mut tmp = ...; ...; tmp }` so the surrounding scope sees an immutable binding. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025)."}
+                "then": {"warn": "`?fn` in ?file has ?count outer-scope `let mut` declarations — consider John Nunley's block pattern: wrap the mutation in `let x = { let mut tmp = ...; ...; tmp }` so the surrounding scope sees an immutable binding. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025). (Scoped to src/ — examples/benches/tests are not production code and are exempt.)"}
             }
         ]
     })
