@@ -71,6 +71,39 @@ pub struct RuleAudit {
 pub struct FileAudit {
     pub path: PathBuf,
     pub lines: Vec<u32>,
+    /// Per-hit human-readable detail, parallel to `lines`. Populated for
+    /// AST-predicate hits (e.g. `"ladder (8 let bindings)"`) where the
+    /// line number is a placeholder; empty for content/whole-file hits,
+    /// which carry meaningful line numbers in `lines` instead.
+    pub details: Vec<String>,
+}
+
+/// Accumulator for one (rule, file) pair during the scan. `lines` and
+/// `details` stay parallel: one entry per hit. Collapsed into a
+/// `FileAudit` at the end of the scan.
+#[derive(Debug, Clone, Default)]
+struct PerFileHits {
+    lines: Vec<u32>,
+    details: Vec<String>,
+}
+
+impl PerFileHits {
+    fn push_line(&mut self, line: u32) {
+        self.lines.push(line);
+        self.details.push(String::new());
+    }
+    fn push_detail(&mut self, detail: String) {
+        // AST hits don't know a real line span yet; line 1 is the
+        // documented placeholder. Keep the two vecs the same length so
+        // `hits` (derived from `lines.len()`) stays accurate.
+        self.lines.push(1);
+        self.details.push(detail);
+    }
+    fn extend_lines(&mut self, lines: Vec<u32>) {
+        self.lines.extend(lines.iter().copied());
+        self.details
+            .extend(std::iter::repeat_with(String::new).take(lines.len()));
+    }
 }
 
 // ── Core engine ─────────────────────────────────────────────────────────────
@@ -148,6 +181,40 @@ fn rule_has_ast_predicate(rule: &DiskRule) -> bool {
     rule.conditions
         .iter()
         .any(|c| is_ast_predicate(&c.predicate))
+}
+
+/// Build a human-readable per-hit detail string from an AST fact's args.
+/// `args[0]` is the file path (already shown by the renderer); `args[1]`
+/// is the function/entity name; for count predicates `args[2]` is the
+/// threshold count. Returns `None` only for a shapeless fact (none of the
+/// current AST predicates are shapeless — guard anyway).
+fn ast_hit_detail(predicate: &str, args: &[String]) -> Option<String> {
+    // Count predicates: render "name (N unit)". The unit label is
+    // predicate-specific so the line reads naturally, e.g.
+    // "ladder (8 let bindings)" rather than a bare number.
+    let unit = match predicate {
+        "function_let_binding_count_high" => Some("let bindings"),
+        "function_let_mut_count_high" => Some("let mut decls"),
+        "function_param_count_high"
+        | "python_function_param_count_high"
+        | "ts_function_param_count_high" => Some("params"),
+        "function_clone_count" | "function_clone_count_high" => Some("clones"),
+        _ => None,
+    };
+    if let Some(unit) = unit {
+        let name = args.get(1)?;
+        let count = args.get(2).map(|s| s.as_str()).unwrap_or("?");
+        return Some(format!("{name} ({count} {unit})"));
+    }
+    // Everything else: surface the name plus any trailing args (param
+    // name, type, trait) so the hit still points at something grep-able.
+    // `args[0]` is the path; skip it.
+    let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+    if rest.is_empty() {
+        None
+    } else {
+        Some(rest.join(" "))
+    }
 }
 
 /// True if `rule` has no content-matching predicates — only gates. For
@@ -241,8 +308,8 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
     };
     let files_scanned = files.len() as u32;
 
-    // per_rule[rule_id] -> (level, BTreeMap<path -> Vec<line>>)
-    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, Vec<u32>>)> = BTreeMap::new();
+    // per_rule[rule_id] -> (level, BTreeMap<path -> PerFileHits>)
+    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
 
     for path in &files {
         let content = match std::fs::read_to_string(path) {
@@ -314,28 +381,33 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                     let facts = ast_facts.get_or_insert_with(|| {
                         syntax::extract(&path_str, &content).all_facts(&path_str)
                     });
-                    let mut hit_lines: Vec<u32> = Vec::new();
+                    let mut hits = PerFileHits::default();
                     for cond in &rule.conditions {
                         if !is_ast_predicate(&cond.predicate) {
                             continue;
                         }
-                        for _fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
-                            // Default to line 1 — tracking per-fact line spans
-                            // is a defensible follow-up. The fact's args carry
-                            // enough info (fn name, count) for the user to
-                            // grep -n the actual location. The audit renderer
-                            // shows per-file line numbers, not per-hit messages,
-                            // so we don't interpolate ?file/?fn/?count here.
-                            hit_lines.push(1);
+                        for fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
+                            // Per-fact line spans aren't tracked yet; line 1
+                            // is the placeholder. The fact's args carry the
+                            // function name (and count, for count predicates),
+                            // which `ast_hit_detail` renders into the per-hit
+                            // detail string the renderer surfaces.
+                            let detail = ast_hit_detail(&cond.predicate, &fact.args);
+                            match detail {
+                                Some(d) => hits.push_detail(d),
+                                None => hits.push_line(1),
+                            }
                         }
                     }
-                    if hit_lines.is_empty() {
+                    if hits.lines.is_empty() {
                         continue;
                     }
                     let entry = accum
                         .entry(rule.id.clone())
                         .or_insert_with(|| (level, BTreeMap::new()));
-                    entry.1.entry(path.clone()).or_default().extend(hit_lines);
+                    let slot = entry.1.entry(path.clone()).or_default();
+                    slot.lines.extend(hits.lines);
+                    slot.details.extend(hits.details);
                     continue;
                 }
 
@@ -345,7 +417,7 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                     let entry = accum
                         .entry(rule.id.clone())
                         .or_insert_with(|| (level, BTreeMap::new()));
-                    entry.1.entry(path.clone()).or_default().push(1);
+                    entry.1.entry(path.clone()).or_default().push_line(1);
                     continue;
                 }
 
@@ -383,7 +455,11 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
                     let entry = accum
                         .entry(rule.id.clone())
                         .or_insert_with(|| (level, BTreeMap::new()));
-                    entry.1.entry(path.clone()).or_default().extend(hit_lines);
+                    entry
+                        .1
+                        .entry(path.clone())
+                        .or_default()
+                        .extend_lines(hit_lines);
                 }
             }
         }
@@ -394,7 +470,11 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
         .map(|(rule_id, (level, by_path))| {
             let files: Vec<FileAudit> = by_path
                 .into_iter()
-                .map(|(path, lines)| FileAudit { path, lines })
+                .map(|(path, hits)| FileAudit {
+                    path,
+                    lines: hits.lines,
+                    details: hits.details,
+                })
                 .collect();
             let hits: u32 = files.iter().map(|f| f.lines.len() as u32).sum();
             RuleAudit {
@@ -482,7 +562,7 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
     times.discover = t.elapsed();
     times.files_scanned = files.len() as u32;
 
-    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, Vec<u32>>)> = BTreeMap::new();
+    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
 
     for path in &files {
         let t = Instant::now();
@@ -532,29 +612,35 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
                     let facts = ast_facts.get_or_insert_with(|| {
                         syntax::extract(&path_str, &content).all_facts(&path_str)
                     });
-                    let mut hit_lines: Vec<u32> = Vec::new();
+                    let mut hits = PerFileHits::default();
                     for cond in &rule.conditions {
                         if !is_ast_predicate(&cond.predicate) {
                             continue;
                         }
-                        for _fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
-                            hit_lines.push(1);
+                        for fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
+                            let detail = ast_hit_detail(&cond.predicate, &fact.args);
+                            match detail {
+                                Some(d) => hits.push_detail(d),
+                                None => hits.push_line(1),
+                            }
                         }
                     }
-                    if hit_lines.is_empty() {
+                    if hits.lines.is_empty() {
                         continue;
                     }
                     let entry = accum
                         .entry(rule.id.clone())
                         .or_insert_with(|| (level, BTreeMap::new()));
-                    entry.1.entry(path.clone()).or_default().extend(hit_lines);
+                    let slot = entry.1.entry(path.clone()).or_default();
+                    slot.lines.extend(hits.lines);
+                    slot.details.extend(hits.details);
                     continue;
                 }
                 if is_whole_file_rule(rule) {
                     let entry = accum
                         .entry(rule.id.clone())
                         .or_insert_with(|| (level, BTreeMap::new()));
-                    entry.1.entry(path.clone()).or_default().push(1);
+                    entry.1.entry(path.clone()).or_default().push_line(1);
                     continue;
                 }
                 let doc_excepted = rule.doc_excepted.unwrap_or(false);
@@ -587,7 +673,11 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
                     let entry = accum
                         .entry(rule.id.clone())
                         .or_insert_with(|| (level, BTreeMap::new()));
-                    entry.1.entry(path.clone()).or_default().extend(hit_lines);
+                    entry
+                        .1
+                        .entry(path.clone())
+                        .or_default()
+                        .extend_lines(hit_lines);
                 }
             }
         }
@@ -600,7 +690,11 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
         .map(|(rule_id, (level, by_path))| {
             let files: Vec<FileAudit> = by_path
                 .into_iter()
-                .map(|(path, lines)| FileAudit { path, lines })
+                .map(|(path, hits)| FileAudit {
+                    path,
+                    lines: hits.lines,
+                    details: hits.details,
+                })
                 .collect();
             let hits: u32 = files.iter().map(|f| f.lines.len() as u32).sum();
             RuleAudit {
@@ -928,17 +1022,38 @@ pub fn render_table(report: &AuditReport, expand: bool) -> String {
         ));
         if expand {
             for f in &r.files {
-                let lines_str = f
-                    .lines
-                    .iter()
-                    .map(|n| n.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                out.push_str(&format!(
-                    "    {} \u{2014} lines: {}\n",
-                    f.path.display(),
-                    lines_str
-                ));
+                // AST-predicate hits carry a per-function detail and a
+                // meaningless placeholder line of `1` per hit; surface
+                // the names instead of `lines: 1, 1, ...`. Content and
+                // whole-file hits have empty details and real line
+                // numbers, so they keep the `lines:` form.
+                let has_details = f.details.iter().any(|d| !d.is_empty());
+                if has_details {
+                    let details_str = f
+                        .details
+                        .iter()
+                        .filter(|d| !d.is_empty())
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "    {} \u{2014} {}\n",
+                        f.path.display(),
+                        details_str
+                    ));
+                } else {
+                    let lines_str = f
+                        .lines
+                        .iter()
+                        .map(|n| n.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "    {} \u{2014} lines: {}\n",
+                        f.path.display(),
+                        lines_str
+                    ));
+                }
             }
         }
     }
@@ -969,7 +1084,11 @@ pub fn render_table(report: &AuditReport, expand: bool) -> String {
 
 /// Render an `AuditReport` as JSON. Stable shape: `{generated_at,
 /// scan_duration_ms, files_scanned, totals:{blocked,warned,rules},
-/// rules:[{rule_id, level, hits, files:[{path,lines}]}]}`.
+/// rules:[{rule_id, level, hits, files:[{path,lines,details}]}]}`.
+/// `details` is a per-hit array parallel to `lines`; entries are empty
+/// strings for content/whole-file hits (which carry real line numbers)
+/// and human-readable strings like `"ladder (9 let bindings)"` for
+/// AST-predicate hits.
 pub fn render_json(report: &AuditReport) -> String {
     let total_blocked: u32 = report
         .per_rule
@@ -994,6 +1113,7 @@ pub fn render_json(report: &AuditReport) -> String {
                     json!({
                         "path": f.path.display().to_string(),
                         "lines": f.lines,
+                        "details": f.details,
                     })
                 })
                 .collect();
@@ -1973,6 +2093,48 @@ fn ladder() {
     }
 
     #[test]
+    fn run_ast_predicate_hit_carries_function_name_and_count() {
+        // The audit must name the offending function and its count, not
+        // just emit a placeholder line `1` per hit. `ladder` has 9
+        // outer-scope `let` bindings (a..h plus the trailing `let _ =`),
+        // which clears the 8-binding threshold; the per-hit detail should
+        // read "ladder (9 let bindings)" — the *actual* count, not the
+        // threshold.
+        let dir = tempfile::tempdir().unwrap();
+        let src = "\
+fn ladder() {
+    let a = 1;
+    let b = 2;
+    let c = 3;
+    let d = 4;
+    let e = 5;
+    let f = 6;
+    let g = 7;
+    let h = 8;
+    let _ = (a, b, c, d, e, f, g, h);
+}
+";
+        std::fs::write(dir.path().join("a.rs"), src).unwrap();
+        let rules = RulesFile {
+            rules: vec![ast_let_binding_rule()],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+        assert_eq!(report.per_rule.len(), 1);
+        let details = &report.per_rule[0].files[0].details;
+        assert!(
+            details.iter().any(|d| d == "ladder (9 let bindings)"),
+            "expected named detail 'ladder (9 let bindings)', got {details:?}"
+        );
+    }
+
+    #[test]
     fn run_silences_ast_predicate_on_block_pattern_adopter() {
         // Silence case (LOAD-BEARING): a function using the block pattern —
         // `let x = { let a; let b; ...; tmp }` — has 8+ total `let`s but only
@@ -2564,10 +2726,12 @@ fn short() {
                         FileAudit {
                             path: PathBuf::from("src/engine.rs"),
                             lines: vec![42, 91, 240],
+                            details: vec![],
                         },
                         FileAudit {
                             path: PathBuf::from("src/parser.rs"),
                             lines: vec![18],
+                            details: vec![],
                         },
                     ],
                 },
@@ -2578,6 +2742,7 @@ fn short() {
                     files: vec![FileAudit {
                         path: PathBuf::from("src/parser.rs"),
                         lines: vec![3, 4, 5, 6, 7],
+                        details: vec![],
                     }],
                 },
             ],
@@ -2605,6 +2770,46 @@ fn short() {
         assert!(out.contains("42"));
         assert!(out.contains("91"));
         assert!(out.contains("240"));
+    }
+
+    #[test]
+    fn render_table_expand_shows_named_ast_details() {
+        // AST hits carry a per-function detail (e.g. "add_rule (12 let
+        // bindings)") and a meaningless placeholder line of `1` per hit.
+        // The expanded table must surface the names and drop the
+        // placeholder "lines: 1, 1" — otherwise the user sees
+        // `server.rs — lines: 1, 1, 1` and has to grep for the offenders.
+        let report = AuditReport {
+            generated_at: 0,
+            scan_duration_ms: 0,
+            files_scanned: 1,
+            per_rule: vec![RuleAudit {
+                rule_id: "audit-rust-let-binding-count-high".into(),
+                level: Level::Warn,
+                hits: 2,
+                files: vec![FileAudit {
+                    path: PathBuf::from("src/server.rs"),
+                    lines: vec![1, 1],
+                    details: vec![
+                        "add_rule (12 let bindings)".to_string(),
+                        "run (9 let bindings)".to_string(),
+                    ],
+                }],
+            }],
+        };
+        let out = render_table(&report, true);
+        assert!(
+            out.contains("add_rule (12 let bindings)"),
+            "expanded table must name the function, got:\n{out}"
+        );
+        assert!(
+            out.contains("run (9 let bindings)"),
+            "expanded table must name the second function, got:\n{out}"
+        );
+        assert!(
+            !out.contains("lines: 1, 1"),
+            "expanded table must drop placeholder lines when details are present, got:\n{out}"
+        );
     }
 
     #[test]
@@ -2769,6 +2974,34 @@ fn short() {
         assert_eq!(lines.len(), 3);
     }
 
+    #[test]
+    fn render_json_includes_per_hit_details() {
+        // AST hits must serialize their per-function detail so machine
+        // consumers (trend tooling, CI dashboards) can name offenders
+        // without re-parsing the tree.
+        let report = AuditReport {
+            generated_at: 0,
+            scan_duration_ms: 0,
+            files_scanned: 1,
+            per_rule: vec![RuleAudit {
+                rule_id: "audit-rust-let-binding-count-high".into(),
+                level: Level::Warn,
+                hits: 1,
+                files: vec![FileAudit {
+                    path: PathBuf::from("src/a.rs"),
+                    lines: vec![1],
+                    details: vec!["ladder (9 let bindings)".to_string()],
+                }],
+            }],
+        };
+        let out = render_json(&report);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        let files = v["rules"][0]["files"].as_array().unwrap();
+        let details = files[0]["details"].as_array().unwrap();
+        assert_eq!(details.len(), 1);
+        assert_eq!(details[0], "ladder (9 let bindings)");
+    }
+
     fn empty_report() -> AuditReport {
         AuditReport {
             generated_at: 0,
@@ -2790,6 +3023,7 @@ fn short() {
                 files: vec![FileAudit {
                     path: PathBuf::from("a.rs"),
                     lines: vec![1],
+                    details: vec![],
                 }],
             }],
         }
