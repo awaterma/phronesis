@@ -113,7 +113,7 @@ pub fn parse_decision_file(path: &Path) -> Result<Decision, WikiError> {
         .to_string();
 
     let frontmatter: DecisionFrontmatter =
-        serde_yml::from_str(yaml).map_err(|e| WikiError::Frontmatter {
+        serde_norway::from_str(yaml).map_err(|e| WikiError::Frontmatter {
             path: path.display().to_string(),
             message: e.to_string(),
         })?;
