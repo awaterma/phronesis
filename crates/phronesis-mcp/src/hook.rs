@@ -110,7 +110,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     let new_content = extract_new_content(&payload, &tool_name);
     let file_path = extract_file_path(&payload);
 
-    let mut network = ReteNetwork::new();
+    let mut network = crate::net::build_network();
 
     let rules_for_journey: Vec<Rule> = rules.clone();
     for rule in rules {
@@ -340,7 +340,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
 
     let file_path = extract_file_path(&payload);
 
-    let mut network = ReteNetwork::new();
+    let mut network = crate::net::build_network();
 
     let rules_for_journey: Vec<Rule> = rules.clone();
     for rule in rules {

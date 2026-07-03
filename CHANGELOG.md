@@ -4,6 +4,59 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.16.0] - 2026-07-03
+
+phr-mcp 0.16.0; phr library bumps to 0.14.0 (engine changes this round —
+new scripting trait, a removed method, and a new feature gate); new
+`phronesis-rhai` 0.1.0.
+
+Three changes that tighten the engine/embedding-host boundary ahead of a
+1.0 line: an expressive scripting layer, removal of the last
+consumer-specific engine API, and a feature gate that makes the default
+public surface equal what the bundled MCP consumes.
+
+### Added
+- **`phronesis-rhai` crate + `ScriptEval` trait.** The core
+  `__script__` evaluator now lives behind a `ScriptEval` trait
+  (`ReteNetwork::with_script_evaluator`). The new `phronesis-rhai` crate
+  provides `RhaiScriptEvaluator`, a sandboxed Rhai implementation
+  (`Engine::new_raw` + StandardPackage, operation/call-depth/string/array/map
+  caps, `sync`) supporting numeric comparisons and boolean combinators over
+  fact arguments — the guard expressions the builtin two-primitive DSL
+  can't express. Scripts see `facts` (array of `#{predicate, args}`) and
+  `bindings` (map) and must return `bool`; errors/non-bool are treated as a
+  blocked guard. `CompositeScriptEvaluator` routes builtin-DSL forms
+  (`facts_contain`/`facts_count`) to the builtin evaluator and everything
+  else to Rhai, so bundled packs and Rhai guards coexist in one rules.json.
+  Wired into `phronesis-mcp` behind an off-by-default `rhai` feature (server
+  + pre/post hooks via a `net::build_network` seam). Implements
+  `docs/superpowers/specs/2026-06-01-rhai-script-evaluator-design.md`.
+- **`embedding-host` cargo feature on `phronesis`** (off by default). Gates
+  the ~10 public `ReteNetwork` methods only an external embedding host needs
+  (`restore_persistent_facts*`, `execute_next_agenda_item`,
+  `fact_ids_matching`, `fact_count`, `facts_matching_predicate`,
+  `get_rules_count`, `get_wmes_by_condition`, and the instrumentation
+  getters). The default surface equals what the bundled MCP consumes, so the
+  compiler enforces the symmetry. CI exercises the feature config. Implements
+  `docs/superpowers/specs/2026-06-13-embedding-host-feature-gate-design.md`.
+
+### Changed
+- **`ScriptEvaluator` renamed to `BuiltinScriptEvaluator`** (implements
+  `ScriptEval`). `ScriptEvaluator` remains as a backwards-compatible alias
+  and the inherent `evaluate` still returns `ReteError`, so existing callers
+  are unaffected. The misleading "Rhai" docstrings in core (the builtin is a
+  hand-rolled DSL, not Rhai) are corrected.
+
+### Removed
+- **`ReteNetwork::get_persistent_facts` and its hardcoded
+  `PERSISTENT_PREDICATES`** — a downstream consumer's game-state vocabulary
+  baked into a "domain-neutral" engine, deprecated since 0.11 and now that
+  the consumer has migrated onto `facts_matching_predicates`, deleted. The
+  remaining consumer-flavored doc/example vocabulary in the engine and MCP
+  fixtures is neutralized. `restore_persistent_facts*` stay (generic
+  bulk-assert; now behind `embedding-host`). Implements
+  `docs/superpowers/specs/2026-06-13-domain-neutral-persistent-facts-design.md`.
+
 ## [0.14.0] - 2026-06-21
 
 Dogfooding-driven polish. The 0.13.x patch line was driven by playtest bugs

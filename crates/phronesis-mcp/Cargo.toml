@@ -1,6 +1,6 @@
 [package]
 name = "phronesis-mcp"
-version = "0.15.0"
+version = "0.16.0"
 edition = "2024"
 rust-version = "1.90"
 description = "MCP server and CLI (phr-mcp) wrapping the phronesis RETE rules engine for durable enforcement of project conventions in LLM-assisted work."
@@ -21,8 +21,16 @@ path = "src/lib.rs"
 name = "phr-mcp"
 path = "src/main.rs"
 
+[features]
+default = []
+# Route `__script__` conditions through the sandboxed Rhai evaluator
+# instead of the builtin two-primitive DSL. Off by default; opt in for
+# projects whose rules use expressive guard expressions.
+rhai = ["dep:phronesis-rhai"]
+
 [dependencies]
-phr = { version = "0.13.3", path = "../phronesis", package = "phronesis", features = ["schemars"] }
+phr = { version = "0.14.0", path = "../phronesis", package = "phronesis", features = ["schemars"] }
+phronesis-rhai = { version = "0.1", path = "../phronesis-rhai", optional = true }
 rmcp = { version = "0.17", features = ["server", "macros", "transport-io", "schemars"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

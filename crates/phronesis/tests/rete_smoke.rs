@@ -111,6 +111,7 @@ async fn non_matching_fact_produces_no_action() {
     );
 }
 
+#[cfg(feature = "embedding-host")]
 #[tokio::test]
 async fn rule_count_reflects_added_rules() {
     let network = ReteNetwork::new();

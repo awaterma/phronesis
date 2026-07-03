@@ -23,6 +23,19 @@
 //! The crate defines the types and the engine; integration with any
 //! particular host (an MCP server, a game engine, a sheet-FFI bridge,
 //! a conversational module) lives outside this crate.
+//!
+//! # Features
+//!
+//! - **`embedding-host`** (off by default) — extends [`ReteNetwork`]'s
+//!   public surface with methods only an external embedding host needs:
+//!   bulk save/restore (`restore_persistent_facts*`), single-step agenda
+//!   (`execute_next_agenda_item`), batch-retraction id collection
+//!   (`fact_ids_matching`), and instrumentation getters
+//!   (`get_performance_stats`, `get_rules_count`, …). The default surface
+//!   equals what the bundled MCP consumes, so the compiler enforces that
+//!   symmetry; a host that drives the engine directly enables this feature.
+//! - **`schemars`** (off by default) — derive JSON schemas for the ID
+//!   newtypes so downstream MCP tool-parameter structs keep their schema.
 
 pub mod actor;
 pub mod agenda;
@@ -56,6 +69,6 @@ pub use network::*;
 pub use production::*;
 pub use pull::{DynLookup, Lookup, dyn_lookup_as_consequence, lookup_as_consequence};
 pub use push::rule_firing_to_consequences;
-pub use script_evaluator::ScriptEvaluator;
+pub use script_evaluator::{BuiltinScriptEvaluator, ScriptEval, ScriptEvaluator};
 pub use variable_binding::{Bindings, Token};
 pub use wme::{WmeManager, WorkingMemoryElement};

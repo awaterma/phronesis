@@ -1,6 +1,6 @@
 [package]
 name = "phronesis"
-version = "0.13.3"
+version = "0.14.0"
 edition = "2024"
 rust-version = "1.90"
 description = "A RETE rules engine for durable, context-window-independent enforcement of project conventions in LLM-assisted work."
@@ -30,6 +30,11 @@ schemars = { version = "1.0", optional = true }
 [features]
 default = []
 schemars = ["dep:schemars"]
+# Public methods that only an external embedding host needs (bulk
+# save/restore, single-step agenda, batch-retraction id collection,
+# instrumentation). Off by default so the default public surface equals what
+# the bundled MCP consumes — the compiler then enforces that symmetry.
+embedding-host = []
 
 [dev-dependencies]
 serde_json = "1.0"

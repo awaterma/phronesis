@@ -23,7 +23,7 @@ use crate::consequence::Consequence;
 use crate::engine_types::{Action, Condition, Fact, PerformanceStats, Rule};
 use crate::error::ReteError;
 use crate::production::ProductionNetwork;
-use crate::script_evaluator::ScriptEvaluator;
+use crate::script_evaluator::{BuiltinScriptEvaluator, ScriptEval};
 use crate::wme::{WmeManager, WorkingMemoryElement};
 use tracing::{debug, warn};
 
@@ -43,8 +43,9 @@ pub struct ReteNetwork {
     performance_stats: Arc<Mutex<PerformanceStats>>,
     /// Track activations that have already been added to the agenda to avoid duplicates
     fired_activations: Arc<Mutex<HashSet<String>>>,
-    /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-xp-progression)
-    script_evaluator: ScriptEvaluator,
+    /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-xp-progression).
+    /// Defaults to [`BuiltinScriptEvaluator`]; swap via [`ReteNetwork::with_script_evaluator`].
+    script_evaluator: Box<dyn ScriptEval>,
 }
 
 impl Default for ReteNetwork {
@@ -63,7 +64,22 @@ impl ReteNetwork {
             production_network: Arc::new(Mutex::new(ProductionNetwork::new())),
             performance_stats: Arc::new(Mutex::new(PerformanceStats::new())),
             fired_activations: Arc::new(Mutex::new(HashSet::new())),
-            script_evaluator: ScriptEvaluator::new(),
+            script_evaluator: Box::new(BuiltinScriptEvaluator::new()),
+        }
+    }
+
+    /// Construct a network that evaluates `__script__` conditions with a
+    /// custom [`ScriptEval`] implementation instead of the default
+    /// [`BuiltinScriptEvaluator`]. All other subsystems are initialized as
+    /// in [`ReteNetwork::new`].
+    ///
+    /// Embedding hosts that need richer guard expressions (numeric
+    /// comparisons, boolean combinators over fact arguments) wire in the
+    /// `phronesis-rhai` evaluator here.
+    pub fn with_script_evaluator(evaluator: Box<dyn ScriptEval>) -> Self {
+        ReteNetwork {
+            script_evaluator: evaluator,
+            ..ReteNetwork::new()
         }
     }
 
@@ -748,8 +764,11 @@ impl ReteNetwork {
             .collect()
     }
 
-    /// Execute the next agenda item
-    pub fn execute_next_agenda_item(&self) -> Result<Vec<Action>, ReteError> {
+    /// Execute the next agenda item. Internal building block for
+    /// [`execute_all_agenda_items`](Self::execute_all_agenda_items); the
+    /// public single-step surface is [`execute_next_agenda_item`] behind the
+    /// `embedding-host` feature.
+    fn execute_next_agenda_item_inner(&self) -> Result<Vec<Action>, ReteError> {
         let agenda_item = {
             let mut agenda = self
                 .agenda
@@ -774,6 +793,16 @@ impl ReteNetwork {
         }
     }
 
+    /// Execute the next agenda item (single-step agenda drive).
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled
+    /// MCP, which drives the agenda via
+    /// [`execute_all_agenda_items`](Self::execute_all_agenda_items).
+    #[cfg(feature = "embedding-host")]
+    pub fn execute_next_agenda_item(&self) -> Result<Vec<Action>, ReteError> {
+        self.execute_next_agenda_item_inner()
+    }
+
     /// Execute all agenda items
     pub fn execute_all_agenda_items(&self) -> Result<Vec<Action>, ReteError> {
         let start = Instant::now();
@@ -787,7 +816,7 @@ impl ReteNetwork {
                 .map_err(|_| ReteError::poisoned("agenda"))?;
             !agenda.is_empty()
         } {
-            all_actions.extend(self.execute_next_agenda_item()?);
+            all_actions.extend(self.execute_next_agenda_item_inner()?);
         }
 
         // Record metrics
@@ -847,7 +876,10 @@ impl ReteNetwork {
         Ok(all)
     }
 
-    /// Get performance statistics and log them
+    /// Get performance statistics and log them.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn log_performance_stats(&self) {
         let rules_count = self
             .production_network
@@ -864,14 +896,20 @@ impl ReteNetwork {
         }
     }
 
-    /// Reset per-cycle performance counters
+    /// Reset per-cycle performance counters.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn reset_cycle_values(&self) {
         if let Ok(mut values) = self.performance_stats.lock() {
             values.reset_cycle();
         }
     }
 
-    /// Get a copy of performance statistics
+    /// Get a copy of performance statistics.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn get_performance_stats(&self) -> Option<PerformanceStats> {
         self.performance_stats
             .lock()
@@ -897,7 +935,10 @@ impl ReteNetwork {
         Ok(wme_manager.get_all().into_iter().cloned().collect())
     }
 
-    /// Get the number of rules in the RETE network
+    /// Get the number of rules in the RETE network.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub async fn get_rules_count(&self) -> Result<usize, ReteError> {
         let production_network = self
             .production_network
@@ -906,7 +947,10 @@ impl ReteNetwork {
         Ok(production_network.get_rules_count())
     }
 
-    /// Get WMEs matching a specific condition
+    /// Get WMEs matching a specific condition.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub async fn get_wmes_by_condition(
         &self,
         condition: &Condition,
@@ -926,7 +970,7 @@ impl ReteNetwork {
     //
     // Sync snapshot queries over working memory. These exist so embedding
     // hosts never need to reach into `wme_manager` directly; the shapes
-    // mirror the real consumer inventory (snapshot-all, predicate filter,
+    // cover the common embedding-host needs (snapshot-all, predicate filter,
     // positional-arg filters, id collection for batch retraction, by-id).
     // Results are owned clones sorted by fact id — deterministic output
     // for hosts that replay-test against recorded sessions.
@@ -947,14 +991,19 @@ impl ReteNetwork {
     }
 
     /// All facts with the given predicate, sorted by fact id.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled
+    /// MCP (use [`facts_matching`](Self::facts_matching) with an empty filter,
+    /// or [`facts_matching_predicates`](Self::facts_matching_predicates)).
+    #[cfg(feature = "embedding-host")]
     pub fn facts_matching_predicate(&self, predicate: &str) -> Result<Vec<Fact>, ReteError> {
         self.facts_matching(predicate, &[])
     }
 
     /// All facts whose predicate is in `predicates` (set membership), sorted
     /// by fact id. Duplicate predicates in the input do not duplicate facts.
-    /// The generic, caller-owned replacement for "give me the facts I treat
-    /// as a category" (e.g. persistent / save-game state).
+    /// The generic, caller-owned way to say "give me the facts I treat as a
+    /// category" — the caller owns the predicate set.
     pub fn facts_matching_predicates(&self, predicates: &[&str]) -> Result<Vec<Fact>, ReteError> {
         let wme_manager = self
             .wme_manager
@@ -999,6 +1048,9 @@ impl ReteNetwork {
 
     /// Ids of facts matching the predicate + arg filters — the shape
     /// batch retraction wants: collect ids, then `retract_fact` each.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn fact_ids_matching(
         &self,
         predicate: &str,
@@ -1021,6 +1073,9 @@ impl ReteNetwork {
     }
 
     /// Number of facts currently in working memory.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn fact_count(&self) -> Result<usize, ReteError> {
         let wme_manager = self
             .wme_manager
@@ -1029,62 +1084,16 @@ impl ReteNetwork {
         Ok(wme_manager.len())
     }
 
-    /// Get all persistent facts (score, goal state, etc.) for save game.
+    /// Bulk-assert a batch of facts (async version).
     ///
-    /// Deprecated: this hardcodes a consumer-specific predicate list, which
-    /// doesn't belong in a domain-neutral engine. Define your own predicate
-    /// set and call [`ReteNetwork::facts_matching_predicates`] instead.
-    #[deprecated(
-        since = "0.11.0",
-        note = "define your own predicate set and call facts_matching_predicates(&YOUR_SET); this hardcodes consumer-specific predicates and will be removed in 0.12"
-    )]
-    pub fn get_persistent_facts(&self) -> Vec<Fact> {
-        // Predicates that represent persistent game state
-        const PERSISTENT_PREDICATES: &[&str] = &[
-            "score_change",
-            "player_score_high",
-            "player_score_low",
-            "milestone_completed",
-            "task_started",
-            "subtask_completed",
-            "module_standing",
-            "agent_trust_level",
-            "hidden_debt_found",
-            "artifact_generated",
-            "goal_reached",
-            // 038: Progression & Achievement System
-            "contribution_logged",
-            "high_rank_task_assigned",
-            "platform_selected",
-            "policy_violation",
-            "policy_compliant_action",
-            "compliance_level",
-            "directory_audited",
-            "task_failed",
-            // consumer-specific game-state predicates (removed in 0.12)
-            "accomplishment_earned",
-            "location_cleared",
-            "deity_quest_offered",
-            "deity_selected",
-            "quest_failed",
-            "alignment_violation",
-            "deity_favor_level",
-            "alignment_aligned_action",
-        ];
-
-        if let Ok(wme_manager) = self.wme_manager.lock() {
-            wme_manager
-                .get_all()
-                .into_iter()
-                .filter(|wme| PERSISTENT_PREDICATES.contains(&wme.fact.predicate.as_str()))
-                .map(|wme| wme.fact.clone())
-                .collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Restore persistent facts from a save game (async version)
+    /// Each fact goes through the full [`assert_fact`](Self::assert_fact)
+    /// path (rule evaluation fires). Embedding hosts use this to rehydrate a
+    /// previously-snapshotted fact set — pair with
+    /// [`facts_matching_predicates`](Self::facts_matching_predicates) to take
+    /// the snapshot.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub async fn restore_persistent_facts(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
         for fact in facts {
             self.assert_fact(fact).await?;
@@ -1092,8 +1101,11 @@ impl ReteNetwork {
         Ok(())
     }
 
-    /// Restore persistent facts from a save game (sync version)
-    /// This directly inserts into working memory without triggering rule evaluation
+    /// Bulk-insert a batch of facts directly into working memory (sync
+    /// version), without triggering rule evaluation.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn restore_persistent_facts_sync(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
         let mut wme_manager = self
             .wme_manager
