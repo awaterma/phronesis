@@ -57,7 +57,7 @@ impl Default for EpistemeMcp {
 impl EpistemeMcp {
     pub fn new() -> Self {
         Self {
-            network: Arc::new(Mutex::new(ReteNetwork::new())),
+            network: Arc::new(Mutex::new(crate::net::build_network())),
             registry: Arc::new(Mutex::new(LookupRegistry::new())),
             consequences: Arc::new(Mutex::new(Vec::new())),
             phase_map: Arc::new(Mutex::new(HashMap::new())),

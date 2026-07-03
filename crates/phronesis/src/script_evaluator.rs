@@ -1,26 +1,68 @@
 //! Script-like condition evaluator for rete rules.
 //!
-//! Despite the historical "Rhai" name, this is a hand-rolled parser
-//! for a small DSL — no rhai dependency. It supports:
+//! [`BuiltinScriptEvaluator`] is a hand-rolled parser for a small,
+//! dependency-free DSL — the default `__script__` evaluator. It supports:
 //! - `facts_contain('predicate', ['arg1', 'arg2', ...])`
 //! - `facts_count('predicate', ['arg1', '*']) >= N`
 //! - `!` negation prefix
 //! - `?variable` substitution from bindings
 //!
-//! Kept here as the minimal "escape hatch" for rules that can't be
-//! expressed purely in predicate/argument terms. A future richer
-//! scripting layer (real rhai, wasm, etc.) would plug in behind a
-//! trait rather than replacing this.
+//! It is the minimal "escape hatch" for rules that can't be expressed
+//! purely in predicate/argument terms. A richer scripting layer plugs in
+//! behind the [`ScriptEval`] trait rather than replacing the builtin —
+//! see the `phronesis-rhai` crate for a full Rhai implementation with
+//! numeric comparisons and boolean combinators over fact arguments.
 
 use crate::engine_types::Fact;
 use crate::error::ReteError;
 use std::collections::HashMap;
 
-/// Evaluates Rhai script conditions against the current RETE working memory.
-#[derive(Debug)]
-pub struct ScriptEvaluator;
+/// Evaluates a `__script__` condition against the current RETE working
+/// memory, returning whether the guard passes.
+///
+/// The [`ReteNetwork`](crate::network::ReteNetwork) holds one
+/// `Box<dyn ScriptEval>`; it defaults to [`BuiltinScriptEvaluator`] and
+/// can be swapped for an alternative implementation (e.g. `phronesis-rhai`)
+/// via [`ReteNetwork::with_script_evaluator`](crate::network::ReteNetwork::with_script_evaluator).
+///
+/// A returned `Err` is treated by the network as a *blocked* condition
+/// (safe default): a broken guard never silently passes.
+pub trait ScriptEval: Send + Sync + std::fmt::Debug {
+    /// Evaluate `script` against `facts` and the rule's variable `bindings`.
+    fn evaluate(
+        &self,
+        script: &str,
+        facts: &[Fact],
+        bindings: &HashMap<String, String>,
+    ) -> Result<bool, String>;
+}
 
-impl ScriptEvaluator {
+/// The default, dependency-free `__script__` evaluator.
+///
+/// Supports `facts_contain(...)`, `facts_count(...) <op> N`, a leading `!`
+/// negation, and `?variable` substitution from bindings. For richer guard
+/// expressions, wire in the `phronesis-rhai` evaluator instead.
+#[derive(Debug)]
+pub struct BuiltinScriptEvaluator;
+
+/// Backwards-compatible alias for [`BuiltinScriptEvaluator`], the original
+/// name of the builtin evaluator before the [`ScriptEval`] trait split.
+pub type ScriptEvaluator = BuiltinScriptEvaluator;
+
+impl ScriptEval for BuiltinScriptEvaluator {
+    fn evaluate(
+        &self,
+        script: &str,
+        facts: &[Fact],
+        bindings: &HashMap<String, String>,
+    ) -> Result<bool, String> {
+        // Delegate to the inherent method, mapping the typed engine error
+        // into the trait's string contract.
+        BuiltinScriptEvaluator::evaluate(self, script, facts, bindings).map_err(|e| e.to_string())
+    }
+}
+
+impl BuiltinScriptEvaluator {
     pub fn new() -> Self {
         Self
     }
@@ -216,7 +258,7 @@ impl ScriptEvaluator {
     }
 }
 
-impl Default for ScriptEvaluator {
+impl Default for BuiltinScriptEvaluator {
     fn default() -> Self {
         Self::new()
     }

@@ -23,7 +23,7 @@ use crate::consequence::Consequence;
 use crate::engine_types::{Action, Condition, Fact, PerformanceStats, Rule};
 use crate::error::ReteError;
 use crate::production::ProductionNetwork;
-use crate::script_evaluator::ScriptEvaluator;
+use crate::script_evaluator::{BuiltinScriptEvaluator, ScriptEval};
 use crate::wme::{WmeManager, WorkingMemoryElement};
 use tracing::{debug, warn};
 
@@ -43,8 +43,9 @@ pub struct ReteNetwork {
     performance_stats: Arc<Mutex<PerformanceStats>>,
     /// Track activations that have already been added to the agenda to avoid duplicates
     fired_activations: Arc<Mutex<HashSet<String>>>,
-    /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-xp-progression)
-    script_evaluator: ScriptEvaluator,
+    /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-xp-progression).
+    /// Defaults to [`BuiltinScriptEvaluator`]; swap via [`ReteNetwork::with_script_evaluator`].
+    script_evaluator: Box<dyn ScriptEval>,
 }
 
 impl Default for ReteNetwork {
@@ -63,7 +64,22 @@ impl ReteNetwork {
             production_network: Arc::new(Mutex::new(ProductionNetwork::new())),
             performance_stats: Arc::new(Mutex::new(PerformanceStats::new())),
             fired_activations: Arc::new(Mutex::new(HashSet::new())),
-            script_evaluator: ScriptEvaluator::new(),
+            script_evaluator: Box::new(BuiltinScriptEvaluator::new()),
+        }
+    }
+
+    /// Construct a network that evaluates `__script__` conditions with a
+    /// custom [`ScriptEval`] implementation instead of the default
+    /// [`BuiltinScriptEvaluator`]. All other subsystems are initialized as
+    /// in [`ReteNetwork::new`].
+    ///
+    /// Embedding hosts that need richer guard expressions (numeric
+    /// comparisons, boolean combinators over fact arguments) wire in the
+    /// `phronesis-rhai` evaluator here.
+    pub fn with_script_evaluator(evaluator: Box<dyn ScriptEval>) -> Self {
+        ReteNetwork {
+            script_evaluator: evaluator,
+            ..ReteNetwork::new()
         }
     }
 

@@ -56,6 +56,6 @@ pub use network::*;
 pub use production::*;
 pub use pull::{DynLookup, Lookup, dyn_lookup_as_consequence, lookup_as_consequence};
 pub use push::rule_firing_to_consequences;
-pub use script_evaluator::ScriptEvaluator;
+pub use script_evaluator::{BuiltinScriptEvaluator, ScriptEval, ScriptEvaluator};
 pub use variable_binding::{Bindings, Token};
 pub use wme::{WmeManager, WorkingMemoryElement};
