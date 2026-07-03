@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.16.2] - 2026-07-03
+
+### Added
+- **`phr-mcp migrate-extracted-rules <path> [--dry-run]`** — the salvage
+  command deferred from 0.14.0. Rewrites pre-0.14.0 `extract_rules` output
+  in place (with a `.bak` backup): strips the bracketed extraction-time
+  prefixes (`[pattern]`, `[anti_pattern]`, `[context]`, `[problem]`,
+  `[directive]`) from messages, demotes `block` actions to `warn`, and
+  demotes to `log` any extracted rule duplicating a structural Rust-pack
+  rule (the SPEC's static keyword table: unwrap, clone, Deref, &String,
+  &Vec, thiserror). Extracted rules are detected by their `markdown_rule`
+  condition, so hand-written rules are never touched. Idempotent.
+  Implements the salvage path in `docs/specs/SPEC-extract-rules-defaults.md`.
+
 ## [0.16.1] - 2026-07-03
 
 ### Added
@@ -419,6 +433,7 @@ Pre-0.11 history (0.10.0 and earlier) is recorded in the git log and
 `docs/specs/`. Notably, 0.10.0 added wiki-drift, the block-pattern rules, and
 the v2 rule schema.
 
+[0.16.2]: https://github.com/awaterma/phronesis/releases/tag/v0.16.2
 [0.14.0]: https://github.com/awaterma/phronesis/releases/tag/v0.14.0
 [0.13.3]: https://github.com/awaterma/phronesis/releases/tag/v0.13.3
 [0.13.2]: https://github.com/awaterma/phronesis/releases/tag/v0.13.2

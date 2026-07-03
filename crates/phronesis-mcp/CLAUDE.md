@@ -22,6 +22,7 @@ cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matc
 cargo run -- wiki-drift      # Heuristic: which .phronesis/wiki/decisions/ ADRs lack rule coverage?
 cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
 cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shape to the v2 shape
+cargo run -- migrate-extracted-rules <path>  # Salvage pre-0.14.0 extract_rules output: strip prefixes, demote actions
 ```
 
 ### Durable directives (`.phronesis/durable.md`)
@@ -336,6 +337,25 @@ phr-mcp migrate-rules --check <path>    # exit 0 if already v2, exit 1 if needs 
 
 Idempotent — running on an already-v2 file re-writes it in canonical form (no loss).
 
+### `migrate-extracted-rules`
+
+Salvages pre-0.14.0 `extract_rules` output in place (with a `.bak` backup).
+Detected by the `markdown_rule` condition — hand-written rules are never touched.
+
+```
+phr-mcp migrate-extracted-rules <path>            # rewrite in place (backs up to .bak)
+phr-mcp migrate-extracted-rules --dry-run <path>  # print what would change to stdout; write nothing
+```
+
+Three transformations applied to every extracted rule:
+- Strip bracketed extraction-time prefixes (`[pattern]`, `[anti_pattern]`, `[context]`,
+  `[problem]`, `[directive]`) from the message.
+- Demote `block` actions to `warn`.
+- Demote to `log` any rule whose message matches a structural Rust-pack keyword
+  (`unwrap`, `clone`, `Deref`, `&String`, `&Vec`, `thiserror`).
+
+Idempotent.
+
 ## Development
 
 ```
@@ -370,7 +390,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`, `migrate-rules`
+- `src/main.rs` — CLI entry point (clap): `serve`, `pre-check`, `post-check`, `init`, `migrate-rules`, `migrate-extracted-rules`
 - `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift, get_wiki_drift, get_confidence, submit_suggestion, get_journey)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
