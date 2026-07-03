@@ -764,8 +764,11 @@ impl ReteNetwork {
             .collect()
     }
 
-    /// Execute the next agenda item
-    pub fn execute_next_agenda_item(&self) -> Result<Vec<Action>, ReteError> {
+    /// Execute the next agenda item. Internal building block for
+    /// [`execute_all_agenda_items`](Self::execute_all_agenda_items); the
+    /// public single-step surface is [`execute_next_agenda_item`] behind the
+    /// `embedding-host` feature.
+    fn execute_next_agenda_item_inner(&self) -> Result<Vec<Action>, ReteError> {
         let agenda_item = {
             let mut agenda = self
                 .agenda
@@ -790,6 +793,16 @@ impl ReteNetwork {
         }
     }
 
+    /// Execute the next agenda item (single-step agenda drive).
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled
+    /// MCP, which drives the agenda via
+    /// [`execute_all_agenda_items`](Self::execute_all_agenda_items).
+    #[cfg(feature = "embedding-host")]
+    pub fn execute_next_agenda_item(&self) -> Result<Vec<Action>, ReteError> {
+        self.execute_next_agenda_item_inner()
+    }
+
     /// Execute all agenda items
     pub fn execute_all_agenda_items(&self) -> Result<Vec<Action>, ReteError> {
         let start = Instant::now();
@@ -803,7 +816,7 @@ impl ReteNetwork {
                 .map_err(|_| ReteError::poisoned("agenda"))?;
             !agenda.is_empty()
         } {
-            all_actions.extend(self.execute_next_agenda_item()?);
+            all_actions.extend(self.execute_next_agenda_item_inner()?);
         }
 
         // Record metrics
@@ -863,7 +876,10 @@ impl ReteNetwork {
         Ok(all)
     }
 
-    /// Get performance statistics and log them
+    /// Get performance statistics and log them.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn log_performance_stats(&self) {
         let rules_count = self
             .production_network
@@ -880,14 +896,20 @@ impl ReteNetwork {
         }
     }
 
-    /// Reset per-cycle performance counters
+    /// Reset per-cycle performance counters.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn reset_cycle_values(&self) {
         if let Ok(mut values) = self.performance_stats.lock() {
             values.reset_cycle();
         }
     }
 
-    /// Get a copy of performance statistics
+    /// Get a copy of performance statistics.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn get_performance_stats(&self) -> Option<PerformanceStats> {
         self.performance_stats
             .lock()
@@ -913,7 +935,10 @@ impl ReteNetwork {
         Ok(wme_manager.get_all().into_iter().cloned().collect())
     }
 
-    /// Get the number of rules in the RETE network
+    /// Get the number of rules in the RETE network.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub async fn get_rules_count(&self) -> Result<usize, ReteError> {
         let production_network = self
             .production_network
@@ -922,7 +947,10 @@ impl ReteNetwork {
         Ok(production_network.get_rules_count())
     }
 
-    /// Get WMEs matching a specific condition
+    /// Get WMEs matching a specific condition.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub async fn get_wmes_by_condition(
         &self,
         condition: &Condition,
@@ -963,6 +991,11 @@ impl ReteNetwork {
     }
 
     /// All facts with the given predicate, sorted by fact id.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled
+    /// MCP (use [`facts_matching`](Self::facts_matching) with an empty filter,
+    /// or [`facts_matching_predicates`](Self::facts_matching_predicates)).
+    #[cfg(feature = "embedding-host")]
     pub fn facts_matching_predicate(&self, predicate: &str) -> Result<Vec<Fact>, ReteError> {
         self.facts_matching(predicate, &[])
     }
@@ -1015,6 +1048,9 @@ impl ReteNetwork {
 
     /// Ids of facts matching the predicate + arg filters — the shape
     /// batch retraction wants: collect ids, then `retract_fact` each.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn fact_ids_matching(
         &self,
         predicate: &str,
@@ -1037,6 +1073,9 @@ impl ReteNetwork {
     }
 
     /// Number of facts currently in working memory.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn fact_count(&self) -> Result<usize, ReteError> {
         let wme_manager = self
             .wme_manager
@@ -1052,6 +1091,9 @@ impl ReteNetwork {
     /// previously-snapshotted fact set — pair with
     /// [`facts_matching_predicates`](Self::facts_matching_predicates) to take
     /// the snapshot.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub async fn restore_persistent_facts(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
         for fact in facts {
             self.assert_fact(fact).await?;
@@ -1061,6 +1103,9 @@ impl ReteNetwork {
 
     /// Bulk-insert a batch of facts directly into working memory (sync
     /// version), without triggering rule evaluation.
+    ///
+    /// Requires the `embedding-host` feature; not consumed by the bundled MCP.
+    #[cfg(feature = "embedding-host")]
     pub fn restore_persistent_facts_sync(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
         let mut wme_manager = self
             .wme_manager

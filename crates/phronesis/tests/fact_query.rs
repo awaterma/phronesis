@@ -39,6 +39,7 @@ async fn snapshot_returns_all_facts_sorted_by_id() {
     assert_eq!(ids, vec!["e1", "e2", "e3", "g1"], "deterministic order");
 }
 
+#[cfg(feature = "embedding-host")]
 #[tokio::test]
 async fn matching_predicate_returns_only_that_predicate() {
     let net = seeded().await;
@@ -121,9 +122,11 @@ async fn get_fact_by_id_and_count() {
     let e1 = net.get_fact_by_id("e1").expect("query");
     assert_eq!(e1.expect("e1 exists").args, vec!["alice", "head", "helm"]);
     assert!(net.get_fact_by_id("nope").expect("query").is_none());
+    #[cfg(feature = "embedding-host")]
     assert_eq!(net.fact_count().expect("count"), 4);
 }
 
+#[cfg(feature = "embedding-host")]
 #[tokio::test]
 async fn fact_ids_matching_supports_batch_retract() {
     let net = seeded().await;
@@ -154,9 +157,11 @@ async fn duplicate_fact_id_is_rejected() {
     // Original fact is unchanged.
     let e1 = net.get_fact_by_id("e1").expect("query").expect("e1 exists");
     assert_eq!(e1.args, vec!["alice", "head", "helm"]);
+    #[cfg(feature = "embedding-host")]
     assert_eq!(net.fact_count().expect("count"), 4);
 }
 
+#[cfg(feature = "embedding-host")]
 #[tokio::test]
 async fn duplicate_assert_does_not_corrupt_predicate_index() {
     let net = seeded().await;
@@ -171,6 +176,7 @@ async fn duplicate_assert_does_not_corrupt_predicate_index() {
     assert_eq!(e1_hits, 1, "e1 must appear exactly once");
 }
 
+#[cfg(feature = "embedding-host")]
 #[tokio::test]
 async fn identical_reassert_is_idempotent_noop() {
     let net = seeded().await;

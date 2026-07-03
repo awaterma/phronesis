@@ -76,6 +76,10 @@ fn errors_render_legacy_messages_and_convert_to_string() {
     assert_eq!(as_string, "WME with ID f9 not found");
 }
 
+// `execute_next_agenda_item` — and thus the only way to reach EmptyAgenda —
+// is behind the `embedding-host` feature; `execute_all_agenda_items` drains
+// the agenda and never surfaces the variant.
+#[cfg(feature = "embedding-host")]
 #[tokio::test]
 async fn empty_agenda_is_a_matchable_variant() {
     let net = ReteNetwork::new();
