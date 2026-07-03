@@ -4,7 +4,11 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
-## [Unreleased]
+## [0.16.0] - 2026-07-03
+
+phr-mcp 0.16.0; phr library bumps to 0.14.0 (engine changes this round —
+new scripting trait, a removed method, and a new feature gate); new
+`phronesis-rhai` 0.1.0.
 
 Three changes that tighten the engine/embedding-host boundary ahead of a
 1.0 line: an expressive scripting layer, removal of the last
