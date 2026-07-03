@@ -4,6 +4,27 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.16.1] - 2026-07-03
+
+### Security
+- **Migrate `serde_yml` → `serde_norway`.** `serde_yml 0.0.12` and its
+  `libyml` backend are archived and flagged unsound
+  (RUSTSEC-2025-0068 / RUSTSEC-2025-0067) with no fix coming.
+  `serde_norway` is the RustSec-recommended maintained `serde_yaml`
+  fork with the same API; the only call site (wiki frontmatter
+  parsing) changes crate path only. Removes `libyml` from the
+  dependency tree entirely.
+
+### Fixed
+- **Wiki frontmatter closing fence must be exactly `---` on its own
+  line.** The parser previously accepted any line beginning with three
+  dashes (`----`, `--- see appendix`) as the closing fence, silently
+  truncating the YAML and leaking the line's tail into the body. The
+  fence search now skips lookalikes; a page with no true fence reports
+  "missing closing `---` fence" instead of parsing corrupted content.
+  Pinned by five new parser tests (lookalike lines, fence at EOF,
+  CRLF endings).
+
 ## [0.16.0] - 2026-07-03
 
 phr-mcp 0.16.0; phr library bumps to 0.14.0 (engine changes this round —
@@ -56,6 +77,28 @@ public surface equal what the bundled MCP consumes.
   fixtures is neutralized. `restore_persistent_facts*` stay (generic
   bulk-assert; now behind `embedding-host`). Implements
   `docs/superpowers/specs/2026-06-13-domain-neutral-persistent-facts-design.md`.
+
+## [0.15.0] - 2026-06-24
+
+### Added
+- **Loop-based agent programming guide**
+  (`docs/loop-programming-guide.md`) — writing recurring /loop-driven
+  agent workflows against phronesis, with captures from live sessions
+  in this repo.
+- **`journey_derive` scaling bench** plus an ADR recording the
+  scaling behavior of journey fact derivation.
+
+### Fixed
+- **Journey rules with undefined selectors fail closed.** A rule
+  referencing a tag absent from `.phronesis/journey.json` was
+  fail-open: a stderr warning, then the rule loaded anyway — and for
+  absence-style rules (`== 0`) the missing tagger looked like zero
+  occurrences, so the rule fired on every call. Configuration errors
+  (`BadWindow`, `UndefinedSelector`) now propagate — the hook exits 2
+  (pre-check) / 1 (post-check) naming the offending rule id and
+  missing selector — while transient journal I/O errors stay
+  fail-open. See the decision page
+  `2026-06-23-undefined-selector-rejection.md`.
 
 ## [0.14.0] - 2026-06-21
 

@@ -99,21 +99,37 @@ pub fn parse_decision_file(path: &Path) -> Result<Decision, WikiError> {
             path: path.display().to_string(),
             message: "expected file to start with `---`".to_string(),
         })?;
-    let close_idx = rest.find("\n---").ok_or_else(|| WikiError::Frontmatter {
-        path: path.display().to_string(),
-        message: "missing closing `---` fence".to_string(),
-    })?;
-    let yaml = &rest[..close_idx];
-    // Body starts after the closing fence and the newline that follows it.
-    let after_fence = &rest[close_idx + 4..]; // skip "\n---"
-    let body = after_fence
-        .strip_prefix('\n')
-        .or_else(|| after_fence.strip_prefix("\r\n"))
-        .unwrap_or(after_fence)
-        .to_string();
+    // The closing fence is a line consisting of exactly `---`. A plain
+    // `find("\n---")` would also match a `----` divider or a block-scalar
+    // line starting with `---` inside the YAML, truncating it mid-document —
+    // so keep searching until the three dashes are followed by a line
+    // break (or end of file).
+    let mut search_from = 0;
+    let (yaml, body) = loop {
+        let rel = rest[search_from..]
+            .find("\n---")
+            .ok_or_else(|| WikiError::Frontmatter {
+                path: path.display().to_string(),
+                message: "missing closing `---` fence".to_string(),
+            })?;
+        let idx = search_from + rel;
+        // Body starts after the closing fence and the newline that follows it.
+        let after_fence = &rest[idx + 4..]; // skip "\n---"
+        if after_fence.is_empty() {
+            break (&rest[..idx], "");
+        }
+        if let Some(body) = after_fence
+            .strip_prefix('\n')
+            .or_else(|| after_fence.strip_prefix("\r\n"))
+        {
+            break (&rest[..idx], body);
+        }
+        search_from = idx + 1;
+    };
+    let body = body.to_string();
 
     let frontmatter: DecisionFrontmatter =
-        serde_yml::from_str(yaml).map_err(|e| WikiError::Frontmatter {
+        serde_norway::from_str(yaml).map_err(|e| WikiError::Frontmatter {
             path: path.display().to_string(),
             message: e.to_string(),
         })?;
@@ -305,6 +321,79 @@ mod tests {
             parse_decision_file(&p),
             Err(WikiError::Frontmatter { .. })
         ));
+    }
+
+    #[test]
+    fn parse_decision_fence_with_trailing_text_is_not_a_fence() {
+        // `--- see appendix` is not a closing fence. The old find("\n---")
+        // accepted it, silently truncating the YAML and leaking the line's
+        // tail into the body. Now the parser keeps searching and, absent a
+        // real fence, reports it missing.
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "x.md",
+            "---\nid: x\ndate: 2026-01-01\nstatus: accepted\n--- see appendix\n",
+        );
+        let err = parse_decision_file(&p).expect_err("trailing text is not a fence");
+        assert!(err.to_string().contains("missing closing `---` fence"));
+    }
+
+    #[test]
+    fn parse_decision_four_dash_divider_is_not_a_fence() {
+        // A `----` divider must not close the frontmatter (the old code
+        // matched it and prepended a stray `-` to the body).
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "x.md",
+            "---\nid: x\ndate: 2026-01-01\nstatus: accepted\n----\n",
+        );
+        let err = parse_decision_file(&p).expect_err("---- is not a fence");
+        assert!(err.to_string().contains("missing closing `---` fence"));
+    }
+
+    #[test]
+    fn parse_decision_real_fence_after_lookalike_line() {
+        // A lookalike line is skipped; the real fence further down still
+        // closes the frontmatter. The YAML in between is then judged by the
+        // parser (here it is invalid, and the error names the YAML problem
+        // rather than silently truncating at the lookalike).
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "x.md",
+            "---\nid: x\ndate: 2026-01-01\nstatus: accepted\n--- stray\n---\n\nbody\n",
+        );
+        let err = parse_decision_file(&p).expect_err("lookalike makes the YAML invalid");
+        let msg = err.to_string();
+        assert!(!msg.contains("missing closing"), "fence was found: {msg}");
+    }
+
+    #[test]
+    fn parse_decision_fence_at_eof_without_trailing_newline() {
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "x.md",
+            "---\nid: x\ndate: 2026-01-01\nstatus: accepted\n---",
+        );
+        let d = parse_decision_file(&p).expect("fence at EOF closes frontmatter");
+        assert_eq!(d.frontmatter.id, "x");
+        assert!(d.body.is_empty());
+    }
+
+    #[test]
+    fn parse_decision_crlf_line_endings() {
+        let dir = TempDir::new().unwrap();
+        let p = write(
+            &dir,
+            "x.md",
+            "---\r\nid: x\r\ndate: 2026-01-01\r\nstatus: accepted\r\n---\r\nbody\r\n",
+        );
+        let d = parse_decision_file(&p).expect("CRLF fences parse");
+        assert_eq!(d.frontmatter.id, "x");
+        assert!(d.body.contains("body"));
     }
 
     #[test]
