@@ -11,6 +11,7 @@ pub mod init;
 pub mod journey;
 pub mod journey_cli;
 pub mod memory_drift;
+pub mod migrate_extracted;
 pub mod net;
 pub mod outcomes;
 pub mod rules_file;
