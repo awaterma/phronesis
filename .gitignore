@@ -10,10 +10,15 @@
 docs/specs/*-migration-map.md
 docs/specs/PLAN-v0.11-hardening.md
 
+# macOS Finder metadata
+.DS_Store
+**/.DS_Store
+
 # Local IDE / agent configs (not part of the project)
 .claude/
 .crush/
 .gemini/
+.obsidian/
 .vscode/
 .mcp.json
 

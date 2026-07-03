@@ -101,6 +101,91 @@ fn build_rules() -> Vec<Rule> {
     rules
 }
 
+/// Build a scaled rule set of `n` rules, split evenly across the same three
+/// condition-count families as `build_rules` and using the identical predicate
+/// naming (`predicate_a_*` … `predicate_f_*`, indexed `i % 5`). Because the
+/// predicates and arities match `build_facts`, every family genuinely fires —
+/// the two- and three-condition families exercise the beta-join path rather
+/// than sitting dead. Models a SpamAssassin-scale ruleset (~200 rules) where
+/// the existing fixed 30-rule `build_rules` is too small to surface the
+/// super-linear assert/fire cost that fan-out drives.
+fn build_rules_scaled(n: usize) -> Vec<Rule> {
+    let mut rules = Vec::with_capacity(n);
+    let per_family = n / 3;
+
+    for i in 0..per_family {
+        rules.push(Rule {
+            id: format!("scale-single-{i}"),
+            priority: 1,
+            conditions: vec![Condition {
+                predicate: format!("predicate_a_{}", i % 5),
+                args: vec!["?x".to_string()],
+                script: None,
+            }],
+            actions: vec![Action {
+                action_type: "constraint_violation".to_string(),
+                params: vec![format!("scale single {i}: x=?x")],
+            }],
+        });
+    }
+
+    for i in 0..per_family {
+        rules.push(Rule {
+            id: format!("scale-two-{i}"),
+            priority: 1,
+            conditions: vec![
+                Condition {
+                    predicate: format!("predicate_b_{}", i % 5),
+                    args: vec!["?file".to_string()],
+                    script: None,
+                },
+                Condition {
+                    predicate: format!("predicate_c_{}", i % 5),
+                    args: vec!["?file".to_string(), "?detail".to_string()],
+                    script: None,
+                },
+            ],
+            actions: vec![Action {
+                action_type: "constraint_violation".to_string(),
+                params: vec![format!("scale two {i}: file=?file detail=?detail")],
+            }],
+        });
+    }
+
+    // Remainder folds into the three-condition family so `rules.len() == n`.
+    for i in 0..(n - 2 * per_family) {
+        rules.push(Rule {
+            id: format!("scale-three-{i}"),
+            priority: 1,
+            conditions: vec![
+                Condition {
+                    predicate: format!("predicate_d_{}", i % 5),
+                    args: vec!["?file".to_string()],
+                    script: None,
+                },
+                Condition {
+                    predicate: format!("predicate_e_{}", i % 5),
+                    args: vec!["?file".to_string(), "?kind".to_string()],
+                    script: None,
+                },
+                Condition {
+                    predicate: format!("predicate_f_{}", i % 5),
+                    args: vec!["?file".to_string(), "?owner".to_string()],
+                    script: None,
+                },
+            ],
+            actions: vec![Action {
+                action_type: "constraint_violation".to_string(),
+                params: vec![format!(
+                    "scale three {i}: file=?file kind=?kind owner=?owner"
+                )],
+            }],
+        });
+    }
+
+    rules
+}
+
 /// Build a representative fact set: predicates that match each rule family.
 /// Args use longer strings to make `Vec<String>` clone cost realistic.
 fn build_facts(n: usize) -> Vec<Fact> {
@@ -268,10 +353,41 @@ fn bench_add_rule(c: &mut Criterion) {
     group.finish();
 }
 
+/// SpamAssassin-scale fan-out: ~200 rules, contrasting a *sparse* fact set
+/// (few matching facts) against a *dense* one (every fact matches). The dense
+/// case drives consequence fan-out into the thousands and surfaces the
+/// super-linear assert/fire cost that the fixed 30-rule `assert_session` bench
+/// is too small to show. Ported from the former `scale_test.rs` example, but
+/// built on `build_rules_scaled`/`build_facts` so every rule family genuinely
+/// fires (the original example's content and join families never matched).
+fn bench_scale_fanout(c: &mut Criterion) {
+    let rt = build_runtime();
+    let rules = build_rules_scaled(200);
+
+    let mut group = c.benchmark_group("scale_fanout");
+    // (label, fact_count): sparse models realistic low hit-rate; dense is the
+    // worst-case fan-out where the network does the most work.
+    for &(label, n) in &[("sparse", 50usize), ("dense", 500usize)] {
+        let facts = build_facts(n);
+        group.throughput(Throughput::Elements(n as u64));
+        group.bench_with_input(BenchmarkId::from_parameter(label), &facts, |b, facts| {
+            b.to_async(&rt).iter(|| async {
+                let net = ReteNetwork::new();
+                populate_rules(&net, &rules).await;
+                assert_all(&net, facts).await;
+                let consequences = net.fire_all_consequences().expect("fire");
+                criterion::black_box(consequences);
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_assert_session,
     bench_assert_one,
-    bench_add_rule
+    bench_add_rule,
+    bench_scale_fanout
 );
 criterion_main!(benches);
