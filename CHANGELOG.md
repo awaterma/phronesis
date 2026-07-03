@@ -6,6 +6,23 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [0.16.1] - 2026-07-03
 
+### Added
+- **Named function detail on AST-predicate audit hits.** The audit
+  table/JSON previously rendered whole-function hits (let-binding
+  counts, etc.) as `lines: 1, 1, 1` — the placeholder line number.
+  `FileAudit` gains a `details` field parallel to `lines`, rendered as
+  `audit.rs — run (26 let bindings), run_profiled (32 let bindings)`
+  in both output formats.
+
+### Changed
+- **Rust pack: audit let-rules scope to `src/`.**
+  `audit-rust-let-binding-count-high` / `-let-mut-count-high` gain a
+  `file_path_matches: "src"` gate so examples, benches, and tests are
+  no longer flagged for let-count debt.
+- **Rust pack: `audit-newtype-id-string` honors doc exceptions.** The
+  rule gains `doc_excepted: true`, so a `///` field doc marks an
+  intentional string ID as an accepted exception.
+
 ### Security
 - **Migrate `serde_yml` → `serde_norway`.** `serde_yml 0.0.12` and its
   `libyml` backend are archived and flagged unsound
