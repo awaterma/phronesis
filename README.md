@@ -24,6 +24,7 @@ Beyond the syntactic rule packs, two grounded subsystems extend enforcement past
 
 - **`phronesis`** ([`crates/phronesis`](crates/phronesis)) — The core library: a high-performance, domain-neutral RETE rules engine (Alpha/Beta networks, P-states, join-sharing) with Consequence/Actor/Provenance primitives.
 - **`phronesis-mcp`** ([`crates/phronesis-mcp`](crates/phronesis-mcp)) — An MCP server that hosts the engine behind Claude Code / Gemini CLI hooks. Builds the `phr-mcp` binary.
+- **`phronesis-rhai`** ([`crates/phronesis-rhai`](crates/phronesis-rhai)) — A sandboxed [Rhai](https://rhai.rs) evaluator for `__script__` guard conditions, so rules can express numeric comparisons and boolean combinators over fact arguments. Opt in via the MCP's `rhai` feature.
 
 ## Documentation
 
