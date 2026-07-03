@@ -209,12 +209,11 @@ transformations in place (with a `.bak` backup).
 
 ## Rollout plan
 
-1. **PATCH** (next 0.13.x) — ✅ shipped in 0.16.2:
-   - Strip the bracketed prefix in extractor output (Problem 2).
-   - Default action to `warn` (Problem 1).
-   - `phr-mcp migrate-extracted-rules` (the salvage path above) for
-     existing projects — ships as `phr-mcp migrate-extracted-rules`
-     in 0.16.2.
+1. **PATCH** (next 0.13.x):
+   - Strip the bracketed prefix in extractor output (Problem 2). *(shipped in 0.14.0)*
+   - Default action to `warn` (Problem 1). *(shipped in 0.14.0)*
+   - `phr-mcp migrate-extracted-rules` covers the salvage path for
+     existing projects. *(shipped in 0.16.2)*
 2. **MINOR** (0.14.x or later):
    - Per-pattern marker conditions (Problem 3b).
    - Static skip-list for structurally-enforced patterns (Problem 4a).

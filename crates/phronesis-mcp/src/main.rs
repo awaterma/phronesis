@@ -688,8 +688,16 @@ async fn main() -> anyhow::Result<()> {
                 rules_file::read_source(&path).map_err(|e| anyhow::anyhow!("{}", e))?;
             let summary = migrate_extracted::migrate_extracted(&mut sources);
 
+            if summary.examined == 0 {
+                println!("no extracted rules found in {}", path.display());
+                return Ok(());
+            }
             if summary.changed == 0 {
-                println!("no extracted rules to migrate in {}", path.display());
+                println!(
+                    "{} extracted rule(s) already migrated in {}; nothing to do",
+                    summary.examined,
+                    path.display()
+                );
                 return Ok(());
             }
 
