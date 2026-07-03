@@ -942,7 +942,7 @@ impl ReteNetwork {
     //
     // Sync snapshot queries over working memory. These exist so embedding
     // hosts never need to reach into `wme_manager` directly; the shapes
-    // mirror the real consumer inventory (snapshot-all, predicate filter,
+    // cover the common embedding-host needs (snapshot-all, predicate filter,
     // positional-arg filters, id collection for batch retraction, by-id).
     // Results are owned clones sorted by fact id — deterministic output
     // for hosts that replay-test against recorded sessions.
@@ -969,8 +969,8 @@ impl ReteNetwork {
 
     /// All facts whose predicate is in `predicates` (set membership), sorted
     /// by fact id. Duplicate predicates in the input do not duplicate facts.
-    /// The generic, caller-owned replacement for "give me the facts I treat
-    /// as a category" (e.g. persistent / save-game state).
+    /// The generic, caller-owned way to say "give me the facts I treat as a
+    /// category" — the caller owns the predicate set.
     pub fn facts_matching_predicates(&self, predicates: &[&str]) -> Result<Vec<Fact>, ReteError> {
         let wme_manager = self
             .wme_manager
@@ -1045,62 +1045,13 @@ impl ReteNetwork {
         Ok(wme_manager.len())
     }
 
-    /// Get all persistent facts (score, goal state, etc.) for save game.
+    /// Bulk-assert a batch of facts (async version).
     ///
-    /// Deprecated: this hardcodes a consumer-specific predicate list, which
-    /// doesn't belong in a domain-neutral engine. Define your own predicate
-    /// set and call [`ReteNetwork::facts_matching_predicates`] instead.
-    #[deprecated(
-        since = "0.11.0",
-        note = "define your own predicate set and call facts_matching_predicates(&YOUR_SET); this hardcodes consumer-specific predicates and will be removed in 0.12"
-    )]
-    pub fn get_persistent_facts(&self) -> Vec<Fact> {
-        // Predicates that represent persistent game state
-        const PERSISTENT_PREDICATES: &[&str] = &[
-            "score_change",
-            "player_score_high",
-            "player_score_low",
-            "milestone_completed",
-            "task_started",
-            "subtask_completed",
-            "module_standing",
-            "agent_trust_level",
-            "hidden_debt_found",
-            "artifact_generated",
-            "goal_reached",
-            // 038: Progression & Achievement System
-            "contribution_logged",
-            "high_rank_task_assigned",
-            "platform_selected",
-            "policy_violation",
-            "policy_compliant_action",
-            "compliance_level",
-            "directory_audited",
-            "task_failed",
-            // consumer-specific game-state predicates (removed in 0.12)
-            "accomplishment_earned",
-            "location_cleared",
-            "deity_quest_offered",
-            "deity_selected",
-            "quest_failed",
-            "alignment_violation",
-            "deity_favor_level",
-            "alignment_aligned_action",
-        ];
-
-        if let Ok(wme_manager) = self.wme_manager.lock() {
-            wme_manager
-                .get_all()
-                .into_iter()
-                .filter(|wme| PERSISTENT_PREDICATES.contains(&wme.fact.predicate.as_str()))
-                .map(|wme| wme.fact.clone())
-                .collect()
-        } else {
-            Vec::new()
-        }
-    }
-
-    /// Restore persistent facts from a save game (async version)
+    /// Each fact goes through the full [`assert_fact`](Self::assert_fact)
+    /// path (rule evaluation fires). Embedding hosts use this to rehydrate a
+    /// previously-snapshotted fact set — pair with
+    /// [`facts_matching_predicates`](Self::facts_matching_predicates) to take
+    /// the snapshot.
     pub async fn restore_persistent_facts(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
         for fact in facts {
             self.assert_fact(fact).await?;
@@ -1108,8 +1059,8 @@ impl ReteNetwork {
         Ok(())
     }
 
-    /// Restore persistent facts from a save game (sync version)
-    /// This directly inserts into working memory without triggering rule evaluation
+    /// Bulk-insert a batch of facts directly into working memory (sync
+    /// version), without triggering rule evaluation.
     pub fn restore_persistent_facts_sync(&self, facts: Vec<Fact>) -> Result<(), ReteError> {
         let mut wme_manager = self
             .wme_manager

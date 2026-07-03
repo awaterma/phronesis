@@ -756,7 +756,7 @@ mod tests {
             name: "x".into(),
             description: "".into(),
             memory_type: "project".into(),
-            body: "This project uses card-game framing throughout.".into(),
+            body: "This project uses hexagonal architecture throughout.".into(),
         };
         assert_eq!(classify(&entry), Bucket::Ambient);
     }

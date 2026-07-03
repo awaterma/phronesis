@@ -759,7 +759,7 @@ const WIKI_DECISIONS_README: &str = "\
 # `.phronesis/wiki/decisions/`
 
 ADR-style decision pages. Each file is one decision (e.g. \
-`2026-05-29-card-game-terminology.md`). The first block is YAML \
+`2026-05-29-error-handling-policy.md`). The first block is YAML \
 frontmatter (`id`, `date`, `status`, optional `enforces`, \
 `superseded_by`, `tags`). The body uses Context / Decision / \
 Enforcement / Consequences sections.

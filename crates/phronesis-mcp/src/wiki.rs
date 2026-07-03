@@ -180,24 +180,24 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let p = write(
             &dir,
-            "2026-05-29-card-game-vocab.md",
+            "2026-05-29-api-naming.md",
             "---\n\
-             id: card-game-vocab\n\
+             id: api-naming\n\
              date: 2026-05-29\n\
              status: accepted\n\
              ---\n\
              \n\
              ## Decision\n\
-             Use card-game vocabulary.\n",
+             Use snake_case for API fields.\n",
         );
         let d = parse_decision_file(&p).expect("parse");
-        assert_eq!(d.frontmatter.id, "card-game-vocab");
+        assert_eq!(d.frontmatter.id, "api-naming");
         assert_eq!(d.frontmatter.date, "2026-05-29");
         assert_eq!(d.frontmatter.status, DecisionStatus::Accepted);
         assert!(d.frontmatter.enforces.is_empty());
         assert!(d.frontmatter.superseded_by.is_none());
         assert!(d.body.contains("## Decision"));
-        assert!(d.body.contains("Use card-game vocabulary"));
+        assert!(d.body.contains("Use snake_case for API fields"));
         assert_eq!(d.path, p);
     }
 
