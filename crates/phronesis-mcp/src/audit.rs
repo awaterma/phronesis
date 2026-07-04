@@ -11,7 +11,9 @@
 //!
 //! phronesis-allow: audit-file-loc-high (cohesive audit-engine surface)
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 
 use crate::rules_file::{DiskRule, RulesFile};
 use crate::syntax;
@@ -48,6 +50,64 @@ pub struct AuditOpts {
     /// Defaults to `project_root` when constructed by the CLI/MCP handler.
     pub scan_root: PathBuf,
     pub rule_filter: Option<String>,
+}
+
+/// Resolve the audit scan root: an absolute path is used as-is; a relative
+/// path is joined onto `project_root`; `None` defaults to `project_root`.
+///
+/// Both the MCP `audit_codebase` handler (server.rs, receives `Option<&str>`
+/// from tool params) and the CLI `handle_audit` (main.rs, converts
+/// `Option<PathBuf>` to `Option<&str>` at the call site) use this. The
+/// call-site conversion keeps the signature uniform here.
+pub fn resolve_scan_root(param: Option<&str>, project_root: &Path) -> PathBuf {
+    match param {
+        Some(p) => {
+            let pb = PathBuf::from(p);
+            if pb.is_absolute() {
+                pb
+            } else {
+                project_root.join(pb)
+            }
+        }
+        None => project_root.to_path_buf(),
+    }
+}
+
+/// Build the `audit_codebase` log-snapshot entry by annotating `e` with
+/// per-rule hit counts, totals, and the files-scanned count.
+///
+/// Both `server::EpistemeMcp::audit_codebase` (MCP tool) and
+/// `main::handle_audit` (CLI) call this to write their snapshot. Field
+/// names and integer widths here must stay in sync with the field reads
+/// inside `compute_trend` — that function is the sole reader of these
+/// snapshots, and divergence would silently produce zeroed trend rows.
+pub fn audit_snapshot_entry(
+    e: crate::action_log::LogEntry,
+    report: &AuditReport,
+) -> crate::action_log::LogEntry {
+    let mut per_rule = serde_json::Map::new();
+    for r in &report.per_rule {
+        per_rule.insert(
+            r.rule_id.as_str().to_string(),
+            serde_json::json!({ "level": r.level.as_str(), "hits": r.hits }),
+        );
+    }
+    let blocked: u32 = report
+        .per_rule
+        .iter()
+        .filter(|r| r.level == Level::Block)
+        .map(|r| r.hits)
+        .sum();
+    let warned: u32 = report
+        .per_rule
+        .iter()
+        .filter(|r| r.level == Level::Warn)
+        .map(|r| r.hits)
+        .sum();
+    e.with("files_scanned", report.files_scanned as u64)
+        .with("blocked_total", blocked as u64)
+        .with("warned_total", warned as u64)
+        .with("per_rule", serde_json::Value::Object(per_rule))
 }
 
 #[derive(Debug, Clone)]
@@ -281,190 +341,255 @@ fn line_preceded_by_doc_comment(lines: &[&str], i: usize) -> bool {
     false
 }
 
-/// Run the audit over `opts.scan_root` using `rules`. Reads files, runs each
-/// opted-in rule's predicates against the file contents, returns an
-/// `AuditReport`. Never panics; unreadable files are skipped silently.
-pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
-    use std::collections::BTreeMap;
-    use std::time::Instant;
-
-    let start = Instant::now();
-
-    // Filter to opted-in audit rules, honoring rule_filter.
-    let audit_rules: Vec<&DiskRule> = rules
+/// Filter `rules` to those opted into the audit, honoring `rule_filter`.
+fn filter_audit_rules<'a>(rules: &'a RulesFile, rule_filter: Option<&str>) -> Vec<&'a DiskRule> {
+    rules
         .rules
         .iter()
         .filter(|r| r.audit == Some(true))
-        .filter(|r| opts.rule_filter.as_deref().is_none_or(|f| r.id == f))
-        .collect();
+        .filter(|r| rule_filter.is_none_or(|f| r.id == f))
+        .collect()
+}
 
-    let files = if audit_rules.is_empty() {
-        Vec::new()
-    } else {
-        // For v1, audit every file the walker accepts. Most rules don't carry
-        // an explicit file_pattern condition; default to scanning everything
-        // and let the predicates self-filter.
-        discover_files(&opts.scan_root, &["*"])
-    };
-    let files_scanned = files.len() as u32;
-
-    // per_rule[rule_id] -> (level, BTreeMap<path -> PerFileHits>)
-    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
-
-    for path in &files {
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-        let lines: Vec<&str> = content.lines().collect();
-        // For Rust files, compute a keep-mask that excludes lines inside
-        // test-only modules. Hits there are real but not actionable as debt.
-        // Mirrors the hook's diff-time strip_test_blocks behavior.
-        let is_rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
-        let keep_mask: Option<Vec<bool>> = if is_rust {
-            Some(crate::diff_extract::rust_test_block_keep_mask_for(&content))
-        } else {
-            None
-        };
-
-        // For `file_line_count_above` checks, count only production lines on
-        // Rust files. Test files inflate line count without being the kind of
-        // "god-file" debt the rule is trying to surface — and the audit
-        // engine already strips test blocks for content predicates, so being
-        // consistent here too is the principled move.
-        let effective_line_count = match &keep_mask {
-            Some(mask) => mask.iter().filter(|&&keep| keep).count(),
-            None => lines.len(),
-        };
-
-        // Lazily parse syntax facts once per file. The parse is non-trivial
-        // (tree-sitter walk) so we defer it until a rule actually needs it,
-        // then cache so subsequent rules reuse the same parse.
-        let mut ast_facts: Option<Vec<Fact>> = None;
-        let path_str = path.to_string_lossy().to_string();
-
-        for rule in &audit_rules {
-            // Check gate predicates and reject rules that contain unsupported
-            // predicates (diff-only ones like `function_added`).
-            if !rule_applies_to_file(rule, path, effective_line_count) {
-                continue;
-            }
-            // File-level exemption: a file with a top-of-file `//! phronesis-allow:
-            // <rule-id>` doc-comment is exempt from that rule, when the rule
-            // opts in via `doc_excepted: true`. Lets an intentional god-file
-            // (e.g. a coherent MCP tool surface) document its size choice
-            // rather than be split mechanically.
-            if rule.doc_excepted.unwrap_or(false) && file_exempts_rule(&lines, &rule.id) {
-                continue;
-            }
-            for action in &rule.actions {
-                let Some(level) = Level::from_action_type(&action.action_type) else {
-                    continue;
-                };
-
-                // AST-predicate path: look up matching facts emitted by
-                // `SyntaxFacts::all_facts` and emit one audit hit per fact.
-                // Block-pattern adopters go silent here automatically because
-                // the extractor halts at child blocks — no fact means no hit.
-                //
-                // Mixed-rule semantics: if a rule's `when` clause combines an
-                // AST predicate with a content predicate (e.g.
-                // `function_let_binding_count_high` AND `new_content_contains`),
-                // this branch fires on the AST predicate alone and the trailing
-                // `continue` skips the content-evaluation loop below.
-                // Effectively, AST predicates take priority and content
-                // predicates in the same rule are ignored. No rule in the
-                // shipped seed packs mixes them today; if you ship one, change
-                // this branch to AND the two predicate kinds together rather
-                // than short-circuiting here.
-                if rule_has_ast_predicate(rule) {
-                    let facts = ast_facts.get_or_insert_with(|| {
-                        syntax::extract(&path_str, &content).all_facts(&path_str)
-                    });
-                    let mut hits = PerFileHits::default();
-                    for cond in &rule.conditions {
-                        if !is_ast_predicate(&cond.predicate) {
-                            continue;
-                        }
-                        for fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
-                            // Per-fact line spans aren't tracked yet; line 1
-                            // is the placeholder. The fact's args carry the
-                            // function name (and count, for count predicates),
-                            // which `ast_hit_detail` renders into the per-hit
-                            // detail string the renderer surfaces.
-                            let detail = ast_hit_detail(&cond.predicate, &fact.args);
-                            match detail {
-                                Some(d) => hits.push_detail(d),
-                                None => hits.push_line(1),
-                            }
-                        }
-                    }
-                    if hits.lines.is_empty() {
-                        continue;
-                    }
-                    let entry = accum
-                        .entry(rule.id.clone())
-                        .or_insert_with(|| (level, BTreeMap::new()));
-                    let slot = entry.1.entry(path.clone()).or_default();
-                    slot.lines.extend(hits.lines);
-                    slot.details.extend(hits.details);
-                    continue;
-                }
-
-                // Gate-only rule (e.g. file_line_count_above with no content
-                // match): emit one hit per file at line 1 once gates pass.
-                if is_whole_file_rule(rule) {
-                    let entry = accum
-                        .entry(rule.id.clone())
-                        .or_insert_with(|| (level, BTreeMap::new()));
-                    entry.1.entry(path.clone()).or_default().push_line(1);
-                    continue;
-                }
-
-                // Evaluate each `new_content_contains` condition against each
-                // line, recording line numbers of each match. Lines inside
-                // Rust test blocks are skipped via `keep_mask`. Matches
-                // immediately preceded by a `///` doc-comment are skipped
-                // when the rule opts in via `doc_excepted: true`.
-                let doc_excepted = rule.doc_excepted.unwrap_or(false);
-                for cond in &rule.conditions {
-                    if cond.predicate != "new_content_contains" {
-                        continue;
-                    }
-                    let Some(needle) = cond.args.first() else {
-                        continue;
-                    };
-                    let mut hit_lines: Vec<u32> = Vec::new();
-                    for (i, line) in lines.iter().enumerate() {
-                        if let Some(mask) = &keep_mask
-                            && !mask.get(i).copied().unwrap_or(true)
-                        {
-                            continue;
-                        }
-                        let count = line.matches(needle.as_str()).count();
-                        if count > 0 && doc_excepted && line_preceded_by_doc_comment(&lines, i) {
-                            continue;
-                        }
-                        for _ in 0..count {
-                            hit_lines.push((i + 1) as u32);
-                        }
-                    }
-                    if hit_lines.is_empty() {
-                        continue;
-                    }
-                    let entry = accum
-                        .entry(rule.id.clone())
-                        .or_insert_with(|| (level, BTreeMap::new()));
-                    entry
-                        .1
-                        .entry(path.clone())
-                        .or_default()
-                        .extend_lines(hit_lines);
-                }
+/// Evaluate the AST-predicate branch for a single rule on a single file.
+/// Returns `Some(hits)` if any AST facts matched, `None` if no hits.
+/// Lazily populates `ast_facts` on first call per file.
+fn eval_ast_rule(
+    rule: &DiskRule,
+    path_str: &str,
+    content: &str,
+    ast_facts: &mut Option<Vec<Fact>>,
+) -> Option<PerFileHits> {
+    let facts =
+        ast_facts.get_or_insert_with(|| syntax::extract(path_str, content).all_facts(path_str));
+    let mut hits = PerFileHits::default();
+    for cond in &rule.conditions {
+        if !is_ast_predicate(&cond.predicate) {
+            continue;
+        }
+        for fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
+            // Per-fact line spans aren't tracked yet; line 1 is the
+            // placeholder. The fact's args carry the function name (and
+            // count, for count predicates), which `ast_hit_detail` renders
+            // into the per-hit detail string the renderer surfaces.
+            let detail = ast_hit_detail(&cond.predicate, &fact.args);
+            match detail {
+                Some(d) => hits.push_detail(d),
+                None => hits.push_line(1),
             }
         }
     }
+    if hits.lines.is_empty() {
+        None
+    } else {
+        Some(hits)
+    }
+}
 
+/// Evaluate one `new_content_contains` condition against `lines`.
+/// Lines inside test blocks (via `keep_mask`) and doc-excepted lines are
+/// skipped. Increments `times.line_matches_evaluated` per line checked.
+fn eval_content_rule(
+    needle: &str,
+    lines: &[&str],
+    keep_mask: &Option<Vec<bool>>,
+    doc_excepted: bool,
+    mut times: Option<&mut AuditSectionTimes>,
+) -> Vec<u32> {
+    let mut hit_lines: Vec<u32> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if let Some(mask) = keep_mask
+            && !mask.get(i).copied().unwrap_or(true)
+        {
+            continue;
+        }
+        if let Some(ref mut t) = times {
+            t.line_matches_evaluated += 1;
+        }
+        let count = line.matches(needle).count();
+        if count > 0 && doc_excepted && line_preceded_by_doc_comment(lines, i) {
+            continue;
+        }
+        for _ in 0..count {
+            hit_lines.push((i + 1) as u32);
+        }
+    }
+    hit_lines
+}
+
+/// Apply one rule's actions against one file's pre-parsed data, writing any
+/// hits into `accum`. Gate checks and exemptions are evaluated here; timing
+/// for the line-match inner loop is forwarded via `times`.
+///
+/// See the comment below for the mixed-AST-short-circuit caveat.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_rule_for_file(
+    rule: &DiskRule,
+    path: &Path,
+    path_str: &str,
+    content: &str,
+    lines: &[&str],
+    keep_mask: &Option<Vec<bool>>,
+    effective_line_count: usize,
+    ast_facts: &mut Option<Vec<Fact>>,
+    accum: &mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
+    mut times: Option<&mut AuditSectionTimes>,
+) {
+    if !rule_applies_to_file(rule, path, effective_line_count) {
+        return;
+    }
+    if rule.doc_excepted.unwrap_or(false) && file_exempts_rule(lines, &rule.id) {
+        return;
+    }
+    for action in &rule.actions {
+        let Some(level) = Level::from_action_type(&action.action_type) else {
+            continue;
+        };
+
+        // AST-predicate path: look up matching facts emitted by
+        // `SyntaxFacts::all_facts` and emit one audit hit per fact.
+        // Block-pattern adopters go silent here automatically because
+        // the extractor halts at child blocks — no fact means no hit.
+        //
+        // Mixed-rule semantics: if a rule's `when` clause combines an
+        // AST predicate with a content predicate (e.g.
+        // `function_let_binding_count_high` AND `new_content_contains`),
+        // this branch fires on the AST predicate alone and the trailing
+        // `continue` skips the content-evaluation loop below.
+        // Effectively, AST predicates take priority and content
+        // predicates in the same rule are ignored. No rule in the
+        // shipped seed packs mixes them today; if you ship one, change
+        // this branch to AND the two predicate kinds together rather
+        // than short-circuiting here.
+        if rule_has_ast_predicate(rule) {
+            if let Some(hits) = eval_ast_rule(rule, path_str, content, ast_facts) {
+                let slot = accum
+                    .entry(rule.id.clone())
+                    .or_insert_with(|| (level, BTreeMap::new()))
+                    .1
+                    .entry(path.to_path_buf())
+                    .or_default();
+                slot.lines.extend(hits.lines);
+                slot.details.extend(hits.details);
+            }
+            continue;
+        }
+
+        // Gate-only rule (e.g. file_line_count_above with no content
+        // match): emit one hit per file at line 1 once gates pass.
+        if is_whole_file_rule(rule) {
+            accum
+                .entry(rule.id.clone())
+                .or_insert_with(|| (level, BTreeMap::new()))
+                .1
+                .entry(path.to_path_buf())
+                .or_default()
+                .push_line(1);
+            continue;
+        }
+
+        // Evaluate each `new_content_contains` condition against each
+        // line, recording line numbers of each match. Lines inside
+        // Rust test blocks are skipped via `keep_mask`. Matches
+        // immediately preceded by a `///` doc-comment are skipped
+        // when the rule opts in via `doc_excepted: true`.
+        let doc_excepted = rule.doc_excepted.unwrap_or(false);
+        for cond in &rule.conditions {
+            if cond.predicate != "new_content_contains" {
+                continue;
+            }
+            let Some(needle) = cond.args.first() else {
+                continue;
+            };
+            let hit_lines = eval_content_rule(
+                needle.as_str(),
+                lines,
+                keep_mask,
+                doc_excepted,
+                times.as_deref_mut(),
+            );
+            if hit_lines.is_empty() {
+                continue;
+            }
+            accum
+                .entry(rule.id.clone())
+                .or_insert_with(|| (level, BTreeMap::new()))
+                .1
+                .entry(path.to_path_buf())
+                .or_default()
+                .extend_lines(hit_lines);
+        }
+    }
+}
+
+/// Per-file scan body: runs all `rules` against `content`, accumulating hits
+/// into `accum`. Timing increments are guarded on `times`.
+fn scan_file_into_accum(
+    path: &Path,
+    content: &str,
+    rules: &[&DiskRule],
+    accum: &mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
+    mut times: Option<&mut AuditSectionTimes>,
+) {
+    let lines: Vec<&str> = content.lines().collect();
+    let is_rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
+
+    // For Rust files, compute a keep-mask that excludes lines inside
+    // test-only modules. Hits there are real but not actionable as debt.
+    // Mirrors the hook's diff-time strip_test_blocks behavior.
+    let keep_mask: Option<Vec<bool>> = {
+        let t = Instant::now();
+        let mask = if is_rust {
+            Some(crate::diff_extract::rust_test_block_keep_mask_for(content))
+        } else {
+            None
+        };
+        if let Some(ref mut t2) = times {
+            t2.keep_mask += t.elapsed();
+        }
+        mask
+    };
+
+    // For `file_line_count_above` checks, count only production lines on
+    // Rust files. Test files inflate line count without being the kind of
+    // "god-file" debt the rule is trying to surface — and the audit
+    // engine already strips test blocks for content predicates, so being
+    // consistent here too is the principled move.
+    let effective_line_count = match &keep_mask {
+        Some(mask) => mask.iter().filter(|&&keep| keep).count(),
+        None => lines.len(),
+    };
+
+    // Lazily parse syntax facts once per file. The parse is non-trivial
+    // (tree-sitter walk) so we defer it until a rule actually needs it,
+    // then cache so subsequent rules reuse the same parse.
+    let mut ast_facts: Option<Vec<Fact>> = None;
+    let path_str = path.to_string_lossy().to_string();
+
+    let t_match = Instant::now();
+    for rule in rules {
+        evaluate_rule_for_file(
+            rule,
+            path,
+            &path_str,
+            content,
+            &lines,
+            &keep_mask,
+            effective_line_count,
+            &mut ast_facts,
+            accum,
+            times.as_deref_mut(),
+        );
+    }
+    if let Some(ref mut t2) = times {
+        t2.match_loop += t_match.elapsed();
+    }
+}
+
+/// Collapse the per-file accumulator into a sorted `Vec<RuleAudit>`.
+fn build_per_rule(
+    accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
+) -> Vec<RuleAudit> {
     let mut per_rule: Vec<RuleAudit> = accum
         .into_iter()
         .map(|(rule_id, (level, by_path))| {
@@ -485,7 +610,6 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
             }
         })
         .collect();
-
     per_rule.sort_by(|a, b| {
         // Block > Warn
         let lvl = match (a.level, b.level) {
@@ -496,15 +620,86 @@ pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
         lvl.then_with(|| b.hits.cmp(&a.hits))
             .then_with(|| a.rule_id.cmp(&b.rule_id))
     });
+    per_rule
+}
 
-    let scan_duration_ms = start.elapsed().as_millis() as u64;
+/// Shared scan core used by both [`run`] and [`run_profiled`].
+/// When `times` is `Some`, timing points are recorded; when `None`
+/// the `Instant::now()` calls still execute (unconditionally) but
+/// stores are gated so there is no semantic difference for the caller.
+fn run_core(
+    rules: &RulesFile,
+    opts: &AuditOpts,
+    mut times: Option<&mut AuditSectionTimes>,
+) -> AuditReport {
+    let total_start = Instant::now();
+
+    let audit_rules = filter_audit_rules(rules, opts.rule_filter.as_deref());
+    if let Some(ref mut t) = times {
+        t.audit_rules = audit_rules.len() as u32;
+    }
+
+    // For v1, audit every file the walker accepts. Most rules don't carry
+    // an explicit file_pattern condition; default to scanning everything
+    // and let the predicates self-filter.
+    let (files, files_scanned) = {
+        let t = Instant::now();
+        let f = if audit_rules.is_empty() {
+            Vec::new()
+        } else {
+            discover_files(&opts.scan_root, &["*"])
+        };
+        let n = f.len() as u32;
+        if let Some(ref mut t2) = times {
+            t2.discover = t.elapsed();
+            t2.files_scanned = n;
+        }
+        (f, n)
+    };
+
+    // per_rule[rule_id] -> (level, BTreeMap<path -> PerFileHits>)
+    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
+
+    for path in &files {
+        let t = Instant::now();
+        let content = match std::fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => {
+                if let Some(ref mut t2) = times {
+                    t2.read_files += t.elapsed();
+                }
+                continue;
+            }
+        };
+        if let Some(ref mut t2) = times {
+            t2.read_files += t.elapsed();
+        }
+        scan_file_into_accum(
+            path,
+            &content,
+            &audit_rules,
+            &mut accum,
+            times.as_deref_mut(),
+        );
+    }
+
+    let (per_rule, total) = {
+        let t = Instant::now();
+        let r = build_per_rule(accum);
+        let total = total_start.elapsed();
+        if let Some(ref mut t2) = times {
+            t2.report_build = t.elapsed();
+            t2.total = total;
+        }
+        (r, total)
+    };
 
     AuditReport {
         generated_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
-        scan_duration_ms,
+        scan_duration_ms: total.as_millis() as u64,
         files_scanned,
         per_rule,
     }
@@ -534,199 +729,20 @@ pub struct AuditSectionTimes {
     pub line_matches_evaluated: u64,
 }
 
+/// Run the audit over `opts.scan_root` using `rules`. Reads files, runs each
+/// opted-in rule's predicates against the file contents, returns an
+/// `AuditReport`. Never panics; unreadable files are skipped silently.
+pub fn run(rules: &RulesFile, opts: &AuditOpts) -> AuditReport {
+    run_core(rules, opts, None)
+}
+
 /// Profiling variant of [`run`] — same logic, returns per-section wall
 /// times via [`AuditSectionTimes`]. Kept in tree as a permanent diagnostic
 /// (analogous to the criterion bench in `phronesis`); no behavior change vs
 /// `run`. Call this from a probe binary; production callers use `run`.
 pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditSectionTimes) {
-    use std::collections::BTreeMap;
-    use std::time::Instant;
-
-    let total_start = Instant::now();
     let mut times = AuditSectionTimes::default();
-
-    let audit_rules: Vec<&DiskRule> = rules
-        .rules
-        .iter()
-        .filter(|r| r.audit == Some(true))
-        .filter(|r| opts.rule_filter.as_deref().is_none_or(|f| r.id == f))
-        .collect();
-    times.audit_rules = audit_rules.len() as u32;
-
-    let t = Instant::now();
-    let files = if audit_rules.is_empty() {
-        Vec::new()
-    } else {
-        discover_files(&opts.scan_root, &["*"])
-    };
-    times.discover = t.elapsed();
-    times.files_scanned = files.len() as u32;
-
-    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
-
-    for path in &files {
-        let t = Instant::now();
-        let content = match std::fs::read_to_string(path) {
-            Ok(c) => c,
-            Err(_) => {
-                times.read_files += t.elapsed();
-                continue;
-            }
-        };
-        times.read_files += t.elapsed();
-
-        let lines: Vec<&str> = content.lines().collect();
-        let is_rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
-
-        let t = Instant::now();
-        let keep_mask: Option<Vec<bool>> = if is_rust {
-            Some(crate::diff_extract::rust_test_block_keep_mask_for(&content))
-        } else {
-            None
-        };
-        times.keep_mask += t.elapsed();
-
-        let effective_line_count = match &keep_mask {
-            Some(mask) => mask.iter().filter(|&&keep| keep).count(),
-            None => lines.len(),
-        };
-
-        let mut ast_facts: Option<Vec<Fact>> = None;
-        let path_str = path.to_string_lossy().to_string();
-
-        let t = Instant::now();
-        for rule in &audit_rules {
-            if !rule_applies_to_file(rule, path, effective_line_count) {
-                continue;
-            }
-            if rule.doc_excepted.unwrap_or(false) && file_exempts_rule(&lines, &rule.id) {
-                continue;
-            }
-            for action in &rule.actions {
-                let Some(level) = Level::from_action_type(&action.action_type) else {
-                    continue;
-                };
-                // Mirror of the run() branch — see that copy for the
-                // mixed AST+content rule semantics caveat.
-                if rule_has_ast_predicate(rule) {
-                    let facts = ast_facts.get_or_insert_with(|| {
-                        syntax::extract(&path_str, &content).all_facts(&path_str)
-                    });
-                    let mut hits = PerFileHits::default();
-                    for cond in &rule.conditions {
-                        if !is_ast_predicate(&cond.predicate) {
-                            continue;
-                        }
-                        for fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
-                            let detail = ast_hit_detail(&cond.predicate, &fact.args);
-                            match detail {
-                                Some(d) => hits.push_detail(d),
-                                None => hits.push_line(1),
-                            }
-                        }
-                    }
-                    if hits.lines.is_empty() {
-                        continue;
-                    }
-                    let entry = accum
-                        .entry(rule.id.clone())
-                        .or_insert_with(|| (level, BTreeMap::new()));
-                    let slot = entry.1.entry(path.clone()).or_default();
-                    slot.lines.extend(hits.lines);
-                    slot.details.extend(hits.details);
-                    continue;
-                }
-                if is_whole_file_rule(rule) {
-                    let entry = accum
-                        .entry(rule.id.clone())
-                        .or_insert_with(|| (level, BTreeMap::new()));
-                    entry.1.entry(path.clone()).or_default().push_line(1);
-                    continue;
-                }
-                let doc_excepted = rule.doc_excepted.unwrap_or(false);
-                for cond in &rule.conditions {
-                    if cond.predicate != "new_content_contains" {
-                        continue;
-                    }
-                    let Some(needle) = cond.args.first() else {
-                        continue;
-                    };
-                    let mut hit_lines: Vec<u32> = Vec::new();
-                    for (i, line) in lines.iter().enumerate() {
-                        if let Some(mask) = &keep_mask
-                            && !mask.get(i).copied().unwrap_or(true)
-                        {
-                            continue;
-                        }
-                        times.line_matches_evaluated += 1;
-                        let count = line.matches(needle.as_str()).count();
-                        if count > 0 && doc_excepted && line_preceded_by_doc_comment(&lines, i) {
-                            continue;
-                        }
-                        for _ in 0..count {
-                            hit_lines.push((i + 1) as u32);
-                        }
-                    }
-                    if hit_lines.is_empty() {
-                        continue;
-                    }
-                    let entry = accum
-                        .entry(rule.id.clone())
-                        .or_insert_with(|| (level, BTreeMap::new()));
-                    entry
-                        .1
-                        .entry(path.clone())
-                        .or_default()
-                        .extend_lines(hit_lines);
-                }
-            }
-        }
-        times.match_loop += t.elapsed();
-    }
-
-    let t = Instant::now();
-    let mut per_rule: Vec<RuleAudit> = accum
-        .into_iter()
-        .map(|(rule_id, (level, by_path))| {
-            let files: Vec<FileAudit> = by_path
-                .into_iter()
-                .map(|(path, hits)| FileAudit {
-                    path,
-                    lines: hits.lines,
-                    details: hits.details,
-                })
-                .collect();
-            let hits: u32 = files.iter().map(|f| f.lines.len() as u32).sum();
-            RuleAudit {
-                rule_id: rule_id.into(),
-                level,
-                hits,
-                files,
-            }
-        })
-        .collect();
-    per_rule.sort_by(|a, b| {
-        let lvl = match (a.level, b.level) {
-            (Level::Block, Level::Warn) => std::cmp::Ordering::Less,
-            (Level::Warn, Level::Block) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        };
-        lvl.then_with(|| b.hits.cmp(&a.hits))
-            .then_with(|| a.rule_id.cmp(&b.rule_id))
-    });
-    times.report_build = t.elapsed();
-    times.total = total_start.elapsed();
-
-    let scan_duration_ms = times.total.as_millis() as u64;
-    let report = AuditReport {
-        generated_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0),
-        scan_duration_ms,
-        files_scanned: times.files_scanned,
-        per_rule,
-    };
+    let report = run_core(rules, opts, Some(&mut times));
     (report, times)
 }
 
@@ -860,68 +876,16 @@ pub struct TrendPoint {
     pub hits: Option<u32>,
 }
 
-/// Compute a debt-over-time view from a slice of audit log entries.
-/// `entries` may contain non-`audit_codebase` events; they're skipped.
-/// Snapshots are taken in chronological order; `last`/`since_secs` slice
-/// the most recent window. Rules absent from a snapshot get a `None`
-/// `TrendPoint` at that timestamp (no zero-substitution).
-pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
-    use std::collections::BTreeMap;
-
-    let now = if opts.now_secs == 0 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    } else {
-        opts.now_secs
-    };
-
-    // Filter to audit snapshots in chronological order.
-    let mut snapshots: Vec<&LogEntry> = entries
-        .iter()
-        .filter(|e| e.event == "audit_codebase")
-        .collect();
-    snapshots.sort_by_key(|e| e.ts);
-
-    // Window slicing.
-    if let Some(since) = opts.since_secs {
-        let cutoff = now.saturating_sub(since);
-        snapshots.retain(|e| e.ts >= cutoff);
-    } else if let Some(n) = opts.last
-        && snapshots.len() > n
-    {
-        let skip = snapshots.len() - n;
-        snapshots.drain(0..skip);
-    }
-
-    if snapshots.is_empty() {
-        return DebtTrend {
-            generated_at: now,
-            snapshots_considered: 0,
-            first_snapshot_ts: 0,
-            last_snapshot_ts: 0,
-            rules: Vec::new(),
-        };
-    }
-
-    let first_ts = snapshots
-        .first()
-        .expect("snapshots non-empty: early-return above guards this")
-        .ts;
-    let last_ts = snapshots
-        .last()
-        .expect("snapshots non-empty: early-return above guards this")
-        .ts;
-
-    // Collect every rule id seen across the windowed snapshots, respecting the rule filter.
+/// Accumulate per-rule trend data from a windowed set of audit snapshots.
+/// Respects `rule_filter`; returns sorted `Vec<RuleTrend>` (improvements first).
+fn rule_trends(snapshots: &[&LogEntry], rule_filter: Option<&str>) -> Vec<RuleTrend> {
     let mut rule_ids: BTreeMap<String, Level> = BTreeMap::new();
-    for snap in &snapshots {
+    for snap in snapshots {
         let Some(per_rule) = snap.data.get("per_rule").and_then(|v| v.as_object()) else {
             continue;
         };
         for (id, v) in per_rule {
-            if let Some(filter) = opts.rule_filter.as_deref()
+            if let Some(filter) = rule_filter
                 && id != filter
             {
                 continue;
@@ -934,7 +898,6 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
             rule_ids.entry(id.clone()).or_insert(level);
         }
     }
-
     let mut rules: Vec<RuleTrend> = rule_ids
         .into_iter()
         .map(|(rule_id, level)| {
@@ -966,13 +929,69 @@ pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
             }
         })
         .collect();
-
     // Sort: improvements first (most-negative net_change), then by rule id.
     rules.sort_by(|a, b| {
         a.net_change
             .cmp(&b.net_change)
             .then_with(|| a.rule_id.cmp(&b.rule_id))
     });
+    rules
+}
+
+/// Compute a debt-over-time view from a slice of audit log entries.
+/// `entries` may contain non-`audit_codebase` events; they're skipped.
+/// Snapshots are taken in chronological order; `last`/`since_secs` slice
+/// the most recent window. Rules absent from a snapshot get a `None`
+/// `TrendPoint` at that timestamp (no zero-substitution).
+pub fn compute_trend(entries: &[LogEntry], opts: &TrendOpts) -> DebtTrend {
+    // Resolve wall-clock `now`, filter to audit snapshots, and apply the
+    // window (since_secs or last-N) in one block so the temporaries
+    // (`cutoff`, `skip`) don't leak into the outer scope.
+    let (now, snapshots) = {
+        let now = if opts.now_secs == 0 {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        } else {
+            opts.now_secs
+        };
+        let mut snaps: Vec<&LogEntry> = entries
+            .iter()
+            .filter(|e| e.event == "audit_codebase")
+            .collect();
+        snaps.sort_by_key(|e| e.ts);
+        if let Some(since) = opts.since_secs {
+            let cutoff = now.saturating_sub(since);
+            snaps.retain(|e| e.ts >= cutoff);
+        } else if let Some(n) = opts.last
+            && snaps.len() > n
+        {
+            let skip = snaps.len() - n;
+            snaps.drain(0..skip);
+        }
+        (now, snaps)
+    };
+
+    if snapshots.is_empty() {
+        return DebtTrend {
+            generated_at: now,
+            snapshots_considered: 0,
+            first_snapshot_ts: 0,
+            last_snapshot_ts: 0,
+            rules: Vec::new(),
+        };
+    }
+
+    let first_ts = snapshots
+        .first()
+        .expect("snapshots non-empty: early-return above guards this")
+        .ts;
+    let last_ts = snapshots
+        .last()
+        .expect("snapshots non-empty: early-return above guards this")
+        .ts;
+    let rules = rule_trends(&snapshots, opts.rule_filter.as_deref());
 
     DebtTrend {
         generated_at: now,
@@ -1258,13 +1277,16 @@ pub(crate) fn short_iso_date(ts: u64) -> String {
 // http://howardhinnant.github.io/date_algorithms.html#civil_from_days
 fn days_to_ymd(z: i64) -> (i32, u32, u32) {
     let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let (y, mp, d) = {
+        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+        let doe = (z - era * 146_097) as u64; // [0, 146096]
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365; // [0, 399]
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+        (y, mp, d)
+    };
     let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
     let y = if m <= 2 { y + 1 } else { y };
     (y as i32, m, d)
@@ -3071,5 +3093,50 @@ fn short() {
             ..empty_report()
         };
         assert!(empty_result_diagnostic(&r, 3, Path::new("/proj")).is_none());
+    }
+
+    #[test]
+    fn run_profiled_matches_run_and_populates_section_times() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn main() { let x = foo.unwrap(); }",
+        )
+        .unwrap();
+        let rules = RulesFile {
+            rules: vec![rule("no-unwrap", ".unwrap()", "constraint_violation")],
+        };
+        let opts = AuditOpts {
+            project_root: dir.path().to_path_buf(),
+            scan_root: dir.path().to_path_buf(),
+            rule_filter: None,
+        };
+        let report = run(&rules, &opts);
+        let (profiled, times) = run_profiled(&rules, &opts);
+
+        // Structural equality between the two paths.
+        assert_eq!(report.files_scanned, profiled.files_scanned);
+        assert_eq!(report.per_rule.len(), profiled.per_rule.len());
+        for (r, p) in report.per_rule.iter().zip(profiled.per_rule.iter()) {
+            assert_eq!(r.rule_id, p.rule_id);
+            assert_eq!(r.hits, p.hits);
+            assert_eq!(r.files.len(), p.files.len());
+            // FileAudit does not derive PartialEq; compare fields individually.
+            for (a, b) in r.files.iter().zip(p.files.iter()) {
+                assert_eq!(a.path, b.path);
+                assert_eq!(a.lines, b.lines);
+                assert_eq!(a.details, b.details);
+            }
+        }
+
+        // Timing fields populated.
+        assert_eq!(times.files_scanned, profiled.files_scanned);
+        assert!(times.audit_rules >= 1, "audit_rules must be counted");
+        assert!(
+            times.total >= times.match_loop,
+            "total {:?} must be >= match_loop {:?}",
+            times.total,
+            times.match_loop
+        );
     }
 }

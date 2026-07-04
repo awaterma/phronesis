@@ -1,9 +1,9 @@
 # MCP-crate decomposition — design
 
 - **Date:** 2026-06-28
-- **Status:** Approved (design); spec pending human review
+- **Status:** Implemented (plan: docs/superpowers/plans/2026-07-03-mcp-crate-decomposition.md)
 - **Branch (planned):** `fix/mcp-crate-decomposition`, off `main`
-- **Pre-feature anchor:** tag `v0.15.0`
+- **Pre-feature anchor:** tag `v0.16.2`
 - **Baseline audit:** 59 hits total across 3 rules (39 `audit-rust-let-binding-count-high` + 18 `audit-rust-let-mut-count-high` + 2 `audit-file-loc-high`). Of these, **51 are in scope** (MCP crate: 35 let-binding + 14 let-mut + 2 file-loc) and **8 are deferred** (core engine: 4 let-binding + 4 let-mut). The trend's starting point is the full 59; the target end-state is 8 (engine only)
 
 ## Context

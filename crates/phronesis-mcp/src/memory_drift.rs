@@ -75,6 +75,17 @@ pub enum MatchedTarget {
     },
 }
 
+impl DriftItem {
+    fn unmatched(entry: MemoryEntry, bucket: Bucket) -> Self {
+        DriftItem {
+            entry,
+            bucket,
+            best_match: None,
+            similarity: 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DriftReport {
     pub memory_dir: String,
@@ -196,37 +207,7 @@ fn parse_memory_file(path: &Path, raw: &str) -> Option<MemoryEntry> {
     let rest = trimmed.strip_prefix("---\n")?;
     let (frontmatter, body) = rest.split_once("\n---")?;
     let body = body.trim_start_matches(['\n', '\r']);
-
-    let mut name = String::new();
-    let mut description = String::new();
-    let mut memory_type = String::new();
-
-    // Track whether we're inside a "metadata:" subsection so we read
-    // `  type: feedback` correctly. The frontmatter we emit is shallow
-    // enough that a tiny line-keyed parser is sufficient — we deliberately
-    // avoid a YAML dependency for two field reads.
-    let mut in_metadata = false;
-    for line in frontmatter.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let indented = line.starts_with(' ') || line.starts_with('\t');
-        if !indented {
-            in_metadata = false;
-        }
-        if let Some(rest) = line.strip_prefix("name:") {
-            name = rest.trim().to_string();
-        } else if let Some(rest) = line.strip_prefix("description:") {
-            description = rest.trim().to_string();
-        } else if line.starts_with("metadata:") {
-            in_metadata = true;
-        } else if in_metadata {
-            let trimmed = line.trim_start();
-            if let Some(rest) = trimmed.strip_prefix("type:") {
-                memory_type = rest.trim().to_string();
-            }
-        }
-    }
+    let (name, description, memory_type) = parse_frontmatter_fields(frontmatter);
 
     if name.is_empty() {
         return None;
@@ -239,6 +220,45 @@ fn parse_memory_file(path: &Path, raw: &str) -> Option<MemoryEntry> {
         memory_type,
         body: body.to_string(),
     })
+}
+
+/// Extract `name`, `description`, and `metadata.type` from YAML frontmatter.
+///
+/// Uses a tiny line-keyed scan — deliberately avoids a YAML dependency
+/// for two field reads. Tracks indentation to read `  type: feedback`
+/// inside a `metadata:` subsection.
+fn parse_frontmatter_fields(frontmatter: &str) -> (String, String, String) {
+    // All four mutable accumulators are scoped inside the block; only the
+    // three-field result tuple escapes, keeping the function's outer
+    // let-mut count at zero (block pattern, per the let-mut audit rule).
+    {
+        let mut in_metadata = false;
+        let mut name = String::new();
+        let mut description = String::new();
+        let mut memory_type = String::new();
+        for line in frontmatter.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let indented = line.starts_with(' ') || line.starts_with('\t');
+            if !indented {
+                in_metadata = false;
+            }
+            if let Some(rest) = line.strip_prefix("name:") {
+                name = rest.trim().to_string();
+            } else if let Some(rest) = line.strip_prefix("description:") {
+                description = rest.trim().to_string();
+            } else if line.starts_with("metadata:") {
+                in_metadata = true;
+            } else if in_metadata {
+                let trimmed = line.trim_start();
+                if let Some(rest) = trimmed.strip_prefix("type:") {
+                    memory_type = rest.trim().to_string();
+                }
+            }
+        }
+        (name, description, memory_type)
+    }
 }
 
 fn classify(entry: &MemoryEntry) -> Bucket {
@@ -327,34 +347,48 @@ fn score_entry(entry: MemoryEntry, rules: &RulesFile, durable_md: &str) -> Drift
     // Personal memories don't drift against rules / durable.md — they
     // belong where they are. Skip the scoring.
     if bucket == Bucket::Personal {
-        return DriftItem {
-            entry,
-            bucket,
-            best_match: None,
-            similarity: 0.0,
-        };
+        return DriftItem::unmatched(entry, bucket);
     }
 
     let entry_tokens = meaningful_tokens(&format!("{} {}", entry.description, entry.body));
     if entry_tokens.is_empty() {
-        return DriftItem {
-            entry,
-            bucket,
-            best_match: None,
-            similarity: 0.0,
-        };
+        return DriftItem::unmatched(entry, bucket);
     }
 
-    let mut best: Option<(f32, MatchedTarget)> = None;
+    let rule_best = best_rule_match(&entry_tokens, rules);
+    // Score against durable.md for BOTH buckets (see comment on best_durable_match).
+    // Rules are scored first: on equal Jaccard, the rule match wins.
+    let best = if let Some(db) = best_durable_match(&entry_tokens, durable_md) {
+        better(rule_best, db)
+    } else {
+        rule_best
+    };
 
-    // Score against every rule.
+    match best {
+        Some((similarity, target)) => DriftItem {
+            entry,
+            bucket,
+            best_match: Some(target),
+            similarity,
+        },
+        None => DriftItem::unmatched(entry, bucket),
+    }
+}
+
+/// Return the highest-Jaccard match among all rules, or `None` if every
+/// rule has zero overlap with `entry_tokens`. First-wins on equal scores.
+fn best_rule_match(
+    entry_tokens: &HashSet<String>,
+    rules: &RulesFile,
+) -> Option<(f32, MatchedTarget)> {
+    let mut best: Option<(f32, MatchedTarget)> = None;
     for rule in &rules.rules {
         let rule_text = rule_textual_blob(rule);
         let rule_tokens = meaningful_tokens(&rule_text);
         if rule_tokens.is_empty() {
             continue;
         }
-        let (jaccard, shared) = jaccard_with_shared(&entry_tokens, &rule_tokens);
+        let (jaccard, shared) = jaccard_with_shared(entry_tokens, &rule_tokens);
         if jaccard > 0.0 {
             let candidate = (
                 jaccard,
@@ -366,13 +400,21 @@ fn score_entry(entry: MemoryEntry, rules: &RulesFile, durable_md: &str) -> Drift
             best = better(best, candidate);
         }
     }
+    best
+}
 
-    // Score against each non-empty paragraph in durable.md — for BOTH
-    // buckets. An actionable entry the operator chose to port as prose
-    // must still register as covered (the renderer notes "rule still
-    // preferable"); gating this to Ambient made the drift list
-    // non-convergent: ported actionable entries reported "port to a
-    // rule" forever.
+/// Return the highest-Jaccard match among all non-empty paragraphs in
+/// `durable_md`, or `None` if every paragraph has zero overlap.
+///
+/// Scored for BOTH `Actionable` and `Ambient` entries: an actionable
+/// entry the operator chose to port as prose must still register as
+/// covered (renderer notes "rule still preferable"); gating this to
+/// Ambient made the drift list non-convergent.
+fn best_durable_match(
+    entry_tokens: &HashSet<String>,
+    durable_md: &str,
+) -> Option<(f32, MatchedTarget)> {
+    let mut best: Option<(f32, MatchedTarget)> = None;
     for para in durable_md.split("\n\n") {
         let para = para.trim();
         if para.is_empty() {
@@ -382,7 +424,7 @@ fn score_entry(entry: MemoryEntry, rules: &RulesFile, durable_md: &str) -> Drift
         if para_tokens.is_empty() {
             continue;
         }
-        let (jaccard, shared) = jaccard_with_shared(&entry_tokens, &para_tokens);
+        let (jaccard, shared) = jaccard_with_shared(entry_tokens, &para_tokens);
         if jaccard > 0.0 {
             let excerpt = para.chars().take(80).collect::<String>();
             let candidate = (
@@ -395,21 +437,7 @@ fn score_entry(entry: MemoryEntry, rules: &RulesFile, durable_md: &str) -> Drift
             best = better(best, candidate);
         }
     }
-
-    match best {
-        Some((similarity, target)) => DriftItem {
-            entry,
-            bucket,
-            best_match: Some(target),
-            similarity,
-        },
-        None => DriftItem {
-            entry,
-            bucket,
-            best_match: None,
-            similarity: 0.0,
-        },
-    }
+    best
 }
 
 fn better(

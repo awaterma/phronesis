@@ -1,0 +1,241 @@
+use std::process;
+
+use phr::{Fact, ReteNetwork};
+
+use crate::hook_facts::{
+    assert_common_facts, assert_diff_facts, assert_test_facts, assert_values_facts,
+    check_bash_command_patterns, check_content_patterns, collect_bash_command_patterns,
+    collect_content_patterns,
+};
+use crate::security;
+
+use super::{HookError, HookPayload};
+
+/// PreToolUse hook: validate proposed changes before they happen.
+/// Exit 0 = allow, exit 2 = block.
+///
+/// Fails closed (exit 2) when:
+/// - stdin payload exceeds the size cap
+/// - `.phronesis/rules.json` exists but is malformed
+/// - rule loading, fact assertion, or rule firing fails
+pub async fn run_pre_check() -> anyhow::Result<()> {
+    let payload = match super::read_payload() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("phronesis: BLOCKED — invalid hook payload: {}", e);
+            process::exit(2);
+        }
+    };
+
+    let tool_name = match &payload.tool_name {
+        Some(name)
+            if name == "Edit"
+                || name == "Write"
+                || name == "MultiEdit"
+                || name == "Bash"
+                || name == "replace"
+                || name == "write_file"
+                || name == "run_shell_command" =>
+        {
+            name.clone()
+        }
+        _ => super::exit_ok(),
+    };
+
+    let (rules, content_patterns, bash_command_patterns) = {
+        let rules = match super::load_rules("pre") {
+            Ok(Some(r)) => r,
+            Ok(None) => super::exit_ok(),
+            Err(e) => {
+                eprintln!("phronesis: BLOCKED — {}", e);
+                process::exit(2);
+            }
+        };
+        let cp = collect_content_patterns(&rules);
+        let bcp = collect_bash_command_patterns(&rules);
+        (rules, cp, bcp)
+    };
+
+    let (new_content, file_path) = (
+        super::extract_new_content(&payload, &tool_name),
+        super::extract_file_path(&payload),
+    );
+
+    let network = {
+        let rules_for_journey = rules.clone();
+        let mut net = crate::net::build_network();
+        for rule in rules {
+            if let Err(e) = net.add_rule(rule).await {
+                eprintln!("phronesis: BLOCKED — failed to load rule: {}", e);
+                process::exit(2);
+            }
+        }
+        if let Err(e) = assert_common_facts(&net, &file_path, &tool_name, "pre").await {
+            eprintln!("phronesis: BLOCKED — failed to assert facts: {}", e);
+            process::exit(2);
+        }
+        if let Err(e) = super::assert_journey_facts_into(
+            &mut net,
+            &security::project_root(),
+            &rules_for_journey,
+        )
+        .await
+        {
+            eprintln!("phronesis: BLOCKED — {}", e);
+            process::exit(2);
+        }
+        super::assert_pack_marker_facts(&net, &security::project_root()).await;
+        super::assert_confidence_signals(&net).await;
+        net
+    };
+
+    if let Some(content) = &new_content
+        && assert_pre_content_facts(
+            &network,
+            &payload,
+            &tool_name,
+            content,
+            &file_path,
+            &content_patterns,
+            &bash_command_patterns,
+        )
+        .await
+        .is_err()
+    {
+        process::exit(2);
+    }
+
+    if let Err(e) = network.update_agenda().await {
+        eprintln!("phronesis: BLOCKED — agenda update failed: {}", e);
+        process::exit(2);
+    }
+    let consequences = match network.fire_all_consequences() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("phronesis: BLOCKED — rule execution failed: {}", e);
+            process::exit(2);
+        }
+    };
+
+    let (logged, violations, warnings) = super::collect_logged(&consequences);
+
+    // Severity order: violations (block) > warnings (allow-with-message) > clean.
+    if !violations.is_empty() {
+        for v in &violations {
+            eprintln!("phronesis: BLOCKED — {}", v);
+        }
+        // Surface any warnings alongside the block so the agent sees the
+        // full picture, not just the first reason the edit was rejected.
+        for w in &warnings {
+            eprintln!("phronesis: WARNING — {}", w);
+        }
+        super::log_hook_event("pre", &tool_name, &file_path, 2, &logged);
+        process::exit(2);
+    }
+
+    if !warnings.is_empty() {
+        for w in &warnings {
+            eprintln!("phronesis: WARNING — {}", w);
+        }
+        super::log_hook_event("pre", &tool_name, &file_path, 1, &logged);
+        process::exit(1);
+    }
+
+    super::log_hook_event("pre", &tool_name, &file_path, 0, &logged);
+    super::exit_ok();
+}
+
+/// Assert all content-derived facts for the pre-check phase: new_content,
+/// pattern checks, cargo-workspace scanner, diff facts, values facts, and
+/// TDD test-existence facts.  Logs the specific error message to stderr on
+/// failure and returns `Err` — the caller maps that to `process::exit(2)`.
+async fn assert_pre_content_facts(
+    network: &ReteNetwork,
+    payload: &HookPayload,
+    tool_name: &str,
+    content: &str,
+    file_path: &str,
+    content_patterns: &[String],
+    bash_command_patterns: &[String],
+) -> Result<(), HookError> {
+    network
+        .assert_fact(Fact {
+            id: "new_content".to_string(),
+            predicate: "new_content".to_string(),
+            args: vec![content.to_string()],
+            timestamp: 0,
+        })
+        .await
+        .map_err(|e| {
+            eprintln!("phronesis: BLOCKED — failed to assert content fact: {}", e);
+            HookError::from(e)
+        })?;
+
+    check_content_patterns(network, file_path, content, content_patterns)
+        .await
+        .map_err(|e| {
+            eprintln!("phronesis: BLOCKED — pattern check failed: {}", e);
+            e
+        })?;
+
+    // Command-content regexes apply only to command tools — file
+    // content quoting the same text must not trip command rules.
+    if matches!(tool_name, "Bash" | "run_shell_command") {
+        check_bash_command_patterns(network, content, bash_command_patterns)
+            .await
+            .map_err(|e| {
+                eprintln!("phronesis: BLOCKED — command pattern check failed: {}", e);
+                e
+            })?;
+    }
+
+    // Cargo-workspace scanner: applies to Bash command content as well as
+    // file content. Has no file-extension gate, so it can't go through
+    // DiffFacts::extract (which returns empty for unknown extensions).
+    super::assert_cargo_workspace_facts(network, content).await;
+
+    let old_content = super::extract_old_content(payload, tool_name);
+
+    // Diff-aware structural facts (function_added/removed, import_added/removed).
+    assert_diff_facts(network, file_path, old_content.as_deref(), content)
+        .await
+        .map_err(|e| {
+            eprintln!("phronesis: BLOCKED — diff-fact assertion failed: {}", e);
+            e
+        })?;
+
+    // Syntax-aware structural facts (function_returns_result_string, etc.)
+    // At pre-check, the edit hasn't applied yet, so disk still holds the
+    // prior content — read it for the delta filter on heavy-clone facts.
+    // Resolve `file_path` against the project root so the read works
+    // regardless of process cwd (matches the post-check path-resolution).
+    let old_disk_content = if !file_path.is_empty() {
+        let root = security::project_root();
+        match security::resolve_safe_path(file_path, &root) {
+            Ok(safe) => std::fs::read_to_string(&safe).ok(),
+            Err(_) => None,
+        }
+    } else {
+        None
+    };
+
+    assert_values_facts(network, file_path, content, old_disk_content.as_deref())
+        .await
+        .map_err(|e| {
+            eprintln!("phronesis: BLOCKED — values-fact assertion failed: {}", e);
+            e
+        })?;
+
+    // TDD support: for each newly-added function, assert test_exists_for / no_test_for.
+    let added =
+        crate::diff_extract::extract(file_path, old_content.as_deref(), content).functions_added;
+    let project_root = security::project_root();
+    assert_test_facts(network, &project_root, file_path, &added)
+        .await
+        .map_err(|e| {
+            eprintln!("phronesis: BLOCKED — test-fact assertion failed: {}", e);
+            e
+        })?;
+
+    Ok(())
+}

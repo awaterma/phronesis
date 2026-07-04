@@ -64,32 +64,13 @@ pub async fn compute(
     now_ts: u64,
     current_sid: &str,
 ) -> Result<Vec<JourneyRow>, JourneyCliError> {
-    let rules_path = rules_file::default_path(project_root);
-    let disk_rules = rules_file::read(&rules_path)?;
+    let disk_rules = rules_file::read(&rules_file::default_path(project_root))?;
     let rules: Vec<Rule> = disk_rules
         .rules
         .iter()
         .map(|d| rules_file::rule_from_disk(d).0)
         .collect();
-
-    let cfg = journey::load_config(project_root)
-        .or_else(|e| match e {
-            // Operator (CLI or MCP) explicitly asked for journey output;
-            // a missing config produces empty rows, which is opaque. Nudge
-            // toward the scaffolder and continue with an empty config. The
-            // hook stays silent — it loads journey advisorily, not on
-            // demand. Malformed config still hard-errors via `?` below.
-            journey::ConfigError::NotFound(_) => {
-                eprintln!(
-                    "phronesis: no .phronesis/journey.json found — run \
-                     `phr-mcp init --packs journey` to scaffold one. \
-                     Continuing with empty config."
-                );
-                Ok(TaggerConfig::default())
-            }
-            other => Err(other),
-        })
-        .map_err(JourneyCliError::Config)?;
+    let cfg = load_config_or_default(project_root)?;
 
     // If an explain rule was requested, ensure it exists in the loaded rules.
     if let Some(rule_id) = explain_rule
@@ -102,29 +83,11 @@ pub async fn compute(
     derive::assert_facts(&mut net, project_root, &rules, &cfg, current_sid, now_ts).await?;
 
     let facts: Vec<Fact> = net.facts_snapshot()?;
-
     // Build attribution: for each (predicate, selector) seen in any rule, the
     // rules that reference it. We index by (predicate, selector) — multiple
     // windows for the same selector still attribute to the same rule.
     let attribution = build_attribution(&rules);
-
-    // Filter facts to journey_* and group them deterministically.
-    let mut rows: Vec<JourneyRow> = facts
-        .into_iter()
-        .filter(|f| f.predicate.starts_with("journey_"))
-        .map(|f| {
-            let (selector, window, extra) = split_args(&f);
-            let key = (f.predicate.clone(), selector.clone());
-            let rules: Vec<String> = attribution.get(&key).cloned().unwrap_or_default();
-            JourneyRow {
-                predicate: f.predicate,
-                selector,
-                window,
-                extra,
-                rules,
-            }
-        })
-        .collect();
+    let mut rows = rows_from_facts(&facts, &attribution);
 
     // Filter by explain rule if requested.
     if let Some(rule_id) = explain_rule {
@@ -148,6 +111,51 @@ pub async fn compute(
     });
 
     Ok(rows)
+}
+
+/// Load `.phronesis/journey.json` or fall back to a default config if the
+/// file is absent. A missing config nudges the operator toward the scaffolder
+/// but continues with empty rows (fail-open on NotFound). Malformed config
+/// surfaces as `JourneyCliError::Config` so the operator can correct it —
+/// distinct from the hook's fully fail-open posture.
+fn load_config_or_default(project_root: &Path) -> Result<TaggerConfig, JourneyCliError> {
+    journey::load_config(project_root)
+        .or_else(|e| match e {
+            journey::ConfigError::NotFound(_) => {
+                eprintln!(
+                    "phronesis: no .phronesis/journey.json found — run \
+                     `phr-mcp init --packs journey` to scaffold one. \
+                     Continuing with empty config."
+                );
+                Ok(TaggerConfig::default())
+            }
+            other => Err(other),
+        })
+        .map_err(JourneyCliError::Config)
+}
+
+/// Map asserted `journey_*` facts to `JourneyRow`s, cross-referencing each
+/// fact with the attribution map built from the loaded rules.
+fn rows_from_facts(
+    facts: &[Fact],
+    attribution: &BTreeMap<(String, String), Vec<String>>,
+) -> Vec<JourneyRow> {
+    facts
+        .iter()
+        .filter(|f| f.predicate.starts_with("journey_"))
+        .map(|f| {
+            let (selector, window, extra) = split_args(f);
+            let key = (f.predicate.clone(), selector.clone());
+            let rules = attribution.get(&key).cloned().unwrap_or_default();
+            JourneyRow {
+                predicate: f.predicate.clone(),
+                selector,
+                window,
+                extra,
+                rules,
+            }
+        })
+        .collect()
 }
 
 /// Decompose a journey fact's args into (selector, window, extra). The args

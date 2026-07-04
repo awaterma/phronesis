@@ -240,52 +240,42 @@ fn scan_condition(cond: &phr::Condition, scan: &mut RuleScan) -> Result<(), Deri
 /// present — the script may be referencing some other predicate family
 /// entirely (e.g. `signal_pass`).
 fn scan_script(script: &str, scan: &mut RuleScan) -> Result<(), DeriveError> {
-    let body = script.trim();
-    let inner = if let Some(rest) = body.strip_prefix("facts_count(") {
-        rest
-    } else if let Some(rest) = body.strip_prefix("facts_contain(") {
-        rest
-    } else {
+    let Some((predicate, args)) = parse_facts_call(script) else {
         return Ok(());
     };
+    record_pair(predicate, &args, scan)?;
+    Ok(())
+}
 
-    // Find matching close-paren.
-    let (close_pos, _) = match find_matching_paren(inner) {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-    let args_blob = &inner[..close_pos];
-
-    // Split predicate, '[arg, arg, ...]'.
-    let bracket_start = match args_blob.find('[') {
-        Some(p) => p,
-        None => return Ok(()),
-    };
-    let comma_pos = match args_blob[..bracket_start].rfind(',') {
-        Some(p) => p,
-        None => return Ok(()),
-    };
+/// Extract the `(predicate, args)` pair from a `facts_count(...)` or
+/// `facts_contain(...)` script body. Returns `None` for any form that
+/// doesn't match the expected grammar — scan_script maps these to a
+/// silent `Ok(())` skip (malformed scripts are tolerantly ignored).
+fn parse_facts_call(script: &str) -> Option<(&str, Vec<String>)> {
+    let body = script.trim();
+    let inner = body
+        .strip_prefix("facts_count(")
+        .or_else(|| body.strip_prefix("facts_contain("))?;
+    let args_blob = &inner[..find_matching_paren(inner)?.0];
+    let bracket_start = args_blob.find('[')?;
+    let comma_pos = args_blob[..bracket_start].rfind(',')?;
     let predicate = args_blob[..comma_pos]
         .trim()
         .trim_matches('\'')
         .trim_matches('"');
     if !predicate.starts_with("journey_") {
-        return Ok(());
+        return None;
     }
-    let array_part = args_blob[comma_pos + 1..].trim();
-    let inner_array = match array_part
+    let args: Vec<String> = args_blob[comma_pos + 1..]
+        .trim()
         .strip_prefix('[')
         .and_then(|s| s.strip_suffix(']'))
-    {
-        Some(v) => v,
-        None => return Ok(()),
-    };
-    let args: Vec<String> = inner_array
-        .split(',')
-        .map(|a| a.trim().trim_matches('\'').trim_matches('"').to_string())
-        .collect();
-    record_pair(predicate, &args, scan)?;
-    Ok(())
+        .map(|ia| {
+            ia.split(',')
+                .map(|a| a.trim().trim_matches('\'').trim_matches('"').to_string())
+                .collect()
+        })?;
+    Some((predicate, args))
 }
 
 /// Forward scan for a matching `)`, accounting for any nested `(`s — same
@@ -328,37 +318,24 @@ fn record_pair(predicate: &str, args: &[String], scan: &mut RuleScan) -> Result<
             scan.seen_pairs.insert((sel, win));
         }
         "journey_since_ge" => {
-            // args: [selector, k]
-            if args.len() < 2 {
-                return Ok(());
-            }
-            let sel = args[0].clone();
-            let k: u32 = match args[1].parse() {
-                Ok(v) => v,
-                Err(_) => return Ok(()),
-            };
-            let entry = scan.since_max_k.entry(sel).or_insert(0);
-            if k > *entry {
-                *entry = k;
+            // args: [selector, k] — malformed args silently drop (no error).
+            if let Some((sel, k)) = take_sel_k(args) {
+                let entry = scan.since_max_k.entry(sel).or_insert(0);
+                if k > *entry {
+                    *entry = k;
+                }
             }
         }
         "journey_filtered_since_ge" => {
-            // args: [target_selector, counted_selector, k]
-            if args.len() < 3 {
-                return Ok(());
-            }
-            let target = args[0].clone();
-            let counted = args[1].clone();
-            let k: u32 = match args[2].parse() {
-                Ok(v) => v,
-                Err(_) => return Ok(()),
-            };
-            let entry = scan
-                .filtered_since_max_k
-                .entry((target, counted))
-                .or_insert(0);
-            if k > *entry {
-                *entry = k;
+            // args: [target_selector, counted_selector, k] — malformed args silently drop.
+            if let Some((target, counted, k)) = take_two_sel_k(args) {
+                let entry = scan
+                    .filtered_since_max_k
+                    .entry((target, counted))
+                    .or_insert(0);
+                if k > *entry {
+                    *entry = k;
+                }
             }
         }
         "journey_distinct" => {
@@ -370,6 +347,27 @@ fn record_pair(predicate: &str, args: &[String], scan: &mut RuleScan) -> Result<
         _ => {}
     }
     Ok(())
+}
+
+/// Extract `(selector, k)` from the args of a `journey_since_ge` condition.
+/// Returns `None` for malformed args (too few, or unparseable k) — the
+/// caller silently skips those conditions rather than propagating an error.
+fn take_sel_k(args: &[String]) -> Option<(String, u32)> {
+    if args.len() < 2 {
+        return None;
+    }
+    let k: u32 = args[1].parse().ok()?;
+    Some((args[0].clone(), k))
+}
+
+/// Extract `(target, counted, k)` from the args of a
+/// `journey_filtered_since_ge` condition. Returns `None` for malformed args.
+fn take_two_sel_k(args: &[String]) -> Option<(String, String, u32)> {
+    if args.len() < 3 {
+        return None;
+    }
+    let k: u32 = args[2].parse().ok()?;
+    Some((args[0].clone(), args[1].clone(), k))
 }
 
 fn take_sel_win(args: &[String]) -> Result<(String, String), DeriveError> {
@@ -487,22 +485,22 @@ pub async fn assert_facts(
     // read up to the hard cap and let the per-window filter drop the rest;
     // the alternative (true reverse-scan until sid changes) is a future
     // optimization, not a v1 contract.
-    let max_calls = scan.max_call_window();
-    let max_seconds = scan.max_time_seconds();
-    let needs_session = scan.references_session();
-
-    let needs_since = !scan.since_max_k.is_empty();
-    let needs_filtered_since = !scan.filtered_since_max_k.is_empty();
-
-    let read_n = if needs_session || needs_since || needs_filtered_since || max_seconds > 0 {
-        // session floor / time window / distance-since-last all need an
-        // open-ended look-back; let the hard cap bound the cost and let
-        // the per-record filter drop the rest.
-        journal::SUFFIX_HARD_CAP
-    } else {
-        // Calls-only window: read exactly enough records to satisfy the
-        // largest call window.
-        (max_calls as usize).max(1)
+    let read_n = {
+        let max_calls = scan.max_call_window();
+        let max_seconds = scan.max_time_seconds();
+        let needs_session = scan.references_session();
+        let needs_since = !scan.since_max_k.is_empty();
+        let needs_filtered_since = !scan.filtered_since_max_k.is_empty();
+        if needs_session || needs_since || needs_filtered_since || max_seconds > 0 {
+            // session floor / time window / distance-since-last all need an
+            // open-ended look-back; let the hard cap bound the cost and let
+            // the per-record filter drop the rest.
+            journal::SUFFIX_HARD_CAP
+        } else {
+            // Calls-only window: read exactly enough records to satisfy the
+            // largest call window.
+            (max_calls as usize).max(1)
+        }
     };
 
     let records = journal::read_recent(project_root, read_n)?;

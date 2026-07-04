@@ -61,6 +61,21 @@ impl CargoAdapter {
     }
 }
 
+/// Sum all `test result:` lines in `output`. Returns `Some((passed, failed))`
+/// when at least one result line is present, or `None` when cargo emitted no
+/// test results (e.g. compile-only run or no test targets).
+fn sum_test_results(output: &str) -> Option<(usize, usize)> {
+    TEST_RESULT
+        .captures_iter(output)
+        .map(|caps| {
+            (
+                caps[1].parse::<usize>().unwrap_or(0),
+                caps[2].parse::<usize>().unwrap_or(0),
+            )
+        })
+        .reduce(|(p1, f1), (p2, f2)| (p1 + p2, f1 + f2))
+}
+
 impl OutcomeAdapter for CargoAdapter {
     fn handles(&self, command: &str) -> bool {
         command.contains("cargo build")
@@ -72,21 +87,13 @@ impl OutcomeAdapter for CargoAdapter {
     fn parse(&self, subject: &str, command: &str, output: &str) -> Vec<OutcomeFact> {
         let compiled = Self::compiled(output);
         let mut facts = vec![OutcomeFact::build(subject, compiled)];
-
         // Tests only run if the code compiled; a compile failure means there is
         // no test signal at all (only the build_outcome above).
-        if Self::is_test_command(command) && compiled {
-            let mut passed = 0usize;
-            let mut failed = 0usize;
-            let mut saw_result = false;
-            for caps in TEST_RESULT.captures_iter(output) {
-                saw_result = true;
-                passed += caps[1].parse::<usize>().unwrap_or(0);
-                failed += caps[2].parse::<usize>().unwrap_or(0);
-            }
-            if saw_result {
-                facts.push(OutcomeFact::test(subject, passed, failed));
-            }
+        if Self::is_test_command(command)
+            && compiled
+            && let Some((passed, failed)) = sum_test_results(output)
+        {
+            facts.push(OutcomeFact::test(subject, passed, failed));
         }
         facts
     }
@@ -114,6 +121,50 @@ fn test_tag(fact: &OutcomeFact) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// Translate a slice of outcome facts into their journal tag strings.
+/// Only `build_outcome` and `test_outcome` predicates produce tags; all
+/// others are silently skipped.
+fn outcome_tags(facts: &[OutcomeFact]) -> Vec<String> {
+    facts
+        .iter()
+        .filter_map(|f| match f.predicate {
+            "build_outcome" => build_tag(f),
+            "test_outcome" => test_tag(f),
+            _ => None,
+        })
+        .map(|s| s.to_string())
+        .collect()
+}
+
+/// Emit `outcome:bug_caught:<id>` tags for any known bug whose test went
+/// green with no regressions. Returns an empty `Vec` when there are no
+/// per-test results or no known bugs.
+fn bug_caught_tags(project_root: &Path, subject: &str, output: &str) -> Vec<String> {
+    let per_test = per_test_results(output);
+    if per_test.is_empty() {
+        return Vec::new();
+    }
+    let known = bugs::load(project_root);
+    if known.is_empty() {
+        return Vec::new();
+    }
+    let no_regressions = per_test.iter().all(|(_, passed)| *passed);
+    let bug_facts = bugs::check(subject, &known, &per_test, no_regressions);
+    bug_facts
+        .iter()
+        .filter_map(|f| {
+            // bug_check_outcome args: [subject, bug_id, status]
+            if let (Some(id), Some(status)) = (f.args.get(1), f.args.get(2))
+                && status == "fixed"
+            {
+                Some(format!("outcome:bug_caught:{}", id))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Post-check side of confidence scoring at the journey-fold-in seam:
@@ -158,48 +209,11 @@ pub fn extract_from(
         Ok(s) => s,
         Err(_) => return (Vec::new(), None),
     };
-
     let outcome_facts = crate::outcomes::adapter::extract(&subject, command, output);
-
-    let mut tags: Vec<String> = Vec::new();
-    for f in &outcome_facts {
-        match f.predicate {
-            "build_outcome" => {
-                if let Some(t) = build_tag(f) {
-                    tags.push(t.to_string());
-                }
-            }
-            "test_outcome" => {
-                if let Some(t) = test_tag(f) {
-                    tags.push(t.to_string());
-                }
-            }
-            _ => {}
-        }
-    }
-
-    // Known-bug TDD signal: if this run named individual tests, score open
-    // bugs and emit one `outcome:bug_caught:<id>` per bug whose test went
-    // green with no regressions. The `:<id>` suffix preserves the bug
-    // identity so per-subject `signals` can reconstruct the same shape the
-    // ledger produced.
-    let per_test = per_test_results(output);
-    if !per_test.is_empty() {
-        let known = bugs::load(project_root);
-        if !known.is_empty() {
-            let no_regressions = per_test.iter().all(|(_, passed)| *passed);
-            let bug_facts = bugs::check(&subject, &known, &per_test, no_regressions);
-            for f in &bug_facts {
-                // bug_check_outcome args: [subject, bug_id, status]
-                if let (Some(id), Some(status)) = (f.args.get(1), f.args.get(2))
-                    && status == "fixed"
-                {
-                    tags.push(format!("outcome:bug_caught:{}", id));
-                }
-            }
-        }
-    }
-
+    let tags: Vec<String> = outcome_tags(&outcome_facts)
+        .into_iter()
+        .chain(bug_caught_tags(project_root, &subject, output))
+        .collect();
     (tags, Some(subject))
 }
 

@@ -63,6 +63,23 @@ const STOPWORDS: &[&str] = &[
     "but", "with", "as", "it", "its", "this", "that", "you", "your", "we", "our", "i", "me",
 ];
 
+/// Imperative trigger words. A bullet whose first significant word matches
+/// one of these is extracted as an enforced directive.
+const TRIGGERS: &[&str] = &[
+    "don't",
+    "do not",
+    "never",
+    "always",
+    "avoid",
+    "prefer",
+    "use ",
+    "make sure",
+    "stop ",
+    "reserve",
+    "drop ",
+    "no ",
+];
+
 /// Top-level entry point. Reads CLAUDE.md and the rule pack from
 /// `project_root` and returns a `DriftReport`.
 pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
@@ -90,6 +107,49 @@ pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
     })
 }
 
+/// Extract the body text from a markdown list item, stripping the bullet
+/// marker. Handles `- `, `* `, and numbered (`1. ` / `1) `) forms. Returns
+/// `None` for non-list lines or numbered items whose body is empty after
+/// stripping the digit and delimiter.
+///
+/// For `- ` / `* ` bullets the returned string is the raw remainder after the
+/// two-character marker — NOT trimmed. This preserves leading whitespace so
+/// that `is_imperative` checks run against the literal rest: a bullet like
+/// `-   never push` (extra spaces) will NOT match the `"never"` trigger
+/// because the lower-cased body starts with spaces. Callers that want a
+/// clean display value should call `.trim()` on the returned string.
+///
+/// For numbered items the body is `trim_start()`-ed (standard: digits and
+/// delimiter consume the indent, any remaining whitespace is noise).
+fn bullet_body(trimmed: &str) -> Option<String> {
+    if let Some(rest) = trimmed.strip_prefix("- ") {
+        return Some(rest.to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("* ") {
+        return Some(rest.to_string());
+    }
+    if trimmed.starts_with(|c: char| c.is_ascii_digit()) {
+        let after_num: String = trimmed
+            .chars()
+            .skip_while(|c| c.is_ascii_digit())
+            .skip_while(|c| matches!(c, '.' | ')'))
+            .collect();
+        let s = after_num.trim();
+        if s.is_empty() {
+            return None;
+        }
+        return Some(s.to_string());
+    }
+    None
+}
+
+/// Return `true` when `body` (a bullet's text content) starts with an
+/// imperative trigger word. Case-insensitive.
+fn is_imperative(body: &str) -> bool {
+    let lower = body.to_ascii_lowercase();
+    TRIGGERS.iter().any(|t| lower.starts_with(t))
+}
+
 /// Pull imperative bullets out of CLAUDE.md. An imperative is a markdown
 /// list item (`- `, `* `, or numbered `1. `) whose first significant word
 /// matches an imperative trigger (Don't, Never, Always, Avoid, Prefer, Use,
@@ -98,56 +158,19 @@ pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
 /// Returns each imperative as a single trimmed line, without the bullet
 /// marker. Order is preserved (CLAUDE.md reading order).
 pub fn extract_imperatives(claude_md: &str) -> Vec<String> {
-    let triggers: &[&str] = &[
-        "don't",
-        "do not",
-        "never",
-        "always",
-        "avoid",
-        "prefer",
-        "use ",
-        "make sure",
-        "stop ",
-        "reserve",
-        "drop ",
-        "no ",
-    ];
-    let mut out = Vec::new();
-    for line in claude_md.lines() {
-        let trimmed = line.trim_start();
-        let body = if let Some(rest) = trimmed.strip_prefix("- ") {
-            rest
-        } else if let Some(rest) = trimmed.strip_prefix("* ") {
-            rest
-        } else if trimmed.starts_with(|c: char| c.is_ascii_digit()) {
-            // Numbered list: "1. body" or "1) body"
-            let after_num: String = trimmed
-                .chars()
-                .skip_while(|c| c.is_ascii_digit())
-                .skip_while(|c| matches!(c, '.' | ')'))
-                .collect();
-            let after_num = after_num.trim_start();
-            if after_num.is_empty() {
-                continue;
+    claude_md
+        .lines()
+        .filter_map(|line| {
+            let body = bullet_body(line.trim_start())?;
+            if is_imperative(&body) {
+                // Push the trimmed display value (matches v0.16.2: the old loop
+                // did `out.push(body.trim().to_string())` for all bullet kinds).
+                Some(body.trim().to_string())
+            } else {
+                None
             }
-            // Re-bind into a String we can match on; need to leak through the loop
-            // by using a separate code path. Simplest: stash and continue below.
-            // Use a small workaround: treat as body via a local variable.
-            let lower = after_num.to_ascii_lowercase();
-            if triggers.iter().any(|t| lower.starts_with(t)) {
-                out.push(after_num.trim().to_string());
-            }
-            continue;
-        } else {
-            continue;
-        };
-
-        let lower = body.to_ascii_lowercase();
-        if triggers.iter().any(|t| lower.starts_with(t)) {
-            out.push(body.trim().to_string());
-        }
-    }
-    out
+        })
+        .collect()
 }
 
 fn score_imperative(imp: &str, rules: &RulesFile) -> DriftItem {
@@ -325,6 +348,28 @@ fn truncate(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use crate::rules_file::{DiskAction, DiskCondition, DiskRule, RulesFile};
+
+    /// A `- ` bullet with extra spaces before the trigger word must NOT be
+    /// extracted. The old (v0.16.2) loop ran the trigger `starts_with` check on
+    /// the raw remainder after stripping `"- "`, so leading spaces in the
+    /// remainder prevented a match. A normal `- Never …` (single space, no
+    /// extra indent) IS extracted.
+    #[test]
+    fn bullet_with_extra_indent_after_dash_is_not_extracted() {
+        let md = "\
+-   never push without review
+- Never commit untested code
+";
+        let imps = extract_imperatives(md);
+        assert!(
+            !imps.iter().any(|s| s.contains("never push")),
+            "bullet with extra spaces after dash must NOT be extracted"
+        );
+        assert!(
+            imps.iter().any(|s| s.contains("Never commit")),
+            "normal bullet (single space) must be extracted"
+        );
+    }
 
     #[test]
     fn extracts_basic_imperative_bullets() {

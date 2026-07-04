@@ -73,6 +73,33 @@ pub fn default_wiki_dir(project_root: &Path) -> PathBuf {
     project_root.join(".phronesis").join("wiki")
 }
 
+/// Locate the closing `---` fence in the post-opening-fence content `rest`
+/// and split into `(yaml, body)` slices. The fence must be exactly three
+/// dashes followed by a line break or end-of-file; lookalike lines (`----`,
+/// `--- text`) are skipped. Returns the static error message on failure so
+/// the caller can wrap it with path context.
+fn split_frontmatter(rest: &str) -> Result<(&str, &str), &'static str> {
+    let mut search_from = 0usize;
+    loop {
+        let rel = rest[search_from..]
+            .find("\n---")
+            .ok_or("missing closing `---` fence")?;
+        let idx = search_from + rel;
+        // Body starts after the closing fence and the newline that follows it.
+        let after_fence = &rest[idx + 4..]; // skip "\n---"
+        if after_fence.is_empty() {
+            return Ok((&rest[..idx], ""));
+        }
+        if let Some(body) = after_fence
+            .strip_prefix('\n')
+            .or_else(|| after_fence.strip_prefix("\r\n"))
+        {
+            return Ok((&rest[..idx], body));
+        }
+        search_from = idx + 1;
+    }
+}
+
 /// Parse a single decision page. Expects:
 ///
 /// ```text
@@ -103,29 +130,11 @@ pub fn parse_decision_file(path: &Path) -> Result<Decision, WikiError> {
     // `find("\n---")` would also match a `----` divider or a block-scalar
     // line starting with `---` inside the YAML, truncating it mid-document —
     // so keep searching until the three dashes are followed by a line
-    // break (or end of file).
-    let mut search_from = 0;
-    let (yaml, body) = loop {
-        let rel = rest[search_from..]
-            .find("\n---")
-            .ok_or_else(|| WikiError::Frontmatter {
-                path: path.display().to_string(),
-                message: "missing closing `---` fence".to_string(),
-            })?;
-        let idx = search_from + rel;
-        // Body starts after the closing fence and the newline that follows it.
-        let after_fence = &rest[idx + 4..]; // skip "\n---"
-        if after_fence.is_empty() {
-            break (&rest[..idx], "");
-        }
-        if let Some(body) = after_fence
-            .strip_prefix('\n')
-            .or_else(|| after_fence.strip_prefix("\r\n"))
-        {
-            break (&rest[..idx], body);
-        }
-        search_from = idx + 1;
-    };
+    // break (or end of file). See `split_frontmatter` for the loop logic.
+    let (yaml, body) = split_frontmatter(rest).map_err(|message| WikiError::Frontmatter {
+        path: path.display().to_string(),
+        message: message.to_string(),
+    })?;
     let body = body.to_string();
 
     let frontmatter: DecisionFrontmatter =
