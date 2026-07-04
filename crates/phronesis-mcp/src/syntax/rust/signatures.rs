@@ -1,7 +1,7 @@
 use std::sync::LazyLock;
 
 use streaming_iterator::StreamingIterator;
-use tree_sitter::{Query, QueryCursor};
+use tree_sitter::{Query, QueryCursor, QueryMatch};
 
 use super::super::parsed::ParsedFile;
 use super::walk::walk_function_items;
@@ -107,26 +107,21 @@ pub(super) fn extract_public_functions(parsed: &ParsedFile) -> Vec<String> {
         return Vec::new();
     };
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&PUB_FN_QUERY, tree.root_node(), source.as_bytes());
-    let mut out = Vec::new();
-    while let Some(m) = matches.next() {
-        let mut vis: Option<&str> = None;
-        let mut name: Option<&str> = None;
-        for cap in m.captures {
-            let text = cap.node.utf8_text(source.as_bytes()).unwrap_or("");
-            match PUB_FN_QUERY.capture_names()[cap.index as usize] {
-                "vis" => vis = Some(text.trim()),
-                "name" => name = Some(text),
-                _ => {}
-            }
-        }
-        if vis == Some("pub")
-            && let Some(n) = name
-        {
-            out.push(n.to_string());
-        }
+    cursor
+        .matches(&PUB_FN_QUERY, tree.root_node(), source.as_bytes())
+        .filter_map_deref(|m| pub_fn_name(m, source.as_bytes()))
+        .collect()
+}
+
+/// From one `PUB_FN_QUERY` match: the function name iff its
+/// visibility_modifier is exactly `pub`.
+fn pub_fn_name(m: &QueryMatch, source: &[u8]) -> Option<String> {
+    let vis = capture_node(m, &PUB_FN_QUERY, "vis")?;
+    if vis.utf8_text(source).unwrap_or("").trim() != "pub" {
+        return None;
     }
-    out
+    let name = capture_node(m, &PUB_FN_QUERY, "name")?;
+    Some(name.utf8_text(source).unwrap_or("").to_string())
 }
 
 /// Functions whose return type is `Result<_, String>` (error state is String).
@@ -135,47 +130,43 @@ pub(super) fn extract_result_string_returns(parsed: &ParsedFile) -> Vec<String> 
         return Vec::new();
     };
     let mut cursor = QueryCursor::new();
-    let mut matches = cursor.matches(&FN_QUERY, tree.root_node(), source.as_bytes());
-    let mut out = Vec::new();
+    cursor
+        .matches(&FN_QUERY, tree.root_node(), source.as_bytes())
+        .filter_map_deref(|m| result_string_offender(m, source.as_bytes()))
+        .collect()
+}
 
-    while let Some(m) = matches.next() {
-        let mut name: Option<&str> = None;
-        let mut outer: Option<&str> = None;
-        let mut args_node: Option<tree_sitter::Node> = None;
-        for cap in m.captures {
-            let text = cap.node.utf8_text(source.as_bytes()).unwrap_or("");
-            match FN_QUERY.capture_names()[cap.index as usize] {
-                "name" => name = Some(text),
-                "return_outer" => outer = Some(text),
-                "return_args" => args_node = Some(cap.node),
-                _ => {}
-            }
-        }
-
-        if outer != Some("Result") {
-            continue;
-        }
-        let Some(args) = args_node else { continue };
-
-        let count = args.named_child_count();
-        if count < 2 {
-            continue;
-        }
-        let Some(last) = args.named_child(count - 1) else {
-            continue;
-        };
-        if last.kind() != "type_identifier" {
-            continue;
-        }
-        let last_text = last.utf8_text(source.as_bytes()).unwrap_or("");
-        if last_text != "String" {
-            continue;
-        }
-        if let Some(n) = name {
-            out.push(n.to_string());
-        }
+/// From one `FN_QUERY` match: the function name iff the return type is
+/// `Result<_, String>` — outer type is `Result`, two or more type
+/// arguments, and the last argument is the bare `String` identifier.
+fn result_string_offender(m: &QueryMatch, source: &[u8]) -> Option<String> {
+    let outer = capture_node(m, &FN_QUERY, "return_outer")?;
+    if outer.utf8_text(source).unwrap_or("") != "Result" {
+        return None;
     }
-    out
+    let args = capture_node(m, &FN_QUERY, "return_args")?;
+    let count = args.named_child_count();
+    if count < 2 {
+        return None;
+    }
+    let last = args.named_child(count - 1)?;
+    if last.kind() != "type_identifier" || last.utf8_text(source).unwrap_or("") != "String" {
+        return None;
+    }
+    let name = capture_node(m, &FN_QUERY, "name")?;
+    Some(name.utf8_text(source).unwrap_or("").to_string())
+}
+
+/// The node captured under `name` in `m`, if that capture is present.
+fn capture_node<'t>(
+    m: &QueryMatch<'_, 't>,
+    query: &Query,
+    name: &str,
+) -> Option<tree_sitter::Node<'t>> {
+    m.captures
+        .iter()
+        .find(|cap| query.capture_names()[cap.index as usize] == name)
+        .map(|cap| cap.node)
 }
 
 #[cfg(test)]

@@ -64,26 +64,7 @@ fn collect_derives_from_attr(
     let Some(inner) = attr.children(&mut aw).find(|c| c.kind() == "attribute") else {
         return;
     };
-    // The attribute's path is an `identifier` child (or `scoped_identifier`);
-    // its arguments are exposed via the `arguments` field.
-    let mut is_derive = false;
-    let mut iw = inner.walk();
-    for child in inner.children(&mut iw) {
-        if child.kind() == "identifier" {
-            if child.utf8_text(source).unwrap_or("") == "derive" {
-                is_derive = true;
-            }
-            break;
-        } else if child.kind() == "scoped_identifier" {
-            // e.g. `core::prelude::v1::derive` — last segment is the path tail.
-            let txt = child.utf8_text(source).unwrap_or("");
-            if txt.rsplit("::").next() == Some("derive") {
-                is_derive = true;
-            }
-            break;
-        }
-    }
-    if !is_derive {
+    if !attr_is_derive(inner, source) {
         return;
     }
     let Some(args) = inner.child_by_field_name("arguments") else {
@@ -92,7 +73,35 @@ fn collect_derives_from_attr(
     if args.kind() != "token_tree" {
         return;
     }
-    // Walk the token_tree; identifiers inside it are derived traits.
+    push_token_tree_idents(args, source, struct_name, out);
+}
+
+/// True when the `attribute` node's path names `derive`. The attribute's
+/// path is an `identifier` child (or `scoped_identifier` — e.g.
+/// `core::prelude::v1::derive`, where the last segment is the path tail);
+/// only the first path-shaped child is consulted.
+fn attr_is_derive(inner: tree_sitter::Node, source: &[u8]) -> bool {
+    let mut iw = inner.walk();
+    for child in inner.children(&mut iw) {
+        if child.kind() == "identifier" {
+            return child.utf8_text(source).unwrap_or("") == "derive";
+        }
+        if child.kind() == "scoped_identifier" {
+            let txt = child.utf8_text(source).unwrap_or("");
+            return txt.rsplit("::").next() == Some("derive");
+        }
+    }
+    false
+}
+
+/// Walk the derive token_tree; identifiers inside it are derived traits.
+/// Pushes one `(struct_name, trait_name)` per identifier.
+fn push_token_tree_idents(
+    args: tree_sitter::Node,
+    source: &[u8],
+    struct_name: &str,
+    out: &mut Vec<(String, String)>,
+) {
     let mut tw = args.walk();
     for child in args.children(&mut tw) {
         if child.kind() == "identifier" {
