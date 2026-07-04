@@ -65,7 +65,9 @@ impl EpistemeMcp {
         };
         let network = self.network.lock().await;
         let mut phase_map = self.phase_map.lock().await;
-        // Best-effort: ignore per-rule errors (duplicate IDs, etc.).
+        // Best-effort: bail on the first add_rule error and discard it;
+        // rules before the failure stay loaded. (Unreachable in practice —
+        // save_rules dedups ids before writing.)
         let _ = hydrate_rules(&network, &mut phase_map, &file.rules, &HashSet::new()).await;
     }
 
