@@ -532,15 +532,13 @@ fn handle_audit(
     }
 
     let (report, diag) = {
-        let scan_root = path
-            .map(|p| {
-                if p.is_absolute() {
-                    p
-                } else {
-                    project_root.join(p)
-                }
-            })
-            .unwrap_or_else(|| project_root.clone());
+        // Convert Option<PathBuf> → Option<&str> at the call site so we can
+        // use the shared `resolve_scan_root` (which takes `Option<&str>`).
+        // CLI paths come from clap and are always valid UTF-8; `to_str()`
+        // failing would mean a non-UTF8 path, which would fall back to
+        // project_root — the same behavior as the old `unwrap_or_else`.
+        let path_str = path.as_ref().and_then(|p| p.to_str());
+        let scan_root = phronesis_mcp::audit::resolve_scan_root(path_str, &project_root);
         let opts = AuditOpts {
             project_root: project_root.clone(),
             scan_root,
@@ -557,36 +555,13 @@ fn handle_audit(
     };
 
     // Write a snapshot entry so `phr-mcp trend` can read it.
-    // Matches the shape the MCP `audit_codebase` tool writes.
+    // Shared helper keeps field names byte-identical to the MCP writer.
     {
         use phronesis_mcp::action_log::{self, LogEntry};
-        let mut per_rule = serde_json::Map::new();
-        for r in &report.per_rule {
-            per_rule.insert(
-                r.rule_id.as_str().to_string(),
-                serde_json::json!({
-                    "level": r.level.as_str(),
-                    "hits": r.hits,
-                }),
-            );
-        }
-        let blocked: u32 = report
-            .per_rule
-            .iter()
-            .filter(|r| r.level == Level::Block)
-            .map(|r| r.hits)
-            .sum();
-        let warned: u32 = report
-            .per_rule
-            .iter()
-            .filter(|r| r.level == Level::Warn)
-            .map(|r| r.hits)
-            .sum();
-        let entry = LogEntry::new("mcp", "audit_codebase")
-            .with("files_scanned", report.files_scanned as u64)
-            .with("blocked_total", blocked as u64)
-            .with("warned_total", warned as u64)
-            .with("per_rule", serde_json::Value::Object(per_rule));
+        let entry = phronesis_mcp::audit::audit_snapshot_entry(
+            LogEntry::new("mcp", "audit_codebase"),
+            &report,
+        );
         let log_path = action_log::default_path(&project_root);
         let _ = action_log::append(&log_path, &entry);
     }

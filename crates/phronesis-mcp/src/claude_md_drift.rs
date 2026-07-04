@@ -111,12 +111,22 @@ pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
 /// marker. Handles `- `, `* `, and numbered (`1. ` / `1) `) forms. Returns
 /// `None` for non-list lines or numbered items whose body is empty after
 /// stripping the digit and delimiter.
+///
+/// For `- ` / `* ` bullets the returned string is the raw remainder after the
+/// two-character marker — NOT trimmed. This preserves leading whitespace so
+/// that `is_imperative` checks run against the literal rest: a bullet like
+/// `-   never push` (extra spaces) will NOT match the `"never"` trigger
+/// because the lower-cased body starts with spaces. Callers that want a
+/// clean display value should call `.trim()` on the returned string.
+///
+/// For numbered items the body is `trim_start()`-ed (standard: digits and
+/// delimiter consume the indent, any remaining whitespace is noise).
 fn bullet_body(trimmed: &str) -> Option<String> {
     if let Some(rest) = trimmed.strip_prefix("- ") {
-        return Some(rest.trim().to_string());
+        return Some(rest.to_string());
     }
     if let Some(rest) = trimmed.strip_prefix("* ") {
-        return Some(rest.trim().to_string());
+        return Some(rest.to_string());
     }
     if trimmed.starts_with(|c: char| c.is_ascii_digit()) {
         let after_num: String = trimmed
@@ -153,7 +163,9 @@ pub fn extract_imperatives(claude_md: &str) -> Vec<String> {
         .filter_map(|line| {
             let body = bullet_body(line.trim_start())?;
             if is_imperative(&body) {
-                Some(body)
+                // Push the trimmed display value (matches v0.16.2: the old loop
+                // did `out.push(body.trim().to_string())` for all bullet kinds).
+                Some(body.trim().to_string())
             } else {
                 None
             }
@@ -336,6 +348,28 @@ fn truncate(s: &str, n: usize) -> String {
 mod tests {
     use super::*;
     use crate::rules_file::{DiskAction, DiskCondition, DiskRule, RulesFile};
+
+    /// A `- ` bullet with extra spaces before the trigger word must NOT be
+    /// extracted. The old (v0.16.2) loop ran the trigger `starts_with` check on
+    /// the raw remainder after stripping `"- "`, so leading spaces in the
+    /// remainder prevented a match. A normal `- Never …` (single space, no
+    /// extra indent) IS extracted.
+    #[test]
+    fn bullet_with_extra_indent_after_dash_is_not_extracted() {
+        let md = "\
+-   never push without review
+- Never commit untested code
+";
+        let imps = extract_imperatives(md);
+        assert!(
+            !imps.iter().any(|s| s.contains("never push")),
+            "bullet with extra spaces after dash must NOT be extracted"
+        );
+        assert!(
+            imps.iter().any(|s| s.contains("Never commit")),
+            "normal bullet (single space) must be extracted"
+        );
+    }
 
     #[test]
     fn extracts_basic_imperative_bullets() {

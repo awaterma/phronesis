@@ -52,6 +52,64 @@ pub struct AuditOpts {
     pub rule_filter: Option<String>,
 }
 
+/// Resolve the audit scan root: an absolute path is used as-is; a relative
+/// path is joined onto `project_root`; `None` defaults to `project_root`.
+///
+/// Both the MCP `audit_codebase` handler (server.rs, receives `Option<&str>`
+/// from tool params) and the CLI `handle_audit` (main.rs, converts
+/// `Option<PathBuf>` to `Option<&str>` at the call site) use this. The
+/// call-site conversion keeps the signature uniform here.
+pub fn resolve_scan_root(param: Option<&str>, project_root: &Path) -> PathBuf {
+    match param {
+        Some(p) => {
+            let pb = PathBuf::from(p);
+            if pb.is_absolute() {
+                pb
+            } else {
+                project_root.join(pb)
+            }
+        }
+        None => project_root.to_path_buf(),
+    }
+}
+
+/// Build the `audit_codebase` log-snapshot entry by annotating `e` with
+/// per-rule hit counts, totals, and the files-scanned count.
+///
+/// Both `server::EpistemeMcp::audit_codebase` (MCP tool) and
+/// `main::handle_audit` (CLI) call this to write their snapshot. Field
+/// names and integer widths here must stay in sync with the field reads
+/// inside `compute_trend` — that function is the sole reader of these
+/// snapshots, and divergence would silently produce zeroed trend rows.
+pub fn audit_snapshot_entry(
+    e: crate::action_log::LogEntry,
+    report: &AuditReport,
+) -> crate::action_log::LogEntry {
+    let mut per_rule = serde_json::Map::new();
+    for r in &report.per_rule {
+        per_rule.insert(
+            r.rule_id.as_str().to_string(),
+            serde_json::json!({ "level": r.level.as_str(), "hits": r.hits }),
+        );
+    }
+    let blocked: u32 = report
+        .per_rule
+        .iter()
+        .filter(|r| r.level == Level::Block)
+        .map(|r| r.hits)
+        .sum();
+    let warned: u32 = report
+        .per_rule
+        .iter()
+        .filter(|r| r.level == Level::Warn)
+        .map(|r| r.hits)
+        .sum();
+    e.with("files_scanned", report.files_scanned as u64)
+        .with("blocked_total", blocked as u64)
+        .with("warned_total", warned as u64)
+        .with("per_rule", serde_json::Value::Object(per_rule))
+}
+
 #[derive(Debug, Clone)]
 pub struct AuditReport {
     pub generated_at: u64,

@@ -762,7 +762,7 @@ impl EpistemeMcp {
             return Self::ok_text("no rules configured; run `phr-mcp init` first".to_string());
         }
 
-        let scan_root = resolve_scan_root(params.path.as_deref(), &project_root);
+        let scan_root = crate::audit::resolve_scan_root(params.path.as_deref(), &project_root);
 
         let (report, diag) = {
             let opts = AuditOpts {
@@ -778,7 +778,9 @@ impl EpistemeMcp {
         };
 
         // Write the audit snapshot to the log so get_debt_trend can read it.
-        Self::log_event("audit_codebase", |e| audit_snapshot_entry(e, &report));
+        Self::log_event("audit_codebase", |e| {
+            crate::audit::audit_snapshot_entry(e, &report)
+        });
 
         let body = match params.format.as_deref() {
             Some("table") => {
@@ -1052,54 +1054,6 @@ impl ServerHandler for EpistemeMcp {
             ..Default::default()
         }
     }
-}
-
-/// Resolve the audit scan root: an absolute path is used as-is; a relative
-/// path is joined onto `project_root`; `None` defaults to `project_root`.
-fn resolve_scan_root(param: Option<&str>, project_root: &std::path::Path) -> std::path::PathBuf {
-    match param {
-        Some(p) => {
-            let pb = std::path::PathBuf::from(p);
-            if pb.is_absolute() {
-                pb
-            } else {
-                project_root.join(pb)
-            }
-        }
-        None => project_root.to_path_buf(),
-    }
-}
-
-/// Build the `audit_codebase` log-snapshot entry by annotating `e` with
-/// per-rule hit counts, totals, and the files-scanned count.
-fn audit_snapshot_entry(
-    e: crate::action_log::LogEntry,
-    report: &crate::audit::AuditReport,
-) -> crate::action_log::LogEntry {
-    use crate::audit::Level;
-    let mut per_rule = serde_json::Map::new();
-    for r in &report.per_rule {
-        per_rule.insert(
-            r.rule_id.as_str().to_string(),
-            serde_json::json!({ "level": r.level.as_str(), "hits": r.hits }),
-        );
-    }
-    let blocked: u32 = report
-        .per_rule
-        .iter()
-        .filter(|r| r.level == Level::Block)
-        .map(|r| r.hits)
-        .sum();
-    let warned: u32 = report
-        .per_rule
-        .iter()
-        .filter(|r| r.level == Level::Warn)
-        .map(|r| r.hits)
-        .sum();
-    e.with("files_scanned", report.files_scanned as u64)
-        .with("blocked_total", blocked as u64)
-        .with("warned_total", warned as u64)
-        .with("per_rule", serde_json::Value::Object(per_rule))
 }
 
 /// Per-line classification produced by [`classify_md_line`].
