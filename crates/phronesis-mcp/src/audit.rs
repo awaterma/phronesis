@@ -3072,4 +3072,43 @@ fn short() {
         };
         assert!(empty_result_diagnostic(&r, 3, Path::new("/proj")).is_none());
     }
+
+    #[test]
+    fn run_profiled_matches_run_and_populates_section_times() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("a.rs"),
+            "fn main() { let x = foo.unwrap(); }",
+        )
+        .unwrap();
+        let rules = RulesFile {
+            rules: vec![rule("no-unwrap", ".unwrap()", "constraint_violation")],
+        };
+        let opts = AuditOpts {
+            project_root: dir.path().to_path_buf(),
+            scan_root: dir.path().to_path_buf(),
+            rule_filter: None,
+        };
+        let report = run(&rules, &opts);
+        let (profiled, times) = run_profiled(&rules, &opts);
+
+        // Structural equality between the two paths.
+        assert_eq!(report.files_scanned, profiled.files_scanned);
+        assert_eq!(report.per_rule.len(), profiled.per_rule.len());
+        for (r, p) in report.per_rule.iter().zip(profiled.per_rule.iter()) {
+            assert_eq!(r.rule_id, p.rule_id);
+            assert_eq!(r.hits, p.hits);
+            assert_eq!(r.files.len(), p.files.len());
+        }
+
+        // Timing fields populated.
+        assert_eq!(times.files_scanned, profiled.files_scanned);
+        assert!(times.audit_rules >= 1, "audit_rules must be counted");
+        assert!(
+            times.total >= times.match_loop,
+            "total {:?} must be >= match_loop {:?}",
+            times.total,
+            times.match_loop
+        );
+    }
 }
