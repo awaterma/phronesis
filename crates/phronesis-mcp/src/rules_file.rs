@@ -18,6 +18,56 @@ pub enum WhenClause {
     Or(Vec<WhenClause>),
 }
 
+fn parse_or_clause(val: &serde_json::Value) -> anyhow::Result<WhenClause> {
+    let arr = val
+        .as_array()
+        .ok_or_else(|| anyhow!("\"or\" value must be an array of clauses"))?;
+    let alts: anyhow::Result<Vec<WhenClause>> = arr
+        .iter()
+        .map(|v| serde_json::from_value::<WhenClause>(v.clone()).map_err(|e| anyhow!("{}", e)))
+        .collect();
+    Ok(WhenClause::Or(alts?))
+}
+
+fn parse_leaf_clause(key: &str, val: &serde_json::Value) -> anyhow::Result<WhenClause> {
+    let predicate = key.to_string();
+    let (args, script) = if predicate == "__script__" {
+        let s = val
+            .as_str()
+            .ok_or_else(|| anyhow!("__script__ value must be a string"))?;
+        (Vec::new(), Some(s.to_string()))
+    } else {
+        let args = match val {
+            serde_json::Value::String(s) => vec![s.clone()],
+            // A boolean is a zero-arg presence marker: the predicate name is
+            // what matters, not the value (true or false). Both yield empty args.
+            serde_json::Value::Bool(_) => Vec::new(),
+            serde_json::Value::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for it in items {
+                    let s = it
+                        .as_str()
+                        .ok_or_else(|| anyhow!("predicate arg array must contain strings"))?;
+                    out.push(s.to_string());
+                }
+                out
+            }
+            other => {
+                anyhow::bail!(
+                    "predicate value must be string, array, or bool; got {}",
+                    other
+                );
+            }
+        };
+        (args, None)
+    };
+    Ok(WhenClause::Leaf(DiskCondition {
+        predicate,
+        args,
+        script,
+    }))
+}
+
 impl<'de> Deserialize<'de> for WhenClause {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -35,55 +85,10 @@ impl<'de> Deserialize<'de> for WhenClause {
             ));
         }
         let (key, val) = obj.iter().next().expect("len checked == 1");
-
         if key == "or" {
-            let arr = val
-                .as_array()
-                .ok_or_else(|| de::Error::custom("\"or\" value must be an array of clauses"))?;
-            let alts: Result<Vec<WhenClause>, _> = arr
-                .iter()
-                .map(|v| serde_json::from_value::<WhenClause>(v.clone()).map_err(de::Error::custom))
-                .collect();
-            return Ok(WhenClause::Or(alts?));
+            return parse_or_clause(val).map_err(de::Error::custom);
         }
-
-        // Leaf condition. Key is the predicate name.
-        let predicate = key.clone();
-        let (args, script) = if predicate == "__script__" {
-            let s = val
-                .as_str()
-                .ok_or_else(|| de::Error::custom("__script__ value must be a string"))?;
-            (Vec::new(), Some(s.to_string()))
-        } else {
-            let args = match val {
-                serde_json::Value::String(s) => vec![s.clone()],
-                // A boolean is a zero-arg presence marker: the predicate name is
-                // what matters, not the value (true or false). Both yield empty args.
-                serde_json::Value::Bool(_) => Vec::new(),
-                serde_json::Value::Array(items) => {
-                    let mut out = Vec::with_capacity(items.len());
-                    for it in items {
-                        let s = it.as_str().ok_or_else(|| {
-                            de::Error::custom("predicate arg array must contain strings")
-                        })?;
-                        out.push(s.to_string());
-                    }
-                    out
-                }
-                other => {
-                    return Err(de::Error::custom(format!(
-                        "predicate value must be string, array, or bool; got {}",
-                        other
-                    )));
-                }
-            };
-            (args, None)
-        };
-        Ok(WhenClause::Leaf(DiskCondition {
-            predicate,
-            args,
-            script,
-        }))
+        parse_leaf_clause(key, val).map_err(de::Error::custom)
     }
 }
 
@@ -178,6 +183,89 @@ impl SourceRule {
     }
 }
 
+fn parse_when_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<Vec<WhenClause>> {
+    if let Some(when_val) = obj.get("when") {
+        let arr = when_val
+            .as_array()
+            .ok_or_else(|| anyhow!("`when` must be an array"))?;
+        arr.iter()
+            .map(|c| serde_json::from_value::<WhenClause>(c.clone()).map_err(|e| anyhow!("{}", e)))
+            .collect()
+    } else if let Some(cond_val) = obj.get("conditions") {
+        // v1 legacy: each is {predicate, args, script?}.
+        let arr = cond_val
+            .as_array()
+            .ok_or_else(|| anyhow!("`conditions` must be an array"))?;
+        arr.iter()
+            .map(|c| {
+                let co = c
+                    .as_object()
+                    .ok_or_else(|| anyhow!("v1 condition must be an object"))?;
+                let predicate = co
+                    .get("predicate")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| anyhow!("v1 condition missing `predicate`"))?
+                    .to_string();
+                let args = co
+                    .get("args")
+                    .and_then(|x| x.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|s| s.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let script = co.get("script").and_then(|x| x.as_str()).map(String::from);
+                Ok(WhenClause::Leaf(DiskCondition {
+                    predicate,
+                    args,
+                    script,
+                }))
+            })
+            .collect()
+    } else {
+        anyhow::bail!("rule has neither `when` nor `conditions`")
+    }
+}
+
+fn parse_then_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<DiskAction> {
+    if let Some(then_val) = obj.get("then") {
+        parse_then_action(then_val)
+    } else if let Some(actions_val) = obj.get("actions") {
+        let first = actions_val
+            .as_array()
+            .and_then(|a| a.first())
+            .ok_or_else(|| anyhow!("v1 `actions` must be a non-empty array"))?;
+        let ao = first
+            .as_object()
+            .ok_or_else(|| anyhow!("v1 action must be an object"))?;
+        let action_type = ao
+            .get("action_type")
+            .and_then(|x| x.as_str())
+            .ok_or_else(|| anyhow!("v1 action missing `action_type`"))?
+            .to_string();
+        let params = ao
+            .get("params")
+            .and_then(|x| x.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(DiskAction {
+            action_type,
+            params,
+        })
+    } else {
+        anyhow::bail!("rule has neither `then` nor `actions`")
+    }
+}
+
 impl<'de> Deserialize<'de> for SourceRule {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -187,7 +275,6 @@ impl<'de> Deserialize<'de> for SourceRule {
         let obj = v
             .as_object()
             .ok_or_else(|| de::Error::custom("rule must be a JSON object"))?;
-
         let id = obj
             .get("id")
             .and_then(|x| x.as_str())
@@ -198,99 +285,17 @@ impl<'de> Deserialize<'de> for SourceRule {
             .and_then(|x| x.as_str())
             .unwrap_or("pre")
             .to_string();
-        let priority = obj.get("priority").and_then(|x| x.as_i64()).unwrap_or(0) as i32;
-        let silent = obj.get("silent").and_then(|x| x.as_bool());
-        let audit = obj.get("audit").and_then(|x| x.as_bool());
-        let doc_excepted = obj.get("doc_excepted").and_then(|x| x.as_bool());
-
-        // Conditions: v2 `when` takes precedence; fall back to v1 `conditions`.
-        let when: Vec<WhenClause> = if let Some(when_val) = obj.get("when") {
-            let arr = when_val
-                .as_array()
-                .ok_or_else(|| de::Error::custom("`when` must be an array"))?;
-            arr.iter()
-                .map(|c| serde_json::from_value::<WhenClause>(c.clone()).map_err(de::Error::custom))
-                .collect::<Result<_, _>>()?
-        } else if let Some(cond_val) = obj.get("conditions") {
-            // v1 legacy: each is {predicate, args, script?}.
-            let arr = cond_val
-                .as_array()
-                .ok_or_else(|| de::Error::custom("`conditions` must be an array"))?;
-            arr.iter()
-                .map(|c| {
-                    let co = c
-                        .as_object()
-                        .ok_or_else(|| de::Error::custom("v1 condition must be an object"))?;
-                    let predicate = co
-                        .get("predicate")
-                        .and_then(|x| x.as_str())
-                        .ok_or_else(|| de::Error::custom("v1 condition missing `predicate`"))?
-                        .to_string();
-                    let args = co
-                        .get("args")
-                        .and_then(|x| x.as_array())
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|s| s.as_str().map(String::from))
-                                .collect::<Vec<_>>()
-                        })
-                        .unwrap_or_default();
-                    let script = co.get("script").and_then(|x| x.as_str()).map(String::from);
-                    Ok(WhenClause::Leaf(DiskCondition {
-                        predicate,
-                        args,
-                        script,
-                    }))
-                })
-                .collect::<Result<_, _>>()?
-        } else {
-            return Err(de::Error::custom(
-                "rule has neither `when` nor `conditions`",
-            ));
-        };
-
-        // Action: v2 `then` takes precedence; fall back to v1 `actions[0]`.
-        let then: DiskAction = if let Some(then_val) = obj.get("then") {
-            parse_then_action(then_val).map_err(de::Error::custom)?
-        } else if let Some(actions_val) = obj.get("actions") {
-            let first = actions_val
-                .as_array()
-                .and_then(|a| a.first())
-                .ok_or_else(|| de::Error::custom("v1 `actions` must be a non-empty array"))?;
-            let ao = first
-                .as_object()
-                .ok_or_else(|| de::Error::custom("v1 action must be an object"))?;
-            let action_type = ao
-                .get("action_type")
-                .and_then(|x| x.as_str())
-                .ok_or_else(|| de::Error::custom("v1 action missing `action_type`"))?
-                .to_string();
-            let params = ao
-                .get("params")
-                .and_then(|x| x.as_array())
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|s| s.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default();
-            DiskAction {
-                action_type,
-                params,
-            }
-        } else {
-            return Err(de::Error::custom("rule has neither `then` nor `actions`"));
-        };
-
+        let when = parse_when_field(obj).map_err(de::Error::custom)?;
+        let then = parse_then_field(obj).map_err(de::Error::custom)?;
         Ok(SourceRule {
             id,
             phase,
-            priority,
+            priority: obj.get("priority").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
             when,
             then,
-            silent,
-            audit,
-            doc_excepted,
+            silent: obj.get("silent").and_then(|x| x.as_bool()),
+            audit: obj.get("audit").and_then(|x| x.as_bool()),
+            doc_excepted: obj.get("doc_excepted").and_then(|x| x.as_bool()),
         })
     }
 }
@@ -462,6 +467,41 @@ pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
     Ok(w.rules)
 }
 
+/// Cartesian product of per-position alternative condition sets, tracking the
+/// chosen alt index at each OR position so the caller can construct ids.
+fn cartesian_product(
+    position_alts: &[Vec<Vec<DiskCondition>>],
+    is_or_position: &[bool],
+) -> Vec<(Vec<usize>, Vec<DiskCondition>)> {
+    let mut results: Vec<(Vec<usize>, Vec<DiskCondition>)> = vec![(Vec::new(), Vec::new())];
+    for (pos, alts) in position_alts.iter().enumerate() {
+        results = {
+            let mut next = Vec::new();
+            for (idx_path, conds) in &results {
+                for (alt_idx, alt_conds) in alts.iter().enumerate() {
+                    let new_path: Vec<usize> = if is_or_position[pos] {
+                        idx_path
+                            .iter()
+                            .cloned()
+                            .chain(std::iter::once(alt_idx))
+                            .collect()
+                    } else {
+                        idx_path.clone()
+                    };
+                    let new_conds: Vec<DiskCondition> = conds
+                        .iter()
+                        .cloned()
+                        .chain(alt_conds.iter().cloned())
+                        .collect();
+                    next.push((new_path, new_conds));
+                }
+            }
+            next
+        };
+    }
+    results
+}
+
 /// Expand a SourceRule's OR clauses into flat, OR-free DiskRules via
 /// disjunctive-normal-form (DNF) expansion. Each OR position contributes
 /// one alternative per (flattened) branch; the cartesian product across
@@ -493,31 +533,18 @@ pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
 
     // Per-position alternative sets. Leaf positions have one alternative (no
     // index pushed to path); OR positions with >1 branch push an alt index.
-    let mut position_alts: Vec<Vec<Vec<DiskCondition>>> = Vec::new();
-    let mut is_or_position: Vec<bool> = Vec::new();
-    for clause in &source.when {
-        let alts = alternatives(clause, &source.id)?;
-        is_or_position.push(matches!(clause, WhenClause::Or(_)) && alts.len() > 1);
-        position_alts.push(alts);
-    }
-
-    // Cartesian product. Track the chosen alt index at each OR position for id.
-    let mut results: Vec<(Vec<usize>, Vec<DiskCondition>)> = vec![(Vec::new(), Vec::new())];
-    for (pos, alts) in position_alts.iter().enumerate() {
-        let mut next = Vec::new();
-        for (idx_path, conds) in &results {
-            for (alt_idx, alt_conds) in alts.iter().enumerate() {
-                let mut new_path = idx_path.clone();
-                if is_or_position[pos] {
-                    new_path.push(alt_idx);
-                }
-                let mut new_conds = conds.clone();
-                new_conds.extend(alt_conds.clone());
-                next.push((new_path, new_conds));
-            }
+    let (position_alts, is_or_position) = {
+        let mut pa: Vec<Vec<Vec<DiskCondition>>> = Vec::new();
+        let mut ior: Vec<bool> = Vec::new();
+        for clause in &source.when {
+            let alts = alternatives(clause, &source.id)?;
+            ior.push(matches!(clause, WhenClause::Or(_)) && alts.len() > 1);
+            pa.push(alts);
         }
-        results = next;
-    }
+        (pa, ior)
+    };
+
+    let results = cartesian_product(&position_alts, &is_or_position);
 
     if results.len() > 32 {
         eprintln!(
@@ -683,36 +710,57 @@ pub struct MergeResult {
     pub preserved: usize,
 }
 
+/// Apply in-memory rules over the existing disk map: update matching ids,
+/// insert new ones. Returns the updated map plus added/updated counts.
+fn apply_in_memory(
+    existing: &RulesFile,
+    in_memory: &[Rule],
+    phase_map: &HashMap<String, String>,
+    default_phase: &str,
+) -> (HashMap<String, DiskRule>, usize, usize) {
+    let mut by_id: HashMap<String, DiskRule> = existing
+        .rules
+        .iter()
+        .map(|r| (r.id.clone(), r.clone()))
+        .collect();
+    let (added, updated) = in_memory.iter().fold((0usize, 0usize), |(a, u), rule| {
+        let disk_phase = by_id.get(&rule.id).map(|d| d.phase.clone());
+        let phase = phase_map
+            .get(&rule.id)
+            .cloned()
+            .or(disk_phase)
+            .unwrap_or_else(|| default_phase.to_string());
+        let disk = rule_to_disk(rule, &phase);
+        let is_update = by_id.contains_key(&rule.id);
+        by_id.insert(rule.id.clone(), disk);
+        if is_update { (a, u + 1) } else { (a + 1, u) }
+    });
+    (by_id, added, updated)
+}
+
+/// Rebuild ordered output: existing rules in original order, then new rules
+/// (those not in existing) sorted by id for determinism.
+fn ordered_merge(existing: &RulesFile, mut by_id: HashMap<String, DiskRule>) -> Vec<DiskRule> {
+    let mut merged_rules: Vec<DiskRule> = Vec::with_capacity(by_id.len());
+    for r in &existing.rules {
+        if let Some(disk) = by_id.remove(&r.id) {
+            merged_rules.push(disk);
+        }
+    }
+    // Remaining entries are new rules not in existing — sort for determinism.
+    let mut remaining: Vec<DiskRule> = by_id.into_values().collect();
+    remaining.sort_by(|a, b| a.id.cmp(&b.id));
+    merged_rules.extend(remaining);
+    merged_rules
+}
+
 pub fn merge(
     existing: &RulesFile,
     in_memory: &[Rule],
     phase_map: &HashMap<String, String>,
     default_phase: &str,
 ) -> MergeResult {
-    let mut by_id: HashMap<String, DiskRule> = existing
-        .rules
-        .iter()
-        .map(|r| (r.id.clone(), r.clone()))
-        .collect();
-
-    let mut added = 0usize;
-    let mut updated = 0usize;
-
-    for rule in in_memory {
-        let phase = phase_map
-            .get(&rule.id)
-            .cloned()
-            .or_else(|| by_id.get(&rule.id).map(|d| d.phase.clone()))
-            .unwrap_or_else(|| default_phase.to_string());
-        let disk = rule_to_disk(rule, &phase);
-        if by_id.contains_key(&rule.id) {
-            updated += 1;
-        } else {
-            added += 1;
-        }
-        by_id.insert(rule.id.clone(), disk);
-    }
-
+    let (by_id, added, updated) = apply_in_memory(existing, in_memory, phase_map, default_phase);
     let in_memory_ids: std::collections::HashSet<&str> =
         in_memory.iter().map(|r| r.id.as_str()).collect();
     let preserved = existing
@@ -720,25 +768,7 @@ pub fn merge(
         .iter()
         .filter(|r| !in_memory_ids.contains(r.id.as_str()))
         .count();
-
-    // Preserve ordering: existing rules in original order, then new ones
-    let mut merged_rules: Vec<DiskRule> = Vec::with_capacity(by_id.len());
-    let mut seen = std::collections::HashSet::new();
-    for r in &existing.rules {
-        if let Some(disk) = by_id.remove(&r.id) {
-            seen.insert(disk.id.clone());
-            merged_rules.push(disk);
-        }
-    }
-    // Append remaining (new) rules sorted by ID for determinism
-    let mut remaining: Vec<DiskRule> = by_id.into_values().collect();
-    remaining.sort_by(|a, b| a.id.cmp(&b.id));
-    for d in remaining {
-        if !seen.contains(&d.id) {
-            merged_rules.push(d);
-        }
-    }
-
+    let merged_rules = ordered_merge(existing, by_id);
     MergeResult {
         merged: RulesFile {
             rules: merged_rules,
