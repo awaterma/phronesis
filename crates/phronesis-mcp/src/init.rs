@@ -59,7 +59,7 @@ impl Pack {
         }
     }
 
-    fn rules(self) -> Value {
+    pub(crate) fn rules(self) -> Value {
         match self {
             Self::None => json!({"rules": []}),
             Self::Llm => deflection_rules(),
@@ -77,7 +77,7 @@ impl Pack {
         }
     }
 
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Llm => "llm",
             Self::Rust => "rust",
