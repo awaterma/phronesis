@@ -171,6 +171,14 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Regenerate the rule catalogue page from the shipped default packs.
+    /// Rewrites the content between the GENERATED RULES markers in-place;
+    /// run from the repo root (default --out docs/catalogue.html).
+    Catalogue {
+        /// Path to the catalogue HTML file to rewrite.
+        #[arg(long, default_value = "docs/catalogue.html")]
+        out: PathBuf,
+    },
     /// Detect drift between Claude Code's auto-memory store and the
     /// phronesis rule pack / durable directives file. Classifies each
     /// memory by frontmatter `metadata.type` and scores it against
@@ -322,6 +330,7 @@ async fn main() -> anyhow::Result<()> {
         Command::MigrateExtractedRules { path, dry_run } => {
             handle_migrate_extracted_rules(path, dry_run)
         }
+        Command::Catalogue { out } => handle_catalogue(out),
         Command::MemoryDrift {
             path,
             memory_dir,
@@ -714,6 +723,35 @@ fn handle_migrate_rules(path: PathBuf, dry_run: bool, check: bool) -> anyhow::Re
         "migrated {} ({} rule(s)) to v2",
         path.display(),
         sources.len()
+    );
+    Ok(())
+}
+
+fn handle_catalogue(out: PathBuf) -> anyhow::Result<()> {
+    use phronesis_mcp::catalogue;
+
+    let page = match std::fs::read_to_string(&out) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", out.display());
+            std::process::exit(1);
+        }
+    };
+    let generated = catalogue::render_rules_html();
+    let spliced = match catalogue::splice(&page, &generated) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: {} in {}", e, out.display());
+            std::process::exit(1);
+        }
+    };
+    std::fs::write(&out, &spliced)?;
+    let rules = generated.matches("<article class=\"rule\"").count();
+    println!(
+        "regenerated {} ({} rules) at v{}",
+        out.display(),
+        rules,
+        env!("CARGO_PKG_VERSION")
     );
     Ok(())
 }
