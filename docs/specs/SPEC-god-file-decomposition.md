@@ -1,11 +1,20 @@
 # SPEC: God-File Decomposition
 
-**Status:** proposed
+**Status:** partially superseded — see note below
 **Authors:** Andrew Waterman, Claude
 **Date:** 2026-05-25
 **Affects:** `crates/phronesis/src/network.rs`,
             `crates/phronesis-mcp/src/server.rs`,
             `crates/phronesis-mcp/src/audit.rs`
+
+> **Status note (2026-07-04):** The `server.rs` (§A) and `audit.rs` (§C)
+> guidance in this spec has been **superseded** by the MCP-crate decomposition
+> work completed in `fix/mcp-crate-decomposition`; see
+> `docs/superpowers/specs/2026-06-28-mcp-crate-decomposition-design.md`.
+> Both files have been decomposed below the `audit-file-loc-high` threshold
+> and their `//! phronesis-allow` markers removed. The `network.rs` (§B)
+> guidance **remains live** and is deferred to the embedded-consumer-gated
+> engine spec.
 
 ## Summary
 

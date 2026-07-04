@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [Unreleased]
+
+### Changed
+- **MCP-crate decomposition.** `hook.rs` (1764 LOC) and `syntax/rust.rs`
+  (1622 LOC) split into focused submodules; `main`, `audit::run`/`run_profiled`
+  (deduped via a shared core), and ~30 further functions decomposed below the
+  let-count audit thresholds. Audit debt drops 59 → 8 hits; the remaining 8
+  are core-engine functions deferred to the embedded-consumer-gated engine
+  spec. Behavior-preserving; no public API changes. Implements
+  `docs/superpowers/specs/2026-06-28-mcp-crate-decomposition-design.md`.
+
 ## [0.16.2] - 2026-07-03
 
 ### Added
