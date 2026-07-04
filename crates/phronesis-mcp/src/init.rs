@@ -1572,6 +1572,7 @@ fn rust_rules() -> Value {
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
+                "doc_excepted": true,
                 "when": [
                     {"file_path_matches": "src"},
                     {"function_let_binding_count_high": ["?file", "?fn", "?count"]}
@@ -1583,6 +1584,7 @@ fn rust_rules() -> Value {
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
+                "doc_excepted": true,
                 "when": [
                     {"file_path_matches": "src"},
                     {"function_let_mut_count_high": ["?file", "?fn", "?count"]}
@@ -2012,6 +2014,25 @@ mod tests {
             "expected audit-rust-let-mut-count-high in rust pack, got {:?}",
             ids
         );
+    }
+
+    #[test]
+    fn let_count_audit_rules_are_doc_excepted() {
+        let v = Pack::Rust.rules();
+        let arr = v.get("rules").unwrap().as_array().unwrap();
+        for id in [
+            "audit-rust-let-binding-count-high",
+            "audit-rust-let-mut-count-high",
+        ] {
+            let rule = arr
+                .iter()
+                .find(|r| r["id"] == id)
+                .unwrap_or_else(|| panic!("{id} missing from rust pack"));
+            assert_eq!(
+                rule["doc_excepted"], true,
+                "{id} must honor //! phronesis-allow markers"
+            );
+        }
     }
 
     /// All audit-only rules added in 0.4.0 should carry both `phase: "audit"`
