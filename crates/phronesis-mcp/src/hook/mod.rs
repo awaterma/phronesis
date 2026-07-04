@@ -15,6 +15,7 @@ pub use pre::run_pre_check;
 use std::path::Path;
 use std::process;
 
+use phr::consequence::Consequence;
 use phr::{Fact, ReteNetwork, Rule};
 use serde::Deserialize;
 use thiserror::Error;
@@ -319,6 +320,36 @@ fn log_hook_event(
 }
 
 pub(crate) use crate::hook_logged::{LoggedConsequence, split_messages_by_action_type};
+
+/// Assert `cargo_command_lacks_workspace` facts for every cargo sub-command in
+/// `content` that is missing `--workspace`. Shared by pre- and post-check.
+pub(super) async fn assert_cargo_workspace_facts(network: &ReteNetwork, content: &str) {
+    for cmd in crate::diff_extract::cargo_commands_lacking_workspace(content) {
+        let fact_id = format!("cargo_command_lacks_workspace_{}", cmd.replace(' ', "_"));
+        network
+            .assert_fact(Fact {
+                id: fact_id,
+                predicate: "cargo_command_lacks_workspace".to_string(),
+                args: vec![cmd],
+                timestamp: 0,
+            })
+            .await
+            .ok();
+    }
+}
+
+/// Project `consequences` into logged entries and split into
+/// `(logged, violations, warnings)`. Shared by pre- and post-check.
+pub(super) fn collect_logged(
+    consequences: &[Consequence],
+) -> (Vec<LoggedConsequence>, Vec<String>, Vec<String>) {
+    let logged: Vec<LoggedConsequence> = consequences
+        .iter()
+        .filter_map(LoggedConsequence::from_consequence)
+        .collect();
+    let (violations, warnings) = split_messages_by_action_type(&logged);
+    (logged, violations, warnings)
+}
 
 #[cfg(test)]
 mod tests {

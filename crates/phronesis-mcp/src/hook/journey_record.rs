@@ -43,6 +43,51 @@ fn outcomes_for_journal(payload: &HookPayload, tool_name: &str) -> (Vec<String>,
     outcomes::cargo::extract_from(&root, tool_name, command.as_deref(), &output)
 }
 
+/// Load the tagger config from the project root, falling back to default on
+/// any error. Failure to find the config is not an error — projects without
+/// `journey.json` use the zero-config default.
+fn load_tagger_config(root: &std::path::Path) -> journey::tagger::TaggerConfig {
+    match journey::load_config(root) {
+        Ok(c) => c,
+        Err(journey::ConfigError::NotFound(_)) => journey::tagger::TaggerConfig::default(),
+        Err(e) => {
+            eprintln!("phronesis: journey config skipped: {}", e);
+            journey::tagger::TaggerConfig::default()
+        }
+    }
+}
+
+/// Assemble the `JournalRecord` from the tagger result, outcome tags, and
+/// project-root metadata.
+fn build_journal_record(
+    tool_name: &str,
+    file_path: &str,
+    tag_result: journey::tagger::TagResult,
+    outcome_tags: Vec<String>,
+    module: Option<String>,
+    subject: Option<String>,
+    project_root: &std::path::Path,
+) -> journey::journal::JournalRecord {
+    let ext = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
+    let mut all_tags = tag_result.tags;
+    all_tags.extend(outcome_tags);
+    journey::journal::JournalRecord {
+        v: 1,
+        ts: super::unix_secs_now(),
+        sid: journey::current_sid(project_root),
+        seq: super::seq::next_seq(project_root),
+        tool: tool_name.to_string(),
+        path: file_path.to_string(),
+        ext,
+        module,
+        tags: all_tags,
+        subject,
+    }
+}
+
 /// Journey wiring at the **tail of `run_post_check`**: tag the call, resolve
 /// its module, fold in outcome tags + subject, append one journal record.
 /// Fail-open: any failure (config parse, tagger error, IO) is swallowed.
@@ -51,48 +96,23 @@ pub(super) async fn journey_record_post(payload: &HookPayload, tool_name: &str, 
         return;
     }
     let project_root = security::project_root();
-
-    let cfg = match journey::load_config(&project_root) {
-        Ok(c) => c,
-        Err(journey::ConfigError::NotFound(_)) => journey::tagger::TaggerConfig::default(),
-        Err(e) => {
-            eprintln!("phronesis: journey config skipped: {}", e);
-            journey::tagger::TaggerConfig::default()
-        }
-    };
-
-    // Common facts the tagger reuses — same shape `assert_common_facts`
-    // already asserts into the live network. Synthesizing here keeps the
-    // tagger pass independent of post-check's error-bailout paths.
+    let cfg = load_tagger_config(&project_root);
     let facts = tagger_facts(payload, tool_name, file_path, &cfg);
-
     let tag_result = journey::tagger::fire(&cfg, &facts)
         .await
         .unwrap_or_default();
     let module = journey::tagger::resolve_module(&cfg, file_path);
-
     let (outcome_tags, subject) = outcomes_for_journal(payload, tool_name);
-    let mut all_tags = tag_result.tags;
-    all_tags.extend(outcome_tags);
-
-    let ext = std::path::Path::new(file_path)
-        .extension()
-        .and_then(|s| s.to_str())
-        .map(|s| s.to_string());
-
-    let record = journey::journal::JournalRecord {
-        v: 1,
-        ts: super::unix_secs_now(),
-        sid: journey::current_sid(&project_root),
-        seq: super::seq::next_seq(&project_root),
-        tool: tool_name.to_string(),
-        path: file_path.to_string(),
-        ext,
+    let record = build_journal_record(
+        tool_name,
+        file_path,
+        tag_result,
+        outcome_tags,
         module,
-        tags: all_tags,
         subject,
-    };
-    let _ = journey::journal::append(&project_root, &record);
+        &project_root,
+    );
+    journey::journal::append(&project_root, &record).ok();
 }
 
 /// Build the common point-in-time facts the tagger evaluates against. Mirrors
