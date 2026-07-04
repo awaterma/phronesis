@@ -625,14 +625,15 @@ fn run_core(
         );
     }
 
-    let per_rule = {
+    let (per_rule, total) = {
         let t = Instant::now();
         let r = build_per_rule(accum);
+        let total = total_start.elapsed();
         if let Some(ref mut t2) = times {
             t2.report_build = t.elapsed();
-            t2.total = total_start.elapsed();
+            t2.total = total;
         }
-        r
+        (r, total)
     };
 
     AuditReport {
@@ -640,7 +641,7 @@ fn run_core(
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
-        scan_duration_ms: total_start.elapsed().as_millis() as u64,
+        scan_duration_ms: total.as_millis() as u64,
         files_scanned,
         per_rule,
     }
@@ -3062,6 +3063,12 @@ fn short() {
             assert_eq!(r.rule_id, p.rule_id);
             assert_eq!(r.hits, p.hits);
             assert_eq!(r.files.len(), p.files.len());
+            // FileAudit does not derive PartialEq; compare fields individually.
+            for (a, b) in r.files.iter().zip(p.files.iter()) {
+                assert_eq!(a.path, b.path);
+                assert_eq!(a.lines, b.lines);
+                assert_eq!(a.details, b.details);
+            }
         }
 
         // Timing fields populated.
