@@ -25,7 +25,7 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use phr::{Fact, ReteNetwork, Rule};
+use phr::{Consequence, Fact, ReteNetwork, Rule};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -186,11 +186,18 @@ pub async fn fire(cfg: &TaggerConfig, facts: &[Fact]) -> Result<TagResult, Tagge
         .fire_all_consequences()
         .map_err(|e| TaggerError::Engine(e.to_string()))?;
 
-    // Pull tag names off the consequence payloads. Same shape
-    // `LoggedConsequence::from_consequence` uses for stderr messages —
-    // the payload always carries `action_type` and `message` for
-    // RuleFiring consequences. Anything else (unlikely here) is
-    // ignored.
+    Ok(TagResult {
+        tags: tags_from_consequences(consequences),
+        module: None,
+    })
+}
+
+/// Pull tag names off the consequence payloads. Same shape
+/// `LoggedConsequence::from_consequence` uses for stderr messages —
+/// the payload always carries `action_type` and `message` for
+/// RuleFiring consequences. Anything else (unlikely here) is ignored.
+/// Returns a deterministically sorted list of matched tag names.
+fn tags_from_consequences(consequences: Vec<Consequence>) -> Vec<String> {
     let mut fired: HashSet<String> = HashSet::new();
     for c in consequences {
         let action_type = c
@@ -206,7 +213,7 @@ pub async fn fire(cfg: &TaggerConfig, facts: &[Fact]) -> Result<TagResult, Tagge
     }
     let mut tags: Vec<String> = fired.into_iter().collect();
     tags.sort();
-    Ok(TagResult { tags, module: None })
+    tags
 }
 
 /// Resolve a file path to a configured module name, or `None` if no

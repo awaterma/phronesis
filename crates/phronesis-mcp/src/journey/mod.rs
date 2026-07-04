@@ -47,13 +47,15 @@ pub fn current_sid(project_root: &Path) -> String {
         }
     }
 
-    let ts = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let hex: u32 = (ts as u32) ^ std::process::id();
-    let date = crate::audit::short_iso_date(ts);
-    let sid = format!("s-{}-{:06x}", date, hex & 0x00FF_FFFF);
+    let sid = {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let hex: u32 = (ts as u32) ^ std::process::id();
+        let date = crate::audit::short_iso_date(ts);
+        format!("s-{}-{:06x}", date, hex & 0x00FF_FFFF)
+    };
 
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
