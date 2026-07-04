@@ -4,7 +4,13 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
-## [Unreleased]
+## [0.17.0] - 2026-07-04
+
+phr-mcp, phr, and phronesis-rhai all release as **0.17.0** — the workspace
+adopts lockstep versioning (`[workspace.package] version`); from this
+release one number covers all three crates. (Previous: phr-mcp 0.16.2,
+phr 0.14.0, phronesis-rhai 0.1.0; the jumps are version-line unification,
+not breaking changes.)
 
 ### Changed
 - **MCP-crate decomposition.** `hook.rs` (1764 LOC) and `syntax/rust.rs`
@@ -444,6 +450,7 @@ Pre-0.11 history (0.10.0 and earlier) is recorded in the git log and
 `docs/specs/`. Notably, 0.10.0 added wiki-drift, the block-pattern rules, and
 the v2 rule schema.
 
+[0.17.0]: https://github.com/awaterma/phronesis/releases/tag/v0.17.0
 [0.16.2]: https://github.com/awaterma/phronesis/releases/tag/v0.16.2
 [0.14.0]: https://github.com/awaterma/phronesis/releases/tag/v0.14.0
 [0.13.3]: https://github.com/awaterma/phronesis/releases/tag/v0.13.3
