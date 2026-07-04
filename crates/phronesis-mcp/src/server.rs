@@ -111,6 +111,19 @@ impl EpistemeMcp {
         let path = action_log::default_path(&security::project_root());
         let _ = action_log::append(&path, &entry);
     }
+
+    /// Validate that `phase` is `"pre"` or `"post"` and return it unchanged,
+    /// or return an [`McpError`] if it is neither.
+    fn validate_default_phase(phase: &str) -> Result<&str, McpError> {
+        if phase == "pre" || phase == "post" {
+            Ok(phase)
+        } else {
+            Err(Self::err(format!(
+                "phase must be \"pre\" or \"post\", got: {}",
+                phase
+            )))
+        }
+    }
 }
 
 // Persistence helpers (autoload, autosave) live in server_persistence.rs.
@@ -322,18 +335,22 @@ impl EpistemeMcp {
         description = "Execute all pending agenda items, returning fired actions and generated consequences"
     )]
     async fn fire_rules(&self) -> Result<CallToolResult, McpError> {
-        let network = self.network.lock().await;
-        let actions = network.execute_all_agenda_items().map_err(Self::err)?;
+        let actions = {
+            let network = self.network.lock().await;
+            network.execute_all_agenda_items().map_err(Self::err)?
+        };
 
         let new_consequences =
             rule_firing_to_consequences("fire_rules", &[], ConsequenceKind::Event, actions.clone());
 
-        let mut consequences = self.consequences.lock().await;
-        consequences.extend(new_consequences.clone());
-        // FIFO eviction to discard against unbounded accumulation
-        if consequences.len() > MAX_CONSEQUENCES {
-            let excess = consequences.len() - MAX_CONSEQUENCES;
-            consequences.drain(0..excess);
+        // Extend the shared consequence store and FIFO-evict against the cap.
+        {
+            let mut consequences = self.consequences.lock().await;
+            consequences.extend(new_consequences.clone());
+            if consequences.len() > MAX_CONSEQUENCES {
+                let excess = consequences.len() - MAX_CONSEQUENCES;
+                consequences.drain(0..excess);
+            }
         }
 
         let actions_fired = actions.len();
@@ -459,15 +476,15 @@ impl EpistemeMcp {
         &self,
         Parameters(params): Parameters<FilePathParam>,
     ) -> Result<CallToolResult, McpError> {
-        validate_string(&params.file_path, "file_path").map_err(|e| Self::err(e.to_string()))?;
-
-        let root = security::project_root();
-        let safe_path = resolve_safe_path(&params.file_path, &root)
-            .map_err(|e| Self::err(format!("path rejected: {}", e)))?;
-        require_extension(&safe_path, "md").map_err(|e| Self::err(e.to_string()))?;
-
-        let content =
-            security::read_file_capped(&safe_path).map_err(|e| Self::err(e.to_string()))?;
+        let content = {
+            validate_string(&params.file_path, "file_path")
+                .map_err(|e| Self::err(e.to_string()))?;
+            let root = security::project_root();
+            let safe_path = resolve_safe_path(&params.file_path, &root)
+                .map_err(|e| Self::err(format!("path rejected: {}", e)))?;
+            require_extension(&safe_path, "md").map_err(|e| Self::err(e.to_string()))?;
+            security::read_file_capped(&safe_path).map_err(|e| Self::err(e.to_string()))?
+        };
 
         let rules = extract_rules_from_markdown(&content, &params.file_path);
         let count = rules.len();
@@ -506,16 +523,12 @@ impl EpistemeMcp {
         &self,
         Parameters(params): Parameters<SaveRulesParams>,
     ) -> Result<CallToolResult, McpError> {
-        let default_phase = params.phase.as_deref().unwrap_or("pre");
-        if default_phase != "pre" && default_phase != "post" {
-            return Err(Self::err(format!(
-                "phase must be \"pre\" or \"post\", got: {}",
-                default_phase
-            )));
-        }
+        let default_phase = Self::validate_default_phase(params.phase.as_deref().unwrap_or("pre"))?;
 
-        let root = security::project_root();
-        let path = rules_file::default_path(&root);
+        let path = {
+            let root = security::project_root();
+            rules_file::default_path(&root)
+        };
 
         let existing = if params.merge {
             rules_file::read(&path).map_err(|e| Self::err(e.to_string()))?
@@ -523,28 +536,30 @@ impl EpistemeMcp {
             rules_file::RulesFile { rules: vec![] }
         };
 
-        let network = self.network.lock().await;
-        let in_memory = network.get_all_rules().map_err(Self::err)?;
-        drop(network);
+        let in_memory = {
+            let network = self.network.lock().await;
+            network.get_all_rules().map_err(Self::err)?
+        };
 
         let phase_map = self.phase_map.lock().await.clone();
-        let result = rules_file::merge(&existing, &in_memory, &phase_map, default_phase);
 
-        let summary = serde_json::json!({
-            "path": path.display().to_string(),
-            "added": result.added,
-            "updated": result.updated,
-            "preserved": result.preserved,
-            "total": result.merged.rules.len(),
-            "dry_run": params.dry_run,
-        });
+        let json = {
+            let result = rules_file::merge(&existing, &in_memory, &phase_map, default_phase);
+            let summary = serde_json::json!({
+                "path": path.display().to_string(),
+                "added": result.added,
+                "updated": result.updated,
+                "preserved": result.preserved,
+                "total": result.merged.rules.len(),
+                "dry_run": params.dry_run,
+            });
+            if !params.dry_run {
+                rules_file::write_atomic(&path, &result.merged)
+                    .map_err(|e| Self::err(e.to_string()))?;
+            }
+            serde_json::to_string_pretty(&summary).map_err(|e| Self::err(e.to_string()))?
+        };
 
-        if !params.dry_run {
-            rules_file::write_atomic(&path, &result.merged)
-                .map_err(|e| Self::err(e.to_string()))?;
-        }
-
-        let json = serde_json::to_string_pretty(&summary).map_err(|e| Self::err(e.to_string()))?;
         Self::ok_text(json)
     }
 
@@ -555,34 +570,30 @@ impl EpistemeMcp {
         &self,
         Parameters(_): Parameters<LoadRulesFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        let root = security::project_root();
-        let path = rules_file::default_path(&root);
+        let path = {
+            let root = security::project_root();
+            rules_file::default_path(&root)
+        };
         let file = rules_file::read(&path).map_err(|e| Self::err(e.to_string()))?;
 
-        let network = self.network.lock().await;
-        let existing_ids: std::collections::HashSet<String> = network
-            .get_all_rules()
+        let (loaded, skipped) = {
+            let network = self.network.lock().await;
+            let existing_ids: std::collections::HashSet<String> = network
+                .get_all_rules()
+                .map_err(Self::err)?
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
+            let mut phase_map = self.phase_map.lock().await;
+            crate::server_persistence::hydrate_rules(
+                &network,
+                &mut phase_map,
+                &file.rules,
+                &existing_ids,
+            )
+            .await
             .map_err(Self::err)?
-            .into_iter()
-            .map(|r| r.id)
-            .collect();
-
-        let mut loaded = 0usize;
-        let mut skipped = 0usize;
-        let mut phase_map = self.phase_map.lock().await;
-        for disk in &file.rules {
-            if existing_ids.contains(&disk.id) {
-                skipped += 1;
-                continue;
-            }
-            let (rule, phase) = rules_file::rule_from_disk(disk);
-            let id = rule.id.clone();
-            network.add_rule(rule).await.map_err(Self::err)?;
-            phase_map.insert(id, phase);
-            loaded += 1;
-        }
-        drop(phase_map);
-        drop(network);
+        };
 
         let summary = serde_json::json!({
             "path": path.display().to_string(),
@@ -697,13 +708,14 @@ impl EpistemeMcp {
         // the JSON-RPC stream, so the action_log record is the only signal.
         let since_secs = params.since.as_deref().and_then(parse_since);
 
-        let opts_log = action_log::ReadOpts {
-            kind: Some("hook".to_string()),
-            ..action_log::ReadOpts::default()
+        let entries = {
+            let opts_log = action_log::ReadOpts {
+                kind: Some("hook".to_string()),
+                ..action_log::ReadOpts::default()
+            };
+            let path = action_log::default_path(&security::project_root());
+            action_log::read_recent(&path, &opts_log).map_err(|e| Self::err(e.to_string()))?
         };
-        let path = action_log::default_path(&security::project_root());
-        let entries =
-            action_log::read_recent(&path, &opts_log).map_err(|e| Self::err(e.to_string()))?;
 
         let stats_opts = StatsOpts {
             since_secs,
@@ -733,72 +745,40 @@ impl EpistemeMcp {
         &self,
         Parameters(params): Parameters<AuditCodebaseParams>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::audit::{AuditOpts, Level, render_json, render_table, run};
+        use crate::audit::{AuditOpts, render_json, render_table, run};
         use crate::rules_file;
 
         let project_root = crate::security::project_root();
-        let rules_path = rules_file::default_path(&project_root);
-        let rules = match rules_file::read(&rules_path) {
-            Ok(r) => r,
-            Err(e) => {
-                return Self::ok_text(format!("phronesis: cannot read rules file: {}", e));
+        let rules = {
+            let rules_path = rules_file::default_path(&project_root);
+            match rules_file::read(&rules_path) {
+                Ok(r) => r,
+                Err(e) => {
+                    return Self::ok_text(format!("phronesis: cannot read rules file: {}", e));
+                }
             }
         };
         if rules.rules.is_empty() {
             return Self::ok_text("no rules configured; run `phr-mcp init` first".to_string());
         }
 
-        let scan_root = match params.path.as_deref() {
-            Some(p) => {
-                let pb = std::path::PathBuf::from(p);
-                if pb.is_absolute() {
-                    pb
-                } else {
-                    project_root.join(pb)
-                }
-            }
-            None => project_root.clone(),
-        };
+        let scan_root = resolve_scan_root(params.path.as_deref(), &project_root);
 
-        let opts = AuditOpts {
-            project_root: project_root.clone(),
-            scan_root,
-            rule_filter: params.rule.clone(),
+        let (report, diag) = {
+            let opts = AuditOpts {
+                project_root: project_root.clone(),
+                scan_root,
+                rule_filter: params.rule.clone(),
+            };
+            let report = run(&rules, &opts);
+            let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
+            let diag =
+                crate::audit::empty_result_diagnostic(&report, audit_tagged_count, &opts.scan_root);
+            (report, diag)
         };
-        let report = run(&rules, &opts);
-        let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
-        let diag =
-            crate::audit::empty_result_diagnostic(&report, audit_tagged_count, &opts.scan_root);
 
         // Write the audit snapshot to the log so get_debt_trend can read it.
-        Self::log_event("audit_codebase", |e| {
-            let mut per_rule = serde_json::Map::new();
-            for r in &report.per_rule {
-                per_rule.insert(
-                    r.rule_id.as_str().to_string(),
-                    serde_json::json!({
-                        "level": r.level.as_str(),
-                        "hits": r.hits,
-                    }),
-                );
-            }
-            let blocked: u32 = report
-                .per_rule
-                .iter()
-                .filter(|r| r.level == Level::Block)
-                .map(|r| r.hits)
-                .sum();
-            let warned: u32 = report
-                .per_rule
-                .iter()
-                .filter(|r| r.level == Level::Warn)
-                .map(|r| r.hits)
-                .sum();
-            e.with("files_scanned", report.files_scanned as u64)
-                .with("blocked_total", blocked as u64)
-                .with("warned_total", warned as u64)
-                .with("per_rule", serde_json::Value::Object(per_rule))
-        });
+        Self::log_event("audit_codebase", |e| audit_snapshot_entry(e, &report));
 
         let body = match params.format.as_deref() {
             Some("table") => {
@@ -1074,6 +1054,109 @@ impl ServerHandler for EpistemeMcp {
     }
 }
 
+/// Resolve the audit scan root: an absolute path is used as-is; a relative
+/// path is joined onto `project_root`; `None` defaults to `project_root`.
+fn resolve_scan_root(param: Option<&str>, project_root: &std::path::Path) -> std::path::PathBuf {
+    match param {
+        Some(p) => {
+            let pb = std::path::PathBuf::from(p);
+            if pb.is_absolute() {
+                pb
+            } else {
+                project_root.join(pb)
+            }
+        }
+        None => project_root.to_path_buf(),
+    }
+}
+
+/// Build the `audit_codebase` log-snapshot entry by annotating `e` with
+/// per-rule hit counts, totals, and the files-scanned count.
+fn audit_snapshot_entry(
+    e: crate::action_log::LogEntry,
+    report: &crate::audit::AuditReport,
+) -> crate::action_log::LogEntry {
+    use crate::audit::Level;
+    let mut per_rule = serde_json::Map::new();
+    for r in &report.per_rule {
+        per_rule.insert(
+            r.rule_id.as_str().to_string(),
+            serde_json::json!({ "level": r.level.as_str(), "hits": r.hits }),
+        );
+    }
+    let blocked: u32 = report
+        .per_rule
+        .iter()
+        .filter(|r| r.level == Level::Block)
+        .map(|r| r.hits)
+        .sum();
+    let warned: u32 = report
+        .per_rule
+        .iter()
+        .filter(|r| r.level == Level::Warn)
+        .map(|r| r.hits)
+        .sum();
+    e.with("files_scanned", report.files_scanned as u64)
+        .with("blocked_total", blocked as u64)
+        .with("warned_total", warned as u64)
+        .with("per_rule", serde_json::Value::Object(per_rule))
+}
+
+/// Per-line classification produced by [`classify_md_line`].
+enum MdLineKind {
+    /// A `## <section>` heading — caller should update the current-section state.
+    Section(String),
+    /// A `### <title>` heading inside an anti-patterns section with a long enough title.
+    /// The text has already been formatted as `"Avoid: <title>"`.
+    AntiPattern(String),
+    /// A recognized callout (`**Problem**:`, `**Pattern**:`, etc.) with text ≥ 10 chars.
+    Callout(&'static str, String),
+    /// A directive bullet (`Avoid`, `Never`, `Prefer`, `❌`, etc.) with text ≥ 10 chars.
+    Directive(String),
+}
+
+/// Classify a single trimmed markdown line (outside a code fence) into an
+/// [`MdLineKind`], or return `None` for lines that produce no rule.
+///
+/// The `in_anti_patterns` flag indicates whether the enclosing `##` section
+/// is an anti-patterns section; it governs `### ` sub-heading handling.
+/// Fence and current-section state are the caller's responsibility.
+fn classify_md_line(trimmed: &str, in_anti_patterns: bool) -> Option<MdLineKind> {
+    if let Some(section) = trimmed.strip_prefix("## ") {
+        return Some(MdLineKind::Section(section.trim().to_string()));
+    }
+
+    if let Some(sub) = trimmed.strip_prefix("### ") {
+        if in_anti_patterns {
+            let title = strip_numbered_prefix(sub.trim());
+            if title.len() >= 5 {
+                return Some(MdLineKind::AntiPattern(format!("Avoid: {}", title)));
+            }
+        }
+        return None;
+    }
+
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+
+    if let Some((kind, text)) = parse_callout(trimmed) {
+        return if text.len() >= 10 {
+            Some(MdLineKind::Callout(kind, text.to_string()))
+        } else {
+            None
+        };
+    }
+
+    if let Some(constraint_text) = strip_directive_prefix(trimmed)
+        && constraint_text.len() >= 10
+    {
+        return Some(MdLineKind::Directive(constraint_text.to_string()));
+    }
+
+    None
+}
+
 /// Extract enforceable rules from a markdown document.
 ///
 /// Recognizes:
@@ -1084,11 +1167,6 @@ impl ServerHandler for EpistemeMcp {
 /// Skips content inside fenced code blocks to avoid false positives from code comments.
 /// Tracks the enclosing `##` section so each rule is tagged with its category.
 pub fn extract_rules_from_markdown(content: &str, source_file: &str) -> Vec<Rule> {
-    let mut rules = Vec::new();
-    let mut rule_idx = 0;
-    let mut in_code_fence = false;
-    let mut current_section: Option<String> = None;
-
     let source_slug = slugify(
         source_file
             .rsplit('/')
@@ -1097,73 +1175,63 @@ pub fn extract_rules_from_markdown(content: &str, source_file: &str) -> Vec<Rule
             .trim_end_matches(".md"),
     );
 
-    for line in content.lines() {
-        let trimmed = line.trim();
+    let rules: Vec<Rule> = {
+        let mut rules = Vec::new();
+        let mut in_code_fence = false;
+        let mut current_section: Option<String> = None;
 
-        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-            in_code_fence = !in_code_fence;
-            continue;
-        }
-        if in_code_fence {
-            continue;
-        }
+        for line in content.lines() {
+            let trimmed = line.trim();
 
-        if let Some(section) = trimmed.strip_prefix("## ") {
-            current_section = Some(section.trim().to_string());
-            continue;
-        }
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_code_fence = !in_code_fence;
+                continue;
+            }
+            if in_code_fence {
+                continue;
+            }
 
-        if let Some(sub) = trimmed.strip_prefix("### ") {
-            if section_is_anti_patterns(current_section.as_deref()) {
-                let title = strip_numbered_prefix(sub.trim());
-                if title.len() >= 5 {
-                    rule_idx += 1;
+            match classify_md_line(
+                trimmed,
+                section_is_anti_patterns(current_section.as_deref()),
+            ) {
+                None => {}
+                Some(MdLineKind::Section(s)) => current_section = Some(s),
+                Some(MdLineKind::AntiPattern(text)) => {
                     rules.push(make_rule(
                         &source_slug,
-                        rule_idx,
+                        rules.len() + 1,
                         source_file,
                         current_section.as_deref(),
                         "anti_pattern",
-                        &format!("Avoid: {}", title),
+                        &text,
+                    ));
+                }
+                Some(MdLineKind::Callout(kind, text)) => {
+                    rules.push(make_rule(
+                        &source_slug,
+                        rules.len() + 1,
+                        source_file,
+                        current_section.as_deref(),
+                        kind,
+                        &text,
+                    ));
+                }
+                Some(MdLineKind::Directive(text)) => {
+                    rules.push(make_rule(
+                        &source_slug,
+                        rules.len() + 1,
+                        source_file,
+                        current_section.as_deref(),
+                        "directive",
+                        &text,
                     ));
                 }
             }
-            continue;
         }
 
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-
-        if let Some((kind, text)) = parse_callout(trimmed) {
-            if text.len() >= 10 {
-                rule_idx += 1;
-                rules.push(make_rule(
-                    &source_slug,
-                    rule_idx,
-                    source_file,
-                    current_section.as_deref(),
-                    kind,
-                    text,
-                ));
-            }
-            continue;
-        }
-
-        if let Some(constraint_text) = strip_directive_prefix(trimmed)
-            && constraint_text.len() >= 10
-        {
-            rule_idx += 1;
-            rules.push(make_rule(
-                &source_slug,
-                rule_idx,
-                source_file,
-                current_section.as_deref(),
-                "directive",
-                constraint_text,
-            ));
-        }
-    }
+        rules
+    };
 
     rules
 }
