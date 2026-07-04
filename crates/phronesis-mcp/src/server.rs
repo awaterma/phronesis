@@ -1191,41 +1191,42 @@ pub fn extract_rules_from_markdown(content: &str, source_file: &str) -> Vec<Rule
                 continue;
             }
 
-            match classify_md_line(
+            if let Some(kind) = classify_md_line(
                 trimmed,
                 section_is_anti_patterns(current_section.as_deref()),
             ) {
-                None => {}
-                Some(MdLineKind::Section(s)) => current_section = Some(s),
-                Some(MdLineKind::AntiPattern(text)) => {
-                    rules.push(make_rule(
-                        &source_slug,
-                        rules.len() + 1,
-                        source_file,
-                        current_section.as_deref(),
-                        "anti_pattern",
-                        &text,
-                    ));
-                }
-                Some(MdLineKind::Callout(kind, text)) => {
-                    rules.push(make_rule(
-                        &source_slug,
-                        rules.len() + 1,
-                        source_file,
-                        current_section.as_deref(),
-                        kind,
-                        &text,
-                    ));
-                }
-                Some(MdLineKind::Directive(text)) => {
-                    rules.push(make_rule(
-                        &source_slug,
-                        rules.len() + 1,
-                        source_file,
-                        current_section.as_deref(),
-                        "directive",
-                        &text,
-                    ));
+                match kind {
+                    MdLineKind::Section(s) => current_section = Some(s),
+                    MdLineKind::AntiPattern(text) => {
+                        rules.push(make_rule(
+                            &source_slug,
+                            rules.len() + 1,
+                            source_file,
+                            current_section.as_deref(),
+                            "anti_pattern",
+                            &text,
+                        ));
+                    }
+                    MdLineKind::Callout(kind, text) => {
+                        rules.push(make_rule(
+                            &source_slug,
+                            rules.len() + 1,
+                            source_file,
+                            current_section.as_deref(),
+                            kind,
+                            &text,
+                        ));
+                    }
+                    MdLineKind::Directive(text) => {
+                        rules.push(make_rule(
+                            &source_slug,
+                            rules.len() + 1,
+                            source_file,
+                            current_section.as_deref(),
+                            "directive",
+                            &text,
+                        ));
+                    }
                 }
             }
         }

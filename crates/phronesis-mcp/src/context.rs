@@ -190,6 +190,42 @@ pub fn run_session_context(project_root: &Path, max_bytes: usize) -> String {
     wrap_additional_context("SessionStart", &body, max_bytes)
 }
 
+/// Render all user-visible decision bullets for a single log entry.
+///
+/// Returns a `Vec` of formatted bullet strings, one per `constraint_violation`
+/// or `constraint_warning` consequence. Returns an empty `Vec` when the entry
+/// has no consequences or none that surface to the user (e.g. log-only actions).
+fn render_entry_bullets(entry: &LogEntry, now_secs: u64) -> Vec<String> {
+    let Some(consequences) = entry.data.get("consequences").and_then(|v| v.as_array()) else {
+        return Vec::new();
+    };
+    if consequences.is_empty() {
+        return Vec::new();
+    }
+    let file = entry
+        .data
+        .get("file")
+        .and_then(|v| v.as_str())
+        .unwrap_or("<unknown>");
+    let ago = humanize_ago(now_secs.saturating_sub(entry.ts));
+    consequences
+        .iter()
+        .filter_map(|c| {
+            let rule_id = c.get("rule_id").and_then(|v| v.as_str()).unwrap_or("?");
+            let action_type = c.get("action_type").and_then(|v| v.as_str()).unwrap_or("");
+            let decision = match action_type {
+                "constraint_violation" => "BLOCKED",
+                "constraint_warning" => "WARNED",
+                _ => return None, // log/other actions aren't user-visible decisions
+            };
+            Some(format!(
+                "- {} {} ago: {} in {}",
+                decision, ago, rule_id, file
+            ))
+        })
+        .collect()
+}
+
 /// Build the markdown body for the UserPromptSubmit / BeforeModelRequest
 /// context payload.
 ///
@@ -206,44 +242,15 @@ pub fn run_session_context(project_root: &Path, max_bytes: usize) -> String {
 /// deterministically.
 pub fn build_turn_body(entries: &[LogEntry], now_secs: u64) -> String {
     // Newest first, matching the spec's example output.
-    let mut rendered: Vec<String> = Vec::new();
-    for entry in entries.iter().rev() {
-        let Some(consequences) = entry.data.get("consequences").and_then(|v| v.as_array()) else {
-            continue;
-        };
-        if consequences.is_empty() {
-            continue;
-        }
-        let file = entry
-            .data
-            .get("file")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<unknown>");
-        let ago = humanize_ago(now_secs.saturating_sub(entry.ts));
-        for c in consequences {
-            let rule_id = c.get("rule_id").and_then(|v| v.as_str()).unwrap_or("?");
-            let action_type = c.get("action_type").and_then(|v| v.as_str()).unwrap_or("");
-            let decision = match action_type {
-                "constraint_violation" => "BLOCKED",
-                "constraint_warning" => "WARNED",
-                _ => continue, // log/other actions aren't user-visible decisions
-            };
-            rendered.push(format!(
-                "- {} {} ago: {} in {}",
-                decision, ago, rule_id, file
-            ));
-        }
-    }
-
+    let rendered: Vec<String> = entries
+        .iter()
+        .rev()
+        .flat_map(|entry| render_entry_bullets(entry, now_secs))
+        .collect();
     if rendered.is_empty() {
         return String::new();
     }
-    let mut out = String::from("## Recent phronesis activity\n");
-    for line in rendered {
-        out.push_str(&line);
-        out.push('\n');
-    }
-    out
+    format!("## Recent phronesis activity\n{}\n", rendered.join("\n"))
 }
 
 fn humanize_ago(secs: u64) -> String {
