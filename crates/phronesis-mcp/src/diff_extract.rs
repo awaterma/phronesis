@@ -174,17 +174,9 @@ pub fn rust_test_block_keep_mask_for(content: &str) -> Vec<bool> {
 
 fn rust_test_block_keep_mask(lines: &[&str]) -> Vec<bool> {
     let mut keep = vec![true; lines.len()];
-
-    // Per-line state: whether a multi-line string remains open at end of line.
-    // We pre-compute this so test-marker detection on each line can skip lines
-    // that begin inside a string literal.
-    let mut starts_in_str = vec![false; lines.len()];
-    let mut cur_in_str = false;
-    for (idx, line) in lines.iter().enumerate() {
-        starts_in_str[idx] = cur_in_str;
-        cur_in_str = update_in_str(line, cur_in_str);
-    }
-
+    // Pre-compute per-line string-open state so test-marker detection can skip
+    // lines that begin inside a string literal.
+    let starts_in_str = starts_in_str_table(lines);
     let mut i = 0;
     while i < lines.len() {
         // Don't recognize test markers inside a multi-line string.
@@ -201,41 +193,19 @@ fn rust_test_block_keep_mask(lines: &[&str]) -> Vec<bool> {
             i += 1;
             continue;
         }
-
         let marker_idx = i;
         // Allow stacked attributes between the marker and the item.
-        let mut j = i + 1;
-        while j < lines.len() && !starts_in_str[j] && lines[j].trim_start().starts_with("#[") {
-            j += 1;
-        }
+        let j = skip_attrs(lines, &starts_in_str, marker_idx + 1);
         if j >= lines.len() {
             break;
         }
-
         // Balance code-level braces from j until depth returns to zero.
-        let mut depth: i32 = 0;
-        let mut block_started = false;
-        let mut k = j;
-        let mut in_str = starts_in_str[k];
-        while k < lines.len() {
-            let (op, cl) = count_code_braces(lines[k], &mut in_str);
-            depth += op as i32;
-            if op > 0 {
-                block_started = true;
-            }
-            depth -= cl as i32;
-            if block_started && depth <= 0 {
-                for slot in &mut keep[marker_idx..=k] {
-                    *slot = false;
-                }
+        match find_block_end(lines, &starts_in_str, j) {
+            Some(k) => {
+                keep[marker_idx..=k].fill(false);
                 i = k + 1;
-                break;
             }
-            k += 1;
-        }
-        if !block_started || depth > 0 {
-            // Unbalanced or unterminated — bail out without further stripping.
-            break;
+            None => break, // Unbalanced or unterminated — bail out.
         }
     }
     keep
@@ -271,39 +241,96 @@ fn update_in_str(line: &str, mut in_str: bool) -> bool {
     in_str
 }
 
-/// Count `(open_braces, close_braces)` on `line`, ignoring characters inside
-/// string literals and line comments. `in_str` is updated to reflect string
-/// state at end of line so multi-line strings are tracked correctly.
-fn count_code_braces(line: &str, in_str: &mut bool) -> (u32, u32) {
-    let mut opens = 0u32;
-    let mut closes = 0u32;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if *in_str {
-            if c == '\\' {
-                chars.next();
-                continue;
-            }
-            if c == '"' {
-                *in_str = false;
-            }
-            continue;
-        }
-        // Outside string
-        if c == '/' && chars.peek() == Some(&'/') {
-            break;
-        }
-        if c == '"' {
-            *in_str = true;
-            continue;
-        }
-        if c == '{' {
-            opens += 1;
-        } else if c == '}' {
-            closes += 1;
+/// Brace-depth state machine used to locate the closing line of a Rust block.
+///
+/// Tracks `{`/`}` depth, string-literal context, and whether the opening brace
+/// has been seen yet (`started`). Replaces the former `count_code_braces` +
+/// manual threading in `rust_test_block_keep_mask`.
+struct BraceScan {
+    depth: i32,
+    started: bool,
+    in_str: bool,
+}
+
+impl BraceScan {
+    fn new(initial_in_str: bool) -> Self {
+        Self {
+            depth: 0,
+            started: false,
+            in_str: initial_in_str,
         }
     }
-    (opens, closes)
+
+    /// Consume one source line, updating depth and string state inline.
+    /// Returns `true` once the opening block has been matched by a closing
+    /// brace (i.e. `started && depth <= 0`).
+    fn consume_line(&mut self, line: &str) -> bool {
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if self.in_str {
+                if c == '\\' {
+                    chars.next();
+                    continue;
+                }
+                if c == '"' {
+                    self.in_str = false;
+                }
+                continue;
+            }
+            if c == '/' && chars.peek() == Some(&'/') {
+                break;
+            }
+            if c == '"' {
+                self.in_str = true;
+                continue;
+            }
+            if c == '{' {
+                self.depth += 1;
+                self.started = true;
+            } else if c == '}' {
+                self.depth -= 1;
+            }
+        }
+        self.started && self.depth <= 0
+    }
+}
+
+/// Pre-compute, for each line, whether a multi-line string literal is open at
+/// the start of that line. Used by `rust_test_block_keep_mask` to skip false
+/// test-marker detections inside string literals.
+fn starts_in_str_table(lines: &[&str]) -> Vec<bool> {
+    let mut out = vec![false; lines.len()];
+    let mut cur = false;
+    for (idx, line) in lines.iter().enumerate() {
+        out[idx] = cur;
+        cur = update_in_str(line, cur);
+    }
+    out
+}
+
+/// Skip over stacked attributes beginning at `from`, returning the index of
+/// the first line that is not inside a string and does not begin with `#[`.
+fn skip_attrs(lines: &[&str], starts_in_str: &[bool], from: usize) -> usize {
+    let mut j = from;
+    while j < lines.len() && !starts_in_str[j] && lines[j].trim_start().starts_with("#[") {
+        j += 1;
+    }
+    j
+}
+
+/// Brace-balance scan from line `j` using pre-computed string-start state.
+/// Returns `Some(k)` where `k` is the line that closes the block (depth → 0),
+/// or `None` if the block never opens or the input is unbalanced/unterminated.
+fn find_block_end(lines: &[&str], starts_in_str: &[bool], j: usize) -> Option<usize> {
+    let mut scan = BraceScan::new(starts_in_str[j]);
+    let mut k = j;
+    while k < lines.len() {
+        if scan.consume_line(lines[k]) {
+            return Some(k);
+        }
+        k += 1;
+    }
+    None
 }
 
 const CARGO_SUBCOMMANDS_NEEDING_WORKSPACE: &[&str] = &["build", "test", "check", "clippy"];
