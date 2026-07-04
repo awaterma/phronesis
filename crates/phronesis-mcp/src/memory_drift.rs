@@ -228,14 +228,11 @@ fn parse_memory_file(path: &Path, raw: &str) -> Option<MemoryEntry> {
 /// for two field reads. Tracks indentation to read `  type: feedback`
 /// inside a `metadata:` subsection.
 fn parse_frontmatter_fields(frontmatter: &str) -> (String, String, String) {
-    // Three mutable accumulators (`name`, `description`, `memory_type`) live
-    // inside the inner block and are returned as a tuple, keeping the
-    // function's outer let-mut count under the audit threshold. `in_metadata`
-    // must remain in the outer scope because the block both reads and writes
-    // it across loop iterations — moving it inside would reset it on every
-    // call, breaking the metadata-subsection tracking.
-    let mut in_metadata = false;
+    // All four mutable accumulators are scoped inside the block; only the
+    // three-field result tuple escapes, keeping the function's outer
+    // let-mut count at zero (block pattern, per the let-mut audit rule).
     {
+        let mut in_metadata = false;
         let mut name = String::new();
         let mut description = String::new();
         let mut memory_type = String::new();
