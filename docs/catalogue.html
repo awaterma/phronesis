@@ -703,2044 +703,565 @@
     </nav>
   </section>
 
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <!-- ─── PACK · LLM                                            ── -->
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <section class="pack">
-    <header class="pack-head-block">
-      <div class="pack-num">§<small>I</small><br>1</div>
-      <h2>Pack · LLM — <span class="it">behavior, not code shape.</span></h2>
-      <div class="pack-count"><span class="num">8</span>Rules</div>
-    </header>
-
-    <p class="pack-intro">
-      The LLM pack catches phrasing patterns that recur in long
-      LLM-assisted sessions: <em>deflective disclaimers</em> that shift
-      blame to pre-existing code, <em>unverified completion claims</em>
-      that report success without evidence, and <em>workflow moments</em>
-      where a nudge before commit or push is worth more than a thousand
-      words in a CLAUDE.md that has already faded from context.
-    </p>
-
-    <!-- ─── 1.1 Deflection family ─── -->
-    <article class="rule" data-level="block" id="deflection">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">×3 variants</span>
-        </div>
-        <h3 class="rule-id">enforce-no-pre-existing-issue · -not-from-our-changes · -not-caused-by-our</h3>
-        <p class="rule-summary">
-          Stops three closely-related disclaimer phrases that pre-emptively
-          blame the existing tree rather than naming the issue and deciding
-          to fix or defer.
-        </p>
-        <div class="rule-body">
-          <p>
-            All three fire on substring match against new content — no
-            file gates. They apply equally to code edits, commit messages,
-            and PR bodies. The shared shape: the model has noticed a
-            problem and is reaching for a phrase that retires it without
-            a decision.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">trigger <span class="path">in a commit message</span></div>
-<pre><span class="c">// Subject line, ~turn 80 of a long session</span>
-fix(scoring): switch priority ordering to descending
-
-The test failure in play::turn_resolver_tests is
-a pre​‑existing issue not from our changes; ignored.</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">accepted form</div>
-<pre><span class="c">// Subject line</span>
-fix(scoring): switch priority ordering to descending
-
-Known broken: play::turn_resolver_tests::priority_order
-fails on the new sort comparator. Filed as #421;
-this PR does not address it. (See follow-up.)</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> The disclaimer pattern is a known
-            failure mode in long sessions: an issue gets surfaced,
-            attribution-shifted, and then forgotten. The accepted form
-            forces a binary — fix it as part of this change, or name it
-            and defer it explicitly.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 1.2 Unverified completion claims ─── -->
-    <article class="rule" data-level="block" id="unverified-claims">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">×2 variants</span>
-        </div>
-        <h3 class="rule-id">enforce-no-should-work-claim · enforce-no-should-be-fixed-claim</h3>
-        <p class="rule-summary">
-          Stops "should​ work now" and "should​ be fixed" phrasing when
-          they appear without accompanying verification.
-        </p>
-        <div class="rule-body">
-          <p>
-            These phrases are the linguistic marker of the unfinished
-            handoff: a change made, a hypothesis stated, no test run.
-            The rule cannot tell whether you actually ran the test — but
-            it can force the language to match the evidence.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">trigger</div>
-<pre>The duplicate-entry bug should​ work now. Closes #87.</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">verified report</div>
-<pre>Verified against the seed that triggered #87:
-    $ cargo test hand::duplicate_entry -- --exact
-    test ... ok (1 passed)
-Closes #87.</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 1.3 Nudge before commit ─── -->
-    <article class="rule" data-level="warn" id="nudge-commit">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">on Bash content</span>
-        </div>
-        <h3 class="rule-id">nudge-verify-before-commit</h3>
-        <p class="rule-summary">
-          Fires when a Bash command contains "git​&nbsp;commit&nbsp;-m". A
-          reminder, not a refusal — to trace the call chain end-to-end
-          before claiming done.
-        </p>
-        <div class="rule-body">
-          <p>
-            Hook fires before the commit runs. The host prints the rule's
-            message to stderr at exit&nbsp;1; the commit still proceeds.
-            The point is the moment of friction — a half-second to ask
-            <em>did I actually verify this</em> before the message is
-            permanent.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">trigger</div>
-<pre><span class="c">$ git​ commit -m "wire up new play ledger"</span>
-<span class="em">phronesis: WARNING</span> — About to commit. Trace
-the call chain end-to-end before reporting done.
-Half-fixes where one layer is wired but another is
-not are a recurring failure mode.</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">verified, then commit</div>
-<pre><span class="c">$ cargo test --workspace -p core</span>
-test ... ok (124 passed)
-<span class="c">$ cargo run -- --scenario play-smoke</span>
-... play smoke passed
-<span class="c">$ git​ commit -m "wire up new play ledger"</span></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 1.4 Stage explicitly ─── -->
-    <article class="rule" data-level="warn" id="git-add-all">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">on Bash content</span>
-        </div>
-        <h3 class="rule-id">llm-warn-git-add-all</h3>
-        <p class="rule-summary">
-          Fires when a Bash command runs <code>git add -A</code> or
-          <code>git add .</code> — a nudge to stage the files you actually
-          changed, not whatever happens to be in the tree.
-        </p>
-        <div class="rule-body">
-          <p>
-            Matched by the <code>bash_command_matches</code> predicate (a
-            regex over the command itself, not file content), so it fires on
-            the command tool and ignores an edit that merely mentions the
-            text. Blanket staging is how unrelated changes — debug prints,
-            stray files, a half-finished refactor — slip into a commit.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">trigger</div>
-<pre><span class="c">$ git add -A</span>
-<span class="em">phronesis: WARNING</span> — Stage files explicitly —
-git add -A / git add . sweeps unrelated changes into
-the commit. List the files you actually changed.</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">explicit</div>
-<pre><span class="c">$ git add src/ledger.rs tests/ledger.rs</span></pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 1.5 Don't kill the build ─── -->
-    <article class="rule" data-level="warn" id="kill-build">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">on Bash content</span>
-        </div>
-        <h3 class="rule-id">llm-warn-kill-build</h3>
-        <p class="rule-summary">
-          Fires when a Bash command tries to <code>pkill</code> /
-          <code>kill</code> a <code>cargo</code> or <code>rustc</code>
-          process — a build at 0% CPU is usually in disk-wait, not hung.
-        </p>
-        <div class="rule-body">
-          <p>
-            Also a <code>bash_command_matches</code> rule. Rust builds are
-            I/O-bound; a <code>rustc</code> sitting at 0% CPU is typically
-            waiting on disk, not stuck. Killing it discards incremental
-            progress and usually starts an even slower clean rebuild.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">trigger</div>
-<pre><span class="c">$ pkill -9 rustc</span>
-<span class="em">phronesis: WARNING</span> — Builds are I/O-bound:
-a rustc at 0% CPU is usually in disk-wait, not hung.
-Give it time or check `ps` state before killing.</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">check first</div>
-<pre><span class="c">$ ps -o state= -p $(pgrep rustc)</span>
-D    # uninterruptible sleep = waiting on disk I/O</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-  </section>
-
-
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <!-- ─── PACK · RUST                                           ── -->
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <section class="pack">
-    <header class="pack-head-block">
-      <div class="pack-num">§<small>II</small><br>2</div>
-      <h2>Pack · Rust — <span class="it">code shape, error handling, debt.</span></h2>
-      <div class="pack-count"><span class="num">30</span>Rules</div>
-    </header>
-
-    <p class="pack-intro">
-      The Rust pack mixes hard blocks (panic-shaped exits, sync/async
-      misuse, raw <code>Result&lt;_, String&gt;</code>), softer warns
-      (signature smells, dbg!() leftovers), and audit-only debt
-      indicators (newtype opportunities, god-files, manual error
-      propagation). The examples below all draw from a representative
-      Rust application — a game engine — chosen because the domain
-      tends to surface every category of Rust pain at once.
-    </p>
-
-    <!-- ─── 2.1 Panic family ─── -->
-    <article class="rule" data-level="block" id="panic-family">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">audit: yes</span>
-          <span class="tag">×4 variants</span>
-        </div>
-        <h3 class="rule-id">enforce-no-{unwrap, panic, todo, unimplemented}-in-src</h3>
-        <p class="rule-summary">
-          Four sibling rules. Each catches one panic-shaped exit
-          (<code>.unwrap()</code>, <code>panic!()</code>, <code>todo!()</code>,
-          <code>unimplemented!()</code>) added in any file under
-          <code>src/</code>. Test code is excluded via inline
-          <code>#[cfg(test)]</code> stripping.
-        </p>
-        <div class="rule-body">
-          <p>
-            All four share the same shape: substring match against new
-            content, gated by a file-path match on <code>src</code>. The
-            hook strips test blocks before evaluation, so usage inside
-            inline test modules — where panics are idiomatic — does not
-            trip the rule.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
-<pre><span class="k">pub fn</span> current_card(&<span class="k">self</span>) -> &Card {
-    <span class="k">self</span>.members
-        .get(&<span class="k">self</span>.turn_order[<span class="k">self</span>.turn_index])
-        .<span class="em">unwrap</span>()
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">pub fn</span> current_card(&<span class="k">self</span>) -> Result&lt;&Card, HandError&gt; {
-    <span class="k">let</span> id = <span class="k">self</span>.turn_order
-        .get(<span class="k">self</span>.turn_index)
-        .ok_or(HandError::TurnIndexOutOfRange)?;
-    <span class="k">self</span>.members
-        .get(id)
-        .ok_or_else(|| HandError::CardNotFound(id.clone()))
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Panic-shaped exits in production paths
-            crash the host runtime. The cost of carrying a Result
-            through one more call is much lower than the cost of a
-            mid-session crash in a tool that holds long-lived state.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.2 Result<_, String> ─── -->
-    <article class="rule" data-level="block" id="result-string">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">predicate: AST</span>
-        </div>
-        <h3 class="rule-id">enforce-no-result-string-error</h3>
-        <p class="rule-summary">
-          Fires when a function's signature returns
-          <code>Result&lt;_, String&gt;</code>. Strings are not error
-          types.
-        </p>
-        <div class="rule-body">
-          <p>
-            Detected via tree-sitter: the rule walks function signatures
-            and matches the precise return shape. Test functions are
-            excluded automatically. The remedy is a proper error enum,
-            usually with <code>thiserror</code>.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/core/event_pipeline.rs</span></div>
-<pre><span class="k">pub fn</span> enqueue(&<span class="k">mut self</span>, event: Event) -> Result&lt;(), <span class="em">String</span>&gt; {
-    <span class="k">if</span> <span class="k">self</span>.queue.len() >= <span class="k">self</span>.cap {
-        <span class="k">return</span> Err(format!(<span class="s">"queue full at cap {}"</span>, <span class="k">self</span>.cap));
-    }
-    <span class="k">self</span>.queue.push(event);
-    Ok(())
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="c">// New: a domain error type</span>
-<span class="a">#[derive(Debug, thiserror::Error)]</span>
-<span class="k">pub enum</span> PipelineError {
-    <span class="a">#[error("event queue full at cap {0}")]</span>
-    QueueFull(<span class="k">usize</span>),
-}
-
-<span class="k">pub fn</span> enqueue(&<span class="k">mut self</span>, event: Event) -> Result&lt;(), PipelineError&gt; {
-    <span class="k">if</span> <span class="k">self</span>.queue.len() >= <span class="k">self</span>.cap {
-        <span class="k">return</span> Err(PipelineError::QueueFull(<span class="k">self</span>.cap));
-    }
-    <span class="k">self</span>.queue.push(event);
-    Ok(())
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> A typed error makes the pipeline's
-            failure modes explicit to callers, lets <code>?</code> compose
-            with <code>From</code> impls, and survives refactors. A
-            stringified error is a one-way trapdoor — every caller has
-            to <em>parse the message</em> to recover any structure.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.3 dbg in src ─── -->
-    <article class="rule" data-level="warn" id="dbg">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">audit: yes</span>
-        </div>
-        <h3 class="rule-id">warn-dbg-in-src</h3>
-        <p class="rule-summary">
-          Catches <code>dbg!()</code> in any <code>src/</code> file.
-          Diagnostic leftover; never an intentional shipping pattern.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/core/play/turn_resolver.rs</span></div>
-<pre><span class="k">fn</span> resolve_play(&<span class="k">mut self</span>, play: Play) -> Resolution {
-    <span class="k">let</span> roll = <span class="em">dbg!</span>(<span class="k">self</span>.compute_priority() + play.bonus);
-    <span class="k">match</span> roll {
-        <span class="k">_</span> <span class="k">if</span> roll >= play.target_threshold => Resolution::Valid,
-        _ => Resolution::Invalid,
-    }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">use</span> tracing::trace;
-
-<span class="k">fn</span> resolve_play(&<span class="k">mut self</span>, play: Play) -> Resolution {
-    <span class="k">let</span> roll = <span class="k">self</span>.compute_priority() + play.bonus;
-    trace!(target: <span class="s">"play"</span>, ?play, roll, <span class="s">"resolving"</span>);
-    <span class="k">match</span> roll {
-        <span class="k">_</span> <span class="k">if</span> roll >= play.target_threshold => Resolution::Valid,
-        _ => Resolution::Invalid,
-    }
-}</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.4 Public fn takes &String ─── -->
-    <article class="rule" data-level="warn" id="string-ref">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: post</span>
-          <span class="tag">predicate: AST</span>
-        </div>
-        <h3 class="rule-id">warn-rust-public-fn-takes-string-ref</h3>
-        <p class="rule-summary">
-          Public function takes a <code>&amp;String</code> parameter
-          where <code>&amp;str</code> would accept a strictly larger
-          set of callers.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
-<pre><span class="k">pub fn</span> find_card(&<span class="k">self</span>, name: &<span class="em">String</span>) -> Option&lt;&Card&gt; {
-    <span class="k">self</span>.members.iter().find(|c| &c.name == name)
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">pub fn</span> find_card(&<span class="k">self</span>, name: &<span class="k">str</span>) -> Option&lt;&Card&gt; {
-    <span class="k">self</span>.members.iter().find(|c| c.name == name)
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> A <code>&amp;str</code> accepts string
-            literals, slices into existing buffers, and the result of
-            <code>.as_str()</code> on a <code>String</code>. A
-            <code>&amp;String</code> forces every caller to first own a
-            <code>String</code> — a needless allocation requirement at
-            an API boundary.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.5 Public fn takes &Vec<T> ─── -->
-    <article class="rule" data-level="warn" id="vec-ref">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: post</span>
-          <span class="tag">predicate: AST</span>
-        </div>
-        <h3 class="rule-id">warn-rust-public-fn-takes-vec-ref</h3>
-        <p class="rule-summary">
-          Public function takes a <code>&amp;Vec&lt;T&gt;</code> where
-          <code>&amp;[T]</code> would accept slices, arrays, and Vecs.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/world/state.rs</span></div>
-<pre><span class="k">pub fn</span> apply_events(&<span class="k">mut self</span>, events: &<span class="em">Vec&lt;Event&gt;</span>) {
-    <span class="k">for</span> event <span class="k">in</span> events {
-        <span class="k">self</span>.apply(event);
-    }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">pub fn</span> apply_events(&<span class="k">mut self</span>, events: &[Event]) {
-    <span class="k">for</span> event <span class="k">in</span> events {
-        <span class="k">self</span>.apply(event);
-    }
-}</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.6 Param-count high ─── -->
-    <article class="rule" data-level="warn" id="param-count">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: post</span>
-          <span class="tag">audit: yes</span>
-          <span class="tag">threshold: 5</span>
-        </div>
-        <h3 class="rule-id">warn-rust-function-param-count-high</h3>
-        <p class="rule-summary">
-          Function takes five or more parameters (excluding <code>self</code>).
-          A god-signature smell.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/core/play/turn_resolver.rs</span></div>
-<pre><span class="k">pub fn</span> new(
-    id: String,
-    name: String,
-    score: <span class="k">u32</span>,
-    max_score: <span class="k">u32</span>,
-    rank: <span class="k">u32</span>,
-    priority: <span class="k">i32</span>,
-    actions: Vec&lt;Action&gt;,
-    members: Hand,
-) -> Self { ... }</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">pub struct</span> HandStats { <span class="k">pub</span> score: <span class="k">u32</span>, <span class="k">pub</span> max_score: <span class="k">u32</span>, <span class="k">pub</span> rank: <span class="k">u32</span>, <span class="k">pub</span> priority: <span class="k">i32</span> }
-
-<span class="k">pub fn</span> new(
-    id: ActorId,
-    name: String,
-    values: HandStats,
-    strategy: Strategy,   <span class="c">// holds actions + members</span>
-) -> Self { ... }</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Long parameter lists correlate with
-            god-functions and make call sites stateal and brittle.
-            Grouping related params into named structs improves
-            readability and gives a place for invariants to live.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.7 Deref for non-pointer type ─── -->
-    <article class="rule" data-level="warn" id="deref">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">audit: yes</span>
-        </div>
-        <h3 class="rule-id">warn-deref-for-non-pointer-type</h3>
-        <p class="rule-summary">
-          Catches <code>impl Deref for</code> outside of true smart-pointer
-          wrappers. Deref polymorphism is an anti-pattern.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
-<pre><span class="k">pub struct</span> HandView { inner: Hand }
-<span class="k">impl</span> <span class="em">Deref for</span> HandView {
-    <span class="k">type</span> Target = Hand;
-    <span class="k">fn</span> deref(&<span class="k">self</span>) -> &Hand { &<span class="k">self</span>.inner }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">pub struct</span> HandView { inner: Hand }
-<span class="k">impl</span> HandView {
-    <span class="k">pub fn</span> hand(&<span class="k">self</span>) -> &Hand { &<span class="k">self</span>.inner }
-}
-    <span class="c">// expose specific methods explicitly</span>
-    <span class="k">pub fn</span> name(&<span class="k">self</span>) -> &<span class="k">str</span> { <span class="k">self</span>.inner.name() }
-}</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.8 Cargo workspace ─── -->
-    <article class="rule" data-level="warn" id="cargo">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">on Bash content</span>
-        </div>
-        <h3 class="rule-id">warn-cargo-build-without-workspace</h3>
-        <p class="rule-summary">
-          Catches <code>cargo build</code> / <code>test</code> /
-          <code>check</code> / <code>clippy</code> invoked without
-          <code>--workspace</code> in a multi-crate workspace.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">trigger</div>
-<pre><span class="c">$ cargo test</span>
-<span class="em">phronesis: WARNING</span> — Running `cargo test` without
-`--workspace` only checks part of the workspace. Use
-`cargo &lt;subcommand&gt; --workspace --tests --examples`
-to catch sibling-crate breakage, or pass `-p &lt;crate&gt;`
-if scope was intentional.</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">scoped, full</div>
-<pre><span class="c"># Whole workspace, including sibling crates</span>
-$ cargo test --workspace --tests --examples
-
-<span class="c"># Or scoped intentionally to one crate</span>
-$ cargo test -p core hand::</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> A bare <code>cargo build</code> in a
-            multi-crate workspace silently skips sibling crates whose
-            paths Cargo can't infer from the cwd. The result is the
-            classic "green locally, red on CI" failure when a small
-            refactor breaks a downstream crate.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.9 Clone-heavy ─── -->
-    <article class="rule" data-level="warn" id="clone">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">predicate: AST</span>
-          <span class="tag">threshold: 3</span>
-        </div>
-        <h3 class="rule-id">warn-clone-heavy</h3>
-        <p class="rule-summary">
-          A single function body contains three or more
-          <code>.clone()</code> calls — usually a sign that the borrow
-          checker has been argued with rather than appeased.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/example/hand.rs</span></div>
-<pre><span class="k">fn</span> snapshot_hand(hand: &Hand) -> HandSnapshot {
-    HandSnapshot {
-        name:     hand.name.<span class="em">clone</span>(),
-        members:    hand.members.<span class="em">clone</span>(),
-        state:    hand.state.<span class="em">clone</span>(),
-        log:      hand.log.<span class="em">clone</span>(),
-    }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="a">#[derive(Clone)]</span>
-<span class="k">pub struct</span> HandSnapshot { ... }
-
-<span class="k">fn</span> snapshot_hand(hand: &Hand) -> HandSnapshot {
-    hand.snapshot.clone()  <span class="c">// one borrow into the canonical clone</span>
-}
-
-<span class="c">// or, if read-only is enough:</span>
-<span class="k">fn</span> snapshot_hand(hand: &Hand) -> &HandSnapshot { &hand.snapshot }</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.10 Empty test ─── -->
-    <article class="rule" data-level="warn" id="empty-test">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: post</span>
-          <span class="tag">predicate: AST</span>
-        </div>
-        <h3 class="rule-id">warn-empty-test</h3>
-        <p class="rule-summary">
-          A <code>#[test]</code> function body with no assertion macro
-          and no <code>?</code> operator. A placeholder that always
-          passes is a regression hidden in plain sight.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">tests/example/hand.rs</span></div>
-<pre><span class="a">#[test]</span>
-<span class="k">fn</span> hand_can_be_created() {
-    <span class="k">let</span> _p = Hand::new(<span class="s">"the winning hand"</span>);
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="a">#[test]</span>
-<span class="k">fn</span> hand_starts_empty_and_named() {
-    <span class="k">let</span> p = Hand::new(<span class="s">"the winning hand"</span>);
-    assert_eq!(p.name(), <span class="s">"the winning hand"</span>);
-    assert!(p.members().is_empty());
-}</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.11 sync .await ─── -->
-    <article class="rule" data-level="block" id="sync-await">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">audit: yes</span>
-          <span class="tag">×2 variants</span>
-        </div>
-        <h3 class="rule-id">block-await-on-sync-execute-all-agenda-items · -fire-all-consequences</h3>
-        <p class="rule-summary">
-          Catches stale <code>.await</code> calls on methods that were
-          made synchronous in a prior refactor — a recurring source of
-          stale call sites after API changes.
-        </p>
-        <div class="rule-body">
-          <p>
-            Project-specific in shape, broadly useful in concept: these
-            two methods on phronesis's own RETE network were converted
-            from async to sync in an earlier refactor, and old
-            <code>.await</code> call sites kept turning up in test code
-            and integration helpers afterwards. The rule pins the API
-            surface so that resurrected snippets get caught before they
-            reach a <em>future is not awaitable</em> compile error. The
-            same shape — naming two specific now-sync methods you wish
-            to police — generalizes cleanly to any project undergoing
-            a sync/async migration.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">tests/integration/round_smoke.rs</span></div>
-<pre><span class="a">#[tokio::test]</span>
-<span class="k">async fn</span> round_smoke() -> Result&lt;(), TestError&gt; {
-    <span class="k">let</span> engine = make_engine();
-    <span class="k">let</span> actions = engine.execute_all_agenda_items()<span class="em">.await</span>?;
-    assert_eq!(actions.len(), 3);
-    Ok(())
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="a">#[test]</span>
-<span class="k">fn</span> round_smoke() -> Result&lt;(), TestError&gt; {
-    <span class="k">let</span> engine = make_engine();
-    <span class="k">let</span> actions = engine.execute_all_agenda_items()?;
-    assert_eq!(actions.len(), 3);
-    Ok(())
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Without the rule, the compiler error is
-            confusing — "<code>Result&lt;…&gt;</code> is not a future" —
-            and easy to misdiagnose as a Tokio version mismatch. The
-            named rule turns a five-minute hunt into a one-line fix.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.12 Manual err return (audit) ─── -->
-    <article class="rule" data-level="audit" id="manual-err">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">AUDIT</span>
-          <span class="tag">phase: audit</span>
-          <span class="tag">silent at hook</span>
-        </div>
-        <h3 class="rule-id">audit-manual-err-return</h3>
-        <p class="rule-summary">
-          Catches the shape <code>=&gt; return Err(…)</code> in a match
-          arm — almost always a place where <code>?</code> would
-          replace the whole construct.
-        </p>
-        <div class="rule-body">
-          <p>
-            Audit-only by design. Firing this at hook time would
-            interrupt every refactor mid-flight; firing it at sweep
-            time gives a debt count of "places where the
-            <code>?</code> operator wasn't used."
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/core/event_pipeline.rs</span></div>
-<pre><span class="k">let</span> event = <span class="k">match</span> parse_event(&payload) {
-    Ok(e) => e,
-    Err(e) <span class="em">=&gt; return Err(</span>e),
-};</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">let</span> event = parse_event(&payload)?;</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.14 Newtype id (audit) ─── -->
-    <article class="rule" data-level="audit" id="newtype-id">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">AUDIT</span>
-          <span class="tag">phase: audit</span>
-          <span class="tag">×2 variants</span>
-        </div>
-        <h3 class="rule-id">audit-newtype-id-string · audit-newtype-id-u64</h3>
-        <p class="rule-summary">
-          Surfaces struct fields named <code>*_id: String</code> or
-          <code>*_id: u64</code> — typical candidates for the newtype
-          pattern.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/topology/graph.rs</span></div>
-<pre><span class="k">pub struct</span> State {
-    <span class="k">pub</span> id: <span class="em">String</span>,
-    <span class="k">pub</span> name: String,
-    <span class="k">pub</span> exits: Vec&lt;<span class="em">String</span>&gt;,    <span class="c">// also ids, also strings</span>
-    <span class="k">pub</span> slot_ids: Vec&lt;<span class="em">String</span>&gt;,
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="a">#[derive(Debug, Clone, PartialEq, Eq, Hash)]</span>
-<span class="k">pub struct</span> StateId(String);
-<span class="a">#[derive(Debug, Clone, PartialEq, Eq, Hash)]</span>
-<span class="k">pub struct</span> SlotId(String);
-
-<span class="k">impl</span> StateId {
-    <span class="k">pub fn</span> new(s: <span class="k">impl</span> Into&lt;String&gt;) -> Self { Self(s.into()) }
-    <span class="k">pub fn</span> as_str(&<span class="k">self</span>) -> &<span class="k">str</span> { &<span class="k">self</span>.0 }
-}
-
-<span class="k">pub struct</span> State {
-    <span class="k">pub</span> id: StateId,
-    <span class="k">pub</span> name: String,
-    <span class="k">pub</span> exits: Vec&lt;StateId&gt;,
-    <span class="k">pub</span> slot_ids: Vec&lt;SlotId&gt;,
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> A bare <code>String</code> id lets you
-            pass a <code>SlotId</code> where a <code>StateId</code> is
-            expected. The compiler will not save you. A newtype turns
-            the mistake into a type error at the call site.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.15 If-let opportunity (audit) ─── -->
-    <article class="rule" data-level="audit" id="if-let">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">AUDIT</span>
-          <span class="tag">phase: audit</span>
-          <span class="tag">×2 variants</span>
-        </div>
-        <h3 class="rule-id">audit-if-let-opportunity-none-empty · -err-empty</h3>
-        <p class="rule-summary">
-          Catches <code>None =&gt; {}</code> and <code>Err(_) =&gt; {}</code>
-          match arms — either redundant <code>if let</code> opportunities
-          or silent error-swallows.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">From the field <span class="path">src/core/play/turn_resolver.rs</span></div>
-<pre><span class="k">match</span> <span class="k">self</span>.active_target.as_ref() {
-    Some(target) => <span class="k">self</span>.narrate_play(target),
-    <span class="em">None =&gt; {}</span>
-}
-
-<span class="k">match</span> <span class="k">self</span>.write_to_log(&entry) {
-    Ok(()) => {},
-    <span class="em">Err(_) =&gt; {}</span>   <span class="c">// silent swallow!</span>
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">refactored</div>
-<pre><span class="k">if let</span> Some(target) = <span class="k">self</span>.active_target.as_ref() {
-    <span class="k">self</span>.narrate_play(target);
-}
-
-<span class="k">if let</span> Err(e) = <span class="k">self</span>.write_to_log(&entry) {
-    tracing::warn!(?e, <span class="s">"play log write failed"</span>);
-}</pre>
-            </div>
-          </div>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.16 File LOC (audit) ─── -->
-    <article class="rule" data-level="audit" id="file-loc">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">AUDIT</span>
-          <span class="tag">phase: audit</span>
-          <span class="tag">threshold: 800</span>
-        </div>
-        <h3 class="rule-id">audit-file-loc-high</h3>
-        <p class="rule-summary">
-          Flags <code>.rs</code> files exceeding 800 lines. A god-file
-          signal; not a violation, just a candidate for splitting.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">audit output</div>
-<pre>$ phr-mcp audit --rule audit-file-loc-high
-
-Rule                 Level  Hits  Files
-audit-file-loc-high  warn      3      3
-  src/core/event_pipeline.rs   lines: 1
-  src/core/play/turn_resolver.rs  lines: 1
-  src/example/round/mod.rs             lines: 1</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">a plan, not a fix</div>
-<pre><span class="c">// Split event_pipeline.rs (1418 LOC) into:</span>
-src/core/event_pipeline/
-├── mod.rs                  <span class="c">// 80 LOC: the trait, re-exports</span>
-├── queue.rs                <span class="c">// 220 LOC: the ring buffer</span>
-├── dispatch.rs             <span class="c">// 410 LOC: the dispatch table</span>
-├── consequences.rs         <span class="c">// 340 LOC: side-effect drainage</span>
-└── shape.rs                <span class="c">// 180 LOC: payload types</span>
-                            <span class="c">// 1230 LOC total, 188 LOC saved as overlap</span></pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> A file that crosses 800 lines is usually
-            doing several jobs. The rule is a sweep indicator, not a
-            mechanical fix — the value is in being told the pile exists
-            during a quarterly review, not on every edit.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.17 #![deny(warnings)] attribute (block) ─── -->
-    <article class="rule" data-level="block" id="deny-warnings">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">audit: yes</span>
-          <a class="tag tag-source"
-             href="https://rust-unofficial.github.io/patterns/anti_patterns/deny-warnings.html"
-             target="_blank" rel="noopener noreferrer">patterns book</a>
-        </div>
-        <h3 class="rule-id">block-deny-warnings-attribute</h3>
-        <p class="rule-summary">
-          Blocks <code>#![deny(warnings)]</code> in any <code>.rs</code>
-          file. A toolchain-fragility anti-pattern: every new rustc
-          release introduces new warnings and breaks the build.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">avoid <span class="path">src/lib.rs</span></div>
-<pre><span class="em">#![deny(warnings)]</span>
-
-<span class="c">// every cargo update is a coin flip</span>
-<span class="k">pub fn</span> hello() { println!(<span class="s">"hello"</span>); }</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">put the policy in CI</div>
-<pre><span class="c">// src/lib.rs — no global deny</span>
-<span class="k">pub fn</span> hello() { println!(<span class="s">"hello"</span>); }
-
-<span class="c"># .github/workflows/ci.yml</span>
-- <span class="k">run</span>: cargo clippy --workspace -- -D warnings
-  env:
-    RUSTFLAGS: <span class="s">"-D warnings"</span></pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Library code with
-            <code>#![deny(warnings)]</code> stops compiling for downstream
-            consumers as soon as their toolchain introduces a new warning.
-            The policy belongs in CI, where it gates merges without
-            propagating fragility to anyone using the crate. Source:
-            <a href="https://rust-unofficial.github.io/patterns/anti_patterns/deny-warnings.html">rust-unofficial/patterns
-            §Anti-patterns (deny-warnings)</a>.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.18 Public fn takes &Box<T> (warn) ─── -->
-    <article class="rule" data-level="warn" id="box-ref">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">audit: yes</span>
-          <a class="tag tag-source"
-             href="https://rust-unofficial.github.io/patterns/idioms/coercion-arguments.html"
-             target="_blank" rel="noopener noreferrer">patterns book</a>
-        </div>
-        <h3 class="rule-id">warn-public-fn-takes-box-ref</h3>
-        <p class="rule-summary">
-          Detects parameter types of the form
-          <code>&amp;Box&lt;T&gt;</code>. The borrow of an owned pointer
-          adds a useless layer of indirection;
-          <code>&amp;T</code> conveys the same intent without the
-          wrapper.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">avoid</div>
-<pre><span class="k">pub fn</span> describe(card: &<span class="em">Box&lt;Card&gt;</span>) -> String {
-    <span class="k">format!</span>(<span class="s">"{}: VALUE {}"</span>, card.name, card.score)
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">prefer</div>
-<pre><span class="k">pub fn</span> describe(card: &<span class="k">Card</span>) -> String {
-    <span class="k">format!</span>(<span class="s">"{}: VALUE {}"</span>, card.name, card.score)
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> A <code>&amp;Box&lt;T&gt;</code> can
-            always be obtained from a <code>&amp;T</code> via
-            auto-deref, but the reverse forces every caller to pre-wrap
-            their value in a <code>Box</code> regardless of where it
-            actually lives. Source:
-            <a href="https://rust-unofficial.github.io/patterns/idioms/coercion-arguments.html">rust-unofficial/patterns
-            §Idioms (borrowed-types-for-arguments)</a>.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.19 Empty .expect() message (warn) ─── -->
-    <article class="rule" data-level="warn" id="expect-empty">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">audit: yes</span>
-        </div>
-        <h3 class="rule-id">warn-expect-with-empty-message</h3>
-        <p class="rule-summary">
-          Flags <code>.expect("")</code> in <code>src/</code>. Strictly
-          worse than <code>.unwrap()</code> — the same panic, plus the
-          noise of a method named <code>expect</code> with nothing to
-          expect.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">avoid</div>
-<pre><span class="k">let</span> config = load_config().<span class="em">expect("")</span>;
-<span class="k">let</span> port = config.port.<span class="em">expect("")</span>;</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">give the invariant a name</div>
-<pre><span class="k">let</span> config = load_config()
-    .expect(<span class="s">"config must exist at $CARGO_MANIFEST_DIR/config.toml"</span>);
-<span class="k">let</span> port = config.port
-    .expect(<span class="s">"validate_config() guarantees port is Some"</span>);</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> When the panic eventually fires in
-            production, the message is what tells the operator which
-            invariant was broken. An empty message turns a debuggable
-            assertion into an opaque crash; the existing
-            <code>warn-unwrap-in-src</code> rule already flags
-            <code>.unwrap()</code>, but <code>.expect("")</code> escapes
-            it by being technically a different call.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.20 Rc<RefCell<T>> in src/ (audit) ─── -->
-    <article class="rule" data-level="audit" id="rc-refcell">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">AUDIT</span>
-          <span class="tag">phase: audit</span>
-          <span class="tag">predicate: substring</span>
-          <a class="tag tag-source"
-             href="https://rust-unofficial.github.io/patterns/anti_patterns/borrow_clone.html"
-             target="_blank" rel="noopener noreferrer">borrow-checker workaround</a>
-        </div>
-        <h3 class="rule-id">audit-rc-refcell-in-src</h3>
-        <p class="rule-summary">
-          Flags occurrences of <code>Rc&lt;RefCell&lt;T&gt;&gt;</code>
-          inside <code>src/</code>. The textbook
-          "fighting-the-borrow-checker" shape — often a signal that the
-          ownership model could be redesigned.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">audit output</div>
-<pre>$ phr-mcp audit --rule audit-rc-refcell-in-src
-
-Rule                      Level  Hits  Files
-audit-rc-refcell-in-src   warn      4      2
-  src/world/region.rs        lines: 18, 42
-  src/world/graph.rs         lines: 7, 91</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">redesign options</div>
-<pre><span class="c">// arena + indices replaces shared mutability</span>
-<span class="k">pub struct</span> RegionArena {
-    regions: Vec&lt;Region&gt;,
-}
-<span class="k">pub struct</span> RegionId(<span class="k">u32</span>);
-
-<span class="c">// or: precompute the graph, treat it as immutable</span>
-<span class="c">// or: move mutability into a single owner, pass &amp;mut</span></pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> <code>Rc&lt;RefCell&lt;T&gt;&gt;</code>
-            is sometimes the right answer — for graph-shaped data with
-            true aliasing, for callback registries, for single-threaded
-            observer patterns. But it is also the canonical shape that
-            appears when someone has lost a fight with the borrow checker
-            and reached for the escape hatch. Surface it during one-time
-            audits so design intent gets revisited.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.21 String concat with + & (audit) ─── -->
-    <article class="rule" data-level="audit" id="string-concat">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">AUDIT</span>
-          <span class="tag">phase: audit</span>
-          <span class="tag">predicate: substring</span>
-          <a class="tag tag-source"
-             href="https://rust-unofficial.github.io/patterns/idioms/concat-format.html"
-             target="_blank" rel="noopener noreferrer">patterns book</a>
-        </div>
-        <h3 class="rule-id">audit-string-concat-with-plus</h3>
-        <p class="rule-summary">
-          Flags the <code>" + &amp;</code> shape — string-literal
-          concatenated with a borrowed string. A signal that
-          <code>format!</code> would be clearer.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">avoid</div>
-<pre><span class="k">let</span> msg = <span class="s">"hand "</span> + &name + <span class="s">" drew "</span> + &card.to_string();</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">prefer</div>
-<pre><span class="k">let</span> msg = <span class="k">format!</span>(<span class="s">"hand {} drew {}"</span>, name, card);</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Plus-chained string concatenation
-            produces a sequence of intermediate <code>String</code>
-            allocations and forces awkward <code>.to_string()</code>
-            calls on non-string arguments. <code>format!</code> reads as
-            a template, allocates once, and accepts anything that
-            implements <code>Display</code>. Source:
-            <a href="https://rust-unofficial.github.io/patterns/idioms/concat-format.html">rust-unofficial/patterns
-            §Idioms (concat-format)</a>.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.23 env::set_var( in src/ (audit) ─── -->
-    <article class="rule" data-level="audit" id="env-set-var">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">AUDIT</span>
-          <span class="tag">phase: audit</span>
-          <span class="tag">predicate: substring</span>
-          <a class="tag tag-source"
-             href="https://doc.rust-lang.org/edition-guide/rust-2024/newly-unsafe-functions.html"
-             target="_blank" rel="noopener noreferrer">edition 2024</a>
-        </div>
-        <h3 class="rule-id">audit-env-set-var-in-src</h3>
-        <p class="rule-summary">
-          Flags <code>env::set_var(</code> in <code>src/</code>. Edition
-          2024 marks this call <code>unsafe</code> because mutating the
-          process environment is unsound when other threads read it
-          concurrently. The audit gives you a chance to verify intent.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">avoid in library code</div>
-<pre><span class="k">pub fn</span> configure_database(url: &<span class="k">str</span>) {
-    <span class="k">unsafe</span> { <span class="em">std::env::set_var</span>(<span class="s">"DATABASE_URL"</span>, url); }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">pass configuration explicitly</div>
-<pre><span class="k">pub struct</span> DbConfig { <span class="k">pub</span> url: String }
-
-<span class="k">pub fn</span> connect(cfg: &DbConfig) -> Result&lt;Conn, DbError&gt; {
-    Conn::open(&cfg.url)
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> The standard library was tightened in
-            edition 2024 for the same reason this rule exists: env-var
-            mutation is process-global and unsynchronized, and any read
-            from another thread during the write is undefined behavior.
-            Tests where you control thread count are usually fine (and
-            already opt in with <code>unsafe</code>); library code
-            almost never is. Prefer passing configuration explicitly
-            through arguments or a context struct.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 2.22 #[allow(dead_code)] in src/ (audit) ─── -->
-    <article class="rule" data-level="audit" id="allow-dead-code">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">AUDIT</span>
-          <span class="tag">phase: audit</span>
-          <span class="tag">predicate: substring</span>
-        </div>
-        <h3 class="rule-id">audit-allow-dead-code-in-src</h3>
-        <p class="rule-summary">
-          Flags <code>#[allow(dead_code)]</code> attributes in
-          <code>src/</code>. The compiler is telling you something; the
-          attribute silences it without addressing the underlying
-          question of why the code exists.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">avoid</div>
-<pre><span class="em">#[allow(dead_code)]</span>
-<span class="k">pub fn</span> compute_secondary_score(&<span class="k">self</span>) { /* never called */ }</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">either delete it, or document why it stays</div>
-<pre><span class="c">// option A: delete</span>
-
-<span class="c">// option B: document the reason</span>
-<span class="c">/// Held in reserve for the upcoming scoring-revision RFC (see #142).</span>
-<span class="c">/// Not yet wired into the dispatch table; cargo would otherwise warn.</span>
-<span class="em">#[allow(dead_code)]</span>
-<span class="k">pub fn</span> compute_secondary_score(&<span class="k">self</span>) { /* ... */ }</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Many <code>#[allow(dead_code)]</code>
-            attributes get added during refactors and then forgotten.
-            Audit sweeps surface them so the team can decide, code by
-            code, whether each one is still earning its keep.
-          </p>
-        </div>
-      </div>
-
-      <div class="rule">
-        <h3 class="rule-id">audit-rust-let-binding-count-high · audit-rust-let-mut-count-high</h3>
-        <p class="rule-summary">
-          Two heuristic audits that surface candidates for John
-          Nunley's <em>block pattern</em>: functions whose top-level
-          <code>let</code> ladder runs eight bindings or longer, or
-          whose top-level <code>let mut</code> declarations reach
-          three or more. Both go silent on functions that have
-          already adopted the pattern.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">audited</div>
-<pre><span class="k">fn</span> build() {
-  <span class="k">let</span> a = step1();
-  <span class="k">let</span> b = step2(a);
-  <span class="k">let</span> c = step3(b);
-  <span class="k">let</span> d = step4(c);
-  <span class="c">// … eight outer-scope</span>
-  <span class="c">//   lets total</span>
-  use_result(h);
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">block pattern (silent)</div>
-<pre><span class="k">fn</span> build() {
-  <span class="k">let</span> result = {
-    <span class="k">let</span> a = step1();
-    <span class="k">let</span> b = step2(a);
-    <span class="k">let</span> c = step3(b);
-    step4(c)
-  };
-  use_result(result);
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> A block expression leads with intent
-            (<code>let result = …</code>), keeps intermediate names
-            from polluting the outer scope, and scopes mutability — a
-            <code>let mut</code> inside a block returns an immutable
-            binding to its caller.
-          </p>
-          <p class="rule-why">
-            The walker halts at child <code>{ … }</code>, closures,
-            and nested <code>fn</code> bodies, so the rule does not
-            punish the very shape it surfaces. Conditional and loop
-            bodies still recurse (they continue the outer flow).
-            Source: <em>John Nunley, &ldquo;Rust&rsquo;s Block Pattern&rdquo; (Dec 2025)</em>.
-          </p>
-        </div>
-      </div>
-    </article>
-  </section>
-
-
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <!-- ─── PACK · RHAI                                           ── -->
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <section class="pack" id="rhai-pack">
-    <header class="pack-head-block">
-      <div class="pack-num">§<small>III</small><br>3</div>
-      <h2>Pack · Rhai — <span class="it">script hygiene for embedded engines.</span></h2>
-      <div class="pack-count"><span class="num">2</span>Rules</div>
-    </header>
-
-    <p class="pack-intro">
-      Discipline for projects that embed the Rhai scripting language.
-      The pack assumes a host that loads <code>.rhai</code> files,
-      compiles them to ASTs, and registers host-side functions the
-      scripts can call. The two rules push back on the two most
-      common entropy sources: inline <code>engine.eval</code> in the
-      Rust source, and ad-hoc <code>print()</code> in the scripts
-      themselves. Messages are intentionally generic — wire any
-      project-specific guidance (which loader helper, which
-      response-proxy) into your own <code>.phronesis/rules.json</code>.
-    </p>
-
-    <!-- ─── 3.1 Rhai inline eval string (block) ─── -->
-    <article class="rule" data-level="block" id="rhai-eval">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">predicate: AST</span>
-        </div>
-        <h3 class="rule-id">block-rhai-inline-eval-string</h3>
-        <p class="rule-summary">
-          Blocks calls of the shape <code>engine.eval(&lt;string
-          literal&gt;)</code> in Rust source. Inline string-eval
-          bypasses any script registry and resists isolated testing;
-          a <code>.rhai</code> file plus <code>compile_file</code> /
-          <code>eval_ast</code> is the cached, reviewable alternative.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">avoid <span class="path">src/scripting/util.rs</span></div>
-<pre><span class="k">let</span> result: <span class="k">i64</span> = engine.<span class="em">eval</span>(<span class="s">"let base = 10; base * 2 + 5"</span>)?;</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">precompiled AST</div>
-<pre><span class="c">// scripts/calc_priority.rhai is loaded once,</span>
-<span class="c">// compiled to an AST, then eval'd many times.</span>
-<span class="k">let</span> ast = engine.compile_file(<span class="s">"scripts/calc_priority.rhai"</span>.into())?;
-<span class="k">let</span> result: <span class="k">i64</span> = engine.eval_ast(&ast)?;</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> The compiled-AST path lets the script
-            be values-checked at build time, exercised in isolation,
-            cached across calls, and discovered via the file system
-            rather than buried as a literal in unrelated code. Inline
-            string-eval gives up all of those affordances for a
-            character-count win.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 3.2 Rhai print() in script (block) ─── -->
-    <article class="rule" data-level="block" id="rhai-print">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">audit: yes</span>
-        </div>
-        <h3 class="rule-id">block-rhai-print-in-script</h3>
-        <p class="rule-summary">
-          Blocks <code>print(</code> in any <code>.rhai</code> file.
-          Rhai's <code>print</code> is the equivalent of
-          <code>dbg!()</code> — debug output that bypasses whatever
-          response/logging channel the host has registered.
-        </p>
-        <div class="rule-body">
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">avoid <span class="path">scripts/save.rhai</span></div>
-<pre><span class="k">fn</span> execute(actor, slot) {
-    <span class="em">print</span>(`Saving state for ${actor} to slot ${slot}`);
-    save_state(actor, slot);
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">use the host-registered channel</div>
-<pre><span class="c">// Whatever your Engine exposes via register_fn:</span>
-<span class="c">// log / emit / notify / response_append / etc.</span>
-<span class="k">fn</span> execute(actor, slot) {
-    log(`Saving state for ${actor} to slot ${slot}`);
-    save_state(actor, slot);
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Output from a shipped script should
-            flow through the same path as the rest of the
-            application's output — to be captured, replayed, formatted,
-            or addressed to a specific surface (user chat, server
-            log, audit trail). <code>print</code> escapes to stdout,
-            which is usually nowhere useful.
-          </p>
-        </div>
-      </div>
-    </article>
-  </section>
-
-
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <!-- ─── PACK · CONFIDENCE                                     ── -->
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <section class="pack" id="confidence-pack">
-    <header class="pack-head-block">
-      <div class="pack-num">§<small>IV</small><br>4</div>
-      <h2>Pack · Confidence — <span class="it">grounded outcomes at the commit gate.</span></h2>
-      <div class="pack-count"><span class="num">2</span>Rules</div>
-    </header>
-
-    <p class="pack-intro">
-      The confidence pack is opt-in. <code>phr-mcp init --packs confidence</code>
-      writes <code>.phronesis/confidence.json</code> (the opt-in marker) and a
-      <code>.phronesis/bugs.json</code> registry, then ships two gate rules that
-      count <em>grounded</em> outcome signals before a <code>git commit</code>
-      lands. The signals are not syntactic checks — they are
-      <code>signal_pass</code> facts asserted by the pre-check hook after a
-      per-toolchain adapter (cargo first) has parsed an actual build, an actual
-      test run, and an actual known-bug catch. Three of three is "real"; the
-      pack is conservative about anything less.
-    </p>
-
-    <!-- ─── 4.1 Low confidence blocks commit ─── -->
-    <article class="rule" data-level="block" id="confidence-low">
-      <div class="rule-mark" aria-hidden="true">✕</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">BLOCK</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">on Bash content</span>
-          <span class="tag">predicate: script</span>
-        </div>
-        <h3 class="rule-id">confidence-low-blocks-commit</h3>
-        <p class="rule-summary">
-          Blocks a <code>git commit</code> when at most one of the three
-          grounded outcome signals (compile, tests, known-bug) has passed.
-          At least two of the three claims are unverified; the commit waits.
-        </p>
-        <div class="rule-body">
-          <p>
-            The predicate combines a Bash-command match against
-            <code>git commit</code> with a script clause that counts
-            <code>signal_pass</code> facts asserted earlier in the same hook
-            chain. The signals are asserted by an adapter (cargo at v1)
-            that reads real build / test / bug-catch results from the
-            journey journal — they are evidence of work, not promises about it.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">rule shape <span class="path">.phronesis/rules.json</span></div>
-<pre>{
-  <span class="k">"id"</span>: <span class="s">"confidence-low-blocks-commit"</span>,
-  <span class="k">"phase"</span>: <span class="s">"pre"</span>,
-  <span class="k">"priority"</span>: 30,
-  <span class="k">"when"</span>: [
-    { <span class="k">"bash_command_matches"</span>: <span class="s">"git commit"</span> },
-    { <span class="k">"__script__"</span>:
-      <span class="s">"facts_count('signal_pass', ['*','*']) &lt;= 1"</span> }
-  ],
-  <span class="k">"then"</span>: { <span class="k">"block"</span>:
-    <span class="s">"Low confidence — compile/tests/known-bug not all green..."</span> }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">hook output</div>
-<pre><span class="c">$ git​ commit -m "wire up new play ledger"</span>
-<span class="em">phronesis: BLOCKED</span> — Low confidence —
-compile/tests/known-bug not all green. Run the
-build and tests and resolve failing signals
-before committing.
-
-<span class="c"># Resolve: actually run the build + tests; the</span>
-<span class="c"># adapter writes signal_pass facts; re-commit.</span></pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> A passing compile alone is not "done."
-            The gate counts <em>grounded</em> signals — actual outcomes
-            written by the adapter from real tool output — so the band
-            reflects evidence, not language. Opt-in via
-            <code>.phronesis/confidence.json</code>; pair with
-            <code>phr-mcp confidence</code> for the report surface.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 4.2 Medium confidence warns commit ─── -->
-    <article class="rule" data-level="warn" id="confidence-medium">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">WARN</span>
-          <span class="tag">phase: pre</span>
-          <span class="tag">on Bash content</span>
-          <span class="tag">predicate: script</span>
-        </div>
-        <h3 class="rule-id">confidence-medium-warns-commit</h3>
-        <p class="rule-summary">
-          Fires when exactly two of the three grounded signals have passed.
-          One gap remains — usually the known-bug check. The commit is
-          allowed; the human is told.
-        </p>
-        <div class="rule-body">
-          <p>
-            Same shape as the low-confidence rule, with the script clause
-            tightened to equality at two signals. The warn band exists for
-            the in-between case: enough evidence to keep moving, not enough
-            to be silent about it.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">rule shape <span class="path">.phronesis/rules.json</span></div>
-<pre>{
-  <span class="k">"id"</span>: <span class="s">"confidence-medium-warns-commit"</span>,
-  <span class="k">"phase"</span>: <span class="s">"pre"</span>,
-  <span class="k">"priority"</span>: 29,
-  <span class="k">"when"</span>: [
-    { <span class="k">"bash_command_matches"</span>: <span class="s">"git commit"</span> },
-    { <span class="k">"__script__"</span>:
-      <span class="s">"facts_count('signal_pass', ['*','*']) == 2"</span> }
-  ],
-  <span class="k">"then"</span>: { <span class="k">"warn"</span>:
-    <span class="s">"Medium confidence — one grounded signal is missing..."</span> }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">hook output</div>
-<pre><span class="c">$ git​ commit -m "extract turn-resolver module"</span>
-<span class="em">phronesis: WARNING</span> — Medium confidence —
-one grounded signal is missing. Review before
-presenting this as done.
-<span class="c"># Commit proceeds; the gap is flagged for the</span>
-<span class="c"># reviewer (usually: the known-bug catch).</span></pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Two of three is not failure — it is a
-            visible gap. The known-bug check is the
-            discipline-establishing piece: it asks the project to keep a
-            <code>bugs.json</code> registry of real failures the
-            test suite is supposed to catch. Warning rather than blocking
-            lets the work flow while making the missing piece legible.
-          </p>
-        </div>
-      </div>
-    </article>
-
-  </section>
-
-
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <!-- ─── PACK · JOURNEY                                        ── -->
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <section class="pack" id="journey-pack">
-    <header class="pack-head-block">
-      <div class="pack-num">§<small>V</small><br>5</div>
-      <h2>Pack · Journey — <span class="it">cross-call temporal predicates.</span></h2>
-      <div class="pack-count"><span class="num">0+5</span>Aggregators</div>
-    </header>
-
-    <p class="pack-intro">
-      The journey pack is structurally different from every other pack
-      in this catalogue. It ships <em>no rules</em>. What it ships is a
-      pair of seams: <strong>project-defined taggers</strong> in
-      <code>.phronesis/journey.json</code> that stamp tool calls as they
-      execute, and <strong>aggregator predicates</strong>
-      (<code>journey_*</code>) that the engine derives from a bounded
-      window of the journal at every hook fire. Rules layer on top —
-      composed by the project, not shipped by the pack. The example
-      rules below are taken from
-      <code>docs/specs/SPEC-journey-facts.md</code>; they are
-      illustrative, not preinstalled.
-    </p>
-
-    <!-- ─── 5.1 Aggregator predicates ─── -->
-    <article class="rule" data-level="audit" id="journey-predicates">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">REFERENCE</span>
-          <span class="tag">surface: predicate</span>
-          <span class="tag">×5 aggregators</span>
-        </div>
-        <h3 class="rule-id">journey_occurrence · journey_count · journey_seen · journey_since_ge · journey_distinct</h3>
-        <p class="rule-summary">
-          Five predicates over a windowed view of the journey journal.
-          Recomputed every hook fire from disk; no in-memory accumulation.
-        </p>
-        <div class="rule-body">
-          <p>
-            Each predicate takes a <em>selector</em> (a tag name such as
-            <code>auth</code>, <code>build</code>, <code>sql</code>) and a
-            <em>window</em> (see below). The engine derives only what
-            rules actually reference, so unused windows cost nothing.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">predicate reference</div>
-<pre><span class="k">journey_occurrence</span>(selector, window)
-  <span class="c">// one fact per matching record in window;</span>
-  <span class="c">// the unit `facts_count` thresholds + `== 0` over</span>
-
-<span class="k">journey_count</span>(selector, window, count)
-  <span class="c">// the count as a single bindable fact</span>
-  <span class="c">// (reporting / equality matches)</span>
-
-<span class="k">journey_seen</span>(selector, window)
-  <span class="c">// presence (≥1) boolean fact</span>
-
-<span class="k">journey_since_ge</span>(selector, k)
-  <span class="c">// one fact for each k ≤ distance-since-last-match,</span>
-  <span class="c">// capped at the max k any rule references</span>
-
-<span class="k">journey_distinct</span>(field, window, count)
-  <span class="c">// distinct values of `field` (only `path` in v1)</span>
-  <span class="c">// over the window</span></pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">window encoding</div>
-<pre><span class="k">5c</span>    <span class="c">// last 5 tool calls (count-based)</span>
-<span class="k">30m</span>   <span class="c">// last 30 minutes (wall-time)</span>
-<span class="k">2h</span>    <span class="c">// last 2 hours (wall-time)</span>
-<span class="k">7d</span>    <span class="c">// last 7 days (wall-time)</span>
-<span class="k">s</span>     <span class="c">// current session (sid)</span>
-<span class="k">r</span>     <span class="c">// repo lifetime — phase 2, not in v1</span></pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> Many session-level discipline patterns
-            cannot be expressed by looking at a single tool call. "Edited
-            auth three times without touching tests" or "eight calls since
-            the last build" needs a window. The aggregator surface gives
-            rules access to that window without granting them mutable
-            state — the facts are <em>derived</em> from the journal every
-            fire, so there is no accumulator to corrupt and nothing to
-            reset between sessions.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 5.2 Project-defined taggers ─── -->
-    <article class="rule" data-level="audit" id="journey-taggers">
-      <div class="rule-mark" aria-hidden="true">○</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">CONFIG</span>
-          <span class="tag">file: .phronesis/journey.json</span>
-        </div>
-        <h3 class="rule-id">Taggers — the project-defined seam</h3>
-        <p class="rule-summary">
-          A tagger says "if the call matches this predicate, stamp it with
-          this tag." Tags are the vocabulary that aggregator predicates
-          aggregate over.
-        </p>
-        <div class="rule-body">
-          <p>
-            <code>phr-mcp init --packs journey</code> writes a starter
-            <code>.phronesis/journey.json</code> with a single tagger for
-            <code>build</code>. Projects extend it. Predicates inside
-            <code>when</code> are the same set the rule engine uses —
-            <code>bash_command_matches</code>, <code>file_path_matches</code>,
-            <code>new_content_contains</code>, <code>or</code>, etc. The
-            tagger surface is therefore the engine surface, reused.
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">default + spec examples <span class="path">.phronesis/journey.json</span></div>
-<pre>{
-  <span class="k">"version"</span>: 1,
-  <span class="k">"taggers"</span>: [
-    { <span class="k">"tag"</span>: <span class="s">"build"</span>,
-      <span class="k">"when"</span>: [
-        { <span class="k">"bash_command_matches"</span>:
-          <span class="s">"cargo (build|check|test)"</span> } ] },
-    { <span class="k">"tag"</span>: <span class="s">"auth"</span>,
-      <span class="k">"when"</span>: [
-        { <span class="k">"file_path_matches"</span>: <span class="s">"src/auth/"</span> } ] },
-    { <span class="k">"tag"</span>: <span class="s">"tests"</span>,
-      <span class="k">"when"</span>: [
-        { <span class="k">"file_path_matches"</span>: <span class="s">"tests/"</span> } ] },
-    { <span class="k">"tag"</span>: <span class="s">"sql"</span>,
-      <span class="k">"when"</span>: [ { <span class="k">"or"</span>: [
-        { <span class="k">"new_content_contains"</span>: <span class="s">"INSERT INTO"</span> },
-        { <span class="k">"new_content_contains"</span>: <span class="s">"DELETE FROM"</span> },
-        { <span class="k">"file_path_matches"</span>: <span class="s">"migrations/"</span> } ] } ] }
-  ],
-  <span class="k">"modules"</span>: [
-    { <span class="k">"name"</span>: <span class="s">"auth"</span>,
-      <span class="k">"paths"</span>: [<span class="s">"src/auth/**"</span>] }
-  ]
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">what rules see</div>
-<pre><span class="c">// After each tool call, the hook evaluates the</span>
-<span class="c">// tagger predicates against the call, stamps</span>
-<span class="c">// matched tags onto the journal record, and</span>
-<span class="c">// appends to .phronesis/journey/events.jsonl.</span>
-
-<span class="c">// At the next hook fire, the engine derives</span>
-<span class="c">// journey_* facts from a bounded suffix of the</span>
-<span class="c">// journal — only for the (selector, window) pairs</span>
-<span class="c">// that loaded rules reference.</span>
-
-<span class="c">// `phr-mcp journey` prints what journey_* facts</span>
-<span class="c">// assert right now; `--explain &lt;rule-id&gt;` shows</span>
-<span class="c">// which records contributed to a fact.</span></pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> The taggers are where a project encodes
-            its own ontology — what counts as "auth," what counts as a
-            "build," what counts as "touching the database." Phronesis
-            ships a starter but the file is the project's to grow. The
-            aggregator predicates above are stable; the tags are not.
-          </p>
-        </div>
-      </div>
-    </article>
-
-    <!-- ─── 5.3 Example rules (project-defined) ─── -->
-    <article class="rule" data-level="warn" id="journey-examples">
-      <div class="rule-mark" aria-hidden="true">!</div>
-      <div>
-        <div class="rule-tags">
-          <span class="tag tag-level">EXAMPLES</span>
-          <span class="tag">not shipped</span>
-          <span class="tag">×4 from the spec</span>
-        </div>
-        <h3 class="rule-id">auth-churn-session · auth-churn-without-tests · sql-recent-call-window · build-staleness</h3>
-        <p class="rule-summary">
-          Four example rules from <code>SPEC-journey-facts.md</code>.
-          They show how the aggregators compose — count thresholds,
-          absence tests via <code>== 0</code>, presence via
-          <code>journey_seen</code>, and distance-since-last via
-          <code>journey_since_ge</code>.
-        </p>
-        <div class="rule-body">
-          <p>
-            None of these are written by <code>init</code>. They are the
-            shape a project's own journey rules tend to take after a
-            week or two of using the journal. The <code>== 0</code> form
-            relies on the 0.13.0 engine fix that lets pure-script rules
-            fire (previously a script-only <code>when</code> would not
-            schedule).
-          </p>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">count signal — auth churn</div>
-<pre>{
-  <span class="k">"id"</span>: <span class="s">"auth-churn-session"</span>,
-  <span class="k">"when"</span>: [
-    { <span class="k">"__script__"</span>:
-      <span class="s">"facts_count('journey_occurrence',</span>
-<span class="s">          ['auth','s']) &gt;= 3"</span> }
-  ],
-  <span class="k">"then"</span>: { <span class="k">"warn"</span>:
-    <span class="s">"You've edited the auth module 3+ times</span>
-<span class="s">     this session..."</span> }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">count + absence — composite (showcase)</div>
-<pre>{
-  <span class="k">"id"</span>: <span class="s">"auth-churn-without-tests"</span>,
-  <span class="k">"when"</span>: [
-    { <span class="k">"__script__"</span>:
-      <span class="s">"facts_count('journey_occurrence',</span>
-<span class="s">          ['auth','s']) &gt;= 3"</span> },
-    { <span class="k">"__script__"</span>:
-      <span class="s">"facts_count('journey_occurrence',</span>
-<span class="s">          ['tests','s']) == 0"</span> }
-  ],
-  <span class="k">"then"</span>: { <span class="k">"warn"</span>: <span class="s">"..."</span> }
-}</pre>
-            </div>
-          </div>
-          <div class="rule-example">
-            <div class="ex ex-bad">
-              <div class="ex-label">presence — recent SQL window</div>
-<pre>{
-  <span class="k">"id"</span>: <span class="s">"sql-recent-call-window"</span>,
-  <span class="k">"when"</span>: [
-    { <span class="k">"journey_seen"</span>: [<span class="s">"sql"</span>, <span class="s">"5c"</span>] }
-  ],
-  <span class="k">"then"</span>: { <span class="k">"warn"</span>:
-    <span class="s">"A SQL/migration edit happened in the</span>
-<span class="s">     last 5 tool calls — verify target</span>
-<span class="s">     database."</span> }
-}</pre>
-            </div>
-            <div class="arrow" aria-hidden="true">→</div>
-            <div class="ex ex-good">
-              <div class="ex-label">distance-since-last — build staleness</div>
-<pre>{
-  <span class="k">"id"</span>: <span class="s">"build-staleness"</span>,
-  <span class="k">"when"</span>: [
-    { <span class="k">"__script__"</span>:
-      <span class="s">"facts_count('journey_since_ge',</span>
-<span class="s">          ['build','8']) &gt;= 1"</span> }
-  ],
-  <span class="k">"then"</span>: { <span class="k">"warn"</span>:
-    <span class="s">"8+ tool calls since the last build/test.</span>
-<span class="s">     Run the build before reporting done."</span> }
-}</pre>
-            </div>
-          </div>
-          <p class="rule-why">
-            <strong>Why</strong> These four exercise the four expressive
-            modes a journey rule needs: count threshold, absence,
-            point-in-time presence, and distance-since-last. Once a
-            project has these four shapes wired against its own tag
-            vocabulary, almost any cross-call discipline becomes a small
-            rule rather than a long CLAUDE.md paragraph.
-          </p>
-        </div>
-      </div>
-    </article>
-
-  </section>
-
-
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <!-- ─── OTHER PACKS                                           ── -->
-  <!-- ─── ──────────────────────────────────────────────────────── -->
-  <section class="pack" id="other">
-    <header class="pack-head-block">
-      <div class="pack-num">§<small>VI</small><br>6</div>
-      <h2>Other packs — <span class="it">Python · TypeScript · Swift.</span></h2>
-      <div class="pack-count"><span class="num">17</span>Rules</div>
-    </header>
-
-    <p class="pack-intro">
-      Smaller language packs ship with minimal seeds. Compose them with
-      <code>--packs llm,python</code> or similar. The intent is a
-      starting point; downstream projects are expected to grow their
-      own rules over time.
-    </p>
-
-    <div class="briefs">
-
-      <div class="brief">
-        <h4><span class="lang">Python</span> · <code>--packs python</code></h4>
-        <span class="brule"><strong>warn</strong> · warn-print-in-src</span>
-        <span class="brule"><strong>block</strong> · enforce-no-bare-except</span>
-        <span class="brule"><strong>warn</strong> · warn-python-mutable-default-arg</span>
-        <span class="brule"><strong>○</strong> · audit-python-bare-except</span>
-        <span class="brule"><strong>○</strong> · audit-python-missing-docstring</span>
-        <p>
-          Catches <code>print()</code> in <code>src/</code> (use
-          <code>logging</code>) and bare <code>except:</code> clauses
-          (which swallow <code>KeyboardInterrupt</code> and
-          <code>SystemExit</code> together with everything else).
-          Tree-sitter AST rules add depth: mutable default arguments
-          (<code>def f(x=[])</code> — created once at def time, shared
-          across calls), plus audit-only sweeps for bare <code>except:</code>
-          by enclosing function and public <code>def</code>s missing a
-          docstring.
-        </p>
-      </div>
-
-      <div class="brief">
-        <h4><span class="lang">TypeScript</span> · <code>--packs typescript</code></h4>
-        <span class="brule"><strong>warn</strong> · warn-any-in-src</span>
-        <span class="brule"><strong>warn</strong> · warn-console-log-in-src</span>
-        <span class="brule"><strong>warn</strong> · warn-ts-explicit-any-ast</span>
-        <span class="brule"><strong>warn</strong> · warn-ts-suppression-comment</span>
-        <span class="brule"><strong>○</strong> · audit-ts-non-null-assertion</span>
-        <p>
-          Catches <code>: any</code> annotations (use <code>unknown</code>
-          and narrow with guards) and stray <code>console.log</code>
-          calls in committed source. Tree-sitter AST rules count explicit
-          <code>any</code> per function, flag
-          <code>@ts-ignore</code>/<code>@ts-expect-error</code>/<code>@ts-nocheck</code>
-          type-checker suppressions, and audit non-null <code>!</code>
-          assertions.
-        </p>
-      </div>
-
-      <div class="brief">
-        <h4><span class="lang">Swift</span> · <code>--packs swift</code></h4>
-        <span class="brule"><strong>warn</strong> · warn-swift-force-unwrap</span>
-        <span class="brule"><strong>warn</strong> · warn-swift-try-bang</span>
-        <span class="brule"><strong>warn</strong> · warn-swift-force-cast</span>
-        <span class="brule"><strong>○</strong> · audit-swift-fatal-error</span>
-        <span class="brule"><strong>○</strong> · audit-swift-mutable-singleton</span>
-        <span class="brule"><strong>○</strong> · audit-swift-legacy-constructor</span>
-        <span class="brule"><strong>○</strong> · audit-swift-legacy-random</span>
-        <p>
-          Three <em>force-bang</em> warnings cover the postfix
-          <code>!</code>, <code>try!</code>, and <code>as!</code>
-          escape hatches — prefer <code>guard let</code> /
-          <code>if let</code>, <code>try?</code> with
-          <code>do/catch</code>, and <code>as?</code> binding. Four
-          audit-only rules surface debt: <code>fatalError(</code> sites
-          (prefer <code>throws</code>, <code>precondition</code>, or
-          <code>assertionFailure</code>); <code>static var shared</code>
-          mutable singletons (the canonical pattern uses
-          <code>static let shared</code>); the pre-Swift-3 C-style
-          constructors <code>CGRectMake</code>, <code>UIEdgeInsetsMake</code>,
-          and their siblings (use the labeled Swift initializers); and
-          the pre-Swift-4.2 random APIs <code>arc4random</code>,
-          <code>arc4random_uniform</code>, <code>drand48</code> (use
-          <code>Int.random(in:)</code> / <code>randomElement()</code>).
-          Sourced from
-          <a href="https://github.com/eleev/swift-design-patterns">eleev/swift-design-patterns</a>
-          and SwiftLint's default-enabled rule set.
-        </p>
-      </div>
-
-    </div>
-
-    <p style="max-width: var(--measure); margin-top: 2rem; color: var(--ink-soft);">
-      All three packs are intentionally lean. Phronesis's value scales
-      with how well the rules fit the project; canned defaults beyond
-      these few would be presumptuous about your codebase. Start with
-      the seeds, then run the drift detectors to find gaps.
-      <code>phr-mcp claude-md-drift</code> flags CLAUDE.md imperatives
-      without a corresponding rule. <code>phr-mcp memory-drift</code>
-      flags auto-memory entries. <code>phr-mcp wiki-drift</code> flags
-      ADR-style decision pages under <code>.phronesis/wiki/decisions/</code>
-      — decisions with explicit <code>enforces:</code> frontmatter
-      resolve deterministically; the rest fall through to Jaccard
-      matching. Grow the pack from there.
-    </p>
-  </section>
-
+<!-- BEGIN GENERATED RULES -->
+<p class="catalogue-stamp">documents the default packs as of v0.17.0</p>
+<section class="pack-section" id="pack-llm">
+<h2 class="pack-name">llm pack</h2>
+<article class="rule" data-level="block" id="enforce-no-pre-existing-issue">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">enforce-no-pre-existing-issue</h3>
+    <p class="rule-summary">Don't deflect with 'pre-existing issue'. Either fix it as part of this change, defer with a clear rationale, or drop the disclaimer.</p>
+    <div class="rule-body"><code>new_content_contains</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-not-from-our-changes">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">enforce-no-not-from-our-changes</h3>
+    <p class="rule-summary">Drop the 'not from our changes' disclaimer. Name the issue and decide: fix or defer.</p>
+    <div class="rule-body"><code>new_content_contains</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-not-caused-by-our">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">enforce-no-not-caused-by-our</h3>
+    <p class="rule-summary">Drop the 'not caused by our' disclaimer. Own the fix or own the decision to defer.</p>
+    <div class="rule-body"><code>new_content_contains</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-should-work-claim">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">enforce-no-should-work-claim</h3>
+    <p class="rule-summary">Avoid claiming a fix is complete without evidence. Run the verification (test, manual exercise, traced call chain) before reporting, or explicitly label the work 'untested' so the human knows to check.</p>
+    <div class="rule-body"><code>new_content_contains</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-should-be-fixed-claim">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">enforce-no-should-be-fixed-claim</h3>
+    <p class="rule-summary">Don't make repair claims without verifying. Run the failing case end-to-end before reporting a fix; otherwise mark it 'untested' so the user knows to verify.</p>
+    <div class="rule-body"><code>new_content_contains</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="nudge-verify-before-commit">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">nudge-verify-before-commit</h3>
+    <p class="rule-summary">About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode.</p>
+    <div class="rule-body"><code>new_content_contains + __script__</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="llm-warn-git-add-all">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">llm-warn-git-add-all</h3>
+    <p class="rule-summary">Stage files explicitly — git add -A / git add . sweeps unrelated changes into the commit. List the files you actually changed.</p>
+    <div class="rule-body"><code>bash_command_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="llm-warn-kill-build">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">llm-warn-kill-build</h3>
+    <p class="rule-summary">Builds are I/O-bound: a rustc at 0% CPU is usually in disk-wait, not hung. Give it time or check `ps` state before killing the build.</p>
+    <div class="rule-body"><code>bash_command_matches</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-rust">
+<h2 class="pack-name">rust pack</h2>
+<article class="rule" data-level="block" id="enforce-no-unwrap-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">enforce-no-unwrap-in-src</h3>
+    <p class="rule-summary">Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-todo-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">enforce-no-todo-in-src</h3>
+    <p class="rule-summary">Don't ship todo!() in src/ — finish the implementation or split it into a tracked task.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-panic-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">enforce-no-panic-in-src</h3>
+    <p class="rule-summary">Avoid panic!() in src/ — return a Result and let the caller decide.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-unimplemented-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">enforce-no-unimplemented-in-src</h3>
+    <p class="rule-summary">Avoid unimplemented!() in src/ — implement the path or remove it.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-result-string-error">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">enforce-no-result-string-error</h3>
+    <p class="rule-summary">`?fn` in ?file returns Result&lt;_, String&gt;. Define a proper error enum with thiserror.</p>
+    <div class="rule-body"><code>function_returns_result_string</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-dbg-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-dbg-in-src</h3>
+    <p class="rule-summary">dbg!() in src/ — remove before committing, or use tracing::debug!() for diagnostics that stay.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-rust-public-fn-takes-string-ref">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-rust-public-fn-takes-string-ref</h3>
+    <p class="rule-summary">Public `?fn` takes `?param: &amp;String` — prefer `&amp;str` for ergonomics and to avoid forcing callers to own a String.</p>
+    <div class="rule-body"><code>function_is_public + function_param_type</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-rust-function-param-count-high">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-rust-function-param-count-high</h3>
+    <p class="rule-summary">Function `?fn` in ?file has ?count parameters. Consider grouping related params into a struct (builder/options pattern) or splitting the function — long signatures correlate with God-function debt.</p>
+    <div class="rule-body"><code>function_param_count_high</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-file-loc-high">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-file-loc-high</h3>
+    <p class="rule-summary">File exceeds 800 lines — consider splitting into focused submodules. Long files correlate with God-object debt and slow down navigation. (Scoped to src/; test blocks excluded from the count; a top-of-file `//! phronesis-allow: audit-file-loc-high &lt;reason&gt;` doc-comment exempts intentional god-files.)</p>
+    <div class="rule-body"><code>file_extension_is + file_path_matches + file_line_count_above</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-rust-public-fn-takes-vec-ref">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-rust-public-fn-takes-vec-ref</h3>
+    <p class="rule-summary">Public `?fn` takes `?param: &amp;Vec&lt;T&gt;` — prefer `&amp;[T]` for ergonomics; a slice accepts arrays, slices, and Vecs alike. From the patterns guide §API Design 1.</p>
+    <div class="rule-body"><code>function_is_public + function_param_is_vec_ref</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-cargo-build-without-workspace">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-cargo-build-without-workspace</h3>
+    <p class="rule-summary">Running `?cmd` without `--workspace` only checks part of the workspace. Use `cargo &lt;subcommand&gt; --workspace --tests --examples` to catch sibling-crate breakage, or pass `-p &lt;crate&gt;` if scope was intentional.</p>
+    <div class="rule-body"><code>cargo_command_lacks_workspace</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="block-await-on-sync-execute-all-agenda-items">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">block-await-on-sync-execute-all-agenda-items</h3>
+    <p class="rule-summary">`execute_all_agenda_items()` is sync as of the 039 refactor — drop the `.await`. Cargo will reject the call site as `Result&lt;Vec&lt;Action&gt;, String&gt; is not a future`.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="block-await-on-sync-fire-all-consequences">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">block-await-on-sync-fire-all-consequences</h3>
+    <p class="rule-summary">`fire_all_consequences()` is sync — drop the `.await`. Cargo will reject as `Result&lt;Vec&lt;Consequence&gt;, ReteError&gt; is not a future`.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-clone-heavy">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-clone-heavy</h3>
+    <p class="rule-summary">`?fn` in ?file calls .clone() ?count times — review whether references or borrowed slices would work.</p>
+    <div class="rule-body"><code>function_clone_count_high</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-empty-test">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-empty-test</h3>
+    <p class="rule-summary">Test `?fn` in ?file has no assertions or `?` propagation — a placeholder test that always passes hides regressions.</p>
+    <div class="rule-body"><code>test_without_assertion</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-deref-for-non-pointer-type">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-deref-for-non-pointer-type</h3>
+    <p class="rule-summary">`impl Deref for` — Deref polymorphism is an anti-pattern for non-pointer types. Reserve Deref for smart-pointer wrappers (Box/Arc/Rc); for other types, prefer explicit delegation methods so the API surface is intentional.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-manual-err-return">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-manual-err-return</h3>
+    <p class="rule-summary">Manual `=&gt; return Err(...)` in a match arm — the `?` operator usually replaces this whole shape. Surface during one-time audit sweeps; deliberately silent at hook time so in-progress refactors aren't blocked.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-newtype-id-string">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-newtype-id-string</h3>
+    <p class="rule-summary">Field named `*_id: String` — consider a newtype like `StateId(String)` for type safety so one ID kind can't be passed where another is expected. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt. A `///` doc-comment immediately above the field marks an intentional string ID, e.g. one crossing a JSON registry boundary, as an accepted exception.)</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-newtype-id-u64">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-newtype-id-u64</h3>
+    <p class="rule-summary">Field named `*_id: u64` — consider a newtype like `UserId(u64)` to prevent mixing different ID types. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-if-let-opportunity-none-empty">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-if-let-opportunity-none-empty</h3>
+    <p class="rule-summary">`match` with a `None =&gt; {}` arm — `if let Some(x) = ...` is usually clearer. From the patterns guide §Idioms 2.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-if-let-opportunity-err-empty">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-if-let-opportunity-err-empty</h3>
+    <p class="rule-summary">`match` arm `Err(_) =&gt; {}` silently swallows errors. Either handle the error (log/return) or use `if let Ok(x) = ...` to make the intent explicit.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="block-deny-warnings-attribute">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">block-deny-warnings-attribute</h3>
+    <p class="rule-summary">`#![deny(warnings)]` breaks builds on toolchain upgrades, since each rustc release introduces new warnings. Move the policy to CI with `RUSTFLAGS=&quot;-D warnings&quot;` instead. From the patterns guide §Anti-patterns (deny-warnings).</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-public-fn-takes-box-ref">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-public-fn-takes-box-ref</h3>
+    <p class="rule-summary">Parameter type `&amp;Box&lt;T&gt;` adds a useless layer of indirection — prefer `&amp;T` directly. From the patterns guide §Idioms (borrowed-types-for-arguments).</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-expect-with-empty-message">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-expect-with-empty-message</h3>
+    <p class="rule-summary">`.expect(&quot;&quot;)` is strictly worse than `.unwrap()` — same panic, no explanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-rc-refcell-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-rc-refcell-in-src</h3>
+    <p class="rule-summary">`Rc&lt;RefCell&lt;T&gt;&gt;` is the textbook 'fighting the borrow checker' shape — often a signal that an arena, index-based references, or a redesigned ownership model would be a better fit. Confirm intent.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-string-concat-with-plus">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-string-concat-with-plus</h3>
+    <p class="rule-summary">String concatenation with `&quot; + &amp;` — prefer `format!(&quot;{}{}&quot;, a, b)` for readability and to avoid intermediate allocations. From the patterns guide §Idioms (concat-format).</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-allow-dead-code-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-allow-dead-code-in-src</h3>
+    <p class="rule-summary">`#[allow(dead_code)]` in src/ — either delete the code or add a `///` doc-comment immediately above explaining why it's kept (planned API, generic-constraint trick, intentional placeholder). Documented exceptions are not flagged.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-env-set-var-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-env-set-var-in-src</h3>
+    <p class="rule-summary">`env::set_var(` in src/ — mutating process environment variables is unsound under concurrent reads (which is why edition 2024 marks the call unsafe). Verify the call site is genuinely single-threaded, or refactor to pass configuration explicitly through function arguments / a context struct. Tests where you control the thread count are usually fine; library code almost never is.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-rust-let-binding-count-high">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-rust-let-binding-count-high</h3>
+    <p class="rule-summary">`?fn` in ?file has ?count outer-scope `let` bindings — consider scoping intermediate temporaries into a block (`let result = { let raw = ...; let parsed = ...; ... }`) so only the final value is visible to the rest of the function. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025). (Scoped to src/ — examples/benches/tests are not production code and are exempt.)</p>
+    <div class="rule-body"><code>file_path_matches + function_let_binding_count_high</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-rust-let-mut-count-high">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-rust-let-mut-count-high</h3>
+    <p class="rule-summary">`?fn` in ?file has ?count outer-scope `let mut` declarations — consider John Nunley's block pattern: wrap the mutation in `let x = { let mut tmp = ...; ...; tmp }` so the surrounding scope sees an immutable binding. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025). (Scoped to src/ — examples/benches/tests are not production code and are exempt.)</p>
+    <div class="rule-body"><code>file_path_matches + function_let_mut_count_high</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-rhai">
+<h2 class="pack-name">rhai pack</h2>
+<article class="rule" data-level="block" id="block-rhai-inline-eval-string">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rhai</span></div>
+    <h3 class="rule-id">block-rhai-inline-eval-string</h3>
+    <p class="rule-summary">`?fn` in ?file calls `engine.eval(&lt;string literal&gt;)`. Inline string-eval can't be tested independently of the surrounding Rust code and bypasses any script registry. Move the script to a `.rhai` file and load it via `engine.compile_file(...)` (or `compile(...)` on `include_str!`-ed content) so the AST can be cached, values-checked at build time, and exercised in isolation.</p>
+    <div class="rule-body"><code>engine_eval_string_literal + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="block-rhai-print-in-script">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rhai</span></div>
+    <h3 class="rule-id">block-rhai-print-in-script</h3>
+    <p class="rule-summary">`print(` appears in a .rhai script. `print` is Rhai's equivalent of `dbg!()` — debug output that bypasses whatever response/logging channel your host has registered. Use the host-registered function for emitting output (commonly a `log`, `emit`, or `response_*` proxy your `Engine` exposes via `register_fn`) so script output flows through the same path as the rest of your application.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-python">
+<h2 class="pack-name">python pack</h2>
+<article class="rule" data-level="warn" id="warn-print-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python</span></div>
+    <h3 class="rule-id">warn-print-in-src</h3>
+    <p class="rule-summary">print() in src/ — consider logging.info()/debug() instead. Remove debug prints before committing.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="enforce-no-bare-except">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">python</span></div>
+    <h3 class="rule-id">enforce-no-bare-except</h3>
+    <p class="rule-summary">Don't use bare `except:` — catch specific exception types. Bare except swallows KeyboardInterrupt and SystemExit.</p>
+    <div class="rule-body"><code>new_content_contains</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-bare-except">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python</span></div>
+    <h3 class="rule-id">audit-python-bare-except</h3>
+    <p class="rule-summary">Bare `except:` in ?fn (?file) — catch specific exception types so KeyboardInterrupt/SystemExit pass through.</p>
+    <div class="rule-body"><code>python_bare_except</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-mutable-default-arg">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python</span></div>
+    <h3 class="rule-id">warn-python-mutable-default-arg</h3>
+    <p class="rule-summary">Mutable default `?param` in ?fn — defaults are created once at def time and shared across calls. Use None and create inside.</p>
+    <div class="rule-body"><code>python_mutable_default_arg</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-missing-docstring">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python</span></div>
+    <h3 class="rule-id">audit-python-missing-docstring</h3>
+    <p class="rule-summary">Public def ?fn in ?file has no docstring.</p>
+    <div class="rule-body"><code>python_function_missing_docstring</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-typescript">
+<h2 class="pack-name">typescript pack</h2>
+<article class="rule" data-level="warn" id="warn-any-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">typescript</span></div>
+    <h3 class="rule-id">warn-any-in-src</h3>
+    <p class="rule-summary">: any in src/ — narrow the type. Use `unknown` if you really don't know, then refine with type guards.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-console-log-in-src">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">typescript</span></div>
+    <h3 class="rule-id">warn-console-log-in-src</h3>
+    <p class="rule-summary">console.log in src/ — remove before committing, or use a proper logger.</p>
+    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-ts-explicit-any-ast">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">typescript</span></div>
+    <h3 class="rule-id">warn-ts-explicit-any-ast</h3>
+    <p class="rule-summary">?count explicit `any` annotation(s) in ?fn (?file) — narrow the type, or use `unknown` and refine with type guards.</p>
+    <div class="rule-body"><code>ts_explicit_any</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-ts-suppression-comment">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">typescript</span></div>
+    <h3 class="rule-id">warn-ts-suppression-comment</h3>
+    <p class="rule-summary">?count @ts-ignore/@ts-expect-error/@ts-nocheck comment(s) in ?file — each one turns the type checker off somewhere. Fix the type instead.</p>
+    <div class="rule-body"><code>ts_suppression_comment</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-ts-non-null-assertion">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">typescript</span></div>
+    <h3 class="rule-id">audit-ts-non-null-assertion</h3>
+    <p class="rule-summary">?count non-null assertion(s) (`x!`) in ?fn (?file) — prefer explicit narrowing or optional chaining.</p>
+    <div class="rule-body"><code>ts_non_null_assertion</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-swift">
+<h2 class="pack-name">swift pack</h2>
+<article class="rule" data-level="warn" id="warn-swift-force-unwrap">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">swift</span></div>
+    <h3 class="rule-id">warn-swift-force-unwrap</h3>
+    <p class="rule-summary">Function `?fn` in ?file uses ?count force-unwrap(s). Prefer guard let or if let; reserve ! for invariants you can document.</p>
+    <div class="rule-body"><code>function_uses_force_unwrap</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-swift-try-bang">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">swift</span></div>
+    <h3 class="rule-id">warn-swift-try-bang</h3>
+    <p class="rule-summary">try! crashes on error — prefer try with do/catch, or try? when an Optional result is acceptable.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-swift-force-cast">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">swift</span></div>
+    <h3 class="rule-id">warn-swift-force-cast</h3>
+    <p class="rule-summary">Force-cast `as!` crashes on type mismatch — prefer `as?` with `if let`/`guard let`. Completes the force-bang trio with `!` and `try!`.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-swift-fatal-error">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">swift</span></div>
+    <h3 class="rule-id">audit-swift-fatal-error</h3>
+    <p class="rule-summary">`fatalError(` aborts the process — for recoverable conditions prefer a `throws` API and let the caller decide. Reserve `fatalError` for genuinely unreachable invariants (and prefer `precondition`/`assertionFailure` when the intent is a debug-only trap).</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-swift-mutable-singleton">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">swift</span></div>
+    <h3 class="rule-id">audit-swift-mutable-singleton</h3>
+    <p class="rule-summary">`static var shared` is a mutable global — the Singleton pattern (eleev/swift-design-patterns §Creational/Singleton) uses `static let shared` so the instance can't be swapped at runtime. If mutability is intentional, add a comment or move state inside the instance.</p>
+    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-swift-legacy-constructor">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">swift</span></div>
+    <h3 class="rule-id">audit-swift-legacy-constructor</h3>
+    <p class="rule-summary">Legacy C-style constructor — prefer the modern Swift initializer (e.g. `CGRect(x:y:width:height:)`, `UIEdgeInsets(top:left:bottom:right:)`). Mirrors SwiftLint's `legacy_constructor` rule.</p>
+    <div class="rule-body"><code>(new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains) + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-swift-legacy-random">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">swift</span></div>
+    <h3 class="rule-id">audit-swift-legacy-random</h3>
+    <p class="rule-summary">Legacy random API — Swift 4.2+ ships `Int.random(in:)`, `Double.random(in:)`, and `Collection.randomElement()`, which work on all platforms (not just Darwin) and are uniformly distributed without modulo bias. Mirrors SwiftLint's `legacy_random` rule.</p>
+    <div class="rule-body"><code>(new_content_contains | new_content_contains | new_content_contains) + file_extension_is</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-confidence">
+<h2 class="pack-name">confidence pack</h2>
+<article class="rule" data-level="block" id="confidence-low-blocks-commit">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">confidence</span></div>
+    <h3 class="rule-id">confidence-low-blocks-commit</h3>
+    <p class="rule-summary">Low confidence — compile/tests/known-bug not all green. Run the build and tests and resolve failing signals before committing.</p>
+    <div class="rule-body"><code>bash_command_matches + __script__</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="confidence-medium-warns-commit">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">confidence</span></div>
+    <h3 class="rule-id">confidence-medium-warns-commit</h3>
+    <p class="rule-summary">Medium confidence — one grounded signal is missing. Review before presenting this as done.</p>
+    <div class="rule-body"><code>bash_command_matches + __script__</code></div>
+  </div>
+</article>
+</section>
+<!-- END GENERATED RULES -->
+  <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
+    <a href="./index.html">Home</a> &middot; <a href="./explainer.html">Explainer</a> &middot; <span class="doc-web-here">Catalogue</span> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/docs/loop-programming-guide.md">Guide</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/CHANGELOG.md">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.17.0</span>
+  </nav>
   <footer>
     <div>
       <div class="label" style="margin-bottom: 0.4rem;">Colophon</div>
@@ -2749,7 +1270,7 @@ presenting this as done.
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
       with Claude.<br>
       Pairs with <a href="./explainer.html">the explainer</a> &middot;
-      v 0.13.2 &middot; 2026 &middot;
+      v 0.17.0 &middot; 2026 &middot;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">

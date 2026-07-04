@@ -1,5 +1,6 @@
 pub mod action_log;
 pub mod audit;
+pub mod catalogue;
 pub mod claude_md_drift;
 pub mod clock_facts;
 pub mod context;

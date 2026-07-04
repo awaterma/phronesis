@@ -23,6 +23,7 @@ cargo run -- wiki-drift      # Heuristic: which .phronesis/wiki/decisions/ ADRs 
 cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
 cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shape to the v2 shape
 cargo run -- migrate-extracted-rules <path>  # Salvage pre-0.14.0 extract_rules output: strip prefixes, demote actions
+cargo run -- catalogue        # Regenerate docs/catalogue.html from the shipped packs (run from repo root)
 ```
 
 ### Durable directives (`.phronesis/durable.md`)
@@ -375,7 +376,10 @@ Semver, manually bumped in `Cargo.toml`. We are pre-1.0, so:
   someone else" milestone.
 
 After bumping, rebuild and `cargo install --path .` so the user-level
-binary (the one hooks invoke) matches. `phr-mcp --version` prints
+binary (the one hooks invoke) matches. If the release touched any pack
+rules, also run `phr-mcp catalogue` from the repo root and commit the
+regenerated `docs/catalogue.html` — the page is a generated artifact
+and drifts otherwise. `phr-mcp --version` prints
 the installed version — that's how you check whether a project's hooks
 are running fresh code.
 

@@ -1,6 +1,6 @@
 [package]
 name = "phronesis-mcp"
-version = "0.16.2"
+version.workspace = true
 edition = "2024"
 rust-version = "1.90"
 description = "MCP server and CLI (phr-mcp) wrapping the phronesis RETE rules engine for durable enforcement of project conventions in LLM-assisted work."
@@ -29,8 +29,8 @@ default = []
 rhai = ["dep:phronesis-rhai"]
 
 [dependencies]
-phr = { version = "0.14.0", path = "../phronesis", package = "phronesis", features = ["schemars"] }
-phronesis-rhai = { version = "0.1", path = "../phronesis-rhai", optional = true }
+phr = { version = "0.17.0", path = "../phronesis", package = "phronesis", features = ["schemars"] }
+phronesis-rhai = { version = "0.17", path = "../phronesis-rhai", optional = true }
 rmcp = { version = "0.17", features = ["server", "macros", "transport-io", "schemars"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }

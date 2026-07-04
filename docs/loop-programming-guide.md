@@ -5,7 +5,10 @@
 This guide is for people running Claude (or any hook-capable LLM agent) in a
 long, iterative loop — the *propose → act → observe → propose again* cycle that
 drives real coding work — and who want that loop to stay on the rails from the
-first turn to the thousandth. It assumes you've read the [README](../README.md)
+first turn to the thousandth. For the conceptual grounding, see the
+[documentation site](https://awaterma.github.io/phronesis/) — the explainer
+essay and the rule catalogue live there. It assumes you've read the
+[README](../README.md)
 and have `phr-mcp` installed. For the full CLI surface, see the
 [Command Reference](../crates/phronesis-mcp/CLAUDE.md).
 
