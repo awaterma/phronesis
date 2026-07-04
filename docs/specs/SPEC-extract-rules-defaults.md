@@ -190,9 +190,10 @@ need a recipe:
    multi-line warn (Problem 3a) — defer until the prefix and verb
    changes are in.
 
-A `phr-mcp migrate-extracted-rules` command (or a flag on
-`migrate-rules`) could automate this against an existing
-`rules.json`. Scope-creep for this SPEC; flag as future work.
+`phr-mcp migrate-extracted-rules <path> [--dry-run]` automates this
+against an existing `rules.json`. Shipped in 0.16.2. Run it once
+against your project's `.phronesis/rules.json` to apply all three
+transformations in place (with a `.bak` backup).
 
 ## Out of scope
 
@@ -209,10 +210,10 @@ A `phr-mcp migrate-extracted-rules` command (or a flag on
 ## Rollout plan
 
 1. **PATCH** (next 0.13.x):
-   - Strip the bracketed prefix in extractor output (Problem 2).
-   - Default action to `warn` (Problem 1).
-   - Add `phr-mcp migrate-extracted-rules` (the salvage path above) for
-     existing projects.
+   - Strip the bracketed prefix in extractor output (Problem 2). *(shipped in 0.14.0)*
+   - Default action to `warn` (Problem 1). *(shipped in 0.14.0)*
+   - `phr-mcp migrate-extracted-rules` covers the salvage path for
+     existing projects. *(shipped in 0.16.2)*
 2. **MINOR** (0.14.x or later):
    - Per-pattern marker conditions (Problem 3b).
    - Static skip-list for structurally-enforced patterns (Problem 4a).

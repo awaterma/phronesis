@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use phronesis_mcp::{hook, init, server};
+use phronesis_mcp::{hook, init, migrate_extracted, server};
 
 /// ISO-8601 date string for the local clock (YYYY-MM-DD). Uses chrono,
 /// which is already a phronesis-mcp dep (clock_facts).
@@ -158,6 +158,18 @@ enum Command {
         /// Exit 0 if already v2, 1 if v1 (no writes). For CI gating.
         #[arg(long)]
         check: bool,
+    },
+    /// Rewrite pre-0.14.0 `extract_rules` output in a rules.json: strip
+    /// bracketed metadata prefixes ([pattern], [anti_pattern], ...), demote
+    /// `block` to `warn`, and demote to `log` rules the Rust pack already
+    /// enforces structurally. Idempotent. Backs up to rules.json.bak.
+    #[command(name = "migrate-extracted-rules")]
+    MigrateExtractedRules {
+        /// Path to the rules.json file to rewrite.
+        path: PathBuf,
+        /// Print the migrated JSON to stdout; write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Detect drift between Claude Code's auto-memory store and the
     /// phronesis rule pack / durable directives file. Classifies each
@@ -666,6 +678,49 @@ async fn main() -> anyhow::Result<()> {
                 "migrated {} ({} rule(s)) to v2",
                 path.display(),
                 sources.len()
+            );
+            Ok(())
+        }
+        Command::MigrateExtractedRules { path, dry_run } => {
+            use phronesis_mcp::rules_file::{self, SourceRule};
+
+            let mut sources: Vec<SourceRule> =
+                rules_file::read_source(&path).map_err(|e| anyhow::anyhow!("{}", e))?;
+            let summary = migrate_extracted::migrate_extracted(&mut sources);
+
+            if summary.examined == 0 {
+                println!("no extracted rules found in {}", path.display());
+                return Ok(());
+            }
+            if summary.changed == 0 {
+                println!(
+                    "{} extracted rule(s) already migrated in {}; nothing to do",
+                    summary.examined,
+                    path.display()
+                );
+                return Ok(());
+            }
+
+            if dry_run {
+                #[derive(serde::Serialize)]
+                struct Wrapper<'a> {
+                    rules: &'a [SourceRule],
+                }
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&Wrapper { rules: &sources })?
+                );
+                return Ok(());
+            }
+
+            rules_file::write_source(&path, &sources).map_err(|e| anyhow::anyhow!("{}", e))?;
+            println!(
+                "migrated {} extracted rule(s) in {} ({} prefix(es) stripped, {} demoted to warn, {} demoted to log)",
+                summary.changed,
+                path.display(),
+                summary.prefixes_stripped,
+                summary.demoted_to_warn,
+                summary.demoted_to_log
             );
             Ok(())
         }
