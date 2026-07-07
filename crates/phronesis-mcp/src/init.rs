@@ -564,7 +564,7 @@ fn write_gemini_settings(
 
     // Context-injection hooks. Same shape as the Claude wiring — empty
     // matcher means fire on every event. SessionStart matches Claude's
-    // event name; BeforeModelRequest is Gemini's per-turn equivalent of
+    // event name; BeforeAgent is Gemini's per-turn equivalent of
     // Claude's UserPromptSubmit.
     let context_entry = |cmd: &str| {
         json!({
@@ -579,9 +579,14 @@ fn write_gemini_settings(
     );
     upsert_hook(
         &mut settings,
-        "BeforeModelRequest",
+        "BeforeAgent",
         context_entry("phr-mcp turn-context"),
     );
+
+    // Clean up legacy BeforeModelRequest hook if present
+    if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+        hooks.remove("BeforeModelRequest");
+    }
 
     write_json(&path, &settings, opts, ".gemini/settings.json", report)?;
     Ok(())
@@ -2705,8 +2710,8 @@ mod tests {
     }
 
     #[test]
-    fn write_gemini_settings_includes_session_and_before_model_request_hooks() {
-        let dir = tempfile::tempdir().unwrap();
+    fn write_gemini_settings_includes_session_and_before_agent_hooks() {
+        let dir = tempfile::tempdir().expect("tempdir failed");
         let opts = InitOpts {
             project_root: dir.path().to_path_buf(),
             packs: vec![Pack::Llm],
@@ -2715,18 +2720,27 @@ mod tests {
             rules_only: false,
             hooks_only: false,
         };
-        run(opts).unwrap();
+        run(opts).expect("run failed");
 
         let path = dir.path().join(".gemini/settings.json");
         let content: Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("read settings failed"))
+                .expect("parse json failed");
 
-        let session = content["hooks"]["SessionStart"].as_array().unwrap();
-        let cmd = session[0]["hooks"][0]["command"].as_str().unwrap();
+        let session = content["hooks"]["SessionStart"]
+            .as_array()
+            .expect("SessionStart not array");
+        let cmd = session[0]["hooks"][0]["command"]
+            .as_str()
+            .expect("command not string");
         assert_eq!(cmd, "phr-mcp session-context");
 
-        let before = content["hooks"]["BeforeModelRequest"].as_array().unwrap();
-        let cmd = before[0]["hooks"][0]["command"].as_str().unwrap();
+        let before = content["hooks"]["BeforeAgent"]
+            .as_array()
+            .expect("BeforeAgent not array");
+        let cmd = before[0]["hooks"][0]["command"]
+            .as_str()
+            .expect("command not string");
         assert_eq!(cmd, "phr-mcp turn-context");
     }
 

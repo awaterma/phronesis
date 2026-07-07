@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.17.1] - 2026-07-06
+
+### Fixed
+- **Gemini CLI turn-context hook never fired.** `init` wired the
+  turn-context hook into `.gemini/settings.json` under
+  `BeforeModelRequest`, which is not a Gemini CLI hook event — Gemini
+  silently ignored it, so per-turn context injection (recent hook
+  decisions + durable directives) never ran in Gemini sessions. Now
+  wired under `BeforeAgent`, the per-prompt analogue of Claude Code's
+  `UserPromptSubmit`. Re-running `init` (or `init --hooks-only`) also
+  removes the dead legacy `BeforeModelRequest` key from existing
+  settings. The emitted `hookEventName` stays `"UserPromptSubmit"` for
+  both CLIs: Claude Code validates the field, Gemini reads only
+  `additionalContext` and ignores the echo.
+
 ## [0.17.0] - 2026-07-04
 
 phr-mcp, phr, and phronesis-rhai all release as **0.17.0** — the workspace

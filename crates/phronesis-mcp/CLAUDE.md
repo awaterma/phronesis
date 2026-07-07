@@ -11,7 +11,7 @@ cargo run -- pre-check   # PreToolUse hook (blocks violations)
 cargo run -- post-check  # PostToolUse hook (warns on violations)
 cargo run -- init             # One-command setup for a project
 cargo run -- session-context  # SessionStart hook (injects active rules + durable directives)
-cargo run -- turn-context     # UserPromptSubmit / BeforeModelRequest hook (injects recent activity + durable directives)
+cargo run -- turn-context     # UserPromptSubmit / BeforeAgent hook (injects recent activity + durable directives)
 cargo run -- stats             # Read-only per-rule summary of .phronesis/log.jsonl
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
@@ -199,7 +199,7 @@ a new rule that ships in `llm` after upgrading the binary.
 ### Refreshing just the hooks
 
 When you've added new context-injection hooks upstream (e.g. SessionStart or
-BeforeModelRequest entries that didn't ship in older versions of init) and
+BeforeAgent entries that didn't ship in older versions of init) and
 want to pull them into an existing project without touching its rules pack,
 use `--hooks-only`:
 

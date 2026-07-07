@@ -46,7 +46,7 @@ enum Command {
     /// is present. Wired by `init` into `.claude/settings.local.json` and
     /// `.gemini/settings.json`.
     SessionContext,
-    /// UserPromptSubmit (Claude) / BeforeModelRequest (Gemini) hook: emit
+    /// UserPromptSubmit (Claude) / BeforeAgent (Gemini) hook: emit
     /// `additionalContext` JSON summarizing the last few hook decisions.
     /// Exit 0 with empty stdout when there's nothing recent to report.
     TurnContext {
