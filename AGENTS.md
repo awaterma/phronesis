@@ -276,7 +276,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/server.rs` | `EpistemeMcp` struct, MCP tools (rmcp macros) |
 | `crates/phronesis-mcp/src/hook.rs` | `pre-check`/`post-check` hooks, rule evaluation |
 | `crates/phronesis-mcp/src/init.rs` | `phr-mcp init` project setup |
-| `crates/phronesis-mcp/src/context.rs` | SessionStart/BeforeModelRequest payload formatters; `ensure_session_id` |
+| `crates/phronesis-mcp/src/context.rs` | SessionStart/BeforeAgent payload formatters; `ensure_session_id` |
 | `crates/phronesis-mcp/src/stats.rs` | Aggregate log entries per rule |
 | `crates/phronesis-mcp/src/audit.rs` | Whole-tree audit + debt-over-time |
 | `crates/phronesis-mcp/src/action_log.rs` | Append-only JSONL log |
@@ -321,7 +321,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 
 ### Durable Directives (`.phronesis/durable.md`)
 
-Optional file. Contents are re-injected at every `SessionStart` AND `BeforeModelRequest`. Use for project guidance that **must not fade** from context window (typically a few hundred words).
+Optional file. Contents are re-injected at every `SessionStart` AND `BeforeAgent`. Use for project guidance that **must not fade** from context window (typically a few hundred words).
 
 ---
 
@@ -349,7 +349,7 @@ Optional file. Contents are re-injected at every `SessionStart` AND `BeforeModel
 - Injects active rules summary + durable directives
 - No context about recent activity (fresh session)
 
-**UserPromptSubmit** (Claude) / **BeforeModelRequest** (Gemini):
+**UserPromptSubmit** (Claude) / **BeforeAgent** (Gemini):
 - Injects last N hook decisions + durable directives
 - Helps LLM understand what's been blocked/warned recently
 

@@ -1,6 +1,6 @@
 //! Builders for the `additionalContext` payloads consumed by Claude Code's
 //! SessionStart / UserPromptSubmit hooks and Gemini CLI's SessionStart /
-//! BeforeModelRequest hooks. Pure formatters: each public entry point takes
+//! BeforeAgent hooks. Pure formatters: each public entry point takes
 //! an already-parsed input (a `RulesFile` or `Vec<LogEntry>`) and returns
 //! either an empty string (suppress injection) or a JSON object string.
 
@@ -15,8 +15,9 @@ pub const DEFAULT_MAX_BYTES: usize = 4 * 1024;
 
 /// Wrap a markdown body in the Claude/Gemini hook-output envelope.
 ///
-/// `hook_event_name` must be one of the documented values:
-/// `"SessionStart"`, `"UserPromptSubmit"`, `"BeforeModelRequest"`.
+/// `hook_event_name` must be one of the values Claude Code validates:
+/// `"SessionStart"`, `"UserPromptSubmit"`. Gemini CLI reads only
+/// `additionalContext` and ignores the event-name echo.
 ///
 /// Returns the serialized JSON string. The body is truncated to `max_bytes`
 /// before wrapping (the cap applies to the body, not the JSON envelope, so
@@ -152,6 +153,9 @@ pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) ->
         (false, true) => durable,
         (false, false) => format!("{}\n{}", durable, activity),
     };
+    // "UserPromptSubmit" is what Claude Code validates against; Gemini's
+    // BeforeAgent hook reads only `additionalContext` and ignores the
+    // event-name echo, so one constant serves both CLIs.
     wrap_additional_context("UserPromptSubmit", &body, max_bytes)
 }
 
@@ -226,7 +230,7 @@ fn render_entry_bullets(entry: &LogEntry, now_secs: u64) -> Vec<String> {
         .collect()
 }
 
-/// Build the markdown body for the UserPromptSubmit / BeforeModelRequest
+/// Build the markdown body for the UserPromptSubmit / BeforeAgent
 /// context payload.
 ///
 /// Iterates the supplied log entries (assumed newest-last, as produced by
