@@ -82,6 +82,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// List active toolchain definitions (built-in + project).
+    /// Shows ID, source, match patterns, and active signal refinements.
+    Toolchains {
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Render the `journey_*` facts a derivation pass would assert against
     /// the current `.phronesis/journey/events.jsonl` and `.phronesis/rules.json`
     /// — a "why did this fire" view. Default output is a terminal table; pass
@@ -308,6 +315,7 @@ async fn main() -> anyhow::Result<()> {
         Command::TurnContext { last } => handle_turn_context(last),
         Command::Stats { since, rule, json } => handle_stats(since, rule, json),
         Command::Confidence { subject, json } => handle_confidence(subject, json),
+        Command::Toolchains { json } => handle_toolchains(json),
         Command::Journey { json, explain } => handle_journey(json, explain).await,
         Command::Audit {
             rule,
@@ -479,6 +487,50 @@ fn handle_confidence(subject: Option<String>, json: bool) -> anyhow::Result<()> 
                 println!("No open work unit. Run a build/test under the hook first.");
             }
         }
+    }
+    Ok(())
+}
+
+fn handle_toolchains(json: bool) -> anyhow::Result<()> {
+    let root = phronesis_mcp::security::project_root();
+    let defs = phronesis_mcp::outcomes::toolchain::registry(&root);
+    if json {
+        let items: Vec<serde_json::Value> = defs
+            .iter()
+            .map(|d| {
+                let mut v = serde_json::to_value(&d.def).unwrap_or_default();
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("source".to_string(), d.source.as_str().into());
+                }
+                v
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+    if defs.is_empty() {
+        println!("no toolchain definitions active");
+        return Ok(());
+    }
+    println!("{:<12} {:<10} {:<40} SIGNALS", "ID", "SOURCE", "MATCHES");
+    for d in &defs {
+        let mut signals = vec!["exit"];
+        if !d.def.compile_fail.is_empty() {
+            signals.push("compile-fail");
+        }
+        if d.def.test_summary.is_some() {
+            signals.push("summary");
+        }
+        if d.def.per_test.is_some() {
+            signals.push("per-test");
+        }
+        println!(
+            "{:<12} {:<10} {:<40} {}",
+            d.def.id,
+            d.source.as_str(),
+            d.def.matches,
+            signals.join("+")
+        );
     }
     Ok(())
 }
