@@ -22,6 +22,7 @@ pub mod cargo;
 pub mod derive;
 pub mod facts;
 pub mod subject;
+pub mod toolchain;
 
 pub use adapter::{extract, handles};
 pub use derive::{band, signals};
