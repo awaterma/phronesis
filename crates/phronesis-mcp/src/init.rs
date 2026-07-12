@@ -822,6 +822,27 @@ const CONFIDENCE_JSON: &str = "{\n  \"version\": 1\n}\n";
 /// Each entry: `{ "bug_id": "...", "test": "module::test_name", "status": "open" }`.
 const CONFIDENCE_BUGS_JSON: &str = "[]\n";
 
+/// Example `.phronesis/toolchains.json` written with the confidence pack:
+/// two real project-def examples (pytest, tsc) proving toolchain neutrality.
+/// Users edit/extend in place; `init` never overwrites it.
+const TOOLCHAINS_JSON: &str = r#"[
+  {
+    "_doc": "Recognition regex is `matches`; refinement fields are optional. See `phr-mcp toolchains`.",
+    "id": "pytest",
+    "matches": "pytest",
+    "compile_fail": ["SyntaxError", "ImportError"],
+    "test_summary": "(?:(?P<failed>\\d+) failed, )?(?P<passed>\\d+) passed",
+    "per_test": "(?m)^(?P<name>\\S+) (?P<status>PASSED|FAILED)",
+    "pass_tokens": ["PASSED"]
+  },
+  {
+    "id": "tsc",
+    "matches": "\\btsc\\b",
+    "compile_fail": ["error TS\\d+"]
+  }
+]
+"#;
+
 /// Write the confidence opt-in marker + known-bug registry when the
 /// `confidence` pack is selected. Idempotent (leaves existing files alone).
 fn write_confidence_scaffold(
@@ -836,6 +857,7 @@ fn write_confidence_scaffold(
     for (name, contents) in [
         ("confidence.json", CONFIDENCE_JSON),
         ("bugs.json", CONFIDENCE_BUGS_JSON),
+        ("toolchains.json", TOOLCHAINS_JSON),
     ] {
         let path = phr.join(name);
         if path.exists() {
@@ -939,6 +961,7 @@ fn update_gitignore(
     if opts.packs.contains(&Pack::Confidence) {
         entries.push("!.phronesis/confidence.json");
         entries.push("!.phronesis/bugs.json");
+        entries.push("!.phronesis/toolchains.json");
     }
     // Journey config is project knowledge (track it); the journal under
     // .phronesis/journey/ (events.jsonl, session, seq) stays ignored via

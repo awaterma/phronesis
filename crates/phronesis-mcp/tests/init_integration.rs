@@ -383,6 +383,51 @@ fn init_without_confidence_pack_writes_no_scaffold() {
 }
 
 #[test]
+fn confidence_pack_writes_toolchains_example() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "confidence"], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let raw = std::fs::read_to_string(dir.path().join(".phronesis/toolchains.json"))
+        .expect("toolchains.json written");
+    let defs: serde_json::Value =
+        serde_json::from_str(&raw).expect("toolchains.json is valid JSON array");
+    let ids: Vec<&str> = defs
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["pytest", "tsc"]);
+}
+
+#[test]
+fn toolchains_example_left_alone_on_rerun() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "confidence"], dir.path());
+    assert!(out.status.success());
+    let custom = r#"[{"id":"mine","matches":"mine"}]"#;
+    std::fs::write(dir.path().join(".phronesis/toolchains.json"), custom).unwrap();
+    let out = run_init(&["--packs", "confidence"], dir.path());
+    assert!(out.status.success());
+    let raw = std::fs::read_to_string(dir.path().join(".phronesis/toolchains.json"))
+        .unwrap();
+    assert_eq!(raw, custom, "existing file must be left unchanged");
+}
+
+#[test]
+fn confidence_pack_unignores_toolchains_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "confidence"], dir.path());
+    assert!(out.status.success());
+    let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(gitignore.contains("!.phronesis/toolchains.json"));
+}
+
+#[test]
 fn init_confidence_is_idempotent() {
     let dir = tempfile::tempdir().unwrap();
     assert!(
