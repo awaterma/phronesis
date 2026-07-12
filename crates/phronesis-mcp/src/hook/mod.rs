@@ -25,6 +25,7 @@ use crate::clock_facts;
 use crate::journey;
 use crate::outcomes;
 use crate::security;
+use fs2::FileExt as _;
 
 #[derive(Debug, Error)]
 enum RulesLoadError {
@@ -74,10 +75,42 @@ fn exit_ok() -> ! {
     process::exit(0);
 }
 
-fn read_payload() -> anyhow::Result<HookPayload> {
+fn read_payload(phase: &str) -> anyhow::Result<HookPayload> {
     let input = security::read_stdin_capped()?;
+    capture_raw_payload(phase, &input);
     let payload: HookPayload = serde_json::from_str(&input)?;
     Ok(payload)
+}
+
+/// When `PHRONESIS_CAPTURE_DIR` is set, append the raw stdin payload as one
+/// JSONL record to `<dir>/payloads.jsonl`. Best-effort: capture must never
+/// change hook behavior or exit codes, so every failure path returns silently.
+/// Uses an exclusive advisory file lock (fs2 flock) around the write so
+/// concurrent hook processes cannot interleave lines.
+fn capture_raw_payload(phase: &str, raw: &str) {
+    let Ok(dir) = std::env::var("PHRONESIS_CAPTURE_DIR") else {
+        return;
+    };
+    let record = serde_json::json!({
+        "ts": unix_secs_now(),
+        "phase": phase,
+        "raw": serde_json::from_str::<serde_json::Value>(raw)
+            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string())),
+    });
+    let path = std::path::Path::new(&dir).join("payloads.jsonl");
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    else {
+        return;
+    };
+    if file.lock_exclusive().is_err() {
+        return;
+    }
+    use std::io::Write as _;
+    let _ = writeln!(file, "{record}");
+    let _ = file.unlock();
 }
 
 /// Current epoch seconds — best-effort. Returns 0 on clock-before-epoch (won't

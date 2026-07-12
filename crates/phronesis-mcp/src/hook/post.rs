@@ -25,7 +25,7 @@ struct PathViolation;
 /// - `file_path` resolves outside the project root
 /// - rule loading or firing fails
 pub async fn run_post_check() -> anyhow::Result<()> {
-    let payload = match super::read_payload() {
+    let payload = match super::read_payload("post") {
         Ok(p) => p,
         Err(e) => {
             eprintln!("phronesis: WARNING — invalid hook payload: {}", e);

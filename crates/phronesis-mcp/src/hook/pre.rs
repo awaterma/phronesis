@@ -19,7 +19,7 @@ use super::{HookError, HookPayload};
 /// - `.phronesis/rules.json` exists but is malformed
 /// - rule loading, fact assertion, or rule firing fails
 pub async fn run_pre_check() -> anyhow::Result<()> {
-    let payload = match super::read_payload() {
+    let payload = match super::read_payload("pre") {
         Ok(p) => p,
         Err(e) => {
             eprintln!("phronesis: BLOCKED — invalid hook payload: {}", e);
