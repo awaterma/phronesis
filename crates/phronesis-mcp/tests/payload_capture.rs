@@ -87,7 +87,7 @@ fn capture_preserves_non_json_stdin_as_string() {
     // Malformed payload: hook exits 0 (allow) per existing behavior, but the
     // capture must still record the raw bytes — broken payloads are exactly
     // what we want ground truth on.
-    run_hook_with_env(
+    let code = run_hook_with_env(
         "pre-check",
         "not json at all",
         &[("PHRONESIS_CAPTURE_DIR", dir.path().to_str().expect("utf8"))],
@@ -95,4 +95,5 @@ fn capture_preserves_non_json_stdin_as_string() {
     let records = read_capture(dir.path());
     assert_eq!(records.len(), 1);
     assert_eq!(records[0]["raw"], "not json at all");
+    assert_eq!(code, 2, "pre-check fails closed on malformed JSON");
 }

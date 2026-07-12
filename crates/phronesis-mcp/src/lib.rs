@@ -15,6 +15,7 @@ pub mod memory_drift;
 pub mod migrate_extracted;
 pub mod net;
 pub mod outcomes;
+pub mod payload_scrub;
 pub mod rules_file;
 pub mod security;
 pub mod server;
