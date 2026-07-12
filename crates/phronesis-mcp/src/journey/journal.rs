@@ -18,6 +18,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -95,6 +96,33 @@ fn events_path(root: &Path) -> PathBuf {
     dir(root).join("events.jsonl")
 }
 
+/// True when `file`'s fd still refers to the live file at `path`.
+/// Compaction replaces the journal by rename; advisory flocks follow the
+/// inode, not the path, so a caller that locked a just-replaced fd must
+/// reopen before trusting its lock.
+fn fd_is_current(file: &std::fs::File, path: &Path) -> bool {
+    match (file.metadata(), std::fs::metadata(path)) {
+        (Ok(fd_meta), Ok(path_meta)) => {
+            fd_meta.dev() == path_meta.dev() && fd_meta.ino() == path_meta.ino()
+        }
+        _ => false,
+    }
+}
+
+fn open_locked_for_append(path: &Path) -> Result<std::fs::File, JournalError> {
+    let io_err = |e: std::io::Error| JournalError::Io {
+        path: path.display().to_string(),
+        source: e,
+    };
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map_err(io_err)?;
+    file.lock_exclusive().map_err(io_err)?;
+    Ok(file)
+}
+
 fn max_journal_bytes() -> u64 {
     std::env::var("PHRONESIS_MAX_JOURNAL_BYTES")
         .ok()
@@ -128,6 +156,12 @@ pub fn maybe_compact(
     };
     let file = OpenOptions::new().read(true).open(&path).map_err(io_err)?;
     file.lock_exclusive().map_err(io_err)?;
+    if !fd_is_current(&file, &path) {
+        // Another process compacted (renamed) while we waited for the lock;
+        // its rewrite already enforced the cap.
+        let _ = FileExt::unlock(&file);
+        return Ok(false);
+    }
     let result = compact_locked(&path, tail_records);
     let _ = FileExt::unlock(&file);
     result
@@ -196,18 +230,17 @@ pub fn append(root: &Path, record: &JournalRecord) -> Result<(), JournalError> {
     let mut line = serde_json::to_string(record)?;
     line.push('\n');
 
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| JournalError::Io {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-    file.lock_exclusive().map_err(|e| JournalError::Io {
-        path: path.display().to_string(),
-        source: e,
-    })?;
+    let mut file = open_locked_for_append(&path)?;
+    // A concurrent compaction may have renamed a new journal over `path`
+    // between our open and our lock grant; re-open until our locked fd is
+    // the live file (bounded — proceed fail-open rather than wedge).
+    for _ in 0..3 {
+        if fd_is_current(&file, &path) {
+            break;
+        }
+        let _ = FileExt::unlock(&file);
+        file = open_locked_for_append(&path)?;
+    }
     let write_result = (&file)
         .write_all(line.as_bytes())
         .map_err(|e| JournalError::Io {
@@ -395,5 +428,51 @@ mod tests {
         maybe_compact(dir.path(), 1, 2).unwrap();
         let seqs: Vec<u64> = read_recent(dir.path(), 100).unwrap().iter().map(|r| r.seq).collect();
         assert_eq!(seqs, vec![3, 4]);
+    }
+
+    #[test]
+    fn fd_is_current_detects_rename_swap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("events.jsonl");
+        std::fs::write(&path, "a\n").unwrap();
+        let held = std::fs::File::open(&path).unwrap();
+        assert!(fd_is_current(&held, &path));
+        // Simulate a compaction: rename a new file over the path.
+        let tmp = dir.path().join("events.jsonl.tmp");
+        std::fs::write(&tmp, "b\n").unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
+        assert!(
+            !fd_is_current(&held, &path),
+            "held fd must be detected as orphaned after rename-over"
+        );
+    }
+
+    #[test]
+    fn append_lands_in_live_file_after_external_rename() {
+        // append() must reopen when its target was renamed away, so the
+        // record lands in the live journal, not an orphaned inode.
+        let dir = tempfile::tempdir().unwrap();
+        for seq in 1..=3 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        // Swap the journal exactly as compaction's rename does.
+        let path = dir.path().join(".phronesis/journey/events.jsonl");
+        let tmp = dir.path().join(".phronesis/journey/events.jsonl.tmp");
+        std::fs::copy(&path, &tmp).unwrap();
+        std::fs::rename(&tmp, &path).unwrap();
+        append(dir.path(), &record(4, None)).unwrap();
+        let seqs: Vec<u64> = read_recent(dir.path(), 100).unwrap().iter().map(|r| r.seq).collect();
+        assert_eq!(seqs, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn at_cap_with_few_records_is_not_rewritten() {
+        // Byte cap exceeded but parsed records <= tail_records: no rewrite.
+        let dir = tempfile::tempdir().unwrap();
+        for seq in 1..=3 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        assert!(!maybe_compact(dir.path(), 1, 10).unwrap());
+        assert_eq!(read_recent(dir.path(), 100).unwrap().len(), 3);
     }
 }
