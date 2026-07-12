@@ -406,7 +406,11 @@ mod tests {
         }
         maybe_compact(dir.path(), 1, 2).unwrap();
         append(dir.path(), &record(5, None)).unwrap();
-        let seqs: Vec<u64> = read_recent(dir.path(), 100).unwrap().iter().map(|r| r.seq).collect();
+        let seqs: Vec<u64> = read_recent(dir.path(), 100)
+            .unwrap()
+            .iter()
+            .map(|r| r.seq)
+            .collect();
         assert_eq!(seqs, vec![3, 4, 5]);
     }
 
@@ -426,7 +430,11 @@ mod tests {
         drop(f);
         append(dir.path(), &record(4, None)).unwrap();
         maybe_compact(dir.path(), 1, 2).unwrap();
-        let seqs: Vec<u64> = read_recent(dir.path(), 100).unwrap().iter().map(|r| r.seq).collect();
+        let seqs: Vec<u64> = read_recent(dir.path(), 100)
+            .unwrap()
+            .iter()
+            .map(|r| r.seq)
+            .collect();
         assert_eq!(seqs, vec![3, 4]);
     }
 
@@ -461,7 +469,11 @@ mod tests {
         std::fs::copy(&path, &tmp).unwrap();
         std::fs::rename(&tmp, &path).unwrap();
         append(dir.path(), &record(4, None)).unwrap();
-        let seqs: Vec<u64> = read_recent(dir.path(), 100).unwrap().iter().map(|r| r.seq).collect();
+        let seqs: Vec<u64> = read_recent(dir.path(), 100)
+            .unwrap()
+            .iter()
+            .map(|r| r.seq)
+            .collect();
         assert_eq!(seqs, vec![1, 2, 3, 4]);
     }
 

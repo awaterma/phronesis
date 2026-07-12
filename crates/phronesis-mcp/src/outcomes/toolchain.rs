@@ -187,7 +187,10 @@ impl CompiledDef {
     fn test_counts(&self, output: &str) -> Option<TestCounts> {
         let re = self.test_summary.as_ref()?;
         let mut found = false;
-        let mut counts = TestCounts { passed: 0, failed: 0 };
+        let mut counts = TestCounts {
+            passed: 0,
+            failed: 0,
+        };
         for caps in re.captures_iter(output) {
             found = true;
             counts.passed += caps
@@ -256,7 +259,10 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
     vec![ToolchainDef {
         id: "cargo".to_string(),
         matches: r"cargo (build|check|test|nextest)".to_string(),
-        compile_fail: vec![r"error\[E\d+\]".to_string(), "could not compile".to_string()],
+        compile_fail: vec![
+            r"error\[E\d+\]".to_string(),
+            "could not compile".to_string(),
+        ],
         test_summary: Some(
             r"test result: \w+\. (?P<passed>\d+) passed; (?P<failed>\d+) failed".to_string(),
         ),
@@ -441,7 +447,11 @@ mod tests {
     fn registry_appends_project_defs_after_builtins() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
-        std::fs::write(config_path(dir.path()), r#"[{"id":"pytest","matches":"pytest"}]"#).unwrap();
+        std::fs::write(
+            config_path(dir.path()),
+            r#"[{"id":"pytest","matches":"pytest"}]"#,
+        )
+        .unwrap();
         let reg = registry(dir.path());
         assert_eq!(reg.len(), 2);
         assert_eq!(reg[0].def.id, "cargo");
@@ -528,7 +538,10 @@ mod tests {
         // Spec table row 3: cargo-style "linker failed on exit 0" semantics.
         let facts = synthetic().parse("u", "pytest", "ImportError: no module named x\n", Some(0));
         assert_eq!(build_status(&facts), Some("fail"));
-        assert!(test_fact(&facts).is_none(), "no test signal on a compile failure");
+        assert!(
+            test_fact(&facts).is_none(),
+            "no test signal on a compile failure"
+        );
     }
 
     #[test]
@@ -547,7 +560,11 @@ mod tests {
         let facts = synthetic().parse("u", "pytest", "=== 12 passed in 0.2s ===\n", Some(0));
         assert_eq!(build_status(&facts), Some("pass"));
         let t = test_fact(&facts).expect("test_outcome present");
-        assert_eq!(t.args, vec!["u", "12", "0", "12"], "absent failed group counts as 0");
+        assert_eq!(
+            t.args,
+            vec!["u", "12", "0", "12"],
+            "absent failed group counts as 0"
+        );
     }
 
     #[test]
@@ -596,7 +613,10 @@ mod tests {
         let out = "   Compiling foo v0.1.0\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.42s\n";
         let facts = cargo_def().parse("u", "cargo build", out, None);
         assert_eq!(build_status(&facts), Some("pass"));
-        assert!(test_fact(&facts).is_none(), "build command emits no test fact");
+        assert!(
+            test_fact(&facts).is_none(),
+            "build command emits no test fact"
+        );
     }
 
     #[test]
@@ -667,6 +687,9 @@ mod tests {
         let out = "error[E0599]: no method named `frobnicate` found\nerror: could not compile `foo` (test \"it\") due to 1 previous error\n";
         let facts = cargo_def().parse("u", "cargo test", out, None);
         assert_eq!(build_status(&facts), Some("fail"));
-        assert!(test_fact(&facts).is_none(), "no test signal when compilation fails");
+        assert!(
+            test_fact(&facts).is_none(),
+            "no test signal when compilation fails"
+        );
     }
 }

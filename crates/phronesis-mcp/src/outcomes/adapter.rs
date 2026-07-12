@@ -48,7 +48,9 @@ impl OutcomeAdapter for ConfigAdapter {
 
 /// First def in the registry that recognizes the command.
 fn matching_def(root: &Path, command: &str) -> Option<CompiledDef> {
-    toolchain::registry(root).into_iter().find(|d| d.handles(command))
+    toolchain::registry(root)
+        .into_iter()
+        .find(|d| d.handles(command))
 }
 
 /// Does any def recognize this command? Lets callers skip opening a work
@@ -113,11 +115,7 @@ fn outcome_tags(facts: &[OutcomeFact]) -> Vec<String> {
 /// Emit `outcome:bug_caught:<id>` tags for any known bug whose test went
 /// green with no regressions. Returns an empty `Vec` when there are no
 /// per-test results or no known bugs.
-fn bug_caught_tags(
-    project_root: &Path,
-    subject: &str,
-    per_test: &[(String, bool)],
-) -> Vec<String> {
+fn bug_caught_tags(project_root: &Path, subject: &str, per_test: &[(String, bool)]) -> Vec<String> {
     if per_test.is_empty() {
         return Vec::new();
     }
@@ -237,7 +235,13 @@ mod tests {
             r#"[{"id":"pytest","matches":"pytest","test_summary":"(?:(?P<failed>\\d+) failed, )?(?P<passed>\\d+) passed"}]"#,
         )
         .unwrap();
-        let facts = extract(dir.path(), "u", "pytest -q", "=== 3 passed in 0.1s ===\n", Some(0));
+        let facts = extract(
+            dir.path(),
+            "u",
+            "pytest -q",
+            "=== 3 passed in 0.1s ===\n",
+            Some(0),
+        );
         assert!(facts.iter().any(|f| f.predicate == "build_outcome"));
         assert!(facts.iter().any(|f| f.predicate == "test_outcome"));
     }

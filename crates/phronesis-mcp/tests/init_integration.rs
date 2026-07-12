@@ -413,8 +413,7 @@ fn toolchains_example_left_alone_on_rerun() {
     std::fs::write(dir.path().join(".phronesis/toolchains.json"), custom).unwrap();
     let out = run_init(&["--packs", "confidence"], dir.path());
     assert!(out.status.success());
-    let raw = std::fs::read_to_string(dir.path().join(".phronesis/toolchains.json"))
-        .unwrap();
+    let raw = std::fs::read_to_string(dir.path().join(".phronesis/toolchains.json")).unwrap();
     assert_eq!(raw, custom, "existing file must be left unchanged");
 }
 

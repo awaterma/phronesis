@@ -31,9 +31,11 @@ fn extract_tool_output_text(payload: &HookPayload) -> String {
 /// Trailing `exit code: N` line in captured output text — the last-resort
 /// source when the payload has no structured exit field.
 fn exit_from_text(text: &str) -> Option<i32> {
-    text.lines()
-        .rev()
-        .find_map(|l| l.trim().strip_prefix("exit code: ").and_then(|n| n.trim().parse().ok()))
+    text.lines().rev().find_map(|l| {
+        l.trim()
+            .strip_prefix("exit code: ")
+            .and_then(|n| n.trim().parse().ok())
+    })
 }
 
 /// Best-effort exit-code extraction from the tool-response object. The exact
@@ -70,8 +72,13 @@ fn outcomes_for_journal(
     let command_exit = matches!(tool_name, "Bash" | "run_shell_command")
         .then(|| payload_command_exit(payload))
         .flatten();
-    let (tags, subject) =
-        outcomes::adapter::extract_from(&root, tool_name, command.as_deref(), &output, command_exit);
+    let (tags, subject) = outcomes::adapter::extract_from(
+        &root,
+        tool_name,
+        command.as_deref(),
+        &output,
+        command_exit,
+    );
     (tags, subject, command_exit)
 }
 
@@ -91,6 +98,7 @@ fn load_tagger_config(root: &std::path::Path) -> journey::tagger::TaggerConfig {
 
 /// Assemble the `JournalRecord` from the tagger result, outcome tags, and
 /// project-root metadata.
+#[allow(clippy::too_many_arguments)]
 fn build_journal_record(
     tool_name: &str,
     file_path: &str,
@@ -459,7 +467,11 @@ mod tests {
     fn command_exit_tries_alternate_keys_in_order() {
         for key in ["exit_code", "exitCode", "returncode", "code", "status"] {
             let p = payload_with_output(serde_json::json!({ key: 2 }));
-            assert_eq!(payload_command_exit(&p), Some(2), "key {key} should be read");
+            assert_eq!(
+                payload_command_exit(&p),
+                Some(2),
+                "key {key} should be read"
+            );
         }
     }
 

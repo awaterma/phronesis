@@ -19,7 +19,10 @@ fn toolchains_lists_builtin_cargo() {
     let (code, stdout) = run_in(dir.path(), &["toolchains"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("cargo"), "built-in cargo listed: {stdout}");
-    assert!(stdout.contains("built-in"), "source column present: {stdout}");
+    assert!(
+        stdout.contains("built-in"),
+        "source column present: {stdout}"
+    );
 }
 
 #[test]
