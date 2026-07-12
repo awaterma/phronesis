@@ -1,3 +1,4 @@
+use phronesis_mcp::outcomes::toolchain::{CompiledDef, DefSource, load_project_defs};
 use std::process::Command;
 
 fn run_in(dir: &std::path::Path, args: &[&str]) -> (i32, String) {
@@ -45,4 +46,38 @@ fn toolchains_json_includes_project_def() {
         .collect();
     assert_eq!(ids, vec!["cargo", "pytest"]);
     assert_eq!(v[1]["source"], "project");
+}
+
+#[test]
+fn scaffolded_pytest_def_handles_whitespace_but_not_substring() {
+    // Run init --packs confidence to create the actual scaffolded
+    // toolchains.json, then load it through the toolchain loader to
+    // assert correct matching behavior.
+    let dir = tempfile::tempdir().unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(&["init", "--packs", "confidence"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn phr-mcp init");
+    assert!(out.status.success(), "init stdout={:?}", out.stdout);
+
+    let defs = load_project_defs(dir.path());
+    let pytest_def = defs
+        .iter()
+        .find(|d| d.id == "pytest")
+        .expect("pytest def in scaffold");
+
+    let compiled =
+        CompiledDef::compile(pytest_def.clone(), DefSource::Project).expect("compile pytest");
+
+    assert!(
+        compiled.handles("pytest -q"),
+        "pytest -q should be recognized"
+    );
+
+    assert!(
+        !compiled.handles("pip install pytest-cov"),
+        "pip install pytest-cov must NOT match the pytest def"
+    );
 }

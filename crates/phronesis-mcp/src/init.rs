@@ -829,7 +829,7 @@ const TOOLCHAINS_JSON: &str = r#"[
   {
     "_doc": "Recognition regex is `matches`; refinement fields are optional. See `phr-mcp toolchains`.",
     "id": "pytest",
-    "matches": "(^|\\\\s)pytest(\\\\s|$)",
+    "matches": "(^|\\s)pytest(\\s|$)",
     "compile_fail": ["SyntaxError", "ImportError"],
     "test_summary": "(?P<failed>\\d+) failed|(?P<passed>\\d+) passed",
     "per_test": "(?m)^(?P<name>\\S+) (?P<status>PASSED|FAILED)",
