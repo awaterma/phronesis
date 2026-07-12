@@ -61,6 +61,11 @@ fn collect_fixtures() -> Vec<PathBuf> {
         }
     }
     out.sort();
+    assert!(
+        !out.is_empty(),
+        "corpus must not be empty — no fixtures found under {}",
+        base.display()
+    );
     out
 }
 
@@ -234,6 +239,85 @@ fn check_fixture(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The hook-event-name registry: the exhaustive list of event names each CLI
+/// actually dispatches. Future host additions must extend this fixture in the
+/// same PR that adds wiring.
+fn registry() -> serde_json::Value {
+    let raw = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hook_events.json"),
+    )
+    .expect("read hook_events.json");
+    serde_json::from_str(&raw).expect("registry is JSON")
+}
+
+fn hook_keys(settings: &serde_json::Value) -> Vec<String> {
+    settings["hooks"]
+        .as_object()
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default()
+}
+
+#[test]
+fn init_wires_hooks_only_under_event_names_that_exist() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_project(&dir, "llm");
+    let reg = registry();
+
+    let claude: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".claude/settings.local.json"))
+            .expect("claude settings"),
+    )
+    .expect("claude settings JSON");
+    let valid: Vec<&str> = reg["claude-code"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    let keys = hook_keys(&claude);
+    assert!(!keys.is_empty(), "init wrote no Claude Code hooks at all");
+    for key in keys {
+        assert!(
+            valid.contains(&key.as_str()),
+            "init wired unknown Claude Code hook event {key:?}"
+        );
+    }
+
+    let gemini: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".gemini/settings.json"))
+            .expect("gemini settings"),
+    )
+    .expect("gemini settings JSON");
+    let valid: Vec<&str> = reg["gemini"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    let keys = hook_keys(&gemini);
+    assert!(!keys.is_empty(), "init wrote no Gemini hooks at all");
+    for key in keys {
+        assert!(
+            valid.contains(&key.as_str()),
+            "init wired unknown Gemini hook event {key:?}"
+        );
+    }
+}
+
+#[test]
+fn before_model_request_never_reappears() {
+    // 0.17.1 regression, pinned by name: this event does not exist in
+    // Gemini CLI; wiring under it made per-turn injection silently never run.
+    let dir = tempfile::tempdir().expect("tempdir");
+    init_project(&dir, "llm");
+    let gemini =
+        std::fs::read_to_string(dir.path().join(".gemini/settings.json")).expect("gemini settings");
+    assert!(
+        !gemini.contains("BeforeModelRequest"),
+        "dead Gemini hook event resurfaced"
+    );
 }
 
 #[test]

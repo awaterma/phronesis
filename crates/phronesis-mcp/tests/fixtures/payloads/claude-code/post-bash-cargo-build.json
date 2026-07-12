@@ -5,7 +5,7 @@
     "event": "PostToolUse",
     "provenance": "authored",
     "captured": "2026-07-06",
-    "description": "Post-check payload for a Bash tool that ran `cargo test --workspace`. Pins bug #1 (0.13.2): Claude Code delivers Bash output under `tool_response` (shaped {stdout, stderr, interrupted}), not `tool_output`. The runner asserts `outcome:test_pass` appears on a fresh journal record — impossible if the alias is absent or the output field goes unread."
+    "description": "Post-check payload for a Bash tool that ran `cargo build --workspace`. Pins bug #2 (0.13.2): the command-derived `build` tagger must fire, and the compile output under `tool_response` must be read by the cargo adapter to stamp `outcome:compile_ok`."
   },
   "subcommand": "post-check",
   "packs": "llm,rust,confidence,journey",
@@ -16,10 +16,10 @@
     "hook_event_name": "PostToolUse",
     "tool_name": "Bash",
     "tool_input": {
-      "command": "cargo test --workspace 2>&1"
+      "command": "cargo build --workspace 2>&1"
     },
     "tool_response": {
-      "stdout": "running 12 tests\ntest a ... ok\ntest result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+      "stdout": "   Compiling phronesis v0.18.0 (/home/dev/project/crates/phronesis)\n   Compiling phronesis-mcp v0.18.0 (/home/dev/project/crates/phronesis-mcp)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.34s",
       "stderr": "",
       "interrupted": false
     }
@@ -29,7 +29,7 @@
     "stdout_json": true,
     "log_rule_fired": null,
     "journal_tag_new": ["build"],
-    "journal_tag_from_output": ["outcome:test_pass"],
+    "journal_tag_from_output": ["outcome:compile_ok"],
     "stderr_contains": []
   }
 }

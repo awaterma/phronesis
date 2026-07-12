@@ -25,7 +25,42 @@ cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/d
 cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shape to the v2 shape
 cargo run -- migrate-extracted-rules <path>  # Salvage pre-0.14.0 extract_rules output: strip prefixes, demote actions
 cargo run -- catalogue        # Regenerate docs/catalogue.html from the shipped packs (run from repo root)
+cargo run -- scrub-payload <path> [--write] [--home DIR] [--project-root DIR]  # Anonymize captured payloads for committing as fixtures
 ```
+
+### Payload-contract corpus
+
+Committed fixtures of CLI hook payloads under
+`tests/fixtures/payloads/<cli>/<name>.json` (claude-code and gemini) —
+replayed verbatim through the real binary by
+`cargo test --test payload_contract`, which asserts exit codes,
+stdout-JSON (the Gemini exit-0 contract), action-log consequences, and
+journey-journal tags (with a freshness guard so `init` scaffolding can't
+produce false-greens, and a non-empty-corpus assert so a missing fixture
+tree can't pass vacuously). Each fixture is self-describing with `source`
+(cli, event, provenance) and `expect` (exit, stdout_json, log_rule_fired,
+journal_tag_new, journal_tag_from_output, stderr_contains). All current
+fixtures are `provenance: "authored"` — hand-written approximations of
+the real envelopes, to be superseded by real captures.
+
+The same test file consumes `tests/fixtures/hook_events.json`, the
+hook-event-name registry: `init_wires_hooks_only_under_event_names_that_exist`
+checks every event name `init` wires (Claude Code and Gemini) against the
+registry, and `before_model_request_never_reappears` pins the 0.17.1
+`BeforeModelRequest` incident by name. New host events must be added to
+the registry in the same PR that adds wiring.
+
+**Refresh workflow** (when a CLI changes its payload shape):
+1. Set `PHRONESIS_CAPTURE_DIR=/tmp/cap` in the shell that launches the CLI.
+2. Work normally — captures are written to `<dir>/payloads.jsonl`.
+3. `phr-mcp scrub-payload /tmp/cap/payloads.jsonl [--write] [--home DIR] [--project-root DIR]`
+   to anonymize. Run it from the project root (or pass `--project-root`)
+   so in-project paths are preserved. Output is JSONL; `--write` backs the
+   original up to `<path>.bak` first, and a residual leak or corrupt line
+   aborts the run before anything is written.
+4. Human-review the scrubbed output for semantic leaks.
+5. Place reviewed records under `tests/fixtures/payloads/<cli>/` with
+   proper `source.provenance` and `expect` blocks.
 
 ### Durable directives (`.phronesis/durable.md`)
 

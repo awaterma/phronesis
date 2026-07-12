@@ -4,16 +4,20 @@
     "cli": "claude-code",
     "event": "PreToolUse",
     "provenance": "authored",
+    "captured": "2026-07-06",
     "description": "Pre-check payload for a Bash tool that runs `cargo test` without `--workspace`. Exercises the `warn-cargo-build-without-workspace` rule. Exit 1 = warning (allows but warns). Pre-check does NOT write journey records."
   },
   "subcommand": "pre-check",
   "packs": "llm,rust,confidence,journey",
   "payload": {
+    "session_id": "sess-00000000",
+    "transcript_path": "/home/dev/.claude/transcript.jsonl",
+    "cwd": "/home/dev/project",
+    "hook_event_name": "PreToolUse",
     "tool_name": "Bash",
     "tool_input": {
       "command": "cargo test 2>&1"
-    },
-    "session_id": "abc123-def456"
+    }
   },
   "expect": {
     "exit": 1,
