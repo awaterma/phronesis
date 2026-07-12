@@ -19,6 +19,18 @@ pub enum ScrubError {
 /// still cover them because paths embed the full `$HOME` prefix.
 const MIN_BARE_USERNAME_LEN: usize = 3;
 
+/// Canonical placeholder roots the scrubber itself writes. `scrub_str` must
+/// never rewrite text under these prefixes: when the configured home dir is a
+/// prefix of the placeholder root (e.g. home = `/home/dev`), a naive
+/// find-and-replace loop matches its own freshly inserted replacement forever
+/// (non-termination + unbounded `external` growth), and re-scrubbing an
+/// already-scrubbed fixture would mangle the canonical paths.
+const PLACEHOLDER_PREFIXES: [&str; 3] = [
+    "/home/dev/project",
+    "/home/dev/external/",
+    "/home/dev/.claude/",
+];
+
 pub struct Scrubber {
     home: String,
     user: String,
@@ -71,7 +83,20 @@ impl Scrubber {
         // 1. Project-root prefix → canonical fixture root.
         let mut out = s.replace(&self.project_root, "/home/dev/project");
         // 2. Any remaining $HOME-rooted path → indexed external placeholder.
-        while let Some(start) = out.find(&self.home) {
+        // The cursor only moves forward — each iteration resumes past the
+        // text it just inserted — and canonical placeholder paths are skipped
+        // outright, so replacement terminates and is a fixpoint even when
+        // `home` is a prefix of the placeholder root (e.g. `/home/dev`).
+        let mut search_from = 0;
+        while let Some(rel) = out[search_from..].find(&self.home) {
+            let start = search_from + rel;
+            if PLACEHOLDER_PREFIXES
+                .iter()
+                .any(|p| out[start..].starts_with(p))
+            {
+                search_from = start + self.home.len();
+                continue;
+            }
             let end = out[start..]
                 .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ':' | ','))
                 .map(|off| start + off)
@@ -84,7 +109,10 @@ impl Scrubber {
                     self.external.len() - 1
                 }
             };
-            out.replace_range(start..end, &format!("/home/dev/external/p{n}"));
+            let replacement = format!("/home/dev/external/p{n}");
+            let replacement_len = replacement.len();
+            out.replace_range(start..end, &replacement);
+            search_from = start + replacement_len;
         }
         // 3. Bare username anywhere else (long enough to be unambiguous).
         if self.user.len() >= MIN_BARE_USERNAME_LEN {
@@ -285,6 +313,48 @@ mod tests {
         // Nothing to say about clean content.
         let clean = json!({"command": "cargo build"});
         assert!(s.warnings(&clean).is_empty());
+    }
+
+    #[test]
+    fn home_dev_home_on_already_scrubbed_content_terminates_and_is_fixpoint() {
+        // C2 regression: when the configured home dir is a prefix of the
+        // placeholder root (home = "/home/dev"), the old find-loop matched
+        // its own freshly inserted replacement forever. Re-scrubbing
+        // already-scrubbed content must terminate AND leave it unchanged.
+        let mut s = Scrubber::new("/home/dev", "/tmp/someproject");
+        let mut v = json!({
+            "cwd": "/home/dev/project",
+            "tool_input": {"file_path": "/home/dev/project/src/lib.rs"},
+            "external": "/home/dev/external/p0",
+            "transcript_path": "/home/dev/.claude/transcript.jsonl"
+        });
+        let before = v.clone();
+        s.scrub_value(&mut v);
+        assert_eq!(
+            v, before,
+            "already-scrubbed content must be a fixpoint under home=/home/dev"
+        );
+        // And a second pass stays put too.
+        s.scrub_value(&mut v);
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn home_dev_home_still_scrubs_non_placeholder_paths() {
+        // The C2 guard must not stop legitimate scrubbing for a user whose
+        // home really is /home/dev: paths outside the canonical placeholder
+        // roots still get anonymized, and the loop still terminates even
+        // though every inserted replacement contains the home prefix.
+        let mut s = Scrubber::new("/home/dev", "/home/dev/myproject");
+        let mut v = json!({
+            "a": "/home/dev/otherrepo/src/main.rs",
+            "b": "/home/dev/myproject/src/lib.rs"
+        });
+        s.scrub_value(&mut v);
+        assert_eq!(v["b"], "/home/dev/project/src/lib.rs");
+        let a = v["a"].as_str().expect("string");
+        assert!(a.starts_with("/home/dev/external/p"), "got {a}");
+        assert!(!v.to_string().contains("otherrepo"));
     }
 
     #[test]

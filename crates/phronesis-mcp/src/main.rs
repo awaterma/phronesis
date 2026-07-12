@@ -288,24 +288,23 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
-    /// Scrub-anonymize captured hook payloads for committing as fixtures.
-    /// Reads a JSONL capture file, rewrites every string through the scrubber
-    /// (project paths → `/home/dev/project`, external `$HOME` paths →
-    /// indexed `/home/dev/external/p<N>`, session ids → fixed placeholder),
-    /// verifies for residuals, and prints or rewrites in place.
+    /// Anonymize a captured payload file for committing as a fixture.
+    ///
+    /// Rewrites $HOME paths, the username, session ids, and transcript paths;
+    /// leaves project-internal content verbatim. Prints scrubbed JSONL to
+    /// stdout, or rewrites in place (with a .bak backup) under --write.
     ScrubPayload {
-        /// Path to the captured JSONL file to scrub.
-        file: PathBuf,
-        /// Re-write the file in-place instead of printing to stdout.
+        /// Capture file (JSONL from PHRONESIS_CAPTURE_DIR) or a single-JSON fixture.
+        path: PathBuf,
+        /// Rewrite the file in place, backing up the original to <path>.bak.
         #[arg(long)]
         write: bool,
-        /// Override $HOME used for path replacement (default: $HOME env var).
+        /// Home directory to scrub (defaults to $HOME).
         #[arg(long)]
         home: Option<String>,
-        /// Override the project root path used for replacement
-        /// (default: `$HOME/project`).
+        /// Project root whose paths map to /home/dev/project (defaults to CWD).
         #[arg(long)]
-        project: Option<String>,
+        project_root: Option<String>,
     },
 }
 
@@ -385,14 +384,11 @@ async fn main() -> anyhow::Result<()> {
         Command::Install { dry_run } => handle_install(dry_run),
         Command::Uninstall { dry_run } => handle_uninstall(dry_run),
         Command::ScrubPayload {
-            file,
+            path,
             write,
             home,
-            project,
-        } => {
-            scrub_payload::run(file, write, home, project);
-            Ok(())
-        }
+            project_root,
+        } => scrub_payload::run(&path, write, home, project_root),
     }
 }
 

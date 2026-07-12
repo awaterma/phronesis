@@ -1,105 +1,109 @@
 //! Scrub-anonymize captured hook payloads for committing as fixtures.
 //!
-//! `phr-mcp scrub-payload <file> [--write] [--home DIR] [--project DIR]`
-//! reads a captured JSONL file (or a single fixture JSON), rewrites every
+//! `phr-mcp scrub-payload <path> [--write] [--home DIR] [--project-root DIR]`
+//! reads a captured JSONL file (or a single-JSON fixture), rewrites every
 //! string value through the [`Scrubber`](crate::payload_scrub::Scrubber),
-//! verifies the output for residuals, and prints the result (or rewrites
-//! in place with `--write`).
+//! verifies the output for residual leaks, and prints scrubbed JSONL to
+//! stdout — or rewrites the file in place under `--write`, backing the
+//! original up to `<path>.bak` first.
+//!
+//! Contract (plan Task 3):
+//! - Output is JSONL, one compact record per line — diffable, promotable
+//!   per-line, and re-parseable, so a second run is a fixpoint.
+//! - `--write` copies the original to `<path>.bak` before touching it.
+//! - A hard residual leak ($HOME path, username as a path component) aborts
+//!   the run with a nonzero exit BEFORE anything is written.
+//! - A non-JSON line aborts with `line {n}: not JSON: {e}` and nonzero exit.
+//! - Soft residuals (username as a free-text token) are warnings on stderr;
+//!   the run still succeeds, keeping scrubbing idempotent.
+//! - `--home` defaults to `$HOME`; `--project-root` defaults to the current
+//!   directory, so in-project paths are preserved when run from the root.
 //!
 //! Design: `docs/superpowers/specs/2026-07-06-payload-contract-corpus-design.md`.
 
-use std::path::PathBuf;
+use std::path::Path;
 
-use serde::Serialize;
+use anyhow::Context;
 use serde_json::Value;
 
 use crate::payload_scrub::Scrubber;
 
-/// A single scrubbed record written back to the output file.
-#[derive(Debug, Serialize)]
-struct ScrubRecord {
-    ts: u64,
-    phase: String,
-    raw: Value,
-}
-
-/// Run the scrub-payload subcommand: anonymize captured payloads for
-/// committing as fixtures.
+/// Run the scrub-payload subcommand. Errors bubble to `main.rs`'s
+/// `anyhow::Result` handler; this module never exits the process.
 pub fn run(
-    file: PathBuf,
+    path: &Path,
     write: bool,
     home: Option<String>,
-    project: Option<String>,
-) -> std::process::ExitCode {
-    let raw = std::fs::read_to_string(&file).map_err(|e| {
-        eprintln!("error: cannot read {}: {e}", file.display());
-        std::process::exit(1);
-    });
-    let raw = raw.unwrap_or_default();
+    project_root: Option<String>,
+) -> anyhow::Result<()> {
+    let home = match home {
+        Some(h) => h,
+        None => std::env::var("HOME").context("--home not given and $HOME is unset")?,
+    };
+    let project_root = match project_root {
+        Some(p) => p,
+        None => std::env::current_dir()
+            .context("--project-root not given and the current directory is unreadable")?
+            .display()
+            .to_string(),
+    };
 
-    let home =
-        home.unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/home/dev".to_string()));
-    let project = project.unwrap_or_else(|| format!("{}/project", home));
+    let raw = crate::security::read_file_capped(path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
 
-    let mut scrubber = Scrubber::new(&home, &project);
+    let mut scrubber = Scrubber::new(&home, &project_root);
+    let out_lines = scrub_lines(&mut scrubber, &raw)?;
 
-    // Detect JSONL (one object per line) vs single JSON.
-    let records: Vec<Value> = raw
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .collect();
-
-    let mut output: Vec<ScrubRecord> = Vec::with_capacity(records.len());
-    let mut has_errors = false;
-
-    for record in &records {
-        // Try to treat it as a capture record; if it lacks "raw", scrub the
-        // whole object.
-        let raw_val = record.get("raw").unwrap_or(record);
-        let mut scrubbed = raw_val.clone();
-        scrubber.scrub_value(&mut scrubbed);
-
-        // Verify after scrubbing.
-        if let Err(e) = scrubber.verify(&scrubbed) {
-            eprintln!("scrub error: {e}");
-            has_errors = true;
-        }
-
-        // Emit warnings for human review.
-        for warn in scrubber.warnings(&scrubbed) {
-            eprintln!("warning: {warn}");
-        }
-
-        output.push(ScrubRecord {
-            ts: record.get("ts").and_then(|v| v.as_u64()).unwrap_or(0),
-            phase: record
-                .get("phase")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
-                .to_string(),
-            raw: scrubbed,
-        });
-    }
-
-    let serialized = serde_json::to_string_pretty(&output).expect("serialize output");
-
+    let rendered = out_lines.join("\n") + "\n";
     if write {
-        std::fs::write(&file, format!("{serialized}\n")).map_err(|e| {
-            eprintln!("error: cannot write {}: {e}", file.display());
-            std::process::exit(1);
-        });
-        println!(
-            "wrote scrubbed {} record(s) to {}",
-            output.len(),
-            file.display()
+        let backup = format!("{}.bak", path.display());
+        std::fs::copy(path, &backup).with_context(|| format!("cannot back up to {backup}"))?;
+        std::fs::write(path, &rendered)
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        eprintln!(
+            "scrubbed {} line(s) in place; original at {backup}",
+            out_lines.len()
         );
     } else {
-        println!("{}", serialized);
+        print!("{rendered}");
     }
+    Ok(())
+}
 
-    if has_errors {
-        std::process::exit(1);
+/// Scrub every record in `raw` to compact JSON lines. `raw` is either JSONL
+/// (one object per line) or a single-JSON fixture, possibly pretty-printed:
+/// if the whole input parses as one JSON value it is scrubbed as a single
+/// record — verbatim, never wrapped in a capture-record envelope — otherwise
+/// each line must parse on its own and a bad line aborts with its number.
+/// Nothing is emitted (and under `--write`, nothing is written) unless every
+/// record scrubs AND verifies clean.
+fn scrub_lines(scrubber: &mut Scrubber, raw: &str) -> anyhow::Result<Vec<String>> {
+    if let Ok(mut value) = serde_json::from_str::<Value>(raw) {
+        scrub_one(scrubber, &mut value, 1)?;
+        return Ok(vec![value.to_string()]);
     }
-    std::process::exit(0)
+    let mut out_lines = Vec::new();
+    for (idx, line) in raw.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut value: Value = serde_json::from_str(line)
+            .map_err(|e| anyhow::anyhow!("line {}: not JSON: {}", idx + 1, e))?;
+        scrub_one(scrubber, &mut value, idx + 1)?;
+        out_lines.push(value.to_string());
+    }
+    Ok(out_lines)
+}
+
+/// Scrub a single record in place, then verify. Hard leaks abort the run;
+/// soft residuals go to stderr for the human reviewer but do not fail.
+fn scrub_one(scrubber: &mut Scrubber, value: &mut Value, line_no: usize) -> anyhow::Result<()> {
+    scrubber.scrub_value(value);
+    scrubber
+        .verify(value)
+        .with_context(|| format!("line {line_no}: residual leak after scrubbing"))?;
+    for w in scrubber.warnings(value) {
+        eprintln!("phronesis: scrub warning (line {line_no}): {w}");
+    }
+    Ok(())
 }
