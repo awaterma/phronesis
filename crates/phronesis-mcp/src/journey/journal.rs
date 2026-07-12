@@ -77,12 +77,105 @@ pub enum JournalError {
 /// Bounds the pathological case where retention misbehaves. See SPEC §"Cost".
 pub const SUFFIX_HARD_CAP: usize = 10_000;
 
+/// Default write-side size cap for the journal. Journal records are small
+/// (~200–500 bytes), so 16 MiB comfortably holds several times the
+/// `SUFFIX_HARD_CAP` read window.
+pub const MAX_JOURNAL_BYTES_DEFAULT: u64 = 16 * 1024 * 1024;
+/// Upper bound on the env override, mirroring the action log's ceiling.
+pub const MAX_JOURNAL_BYTES_CEILING: u64 = 1024 * 1024 * 1024;
+/// Records retained unconditionally at the tail. Equal to `SUFFIX_HARD_CAP`
+/// so compaction can never drop a record the readers could still see.
+pub const COMPACT_TAIL_RECORDS: usize = SUFFIX_HARD_CAP;
+
 fn dir(root: &Path) -> PathBuf {
     root.join(".phronesis").join("journey")
 }
 
 fn events_path(root: &Path) -> PathBuf {
     dir(root).join("events.jsonl")
+}
+
+fn max_journal_bytes() -> u64 {
+    std::env::var("PHRONESIS_MAX_JOURNAL_BYTES")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.min(MAX_JOURNAL_BYTES_CEILING))
+        .unwrap_or(MAX_JOURNAL_BYTES_DEFAULT)
+}
+
+/// Compact the journal when it exceeds `max_bytes`: retain the most recent
+/// `tail_records` records plus, for every subject appearing in the dropped
+/// prefix, its most recent `outcome:*`-bearing record (so each work unit's
+/// latest grounded build/test result survives for confidence banding).
+/// Atomic rewrite (temp file + rename) under the same advisory lock the
+/// appenders take; never blind-truncates. Returns whether a compaction ran.
+pub fn maybe_compact(
+    root: &Path,
+    max_bytes: u64,
+    tail_records: usize,
+) -> Result<bool, JournalError> {
+    let path = events_path(root);
+    let meta = match std::fs::metadata(&path) {
+        Ok(m) => m,
+        Err(_) => return Ok(false),
+    };
+    if meta.len() < max_bytes {
+        return Ok(false);
+    }
+    let io_err = |e: std::io::Error| JournalError::Io {
+        path: path.display().to_string(),
+        source: e,
+    };
+    let file = OpenOptions::new().read(true).open(&path).map_err(io_err)?;
+    file.lock_exclusive().map_err(io_err)?;
+    let result = compact_locked(&path, tail_records);
+    let _ = FileExt::unlock(&file);
+    result
+}
+
+fn compact_locked(path: &Path, tail_records: usize) -> Result<bool, JournalError> {
+    let io_err = |e: std::io::Error| JournalError::Io {
+        path: path.display().to_string(),
+        source: e,
+    };
+    let content = std::fs::read_to_string(path).map_err(io_err)?;
+    let all: Vec<JournalRecord> = content
+        .lines()
+        .filter_map(|l| serde_json::from_str::<JournalRecord>(l).ok())
+        .collect();
+    if all.len() <= tail_records {
+        return Ok(false);
+    }
+    let split = all.len() - tail_records;
+    let (prefix, tail) = all.split_at(split);
+    // Latest outcome-bearing record per subject in the prefix, by index.
+    let mut latest: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (i, r) in prefix.iter().enumerate() {
+        if let Some(s) = r.subject.as_deref()
+            && r.tags.iter().any(|t| t.starts_with("outcome:"))
+        {
+            latest.insert(s, i);
+        }
+    }
+    let mut keep: Vec<usize> = latest.into_values().collect();
+    keep.sort_unstable();
+    let mut out = String::new();
+    for i in keep {
+        out.push_str(&serde_json::to_string(&prefix[i])?);
+        out.push('\n');
+    }
+    for r in tail {
+        out.push_str(&serde_json::to_string(r)?);
+        out.push('\n');
+    }
+    let tmp = path.with_extension("jsonl.tmp");
+    let tmp_err = |e: std::io::Error| JournalError::Io {
+        path: tmp.display().to_string(),
+        source: e,
+    };
+    std::fs::write(&tmp, out).map_err(tmp_err)?;
+    std::fs::rename(&tmp, path).map_err(tmp_err)?;
+    Ok(true)
 }
 
 /// Append one record to the journey journal. Creates `.phronesis/journey/`
@@ -94,6 +187,11 @@ pub fn append(root: &Path, record: &JournalRecord) -> Result<(), JournalError> {
         path: d.display().to_string(),
         source: e,
     })?;
+    // Write-side retention: best-effort and fail-open — a compaction error
+    // must never block the append.
+    if let Err(e) = maybe_compact(root, max_journal_bytes(), COMPACT_TAIL_RECORDS) {
+        eprintln!("phronesis: journal compaction skipped: {e}");
+    }
     let path = events_path(root);
     let mut line = serde_json::to_string(record)?;
     line.push('\n');
@@ -206,5 +304,96 @@ mod tests {
         let line = r#"{"v":1,"ts":0,"sid":"s","seq":1,"tool":"Bash","path":"<cmd>","tags":[]}"#;
         let rec: JournalRecord = serde_json::from_str(line).unwrap();
         assert_eq!(rec.command_exit, None);
+    }
+
+    fn tagged(seq: u64, subject: &str, tags: &[&str]) -> JournalRecord {
+        JournalRecord {
+            subject: Some(subject.to_string()),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            ..record(seq, None)
+        }
+    }
+
+    #[test]
+    fn under_cap_is_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        append(dir.path(), &record(1, None)).unwrap();
+        let compacted = maybe_compact(dir.path(), u64::MAX, 2).unwrap();
+        assert!(!compacted);
+        assert_eq!(read_recent(dir.path(), 100).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn missing_file_is_not_an_error() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!maybe_compact(dir.path(), 1, 2).unwrap());
+    }
+
+    #[test]
+    fn over_cap_keeps_tail_and_latest_outcome_per_prefix_subject() {
+        let dir = tempfile::tempdir().unwrap();
+        // Prefix: subject "u" has two outcome records (seq 1 stale, seq 2
+        // latest) and noise; subject "v" has one; seq 4 is outcome-less noise.
+        append(dir.path(), &tagged(1, "u", &["outcome:compile_error"])).unwrap();
+        append(dir.path(), &tagged(2, "u", &["outcome:compile_ok"])).unwrap();
+        append(dir.path(), &tagged(3, "v", &["outcome:test_pass"])).unwrap();
+        append(dir.path(), &record(4, None)).unwrap();
+        // Tail of 2:
+        append(dir.path(), &record(5, None)).unwrap();
+        append(dir.path(), &record(6, None)).unwrap();
+        let compacted = maybe_compact(dir.path(), 1, 2).unwrap();
+        assert!(compacted);
+        let recs = read_recent(dir.path(), 100).unwrap();
+        let seqs: Vec<u64> = recs.iter().map(|r| r.seq).collect();
+        assert_eq!(
+            seqs,
+            vec![2, 3, 5, 6],
+            "latest outcome per prefix subject (2 for u, 3 for v) + tail, original order"
+        );
+    }
+
+    #[test]
+    fn confidence_read_still_works_after_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        append(dir.path(), &tagged(1, "u", &["outcome:compile_ok"])).unwrap();
+        for seq in 2..=5 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        maybe_compact(dir.path(), 1, 2).unwrap();
+        let for_u = read_recent_subject(dir.path(), "u", 10).unwrap();
+        assert_eq!(for_u.len(), 1, "subject u's grounded outcome survives");
+        assert!(for_u[0].tags.iter().any(|t| t == "outcome:compile_ok"));
+    }
+
+    #[test]
+    fn append_still_succeeds_after_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        for seq in 1..=4 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        maybe_compact(dir.path(), 1, 2).unwrap();
+        append(dir.path(), &record(5, None)).unwrap();
+        let seqs: Vec<u64> = read_recent(dir.path(), 100).unwrap().iter().map(|r| r.seq).collect();
+        assert_eq!(seqs, vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn malformed_lines_are_dropped_at_compaction() {
+        let dir = tempfile::tempdir().unwrap();
+        for seq in 1..=3 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        // Torn write in the middle of the prefix.
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(dir.path().join(".phronesis/journey/events.jsonl"))
+            .unwrap();
+        writeln!(f, "{{torn").unwrap();
+        drop(f);
+        append(dir.path(), &record(4, None)).unwrap();
+        maybe_compact(dir.path(), 1, 2).unwrap();
+        let seqs: Vec<u64> = read_recent(dir.path(), 100).unwrap().iter().map(|r| r.seq).collect();
+        assert_eq!(seqs, vec![3, 4]);
     }
 }
