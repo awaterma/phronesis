@@ -583,4 +583,90 @@ mod tests {
     fn per_test_results_empty_without_per_test_regex() {
         assert!(exit_only().per_test_results("anything").is_empty());
     }
+
+    // ── cargo fidelity: the retired CargoAdapter test suite, verbatim ─────
+
+    fn cargo_def() -> CompiledDef {
+        let def = builtin_defs().into_iter().next().unwrap();
+        CompiledDef::compile(def, DefSource::BuiltIn).unwrap()
+    }
+
+    #[test]
+    fn cargo_successful_build_is_pass() {
+        let out = "   Compiling foo v0.1.0\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.42s\n";
+        let facts = cargo_def().parse("u", "cargo build", out, None);
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_none(), "build command emits no test fact");
+    }
+
+    #[test]
+    fn cargo_warnings_only_build_is_still_pass() {
+        let out = "warning: unused variable: `x`\n   --> src/main.rs:2:9\n    Finished dev profile in 0.3s\n";
+        let facts = cargo_def().parse("u", "cargo build", out, None);
+        assert_eq!(build_status(&facts), Some("pass"));
+    }
+
+    #[test]
+    fn cargo_compile_error_is_fail() {
+        let out = "error[E0425]: cannot find value `x` in this scope\n --> src/main.rs:2:5\nerror: could not compile `foo` (bin \"foo\") due to 1 previous error\n";
+        let facts = cargo_def().parse("u", "cargo build", out, None);
+        assert_eq!(build_status(&facts), Some("fail"));
+    }
+
+    #[test]
+    fn cargo_could_not_compile_without_error_code_is_fail() {
+        let out = "error: linking with `cc` failed\nerror: could not compile `foo`\n";
+        let facts = cargo_def().parse("u", "cargo build", out, None);
+        assert_eq!(build_status(&facts), Some("fail"));
+    }
+
+    #[test]
+    fn cargo_tests_all_pass() {
+        let out = "running 12 tests\ntest a ... ok\ntest result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n";
+        let facts = cargo_def().parse("u", "cargo test", out, None);
+        assert_eq!(build_status(&facts), Some("pass"));
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "12", "0", "12"]);
+    }
+
+    #[test]
+    fn cargo_tests_with_failures() {
+        let out = "test result: FAILED. 10 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\nerror: test failed, to rerun pass `--lib`\n";
+        let facts = cargo_def().parse("u", "cargo test", out, None);
+        // A test failure is NOT a compile failure.
+        assert_eq!(build_status(&facts), Some("pass"));
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "10", "2", "12"]);
+    }
+
+    #[test]
+    fn cargo_multiple_test_binaries_are_summed() {
+        let out = "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n\
+                   test result: ok. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s\n";
+        let facts = cargo_def().parse("u", "cargo test", out, None);
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "8", "1", "9"]);
+    }
+
+    #[test]
+    fn cargo_per_test_results_parses_names_and_status() {
+        let out = "running 3 tests\ntest mod_a::ok_one ... ok\ntest mod_b::fails ... FAILED\ntest mod_c::ignored_one ... ignored\ntest result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out\n";
+        let results = cargo_def().per_test_results(out);
+        assert_eq!(
+            results,
+            vec![
+                ("mod_a::ok_one".to_string(), true),
+                ("mod_b::fails".to_string(), false),
+            ],
+            "ok/FAILED parsed; ignored and the summary line excluded"
+        );
+    }
+
+    #[test]
+    fn cargo_test_command_that_fails_to_compile_has_no_test_fact() {
+        let out = "error[E0599]: no method named `frobnicate` found\nerror: could not compile `foo` (test \"it\") due to 1 previous error\n";
+        let facts = cargo_def().parse("u", "cargo test", out, None);
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(test_fact(&facts).is_none(), "no test signal when compilation fails");
+    }
 }

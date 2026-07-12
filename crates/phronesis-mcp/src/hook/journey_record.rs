@@ -40,7 +40,7 @@ fn outcomes_for_journal(payload: &HookPayload, tool_name: &str) -> (Vec<String>,
     let root = security::project_root();
     let command = super::extract_new_content(payload, tool_name);
     let output = extract_tool_output_text(payload);
-    outcomes::cargo::extract_from(&root, tool_name, command.as_deref(), &output)
+    outcomes::adapter::extract_from(&root, tool_name, command.as_deref(), &output, None)
 }
 
 /// Load the tagger config from the project root, falling back to default on
