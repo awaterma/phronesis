@@ -829,9 +829,9 @@ const TOOLCHAINS_JSON: &str = r#"[
   {
     "_doc": "Recognition regex is `matches`; refinement fields are optional. See `phr-mcp toolchains`.",
     "id": "pytest",
-    "matches": "pytest",
+    "matches": "(^|\\\\s)pytest(\\\\s|$)",
     "compile_fail": ["SyntaxError", "ImportError"],
-    "test_summary": "(?:(?P<failed>\\d+) failed, )?(?P<passed>\\d+) passed",
+    "test_summary": "(?P<failed>\\d+) failed|(?P<passed>\\d+) passed",
     "per_test": "(?m)^(?P<name>\\S+) (?P<status>PASSED|FAILED)",
     "pass_tokens": ["PASSED"]
   },
@@ -843,8 +843,8 @@ const TOOLCHAINS_JSON: &str = r#"[
 ]
 "#;
 
-/// Write the confidence opt-in marker + known-bug registry when the
-/// `confidence` pack is selected. Idempotent (leaves existing files alone).
+/// Write the confidence opt-in marker, known-bug registry, and
+/// toolchains.json example when the `confidence` pack is selected. Idempotent (leaves existing files alone).
 fn write_confidence_scaffold(
     root: &Path,
     opts: &InitOpts,

@@ -18,6 +18,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +28,7 @@ use thiserror::Error;
 
 /// One line of the journey journal. Field order here is the serialization
 /// order: `v`, `ts`, `sid`, `seq`, `tool`, `path`, `ext?`, `module?`,
-/// `tags[]`, `subject?`. See SPEC §"The journal record".
+/// `tags[]`, `subject?`, `command_exit?`. See SPEC §"The journal record".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalRecord {
     /// Record schema version. Bump when the on-disk shape changes.
@@ -96,10 +97,8 @@ fn events_path(root: &Path) -> PathBuf {
     dir(root).join("events.jsonl")
 }
 
-/// True when `file`'s fd still refers to the live file at `path`.
-/// Compaction replaces the journal by rename; advisory flocks follow the
-/// inode, not the path, so a caller that locked a just-replaced fd must
-/// reopen before trusting its lock.
+/// True when `file`'s fd still refers to the live file at `path`. ...
+#[cfg(unix)]
 fn fd_is_current(file: &std::fs::File, path: &Path) -> bool {
     match (file.metadata(), std::fs::metadata(path)) {
         (Ok(fd_meta), Ok(path_meta)) => {
@@ -107,6 +106,13 @@ fn fd_is_current(file: &std::fs::File, path: &Path) -> bool {
         }
         _ => false,
     }
+}
+
+/// Non-unix fallback: no inode identity available — treat the fd as
+/// current (pre-revalidation behavior; the compaction race is tolerated).
+#[cfg(not(unix))]
+fn fd_is_current(_file: &std::fs::File, _path: &Path) -> bool {
+    true
 }
 
 fn open_locked_for_append(path: &Path) -> Result<std::fs::File, JournalError> {
@@ -277,20 +283,32 @@ pub fn read_recent(root: &Path, n: usize) -> Result<Vec<JournalRecord>, JournalE
     Ok(all[start..].to_vec())
 }
 
-/// Read the last `n` records (bounded by `SUFFIX_HARD_CAP` before filtering)
-/// whose `subject` matches. The per-work-unit read used by the outcomes
-/// fold-in (lands in Task 4).
+/// Subject-filtered over the whole journal (the journal is bounded by
+/// compaction), capped at the last `min(n, SUFFIX_HARD_CAP)` matching
+/// records — this is what makes the compactor's per-subject preserved
+/// outcomes reachable.
 pub fn read_recent_subject(
     root: &Path,
     subject: &str,
     n: usize,
 ) -> Result<Vec<JournalRecord>, JournalError> {
-    let all = read_recent(root, SUFFIX_HARD_CAP)?;
-    let filtered: Vec<JournalRecord> = all
-        .into_iter()
+    let path = events_path(root);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(JournalError::Io {
+                path: path.display().to_string(),
+                source: e,
+            });
+        }
+    };
+    let filtered: Vec<JournalRecord> = content
+        .lines()
+        .filter_map(|l| serde_json::from_str::<JournalRecord>(l).ok())
         .filter(|r| r.subject.as_deref() == Some(subject))
         .collect();
-    let limit = n.min(filtered.len());
+    let limit = n.min(SUFFIX_HARD_CAP).min(filtered.len());
     let start = filtered.len() - limit;
     Ok(filtered[start..].to_vec())
 }
@@ -439,6 +457,24 @@ mod tests {
     }
 
     #[test]
+    fn preserved_prefix_outcome_is_readable_beyond_positional_window() {
+        // A subject's compaction-preserved outcome sits BEFORE the tail;
+        // read_recent_subject must still find it (filter-then-cap).
+        let dir = tempfile::tempdir().unwrap();
+        append(dir.path(), &tagged(1, "u", &["outcome:compile_ok"])).unwrap();
+        for seq in 2..=6 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        maybe_compact(dir.path(), 1, 2).unwrap();
+        // File is now [u's outcome (seq 1)] + tail [5, 6]; a positional
+        // 2-record window would never reach seq 1.
+        let for_u = read_recent_subject(dir.path(), "u", 2).unwrap();
+        assert_eq!(for_u.len(), 1);
+        assert_eq!(for_u[0].seq, 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn fd_is_current_detects_rename_swap() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("events.jsonl");
@@ -456,6 +492,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn append_lands_in_live_file_after_external_rename() {
         // append() must reopen when its target was renamed away, so the
         // record lands in the live journal, not an orphaned inode.

@@ -149,7 +149,9 @@ pub async fn run_post_check() -> anyhow::Result<()> {
 
     let (logged, violations, warnings) = super::collect_logged(&consequences);
 
-    let command_exit = super::journey_record::payload_command_exit(&payload);
+    let command_exit = matches!(tool_name.as_str(), "Bash" | "run_shell_command")
+        .then(|| super::journey_record::payload_command_exit(&payload))
+        .flatten();
 
     // Post-check can't undo the edit, so violations and warnings collapse to
     // the same exit code (1). The single `consequences` array on the log entry

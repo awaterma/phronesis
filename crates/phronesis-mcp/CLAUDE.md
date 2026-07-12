@@ -172,7 +172,10 @@ The packs are composable and **independent**:
   `build_outcome` from its exit code (`command_exit`, captured on every shell
   journal record), with optional per-toolchain regex refinement for test
   counts and per-test results. Cargo ships as a built-in def; project defs
-  in `toolchains.json` extend or override it. Journal growth is bounded by
+  in `toolchains.json` extend or override it. (One behavior refinement
+  vs. pre-0.18: a build/test command that exits non-zero with no test
+  summary and no compile-error text is now graded build-fail when the CLI
+  supplies the exit code.) Journal growth is bounded by
   write-side compaction (`PHRONESIS_MAX_JOURNAL_BYTES`, default 16 MiB) that
   preserves each subject's latest grounded outcome.
 - `journey` — project-defined taggers + journey_* aggregator facts (cross-call temporal predicates)

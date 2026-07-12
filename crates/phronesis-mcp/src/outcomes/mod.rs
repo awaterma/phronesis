@@ -8,7 +8,7 @@
 //!
 //! The design keeps the engine domain-neutral the same way `syntax/` does:
 //! declarative toolchain defs (cargo built-in; project defs in
-//! `.phronesis/toolchains.json`). Adding a pytest adapter generalizes
+//! `.phronesis/toolchains.json`). Adding a pytest def generalizes
 //! confidence scoring beyond Rust without touching a rule.
 //!
 //! See `docs/specs/SPEC-confidence-scoring.md` for the full design, including
