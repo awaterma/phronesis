@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
-use phronesis_mcp::{hook, init, migrate_extracted, server};
+use phronesis_mcp::{hook, init, migrate_extracted, scrub_payload, server};
 
 /// ISO-8601 date string for the local clock (YYYY-MM-DD). Uses chrono,
 /// which is already a phronesis-mcp dep (clock_facts).
@@ -288,6 +288,25 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Scrub-anonymize captured hook payloads for committing as fixtures.
+    /// Reads a JSONL capture file, rewrites every string through the scrubber
+    /// (project paths → `/home/dev/project`, external `$HOME` paths →
+    /// indexed `/home/dev/external/p<N>`, session ids → fixed placeholder),
+    /// verifies for residuals, and prints or rewrites in place.
+    ScrubPayload {
+        /// Path to the captured JSONL file to scrub.
+        file: PathBuf,
+        /// Re-write the file in-place instead of printing to stdout.
+        #[arg(long)]
+        write: bool,
+        /// Override $HOME used for path replacement (default: $HOME env var).
+        #[arg(long)]
+        home: Option<String>,
+        /// Override the project root path used for replacement
+        /// (default: `$HOME/project`).
+        #[arg(long)]
+        project: Option<String>,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -365,6 +384,15 @@ async fn main() -> anyhow::Result<()> {
         ),
         Command::Install { dry_run } => handle_install(dry_run),
         Command::Uninstall { dry_run } => handle_uninstall(dry_run),
+        Command::ScrubPayload {
+            file,
+            write,
+            home,
+            project,
+        } => {
+            scrub_payload::run(file, write, home, project);
+            Ok(())
+        }
     }
 }
 

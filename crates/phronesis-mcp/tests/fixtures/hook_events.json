@@ -1,0 +1,4 @@
+{
+  "claude-code": ["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit"],
+  "gemini": ["BeforeTool", "AfterTool", "SessionStart", "BeforeAgent"]
+}

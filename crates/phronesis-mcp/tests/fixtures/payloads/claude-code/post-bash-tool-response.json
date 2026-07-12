@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "claude-code",
+    "event": "PostToolUse",
+    "provenance": "authored",
+    "description": "Post-check payload for a Bash tool that ran cargo build. Pins bug #1 (0.13.2): Claude Code delivers Bash output under `tool_response`, not `tool_output`. The runner replays this and asserts `outcome:compile_ok` appears on a fresh journal record — impossible if the alias is absent."
+  },
+  "subcommand": "post-check",
+  "packs": "llm,rust,confidence,journey",
+  "payload": {
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "cargo build --workspace 2>&1",
+      "command_exit": 0
+    },
+    "tool_response": {
+      "stdout": "   Compiling phronesis v0.18.0 (/Users/alicejones/Git/myproject/crates/phronesis)\n   Compiling phronesis-mcp v0.18.0 (/Users/alicejones/Git/myproject/crates/phronesis-mcp)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.34s",
+      "stderr": "",
+      "command_exit": 0
+    },
+    "session_id": "abc123-def456",
+    "transcript_path": "/Users/alicejones/.claude/projects/x/y.jsonl"
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": ["build"],
+    "journal_tag_from_output": ["outcome:compile_ok"],
+    "stderr_contains": []
+  }
+}
