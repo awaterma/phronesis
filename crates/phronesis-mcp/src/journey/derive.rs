@@ -775,6 +775,7 @@ mod tests {
             module: None,
             tags: vec![],
             subject: None,
+            command_exit: None,
         };
         assert!(record_in_window(
             &rec,
@@ -809,6 +810,7 @@ mod tests {
                 module: None,
                 tags: vec!["t".to_string()],
                 subject: None,
+                command_exit: None,
             })
             .collect();
         assert!(!record_in_window(&recs[2], "2c", &recs, 2, "s", 0));
@@ -829,6 +831,7 @@ mod tests {
             module: Some("payments".to_string()),
             tags: vec!["sql".to_string()],
             subject: None,
+            command_exit: None,
         };
         assert!(matches_selector(&rec, "sql"));
         assert!(matches_selector(&rec, "module:payments"));

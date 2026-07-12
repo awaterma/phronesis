@@ -149,11 +149,13 @@ pub async fn run_post_check() -> anyhow::Result<()> {
 
     let (logged, violations, warnings) = super::collect_logged(&consequences);
 
+    let command_exit = super::journey_record::payload_command_exit(&payload);
+
     // Post-check can't undo the edit, so violations and warnings collapse to
     // the same exit code (1). The single `consequences` array on the log entry
     // preserves which rule emitted which severity for downstream consumers.
     if violations.is_empty() && warnings.is_empty() {
-        super::log_hook_event("post", &tool_name, &file_path, 0, &logged);
+        super::log_hook_event("post", &tool_name, &file_path, 0, command_exit, &logged);
         // Journal the executed call at the tail — see SPEC §"Where it
         // plugs into the hook" — after the decision is logged, before the
         // exit.
@@ -167,7 +169,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     for w in &warnings {
         eprintln!("phronesis: WARNING — {}", w);
     }
-    super::log_hook_event("post", &tool_name, &file_path, 1, &logged);
+    super::log_hook_event("post", &tool_name, &file_path, 1, command_exit, &logged);
     super::journey_record::journey_record_post(&payload, &tool_name, &file_path).await;
     process::exit(1);
 }

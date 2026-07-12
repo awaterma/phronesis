@@ -90,6 +90,7 @@ mod tests {
                     "outcome:test_pass".to_string(),
                 ],
                 subject: Some("u".to_string()),
+                command_exit: None,
             },
         )
         .unwrap();

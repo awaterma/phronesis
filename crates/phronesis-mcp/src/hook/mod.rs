@@ -301,6 +301,7 @@ fn log_hook_event(
     tool_name: &str,
     file_path: &str,
     exit: i32,
+    command_exit: Option<i32>,
     consequences: &[LoggedConsequence],
 ) {
     let event = match phase {
@@ -309,12 +310,15 @@ fn log_hook_event(
         _ => "hook_event",
     };
     let consequences_value = serde_json::to_value(consequences).unwrap_or(serde_json::Value::Null);
-    let entry = LogEntry::new("hook", event)
+    let mut entry = LogEntry::new("hook", event)
         .with("phase", phase.to_string())
         .with("tool", tool_name.to_string())
         .with("file", file_path.to_string())
         .with("exit", exit)
         .with("consequences", consequences_value);
+    if let Some(ce) = command_exit {
+        entry = entry.with("command_exit", ce);
+    }
     let path = action_log::default_path(&security::project_root());
     let _ = action_log::append(&path, &entry);
 }

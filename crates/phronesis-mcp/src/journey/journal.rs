@@ -53,6 +53,12 @@ pub struct JournalRecord {
     /// Optional work-unit id — the outcomes fold-in seam. Lands in Task 4.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject: Option<String>,
+    /// The tool call's process exit code, when the CLI's payload carried one
+    /// (Bash/shell records only). Named `command_exit`, not `exit` — the
+    /// action log's `exit` is the hook's own exit code; the two must not
+    /// collide. Absent means the CLI genuinely didn't send one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_exit: Option<i32>,
 }
 
 #[derive(Debug, Error)]
@@ -156,4 +162,49 @@ pub fn read_recent_subject(
     let limit = n.min(filtered.len());
     let start = filtered.len() - limit;
     Ok(filtered[start..].to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(seq: u64, command_exit: Option<i32>) -> JournalRecord {
+        JournalRecord {
+            v: 1,
+            ts: seq,
+            sid: "s".to_string(),
+            seq,
+            tool: "Bash".to_string(),
+            path: "<cmd>".to_string(),
+            ext: None,
+            module: None,
+            tags: vec![],
+            subject: None,
+            command_exit,
+        }
+    }
+
+    #[test]
+    fn command_exit_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        append(dir.path(), &record(1, Some(101))).unwrap();
+        let recs = read_recent(dir.path(), 10).unwrap();
+        assert_eq!(recs[0].command_exit, Some(101));
+    }
+
+    #[test]
+    fn command_exit_none_is_omitted_from_serialization() {
+        let line = serde_json::to_string(&record(1, None)).unwrap();
+        assert!(
+            !line.contains("command_exit"),
+            "absent exit code must be omitted, not null: {line}"
+        );
+    }
+
+    #[test]
+    fn v1_line_without_command_exit_still_parses() {
+        let line = r#"{"v":1,"ts":0,"sid":"s","seq":1,"tool":"Bash","path":"<cmd>","tags":[]}"#;
+        let rec: JournalRecord = serde_json::from_str(line).unwrap();
+        assert_eq!(rec.command_exit, None);
+    }
 }
