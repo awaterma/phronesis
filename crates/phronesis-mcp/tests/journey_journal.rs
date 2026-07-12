@@ -19,6 +19,7 @@ fn rec(
         module: None,
         tags: tags.iter().map(|s| s.to_string()).collect(),
         subject: subject.map(|s| s.to_string()),
+        command_exit: None,
     }
 }
 

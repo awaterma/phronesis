@@ -7,10 +7,9 @@
 //! `cargo build`, …) — see `HookPayload.tool_output`.
 //!
 //! The design keeps the engine domain-neutral the same way `syntax/` does:
-//! per-toolchain **adapters** parse one toolchain's output and emit the *same*
-//! neutral facts (`build_outcome`, `test_outcome`). Rules never name a
-//! toolchain. Adding a `pytest` adapter generalizes confidence scoring beyond
-//! Rust without touching a rule.
+//! declarative toolchain defs (cargo built-in; project defs in
+//! `.phronesis/toolchains.json`). Adding a pytest def generalizes
+//! confidence scoring beyond Rust without touching a rule.
 //!
 //! See `docs/specs/SPEC-confidence-scoring.md` for the full design, including
 //! how these facts become a discretized confidence band and gate the
@@ -18,10 +17,10 @@
 
 pub mod adapter;
 pub mod bugs;
-pub mod cargo;
 pub mod derive;
 pub mod facts;
 pub mod subject;
+pub mod toolchain;
 
 pub use adapter::{extract, handles};
 pub use derive::{band, signals};
@@ -91,6 +90,7 @@ mod tests {
                     "outcome:test_pass".to_string(),
                 ],
                 subject: Some("u".to_string()),
+                command_exit: None,
             },
         )
         .unwrap();

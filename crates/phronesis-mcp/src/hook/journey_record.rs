@@ -28,19 +28,58 @@ fn extract_tool_output_text(payload: &HookPayload) -> String {
     }
 }
 
+/// Trailing `exit code: N` line in captured output text — the last-resort
+/// source when the payload has no structured exit field.
+fn exit_from_text(text: &str) -> Option<i32> {
+    text.lines().rev().find_map(|l| {
+        l.trim()
+            .strip_prefix("exit code: ")
+            .and_then(|n| n.trim().parse().ok())
+    })
+}
+
+/// Best-effort exit-code extraction from the tool-response object. The exact
+/// location is CLI-specific (pinned by the payload-contract corpus); known
+/// candidates are tried in order, then the trailing-text fallback. `None`
+/// means the CLI didn't provide one — confidence falls back to Tier 2.
+pub(super) fn payload_command_exit(payload: &HookPayload) -> Option<i32> {
+    let v = payload.tool_output.as_ref()?;
+    if let Some(obj) = v.as_object() {
+        for key in ["exit_code", "exitCode", "returncode", "code", "status"] {
+            if let Some(n) = obj.get(key).and_then(serde_json::Value::as_i64) {
+                return i32::try_from(n).ok();
+            }
+        }
+    }
+    exit_from_text(&extract_tool_output_text(payload))
+}
+
 /// Compute the outcome tags + resolved subject for a post-check tool call.
 /// The result is folded into the journey journal record at the post-check
-/// tail (no separate ledger). Returns `(tags, subject)`.
+/// tail (no separate ledger). Returns `(tags, subject, command_exit)`.
 ///
 /// Mirrors what `capture_outcomes` did pre-0.13: subject lifecycle (open on
 /// recognized commands, settle on `git commit`) and outcome parsing. The
 /// storage write is now the single `journey::journal::append` call in the
 /// hook tail.
-fn outcomes_for_journal(payload: &HookPayload, tool_name: &str) -> (Vec<String>, Option<String>) {
+fn outcomes_for_journal(
+    payload: &HookPayload,
+    tool_name: &str,
+) -> (Vec<String>, Option<String>, Option<i32>) {
     let root = security::project_root();
     let command = super::extract_new_content(payload, tool_name);
     let output = extract_tool_output_text(payload);
-    outcomes::cargo::extract_from(&root, tool_name, command.as_deref(), &output)
+    let command_exit = matches!(tool_name, "Bash" | "run_shell_command")
+        .then(|| payload_command_exit(payload))
+        .flatten();
+    let (tags, subject) = outcomes::adapter::extract_from(
+        &root,
+        tool_name,
+        command.as_deref(),
+        &output,
+        command_exit,
+    );
+    (tags, subject, command_exit)
 }
 
 /// Load the tagger config from the project root, falling back to default on
@@ -59,6 +98,7 @@ fn load_tagger_config(root: &std::path::Path) -> journey::tagger::TaggerConfig {
 
 /// Assemble the `JournalRecord` from the tagger result, outcome tags, and
 /// project-root metadata.
+#[allow(clippy::too_many_arguments)]
 fn build_journal_record(
     tool_name: &str,
     file_path: &str,
@@ -66,6 +106,7 @@ fn build_journal_record(
     outcome_tags: Vec<String>,
     module: Option<String>,
     subject: Option<String>,
+    command_exit: Option<i32>,
     project_root: &std::path::Path,
 ) -> journey::journal::JournalRecord {
     let ext = std::path::Path::new(file_path)
@@ -85,6 +126,7 @@ fn build_journal_record(
         module,
         tags: all_tags,
         subject,
+        command_exit,
     }
 }
 
@@ -102,7 +144,7 @@ pub(super) async fn journey_record_post(payload: &HookPayload, tool_name: &str, 
         .await
         .unwrap_or_default();
     let module = journey::tagger::resolve_module(&cfg, file_path);
-    let (outcome_tags, subject) = outcomes_for_journal(payload, tool_name);
+    let (outcome_tags, subject, command_exit) = outcomes_for_journal(payload, tool_name);
     let record = build_journal_record(
         tool_name,
         file_path,
@@ -110,6 +152,7 @@ pub(super) async fn journey_record_post(payload: &HookPayload, tool_name: &str, 
         outcome_tags,
         module,
         subject,
+        command_exit,
         &project_root,
     );
     journey::journal::append(&project_root, &record).ok();
@@ -404,5 +447,66 @@ mod tests {
             "invalid regex must be skipped: {:?}",
             facts
         );
+    }
+
+    fn payload_with_output(output: serde_json::Value) -> HookPayload {
+        HookPayload {
+            tool_name: Some("Bash".to_string()),
+            tool_input: Some(serde_json::json!({ "command": "cargo build --workspace" })),
+            tool_output: Some(output),
+        }
+    }
+
+    #[test]
+    fn command_exit_from_exit_code_key() {
+        let p = payload_with_output(serde_json::json!({ "exit_code": 101, "stdout": "boom" }));
+        assert_eq!(payload_command_exit(&p), Some(101));
+    }
+
+    #[test]
+    fn command_exit_tries_alternate_keys_in_order() {
+        for key in ["exit_code", "exitCode", "returncode", "code", "status"] {
+            let p = payload_with_output(serde_json::json!({ key: 2 }));
+            assert_eq!(
+                payload_command_exit(&p),
+                Some(2),
+                "key {key} should be read"
+            );
+        }
+    }
+
+    #[test]
+    fn command_exit_falls_back_to_trailing_text_line() {
+        let p = payload_with_output(serde_json::json!({
+            "stdout": "   Compiling foo\nerror: boom\nexit code: 101"
+        }));
+        assert_eq!(payload_command_exit(&p), Some(101));
+    }
+
+    #[test]
+    fn command_exit_absent_is_none() {
+        let p = payload_with_output(serde_json::json!({ "stdout": "Finished dev profile" }));
+        assert_eq!(payload_command_exit(&p), None);
+    }
+
+    #[test]
+    fn command_exit_none_without_tool_output() {
+        let p = make_payload("Bash", serde_json::json!({ "command": "ls" }));
+        assert_eq!(payload_command_exit(&p), None);
+    }
+
+    #[test]
+    fn command_exit_string_output_uses_text_fallback() {
+        let p = payload_with_output(serde_json::Value::String(
+            "ran stuff\nexit code: 3".to_string(),
+        ));
+        assert_eq!(payload_command_exit(&p), Some(3));
+    }
+
+    #[test]
+    fn command_exit_non_numeric_status_is_none() {
+        // Some CLIs send status as a string ("success") — only numeric counts.
+        let p = payload_with_output(serde_json::json!({ "status": "success" }));
+        assert_eq!(payload_command_exit(&p), None);
     }
 }

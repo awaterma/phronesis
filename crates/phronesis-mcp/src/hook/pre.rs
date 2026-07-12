@@ -129,7 +129,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         for w in &warnings {
             eprintln!("phronesis: WARNING — {}", w);
         }
-        super::log_hook_event("pre", &tool_name, &file_path, 2, &logged);
+        super::log_hook_event("pre", &tool_name, &file_path, 2, None, &logged);
         process::exit(2);
     }
 
@@ -137,11 +137,11 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         for w in &warnings {
             eprintln!("phronesis: WARNING — {}", w);
         }
-        super::log_hook_event("pre", &tool_name, &file_path, 1, &logged);
+        super::log_hook_event("pre", &tool_name, &file_path, 1, None, &logged);
         process::exit(1);
     }
 
-    super::log_hook_event("pre", &tool_name, &file_path, 0, &logged);
+    super::log_hook_event("pre", &tool_name, &file_path, 0, None, &logged);
     super::exit_ok();
 }
 

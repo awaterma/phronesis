@@ -58,6 +58,7 @@ fn rec(seq: u64, ts: u64, sid: &str, tags: &[&str], subject: Option<&str>) -> Jo
         module: None,
         tags: tags.iter().map(|s| s.to_string()).collect(),
         subject: subject.map(|s| s.to_string()),
+        command_exit: None,
     }
 }
 
@@ -73,6 +74,7 @@ fn rec_with_path(seq: u64, ts: u64, sid: &str, tags: &[&str], path: &str) -> Jou
         module: None,
         tags: tags.iter().map(|s| s.to_string()).collect(),
         subject: None,
+        command_exit: None,
     }
 }
 

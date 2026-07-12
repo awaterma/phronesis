@@ -175,6 +175,7 @@ mod tests {
             module: None,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             subject: Some(subject.to_string()),
+            command_exit: None,
         }
     }
 

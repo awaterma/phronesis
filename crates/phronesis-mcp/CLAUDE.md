@@ -16,6 +16,7 @@ cargo run -- stats             # Read-only per-rule summary of .phronesis/log.js
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- confidence       # Confidence band + grounded signals for the open work unit
+cargo run -- toolchains        # List active toolchain defs (built-in + project); --json for machine output
 cargo run -- journey   # what journey_* facts assert right now
 cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
 cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
@@ -165,7 +166,18 @@ The packs are composable and **independent**:
   Writes `.phronesis/confidence.json` (the opt-in marker) and ships three
   commit-gate rules: low confidence blocks `git commit -m`, medium warns,
   high passes clean. Pair with `.phronesis/bugs.json` (known-bug
-  registry) and `phr-mcp confidence` for the report surface.
+  registry) and `phr-mcp confidence` for the report surface. Also scaffolds
+  `.phronesis/toolchains.json` (pytest/tsc example defs). Confidence signals
+  are toolchain-neutral: any command matched by a toolchain def grounds a
+  `build_outcome` from its exit code (`command_exit`, captured on every shell
+  journal record), with optional per-toolchain regex refinement for test
+  counts and per-test results. Cargo ships as a built-in def; project defs
+  in `toolchains.json` extend or override it. (One behavior refinement
+  vs. pre-0.18: a build/test command that exits non-zero with no test
+  summary and no compile-error text is now graded build-fail when the CLI
+  supplies the exit code.) Journal growth is bounded by
+  write-side compaction (`PHRONESIS_MAX_JOURNAL_BYTES`, default 16 MiB) that
+  preserves each subject's latest grounded outcome.
 - `journey` — project-defined taggers + journey_* aggregator facts (cross-call temporal predicates)
 - `none` — empty rules array (hooks still wired)
 
@@ -411,12 +423,13 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/diff_extract.rs` — Regex-based diff facts (function_added, import_added, etc.)
 - `src/syntax/` — Tree-sitter AST predicates for Rust, Swift, Python, and TypeScript (e.g. function_returns_result_string, python_bare_except, ts_explicit_any). The Rust analyzer is split across `src/syntax/rust/{mod,walk,derives,counts,signatures,docs,assertions,eval}.rs`.
 - `src/outcomes/` — Confidence scoring (SPEC-confidence-scoring). Grounded
-  `build_outcome`/`test_outcome`/`bug_check_outcome` facts behind a
-  per-toolchain adapter (`cargo` first), reading per-subject history from
-  the journey journal (keyed by subject), and `signal_pass` derivation. The
-  hook captures outcomes at post-check (stamping `subject` + `outcome:*`
-  tags on the journal record) and asserts signals at pre-check so gate
-  rules (`facts_count('signal_pass', ['*','*']) <op> N`) block/warn a
+  `build_outcome`/`test_outcome`/`bug_check_outcome` facts behind declarative
+  toolchain defs (built-in cargo def + `.phronesis/toolchains.json`, one
+  generic parse engine in `outcomes/toolchain.rs`), reading per-subject
+  history from the journey journal (keyed by subject), and `signal_pass`
+  derivation. The hook captures outcomes at post-check (stamping `subject` +
+  `outcome:*` tags on the journal record) and asserts signals at pre-check so
+  gate rules (`facts_count('signal_pass', ['*','*']) <op> N`) block/warn a
   `git commit` by confidence band. Opt-in via
   `.phronesis/confidence.json`; known bugs in `.phronesis/bugs.json`;
   report via `phr-mcp confidence`.
