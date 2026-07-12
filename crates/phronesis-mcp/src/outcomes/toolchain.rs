@@ -17,6 +17,8 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::outcomes::facts::OutcomeFact;
+
 fn default_pass_tokens() -> Vec<String> {
     vec!["ok".to_string(), "PASSED".to_string(), "passed".to_string()]
 }
@@ -83,17 +85,13 @@ pub enum ToolchainError {
 }
 
 /// A `ToolchainDef` with its regexes compiled and validated.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompiledDef {
     pub def: ToolchainDef,
     pub source: DefSource,
     matches: Regex,
-    #[allow(dead_code)]
     compile_fail: Vec<Regex>,
-    #[allow(dead_code)]
     test_summary: Option<Regex>,
-    #[allow(dead_code)]
     per_test: Option<Regex>,
 }
 
@@ -172,6 +170,84 @@ impl CompiledDef {
     }
 }
 
+/// Summed test counts extracted from `test_summary` matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TestCounts {
+    passed: usize,
+    failed: usize,
+}
+
+impl CompiledDef {
+    fn compile_fail_hit(&self, output: &str) -> bool {
+        self.compile_fail.iter().any(|re| re.is_match(output))
+    }
+
+    /// Sum every `test_summary` match (multi-binary runs). `None` when the
+    /// def has no summary regex or nothing matched.
+    fn test_counts(&self, output: &str) -> Option<TestCounts> {
+        let re = self.test_summary.as_ref()?;
+        let mut found = false;
+        let mut counts = TestCounts { passed: 0, failed: 0 };
+        for caps in re.captures_iter(output) {
+            found = true;
+            counts.passed += caps
+                .name("passed")
+                .and_then(|m| m.as_str().parse::<usize>().ok())
+                .unwrap_or(0);
+            counts.failed += caps
+                .name("failed")
+                .and_then(|m| m.as_str().parse::<usize>().ok())
+                .unwrap_or(0);
+        }
+        found.then_some(counts)
+    }
+
+    /// Per-test results `(name, passed)` for the known-bug registry. Empty
+    /// when the def has no `per_test` regex.
+    pub fn per_test_results(&self, output: &str) -> Vec<(String, bool)> {
+        let Some(re) = &self.per_test else {
+            return Vec::new();
+        };
+        re.captures_iter(output)
+            .filter_map(|c| {
+                let name = c.name("name")?.as_str().to_string();
+                let status = c.name("status")?.as_str();
+                let passed = self.def.pass_tokens.iter().any(|t| t == status);
+                Some((name, passed))
+            })
+            .collect()
+    }
+
+    /// The two-tier model. Build: `compile_fail` match → fail; else a present
+    /// exit code is authoritative — except that a non-zero exit accompanied
+    /// by a test summary is attributed to the test failures it reports (a
+    /// test failure is not a compile failure); no exit code → Tier 2 alone
+    /// (no compile_fail match means compiled). Tests: summed summary counts,
+    /// only when the build passed.
+    pub fn parse(
+        &self,
+        subject: &str,
+        _command: &str,
+        output: &str,
+        command_exit: Option<i32>,
+    ) -> Vec<OutcomeFact> {
+        let counts = self.test_counts(output);
+        let build_pass = if self.compile_fail_hit(output) {
+            false
+        } else {
+            match command_exit {
+                Some(0) | None => true,
+                Some(_) => counts.is_some(),
+            }
+        };
+        let mut facts = vec![OutcomeFact::build(subject, build_pass)];
+        if build_pass && let Some(c) = counts {
+            facts.push(OutcomeFact::test(subject, c.passed, c.failed));
+        }
+        facts
+    }
+}
+
 /// The bundled defs. Cargo is the only built-in — pytest/tsc examples ship
 /// via `phr-mcp init` as project defs so the built-in surface stays minimal.
 /// This def must keep the retired `CargoAdapter`'s exact semantics; the
@@ -240,20 +316,21 @@ pub fn load_project_defs(root: &Path) -> Vec<ToolchainDef> {
 /// cargo parsing without a release. Assembled per hook invocation (cheap).
 pub fn registry(root: &Path) -> Vec<CompiledDef> {
     let project = load_project_defs(root);
+    let builtins = builtin_defs();
     let mut out: Vec<CompiledDef> = Vec::new();
-    for def in builtin_defs() {
+    for def in &builtins {
         if let Some(over) = project.iter().find(|p| p.id == def.id) {
             if let Ok(c) = CompiledDef::compile(over.clone(), DefSource::Override) {
                 out.push(c);
             }
             continue;
         }
-        if let Ok(c) = CompiledDef::compile(def, DefSource::BuiltIn) {
+        if let Ok(c) = CompiledDef::compile(def.clone(), DefSource::BuiltIn) {
             out.push(c);
         }
     }
     for def in project {
-        if builtin_defs().iter().any(|b| b.id == def.id) {
+        if builtins.iter().any(|b| b.id == def.id) {
             continue; // already placed as Override
         }
         if let Ok(c) = CompiledDef::compile(def, DefSource::Project) {
@@ -395,5 +472,115 @@ mod tests {
         let reg = registry(dir.path());
         assert_eq!(reg.len(), 1);
         assert_eq!(reg[0].def.id, "cargo");
+    }
+
+    // ── generic parse engine (synthetic def) ──────────────────────────────
+
+    fn synthetic() -> CompiledDef {
+        let def: ToolchainDef = serde_json::from_str(
+            r#"{
+                "id": "pytest",
+                "matches": "pytest",
+                "compile_fail": ["SyntaxError", "ImportError"],
+                "test_summary": "(?:(?P<failed>\\d+) failed, )?(?P<passed>\\d+) passed",
+                "per_test": "(?m)^(?P<name>\\S+) (?P<status>PASSED|FAILED)",
+                "pass_tokens": ["PASSED"]
+            }"#,
+        )
+        .unwrap();
+        CompiledDef::compile(def, DefSource::Project).unwrap()
+    }
+
+    fn exit_only() -> CompiledDef {
+        let def: ToolchainDef =
+            serde_json::from_str(r#"{"id":"make","matches":"^make( |$)"}"#).unwrap();
+        CompiledDef::compile(def, DefSource::Project).unwrap()
+    }
+
+    fn build_status(facts: &[crate::outcomes::facts::OutcomeFact]) -> Option<&str> {
+        facts
+            .iter()
+            .find(|f| f.predicate == "build_outcome")
+            .map(|f| f.args[1].as_str())
+    }
+
+    fn test_fact(
+        facts: &[crate::outcomes::facts::OutcomeFact],
+    ) -> Option<&crate::outcomes::facts::OutcomeFact> {
+        facts.iter().find(|f| f.predicate == "test_outcome")
+    }
+
+    #[test]
+    fn tier1_zero_exit_is_build_pass_with_no_config() {
+        let facts = exit_only().parse("u", "make all", "cc -o main main.c\n", Some(0));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn tier1_nonzero_exit_is_build_fail_with_no_config() {
+        let facts = exit_only().parse("u", "make all", "main.c:3: error\n", Some(2));
+        assert_eq!(build_status(&facts), Some("fail"));
+    }
+
+    #[test]
+    fn compile_fail_overrides_zero_exit() {
+        // Spec table row 3: cargo-style "linker failed on exit 0" semantics.
+        let facts = synthetic().parse("u", "pytest", "ImportError: no module named x\n", Some(0));
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(test_fact(&facts).is_none(), "no test signal on a compile failure");
+    }
+
+    #[test]
+    fn nonzero_exit_with_test_summary_is_test_failure_not_build_failure() {
+        // Spec's "pytest-exit-1" subtlety: the one place exit is not
+        // authoritative for build.
+        let out = "test_a.py::a PASSED\ntest_b.py::b FAILED\n=== 2 failed, 10 passed in 0.5s ===\n";
+        let facts = synthetic().parse("u", "pytest", out, Some(1));
+        assert_eq!(build_status(&facts), Some("pass"));
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "10", "2", "12"]);
+    }
+
+    #[test]
+    fn zero_exit_with_summary_reports_counts() {
+        let facts = synthetic().parse("u", "pytest", "=== 12 passed in 0.2s ===\n", Some(0));
+        assert_eq!(build_status(&facts), Some("pass"));
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "12", "0", "12"], "absent failed group counts as 0");
+    }
+
+    #[test]
+    fn summary_matches_are_summed_across_output() {
+        let out = "=== 3 passed in 0.1s ===\n=== 1 failed, 5 passed in 0.2s ===\n";
+        let facts = synthetic().parse("u", "pytest", out, Some(1));
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "8", "1", "9"]);
+    }
+
+    #[test]
+    fn no_exit_and_no_compile_fail_is_tier2_pass() {
+        // Fallback: payload carried no exit code — today's behavior preserved.
+        let facts = synthetic().parse("u", "pytest", "=== 4 passed in 0.1s ===\n", None);
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_some());
+    }
+
+    #[test]
+    fn per_test_results_uses_named_groups_and_pass_tokens() {
+        let out = "tests/test_x.py::one PASSED\ntests/test_x.py::two FAILED\n";
+        let results = synthetic().per_test_results(out);
+        assert_eq!(
+            results,
+            vec![
+                ("tests/test_x.py::one".to_string(), true),
+                ("tests/test_x.py::two".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn per_test_results_empty_without_per_test_regex() {
+        assert!(exit_only().per_test_results("anything").is_empty());
     }
 }
