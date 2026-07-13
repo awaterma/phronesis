@@ -48,10 +48,13 @@ pub fn run(
             .to_string(),
     };
 
+    // Invalid roots fail here — before the input is read and long before
+    // any backup or output write.
+    let mut scrubber =
+        Scrubber::new(&home, &project_root).context("invalid scrub-payload configuration")?;
+
     let raw = crate::security::read_file_capped(path)
         .with_context(|| format!("cannot read {}", path.display()))?;
-
-    let mut scrubber = Scrubber::new(&home, &project_root);
     let out_lines = scrub_lines(&mut scrubber, &raw)?;
 
     let rendered = out_lines.join("\n") + "\n";

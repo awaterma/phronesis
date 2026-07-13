@@ -203,4 +203,75 @@ fn single_json_fixture_round_trips_without_envelope() {
     assert_eq!(v["session_id"], "sess-00000000");
     assert_eq!(v["tool_name"], "Edit");
     assert_eq!(v["tool_input"]["file_path"], "/home/dev/project/src/lib.rs");
+
+
+#[test]
+fn filesystem_root_project_root_exits_nonzero_and_writes_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    let original = r#"{"ts":1,"phase":"pre","raw":{"cwd":"/Users/alicejones/Git/myproject"}}"#;
+    std::fs::write(&capture, original).expect("write capture");
+
+    let (code, stdout, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--write",
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "/",
+    ]);
+    assert_ne!(code, 0, "the filesystem root must be rejected as a project root");
+    assert!(stdout.is_empty(), "no scrubbed output on a config error");
+    assert!(
+        stderr.contains("project root"),
+        "diagnostic must name the bad root: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&capture).expect("read back"),
+        original,
+        "a rejected configuration must not rewrite the input"
+    );
+    assert!(!dir.path().join("payloads.jsonl.bak").exists());
+}
+
+#[test]
+fn relative_project_root_exits_nonzero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(&capture, r#"{"ts":1,"phase":"pre","raw":{}}"#).expect("write capture");
+
+    let (code, _, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "Git/myproject",
+    ]);
+    assert_ne!(code, 0, "a relative project root is ambiguous and must be rejected");
+    assert!(
+        stderr.contains("absolute path"),
+        "diagnostic must explain the rejection: {stderr}"
+    );
+}
+
+#[test]
+fn whitespace_home_exits_nonzero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(&capture, r#"{"ts":1,"phase":"pre","raw":{}}"#).expect("write capture");
+
+    let (code, _, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "   ",
+        "--project-root",
+        "/Users/alicejones/Git/myproject",
+    ]);
+    assert_ne!(code, 0, "a whitespace-only home must be rejected");
+    assert!(
+        stderr.contains("home directory"),
+        "diagnostic must name the bad root: {stderr}"
+    );
+}
+
 }

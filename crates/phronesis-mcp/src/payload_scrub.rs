@@ -12,6 +12,8 @@ use thiserror::Error;
 pub enum ScrubError {
     #[error("scrubbed output still contains the {what} in: {context}")]
     Residual { what: &'static str, context: String },
+    #[error("invalid {which}: {reason}")]
+    InvalidRoot { which: &'static str, reason: String },
 }
 
 /// Minimum username length for bare-substring replacement. Shorter names
@@ -41,17 +43,26 @@ pub struct Scrubber {
 }
 
 impl Scrubber {
-    pub fn new(home: &str, project_root: &str) -> Self {
-        let user = std::path::Path::new(home)
+    /// Validated construction (evidence-integrity spec, Task 1). Rejects
+    /// roots that would make substring scrubbing unsafe: empty or
+    /// whitespace-only values, relative paths, and the filesystem root `/`.
+    /// Trailing separators are normalized away without changing which
+    /// directory the root names. A project root outside the home directory
+    /// is explicitly supported: project-root replacement runs before home
+    /// replacement, so the two never conflict.
+    pub fn new(home: &str, project_root: &str) -> Result<Self, ScrubError> {
+        let home = validate_root("home directory", home)?;
+        let project_root = validate_root("project root", project_root)?;
+        let user = std::path::Path::new(&home)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Self {
-            home: home.trim_end_matches('/').to_string(),
+        Ok(Self {
+            home,
             user,
-            project_root: project_root.trim_end_matches('/').to_string(),
+            project_root,
             external: Vec::new(),
-        }
+        })
     }
 
     /// Recursively rewrite every string in `v` per the scrub rules. Keys
@@ -165,6 +176,42 @@ impl Scrubber {
     }
 }
 
+/// Validate and normalize one scrub root (evidence-integrity spec, Task 1).
+///
+/// Rejections:
+/// - empty / whitespace-only — an empty needle turns substring replacement
+///   into pathological or non-terminating behavior;
+/// - relative paths — ambiguous: the scrubbed meaning would depend on an
+///   unstated current directory;
+/// - the filesystem root `/` — it would rewrite every absolute path in the
+///   payload.
+///
+/// Normalization: surrounding whitespace and trailing `/` separators are
+/// trimmed; neither changes the filesystem identity of the root.
+fn validate_root(which: &'static str, value: &str) -> Result<String, ScrubError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ScrubError::InvalidRoot {
+            which,
+            reason: "must not be empty or whitespace-only".to_string(),
+        });
+    }
+    if !std::path::Path::new(trimmed).is_absolute() {
+        return Err(ScrubError::InvalidRoot {
+            which,
+            reason: format!("must be an absolute path (got the relative path {trimmed:?})"),
+        });
+    }
+    let normalized = trimmed.trim_end_matches('/');
+    if normalized.is_empty() {
+        return Err(ScrubError::InvalidRoot {
+            which,
+            reason: "the filesystem root `/` cannot be used as a scrub root".to_string(),
+        });
+    }
+    Ok(normalized.to_string())
+}
+
 /// True for session-id-style keys, compared case- and separator-insensitively
 /// (`session_id`, `sessionId`, `SessionID` all match) — finding #3: a CLI
 /// sending `sessionId` must not evade scrubbing.
@@ -201,6 +248,7 @@ mod tests {
 
     fn scrubber() -> Scrubber {
         Scrubber::new("/Users/alicejones", "/Users/alicejones/Git/myproject")
+            .expect("valid roots")
     }
 
     #[test]
@@ -321,7 +369,7 @@ mod tests {
         // placeholder root (home = "/home/dev"), the old find-loop matched
         // its own freshly inserted replacement forever. Re-scrubbing
         // already-scrubbed content must terminate AND leave it unchanged.
-        let mut s = Scrubber::new("/home/dev", "/tmp/someproject");
+        let mut s = Scrubber::new("/home/dev", "/tmp/someproject").expect("valid roots");
         let mut v = json!({
             "cwd": "/home/dev/project",
             "tool_input": {"file_path": "/home/dev/project/src/lib.rs"},
@@ -345,7 +393,7 @@ mod tests {
         // home really is /home/dev: paths outside the canonical placeholder
         // roots still get anonymized, and the loop still terminates even
         // though every inserted replacement contains the home prefix.
-        let mut s = Scrubber::new("/home/dev", "/home/dev/myproject");
+        let mut s = Scrubber::new("/home/dev", "/home/dev/myproject").expect("valid roots");
         let mut v = json!({
             "a": "/home/dev/otherrepo/src/main.rs",
             "b": "/home/dev/myproject/src/lib.rs"
@@ -361,12 +409,54 @@ mod tests {
     fn short_usernames_are_not_blindly_replaced() {
         // A 1-2 char username would shred ordinary text; the scrubber must
         // refuse to substring-replace it and rely on path rules only.
-        let mut s = Scrubber::new("/home/al", "/home/al/proj");
+        let mut s = Scrubber::new("/home/al", "/home/al/proj").expect("valid roots");
         let mut v = json!({"command": "cargo align --all"});
         s.scrub_value(&mut v);
         assert_eq!(v["command"], "cargo align --all");
         // ...and verify/warnings must not fire on the short name either.
         assert!(s.verify(&v).is_ok());
         assert!(s.warnings(&v).is_empty());
+    }
+
+    #[test]
+    fn empty_and_whitespace_roots_are_rejected() {
+        assert!(Scrubber::new("", "/Users/a/proj").is_err());
+        assert!(Scrubber::new("/Users/a", "").is_err());
+        assert!(Scrubber::new("   ", "/Users/a/proj").is_err());
+        assert!(Scrubber::new("/Users/a", "	
+").is_err());
+    }
+
+    #[test]
+    fn filesystem_root_is_rejected_as_either_root() {
+        assert!(Scrubber::new("/", "/Users/a/proj").is_err());
+        assert!(Scrubber::new("/Users/a", "/").is_err());
+        assert!(Scrubber::new("/Users/a", "///").is_err());
+    }
+
+    #[test]
+    fn relative_roots_are_rejected() {
+        assert!(Scrubber::new("Users/alicejones", "/Users/alicejones/p").is_err());
+        assert!(Scrubber::new("/Users/alicejones", "Git/myproject").is_err());
+        assert!(Scrubber::new("/Users/alicejones", "./proj").is_err());
+    }
+
+    #[test]
+    fn trailing_separators_are_normalized() {
+        let mut s = Scrubber::new("/Users/alicejones/", "/Users/alicejones/Git/myproject///")
+            .expect("trailing separators are valid");
+        let mut v = json!({"file_path": "/Users/alicejones/Git/myproject/src/lib.rs"});
+        s.scrub_value(&mut v);
+        assert_eq!(v["file_path"], "/home/dev/project/src/lib.rs");
+    }
+
+    #[test]
+    fn adversarial_repeated_home_prefix_terminates() {
+        // Non-termination pin: a giant blob of back-to-back home prefixes
+        // must scrub in one bounded pass and leave no residual.
+        let mut s = scrubber();
+        let mut v = json!({ "blob": "/Users/alicejones".repeat(200) });
+        s.scrub_value(&mut v);
+        assert!(!v.to_string().contains("alicejones"));
     }
 }
