@@ -1,12 +1,41 @@
 //! Append-only per-call journal at `.phronesis/journey/events.jsonl`.
 //!
-//! Same flock discipline as `action_log`: an exclusive
-//! advisory file lock (via `fs2::FileExt`) is held around each write, so
-//! concurrent appenders serialize and cannot interleave at any line size.
-//! POSIX flock auto-releases when the file descriptor is closed — including on
-//! abnormal process exit — so there's no stuck-lock risk. Advisory locks
+//! # Locking model — stable lock file
+//!
+//! Every mutation of `events.jsonl` (append, compaction) serializes on an
+//! exclusive advisory lock (via `fs2::FileExt`) taken on a *stable sibling
+//! lock file*, `.phronesis/journey/events.lock` — never on the journal's own
+//! file descriptor. Compaction atomically replaces `events.jsonl` by rename,
+//! so a lock held on the journal fd itself could outlive the file it guards;
+//! the lock file's inode is never replaced, so whoever holds it is
+//! unambiguously the only mutator. This removes the old
+//! open/lock/revalidate-inode retry loop, whose bounded retries could in
+//! theory let an append land in a stale, already-renamed-away file.
+//!
+//! The lock auto-releases when its fd is closed — including on abnormal
+//! process exit — so there's no stuck-lock risk. `fs2` provides the same
+//! advisory-exclusive semantics on non-unix platforms (`LockFileEx` on
+//! Windows); the lock file is never read or written, so Windows' stricter
+//! mandatory-lock behavior cannot interfere with journal I/O. Advisory locks
 //! don't work on NFS or some network filesystems; this is acceptable because
 //! `.phronesis/` always lives inside a local project workspace.
+//!
+//! Readers stay lock-free: compaction replaces the journal with a single
+//! atomic `rename`, so any reader observes either the complete old file or
+//! the complete new one, never a partially rewritten file.
+//!
+//! # Durability
+//!
+//! Compaction writes the full compacted journal to a temp file in the same
+//! directory, `sync_all()`s it, then renames it over `events.jsonl`; the
+//! temp file is best-effort removed on any failure. The parent directory is
+//! deliberately *not* fsynced: the journal is best-effort telemetry (the
+//! hook already treats append errors as fail-open), and after a power loss
+//! the worst case is observing the pre-compaction journal — still valid
+//! JSONL, merely over-sized, and healed by the next compaction. Plain
+//! appends are not fsynced either, matching the action log; a crash can
+//! lose the last line, which readers already tolerate (torn trailing lines
+//! are skipped).
 //!
 //! One JSON Lines record per *executed* tool call (post-check only — blocked
 //! calls never reach here, so the journal reflects what the agent actually
@@ -18,8 +47,6 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-#[cfg(unix)]
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
@@ -97,36 +124,45 @@ fn events_path(root: &Path) -> PathBuf {
     dir(root).join("events.jsonl")
 }
 
-/// True when `file`'s fd still refers to the live file at `path`. ...
-#[cfg(unix)]
-fn fd_is_current(file: &std::fs::File, path: &Path) -> bool {
-    match (file.metadata(), std::fs::metadata(path)) {
-        (Ok(fd_meta), Ok(path_meta)) => {
-            fd_meta.dev() == path_meta.dev() && fd_meta.ino() == path_meta.ino()
-        }
-        _ => false,
+fn lock_path(root: &Path) -> PathBuf {
+    dir(root).join("events.lock")
+}
+
+/// Exclusive-lock guard on the stable lock file. Holding this guard is the
+/// sole license to mutate `events.jsonl`. The advisory lock is released on
+/// drop (and by the OS when the fd closes, including on abnormal exit).
+struct JournalLock {
+    file: std::fs::File,
+}
+
+impl Drop for JournalLock {
+    fn drop(&mut self) {
+        // Best-effort explicit unlock; fd close releases it regardless.
+        let _ = FileExt::unlock(&self.file);
     }
 }
 
-/// Non-unix fallback: no inode identity available — treat the fd as
-/// current (pre-revalidation behavior; the compaction race is tolerated).
-#[cfg(not(unix))]
-fn fd_is_current(_file: &std::fs::File, _path: &Path) -> bool {
-    true
-}
-
-fn open_locked_for_append(path: &Path) -> Result<std::fs::File, JournalError> {
+/// Open/create `.phronesis/journey/events.lock` and take a (blocking)
+/// exclusive advisory lock on it. The lock file's inode is stable —
+/// compaction renames over `events.jsonl`, never over the lock file — so
+/// every holder is serialized against every other mutator with no
+/// revalidation needed. Failure policy: any error opening or locking the
+/// lock file surfaces as `JournalError::Io` naming `events.lock`; callers
+/// propagate it (append) or treat it per their own documented policy.
+fn acquire_lock(root: &Path) -> Result<JournalLock, JournalError> {
+    let path = lock_path(root);
     let io_err = |e: std::io::Error| JournalError::Io {
         path: path.display().to_string(),
         source: e,
     };
     let file = OpenOptions::new()
         .create(true)
-        .append(true)
-        .open(path)
+        .write(true)
+        .truncate(false)
+        .open(&path)
         .map_err(io_err)?;
     file.lock_exclusive().map_err(io_err)?;
-    Ok(file)
+    Ok(JournalLock { file })
 }
 
 fn max_journal_bytes() -> u64 {
@@ -137,40 +173,56 @@ fn max_journal_bytes() -> u64 {
         .unwrap_or(MAX_JOURNAL_BYTES_DEFAULT)
 }
 
+/// True when the journal at `path` meets or exceeds `max_bytes`. A missing
+/// file (or any metadata error) reads as under-cap: nothing to compact.
+fn over_cap(path: &Path, max_bytes: u64) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.len() >= max_bytes)
+        .unwrap_or(false)
+}
+
 /// Compact the journal when it exceeds `max_bytes`: retain the most recent
 /// `tail_records` records plus, for every subject appearing in the dropped
 /// prefix, its most recent `outcome:*`-bearing record (so each work unit's
 /// latest grounded build/test result survives for confidence banding).
-/// Atomic rewrite (temp file + rename) under the same advisory lock the
-/// appenders take; never blind-truncates. Returns whether a compaction ran.
+/// Atomic rewrite (temp file + fsync + rename) under the stable lock file
+/// shared with appenders; never blind-truncates. Returns whether a
+/// compaction ran.
 pub fn maybe_compact(
     root: &Path,
     max_bytes: u64,
     tail_records: usize,
 ) -> Result<bool, JournalError> {
     let path = events_path(root);
-    let meta = match std::fs::metadata(&path) {
-        Ok(m) => m,
-        Err(_) => return Ok(false),
-    };
-    if meta.len() < max_bytes {
+    // Cheap unlocked pre-check: skip lock traffic when clearly under cap
+    // (or when the journal — and therefore its directory — doesn't exist).
+    if !over_cap(&path, max_bytes) {
         return Ok(false);
     }
-    let io_err = |e: std::io::Error| JournalError::Io {
-        path: path.display().to_string(),
-        source: e,
-    };
-    let file = OpenOptions::new().read(true).open(&path).map_err(io_err)?;
-    file.lock_exclusive().map_err(io_err)?;
-    if !fd_is_current(&file, &path) {
-        // Another process compacted (renamed) while we waited for the lock;
-        // its rewrite already enforced the cap.
-        let _ = FileExt::unlock(&file);
+    let _lock = acquire_lock(root)?;
+    maybe_compact_locked(&path, max_bytes, tail_records)
+}
+
+/// Cap re-check + compaction body. The caller MUST hold the stable lock.
+fn maybe_compact_locked(
+    path: &Path,
+    max_bytes: u64,
+    tail_records: usize,
+) -> Result<bool, JournalError> {
+    // Re-check under the lock: another process may have compacted while we
+    // waited for the grant, and its rewrite already enforced the cap.
+    if !over_cap(path, max_bytes) {
         return Ok(false);
     }
-    let result = compact_locked(&path, tail_records);
-    let _ = FileExt::unlock(&file);
-    result
+    compact_locked(path, tail_records)
+}
+
+/// Write `content` to `tmp`, flushed to disk (`sync_all`) before returning,
+/// so the subsequent rename never installs an unflushed file.
+fn write_temp_synced(tmp: &Path, content: &str) -> std::io::Result<()> {
+    let mut f = std::fs::File::create(tmp)?;
+    f.write_all(content.as_bytes())?;
+    f.sync_all()
 }
 
 fn compact_locked(path: &Path, tail_records: usize) -> Result<bool, JournalError> {
@@ -213,55 +265,59 @@ fn compact_locked(path: &Path, tail_records: usize) -> Result<bool, JournalError
         path: tmp.display().to_string(),
         source: e,
     };
-    std::fs::write(&tmp, out).map_err(tmp_err)?;
-    std::fs::rename(&tmp, path).map_err(tmp_err)?;
+    if let Err(e) = write_temp_synced(&tmp, &out) {
+        // Best-effort cleanup of a partial temp file; the live journal is
+        // untouched on this path.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(tmp_err(e));
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(tmp_err(e));
+    }
+    // Parent-directory fsync deliberately omitted — see module docs
+    // ("Durability").
     Ok(true)
 }
 
 /// Append one record to the journey journal. Creates `.phronesis/journey/`
-/// if missing; acquires an exclusive advisory lock around the write so
-/// concurrent appenders serialize; releases the lock on fd close.
+/// if missing; serializes on the stable lock file with all other mutators
+/// (appenders and compaction), so a concurrent compaction can never rename
+/// the journal out from under an in-flight append. Write-side retention
+/// runs under that same lock and is fail-open — a compaction error is
+/// reported to stderr and never blocks the append.
 pub fn append(root: &Path, record: &JournalRecord) -> Result<(), JournalError> {
     let d = dir(root);
     std::fs::create_dir_all(&d).map_err(|e| JournalError::Io {
         path: d.display().to_string(),
         source: e,
     })?;
-    // Write-side retention: best-effort and fail-open — a compaction error
-    // must never block the append.
-    if let Err(e) = maybe_compact(root, max_journal_bytes(), COMPACT_TAIL_RECORDS) {
-        eprintln!("phronesis: journal compaction skipped: {e}");
-    }
-    let path = events_path(root);
     let mut line = serde_json::to_string(record)?;
     line.push('\n');
+    let path = events_path(root);
+    let io_err = |e: std::io::Error| JournalError::Io {
+        path: path.display().to_string(),
+        source: e,
+    };
 
-    let mut file = open_locked_for_append(&path)?;
-    // A concurrent compaction may have renamed a new journal over `path`
-    // between our open and our lock grant; re-open until our locked fd is
-    // the live file (bounded — proceed fail-open rather than wedge).
-    for _ in 0..3 {
-        if fd_is_current(&file, &path) {
-            break;
-        }
-        let _ = FileExt::unlock(&file);
-        file = open_locked_for_append(&path)?;
+    let _lock = acquire_lock(root)?;
+    if let Err(e) = maybe_compact_locked(&path, max_journal_bytes(), COMPACT_TAIL_RECORDS) {
+        eprintln!("phronesis: journal compaction skipped: {e}");
     }
-    let write_result = (&file)
-        .write_all(line.as_bytes())
-        .map_err(|e| JournalError::Io {
-            path: path.display().to_string(),
-            source: e,
-        });
-    // Best-effort unlock; the lock is also released when `file` is dropped.
-    let _ = FileExt::unlock(&file);
-    write_result?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(io_err)?;
+    file.write_all(line.as_bytes()).map_err(io_err)?;
     Ok(())
 }
 
 /// Read the last `min(n, SUFFIX_HARD_CAP)` records in append order. A
 /// missing file is not an error — returns an empty vec. Malformed lines are
 /// silently skipped so a torn trailing write doesn't hide good data.
+/// Lock-free by design: compaction's atomic rename means this always sees a
+/// coherent whole file (old or new).
 pub fn read_recent(root: &Path, n: usize) -> Result<Vec<JournalRecord>, JournalError> {
     let limit = n.min(SUFFIX_HARD_CAP);
     let path = events_path(root);
@@ -286,7 +342,7 @@ pub fn read_recent(root: &Path, n: usize) -> Result<Vec<JournalRecord>, JournalE
 /// Subject-filtered over the whole journal (the journal is bounded by
 /// compaction), capped at the last `min(n, SUFFIX_HARD_CAP)` matching
 /// records — this is what makes the compactor's per-subject preserved
-/// outcomes reachable.
+/// outcomes reachable. Lock-free, same rationale as `read_recent`.
 pub fn read_recent_subject(
     root: &Path,
     subject: &str,
@@ -474,28 +530,10 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
-    fn fd_is_current_detects_rename_swap() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("events.jsonl");
-        std::fs::write(&path, "a\n").unwrap();
-        let held = std::fs::File::open(&path).unwrap();
-        assert!(fd_is_current(&held, &path));
-        // Simulate a compaction: rename a new file over the path.
-        let tmp = dir.path().join("events.jsonl.tmp");
-        std::fs::write(&tmp, "b\n").unwrap();
-        std::fs::rename(&tmp, &path).unwrap();
-        assert!(
-            !fd_is_current(&held, &path),
-            "held fd must be detected as orphaned after rename-over"
-        );
-    }
-
-    #[test]
-    #[cfg(unix)]
     fn append_lands_in_live_file_after_external_rename() {
-        // append() must reopen when its target was renamed away, so the
-        // record lands in the live journal, not an orphaned inode.
+        // Under the stable-lock design, append opens the live journal fresh
+        // (under the lock) on every call — an external rename can never
+        // orphan a write. Replaces the old fd-revalidation guarantee.
         let dir = tempfile::tempdir().unwrap();
         for seq in 1..=3 {
             append(dir.path(), &record(seq, None)).unwrap();
@@ -523,5 +561,258 @@ mod tests {
         }
         assert!(!maybe_compact(dir.path(), 1, 10).unwrap());
         assert_eq!(read_recent(dir.path(), 100).unwrap().len(), 3);
+    }
+
+    // ---- Stable-lock concurrency suite (deterministic: barriers + bounded
+    // ---- iteration counts, no sleeps) --------------------------------------
+
+    #[test]
+    #[cfg(unix)]
+    fn lock_inode_is_stable_across_compaction() {
+        // The invariant that makes fd revalidation unnecessary: compaction
+        // renames over events.jsonl, never over events.lock. Replaces the
+        // old fd_is_current_detects_rename_swap test.
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        for seq in 1..=4u64 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        let lock = dir.path().join(".phronesis/journey/events.lock");
+        let before = std::fs::metadata(&lock).unwrap().ino();
+        assert!(maybe_compact(dir.path(), 1, 2).unwrap());
+        append(dir.path(), &record(5, None)).unwrap();
+        let after = std::fs::metadata(&lock).unwrap().ino();
+        assert_eq!(before, after, "the lock file inode must never be replaced");
+    }
+
+    #[test]
+    fn concurrent_appenders_do_not_interleave_json() {
+        use std::sync::{Arc, Barrier};
+        let dir = Arc::new(tempfile::tempdir().unwrap());
+        let threads = 8usize;
+        let per_thread = 25u64;
+        let barrier = Arc::new(Barrier::new(threads));
+        let mut handles = Vec::new();
+        for t in 0..threads as u64 {
+            let dir = Arc::clone(&dir);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for i in 0..per_thread {
+                    append(dir.path(), &record(t * 1000 + i, None)).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        // Assert on the RAW file, not read_recent (which skips bad lines):
+        // every line must parse, and every uniquely numbered seq must be
+        // present exactly once.
+        let raw =
+            std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl")).unwrap();
+        let mut seqs: Vec<u64> = Vec::new();
+        for line in raw.lines() {
+            let rec: JournalRecord = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("interleaved/torn line {line:?}: {e}"));
+            seqs.push(rec.seq);
+        }
+        assert_eq!(seqs.len(), threads * per_thread as usize, "no lost append");
+        seqs.sort_unstable();
+        seqs.dedup();
+        assert_eq!(
+            seqs.len(),
+            threads * per_thread as usize,
+            "no duplicated seq"
+        );
+    }
+
+    #[test]
+    fn appends_racing_compaction_are_never_lost() {
+        // Every record carries a unique subject + outcome tag, so the
+        // compaction policy preserves ALL of them regardless of tail size —
+        // any missing seq is a genuinely lost append, not a policy drop.
+        // Without the stable lock, a compaction rename could clobber a
+        // concurrent append landing in the pre-rename inode.
+        use std::sync::{Arc, Barrier};
+        let dir = Arc::new(tempfile::tempdir().unwrap());
+        let appenders = 4u64;
+        let per_thread = 25u64;
+        let barrier = Arc::new(Barrier::new(appenders as usize + 1));
+        let mut handles = Vec::new();
+        for t in 0..appenders {
+            let dir = Arc::clone(&dir);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for i in 0..per_thread {
+                    let seq = t * 1000 + i;
+                    append(
+                        dir.path(),
+                        &tagged(seq, &format!("s{seq}"), &["outcome:test_pass"]),
+                    )
+                    .unwrap();
+                }
+            }));
+        }
+        {
+            let dir = Arc::clone(&dir);
+            let barrier = Arc::clone(&barrier);
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..50 {
+                    // max_bytes=1 forces a full rewrite attempt every call.
+                    maybe_compact(dir.path(), 1, 1).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let recs = read_recent(dir.path(), SUFFIX_HARD_CAP).unwrap();
+        let mut seqs: Vec<u64> = recs.iter().map(|r| r.seq).collect();
+        seqs.sort_unstable();
+        let mut expected: Vec<u64> = (0..appenders)
+            .flat_map(|t| (0..per_thread).map(move |i| t * 1000 + i))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(seqs, expected, "every unique append survives the race");
+    }
+
+    #[test]
+    fn repeated_compact_append_loop_loses_no_record() {
+        // Sequential worst case: compaction rewrite after every append.
+        // Unique subject + outcome tag per record => policy preserves all,
+        // so any loss would be a locking/atomicity bug.
+        let dir = tempfile::tempdir().unwrap();
+        for seq in 0..200u64 {
+            append(
+                dir.path(),
+                &tagged(seq, &format!("s{seq}"), &["outcome:compile_ok"]),
+            )
+            .unwrap();
+            maybe_compact(dir.path(), 1, 1).unwrap();
+        }
+        let recs = read_recent(dir.path(), SUFFIX_HARD_CAP).unwrap();
+        let seqs: Vec<u64> = recs.iter().map(|r| r.seq).collect();
+        assert_eq!(
+            seqs,
+            (0..200).collect::<Vec<u64>>(),
+            "append order preserved, nothing lost"
+        );
+    }
+
+    #[test]
+    fn reader_sees_valid_json_during_replacement() {
+        // Readers are lock-free: the atomic rename must always present a
+        // coherent whole file. Only the FINAL line of a snapshot may be a
+        // torn in-progress append; a malformed non-final line would mean
+        // the replacement was not atomic.
+        use std::sync::{Arc, Barrier};
+        let dir = Arc::new(tempfile::tempdir().unwrap());
+        for seq in 0..20u64 {
+            append(
+                dir.path(),
+                &tagged(seq, &format!("s{seq}"), &["outcome:test_pass"]),
+            )
+            .unwrap();
+        }
+        let path = dir.path().join(".phronesis/journey/events.jsonl");
+        let barrier = Arc::new(Barrier::new(2));
+        let mutator = {
+            let dir = Arc::clone(&dir);
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                barrier.wait();
+                for i in 0..100u64 {
+                    append(
+                        dir.path(),
+                        &tagged(1000 + i, &format!("t{i}"), &["outcome:test_pass"]),
+                    )
+                    .unwrap();
+                    maybe_compact(dir.path(), 1, 1).unwrap();
+                }
+            })
+        };
+        barrier.wait();
+        for _ in 0..200 {
+            let raw = std::fs::read_to_string(&path).unwrap();
+            let lines: Vec<&str> = raw.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if serde_json::from_str::<JournalRecord>(line).is_err() {
+                    assert_eq!(
+                        i,
+                        lines.len() - 1,
+                        "non-final malformed line during replacement: {line:?}"
+                    );
+                }
+            }
+            // The public reader never errors mid-replacement either.
+            read_recent(dir.path(), 50).unwrap();
+        }
+        mutator.join().unwrap();
+    }
+
+    #[test]
+    fn append_errors_when_lock_path_is_a_directory() {
+        // Documented lock-failure policy: any error opening/locking
+        // events.lock surfaces as JournalError::Io naming events.lock, and
+        // append propagates it (the hook call site already treats append
+        // errors as fail-open).
+        let dir = tempfile::tempdir().unwrap();
+        let journey = dir.path().join(".phronesis").join("journey");
+        std::fs::create_dir_all(&journey).unwrap();
+        std::fs::create_dir(journey.join("events.lock")).unwrap();
+        let err = append(dir.path(), &record(1, None)).unwrap_err();
+        match err {
+            JournalError::Io { path, .. } => {
+                assert!(path.contains("events.lock"), "path = {path}");
+            }
+            other => panic!("expected JournalError::Io, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn compaction_temp_error_propagates_and_journal_is_untouched() {
+        // Documented temp-failure policy: the error surfaces as
+        // JournalError::Io naming the temp path, the live journal is never
+        // touched on that path, and appends keep working (append's internal
+        // compaction is fail-open by policy).
+        let dir = tempfile::tempdir().unwrap();
+        for seq in 1..=4u64 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        // Block the temp path: File::create on a directory fails.
+        let tmp = dir.path().join(".phronesis/journey/events.jsonl.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        let err = maybe_compact(dir.path(), 1, 2).unwrap_err();
+        match err {
+            JournalError::Io { path, .. } => {
+                assert!(path.contains("events.jsonl.tmp"), "path = {path}");
+            }
+            other => panic!("expected JournalError::Io, got {other:?}"),
+        }
+        assert_eq!(
+            read_recent(dir.path(), 100).unwrap().len(),
+            4,
+            "failed compaction must not touch the live journal"
+        );
+        append(dir.path(), &record(5, None)).unwrap();
+        assert_eq!(read_recent(dir.path(), 100).unwrap().len(), 5);
+    }
+
+    #[test]
+    fn successful_compaction_leaves_no_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        for seq in 1..=4u64 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        assert!(maybe_compact(dir.path(), 1, 2).unwrap());
+        assert!(
+            !dir.path()
+                .join(".phronesis/journey/events.jsonl.tmp")
+                .exists(),
+            "temp file must not persist after a successful rename"
+        );
     }
 }
