@@ -293,6 +293,19 @@ enum Command {
     /// Rewrites $HOME paths, the username, session ids, and transcript paths;
     /// leaves project-internal content verbatim. Prints scrubbed JSONL to
     /// stdout, or rewrites in place (with a .bak backup) under --write.
+    /// After anonymizing, residual-risk detectors flag credential-bearing
+    /// URLs, private-key headers, token/secret assignments, secret-suggesting
+    /// environment keys, and absolute paths outside the placeholder roots
+    /// (errors: nonzero exit, nothing written — not even the backup), plus
+    /// email addresses and digit-less possible tokens (warnings on stderr,
+    /// exit 0). Diagnostics truncate matched text; suspected secrets are
+    /// never echoed in full. Raw JSON input is accepted by default; shape
+    /// recognition is a parsing convenience, not a safety guarantee.
+    ///
+    /// scrub-payload performs deterministic anonymization and detects several
+    /// common leak classes. It is not a proof that arbitrary source or
+    /// command content contains no secrets. Review scrubbed fixtures before
+    /// committing them.
     ScrubPayload {
         /// Capture file (JSONL from PHRONESIS_CAPTURE_DIR) or a single-JSON fixture.
         path: PathBuf,
