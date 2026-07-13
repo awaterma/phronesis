@@ -1,0 +1,16 @@
+[
+  {
+    "_doc": "Recognition regex is `matches`; refinement fields are optional. See `phr-mcp toolchains`.",
+    "id": "pytest",
+    "matches": "(^|\\s)pytest(\\s|$)",
+    "compile_fail": ["SyntaxError", "ImportError"],
+    "test_summary": "(?P<failed>\\d+) failed|(?P<passed>\\d+) passed",
+    "per_test": "(?m)^(?P<name>\\S+) (?P<status>PASSED|FAILED)",
+    "pass_tokens": ["PASSED"]
+  },
+  {
+    "id": "tsc",
+    "matches": "\\btsc\\b",
+    "compile_fail": ["error TS\\d+"]
+  }
+]
