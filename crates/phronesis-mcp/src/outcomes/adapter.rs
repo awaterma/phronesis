@@ -73,12 +73,15 @@ pub fn extract(
         .unwrap_or_default()
 }
 
-/// Map a `build_outcome` fact's `pass`/`fail` arg to the outcome tag the
-/// journal record stamps.
+/// Map a `build_outcome` fact's status arg to the outcome tag the journal
+/// record stamps. `unknown` is journaled for transparency
+/// (`outcome:compile_unknown`) but grounds no confidence signal — see
+/// `derive::entries_from`.
 fn build_tag(fact: &OutcomeFact) -> Option<&'static str> {
     match fact.args.get(1).map(|s| s.as_str()) {
         Some("pass") => Some("outcome:compile_ok"),
         Some("fail") => Some("outcome:compile_error"),
+        Some("unknown") => Some("outcome:compile_unknown"),
         _ => None,
     }
 }
@@ -244,5 +247,35 @@ mod tests {
         );
         assert!(facts.iter().any(|f| f.predicate == "build_outcome"));
         assert!(facts.iter().any(|f| f.predicate == "test_outcome"));
+    }
+
+    #[test]
+    fn outcome_tags_cover_all_three_build_states() {
+        use crate::outcomes::facts::OutcomeFact;
+        assert_eq!(
+            outcome_tags(&[OutcomeFact::build("u", true)]),
+            vec!["outcome:compile_ok"]
+        );
+        assert_eq!(
+            outcome_tags(&[OutcomeFact::build("u", false)]),
+            vec!["outcome:compile_error"]
+        );
+        assert_eq!(
+            outcome_tags(&[OutcomeFact::build_unknown("u")]),
+            vec!["outcome:compile_unknown"]
+        );
+    }
+
+    #[test]
+    fn cargo_build_without_exit_or_evidence_stamps_compile_unknown_not_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let facts = extract(
+            dir.path(),
+            "u",
+            "cargo build",
+            "   Compiling foo v0.1.0\n",
+            None,
+        );
+        assert_eq!(outcome_tags(&facts), vec!["outcome:compile_unknown"]);
     }
 }
