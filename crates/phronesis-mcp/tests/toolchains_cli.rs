@@ -81,3 +81,42 @@ fn scaffolded_pytest_def_handles_whitespace_but_not_substring() {
         "pip install pytest-cov must NOT match the pytest def"
     );
 }
+
+#[test]
+fn scaffolded_defs_recognize_command_position_only() {
+    // Evidence-integrity Task 5: the init-scaffolded matchers are
+    // head-anchored and evaluated per command segment. Also an
+    // escape-fidelity guard: the scaffold's `\\s`/`\\d` must survive as
+    // regex classes, or these positive/negative cases diverge.
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(&["init", "--packs", "confidence"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn phr-mcp init");
+    assert!(out.status.success(), "init stderr={:?}", out.stderr);
+
+    let defs = load_project_defs(dir.path());
+    let compile = |id: &str| {
+        let def = defs.iter().find(|d| d.id == id).expect("scaffolded def");
+        CompiledDef::compile(def.clone(), DefSource::Project).expect("compile scaffolded def")
+    };
+    let pytest = compile("pytest");
+    let tsc = compile("tsc");
+
+    assert!(pytest.handles("pytest"));
+    assert!(pytest.handles("pytest -q"));
+    assert!(pytest.handles("python -m pytest tests/"));
+    assert!(pytest.handles("cd api && pytest -q"));
+    assert!(pytest.handles("FOO=1 pytest"));
+    assert!(!pytest.handles("echo pytest"));
+    assert!(!pytest.handles("cat pytest.ini"));
+    assert!(!pytest.handles("pip install pytest-cov"));
+    assert!(!pytest.handles("# pytest"));
+
+    assert!(tsc.handles("tsc"));
+    assert!(tsc.handles("npx tsc --noEmit"));
+    assert!(tsc.handles("cd web && npx tsc"));
+    assert!(!tsc.handles("echo tsc failed"));
+    assert!(!tsc.handles("touch tsc.log"));
+}

@@ -19,6 +19,7 @@ pub mod adapter;
 pub mod bugs;
 pub mod derive;
 pub mod facts;
+pub mod segment;
 pub mod subject;
 pub mod toolchain;
 

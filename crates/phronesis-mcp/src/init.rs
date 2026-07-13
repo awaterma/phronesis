@@ -824,12 +824,15 @@ const CONFIDENCE_BUGS_JSON: &str = "[]\n";
 
 /// Example `.phronesis/toolchains.json` written with the confidence pack:
 /// two real project-def examples (pytest, tsc) proving toolchain neutrality.
+/// Matchers are head-anchored: recognition runs per command segment (split
+/// on `&&`, `||`, `;`, `|`, newlines; leading env assignments stripped), so
+/// `^pytest` matches `cd api && pytest -q` but not `echo pytest`.
 /// Users edit/extend in place; `init` never overwrites it.
 const TOOLCHAINS_JSON: &str = r#"[
   {
-    "_doc": "Recognition regex is `matches`; refinement fields are optional. See `phr-mcp toolchains`.",
+    "_doc": "Recognition regex is `matches`, applied to each command segment (split on &&, ||, ;, |, newlines; leading NAME=value and `env` prefixes stripped) — anchor with ^ to match only real invocations. Refinement fields are optional; `compile_success` lists explicit success evidence used when no exit code was captured. See `phr-mcp toolchains`.",
     "id": "pytest",
-    "matches": "(^|\\s)pytest(\\s|$)",
+    "matches": "^(python3? -m )?pytest(\\s|$)",
     "compile_fail": ["SyntaxError", "ImportError"],
     "test_summary": "(?P<failed>\\d+) failed|(?P<passed>\\d+) passed",
     "per_test": "(?m)^(?P<name>\\S+) (?P<status>PASSED|FAILED)",
@@ -837,7 +840,7 @@ const TOOLCHAINS_JSON: &str = r#"[
   },
   {
     "id": "tsc",
-    "matches": "\\btsc\\b",
+    "matches": "^(npx )?tsc(\\s|$)",
     "compile_fail": ["error TS\\d+"]
   }
 ]
