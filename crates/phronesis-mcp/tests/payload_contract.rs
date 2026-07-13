@@ -12,7 +12,6 @@ use std::process::{Command, Stdio};
 #[derive(serde::Deserialize, Debug)]
 struct Fixture {
     schema: u32,
-    #[allow(dead_code)]
     source: serde_json::Value,
     subcommand: String,
     packs: String,
@@ -42,6 +41,100 @@ struct Expect {
     /// Each substring must appear on stderr.
     #[serde(default)]
     stderr_contains: Vec<String>,
+}
+
+/// Allowed fixture provenance values (spec Task 3). Any other string in
+/// `source.provenance` fails fixture loading — unknown provenance must never
+/// be silently accepted, and authored data must never pass as captured.
+#[derive(serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum Provenance {
+    Authored,
+    Captured,
+    CapturedAndScrubbed,
+}
+
+impl Provenance {
+    fn is_captured(self) -> bool {
+        matches!(self, Provenance::Captured | Provenance::CapturedAndScrubbed)
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Provenance::Authored => "authored",
+            Provenance::Captured => "captured",
+            Provenance::CapturedAndScrubbed => "captured-and-scrubbed",
+        }
+    }
+}
+
+/// Validate the `source` block of a fixture envelope.
+///
+/// - `source.provenance` must be one of `authored | captured |
+///   captured-and-scrubbed`; anything else is an error naming the file.
+/// - Captured provenance additionally requires a `source.capture` object with
+///   non-sensitive metadata: `host`, `capture_date`, `scrubber_version`
+///   (non-empty strings) and `host_version` under an explicit-null policy —
+///   the key must be present; `null` means "unknown at capture time".
+///
+/// Authored fixtures need no capture metadata: they are hand-written
+/// approximations, and must never be relabeled as captured.
+fn validate_provenance(fixture: &str, source: &serde_json::Value) -> Result<Provenance, String> {
+    let raw = source.get("provenance").ok_or_else(|| {
+        format!(
+            "{fixture}: source.provenance is missing \
+             (allowed: authored | captured | captured-and-scrubbed)"
+        )
+    })?;
+    let provenance: Provenance = serde_json::from_value(raw.clone()).map_err(|_| {
+        format!(
+            "{fixture}: unknown provenance {raw} \
+             (allowed: authored | captured | captured-and-scrubbed)"
+        )
+    })?;
+    if !provenance.is_captured() {
+        return Ok(provenance);
+    }
+    let capture = source
+        .get("capture")
+        .and_then(|c| c.as_object())
+        .ok_or_else(|| {
+            format!(
+                "{fixture}: provenance {:?} requires a source.capture object with \
+                 host, host_version, capture_date, scrubber_version",
+                provenance.label()
+            )
+        })?;
+    for key in ["host", "capture_date", "scrubber_version"] {
+        match capture.get(key).and_then(|v| v.as_str()) {
+            Some(s) if !s.trim().is_empty() => {}
+            _ => {
+                return Err(format!(
+                    "{fixture}: source.capture.{key} must be a non-empty string \
+                     for provenance {:?}",
+                    provenance.label()
+                ));
+            }
+        }
+    }
+    match capture.get("host_version") {
+        Some(v) if v.is_null() || v.as_str().is_some_and(|s| !s.trim().is_empty()) => {}
+        Some(_) => {
+            return Err(format!(
+                "{fixture}: source.capture.host_version must be a non-empty string \
+                 or explicit null (unknown), for provenance {:?}",
+                provenance.label()
+            ));
+        }
+        None => {
+            return Err(format!(
+                "{fixture}: source.capture.host_version key is required (use explicit \
+                 null when the host version is unknown), for provenance {:?}",
+                provenance.label()
+            ));
+        }
+    }
+    Ok(provenance)
 }
 
 fn collect_fixtures() -> Vec<PathBuf> {
@@ -164,6 +257,11 @@ fn check_fixture(path: &Path) -> Result<(), String> {
     if fx.schema != 1 {
         return Err(format!("unsupported fixture schema {}", fx.schema));
     }
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("fixture");
+    validate_provenance(name, &fx.source)?;
     let dir = tempfile::tempdir().map_err(|e| format!("tempdir: {e}"))?;
     init_project(&dir, &fx.packs);
 
@@ -332,5 +430,210 @@ fn corpus_replays_green() {
         failures.is_empty(),
         "payload-contract failures:\n{}",
         failures.join("\n")
+    );
+}
+
+/// Coverage report (spec Task 3, requirement 4-6): per-host counts that
+/// distinguish internal contract coverage (authored fixtures) from
+/// host-observed coverage (captured fixtures). A host with zero captured
+/// fixtures is reported informationally — this test must NOT fail merely
+/// because live fixtures are unavailable. Run with `-- --nocapture` to see
+/// the report on a green run.
+#[test]
+fn provenance_coverage_report() {
+    use std::collections::BTreeMap;
+    let reg = registry();
+    let mut authored: BTreeMap<String, usize> = BTreeMap::new();
+    let mut captured: BTreeMap<String, usize> = BTreeMap::new();
+    // Seed every registry host so zero-coverage hosts still appear.
+    for host in reg.as_object().expect("registry is an object").keys() {
+        authored.insert(host.clone(), 0);
+        captured.insert(host.clone(), 0);
+    }
+    let mut errors = Vec::new();
+    for path in collect_fixtures() {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("fixture")
+            .to_string();
+        let raw = std::fs::read_to_string(&path).expect("read fixture");
+        let val: serde_json::Value = serde_json::from_str(&raw).expect("fixture is JSON");
+        let host = val["source"]["cli"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
+        match validate_provenance(&name, &val["source"]) {
+            Ok(p) if p.is_captured() => *captured.entry(host).or_insert(0) += 1,
+            Ok(_) => *authored.entry(host).or_insert(0) += 1,
+            Err(msg) => errors.push(msg),
+        }
+    }
+    assert!(
+        errors.is_empty(),
+        "fixture provenance validation failures:\n{}",
+        errors.join("\n")
+    );
+    println!("payload-corpus provenance coverage:");
+    for (host, n) in &authored {
+        println!("  internal contract coverage (authored)   {host}: {n}");
+    }
+    for (host, n) in &captured {
+        println!("  host-observed coverage (captured)       {host}: {n}");
+        if *n == 0 {
+            println!(
+                "  NOTE: host {host:?} has ZERO captured fixtures — authored fixtures \
+                 validate internal assumptions only, not the live host payload contract \
+                 (informational, not a failure; see docs/payload-corpus-promotion.md)"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Provenance enforcement unit tests (spec Task 3, requirements 1-3).
+//
+// No captured fixtures exist yet, and none may be fabricated — enforcement is
+// therefore proven with inline JSON, not fixture files.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn authored_provenance_requires_no_capture_metadata() {
+    let source = serde_json::json!({
+        "cli": "claude-code",
+        "event": "PreToolUse",
+        "provenance": "authored"
+    });
+    let p = validate_provenance("authored.json", &source).expect("authored must load");
+    assert_eq!(p, Provenance::Authored);
+}
+
+#[test]
+fn unknown_provenance_fails_loading_and_names_the_file() {
+    let source = serde_json::json!({ "provenance": "live-totally-real" });
+    let err = validate_provenance("bad-provenance.json", &source)
+        .expect_err("unknown provenance must fail loading");
+    assert!(
+        err.contains("bad-provenance.json"),
+        "error must name the file: {err}"
+    );
+    assert!(
+        err.contains("unknown provenance"),
+        "unexpected message: {err}"
+    );
+    assert!(
+        err.contains("captured-and-scrubbed"),
+        "error must list allowed values: {err}"
+    );
+}
+
+#[test]
+fn missing_provenance_fails_loading() {
+    let source = serde_json::json!({ "cli": "gemini", "event": "BeforeTool" });
+    let err = validate_provenance("no-provenance.json", &source)
+        .expect_err("missing provenance must fail loading");
+    assert!(
+        err.contains("no-provenance.json"),
+        "error must name the file: {err}"
+    );
+    assert!(err.contains("missing"), "unexpected message: {err}");
+}
+
+#[test]
+fn captured_without_metadata_is_rejected() {
+    let source = serde_json::json!({ "cli": "claude-code", "provenance": "captured" });
+    let err = validate_provenance("captured-bare.json", &source)
+        .expect_err("captured without metadata must fail");
+    assert!(err.contains("source.capture"), "unexpected message: {err}");
+}
+
+#[test]
+fn captured_with_full_metadata_is_accepted() {
+    let source = serde_json::json!({
+        "cli": "claude-code",
+        "provenance": "captured",
+        "capture": {
+            "host": "claude-code",
+            "host_version": "2.1.0",
+            "capture_date": "2026-07-12",
+            "scrubber_version": "1"
+        }
+    });
+    let p = validate_provenance("captured-full.json", &source)
+        .expect("captured with full metadata must load");
+    assert_eq!(p, Provenance::Captured);
+}
+
+#[test]
+fn captured_and_scrubbed_with_null_host_version_is_accepted() {
+    // Explicit-null policy: the host_version key must be present; null means
+    // "unknown at capture time".
+    let source = serde_json::json!({
+        "cli": "gemini",
+        "provenance": "captured-and-scrubbed",
+        "capture": {
+            "host": "gemini",
+            "host_version": null,
+            "capture_date": "2026-07-12",
+            "scrubber_version": "1"
+        }
+    });
+    let p = validate_provenance("scrubbed-null-version.json", &source)
+        .expect("explicit-null host_version must load");
+    assert_eq!(p, Provenance::CapturedAndScrubbed);
+}
+
+#[test]
+fn captured_missing_host_version_key_is_rejected() {
+    let source = serde_json::json!({
+        "cli": "gemini",
+        "provenance": "captured-and-scrubbed",
+        "capture": {
+            "host": "gemini",
+            "capture_date": "2026-07-12",
+            "scrubber_version": "1"
+        }
+    });
+    let err = validate_provenance("scrubbed-no-version-key.json", &source)
+        .expect_err("missing host_version key must fail");
+    assert!(err.contains("host_version"), "unexpected message: {err}");
+}
+
+#[test]
+fn captured_with_empty_host_is_rejected() {
+    let source = serde_json::json!({
+        "cli": "claude-code",
+        "provenance": "captured",
+        "capture": {
+            "host": "",
+            "host_version": "2.1.0",
+            "capture_date": "2026-07-12",
+            "scrubber_version": "1"
+        }
+    });
+    let err =
+        validate_provenance("captured-empty-host.json", &source).expect_err("empty host must fail");
+    assert!(
+        err.contains("source.capture.host"),
+        "unexpected message: {err}"
+    );
+}
+
+#[test]
+fn captured_missing_scrubber_version_is_rejected() {
+    let source = serde_json::json!({
+        "cli": "claude-code",
+        "provenance": "captured",
+        "capture": {
+            "host": "claude-code",
+            "host_version": "2.1.0",
+            "capture_date": "2026-07-12"
+        }
+    });
+    let err = validate_provenance("captured-no-scrubber.json", &source)
+        .expect_err("missing scrubber_version must fail");
+    assert!(
+        err.contains("scrubber_version"),
+        "unexpected message: {err}"
     );
 }
