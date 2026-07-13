@@ -22,6 +22,18 @@ impl OutcomeFact {
         }
     }
 
+    /// `build_outcome(subject, "unknown")` — no exit code was captured, no
+    /// failure pattern matched, and no explicit success evidence appeared.
+    /// Absence of failure evidence is not proof of success
+    /// (evidence-integrity spec, Task 4): unknown is journaled as
+    /// `outcome:compile_unknown` and never grounds a confidence signal.
+    pub fn build_unknown(subject: &str) -> Self {
+        Self {
+            predicate: "build_outcome",
+            args: vec![subject.to_string(), "unknown".to_string()],
+        }
+    }
+
     /// `test_outcome(subject, passed, failed, total)` — test counts. `total`
     /// is `passed + failed` (tests actually run; ignored/filtered are not
     /// counted, matching what a rule means by "the tests").
@@ -103,6 +115,13 @@ mod tests {
         let f = OutcomeFact::build("unit-7", true);
         assert_eq!(f.predicate, "build_outcome");
         assert_eq!(f.args, vec!["unit-7".to_string(), "pass".to_string()]);
+    }
+
+    #[test]
+    fn build_unknown_carries_unknown_status() {
+        let f = OutcomeFact::build_unknown("unit-7");
+        assert_eq!(f.predicate, "build_outcome");
+        assert_eq!(f.args, vec!["unit-7".to_string(), "unknown".to_string()]);
     }
 
     #[test]

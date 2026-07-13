@@ -85,6 +85,11 @@ pub fn entries_from(subject: &str, records: &[JournalRecord]) -> Vec<DerivedEntr
                         args: vec![subject.to_string(), id.to_string(), "fixed".to_string()],
                     });
                 }
+                // `outcome:compile_unknown` (Task 4 decision): an unknown run
+                // produced no evidence, so it carries no signal in either
+                // direction — it neither grounds a compile signal nor
+                // clobbers an earlier grounded pass/fail via latest-wins.
+                "outcome:compile_unknown" => {}
                 _ => {}
             }
         }
@@ -305,5 +310,34 @@ mod tests {
         let s = signals(dir.path(), "u").unwrap();
         assert_eq!(names(&s), vec!["compile", "tests"]);
         assert_eq!(band(dir.path(), "u").unwrap(), Band::Medium);
+    }
+
+    #[test]
+    fn compile_unknown_tag_grounds_no_signal() {
+        let recs = vec![rec(1, "u", &["outcome:compile_unknown"])];
+        let e = entries_from("u", &recs);
+        assert!(e.is_empty(), "unknown must not become a derived entry");
+        assert!(signals_from("u", &e).is_empty());
+    }
+
+    #[test]
+    fn compile_unknown_does_not_clobber_an_earlier_grounded_pass() {
+        // Decision (Task 4): unknown carries no information, so the latest
+        // *grounded* outcome stands — a pass followed by an evidence-free run
+        // keeps its compile signal; it just gains nothing new.
+        let recs = vec![
+            rec(1, "u", &["outcome:compile_ok"]),
+            rec(2, "u", &["outcome:compile_unknown"]),
+        ];
+        let e = entries_from("u", &recs);
+        assert_eq!(names(&signals_from("u", &e)), vec!["compile"]);
+    }
+
+    #[test]
+    fn compile_unknown_alone_yields_low_band() {
+        let dir = tempfile::tempdir().unwrap();
+        journal::append(dir.path(), &rec(1, "u", &["outcome:compile_unknown"])).unwrap();
+        assert!(signals(dir.path(), "u").unwrap().is_empty());
+        assert_eq!(band(dir.path(), "u").unwrap(), Band::Low);
     }
 }
