@@ -1,10 +1,34 @@
 //! Anonymize captured hook payloads before committing them as fixtures.
 //!
-//! Scrubs exactly the class of data that reaches outside the project —
-//! `$HOME` paths, the OS username, session ids, transcript paths — and
-//! leaves project-internal content byte-for-byte intact. See
-//! `docs/superpowers/specs/2026-07-06-payload-contract-corpus-design.md`.
+//! Two distinct mechanisms with different guarantees:
+//!
+//! - **Deterministic anonymization** ([`Scrubber`]) rewrites exactly the
+//!   enumerated identity classes: project-root paths (to
+//!   `/home/dev/project`), other `$HOME`-rooted paths (to indexed
+//!   `/home/dev/external/pN` placeholders), session ids and transcript
+//!   paths under recognized key variants, and username path components /
+//!   free-text tokens. Project-internal content passes through
+//!   byte-for-byte.
+//! - **Residual-risk detection** ([`detect_residual_risks`]) runs
+//!   conservative, bounded pattern checks over the anonymized output for
+//!   common leak classes: credential-bearing URLs, private-key headers,
+//!   token/secret assignments, secret-suggesting environment keys,
+//!   absolute paths outside the canonical placeholder roots, and email
+//!   addresses. Findings are classified [`Severity::Error`] or
+//!   [`Severity::Warning`]; diagnostics truncate the matched text so a
+//!   suspected secret is never echoed in full.
+//!
+//! scrub-payload performs deterministic anonymization and detects several
+//! common leak classes. It is not a proof that arbitrary source or command
+//! content contains no secrets. Review scrubbed fixtures before committing
+//! them.
+//!
+//! See `docs/superpowers/specs/2026-07-06-payload-contract-corpus-design.md`
+//! and `docs/superpowers/specs/2026-07-12-evidence-integrity-hardening.md`.
 
+use std::sync::OnceLock;
+
+use regex::Regex;
 use serde_json::Value;
 use thiserror::Error;
 
@@ -12,6 +36,10 @@ use thiserror::Error;
 pub enum ScrubError {
     #[error("scrubbed output still contains the {what} in: {context}")]
     Residual { what: &'static str, context: String },
+    #[error("invalid {which}: {reason}")]
+    InvalidRoot { which: &'static str, reason: String },
+    #[error("residual-risk detector failed to initialize: {0}")]
+    DetectorInit(String),
 }
 
 /// Minimum username length for bare-substring replacement. Shorter names
@@ -41,17 +69,26 @@ pub struct Scrubber {
 }
 
 impl Scrubber {
-    pub fn new(home: &str, project_root: &str) -> Self {
-        let user = std::path::Path::new(home)
+    /// Validated construction (evidence-integrity spec, Task 1). Rejects
+    /// roots that would make substring scrubbing unsafe: empty or
+    /// whitespace-only values, relative paths, and the filesystem root `/`.
+    /// Trailing separators are normalized away without changing which
+    /// directory the root names. A project root outside the home directory
+    /// is explicitly supported: project-root replacement runs before home
+    /// replacement, so the two never conflict.
+    pub fn new(home: &str, project_root: &str) -> Result<Self, ScrubError> {
+        let home = validate_root("home directory", home)?;
+        let project_root = validate_root("project root", project_root)?;
+        let user = std::path::Path::new(&home)
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        Self {
-            home: home.trim_end_matches('/').to_string(),
+        Ok(Self {
+            home,
             user,
-            project_root: project_root.trim_end_matches('/').to_string(),
+            project_root,
             external: Vec::new(),
-        }
+        })
     }
 
     /// Recursively rewrite every string in `v` per the scrub rules. Keys
@@ -165,6 +202,267 @@ impl Scrubber {
     }
 }
 
+/// Validate and normalize one scrub root (evidence-integrity spec, Task 1).
+///
+/// Rejections:
+/// - empty / whitespace-only — an empty needle turns substring replacement
+///   into pathological or non-terminating behavior;
+/// - relative paths — ambiguous: the scrubbed meaning would depend on an
+///   unstated current directory;
+/// - the filesystem root `/` — it would rewrite every absolute path in the
+///   payload.
+///
+/// Normalization: surrounding whitespace and trailing `/` separators are
+/// trimmed; neither changes the filesystem identity of the root.
+fn validate_root(which: &'static str, value: &str) -> Result<String, ScrubError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(ScrubError::InvalidRoot {
+            which,
+            reason: "must not be empty or whitespace-only".to_string(),
+        });
+    }
+    if !std::path::Path::new(trimmed).is_absolute() {
+        return Err(ScrubError::InvalidRoot {
+            which,
+            reason: format!("must be an absolute path (got the relative path {trimmed:?})"),
+        });
+    }
+    let normalized = trimmed.trim_end_matches('/');
+    if normalized.is_empty() {
+        return Err(ScrubError::InvalidRoot {
+            which,
+            reason: "the filesystem root `/` cannot be used as a scrub root".to_string(),
+        });
+    }
+    Ok(normalized.to_string())
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Residual-risk detection (evidence-integrity spec, Task 2)
+//
+// Runs over the compact-rendered JSON of an ALREADY-SCRUBBED record.
+// Conservative and bounded by design: this detects several common leak
+// classes; it is not a proof that arbitrary content contains no secrets.
+// ─────────────────────────────────────────────────────────────────────
+
+/// Classification of a residual-risk finding, per the spec's failure
+/// policy. `Error` findings abort the run (nonzero exit; under `--write`
+/// nothing is written, not even the backup). `Warning` findings go to
+/// stderr and the run still exits 0, keeping scrubbing idempotent — a
+/// human adjudicates them before committing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    Warning,
+}
+
+/// One residual-risk finding. `hint` is a truncated excerpt of the matched
+/// text — never the full suspected secret.
+#[derive(Debug)]
+pub struct Finding {
+    pub severity: Severity,
+    pub what: &'static str,
+    pub hint: String,
+}
+
+struct Detector {
+    what: &'static str,
+    severity: Severity,
+    /// When true, a match containing no ASCII digit is downgraded to
+    /// `Warning` ("possible identity token" in the spec's failure policy):
+    /// prose like `password: mandatory` must not hard-fail, while real
+    /// keys and tokens virtually always contain digits.
+    digitless_downgrade: bool,
+    re: Regex,
+}
+
+/// Detection runs on the rendered JSON, where inner string quotes appear
+/// as `\"` — hence the `["'\\]{0,4}` bridges around assignment operators.
+fn build_detectors() -> Result<Vec<Detector>, ScrubError> {
+    let specs: &[(&'static str, Severity, bool, &str)] = &[
+        (
+            "private-key header",
+            Severity::Error,
+            false,
+            r#"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----"#,
+        ),
+        (
+            "credential-bearing URL",
+            Severity::Error,
+            false,
+            r#"[a-zA-Z][a-zA-Z0-9+.\-]{0,15}://[^/\s:@"',]{1,64}:[^@\s"',]{1,256}@"#,
+        ),
+        (
+            "token/secret assignment",
+            Severity::Error,
+            true,
+            r#"(?i)\b(?:api[_-]?key|access[_-]?token|auth[_-]?token|refresh[_-]?token|client[_-]?secret|secret[_-]?key|private[_-]?key|password|passwd)["'\\]{0,4}\s*[:=]\s*["'\\]{0,4}[A-Za-z0-9+/_.\-]{8,}"#,
+        ),
+        (
+            "bearer token",
+            Severity::Error,
+            true,
+            r#"(?i)\bbearer\s+[A-Za-z0-9\-._~+/]{16,}"#,
+        ),
+        (
+            "secret-suggesting environment key",
+            Severity::Error,
+            true,
+            r#"\b[A-Z][A-Z0-9_]{2,40}(?:TOKEN|SECRET|PASSWORD|APIKEY|API_KEY|PRIVATE_KEY|CREDENTIALS)["'\\]{0,4}\s*[:=]\s*["'\\]{0,4}\S{4,}"#,
+        ),
+        (
+            "email address",
+            Severity::Warning,
+            false,
+            r#"\b[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,128}\.[A-Za-z]{2,24}\b"#,
+        ),
+    ];
+    let mut out = Vec::with_capacity(specs.len());
+    for &(what, severity, digitless_downgrade, pattern) in specs {
+        let re =
+            Regex::new(pattern).map_err(|e| ScrubError::DetectorInit(format!("{what}: {e}")))?;
+        out.push(Detector {
+            what,
+            severity,
+            digitless_downgrade,
+            re,
+        });
+    }
+    Ok(out)
+}
+
+fn detectors() -> Result<&'static [Detector], ScrubError> {
+    static CELL: OnceLock<Vec<Detector>> = OnceLock::new();
+    if let Some(built) = CELL.get() {
+        return Ok(built.as_slice());
+    }
+    let built = build_detectors()?;
+    Ok(CELL.get_or_init(|| built).as_slice())
+}
+
+/// A bounded absolute path: `/seg/seg[...]`, two or more segments.
+const ABS_PATH_PATTERN: &str = r#"/[A-Za-z0-9._+\-]{1,64}(?:/[A-Za-z0-9._+\-]{1,64}){1,32}"#;
+
+fn absolute_path_regex() -> Result<&'static Regex, ScrubError> {
+    static CELL: OnceLock<Regex> = OnceLock::new();
+    if let Some(re) = CELL.get() {
+        return Ok(re);
+    }
+    let re = Regex::new(ABS_PATH_PATTERN)
+        .map_err(|e| ScrubError::DetectorInit(format!("absolute-path pattern: {e}")))?;
+    Ok(CELL.get_or_init(|| re))
+}
+
+/// Absolute-path prefixes that carry no host identity: the canonical
+/// scrub placeholders (must stay in sync with `PLACEHOLDER_PREFIXES`)
+/// plus identity-neutral system roots. Everything else absolute is a
+/// residual-risk error — `/private/tmp/...`, `/Users/...`, `/var/...`
+/// and friends can all carry usernames or session-specific state.
+const ALLOWED_ABSOLUTE_PREFIXES: &[&str] = &[
+    "/home/dev/project",
+    "/home/dev/external/",
+    "/home/dev/.claude/",
+    "/usr/",
+    "/bin/",
+    "/sbin/",
+    "/etc/",
+    "/opt/",
+    "/lib/",
+    "/lib64/",
+    "/dev/",
+    "/proc/",
+    "/sys/",
+    "/run/",
+    "/System/",
+    "/Library/",
+];
+
+fn is_allowed_absolute(path: &str) -> bool {
+    ALLOWED_ABSOLUTE_PREFIXES.iter().any(|prefix| {
+        let p = prefix.trim_end_matches('/');
+        path == p || (path.starts_with(p) && path.as_bytes().get(p.len()) == Some(&b'/'))
+    })
+}
+
+/// Is the text before a `/...` match a path boundary? A preceding `/` or
+/// word character means the match is the tail of a URL, a relative path,
+/// or a date — not an absolute path. Exception: in rendered JSON a
+/// newline/tab is the two-character escape `\n` / `\t` / `\r`, so a path
+/// right after one IS at a line boundary.
+fn is_path_boundary(before: &str) -> bool {
+    let Some(prev) = before.chars().next_back() else {
+        return true;
+    };
+    if prev == '/' {
+        return false;
+    }
+    if prev.is_alphanumeric() {
+        return matches!(prev, 'n' | 't' | 'r')
+            && before.len() >= 2
+            && before.as_bytes()[before.len() - 2] == b'\\';
+    }
+    true
+}
+
+fn collect_disallowed_absolute_paths(
+    rendered: &str,
+    findings: &mut Vec<Finding>,
+) -> Result<(), ScrubError> {
+    let re = absolute_path_regex()?;
+    for m in re.find_iter(rendered) {
+        if !is_path_boundary(&rendered[..m.start()]) {
+            continue;
+        }
+        if !is_allowed_absolute(m.as_str()) {
+            findings.push(Finding {
+                severity: Severity::Error,
+                what: "absolute path outside the project placeholder roots",
+                hint: redacted_hint(m.as_str()),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Residual-risk detection over an already-scrubbed record. Returns every
+/// finding; the caller decides how to surface them ([`Severity`] documents
+/// the CLI policy).
+pub fn detect_residual_risks(v: &Value) -> Result<Vec<Finding>, ScrubError> {
+    let rendered = v.to_string();
+    let mut findings = Vec::new();
+    for d in detectors()? {
+        for m in d.re.find_iter(&rendered) {
+            let severity =
+                if d.digitless_downgrade && !m.as_str().bytes().any(|b| b.is_ascii_digit()) {
+                    Severity::Warning
+                } else {
+                    d.severity
+                };
+            findings.push(Finding {
+                severity,
+                what: d.what,
+                hint: redacted_hint(m.as_str()),
+            });
+        }
+    }
+    collect_disallowed_absolute_paths(&rendered, &mut findings)?;
+    Ok(findings)
+}
+
+/// First 12 characters of the match plus a redacted-length note — a
+/// suspected secret is never echoed in full.
+fn redacted_hint(matched: &str) -> String {
+    const SHOWN: usize = 12;
+    let head: String = matched.chars().take(SHOWN).collect();
+    let total = matched.chars().count();
+    if total > SHOWN {
+        format!("{head}…[{} more chars redacted]", total - SHOWN)
+    } else {
+        head
+    }
+}
+
 /// True for session-id-style keys, compared case- and separator-insensitively
 /// (`session_id`, `sessionId`, `SessionID` all match) — finding #3: a CLI
 /// sending `sessionId` must not evade scrubbing.
@@ -200,7 +498,7 @@ mod tests {
     use serde_json::json;
 
     fn scrubber() -> Scrubber {
-        Scrubber::new("/Users/alicejones", "/Users/alicejones/Git/myproject")
+        Scrubber::new("/Users/alicejones", "/Users/alicejones/Git/myproject").expect("valid roots")
     }
 
     #[test]
@@ -321,7 +619,7 @@ mod tests {
         // placeholder root (home = "/home/dev"), the old find-loop matched
         // its own freshly inserted replacement forever. Re-scrubbing
         // already-scrubbed content must terminate AND leave it unchanged.
-        let mut s = Scrubber::new("/home/dev", "/tmp/someproject");
+        let mut s = Scrubber::new("/home/dev", "/tmp/someproject").expect("valid roots");
         let mut v = json!({
             "cwd": "/home/dev/project",
             "tool_input": {"file_path": "/home/dev/project/src/lib.rs"},
@@ -345,7 +643,7 @@ mod tests {
         // home really is /home/dev: paths outside the canonical placeholder
         // roots still get anonymized, and the loop still terminates even
         // though every inserted replacement contains the home prefix.
-        let mut s = Scrubber::new("/home/dev", "/home/dev/myproject");
+        let mut s = Scrubber::new("/home/dev", "/home/dev/myproject").expect("valid roots");
         let mut v = json!({
             "a": "/home/dev/otherrepo/src/main.rs",
             "b": "/home/dev/myproject/src/lib.rs"
@@ -361,12 +659,246 @@ mod tests {
     fn short_usernames_are_not_blindly_replaced() {
         // A 1-2 char username would shred ordinary text; the scrubber must
         // refuse to substring-replace it and rely on path rules only.
-        let mut s = Scrubber::new("/home/al", "/home/al/proj");
+        let mut s = Scrubber::new("/home/al", "/home/al/proj").expect("valid roots");
         let mut v = json!({"command": "cargo align --all"});
         s.scrub_value(&mut v);
         assert_eq!(v["command"], "cargo align --all");
         // ...and verify/warnings must not fire on the short name either.
         assert!(s.verify(&v).is_ok());
         assert!(s.warnings(&v).is_empty());
+    }
+
+    #[test]
+    fn empty_and_whitespace_roots_are_rejected() {
+        assert!(Scrubber::new("", "/Users/a/proj").is_err());
+        assert!(Scrubber::new("/Users/a", "").is_err());
+        assert!(Scrubber::new("   ", "/Users/a/proj").is_err());
+        assert!(Scrubber::new("/Users/a", "\t\n").is_err());
+    }
+
+    #[test]
+    fn filesystem_root_is_rejected_as_either_root() {
+        assert!(Scrubber::new("/", "/Users/a/proj").is_err());
+        assert!(Scrubber::new("/Users/a", "/").is_err());
+        assert!(Scrubber::new("/Users/a", "///").is_err());
+    }
+
+    #[test]
+    fn relative_roots_are_rejected() {
+        assert!(Scrubber::new("Users/alicejones", "/Users/alicejones/p").is_err());
+        assert!(Scrubber::new("/Users/alicejones", "Git/myproject").is_err());
+        assert!(Scrubber::new("/Users/alicejones", "./proj").is_err());
+    }
+
+    #[test]
+    fn trailing_separators_are_normalized() {
+        let mut s = Scrubber::new("/Users/alicejones/", "/Users/alicejones/Git/myproject///")
+            .expect("trailing separators are valid");
+        let mut v = json!({"file_path": "/Users/alicejones/Git/myproject/src/lib.rs"});
+        s.scrub_value(&mut v);
+        assert_eq!(v["file_path"], "/home/dev/project/src/lib.rs");
+    }
+
+    #[test]
+    fn adversarial_repeated_home_prefix_terminates() {
+        // Non-termination pin: a giant blob of back-to-back home prefixes
+        // must scrub in one bounded pass and leave no residual.
+        let mut s = scrubber();
+        let mut v = json!({ "blob": "/Users/alicejones".repeat(200) });
+        s.scrub_value(&mut v);
+        assert!(!v.to_string().contains("alicejones"));
+    }
+
+    // ── Residual-risk detection (spec Task 2) ──
+
+    fn error_count(findings: &[Finding]) -> usize {
+        findings
+            .iter()
+            .filter(|f| f.severity == Severity::Error)
+            .count()
+    }
+
+    #[test]
+    fn detector_regexes_compile() {
+        // Loader-level pin: a mis-escaped pattern fails HERE, not at first
+        // CLI use. Also pins the detector count so silent drops are caught.
+        let built = build_detectors().expect("every detector pattern compiles");
+        assert_eq!(built.len(), 6, "expected exactly 6 pattern detectors");
+        assert!(
+            absolute_path_regex().is_ok(),
+            "absolute-path pattern compiles"
+        );
+    }
+
+    #[test]
+    fn detects_api_key_assignment_in_shell_command() {
+        let v = json!({"command": "export API_KEY=SUPERSECRETVALUE123456"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.what == "token/secret assignment"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn detects_bearer_token() {
+        let v = json!({"headers": "Authorization: Bearer abc123def456ghi789jkl"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.what == "bearer token"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn detects_credential_bearing_url() {
+        let v = json!({"command": "git clone https://alice:hunter2pass@github.com/x/y.git"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.what == "credential-bearing URL"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn detects_pem_private_key_header() {
+        let v = json!({"new_string": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAfake"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.what == "private-key header"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn detects_secret_env_key_with_value() {
+        let v = json!({"command": "GITHUB_TOKEN=ghp_abc123xyz789 gh api /user"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error
+                    && f.what == "secret-suggesting environment key"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn env_key_with_placeholder_value_downgrades_to_warning() {
+        // Docs prose: a secret-suggesting key with a digit-less placeholder
+        // value is a "possible identity token" warning, not an error.
+        let v = json!({"doc": "set GITHUB_TOKEN=<yourtoken> before running"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert_eq!(error_count(&findings), 0, "got {findings:?}");
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Warning),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn flags_absolute_path_outside_home() {
+        let v = json!({"command": "cat /private/tmp/cap/payloads.jsonl"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Error
+                && f.what == "absolute path outside the project placeholder roots"),
+            "got {findings:?}"
+        );
+        // Same path right after a newline inside a multiline command.
+        let v2 = json!({"command": "echo hi\ncat /private/tmp/cap/payloads.jsonl"});
+        let findings2 = detect_residual_risks(&v2).expect("detectors run");
+        assert!(error_count(&findings2) >= 1, "got {findings2:?}");
+    }
+
+    #[test]
+    fn allows_placeholder_and_system_paths() {
+        let v = json!({
+            "cwd": "/home/dev/project",
+            "file_path": "/home/dev/project/src/lib.rs",
+            "transcript_path": "/home/dev/.claude/transcript.jsonl",
+            "external": "/home/dev/external/p0",
+            "command": "/usr/bin/env python3 /home/dev/project/x.py"
+        });
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(findings.is_empty(), "got {findings:?}");
+    }
+
+    #[test]
+    fn allows_relative_paths_and_benign_password_words() {
+        let v = json!({
+            "file_path": "src/lib.rs",
+            "content": "the password field is required"
+        });
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(findings.is_empty(), "got {findings:?}");
+    }
+
+    #[test]
+    fn password_prose_with_colon_is_warning_not_error() {
+        let v = json!({"content": "password: mandatory"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert_eq!(error_count(&findings), 0, "got {findings:?}");
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Warning),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn email_address_is_warning_not_error() {
+        let v = json!({"command": "git log --author=someone@example.com"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert_eq!(error_count(&findings), 0, "got {findings:?}");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Warning && f.what == "email address"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn diagnostics_never_echo_full_secret_values() {
+        let v = json!({"command": "export API_KEY=SUPERSECRETVALUE123456"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(!findings.is_empty());
+        for f in &findings {
+            assert!(
+                !f.hint.contains("SECRETVALUE123456"),
+                "hint must truncate the secret: {}",
+                f.hint
+            );
+        }
+    }
+
+    #[test]
+    fn scrubbed_output_of_a_normal_capture_has_no_findings() {
+        // Idempotence guard: everything the scrubber itself writes must be
+        // invisible to the detectors, or clean fixtures could never pass.
+        let mut s = scrubber();
+        let mut v = json!({
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "transcript_path": "/Users/alicejones/.claude/projects/x/y.jsonl",
+            "cwd": "/Users/alicejones/Git/myproject",
+            "tool_input": {
+                "file_path": "/Users/alicejones/Git/myproject/src/lib.rs",
+                "command": "cargo test --workspace"
+            }
+        });
+        s.scrub_value(&mut v);
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings.is_empty(),
+            "clean scrubbed output must have no findings: {findings:?}"
+        );
     }
 }
