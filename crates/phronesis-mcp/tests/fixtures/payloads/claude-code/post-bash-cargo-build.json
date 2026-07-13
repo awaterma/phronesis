@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "claude-code",
+    "event": "PostToolUse",
+    "provenance": "authored",
+    "captured": "2026-07-06",
+    "description": "Post-check payload for a Bash tool that ran `cargo build --workspace`. Pins bug #2 (0.13.2): the command-derived `build` tagger must fire, and the compile output under `tool_response` must be read by the cargo adapter to stamp `outcome:compile_ok`."
+  },
+  "subcommand": "post-check",
+  "packs": "llm,rust,confidence,journey",
+  "payload": {
+    "session_id": "sess-00000000",
+    "transcript_path": "/home/dev/.claude/transcript.jsonl",
+    "cwd": "/home/dev/project",
+    "hook_event_name": "PostToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "cargo build --workspace 2>&1"
+    },
+    "tool_response": {
+      "stdout": "   Compiling phronesis v0.18.0 (/home/dev/project/crates/phronesis)\n   Compiling phronesis-mcp v0.18.0 (/home/dev/project/crates/phronesis-mcp)\n    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.34s",
+      "stderr": "",
+      "interrupted": false
+    }
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": ["build"],
+    "journal_tag_from_output": ["outcome:compile_ok"],
+    "stderr_contains": []
+  }
+}

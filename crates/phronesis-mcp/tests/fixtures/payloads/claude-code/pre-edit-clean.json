@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "claude-code",
+    "event": "PreToolUse",
+    "provenance": "authored",
+    "captured": "2026-07-06",
+    "description": "Full real Claude Code PreToolUse envelope for a clean Edit. No rule should fire; pins that a valid envelope is accepted and exits 0 with JSON on stdout."
+  },
+  "subcommand": "pre-check",
+  "packs": "llm,rust",
+  "payload": {
+    "session_id": "sess-00000000",
+    "transcript_path": "/home/dev/.claude/transcript.jsonl",
+    "cwd": "/home/dev/project",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Edit",
+    "tool_input": {
+      "file_path": "src/lib.rs",
+      "old_string": "fn old_helper() -> u32 { 1 }",
+      "new_string": "fn new_helper() -> u32 { 2 }"
+    }
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}

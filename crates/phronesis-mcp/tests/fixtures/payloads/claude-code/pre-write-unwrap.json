@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "claude-code",
+    "event": "PreToolUse",
+    "provenance": "authored",
+    "captured": "2026-07-06",
+    "description": "Pre-check payload for a Write tool introducing .unwrap() into src/. Exercises the `enforce-no-unwrap-in-src` rule. Note: Write tool uses `content` field, not `new_string`."
+  },
+  "subcommand": "pre-check",
+  "packs": "llm,rust",
+  "payload": {
+    "session_id": "sess-00000000",
+    "transcript_path": "/home/dev/.claude/transcript.jsonl",
+    "cwd": "/home/dev/project",
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Write",
+    "tool_input": {
+      "file_path": "/home/dev/project/src/main.rs",
+      "content": "fn parse() -> String {\n    let x = \"123\";\n    let n = x.parse::<i32>().unwrap();\n    n.to_string()\n}"
+    }
+  },
+  "expect": {
+    "exit": 2,
+    "stdout_json": false,
+    "log_rule_fired": "enforce-no-unwrap-in-src",
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": [".unwrap()"]
+  }
+}

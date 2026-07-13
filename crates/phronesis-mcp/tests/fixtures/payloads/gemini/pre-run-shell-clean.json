@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "gemini",
+    "event": "BeforeTool",
+    "provenance": "authored",
+    "captured": "2026-07-06",
+    "description": "Gemini CLI BeforeTool payload for a harmless `run_shell_command`. Pins that Gemini's shell tool name is recognized and a clean command exits 0 with parseable JSON on stdout."
+  },
+  "subcommand": "pre-check",
+  "packs": "llm",
+  "payload": {
+    "session_id": "sess-00000000",
+    "cwd": "/home/dev/project",
+    "tool_name": "run_shell_command",
+    "tool_input": {
+      "command": "ls"
+    }
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}

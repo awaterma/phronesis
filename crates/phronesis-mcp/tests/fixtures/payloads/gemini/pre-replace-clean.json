@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "gemini",
+    "event": "BeforeTool",
+    "provenance": "authored",
+    "captured": "2026-07-06",
+    "description": "Gemini CLI BeforeTool payload for a clean `replace` edit (Gemini's Edit analogue). Pins that Gemini tool names are recognized and a clean edit exits 0 with parseable JSON on stdout (the Gemini exit-0 contract)."
+  },
+  "subcommand": "pre-check",
+  "packs": "llm,rust",
+  "payload": {
+    "session_id": "sess-00000000",
+    "cwd": "/home/dev/project",
+    "tool_name": "replace",
+    "tool_input": {
+      "file_path": "src/lib.rs",
+      "old_string": "fn old_helper() -> u32 { 1 }",
+      "new_string": "fn new_helper() -> u32 { 2 }"
+    }
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}

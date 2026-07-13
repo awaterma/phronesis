@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "gemini",
+    "event": "AfterTool",
+    "provenance": "authored",
+    "captured": "2026-07-06",
+    "description": "Gemini CLI AfterTool payload for a `write_file` with output under `tool_output` — Gemini's key, NOT Claude Code's `tool_response`. Pins that the serde alias accepts both spellings and the payload is processed without error."
+  },
+  "subcommand": "post-check",
+  "packs": "llm,rust",
+  "payload": {
+    "session_id": "sess-00000000",
+    "cwd": "/home/dev/project",
+    "tool_name": "write_file",
+    "tool_input": {
+      "file_path": "src/gen.rs",
+      "content": "pub fn generated() {}"
+    },
+    "tool_output": {
+      "stdout": "Wrote src/gen.rs",
+      "stderr": ""
+    }
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}

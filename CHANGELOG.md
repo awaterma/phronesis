@@ -4,6 +4,62 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.19.0] - 2026-07-12
+
+### Added
+- **`PHRONESIS_CAPTURE_DIR`** — when set, pre-check/post-check tee the
+  raw stdin payload to `<dir>/payloads.jsonl` before parsing (flock'd
+  for concurrent-hook safety, best-effort and off by default). This is
+  how the payload-contract corpus below gets refreshed against a real
+  CLI's current payload shape.
+- **`payload_scrub` module + `phr-mcp scrub-payload <path> [--write] [--project-root DIR]`** —
+  anonymizes captured payloads for committing as fixtures. Operates on
+  JSONL in/out; `--write` backs the original up to `<path>.bak` before
+  overwriting; `--project-root` defaults to the current working
+  directory so in-project paths survive scrubbing while `$HOME`,
+  username, `session_id`, `transcript_path`, and other out-of-project
+  paths are rewritten to deterministic, indexed placeholders. A
+  residual leak or unrecognized shape aborts the run before anything
+  is written.
+- **Payload-contract corpus.** Fixture payloads for Claude Code and
+  Gemini CLI hook events under
+  `crates/phronesis-mcp/tests/fixtures/payloads/`, each tagged
+  `provenance: "authored"` — hand-written approximations of the real
+  envelopes pending supersession by live captures via the tee above.
+  A contract runner replays every fixture through the real binary and
+  asserts rule liveness (a hook or tagger that silently no-ops now
+  fails CI) and journey-journal outcome tags. A companion hook-event
+  registry test suite pins `init`'s hook wiring to event names that
+  actually exist on each host CLI, including a regression pin on the
+  0.17.1 `BeforeModelRequest` incident.
+
+## [0.18.0] - 2026-07-11
+
+### Added
+- **Neutral toolchain outcomes.** Build/test grading is no longer
+  cargo-specific: declarative `ToolchainDef`s (built-ins ∪ project
+  `.phronesis/toolchains.json`, project ids overriding built-ins)
+  drive outcome detection via named-capture regexes, with the command
+  exit code as the authoritative build signal and regex refinement
+  layered on top. `phr-mcp init` scaffolds example pytest/tsc defs;
+  `phr-mcp toolchains [--json]` lists the effective registry.
+- **`command_exit` capture.** PostToolUse payloads from shell tools
+  (`Bash`, `run_shell_command`) are probed for a numeric exit code
+  (`exit_code`/`exitCode`/`returncode`/`code`/`status`, then a
+  trailing `exit code: N` text fallback), journaled as
+  `command_exit`, and used to grade outcomes — a non-zero exit with a
+  test summary grades build-pass/test-fail (the pytest exit-1 case).
+- **Journal compaction.** `.phronesis/journey/events.jsonl` is
+  bounded (16 MiB default, `PHRONESIS_MAX_JOURNAL_BYTES` override,
+  1 GiB ceiling): compaction retains the 10k-record tail plus the
+  latest `outcome:*` record per subject, atomically via temp+rename
+  with fd/inode revalidation so concurrent appends never land in a
+  stale file.
+
+### Removed
+- `CargoAdapter` — cargo grading now flows through the same
+  toolchain-def registry as every other toolchain.
+
 ## [0.17.1] - 2026-07-06
 
 ### Fixed
