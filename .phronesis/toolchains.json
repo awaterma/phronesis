@@ -1,6 +1,6 @@
 [
   {
-    "_doc": "Recognition regex is `matches`, applied to each command segment (split on &&, ||, ;, |, newlines; leading NAME=value and `env` prefixes stripped) — anchor with ^ to match only real invocations. Refinement fields are optional; `compile_success` lists explicit success evidence used when no exit code was captured. See `phr-mcp toolchains`.",
+    "_doc": "Recognition regex is `matches`, applied to each command segment (split on &&, ||, ;, |, newlines; leading NAME=value and `env` prefixes stripped) — anchor with ^ to match only real invocations. Refinement fields are optional; `compile_success` lists explicit success evidence used when no exit code was captured (unused by these examples; the built-in cargo def uses it). See `phr-mcp toolchains`.",
     "id": "pytest",
     "matches": "^(python3? -m )?pytest(\\s|$)",
     "compile_fail": ["SyntaxError", "ImportError"],
