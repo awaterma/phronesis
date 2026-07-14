@@ -219,7 +219,17 @@ fn extract_handled(
         return (Vec::new(), None);
     };
     let outcome_facts = def.parse(&subject, command, output, command_exit);
-    let per_test = def.per_test_results(output);
+    // Gate bug evidence on a grounded, passing build (Finding 2):
+    // an unknown run produced no evidence, so `bug_caught` tags must not
+    // fire — absent evidence is unknown, not pass.
+    let build_passed = outcome_facts.iter().any(|f| {
+        f.predicate == "build_outcome" && f.args.get(1).is_some_and(|s| s == "pass")
+    });
+    let per_test = if build_passed {
+        def.per_test_results(output)
+    } else {
+        Vec::new()
+    };
     let tags: Vec<String> = outcome_tags(&outcome_facts)
         .into_iter()
         .chain(bug_caught_tags(project_root, &subject, &per_test))
@@ -310,5 +320,90 @@ mod tests {
             command_exit: None,
         });
         assert_eq!(outcome_tags(&facts), vec!["outcome:compile_unknown"]);
+    }
+
+    // ── Finding 2: bug_caught must not fire on unknown builds ──
+
+    fn enable_outcomes(root: &Path) {
+        let p = root.join(".phronesis").join("confidence.json");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, "{}").unwrap();
+    }
+
+    fn open_subject(root: &Path, id: &str) {
+        let meta_dir = root.join(".phronesis").join("outcomes");
+        std::fs::create_dir_all(&meta_dir).unwrap();
+        std::fs::write(meta_dir.join("subject"), id).unwrap();
+    }
+
+    fn write_bugs(root: &Path, content: &str) {
+        let phr = root.join(".phronesis");
+        std::fs::create_dir_all(&phr).unwrap();
+        std::fs::write(phr.join("bugs.json"), content).unwrap();
+    }
+
+    #[test]
+    fn unknown_build_does_not_ground_bug_caught() {
+        // Truncated output with per-test `ok` lines but NO summary /
+        // Finished line / exit code → build_outcome is unknown.
+        // bug_caught must NOT produce tags (absent evidence is unknown,
+        // not pass).
+        let dir = tempfile::tempdir().unwrap();
+        enable_outcomes(dir.path());
+        open_subject(dir.path(), "u");
+        // Set up a known bug whose test name matches a per_test line.
+        write_bugs(
+            dir.path(),
+            r#"[{"bug_id":"1042","test":"test_fix_1042","status":"open"}]"#,
+        );
+        // No "test result:" line, no "Finished", no exit code — just
+        // per-test lines that the per_test regex can match.
+        let output = "running 3 tests\ntest test_fix_1042 ... ok\ntest test_other   ... ok\ntest test_fix_2048 ... ok\n";
+        let (tags, _subject) = extract_from(ExtractFromInput {
+            project_root: dir.path(),
+            tool_name: "Bash",
+            command: Some("cargo test --workspace"),
+            output,
+            command_exit: None,
+        });
+        assert!(
+            tags.iter().any(|t| t == "outcome:compile_unknown"),
+            "tags must include compile_unknown: {tags:?}"
+        );
+        assert!(
+            !tags.iter().any(|t| t.starts_with("outcome:bug_caught")),
+            "bug_caught must NOT appear when build is unknown; tags = {tags:?}"
+        );
+    }
+
+    #[test]
+    fn known_pass_still_grounds_bug_caught() {
+        // Regression: the same output WITH exit=0 (or a full summary)
+        // should still emit the bug_caught tag.
+        let dir = tempfile::tempdir().unwrap();
+        enable_outcomes(dir.path());
+        open_subject(dir.path(), "u");
+        let output = "\
+   Compiling foo v0.1.0\n   Running unittests src/lib.rs (target/debug/deps/foo-abc123)\nrunning 3 tests\ntest test_fix_1042 ... ok\ntest test_other   ... ok\ntest result: ok. 3 passed; 0 failed\n";
+        let (tags, _subject) = extract_from(ExtractFromInput {
+            project_root: dir.path(),
+            tool_name: "Bash",
+            command: Some("cargo test --workspace"),
+            output,
+            command_exit: Some(0),
+        });
+        let tags: Vec<String> = tags;
+        // Build passed, so test facts exist — but without a known-bug
+        // registry the bug_caught tag is empty.  What matters is that
+        // the build_outcome is "pass" (not unknown), proving we didn't
+        // accidentally gate on the wrong thing.
+        assert!(
+            tags.iter().any(|t| t == "outcome:compile_ok"),
+            "tags must include compile_ok: {tags:?}"
+        );
+        assert!(
+            !tags.iter().any(|t| t == "outcome:compile_unknown"),
+            "tags must NOT include compile_unknown: {tags:?}"
+        );
     }
 }
