@@ -403,16 +403,17 @@ fn is_allowed_absolute(path: &str) -> bool {
     })
 }
 
-/// Is the text before a `/...` match a path boundary? A preceding `/` or
-/// word character means the match is the tail of a URL, a relative path,
-/// or a date — not an absolute path. Exception: in rendered JSON a
-/// newline/tab is the two-character escape `\n` / `\t` / `\r`, so a path
-/// right after one IS at a line boundary.
+/// Is the text before a `/...` match a path boundary? A preceding `/`,
+/// `.` (relative-path context like `./x` or `../x`), or word character
+/// means the match is the tail of a URL, a relative path, or a date —
+/// not an absolute path. Exception: in rendered JSON a newline/tab is
+/// the two-character escape `\n` / `\t` / `\r`, so a path right after
+/// one IS at a line boundary.
 fn is_path_boundary(before: &str) -> bool {
     let Some(prev) = before.chars().next_back() else {
         return true;
     };
-    if prev == '/' {
+    if prev == '/' || prev == '.' {
         return false;
     }
     if prev.is_alphanumeric() {
@@ -941,6 +942,83 @@ mod tests {
         assert!(
             findings.is_empty(),
             "clean scrubbed output must have no findings: {findings:?}"
+        );
+    }
+
+    // ── Finding 1: relative `./x` and `../x` paths must not be flagged ──
+
+    #[test]
+    fn relative_dot_slash_path_is_not_flagged_as_absolute() {
+        // Scrubbed command with `./scripts/build.sh` — the preceding `.`
+        // followed by `/` is relative-path context, not an absolute path.
+        let v = json!({"command": "./scripts/build.sh"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        let abs_findings: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| {
+                f.what == "absolute path outside the project placeholder roots"
+            })
+            .collect();
+        assert!(
+            abs_findings.is_empty(),
+            "`./scripts/build.sh` must not be flagged as absolute; got {abs_findings:?}"
+        );
+    }
+
+    #[test]
+    fn relative_dotdot_path_is_not_flagged_as_absolute() {
+        let v = json!({"command": "../other/proj/file.rs"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        let abs_findings: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| {
+                f.what == "absolute path outside the project placeholder roots"
+            })
+            .collect();
+        assert!(
+            abs_findings.is_empty(),
+            "`../other/proj/file.rs` must not be flagged as absolute; got {abs_findings:?}"
+        );
+    }
+
+    #[test]
+    fn genuine_absolute_path_still_flagged_as_error() {
+        // Regression: a real user path like `/Users/alice/leak.txt`
+        // preceded by `"` in rendered JSON MUST still be flagged.
+        let v = json!({"data": "/Users/alice/leak.txt"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        let abs_findings: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| {
+                f.severity == Severity::Error
+                    && f.what == "absolute path outside the project placeholder roots"
+            })
+            .collect();
+        assert!(
+            !abs_findings.is_empty(),
+            "`/Users/alice/leak.txt` MUST be flagged as an Error"
+        );
+    }
+
+    #[test]
+    fn dot_before_absolute_typo_is_relative_path_context() {
+        // `foo./Users/alice/leak` — a concatenated typo. The `.` immediately
+        // preceding the absolute path is treated as relative-path context
+        // (consistent with the `./x` behavior). A missed leak here is
+        // acceptable; this test pins that we don't silently change behavior
+        // without notice.
+        let v = json!({"data": "foo./Users/alice/leak"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        let abs_findings: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| {
+                f.what == "absolute path outside the project placeholder roots"
+            })
+            .collect();
+        // Acceptable: the `.` makes it relative-path-shaped context.
+        assert!(
+            abs_findings.is_empty(),
+            "concatenated typo with `.` is relative-path-shaped; got {abs_findings:?}"
         );
     }
 }
