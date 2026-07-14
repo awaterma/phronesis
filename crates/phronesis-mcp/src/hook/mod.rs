@@ -287,8 +287,20 @@ async fn assert_journey_facts_into(
     };
     let sid = journey::current_sid(project_root);
     let now = unix_secs_now();
-    if let Err(e) =
-        journey::derive::assert_facts(network, project_root, rules, &cfg, &sid, now).await
+    let scope = journey::derive::WindowScope {
+        current_sid: &sid,
+        now_ts: now,
+    };
+    if let Err(e) = journey::derive::assert_facts(
+        network,
+        journey::derive::DeriveInput {
+            project_root,
+            rules,
+            config: &cfg,
+            scope,
+        },
+    )
+    .await
     {
         if e.is_config_error() {
             return Err(e);
@@ -329,15 +341,27 @@ async fn assert_confidence_signals(network: &ReteNetwork) {
 /// Record a hook event to `.phronesis/log.jsonl`. Best-effort: log failures
 /// are intentionally swallowed because we never want logging to alter the
 /// hook's exit code (which is the contract Claude Code depends on).
-fn log_hook_event(
-    phase: &str,
-    tool_name: &str,
-    file_path: &str,
-    exit: i32,
-    command_exit: Option<i32>,
-    consequences: &[LoggedConsequence],
-) {
-    let event = match phase {
+///
+/// Parameters for [`log_hook_event`].
+pub(super) struct LogEventInput<'a> {
+    pub(super) phase: &'static str,
+    pub(super) tool_name: &'a str,
+    pub(super) file_path: &'a str,
+    pub(super) exit: i32,
+    pub(super) command_exit: Option<i32>,
+    pub(super) consequences: &'a [LoggedConsequence],
+}
+
+pub(super) fn log_hook_event(input: &LogEventInput<'_>) {
+    let LogEventInput {
+        phase,
+        tool_name,
+        file_path,
+        exit,
+        command_exit,
+        consequences,
+    } = input;
+    let event = match *phase {
         "pre" => "pre_check",
         "post" => "post_check",
         _ => "hook_event",
@@ -347,10 +371,10 @@ fn log_hook_event(
         .with("phase", phase.to_string())
         .with("tool", tool_name.to_string())
         .with("file", file_path.to_string())
-        .with("exit", exit)
+        .with("exit", *exit)
         .with("consequences", consequences_value);
     if let Some(ce) = command_exit {
-        entry = entry.with("command_exit", ce);
+        entry = entry.with("command_exit", *ce);
     }
     let path = action_log::default_path(&security::project_root());
     let _ = action_log::append(&path, &entry);

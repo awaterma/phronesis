@@ -92,12 +92,14 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     if let Some(content) = &new_content
         && assert_pre_content_facts(
             &network,
-            &payload,
-            &tool_name,
-            content,
-            &file_path,
-            &content_patterns,
-            &bash_command_patterns,
+            PreContentInput {
+                payload: &payload,
+                tool_name: &tool_name,
+                content,
+                file_path: &file_path,
+                content_patterns: &content_patterns,
+                bash_command_patterns: &bash_command_patterns,
+            },
         )
         .await
         .is_err()
@@ -129,7 +131,14 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         for w in &warnings {
             eprintln!("phronesis: WARNING — {}", w);
         }
-        super::log_hook_event("pre", &tool_name, &file_path, 2, None, &logged);
+        super::log_hook_event(&super::LogEventInput {
+            phase: "pre",
+            tool_name: &tool_name,
+            file_path: &file_path,
+            exit: 2,
+            command_exit: None,
+            consequences: &logged,
+        });
         process::exit(2);
     }
 
@@ -137,11 +146,25 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         for w in &warnings {
             eprintln!("phronesis: WARNING — {}", w);
         }
-        super::log_hook_event("pre", &tool_name, &file_path, 1, None, &logged);
+        super::log_hook_event(&super::LogEventInput {
+            phase: "pre",
+            tool_name: &tool_name,
+            file_path: &file_path,
+            exit: 1,
+            command_exit: None,
+            consequences: &logged,
+        });
         process::exit(1);
     }
 
-    super::log_hook_event("pre", &tool_name, &file_path, 0, None, &logged);
+    super::log_hook_event(&super::LogEventInput {
+        phase: "pre",
+        tool_name: &tool_name,
+        file_path: &file_path,
+        exit: 0,
+        command_exit: None,
+        consequences: &logged,
+    });
     super::exit_ok();
 }
 
@@ -149,15 +172,27 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
 /// pattern checks, cargo-workspace scanner, diff facts, values facts, and
 /// TDD test-existence facts.  Logs the specific error message to stderr on
 /// failure and returns `Err` — the caller maps that to `process::exit(2)`.
+struct PreContentInput<'a> {
+    payload: &'a HookPayload,
+    tool_name: &'a str,
+    content: &'a str,
+    file_path: &'a str,
+    content_patterns: &'a [String],
+    bash_command_patterns: &'a [String],
+}
+
 async fn assert_pre_content_facts(
     network: &ReteNetwork,
-    payload: &HookPayload,
-    tool_name: &str,
-    content: &str,
-    file_path: &str,
-    content_patterns: &[String],
-    bash_command_patterns: &[String],
+    input: PreContentInput<'_>,
 ) -> Result<(), HookError> {
+    let PreContentInput {
+        payload,
+        tool_name,
+        content,
+        file_path,
+        content_patterns,
+        bash_command_patterns,
+    } = input;
     network
         .assert_fact(Fact {
             id: "new_content".to_string(),

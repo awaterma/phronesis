@@ -56,7 +56,7 @@ fn scaffolded_pytest_def_handles_whitespace_but_not_substring() {
     let dir = tempfile::tempdir().unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
-        .args(&["init", "--packs", "confidence"])
+        .args(["init", "--packs", "confidence"])
         .current_dir(dir.path())
         .output()
         .expect("spawn phr-mcp init");
@@ -90,7 +90,7 @@ fn scaffolded_defs_recognize_command_position_only() {
     // regex classes, or these positive/negative cases diverge.
     let dir = tempfile::tempdir().unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
-        .args(&["init", "--packs", "confidence"])
+        .args(["init", "--packs", "confidence"])
         .current_dir(dir.path())
         .output()
         .expect("spawn phr-mcp init");
@@ -119,4 +119,35 @@ fn scaffolded_defs_recognize_command_position_only() {
     assert!(tsc.handles("cd web && npx tsc"));
     assert!(!tsc.handles("echo tsc failed"));
     assert!(!tsc.handles("touch tsc.log"));
+}
+
+#[test]
+fn repository_toolchain_defs_match_the_confidence_scaffold() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["init", "--packs", "confidence"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn phr-mcp init");
+    assert!(out.status.success(), "init stderr={:?}", out.stderr);
+
+    let generated: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".phronesis/toolchains.json"))
+            .expect("read generated toolchains"),
+    )
+    .expect("parse generated toolchains");
+    let repository_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".phronesis/toolchains.json");
+    let repository: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&repository_path).expect("read repository toolchains"),
+    )
+    .expect("parse repository toolchains");
+
+    assert_eq!(
+        repository,
+        generated,
+        "{} drifted",
+        repository_path.display()
+    );
 }

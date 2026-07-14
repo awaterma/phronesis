@@ -67,7 +67,9 @@ pub use error::ReteError;
 pub use ids::{FactId, RuleId, StateId};
 pub use network::*;
 pub use production::*;
-pub use pull::{DynLookup, Lookup, dyn_lookup_as_consequence, lookup_as_consequence};
+pub use pull::{
+    DynLookup, Lookup, RuleFiringContext, dyn_lookup_as_consequence, lookup_as_consequence,
+};
 pub use push::rule_firing_to_consequences;
 pub use script_evaluator::{BuiltinScriptEvaluator, ScriptEval, ScriptEvaluator};
 pub use variable_binding::{Bindings, Token};

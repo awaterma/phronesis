@@ -267,22 +267,24 @@ impl BetaNetwork {
         source_id: &str,
         token: Token,
     ) -> Vec<PStateActivation> {
-        let mut activations = Vec::new();
-        // Use a work queue to propagate tokens through the network
-        let mut work_queue: Vec<(String, Token)> = vec![(source_id.to_string(), token)];
+        let (mut activations, mut work_queue) = (Vec::new(), vec![(source_id.to_string(), token)]);
 
         while let Some((current_source, current_token)) = work_queue.pop() {
             // Find all beta states that have this source as input
-            let mut states_to_update = Vec::new();
-
-            for (state_id, state) in &self.states {
-                if state.left_input.contains(&current_source) {
-                    states_to_update.push((state_id.clone(), "left"));
-                }
-                if state.right_input.contains(&current_source) {
-                    states_to_update.push((state_id.clone(), "right"));
-                }
-            }
+            let states_to_update = self
+                .states
+                .iter()
+                .flat_map(|(state_id, state)| {
+                    let mut inputs = Vec::with_capacity(2);
+                    if state.left_input.contains(&current_source) {
+                        inputs.push((state_id.clone(), "left"));
+                    }
+                    if state.right_input.contains(&current_source) {
+                        inputs.push((state_id.clone(), "right"));
+                    }
+                    inputs
+                })
+                .collect::<Vec<_>>();
 
             // Process the token through each relevant state and collect new tokens
             for (state_id, input_type) in states_to_update {

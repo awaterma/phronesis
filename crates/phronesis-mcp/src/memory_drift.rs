@@ -292,7 +292,7 @@ fn classify(entry: &MemoryEntry) -> Bucket {
 ///   "don't kill a rustc" (article between verb and target) does not.
 /// - **file-shaped** → `file_path_matches` / `file_extension_is` /
 ///   `new_content_contains` (hook_facts.rs): extension tokens, path
-///   segments, or code literals like `.unwrap()` / `todo!(`.
+///   segments, or method and macro call literals.
 /// - **function-shaped** → the AST predicates in `syntax/facts.rs`
 ///   (`SyntaxFacts::PREDICATES`): function/fn vocabulary paired with a
 ///   shape word (param, doc, test, assert, derive, clone, public).
@@ -312,14 +312,14 @@ fn has_predicate_shaped_trigger(text: &str) -> bool {
     }
 
     // File-shaped: extension token (".rs"), path segment ("src/", "a/b"),
-    // or code literal (".unwrap()", "todo!(", "dbg!(").
+    // or a method/macro call literal.
     let file_re = regex::Regex::new(
         r#"(?x)
         \.[a-z]{1,5}\b[/\s,)'"]?   # extension-ish token: .rs, .py, .json
         | \b\w{2,}/\w{2,}          # path segment: src/lib, docs/specs (not "I/O")
         | \bsrc/ | \btests?/
-        | \.\w+\(\)                # method literal: .unwrap(), .clone()
-        | \w+!\(                   # macro literal: todo!(, dbg!(
+        | \.\w+\(\)                # method-call literal
+        | \w+!\(                   # macro-call literal
         "#,
     )
     .expect("static regex");

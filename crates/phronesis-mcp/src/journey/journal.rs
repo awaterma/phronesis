@@ -226,20 +226,35 @@ fn write_temp_synced(tmp: &Path, content: &str) -> std::io::Result<()> {
 }
 
 fn compact_locked(path: &Path, tail_records: usize) -> Result<bool, JournalError> {
+    let all = read_records(path)?;
+    if all.len() <= tail_records {
+        return Ok(false);
+    }
+    let out = compacted_content(&all, tail_records)?;
+    install_compacted(path, &out)?;
+    Ok(true)
+}
+
+fn read_records(path: &Path) -> Result<Vec<JournalRecord>, JournalError> {
     let io_err = |e: std::io::Error| JournalError::Io {
         path: path.display().to_string(),
         source: e,
     };
     let content = std::fs::read_to_string(path).map_err(io_err)?;
-    let all: Vec<JournalRecord> = content
+    Ok(content
         .lines()
         .filter_map(|l| serde_json::from_str::<JournalRecord>(l).ok())
-        .collect();
-    if all.len() <= tail_records {
-        return Ok(false);
-    }
+        .collect())
+}
+
+fn compacted_content(all: &[JournalRecord], tail_records: usize) -> Result<String, JournalError> {
     let split = all.len() - tail_records;
     let (prefix, tail) = all.split_at(split);
+    let keep = latest_outcome_indices(prefix);
+    serialize_compaction(prefix, tail, &keep)
+}
+
+fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {
     // Latest outcome-bearing record per subject in the prefix, by index.
     let mut latest: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for (i, r) in prefix.iter().enumerate() {
@@ -251,8 +266,16 @@ fn compact_locked(path: &Path, tail_records: usize) -> Result<bool, JournalError
     }
     let mut keep: Vec<usize> = latest.into_values().collect();
     keep.sort_unstable();
+    keep
+}
+
+fn serialize_compaction(
+    prefix: &[JournalRecord],
+    tail: &[JournalRecord],
+    keep: &[usize],
+) -> Result<String, JournalError> {
     let mut out = String::new();
-    for i in keep {
+    for &i in keep {
         out.push_str(&serde_json::to_string(&prefix[i])?);
         out.push('\n');
     }
@@ -260,12 +283,16 @@ fn compact_locked(path: &Path, tail_records: usize) -> Result<bool, JournalError
         out.push_str(&serde_json::to_string(r)?);
         out.push('\n');
     }
+    Ok(out)
+}
+
+fn install_compacted(path: &Path, out: &str) -> Result<(), JournalError> {
     let tmp = path.with_extension("jsonl.tmp");
     let tmp_err = |e: std::io::Error| JournalError::Io {
         path: tmp.display().to_string(),
         source: e,
     };
-    if let Err(e) = write_temp_synced(&tmp, &out) {
+    if let Err(e) = write_temp_synced(&tmp, out) {
         // Best-effort cleanup of a partial temp file; the live journal is
         // untouched on this path.
         let _ = std::fs::remove_file(&tmp);
@@ -277,7 +304,7 @@ fn compact_locked(path: &Path, tail_records: usize) -> Result<bool, JournalError
     }
     // Parent-directory fsync deliberately omitted — see module docs
     // ("Durability").
-    Ok(true)
+    Ok(())
 }
 
 /// Append one record to the journey journal. Creates `.phronesis/journey/`
@@ -588,17 +615,17 @@ mod tests {
     #[test]
     fn concurrent_appenders_do_not_interleave_json() {
         use std::sync::{Arc, Barrier};
+        const THREADS: usize = 8;
+        const PER_THREAD: u64 = 25;
         let dir = Arc::new(tempfile::tempdir().unwrap());
-        let threads = 8usize;
-        let per_thread = 25u64;
-        let barrier = Arc::new(Barrier::new(threads));
+        let barrier = Arc::new(Barrier::new(THREADS));
         let mut handles = Vec::new();
-        for t in 0..threads as u64 {
+        for t in 0..THREADS as u64 {
             let dir = Arc::clone(&dir);
             let barrier = Arc::clone(&barrier);
             handles.push(std::thread::spawn(move || {
                 barrier.wait();
-                for i in 0..per_thread {
+                for i in 0..PER_THREAD {
                     append(dir.path(), &record(t * 1000 + i, None)).unwrap();
                 }
             }));
@@ -609,22 +636,27 @@ mod tests {
         // Assert on the RAW file, not read_recent (which skips bad lines):
         // every line must parse, and every uniquely numbered seq must be
         // present exactly once.
-        let raw =
-            std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl")).unwrap();
-        let mut seqs: Vec<u64> = Vec::new();
-        for line in raw.lines() {
-            let rec: JournalRecord = serde_json::from_str(line)
-                .unwrap_or_else(|e| panic!("interleaved/torn line {line:?}: {e}"));
-            seqs.push(rec.seq);
-        }
-        assert_eq!(seqs.len(), threads * per_thread as usize, "no lost append");
+        let mut seqs = read_raw_sequences(dir.path());
+        assert_eq!(seqs.len(), THREADS * PER_THREAD as usize, "no lost append");
         seqs.sort_unstable();
         seqs.dedup();
         assert_eq!(
             seqs.len(),
-            threads * per_thread as usize,
+            THREADS * PER_THREAD as usize,
             "no duplicated seq"
         );
+    }
+
+    fn read_raw_sequences(root: &Path) -> Vec<u64> {
+        let raw = std::fs::read_to_string(root.join(".phronesis/journey/events.jsonl"))
+            .expect("read raw journey journal");
+        raw.lines()
+            .map(|line| {
+                serde_json::from_str::<JournalRecord>(line)
+                    .expect("raw journal line must be intact JSON")
+                    .seq
+            })
+            .collect()
     }
 
     #[test]
@@ -635,17 +667,17 @@ mod tests {
         // Without the stable lock, a compaction rename could clobber a
         // concurrent append landing in the pre-rename inode.
         use std::sync::{Arc, Barrier};
+        const APPENDERS: u64 = 4;
+        const PER_THREAD: u64 = 25;
         let dir = Arc::new(tempfile::tempdir().unwrap());
-        let appenders = 4u64;
-        let per_thread = 25u64;
-        let barrier = Arc::new(Barrier::new(appenders as usize + 1));
+        let barrier = Arc::new(Barrier::new(APPENDERS as usize + 1));
         let mut handles = Vec::new();
-        for t in 0..appenders {
+        for t in 0..APPENDERS {
             let dir = Arc::clone(&dir);
             let barrier = Arc::clone(&barrier);
             handles.push(std::thread::spawn(move || {
                 barrier.wait();
-                for i in 0..per_thread {
+                for i in 0..PER_THREAD {
                     let seq = t * 1000 + i;
                     append(
                         dir.path(),
@@ -669,14 +701,19 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        let recs = read_recent(dir.path(), SUFFIX_HARD_CAP).unwrap();
-        let mut seqs: Vec<u64> = recs.iter().map(|r| r.seq).collect();
-        seqs.sort_unstable();
+        let (actual, expected) = race_sequences(dir.path(), APPENDERS, PER_THREAD);
+        assert_eq!(actual, expected, "every unique append survives the race");
+    }
+
+    fn race_sequences(root: &Path, appenders: u64, per_thread: u64) -> (Vec<u64>, Vec<u64>) {
+        let records = read_recent(root, SUFFIX_HARD_CAP).expect("read compacted journey records");
+        let mut actual: Vec<u64> = records.iter().map(|record| record.seq).collect();
+        actual.sort_unstable();
         let mut expected: Vec<u64> = (0..appenders)
-            .flat_map(|t| (0..per_thread).map(move |i| t * 1000 + i))
+            .flat_map(|thread| (0..per_thread).map(move |index| thread * 1000 + index))
             .collect();
         expected.sort_unstable();
-        assert_eq!(seqs, expected, "every unique append survives the race");
+        (actual, expected)
     }
 
     #[test]

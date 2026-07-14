@@ -61,15 +61,24 @@ pub fn handles(root: &Path, command: &str) -> bool {
 
 /// Extract neutral outcome facts. Empty when no def recognizes the command —
 /// a non-build/test command produces no grounded signal, which is correct.
-pub fn extract(
-    root: &Path,
-    subject: &str,
-    command: &str,
-    output: &str,
-    command_exit: Option<i32>,
-) -> Vec<OutcomeFact> {
-    matching_def(root, command)
-        .map(|d| d.parse(subject, command, output, command_exit))
+pub struct ExtractInput<'a> {
+    pub root: &'a Path,
+    pub subject: &'a str,
+    pub command: &'a str,
+    pub output: &'a str,
+    pub command_exit: Option<i32>,
+}
+
+pub fn extract(input: ExtractInput<'_>) -> Vec<OutcomeFact> {
+    matching_def(input.root, input.command)
+        .map(|d| {
+            d.parse(
+                input.subject,
+                input.command,
+                input.output,
+                input.command_exit,
+            )
+        })
         .unwrap_or_default()
 }
 
@@ -159,13 +168,22 @@ fn bug_caught_tags(project_root: &Path, subject: &str, per_test: &[(String, bool
 ///   from build/test/bug results and the subject so the hook stamps both.
 ///
 /// Returns: `(outcome_tags, subject)`.
-pub fn extract_from(
-    project_root: &Path,
-    tool_name: &str,
-    command_opt: Option<&str>,
-    output: &str,
-    command_exit: Option<i32>,
-) -> (Vec<String>, Option<String>) {
+pub struct ExtractFromInput<'a> {
+    pub project_root: &'a Path,
+    pub tool_name: &'a str,
+    pub command: Option<&'a str>,
+    pub output: &'a str,
+    pub command_exit: Option<i32>,
+}
+
+pub fn extract_from(input: ExtractFromInput<'_>) -> (Vec<String>, Option<String>) {
+    let ExtractFromInput {
+        project_root,
+        tool_name,
+        command: command_opt,
+        output,
+        command_exit,
+    } = input;
     if !matches!(tool_name, "Bash" | "run_shell_command") {
         return (Vec::new(), None);
     }
@@ -184,6 +202,15 @@ pub fn extract_from(
         return (Vec::new(), None);
     }
 
+    extract_handled(project_root, command, output, command_exit)
+}
+
+fn extract_handled(
+    project_root: &Path,
+    command: &str,
+    output: &str,
+    command_exit: Option<i32>,
+) -> (Vec<String>, Option<String>) {
     let subject = match subject_mod::open(project_root) {
         Ok(s) => s,
         Err(_) => return (Vec::new(), None),
@@ -207,20 +234,26 @@ mod tests {
     #[test]
     fn unknown_command_yields_no_facts() {
         let dir = tempfile::tempdir().unwrap();
-        let facts = extract(dir.path(), "u", "ls -la", "total 0\n", None);
+        let facts = extract(ExtractInput {
+            root: dir.path(),
+            subject: "u",
+            command: "ls -la",
+            output: "total 0\n",
+            command_exit: None,
+        });
         assert!(facts.is_empty());
     }
 
     #[test]
     fn cargo_command_is_routed_through_the_registry() {
         let dir = tempfile::tempdir().unwrap();
-        let facts = extract(
-            dir.path(),
-            "u",
-            "cargo build",
-            "   Finished dev profile in 0.4s\n",
-            None,
-        );
+        let facts = extract(ExtractInput {
+            root: dir.path(),
+            subject: "u",
+            command: "cargo build",
+            output: "   Finished dev profile in 0.4s\n",
+            command_exit: None,
+        });
         assert!(
             facts.iter().any(|f| f.predicate == "build_outcome"),
             "a cargo command should produce a build_outcome via the built-in def"
@@ -238,13 +271,13 @@ mod tests {
             r#"[{"id":"pytest","matches":"pytest","test_summary":"(?:(?P<failed>\\d+) failed, )?(?P<passed>\\d+) passed"}]"#,
         )
         .unwrap();
-        let facts = extract(
-            dir.path(),
-            "u",
-            "pytest -q",
-            "=== 3 passed in 0.1s ===\n",
-            Some(0),
-        );
+        let facts = extract(ExtractInput {
+            root: dir.path(),
+            subject: "u",
+            command: "pytest -q",
+            output: "=== 3 passed in 0.1s ===\n",
+            command_exit: Some(0),
+        });
         assert!(facts.iter().any(|f| f.predicate == "build_outcome"));
         assert!(facts.iter().any(|f| f.predicate == "test_outcome"));
     }
@@ -269,13 +302,13 @@ mod tests {
     #[test]
     fn cargo_build_without_exit_or_evidence_stamps_compile_unknown_not_ok() {
         let dir = tempfile::tempdir().unwrap();
-        let facts = extract(
-            dir.path(),
-            "u",
-            "cargo build",
-            "   Compiling foo v0.1.0\n",
-            None,
-        );
+        let facts = extract(ExtractInput {
+            root: dir.path(),
+            subject: "u",
+            command: "cargo build",
+            output: "   Compiling foo v0.1.0\n",
+            command_exit: None,
+        });
         assert_eq!(outcome_tags(&facts), vec!["outcome:compile_unknown"]);
     }
 }

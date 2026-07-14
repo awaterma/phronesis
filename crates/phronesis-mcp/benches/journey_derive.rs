@@ -156,9 +156,20 @@ fn bench_journey_derive(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), n, |b, _| {
             b.to_async(&rt).iter(|| async {
                 let mut net = ReteNetwork::new();
-                derive::assert_facts(&mut net, scratch, &rules, &cfg, SID, now_ts)
-                    .await
-                    .expect("derive::assert_facts");
+                derive::assert_facts(
+                    &mut net,
+                    derive::DeriveInput {
+                        project_root: scratch,
+                        rules: &rules,
+                        config: &cfg,
+                        scope: derive::WindowScope {
+                            current_sid: SID,
+                            now_ts,
+                        },
+                    },
+                )
+                .await
+                .expect("derive::assert_facts");
             });
         });
     }
@@ -202,9 +213,20 @@ fn bench_journey_full(c: &mut Criterion) {
                 for rule in &rules {
                     net.add_rule(rule.clone()).await.expect("add_rule");
                 }
-                derive::assert_facts(&mut net, scratch, &rules, &cfg, SID, now_ts)
-                    .await
-                    .expect("derive::assert_facts");
+                derive::assert_facts(
+                    &mut net,
+                    derive::DeriveInput {
+                        project_root: scratch,
+                        rules: &rules,
+                        config: &cfg,
+                        scope: derive::WindowScope {
+                            current_sid: SID,
+                            now_ts,
+                        },
+                    },
+                )
+                .await
+                .expect("derive::assert_facts");
                 let _ = net.fire_all_consequences().expect("fire_all_consequences");
             });
         });

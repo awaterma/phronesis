@@ -268,7 +268,7 @@ fn check_fixture(path: &Path) -> Result<(), String> {
     // Baseline: journal lines that exist AFTER init but BEFORE the hook
     // runs.  Freshness guard so `init` scaffolding can't produce false-green.
     let baseline: std::collections::HashSet<String> =
-        journal_lines(&dir.path()).into_iter().collect();
+        journal_lines(dir.path()).into_iter().collect();
 
     // Path hermeticity: rewrite `/home/dev/project` prefix in file_path
     // fields to this temp project's root so an absolute path resolves
@@ -314,7 +314,7 @@ fn check_fixture(path: &Path) -> Result<(), String> {
 
     // Journal-tag assertions against fresh records only.
     if !fx.expect.journal_tag_new.is_empty() || !fx.expect.journal_tag_from_output.is_empty() {
-        let records = fresh_records(&dir.path(), &baseline);
+        let records = fresh_records(dir.path(), &baseline);
         for tag in &fx.expect.journal_tag_new {
             if !fresh_record_has_tag(&records, tag) {
                 return Err(format!(

@@ -18,11 +18,11 @@ use std::time::Instant;
 
 use crate::agenda::Agenda;
 use crate::alpha_network::AlphaNetwork;
-use crate::beta_network::BetaNetwork;
+use crate::beta_network::{BetaNetwork, PStateActivation};
 use crate::consequence::Consequence;
 use crate::engine_types::{Action, Condition, Fact, PerformanceStats, Rule};
 use crate::error::ReteError;
-use crate::production::ProductionNetwork;
+use crate::production::{ProductionNetwork, ProductionState};
 use crate::script_evaluator::{BuiltinScriptEvaluator, ScriptEval};
 use crate::wme::{WmeManager, WorkingMemoryElement};
 use tracing::{debug, warn};
@@ -130,84 +130,8 @@ impl ReteNetwork {
             acts
         };
 
-        // Add p-state activations to agenda (multi-condition rules).
-        // Hold fired_activations, production_network, and agenda for the whole
-        // loop; previously each iteration re-acquired production_network and
-        // agenda. wme_manager is left per-iteration because `evaluate_script_conditions`
-        // re-enters it and std::sync::Mutex isn't reentrant.
         if !p_state_activations.is_empty() {
-            let mut fired_activations = self
-                .fired_activations
-                .lock()
-                .map_err(|_| ReteError::poisoned("fired_activations"))?;
-            let production_network = self
-                .production_network
-                .lock()
-                .map_err(|_| ReteError::poisoned("production_network"))?;
-            let mut agenda = self
-                .agenda
-                .lock()
-                .map_err(|_| ReteError::poisoned("agenda"))?;
-
-            for activation in p_state_activations {
-                let wme_ids: Vec<String> =
-                    activation.token.wmes.iter().map(|w| w.id.clone()).collect();
-                let activation_key = format!("{}:{}", activation.rule_id, wme_ids.join(","));
-
-                if fired_activations.contains(&activation_key) {
-                    debug!(
-                        "Skipping already-fired p-state activation: {}",
-                        activation_key
-                    );
-                    continue;
-                }
-
-                let rule = production_network
-                    .find_by_rule_id(activation.rule_id.as_str())
-                    .map(|pn| pn.rule.clone());
-
-                if let Some(rule) = rule {
-                    // evaluate_script_conditions locks wme_manager internally;
-                    // see comment above for why we don't hold it across the loop.
-                    let script_passes =
-                        self.evaluate_script_conditions(&rule, &activation.token.bindings)?;
-                    if !script_passes {
-                        debug!(
-                            "P-state activation blocked by script condition: rule '{}'",
-                            rule.id
-                        );
-                        continue;
-                    }
-
-                    let wme_list = {
-                        let wme_manager = self
-                            .wme_manager
-                            .lock()
-                            .map_err(|_| ReteError::poisoned("wme_manager"))?;
-                        activation
-                            .token
-                            .wmes
-                            .iter()
-                            .filter_map(|wme_ref| wme_manager.get(&wme_ref.id).cloned())
-                            .collect::<Vec<_>>()
-                    };
-
-                    debug!(
-                        "P-state activation: rule '{}' with {} WMEs and bindings {:?}",
-                        rule.id,
-                        wme_list.len(),
-                        activation.token.bindings
-                    );
-
-                    agenda.add_item(
-                        rule,
-                        wme_list,
-                        activation.token.bindings,
-                        activation.salience,
-                    );
-                    fired_activations.insert(activation_key);
-                }
-            }
+            self.add_p_state_activations(&p_state_activations)?;
         }
 
         // Handle single-condition rules (alpha-only path, no beta chain)
@@ -223,6 +147,87 @@ impl ReteNetwork {
         }
 
         Ok(())
+    }
+
+    /// Add p-state activations to the agenda.  Holds `fired_activations`,
+    /// `production_network`, and `agenda` for the whole loop to avoid
+    /// repeated lock acquisition; `wme_manager` is locked per-iteration
+    /// because `evaluate_script_conditions` re-enters it and
+    /// `std::sync::Mutex` is not reentrant.
+    fn add_p_state_activations(&self, activations: &[PStateActivation]) -> Result<(), ReteError> {
+        let mut fired_activations = self
+            .fired_activations
+            .lock()
+            .map_err(|_| ReteError::poisoned("fired_activations"))?;
+        let production_network = self
+            .production_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("production_network"))?;
+        let mut agenda = self
+            .agenda
+            .lock()
+            .map_err(|_| ReteError::poisoned("agenda"))?;
+
+        for activation in activations {
+            let wme_ids: Vec<String> = activation.token.wmes.iter().map(|w| w.id.clone()).collect();
+            let activation_key = format!("{}:{}", activation.rule_id, wme_ids.join(","));
+
+            if fired_activations.contains(&activation_key) {
+                debug!(
+                    "Skipping already-fired p-state activation: {}",
+                    activation_key
+                );
+                continue;
+            }
+
+            let rule = production_network
+                .find_by_rule_id(activation.rule_id.as_str())
+                .map(|pn| pn.rule.clone());
+
+            if let Some(rule) = rule {
+                if !self.evaluate_script_conditions(&rule, &activation.token.bindings)? {
+                    debug!(
+                        "P-state activation blocked by script condition: rule '{}'",
+                        rule.id
+                    );
+                    continue;
+                }
+
+                let wme_list = self.activation_wmes(activation)?;
+
+                debug!(
+                    "P-state activation: rule '{}' with {} WMEs and bindings {:?}",
+                    rule.id,
+                    wme_list.len(),
+                    activation.token.bindings
+                );
+
+                agenda.add_item(
+                    rule,
+                    wme_list,
+                    activation.token.bindings.clone(),
+                    activation.salience,
+                );
+                fired_activations.insert(activation_key);
+            }
+        }
+        Ok(())
+    }
+
+    fn activation_wmes(
+        &self,
+        activation: &PStateActivation,
+    ) -> Result<Vec<WorkingMemoryElement>, ReteError> {
+        let manager = self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?;
+        Ok(activation
+            .token
+            .wmes
+            .iter()
+            .filter_map(|reference| manager.get(&reference.id).cloned())
+            .collect())
     }
 
     /// Retract a fact from the RETE network
@@ -287,83 +292,9 @@ impl ReteNetwork {
 
     /// Add a rule to the RETE network
     pub async fn add_rule(&self, rule: Rule) -> Result<String, ReteError> {
-        // Use a default salience value if not specified in the rule priority
         let salience = rule.priority;
-
-        // Create alpha states for each condition in the rule.
-        // Skip __script__ pseudo-predicate conditions — they are evaluated as post-filters
-        // on activations, not matched through the alpha/beta network.
-        let mut condition_state_ids = Vec::new();
-        {
-            let mut alpha_network = self
-                .alpha_network
-                .lock()
-                .map_err(|_| ReteError::poisoned("alpha_network"))?;
-
-            for condition in &rule.conditions {
-                if condition.predicate == "__script__" {
-                    continue; // Script conditions bypass alpha network
-                }
-                let state_id = alpha_network.get_or_create_state(condition.clone());
-                condition_state_ids.push(state_id);
-            }
-        }
-
-        // Create beta states to join the conditions together
-        // Track the terminal state for this rule (where complete matches end up)
-        let terminal_state_id: Option<String> = if condition_state_ids.len() > 1 {
-            // For multiple conditions, we need to create join states
-            let mut current_state_id = condition_state_ids[0].clone();
-
-            for (i, next_condition_id) in condition_state_ids[1..].iter().enumerate() {
-                // Create a beta join state between the current state and the next condition
-                let join_state_id = {
-                    let mut beta_network = self
-                        .beta_network
-                        .lock()
-                        .map_err(|_| ReteError::poisoned("beta_network"))?;
-                    beta_network.get_or_create_join(
-                        current_state_id.clone(),
-                        next_condition_id.clone(),
-                        "default_join".to_string(),
-                    )
-                };
-
-                // FIX: Connect alpha states to the beta network
-                // For the first join, connect both alpha states to the beta state
-                if i == 0 {
-                    let mut alpha_network = self
-                        .alpha_network
-                        .lock()
-                        .map_err(|_| ReteError::poisoned("alpha_network"))?;
-                    // First alpha state feeds left input
-                    if let Some(alpha_state) = alpha_network.states.get_mut(&current_state_id) {
-                        alpha_state.add_child(join_state_id.clone());
-                    }
-                    // Second alpha state feeds right input
-                    if let Some(alpha_state) = alpha_network.states.get_mut(next_condition_id) {
-                        alpha_state.add_child(join_state_id.clone());
-                    }
-                } else {
-                    // For subsequent joins, connect the alpha state to right input
-                    let mut alpha_network = self
-                        .alpha_network
-                        .lock()
-                        .map_err(|_| ReteError::poisoned("alpha_network"))?;
-                    if let Some(alpha_state) = alpha_network.states.get_mut(next_condition_id) {
-                        alpha_state.add_child(join_state_id.clone());
-                    }
-                }
-
-                current_state_id = join_state_id;
-            }
-            Some(current_state_id)
-        } else if condition_state_ids.len() == 1 {
-            // For a single condition, the alpha state is effectively the terminal state
-            Some(condition_state_ids[0].clone())
-        } else {
-            None
-        };
+        let condition_state_ids = self.create_condition_states(&rule)?;
+        let terminal_state_id = self.create_join_chain(&condition_state_ids)?;
 
         // Mark the terminal beta state as a p-state (Forgy's production terminal).
         // This links the terminal of the beta join chain to its production rule,
@@ -389,6 +320,64 @@ impl ReteNetwork {
         };
 
         Ok(state_id)
+    }
+
+    fn create_condition_states(&self, rule: &Rule) -> Result<Vec<String>, ReteError> {
+        let mut alpha_network = self
+            .alpha_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("alpha_network"))?;
+        Ok(rule
+            .conditions
+            .iter()
+            .filter(|condition| condition.predicate != "__script__")
+            .map(|condition| alpha_network.get_or_create_state(condition.clone()))
+            .collect())
+    }
+
+    fn create_join_chain(&self, state_ids: &[String]) -> Result<Option<String>, ReteError> {
+        let Some(first) = state_ids.first() else {
+            return Ok(None);
+        };
+        let mut current = first.clone();
+        for (index, next) in state_ids[1..].iter().enumerate() {
+            let join = self.create_join(&current, next)?;
+            self.connect_alpha_to_join(&current, next, &join, index == 0)?;
+            current = join;
+        }
+        Ok(Some(current))
+    }
+
+    fn create_join(&self, left: &str, right: &str) -> Result<String, ReteError> {
+        let mut beta = self
+            .beta_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("beta_network"))?;
+        Ok(beta.get_or_create_join(
+            left.to_string(),
+            right.to_string(),
+            "default_join".to_string(),
+        ))
+    }
+
+    fn connect_alpha_to_join(
+        &self,
+        left: &str,
+        right: &str,
+        join: &str,
+        connect_left: bool,
+    ) -> Result<(), ReteError> {
+        let mut alpha = self
+            .alpha_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("alpha_network"))?;
+        if connect_left && let Some(state) = alpha.states.get_mut(left) {
+            state.add_child(join.to_string());
+        }
+        if let Some(state) = alpha.states.get_mut(right) {
+            state.add_child(join.to_string());
+        }
+        Ok(())
     }
 
     /// Incrementally update the agenda for single-condition rules when a new WME is asserted.
@@ -504,182 +493,159 @@ impl ReteNetwork {
             let real_count = Self::real_condition_count(rule);
 
             if real_count == 1 {
-                // Single real condition rule: check alpha network directly
-                let real_conds = Self::real_conditions(rule);
-                let condition = real_conds[0];
-                let alpha_matches = {
-                    let alpha_network = self
-                        .alpha_network
-                        .lock()
-                        .map_err(|_| ReteError::poisoned("alpha_network"))?;
-                    alpha_network
-                        .get_wmes_by_condition(condition)
-                        .into_iter()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                };
-
-                // For each matching WME, create an agenda item
-                for wme in alpha_matches {
-                    let activation_key = format!("{}:{}", rule.id, wme.id);
-
-                    if fired_activations.contains(&activation_key) {
-                        debug!("Skipping duplicate activation: {}", activation_key);
-                        continue;
-                    }
-
-                    // Build bindings from the WME
-                    let mut bindings = crate::variable_binding::Bindings::new();
-                    for (cond_arg, fact_arg) in condition.args.iter().zip(wme.fact.args.iter()) {
-                        if cond_arg.starts_with('?') {
-                            bindings.add_binding(cond_arg, fact_arg).ok();
-                        }
-                    }
-
-                    // Evaluate __script__ conditions before adding to agenda
-                    let script_passes = self.evaluate_script_conditions(rule, &bindings)?;
-                    if !script_passes {
-                        debug!(
-                            "Full-scan: rule '{}' blocked by script condition for WME '{}'",
-                            rule.id, wme.id
-                        );
-                        continue;
-                    }
-
-                    let mut agenda = self
-                        .agenda
-                        .lock()
-                        .map_err(|_| ReteError::poisoned("agenda"))?;
-
-                    debug!(
-                        "Adding single-condition rule '{}' to agenda with bindings {:?}",
-                        rule.id, bindings
-                    );
-                    agenda.add_item(
-                        rule.clone(),
-                        vec![wme.clone()],
-                        bindings,
-                        production_state.salience,
-                    );
-
-                    fired_activations.insert(activation_key);
-                }
+                self.update_single_condition_agenda(production_state, &mut fired_activations)?;
             } else if real_count == 0 {
-                // Pure-__script__ rule: no leaf condition created an alpha
-                // state, so there are no WMEs to filter. Treat the rule as
-                // "always a candidate": evaluate its script clauses against
-                // the current fact base with empty bindings, and if every
-                // clause passes, emit an empty-WME activation. Dedup via
-                // fired_activations keyed on "rule_id:" — re-fires only
-                // after the key is purged (currently never; matches the
-                // fire-once semantics of single-cond and multi-cond rules
-                // for the same activation key).
-                if rule.conditions.is_empty() {
-                    continue; // No conditions at all — degenerate, skip.
-                }
-                let activation_key = format!("{}:", rule.id);
-                if fired_activations.contains(&activation_key) {
-                    debug!(
-                        "Skipping duplicate pure-script activation: {}",
-                        activation_key
-                    );
-                    continue;
-                }
-
-                let bindings = crate::variable_binding::Bindings::new();
-                let script_passes = self.evaluate_script_conditions(rule, &bindings)?;
-                if !script_passes {
-                    debug!("Pure-script rule '{}' blocked by script condition", rule.id);
-                    continue;
-                }
-
-                let mut agenda = self
-                    .agenda
-                    .lock()
-                    .map_err(|_| ReteError::poisoned("agenda"))?;
-                debug!(
-                    "Adding pure-script rule '{}' to agenda (no WMEs, empty bindings)",
-                    rule.id
-                );
-                agenda.add_item(
-                    rule.clone(),
-                    Vec::new(),
-                    bindings,
-                    production_state.salience,
-                );
-                fired_activations.insert(activation_key);
+                self.update_pure_script_agenda(production_state, &mut fired_activations)?;
             } else if real_count > 1 {
-                // Multi-condition rule: use the terminal p-state ID to scope to this rule's tokens
-                if let Some(ref terminal_id) = production_state.terminal_state_id {
-                    let tokens = {
-                        let beta_network = self
-                            .beta_network
-                            .lock()
-                            .map_err(|_| ReteError::poisoned("beta_network"))?;
-                        beta_network
-                            .states
-                            .get(terminal_id)
-                            .map(|state| state.beta_memory.clone())
-                            .unwrap_or_default()
-                    };
-
-                    for token in &tokens {
-                        let wme_ids: Vec<String> =
-                            token.wmes.iter().map(|w| w.id.clone()).collect();
-                        let activation_key = format!("{}:{}", rule.id, wme_ids.join(","));
-
-                        if fired_activations.contains(&activation_key) {
-                            debug!("Skipping duplicate activation: {}", activation_key);
-                            continue;
-                        }
-
-                        // Evaluate __script__ conditions before adding to agenda
-                        let script_passes =
-                            self.evaluate_script_conditions(rule, &token.bindings)?;
-                        if !script_passes {
-                            debug!(
-                                "Full-scan multi-condition: rule '{}' blocked by script condition",
-                                rule.id
-                            );
-                            continue;
-                        }
-
-                        let wme_list = {
-                            let wme_manager = self
-                                .wme_manager
-                                .lock()
-                                .map_err(|_| ReteError::poisoned("wme_manager"))?;
-                            token
-                                .wmes
-                                .iter()
-                                .filter_map(|wme_ref| wme_manager.get(&wme_ref.id).cloned())
-                                .collect::<Vec<_>>()
-                        };
-
-                        let mut agenda = self
-                            .agenda
-                            .lock()
-                            .map_err(|_| ReteError::poisoned("agenda"))?;
-
-                        debug!(
-                            "Adding multi-condition rule '{}' to agenda with {} WMEs and bindings {:?}",
-                            rule.id,
-                            wme_list.len(),
-                            token.bindings
-                        );
-                        agenda.add_item(
-                            rule.clone(),
-                            wme_list,
-                            token.bindings.clone(),
-                            production_state.salience,
-                        );
-
-                        fired_activations.insert(activation_key);
-                    }
-                }
+                self.update_multi_condition_agenda(production_state, &mut fired_activations)?;
             }
         }
 
+        Ok(())
+    }
+
+    fn update_single_condition_agenda(
+        &self,
+        state: &ProductionState,
+        fired: &mut HashSet<String>,
+    ) -> Result<(), ReteError> {
+        let rule = &state.rule;
+        let condition = Self::real_conditions(rule)[0];
+        let matches = self
+            .alpha_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("alpha_network"))?
+            .get_wmes_by_condition(condition)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for wme in matches {
+            let activation_key = format!("{}:{}", rule.id, wme.id);
+            if fired.contains(&activation_key) {
+                debug!("Skipping duplicate activation: {}", activation_key);
+                continue;
+            }
+            let mut bindings = crate::variable_binding::Bindings::new();
+            for (condition_arg, fact_arg) in condition.args.iter().zip(&wme.fact.args) {
+                if condition_arg.starts_with('?') {
+                    bindings.add_binding(condition_arg, fact_arg).ok();
+                }
+            }
+            if !self.evaluate_script_conditions(rule, &bindings)? {
+                debug!(
+                    "Full-scan: rule '{}' blocked by script condition for WME '{}'",
+                    rule.id, wme.id
+                );
+                continue;
+            }
+            debug!(
+                "Adding single-condition rule '{}' to agenda with bindings {:?}",
+                rule.id, bindings
+            );
+            self.agenda
+                .lock()
+                .map_err(|_| ReteError::poisoned("agenda"))?
+                .add_item(rule.clone(), vec![wme], bindings, state.salience);
+            fired.insert(activation_key);
+        }
+        Ok(())
+    }
+
+    fn update_pure_script_agenda(
+        &self,
+        state: &ProductionState,
+        fired: &mut HashSet<String>,
+    ) -> Result<(), ReteError> {
+        let rule = &state.rule;
+        if rule.conditions.is_empty() {
+            return Ok(());
+        }
+        let activation_key = format!("{}:", rule.id);
+        if fired.contains(&activation_key) {
+            debug!(
+                "Skipping duplicate pure-script activation: {}",
+                activation_key
+            );
+            return Ok(());
+        }
+        let bindings = crate::variable_binding::Bindings::new();
+        if !self.evaluate_script_conditions(rule, &bindings)? {
+            debug!("Pure-script rule '{}' blocked by script condition", rule.id);
+            return Ok(());
+        }
+        debug!(
+            "Adding pure-script rule '{}' to agenda (no WMEs, empty bindings)",
+            rule.id
+        );
+        self.agenda
+            .lock()
+            .map_err(|_| ReteError::poisoned("agenda"))?
+            .add_item(rule.clone(), Vec::new(), bindings, state.salience);
+        fired.insert(activation_key);
+        Ok(())
+    }
+
+    fn update_multi_condition_agenda(
+        &self,
+        state: &ProductionState,
+        fired: &mut HashSet<String>,
+    ) -> Result<(), ReteError> {
+        let Some(terminal_id) = state.terminal_state_id.as_ref() else {
+            return Ok(());
+        };
+        let tokens = self
+            .beta_network
+            .lock()
+            .map_err(|_| ReteError::poisoned("beta_network"))?
+            .states
+            .get(terminal_id)
+            .map(|terminal| terminal.beta_memory.clone())
+            .unwrap_or_default();
+        for token in tokens {
+            let activation_key = format!(
+                "{}:{}",
+                state.rule.id,
+                token
+                    .wmes
+                    .iter()
+                    .map(|wme| wme.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            );
+            if fired.contains(&activation_key) {
+                debug!("Skipping duplicate activation: {}", activation_key);
+                continue;
+            }
+            if !self.evaluate_script_conditions(&state.rule, &token.bindings)? {
+                debug!(
+                    "Full-scan multi-condition: rule '{}' blocked by script condition",
+                    state.rule.id
+                );
+                continue;
+            }
+            let manager = self
+                .wme_manager
+                .lock()
+                .map_err(|_| ReteError::poisoned("wme_manager"))?;
+            let wmes = token
+                .wmes
+                .iter()
+                .filter_map(|reference| manager.get(&reference.id).cloned())
+                .collect::<Vec<_>>();
+            drop(manager);
+            debug!(
+                "Adding multi-condition rule '{}' to agenda with {} WMEs and bindings {:?}",
+                state.rule.id,
+                wmes.len(),
+                token.bindings
+            );
+            self.agenda
+                .lock()
+                .map_err(|_| ReteError::poisoned("agenda"))?
+                .add_item(state.rule.clone(), wmes, token.bindings, state.salience);
+            fired.insert(activation_key);
+        }
         Ok(())
     }
 

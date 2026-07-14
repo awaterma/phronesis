@@ -76,10 +76,12 @@ impl Lookup for AdderTool {
 async fn main() -> anyhow::Result<()> {
     // Push: manufacture a Consequence as if a rule just fired.
     let push = Consequence::from_rule_firing(
-        "score.points_changed",
-        "hand.card_played",
-        vec!["fact-42".into()],
-        ConsequenceKind::Event,
+        phronesis::RuleFiringContext::new(
+            "score.points_changed",
+            "hand.card_played",
+            vec!["fact-42".into()],
+            ConsequenceKind::Event,
+        ),
         &serde_json::json!({ "actor": "alice", "score_delta": -3 }),
     )?;
 

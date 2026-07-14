@@ -4,6 +4,72 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.20.0] - 2026-07-13
+
+### Changed
+- **Context-struct API migration.** Four call surfaces now group related
+  arguments into explicit input types: `Consequence::from_rule_firing` takes
+  `RuleFiringContext`; `journey::derive::assert_facts` takes `DeriveInput`;
+  `outcomes::extract` takes `ExtractInput`; and
+  `outcomes::adapter::extract_from` takes `ExtractFromInput`. These are
+  breaking Rust API changes; construct the corresponding context/input struct
+  and pass it in place of the former positional arguments.
+- **Audit precision and maintainability.** Rust parameter-count auditing now
+  evaluates each function independently instead of combining same-named
+  methods, and high-complexity paths across the engine, hook, journey, and
+  outcome layers use focused helpers and input types.
+
+### Fixed
+- **Honest payload scrubbing.** Scrubber construction rejects empty, relative,
+  and filesystem-root scrub roots. Scrubbing recognizes colon-delimited bearer
+  credentials and credential URLs with an empty username, detects residual
+  sensitive material, and aborts before backup or overwrite when safety cannot
+  be established.
+- **Evidence integrity.** Residual-risk failures are surfaced rather than
+  silently treated as successful anonymization, scrub integration tests are
+  top-level tests that are actually discovered, and the checked-in toolchain
+  definitions are regression-tested against the generated scaffold.
+
+### Migration
+
+```rust
+let consequence = Consequence::from_rule_firing(
+    RuleFiringContext {
+        rule_id,
+        predicate,
+        bound_facts,
+        kind,
+    },
+    &payload,
+)?;
+
+journey::derive::assert_facts(&mut network, DeriveInput {
+    project_root,
+    rules: &rules,
+    config: &config,
+    scope: WindowScope {
+        current_sid: session_id,
+        now_ts: now,
+    },
+}).await?;
+
+let facts = outcomes::extract(outcomes::adapter::ExtractInput {
+    root,
+    subject,
+    command,
+    output,
+    command_exit,
+});
+
+let (tags, subject) = outcomes::adapter::extract_from(ExtractFromInput {
+    project_root,
+    tool_name,
+    command,
+    output,
+    command_exit,
+});
+```
+
 ## [0.19.0] - 2026-07-12
 
 ### Added

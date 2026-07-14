@@ -153,22 +153,44 @@ impl Consequence {
 
     /// Wrap a rule-firing payload as a push-mode [`Consequence`].
     pub fn from_rule_firing<T: Serialize>(
+        context: RuleFiringContext,
+        payload: &T,
+    ) -> Result<Self, serde_json::Error> {
+        Ok(Consequence {
+            kind: context.kind,
+            predicate: context.predicate,
+            payload: serde_json::to_value(payload)?,
+            provenance: Provenance::RuleFiring {
+                rule_id: context.rule_id,
+                bound_facts: context.bound_facts,
+                bindings: Default::default(),
+            },
+        })
+    }
+}
+
+/// Metadata describing the rule activation that produced a consequence.
+#[derive(Debug, Clone)]
+pub struct RuleFiringContext {
+    pub rule_id: crate::RuleId,
+    pub predicate: String,
+    pub bound_facts: Vec<String>,
+    pub kind: ConsequenceKind,
+}
+
+impl RuleFiringContext {
+    pub fn new(
         rule_id: impl Into<crate::RuleId>,
         predicate: impl Into<String>,
         bound_facts: Vec<String>,
         kind: ConsequenceKind,
-        payload: &T,
-    ) -> Result<Self, serde_json::Error> {
-        Ok(Consequence {
-            kind,
+    ) -> Self {
+        Self {
+            rule_id: rule_id.into(),
             predicate: predicate.into(),
-            payload: serde_json::to_value(payload)?,
-            provenance: Provenance::RuleFiring {
-                rule_id: rule_id.into(),
-                bound_facts,
-                bindings: Default::default(),
-            },
-        })
+            bound_facts,
+            kind,
+        }
     }
 }
 

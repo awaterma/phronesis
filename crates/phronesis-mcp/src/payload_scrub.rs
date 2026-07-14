@@ -118,15 +118,23 @@ impl Scrubber {
 
     fn scrub_str(&mut self, s: &str) -> String {
         // 1. Project-root prefix → canonical fixture root.
-        let mut out = s.replace(&self.project_root, "/home/dev/project");
+        let out = s.replace(&self.project_root, "/home/dev/project");
         // 2. Any remaining $HOME-rooted path → indexed external placeholder.
+        let mut out = self.scrub_external_paths(out);
+        // 3. Bare username anywhere else (long enough to be unambiguous).
+        if self.user.len() >= MIN_BARE_USERNAME_LEN {
+            out = out.replace(&self.user, "dev");
+        }
+        out
+    }
+
+    fn scrub_external_paths(&mut self, mut out: String) -> String {
         // The cursor only moves forward — each iteration resumes past the
         // text it just inserted — and canonical placeholder paths are skipped
         // outright, so replacement terminates and is a fixpoint even when
         // `home` is a prefix of the placeholder root (e.g. `/home/dev`).
         let mut search_from = 0;
-        while let Some(rel) = out[search_from..].find(&self.home) {
-            let start = search_from + rel;
+        while let Some(start) = self.home_match_start(&out, search_from) {
             if PLACEHOLDER_PREFIXES
                 .iter()
                 .any(|p| out[start..].starts_with(p))
@@ -134,28 +142,31 @@ impl Scrubber {
                 search_from = start + self.home.len();
                 continue;
             }
-            let end = out[start..]
-                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ':' | ','))
-                .map(|off| start + off)
-                .unwrap_or(out.len());
+            let end = external_path_end(&out, start);
             let path = out[start..end].to_string();
-            let n = match self.external.iter().position(|p| p == &path) {
-                Some(i) => i,
-                None => {
-                    self.external.push(path);
-                    self.external.len() - 1
-                }
-            };
-            let replacement = format!("/home/dev/external/p{n}");
+            let replacement = self.external_replacement(path);
             let replacement_len = replacement.len();
             out.replace_range(start..end, &replacement);
             search_from = start + replacement_len;
         }
-        // 3. Bare username anywhere else (long enough to be unambiguous).
-        if self.user.len() >= MIN_BARE_USERNAME_LEN {
-            out = out.replace(&self.user, "dev");
-        }
         out
+    }
+
+    fn home_match_start(&self, out: &str, search_from: usize) -> Option<usize> {
+        out[search_from..]
+            .find(&self.home)
+            .map(|relative| search_from + relative)
+    }
+
+    fn external_replacement(&mut self, path: String) -> String {
+        let index = match self.external.iter().position(|known| known == &path) {
+            Some(index) => index,
+            None => {
+                self.external.push(path);
+                self.external.len() - 1
+            }
+        };
+        format!("/home/dev/external/p{index}")
     }
 
     /// Post-scrub verification. Split by residual shape (adversarial-review
@@ -200,6 +211,13 @@ impl Scrubber {
         }
         Vec::new()
     }
+}
+
+fn external_path_end(out: &str, start: usize) -> usize {
+    out[start..]
+        .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ':' | ','))
+        .map(|offset| start + offset)
+        .unwrap_or(out.len())
 }
 
 /// Validate and normalize one scrub root (evidence-integrity spec, Task 1).
@@ -291,7 +309,7 @@ fn build_detectors() -> Result<Vec<Detector>, ScrubError> {
             "credential-bearing URL",
             Severity::Error,
             false,
-            r#"[a-zA-Z][a-zA-Z0-9+.\-]{0,15}://[^/\s:@"',]{1,64}:[^@\s"',]{1,256}@"#,
+            r#"[a-zA-Z][a-zA-Z0-9+.\-]{0,15}://[^/\s:@"',]{0,64}:[^@\s"',]{1,256}@"#,
         ),
         (
             "token/secret assignment",
@@ -303,7 +321,7 @@ fn build_detectors() -> Result<Vec<Detector>, ScrubError> {
             "bearer token",
             Severity::Error,
             true,
-            r#"(?i)\bbearer\s+[A-Za-z0-9\-._~+/]{16,}"#,
+            r#"(?i)\bbearer(?:\s+|:\s*)[A-Za-z0-9\-._~+/]{16,}"#,
         ),
         (
             "secret-suggesting environment key",
@@ -755,8 +773,32 @@ mod tests {
     }
 
     #[test]
+    fn detects_colon_separated_bearer_token() {
+        let v = json!({"headers": "Authorization: Bearer:abc123def456ghi789jkl"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.what == "bearer token"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
     fn detects_credential_bearing_url() {
         let v = json!({"command": "git clone https://alice:hunter2pass@github.com/x/y.git"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity == Severity::Error && f.what == "credential-bearing URL"),
+            "got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn detects_credential_bearing_url_with_empty_username() {
+        let v = json!({"command": "git clone https://:hunter2pass@github.com/x/y.git"});
         let findings = detect_residual_risks(&v).expect("detectors run");
         assert!(
             findings

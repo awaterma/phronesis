@@ -115,21 +115,23 @@ fn compile_field(id: &str, field: &'static str, pattern: &str) -> Result<Regex, 
     })
 }
 
-fn require_groups(
-    id: &str,
+struct RequiredGroups<'a> {
+    id: &'a str,
     field: &'static str,
-    re: &Regex,
-    groups: &[&str],
+    regex: &'a Regex,
+    groups: &'a [&'a str],
     label: &'static str,
-) -> Result<(), ToolchainError> {
-    let names: Vec<&str> = re.capture_names().flatten().collect();
-    if groups.iter().all(|g| names.contains(g)) {
+}
+
+fn require_groups(required: RequiredGroups<'_>) -> Result<(), ToolchainError> {
+    let names: Vec<&str> = required.regex.capture_names().flatten().collect();
+    if required.groups.iter().all(|g| names.contains(g)) {
         Ok(())
     } else {
         Err(ToolchainError::MissingGroup {
-            id: id.to_string(),
-            field,
-            groups: label,
+            id: required.id.to_string(),
+            field: required.field,
+            groups: required.label,
         })
     }
 }
@@ -152,7 +154,13 @@ impl CompiledDef {
             .as_deref()
             .map(|p| {
                 let re = compile_field(&def.id, "test_summary", p)?;
-                require_groups(&def.id, "test_summary", &re, &["passed"], "(?P<passed>)")?;
+                require_groups(RequiredGroups {
+                    id: &def.id,
+                    field: "test_summary",
+                    regex: &re,
+                    groups: &["passed"],
+                    label: "(?P<passed>)",
+                })?;
                 Ok::<_, ToolchainError>(re)
             })
             .transpose()?;
@@ -161,13 +169,13 @@ impl CompiledDef {
             .as_deref()
             .map(|p| {
                 let re = compile_field(&def.id, "per_test", p)?;
-                require_groups(
-                    &def.id,
-                    "per_test",
-                    &re,
-                    &["name", "status"],
-                    "(?P<name>) and (?P<status>)",
-                )?;
+                require_groups(RequiredGroups {
+                    id: &def.id,
+                    field: "per_test",
+                    regex: &re,
+                    groups: &["name", "status"],
+                    label: "(?P<name>) and (?P<status>)",
+                })?;
                 Ok::<_, ToolchainError>(re)
             })
             .transpose()?;

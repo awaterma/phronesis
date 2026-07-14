@@ -28,31 +28,43 @@
 /// string starts where a command word would appear; empty and comment
 /// segments are dropped.
 pub fn command_heads(command: &str) -> Vec<String> {
-    let mut segments: Vec<String> = Vec::new();
-    let mut current = String::new();
+    let mut split = CommandSplit::default();
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
             '&' if chars.peek() == Some(&'&') => {
                 chars.next();
-                segments.push(std::mem::take(&mut current));
+                split.finish_segment();
             }
             '|' => {
                 if chars.peek() == Some(&'|') {
                     chars.next();
                 }
-                segments.push(std::mem::take(&mut current));
+                split.finish_segment();
             }
-            ';' | '\n' => segments.push(std::mem::take(&mut current)),
-            _ => current.push(c),
+            ';' | '\n' => split.finish_segment(),
+            _ => split.current.push(c),
         }
     }
-    segments.push(current);
-    segments
+    split.finish_segment();
+    split
+        .segments
         .iter()
         .filter_map(|s| strip_leading_env(s))
         .map(str::to_string)
         .collect()
+}
+
+#[derive(Default)]
+struct CommandSplit {
+    segments: Vec<String>,
+    current: String,
+}
+
+impl CommandSplit {
+    fn finish_segment(&mut self) {
+        self.segments.push(std::mem::take(&mut self.current));
+    }
 }
 
 /// Strip leading `NAME=value` assignments and a leading `env` word (with its

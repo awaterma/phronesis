@@ -156,9 +156,13 @@ fn action_to_request(action: &Action) -> serde_json::Value {
     )
 }
 
+struct LookupConsequenceContext<'a> {
+    rule_id: &'a str,
+    bound_facts: &'a [String],
+}
+
 fn make_consequence(
-    rule_id: &str,
-    bound_facts: &[String],
+    context: &LookupConsequenceContext<'_>,
     action: &Action,
     tool: &(dyn DynLookup + Send + Sync),
     payload: serde_json::Value,
@@ -168,8 +172,8 @@ fn make_consequence(
         predicate: action.action_type.clone(),
         payload,
         provenance: Provenance::RuleDrivenLookup {
-            rule_id: rule_id.into(),
-            bound_facts: bound_facts.to_vec(),
+            rule_id: context.rule_id.into(),
+            bound_facts: context.bound_facts.to_vec(),
             bindings: Default::default(),
             tool: tool.name().to_string(),
             schema_version: tool.schema_version(),
@@ -205,6 +209,10 @@ pub fn invoke_rule_driven_lookups(
     actions: Vec<Action>,
     registry: &LookupRegistry,
 ) -> (Vec<Consequence>, Vec<Action>) {
+    let context = LookupConsequenceContext {
+        rule_id,
+        bound_facts,
+    };
     let mut consequences = Vec::new();
     let mut remaining = Vec::new();
 
@@ -216,13 +224,7 @@ pub fn invoke_rule_driven_lookups(
 
         match tool.invoke_dyn(action_to_request(&action)) {
             Ok(payload) => {
-                consequences.push(make_consequence(
-                    rule_id,
-                    bound_facts,
-                    &action,
-                    tool,
-                    payload,
-                ));
+                consequences.push(make_consequence(&context, &action, tool, payload));
             }
             Err(_) => remaining.push(action),
         }
@@ -254,6 +256,10 @@ pub fn try_invoke_rule_driven_lookups(
     actions: Vec<Action>,
     registry: &LookupRegistry,
 ) -> Result<(Vec<Consequence>, Vec<Action>), ToolInvocationError> {
+    let context = LookupConsequenceContext {
+        rule_id,
+        bound_facts,
+    };
     let mut consequences = Vec::new();
     let mut remaining = Vec::new();
 
@@ -266,13 +272,7 @@ pub fn try_invoke_rule_driven_lookups(
         let start = std::time::Instant::now();
         match tool.invoke_dyn(action_to_request(&action)) {
             Ok(payload) => {
-                consequences.push(make_consequence(
-                    rule_id,
-                    bound_facts,
-                    &action,
-                    tool,
-                    payload,
-                ));
+                consequences.push(make_consequence(&context, &action, tool, payload));
             }
             Err(source) => {
                 return Err(ToolInvocationError {

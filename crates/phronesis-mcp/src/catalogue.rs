@@ -130,7 +130,12 @@ mod tests {
     fn renders_one_entry_per_rule() {
         let n: usize = CATALOGUE_PACKS
             .iter()
-            .map(|p| p.rules()["rules"].as_array().unwrap().len())
+            .map(|p| {
+                p.rules()["rules"]
+                    .as_array()
+                    .expect("catalogue pack rules must be an array")
+                    .len()
+            })
             .sum();
         let html = render_rules_html();
         assert_eq!(html.matches("<article class=\"rule\"").count(), n);

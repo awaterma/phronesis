@@ -42,6 +42,30 @@ use thiserror::Error;
 use crate::journey::journal::{self, JournalRecord};
 use crate::journey::tagger::TaggerConfig;
 
+// ===== WindowScope =====
+
+/// Bundled window-scoping parameters shared across emit helpers.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowScope<'a> {
+    /// Current session id used for session-window filtering.
+    pub current_sid: &'a str,
+    /// Current timestamp used for time-window filtering.
+    pub now_ts: u64,
+}
+
+/// Inputs shared by journey fact derivation.
+pub struct DeriveInput<'a> {
+    pub project_root: &'a Path,
+    pub rules: &'a [Rule],
+    pub config: &'a TaggerConfig,
+    pub scope: WindowScope<'a>,
+}
+
+struct WindowContext<'a> {
+    records: &'a [JournalRecord],
+    scope: WindowScope<'a>,
+}
+
 // ===== Window =====
 
 /// One window token the rule grammar accepts. Encoded as a short string in
@@ -472,14 +496,10 @@ fn rule_refs_selector(rule: &Rule, selector: &str) -> bool {
 /// honestly.
 pub async fn assert_facts(
     network: &mut ReteNetwork,
-    project_root: &Path,
-    rules: &[Rule],
-    cfg: &TaggerConfig,
-    current_sid: &str,
-    now_ts: u64,
+    input: DeriveInput<'_>,
 ) -> Result<(), DeriveError> {
-    let scan = scan_rules(rules)?;
-    validate_selectors(rules, &scan, cfg)?;
+    let scan = scan_rules(input.rules)?;
+    validate_selectors(input.rules, &scan, input.config)?;
 
     // Read bound: pick the widest. If any rule needs the session window we
     // read up to the hard cap and let the per-window filter drop the rest;
@@ -503,13 +523,17 @@ pub async fn assert_facts(
         }
     };
 
-    let records = journal::read_recent(project_root, read_n)?;
+    let records = journal::read_recent(input.project_root, read_n)?;
+    let context = WindowContext {
+        records: &records,
+        scope: input.scope,
+    };
 
-    emit_occurrence(network, &records, &scan, current_sid, now_ts).await;
-    emit_count(network, &records, &scan, current_sid, now_ts).await;
-    emit_seen(network, &records, &scan, current_sid, now_ts).await;
+    emit_occurrence(network, &context, &scan).await;
+    emit_count(network, &context, &scan).await;
+    emit_seen(network, &context, &scan).await;
     emit_since_ge(network, &records, &scan).await;
-    emit_distinct(network, &records, &scan, current_sid, now_ts).await;
+    emit_distinct(network, &context, &scan).await;
     emit_filtered_since_ge(network, &records, &scan).await;
     Ok(())
 }
@@ -519,10 +543,8 @@ pub async fn assert_facts(
 fn record_in_window(
     rec: &JournalRecord,
     window_tok: &str,
-    records: &[JournalRecord],
     rec_idx: usize,
-    current_sid: &str,
-    now_ts: u64,
+    context: &WindowContext<'_>,
 ) -> bool {
     let window = match Window::parse(window_tok) {
         Ok(w) => w,
@@ -531,12 +553,12 @@ fn record_in_window(
     match window {
         Window::Calls(n) => {
             // Last n records (by position in `records`, which is append order).
-            let total = records.len();
+            let total = context.records.len();
             let start = total.saturating_sub(n as usize);
             rec_idx >= start
         }
-        Window::Seconds(s) => rec.ts + s >= now_ts,
-        Window::Session => rec.sid == current_sid,
+        Window::Seconds(s) => rec.ts + s >= context.scope.now_ts,
+        Window::Session => rec.sid == context.scope.current_sid,
     }
 }
 
@@ -550,20 +572,14 @@ fn matches_selector(rec: &JournalRecord, selector: &str) -> bool {
 
 // ===== Aggregator emitters =====
 
-async fn emit_occurrence(
-    network: &ReteNetwork,
-    records: &[JournalRecord],
-    scan: &RuleScan,
-    current_sid: &str,
-    now_ts: u64,
-) {
+async fn emit_occurrence(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
     for (sel, win) in &scan.occurrence_pairs {
         let mut n = 0u64;
-        for (i, rec) in records.iter().enumerate() {
+        for (i, rec) in context.records.iter().enumerate() {
             if !matches_selector(rec, sel) {
                 continue;
             }
-            if !record_in_window(rec, win, records, i, current_sid, now_ts) {
+            if !record_in_window(rec, win, i, context) {
                 continue;
             }
             n += 1;
@@ -586,20 +602,14 @@ async fn emit_occurrence(
     }
 }
 
-async fn emit_count(
-    network: &ReteNetwork,
-    records: &[JournalRecord],
-    scan: &RuleScan,
-    current_sid: &str,
-    now_ts: u64,
-) {
+async fn emit_count(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
     for (sel, win) in &scan.count_pairs {
         let mut count = 0u64;
-        for (i, rec) in records.iter().enumerate() {
+        for (i, rec) in context.records.iter().enumerate() {
             if !matches_selector(rec, sel) {
                 continue;
             }
-            if !record_in_window(rec, win, records, i, current_sid, now_ts) {
+            if !record_in_window(rec, win, i, context) {
                 continue;
             }
             count += 1;
@@ -616,18 +626,12 @@ async fn emit_count(
     }
 }
 
-async fn emit_seen(
-    network: &ReteNetwork,
-    records: &[JournalRecord],
-    scan: &RuleScan,
-    current_sid: &str,
-    now_ts: u64,
-) {
+async fn emit_seen(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
     for (sel, win) in &scan.seen_pairs {
-        let any = records.iter().enumerate().any(|(i, rec)| {
-            matches_selector(rec, sel)
-                && record_in_window(rec, win, records, i, current_sid, now_ts)
-        });
+        let any =
+            context.records.iter().enumerate().any(|(i, rec)| {
+                matches_selector(rec, sel) && record_in_window(rec, win, i, context)
+            });
         if !any {
             continue;
         }
@@ -674,13 +678,7 @@ async fn emit_since_ge(network: &ReteNetwork, records: &[JournalRecord], scan: &
     }
 }
 
-async fn emit_distinct(
-    network: &ReteNetwork,
-    records: &[JournalRecord],
-    scan: &RuleScan,
-    current_sid: &str,
-    now_ts: u64,
-) {
+async fn emit_distinct(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
     for (field, win) in &scan.distinct_pairs {
         // v1 supports `path` only; unknown fields emit 0 (no fact) rather
         // than erroring — the silent-typo guard for selectors is the
@@ -691,8 +689,8 @@ async fn emit_distinct(
             continue;
         }
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        for (i, rec) in records.iter().enumerate() {
-            if !record_in_window(rec, win, records, i, current_sid, now_ts) {
+        for (i, rec) in context.records.iter().enumerate() {
+            if !record_in_window(rec, win, i, context) {
                 continue;
             }
             seen.insert(rec.path.clone());
@@ -777,22 +775,23 @@ mod tests {
             subject: None,
             command_exit: None,
         };
-        assert!(record_in_window(
-            &rec,
-            "s",
-            std::slice::from_ref(&rec),
-            0,
-            "s-a",
-            0
-        ));
-        assert!(!record_in_window(
-            &rec,
-            "s",
-            std::slice::from_ref(&rec),
-            0,
-            "s-b",
-            0
-        ));
+        let records = std::slice::from_ref(&rec);
+        let current = WindowContext {
+            records,
+            scope: WindowScope {
+                current_sid: "s-a",
+                now_ts: 0,
+            },
+        };
+        let other = WindowContext {
+            records,
+            scope: WindowScope {
+                current_sid: "s-b",
+                now_ts: 0,
+            },
+        };
+        assert!(record_in_window(&rec, "s", 0, &current));
+        assert!(!record_in_window(&rec, "s", 0, &other));
     }
 
     #[test]
@@ -813,9 +812,16 @@ mod tests {
                 command_exit: None,
             })
             .collect();
-        assert!(!record_in_window(&recs[2], "2c", &recs, 2, "s", 0));
-        assert!(record_in_window(&recs[3], "2c", &recs, 3, "s", 0));
-        assert!(record_in_window(&recs[4], "2c", &recs, 4, "s", 0));
+        let context = WindowContext {
+            records: &recs,
+            scope: WindowScope {
+                current_sid: "s",
+                now_ts: 0,
+            },
+        };
+        assert!(!record_in_window(&recs[2], "2c", 2, &context));
+        assert!(record_in_window(&recs[3], "2c", 3, &context));
+        assert!(record_in_window(&recs[4], "2c", 4, &context));
     }
 
     #[test]
