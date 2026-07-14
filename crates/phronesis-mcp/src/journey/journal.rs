@@ -183,8 +183,11 @@ fn over_cap(path: &Path, max_bytes: u64) -> bool {
 
 /// Compact the journal when it exceeds `max_bytes`: retain the most recent
 /// `tail_records` records plus, for every subject appearing in the dropped
-/// prefix, its most recent `outcome:*`-bearing record (so each work unit's
-/// latest grounded build/test result survives for confidence banding).
+/// prefix, its most recent `outcome:*`-bearing record that carries a
+/// **grounded** signal (so each work unit's latest grounded build/test
+/// result survives for confidence banding). `outcome:compile_unknown` is
+/// deliberately excluded from retention because absent evidence must not
+/// displace grounded evidence.
 /// Atomic rewrite (temp file + fsync + rename) under the stable lock file
 /// shared with appenders; never blind-truncates. Returns whether a
 /// compaction ran.
@@ -255,11 +258,15 @@ fn compacted_content(all: &[JournalRecord], tail_records: usize) -> Result<Strin
 }
 
 fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {
-    // Latest outcome-bearing record per subject in the prefix, by index.
+    // Latest *grounded* outcome-bearing record per subject in the prefix, by
+    // index. `outcome:compile_unknown` is not grounded, so it is never a
+    // retention anchor (it must not displace earlier grounded outcomes).
     let mut latest: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for (i, r) in prefix.iter().enumerate() {
         if let Some(s) = r.subject.as_deref()
-            && r.tags.iter().any(|t| t.starts_with("outcome:"))
+            && r.tags
+                .iter()
+                .any(|t| crate::outcomes::is_grounded_outcome_tag(t))
         {
             latest.insert(s, i);
         }
@@ -850,6 +857,39 @@ mod tests {
                 .join(".phronesis/journey/events.jsonl.tmp")
                 .exists(),
             "temp file must not persist after a successful rename"
+        );
+    }
+
+    // ── Finding 3: compaction preserves grounded outcomes ──
+
+    #[test]
+    fn compaction_preserves_grounded_outcome_over_later_unknown() {
+        // An earlier compile_ok followed by compile_unknown should NOT lose
+        // the compile_ok record after compaction.
+        let dir = tempfile::tempdir().unwrap();
+        append(dir.path(), &tagged(1, "u", &["outcome:compile_ok"])).unwrap();
+        // Compile unknown — should NOT clobber the compile_ok.
+        append(dir.path(), &tagged(2, "u", &["outcome:compile_unknown"])).unwrap();
+        // Fill with noise so compaction is triggered.
+        for seq in 3..=8 {
+            append(dir.path(), &record(seq, None)).unwrap();
+        }
+        // max_bytes=1 forces compaction every time.
+        maybe_compact(dir.path(), 1, 1).unwrap();
+        // Read the compacted journal.
+        let recs = read_recent(dir.path(), 100).unwrap();
+        let tags_flat: Vec<String> = recs.iter().flat_map(|r| r.tags.iter().cloned()).collect();
+        assert!(
+            tags_flat.iter().any(|t| t == "outcome:compile_ok"),
+            "compile_ok must survive compaction; tags = {tags_flat:?}"
+        );
+        // Verify the derive path still produces the signal.
+        let for_u = read_recent_subject(dir.path(), "u", 10).unwrap();
+        assert!(
+            for_u
+                .iter()
+                .any(|r| r.tags.iter().any(|t| t == "outcome:compile_ok")),
+            "compile_ok must survive compaction subject filter; records = {for_u:?}"
         );
     }
 }

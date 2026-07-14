@@ -106,6 +106,13 @@ impl Band {
     }
 }
 
+/// An outcome tag that carries a grounded signal. `outcome:compile_unknown`
+/// is deliberately excluded: absent evidence must not displace grounded
+/// evidence — in derivation OR in compaction retention.
+pub fn is_grounded_outcome_tag(tag: &str) -> bool {
+    tag.starts_with("outcome:") && tag != "outcome:compile_unknown"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
