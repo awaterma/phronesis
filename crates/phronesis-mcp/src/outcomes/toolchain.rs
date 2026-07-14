@@ -645,6 +645,31 @@ mod tests {
     }
 
     #[test]
+    fn alternation_summary_regex_captures_both_counts() {
+        // The init-scaffolded pytest def uses an alternation regex
+        // (`N failed|M passed`). Each branch matches separately under
+        // `captures_iter`, so "1 failed, 10 passed" yields two matches whose
+        // counts sum correctly — neither side is dropped.
+        let def: ToolchainDef = serde_json::from_str(
+            r#"{
+                "id": "pytest",
+                "matches": "pytest",
+                "test_summary": "(?P<failed>\\d+) failed|(?P<passed>\\d+) passed"
+            }"#,
+        )
+        .unwrap();
+        let compiled = CompiledDef::compile(def, DefSource::Project).unwrap();
+        let out = "=========== 1 failed, 10 passed in 0.52s ===========\n";
+        let facts = compiled.parse("u", "pytest", out, Some(1));
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(
+            t.args,
+            vec!["u", "10", "1", "11"],
+            "alternation branches must both be captured and summed"
+        );
+    }
+
+    #[test]
     fn no_exit_with_test_summary_is_compiled_with_test_result() {
         // Spec Task 4: a valid test summary is explicit success evidence —
         // tests that ran prove the code compiled.

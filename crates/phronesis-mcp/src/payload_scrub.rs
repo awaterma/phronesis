@@ -402,16 +402,16 @@ fn is_allowed_absolute(path: &str) -> bool {
 }
 
 /// Is the text before a `/...` match a path boundary? A preceding `/`,
-/// `.` (relative-path context like `./x` or `../x`), or word character
-/// means the match is the tail of a URL, a relative path, or a date —
-/// not an absolute path. Exception: in rendered JSON a newline/tab is
-/// the two-character escape `\n` / `\t` / `\r`, so a path right after
-/// one IS at a line boundary.
+/// `.` (relative-path context like `./x` or `../x`), `~` (home-relative
+/// like `~/x`), or word character means the match is the tail of a URL,
+/// a relative path, or a date — not an absolute path. Exception: in
+/// rendered JSON a newline/tab is the two-character escape `\n` / `\t` /
+/// `\r`, so a path right after one IS at a line boundary.
 fn is_path_boundary(before: &str) -> bool {
     let Some(prev) = before.chars().next_back() else {
         return true;
     };
-    if prev == '/' || prev == '.' {
+    if prev == '/' || prev == '.' || prev == '~' {
         return false;
     }
     if prev.is_alphanumeric() {
@@ -1007,6 +1007,22 @@ mod tests {
         assert!(
             !abs_findings.is_empty(),
             "`/Users/alice/leak.txt` MUST be flagged as an Error"
+        );
+    }
+
+    #[test]
+    fn tilde_prefixed_path_is_not_flagged_as_absolute() {
+        // `~/Documents/notes.txt` — the `~` marks a home-relative path, the
+        // same class as `./x`: the `/...` tail is not an absolute path.
+        let v = json!({"command": "cat ~/Documents/notes.txt"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        let abs_findings: Vec<&Finding> = findings
+            .iter()
+            .filter(|f| f.what == "absolute path outside the project placeholder roots")
+            .collect();
+        assert!(
+            abs_findings.is_empty(),
+            "`~/Documents/notes.txt` must not be flagged as an absolute path; got {abs_findings:?}"
         );
     }
 
