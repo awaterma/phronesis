@@ -222,9 +222,9 @@ fn extract_handled(
     // Gate bug evidence on a grounded, passing build (Finding 2):
     // an unknown run produced no evidence, so `bug_caught` tags must not
     // fire — absent evidence is unknown, not pass.
-    let build_passed = outcome_facts.iter().any(|f| {
-        f.predicate == "build_outcome" && f.args.get(1).is_some_and(|s| s == "pass")
-    });
+    let build_passed = outcome_facts
+        .iter()
+        .any(|f| f.predicate == "build_outcome" && f.args.get(1).is_some_and(|s| s == "pass"));
     let per_test = if build_passed {
         def.per_test_results(output)
     } else {

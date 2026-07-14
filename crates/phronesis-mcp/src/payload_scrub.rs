@@ -372,15 +372,10 @@ fn absolute_path_regex() -> Result<&'static Regex, ScrubError> {
     Ok(CELL.get_or_init(|| re))
 }
 
-/// Absolute-path prefixes that carry no host identity: the canonical
-/// scrub placeholders (must stay in sync with `PLACEHOLDER_PREFIXES`)
-/// plus identity-neutral system roots. Everything else absolute is a
-/// residual-risk error — `/private/tmp/...`, `/Users/...`, `/var/...`
-/// and friends can all carry usernames or session-specific state.
-const ALLOWED_ABSOLUTE_PREFIXES: &[&str] = &[
-    "/home/dev/project",
-    "/home/dev/external/",
-    "/home/dev/.claude/",
+/// Identity-neutral system roots that may legitimately appear in scrubbed
+/// output. Placeholder roots are NOT listed here — they come from
+/// PLACEHOLDER_PREFIXES so the two can never drift.
+const ALLOWED_SYSTEM_PREFIXES: &[&str] = &[
     "/usr/",
     "/bin/",
     "/sbin/",
@@ -397,10 +392,13 @@ const ALLOWED_ABSOLUTE_PREFIXES: &[&str] = &[
 ];
 
 fn is_allowed_absolute(path: &str) -> bool {
-    ALLOWED_ABSOLUTE_PREFIXES.iter().any(|prefix| {
-        let p = prefix.trim_end_matches('/');
-        path == p || (path.starts_with(p) && path.as_bytes().get(p.len()) == Some(&b'/'))
-    })
+    PLACEHOLDER_PREFIXES
+        .iter()
+        .chain(ALLOWED_SYSTEM_PREFIXES)
+        .any(|p| {
+            let p = p.trim_end_matches('/');
+            path == p || (path.starts_with(p) && path.as_bytes().get(p.len()) == Some(&b'/'))
+        })
 }
 
 /// Is the text before a `/...` match a path boundary? A preceding `/`,
@@ -945,6 +943,22 @@ mod tests {
         );
     }
 
+    // ── Finding 6: DRY PLACEHOLDER_PREFIXES vs ALLOWED_ABSOLUTE_PREFIXES ──
+
+    #[test]
+    fn every_placeholder_prefix_is_allowed_absolute() {
+        // Each PLACEHOLDER_PREFIXES entry must be accepted by
+        // is_allowed_absolute, otherwise the scrubber's own output
+        // would be flagged as an Error — a DRY break.
+        for prefix in &PLACEHOLDER_PREFIXES {
+            let path = format!("{prefix}/x");
+            assert!(
+                is_allowed_absolute(&path),
+                "is_allowed_absolute({path}) must accept placeholder {prefix}"
+            );
+        }
+    }
+
     // ── Finding 1: relative `./x` and `../x` paths must not be flagged ──
 
     #[test]
@@ -955,9 +969,7 @@ mod tests {
         let findings = detect_residual_risks(&v).expect("detectors run");
         let abs_findings: Vec<&Finding> = findings
             .iter()
-            .filter(|f| {
-                f.what == "absolute path outside the project placeholder roots"
-            })
+            .filter(|f| f.what == "absolute path outside the project placeholder roots")
             .collect();
         assert!(
             abs_findings.is_empty(),
@@ -971,9 +983,7 @@ mod tests {
         let findings = detect_residual_risks(&v).expect("detectors run");
         let abs_findings: Vec<&Finding> = findings
             .iter()
-            .filter(|f| {
-                f.what == "absolute path outside the project placeholder roots"
-            })
+            .filter(|f| f.what == "absolute path outside the project placeholder roots")
             .collect();
         assert!(
             abs_findings.is_empty(),
@@ -1011,9 +1021,7 @@ mod tests {
         let findings = detect_residual_risks(&v).expect("detectors run");
         let abs_findings: Vec<&Finding> = findings
             .iter()
-            .filter(|f| {
-                f.what == "absolute path outside the project placeholder roots"
-            })
+            .filter(|f| f.what == "absolute path outside the project placeholder roots")
             .collect();
         // Acceptable: the `.` makes it relative-path-shaped context.
         assert!(
