@@ -2,10 +2,11 @@
 
 ## Quick Overview
 
-This is a Rust workspace with two crates:
+This is a Rust workspace with three crates:
 
 - **`phronesis`** - Core RETE rules engine library
 - **`phronesis-mcp`** - MCP server for LLM-agent governance (CLAUDE.md hook integration)
+- **`phronesis-rhai`** - Sandboxed Rhai evaluator for `__script__` guard conditions (numeric comparisons and boolean combinators over fact arguments); opt in via the MCP's `rhai` feature
 
 **Project type:** Rust workspace with MCP (Model Context Protocol) integration for AI agent governance.
 
@@ -565,7 +566,7 @@ GitHub Pages: https://awaterma.github.io/phronesis/
 
 ## Versioning & Releases
 
-**Current version:** `0.13.2` (workspace-wide)
+**Current version:** `0.20.0` (workspace-wide)
 
 **Semver (pre-1.0):**
 - **MINOR** (`0.X.0`) - New features (subcommand, pack, hook surface, user-visible)
@@ -692,5 +693,5 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 
 ---
 
-*Last updated: 2026-06-13*
-*Based on phronesis v0.13.2*
+*Last updated: 2026-07-14*
+*Based on phronesis v0.20.0*

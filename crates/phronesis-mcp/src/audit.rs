@@ -386,28 +386,28 @@ fn eval_ast_rule(
     }
 }
 
-/// Evaluate one `new_content_contains` condition against `lines`.
-/// Lines inside test blocks (via `keep_mask`) and doc-excepted lines are
-/// skipped. Increments `times.line_matches_evaluated` per line checked.
-fn eval_content_rule(
-    needle: &str,
-    lines: &[&str],
-    keep_mask: &Option<Vec<bool>>,
+/// Context for `eval_content_rule` so the function stays at two logical
+/// parameters instead of five.
+struct ContentEvalCtx<'a> {
+    lines: &'a [&'a str],
+    keep_mask: &'a Option<Vec<bool>>,
     doc_excepted: bool,
-    mut times: Option<&mut AuditSectionTimes>,
-) -> Vec<u32> {
+    times: Option<&'a mut AuditSectionTimes>,
+}
+
+fn eval_content_rule(needle: &str, mut ctx: ContentEvalCtx<'_>) -> Vec<u32> {
     let mut hit_lines: Vec<u32> = Vec::new();
-    for (i, line) in lines.iter().enumerate() {
-        if let Some(mask) = keep_mask
+    for (i, line) in ctx.lines.iter().enumerate() {
+        if let Some(mask) = ctx.keep_mask
             && !mask.get(i).copied().unwrap_or(true)
         {
             continue;
         }
-        if let Some(ref mut t) = times {
+        if let Some(t) = ctx.times.as_deref_mut() {
             t.line_matches_evaluated += 1;
         }
         let count = line.matches(needle).count();
-        if count > 0 && doc_excepted && line_preceded_by_doc_comment(lines, i) {
+        if count > 0 && ctx.doc_excepted && line_preceded_by_doc_comment(ctx.lines, i) {
             continue;
         }
         for _ in 0..count {
@@ -417,28 +417,31 @@ fn eval_content_rule(
     hit_lines
 }
 
+/// Context bundling per-file data shared by `evaluate_rule_for_file`.
+/// Keeps the public audit surface small; evaluation needs just
+/// `EvalCtx` + `DiskRule` + accumulator.
+struct EvalCtx<'a> {
+    path: &'a Path,
+    path_str: &'a str,
+    content: &'a str,
+    lines: &'a [&'a str],
+    keep_mask: &'a Option<Vec<bool>>,
+    effective_line_count: usize,
+    ast_facts: &'a mut Option<Vec<Fact>>,
+    times: Option<&'a mut AuditSectionTimes>,
+}
+
 /// Apply one rule's actions against one file's pre-parsed data, writing any
-/// hits into `accum`. Gate checks and exemptions are evaluated here; timing
-/// for the line-match inner loop is forwarded via `times`.
-///
-/// See the comment below for the mixed-AST-short-circuit caveat.
-#[allow(clippy::too_many_arguments)]
+/// hits into `accum`.
 fn evaluate_rule_for_file(
     rule: &DiskRule,
-    path: &Path,
-    path_str: &str,
-    content: &str,
-    lines: &[&str],
-    keep_mask: &Option<Vec<bool>>,
-    effective_line_count: usize,
-    ast_facts: &mut Option<Vec<Fact>>,
+    ctx: &mut EvalCtx<'_>,
     accum: &mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
-    mut times: Option<&mut AuditSectionTimes>,
 ) {
-    if !rule_applies_to_file(rule, path, effective_line_count) {
+    if !rule_applies_to_file(rule, ctx.path, ctx.effective_line_count) {
         return;
     }
-    if rule.doc_excepted.unwrap_or(false) && file_exempts_rule(lines, &rule.id) {
+    if rule.doc_excepted.unwrap_or(false) && file_exempts_rule(ctx.lines, &rule.id) {
         return;
     }
     for action in &rule.actions {
@@ -446,28 +449,13 @@ fn evaluate_rule_for_file(
             continue;
         };
 
-        // AST-predicate path: look up matching facts emitted by
-        // `SyntaxFacts::all_facts` and emit one audit hit per fact.
-        // Block-pattern adopters go silent here automatically because
-        // the extractor halts at child blocks — no fact means no hit.
-        //
-        // Mixed-rule semantics: if a rule's `when` clause combines an
-        // AST predicate with a content predicate (e.g.
-        // `function_let_binding_count_high` AND `new_content_contains`),
-        // this branch fires on the AST predicate alone and the trailing
-        // `continue` skips the content-evaluation loop below.
-        // Effectively, AST predicates take priority and content
-        // predicates in the same rule are ignored. No rule in the
-        // shipped seed packs mixes them today; if you ship one, change
-        // this branch to AND the two predicate kinds together rather
-        // than short-circuiting here.
         if rule_has_ast_predicate(rule) {
-            if let Some(hits) = eval_ast_rule(rule, path_str, content, ast_facts) {
+            if let Some(hits) = eval_ast_rule(rule, ctx.path_str, ctx.content, ctx.ast_facts) {
                 let slot = accum
                     .entry(rule.id.clone())
                     .or_insert_with(|| (level, BTreeMap::new()))
                     .1
-                    .entry(path.to_path_buf())
+                    .entry(ctx.path.to_path_buf())
                     .or_default();
                 slot.lines.extend(hits.lines);
                 slot.details.extend(hits.details);
@@ -475,25 +463,17 @@ fn evaluate_rule_for_file(
             continue;
         }
 
-        // Gate-only rule (e.g. file_line_count_above with no content
-        // match): emit one hit per file at line 1 once gates pass.
         if is_whole_file_rule(rule) {
             accum
                 .entry(rule.id.clone())
                 .or_insert_with(|| (level, BTreeMap::new()))
                 .1
-                .entry(path.to_path_buf())
+                .entry(ctx.path.to_path_buf())
                 .or_default()
                 .push_line(1);
             continue;
         }
 
-        // Evaluate each `new_content_contains` condition against each
-        // line, recording line numbers of each match. Lines inside
-        // Rust test blocks are skipped via `keep_mask`. Matches
-        // immediately preceded by a `///` doc-comment are skipped
-        // when the rule opts in via `doc_excepted: true`.
-        let doc_excepted = rule.doc_excepted.unwrap_or(false);
         for cond in &rule.conditions {
             if cond.predicate != "new_content_contains" {
                 continue;
@@ -501,13 +481,13 @@ fn evaluate_rule_for_file(
             let Some(needle) = cond.args.first() else {
                 continue;
             };
-            let hit_lines = eval_content_rule(
-                needle.as_str(),
-                lines,
-                keep_mask,
-                doc_excepted,
-                times.as_deref_mut(),
-            );
+            let cctx = ContentEvalCtx {
+                lines: ctx.lines,
+                keep_mask: ctx.keep_mask,
+                doc_excepted: rule.doc_excepted.unwrap_or(false),
+                times: ctx.times.as_deref_mut(),
+            };
+            let hit_lines = eval_content_rule(needle.as_str(), cctx);
             if hit_lines.is_empty() {
                 continue;
             }
@@ -515,7 +495,7 @@ fn evaluate_rule_for_file(
                 .entry(rule.id.clone())
                 .or_insert_with(|| (level, BTreeMap::new()))
                 .1
-                .entry(path.to_path_buf())
+                .entry(ctx.path.to_path_buf())
                 .or_default()
                 .extend_lines(hit_lines);
         }
@@ -523,66 +503,65 @@ fn evaluate_rule_for_file(
 }
 
 /// Per-file scan body: runs all `rules` against `content`, accumulating hits
-/// into `accum`. Timing increments are guarded on `times`.
-fn scan_file_into_accum(
-    path: &Path,
-    content: &str,
-    rules: &[&DiskRule],
-    accum: &mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
-    mut times: Option<&mut AuditSectionTimes>,
-) {
-    let lines: Vec<&str> = content.lines().collect();
-    let is_rust = path.extension().and_then(|e| e.to_str()) == Some("rs");
+/// into `accum`.
+struct ScanFileInput<'a> {
+    path: &'a Path,
+    content: &'a str,
+    rules: &'a [&'a DiskRule],
+    accum: &'a mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
+    times: Option<&'a mut AuditSectionTimes>,
+}
 
-    // For Rust files, compute a keep-mask that excludes lines inside
-    // test-only modules. Hits there are real but not actionable as debt.
-    // Mirrors the hook's diff-time strip_test_blocks behavior.
+fn scan_file_into_accum(input: ScanFileInput<'_>) {
+    let ScanFileInput {
+        path,
+        content,
+        rules,
+        accum,
+        mut times,
+    } = input;
+    let lines: Vec<&str> = content.lines().collect();
+
     let keep_mask: Option<Vec<bool>> = {
-        let t = Instant::now();
-        let mask = if is_rust {
+        let started = Instant::now();
+        let mask = if path.extension().and_then(|e| e.to_str()) == Some("rs") {
             Some(crate::diff_extract::rust_test_block_keep_mask_for(content))
         } else {
             None
         };
-        if let Some(ref mut t2) = times {
-            t2.keep_mask += t.elapsed();
+        if let Some(t) = times.as_deref_mut() {
+            t.keep_mask += started.elapsed();
         }
         mask
     };
 
-    // For `file_line_count_above` checks, count only production lines on
-    // Rust files. Test files inflate line count without being the kind of
-    // "god-file" debt the rule is trying to surface — and the audit
-    // engine already strips test blocks for content predicates, so being
-    // consistent here too is the principled move.
     let effective_line_count = match &keep_mask {
         Some(mask) => mask.iter().filter(|&&keep| keep).count(),
         None => lines.len(),
     };
 
-    // Lazily parse syntax facts once per file. The parse is non-trivial
-    // (tree-sitter walk) so we defer it until a rule actually needs it,
-    // then cache so subsequent rules reuse the same parse.
     let mut ast_facts: Option<Vec<Fact>> = None;
     let path_str = path.to_string_lossy().to_string();
 
-    let t_match = Instant::now();
-    for rule in rules {
-        evaluate_rule_for_file(
-            rule,
+    let match_started = Instant::now();
+    {
+        let mut ctx = EvalCtx {
             path,
-            &path_str,
+            path_str: &path_str,
             content,
-            &lines,
-            &keep_mask,
+            lines: &lines,
+            keep_mask: &keep_mask,
             effective_line_count,
-            &mut ast_facts,
-            accum,
-            times.as_deref_mut(),
-        );
+            ast_facts: &mut ast_facts,
+            times: times.as_deref_mut(),
+        };
+
+        for rule in rules {
+            evaluate_rule_for_file(rule, &mut ctx, accum);
+        }
     }
-    if let Some(ref mut t2) = times {
-        t2.match_loop += t_match.elapsed();
+    if let Some(t) = times {
+        t.match_loop += match_started.elapsed();
     }
 }
 
@@ -674,13 +653,13 @@ fn run_core(
         if let Some(ref mut t2) = times {
             t2.read_files += t.elapsed();
         }
-        scan_file_into_accum(
+        scan_file_into_accum(ScanFileInput {
             path,
-            &content,
-            &audit_rules,
-            &mut accum,
-            times.as_deref_mut(),
-        );
+            content: &content,
+            rules: &audit_rules,
+            accum: &mut accum,
+            times: times.as_deref_mut(),
+        });
     }
 
     let (per_rule, total) = {

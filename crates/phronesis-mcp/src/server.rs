@@ -1064,7 +1064,7 @@ enum MdLineKind {
     /// The text has already been formatted as `"Avoid: <title>"`.
     AntiPattern(String),
     /// A recognized callout (`**Problem**:`, `**Pattern**:`, etc.) with text ≥ 10 chars.
-    Callout(&'static str, String),
+    Callout(String),
     /// A directive bullet (`Avoid`, `Never`, `Prefer`, `❌`, etc.) with text ≥ 10 chars.
     Directive(String),
 }
@@ -1094,9 +1094,9 @@ fn classify_md_line(trimmed: &str, in_anti_patterns: bool) -> Option<MdLineKind>
         return None;
     }
 
-    if let Some((kind, text)) = parse_callout(trimmed) {
+    if let Some((_kind, text)) = parse_callout(trimmed) {
         return if text.len() >= 10 {
-            Some(MdLineKind::Callout(kind, text.to_string()))
+            Some(MdLineKind::Callout(text.to_string()))
         } else {
             None
         };
@@ -1152,34 +1152,31 @@ pub fn extract_rules_from_markdown(content: &str, source_file: &str) -> Vec<Rule
                 match kind {
                     MdLineKind::Section(s) => current_section = Some(s),
                     MdLineKind::AntiPattern(text) => {
-                        rules.push(make_rule(
-                            &source_slug,
-                            rules.len() + 1,
+                        rules.push(make_rule(ExtractedRuleInput {
+                            source_slug: &source_slug,
+                            idx: rules.len() + 1,
                             source_file,
-                            current_section.as_deref(),
-                            "anti_pattern",
-                            &text,
-                        ));
+                            section: current_section.as_deref(),
+                            text: &text,
+                        }));
                     }
-                    MdLineKind::Callout(kind, text) => {
-                        rules.push(make_rule(
-                            &source_slug,
-                            rules.len() + 1,
+                    MdLineKind::Callout(text) => {
+                        rules.push(make_rule(ExtractedRuleInput {
+                            source_slug: &source_slug,
+                            idx: rules.len() + 1,
                             source_file,
-                            current_section.as_deref(),
-                            kind,
-                            &text,
-                        ));
+                            section: current_section.as_deref(),
+                            text: &text,
+                        }));
                     }
                     MdLineKind::Directive(text) => {
-                        rules.push(make_rule(
-                            &source_slug,
-                            rules.len() + 1,
+                        rules.push(make_rule(ExtractedRuleInput {
+                            source_slug: &source_slug,
+                            idx: rules.len() + 1,
                             source_file,
-                            current_section.as_deref(),
-                            "directive",
-                            &text,
-                        ));
+                            section: current_section.as_deref(),
+                            text: &text,
+                        }));
                     }
                 }
             }
@@ -1191,20 +1188,21 @@ pub fn extract_rules_from_markdown(content: &str, source_file: &str) -> Vec<Rule
     rules
 }
 
-fn make_rule(
-    source_slug: &str,
+struct ExtractedRuleInput<'a> {
+    source_slug: &'a str,
     idx: usize,
-    source_file: &str,
-    section: Option<&str>,
-    _kind: &str,
-    text: &str,
-) -> Rule {
-    let id = match section {
-        Some(s) => format!("{}-{}-{}", source_slug, slugify(s), idx),
-        None => format!("{}-{}", source_slug, idx),
+    source_file: &'a str,
+    section: Option<&'a str>,
+    text: &'a str,
+}
+
+fn make_rule(input: ExtractedRuleInput<'_>) -> Rule {
+    let id = match input.section {
+        Some(s) => format!("{}-{}-{}", input.source_slug, slugify(s), input.idx),
+        None => format!("{}-{}", input.source_slug, input.idx),
     };
-    let mut condition_args = vec![source_file.to_string()];
-    if let Some(s) = section {
+    let mut condition_args = vec![input.source_file.to_string()];
+    if let Some(s) = input.section {
         condition_args.push(s.to_string());
     }
     // SPEC-extract-rules-defaults (scoped slice for 0.14.0):
@@ -1224,7 +1222,7 @@ fn make_rule(
         }],
         actions: vec![Action {
             action_type: "constraint_warning".to_string(),
-            params: vec![text.to_string()],
+            params: vec![input.text.to_string()],
         }],
     }
 }

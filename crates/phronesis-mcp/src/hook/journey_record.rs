@@ -72,13 +72,13 @@ fn outcomes_for_journal(
     let command_exit = matches!(tool_name, "Bash" | "run_shell_command")
         .then(|| payload_command_exit(payload))
         .flatten();
-    let (tags, subject) = outcomes::adapter::extract_from(
-        &root,
+    let (tags, subject) = outcomes::adapter::extract_from(outcomes::adapter::ExtractFromInput {
+        project_root: &root,
         tool_name,
-        command.as_deref(),
-        &output,
+        command: command.as_deref(),
+        output: &output,
         command_exit,
-    );
+    });
     (tags, subject, command_exit)
 }
 
@@ -98,35 +98,36 @@ fn load_tagger_config(root: &std::path::Path) -> journey::tagger::TaggerConfig {
 
 /// Assemble the `JournalRecord` from the tagger result, outcome tags, and
 /// project-root metadata.
-#[allow(clippy::too_many_arguments)]
-fn build_journal_record(
-    tool_name: &str,
-    file_path: &str,
+struct JournalRecordInput<'a> {
+    tool_name: &'a str,
+    file_path: &'a str,
     tag_result: journey::tagger::TagResult,
     outcome_tags: Vec<String>,
     module: Option<String>,
     subject: Option<String>,
     command_exit: Option<i32>,
-    project_root: &std::path::Path,
-) -> journey::journal::JournalRecord {
-    let ext = std::path::Path::new(file_path)
+    project_root: &'a std::path::Path,
+}
+
+fn build_journal_record(input: JournalRecordInput<'_>) -> journey::journal::JournalRecord {
+    let ext = std::path::Path::new(input.file_path)
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_string());
-    let mut all_tags = tag_result.tags;
-    all_tags.extend(outcome_tags);
+    let mut all_tags = input.tag_result.tags;
+    all_tags.extend(input.outcome_tags);
     journey::journal::JournalRecord {
         v: 1,
         ts: super::unix_secs_now(),
-        sid: journey::current_sid(project_root),
-        seq: super::seq::next_seq(project_root),
-        tool: tool_name.to_string(),
-        path: file_path.to_string(),
+        sid: journey::current_sid(input.project_root),
+        seq: super::seq::next_seq(input.project_root),
+        tool: input.tool_name.to_string(),
+        path: input.file_path.to_string(),
         ext,
-        module,
+        module: input.module,
         tags: all_tags,
-        subject,
-        command_exit,
+        subject: input.subject,
+        command_exit: input.command_exit,
     }
 }
 
@@ -145,7 +146,7 @@ pub(super) async fn journey_record_post(payload: &HookPayload, tool_name: &str, 
         .unwrap_or_default();
     let module = journey::tagger::resolve_module(&cfg, file_path);
     let (outcome_tags, subject, command_exit) = outcomes_for_journal(payload, tool_name);
-    let record = build_journal_record(
+    let record = build_journal_record(JournalRecordInput {
         tool_name,
         file_path,
         tag_result,
@@ -153,8 +154,8 @@ pub(super) async fn journey_record_post(payload: &HookPayload, tool_name: &str, 
         module,
         subject,
         command_exit,
-        &project_root,
-    );
+        project_root: &project_root,
+    });
     journey::journal::append(&project_root, &record).ok();
 }
 

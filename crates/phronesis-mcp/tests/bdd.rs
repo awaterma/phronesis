@@ -69,25 +69,25 @@ fn run_hook(subcommand: &str, payload: &str, cwd: Option<&str>) -> (i32, String)
     (code, stderr)
 }
 
-fn simple_rule(
-    id: &str,
+struct RuleSpec<'a> {
+    id: &'a str,
     priority: i32,
-    cond_pred: &str,
-    cond_arg: &str,
-    action_type: &str,
-    action_param: &str,
-) -> Rule {
+    condition: (&'a str, &'a str),
+    action: (&'a str, &'a str),
+}
+
+fn simple_rule(spec: RuleSpec<'_>) -> Rule {
     Rule {
-        id: id.to_string(),
-        priority,
+        id: spec.id.to_string(),
+        priority: spec.priority,
         conditions: vec![Condition {
-            predicate: cond_pred.to_string(),
-            args: vec![cond_arg.to_string()],
+            predicate: spec.condition.0.to_string(),
+            args: vec![spec.condition.1.to_string()],
             script: None,
         }],
         actions: vec![Action {
-            action_type: action_type.to_string(),
-            params: vec![action_param.to_string()],
+            action_type: spec.action.0.to_string(),
+            params: vec![spec.action.1.to_string()],
         }],
     }
 }
@@ -107,7 +107,12 @@ async fn load_rules_table(world: &mut World, step: &cucumber::gherkin::Step) {
         for row in table.rows.iter().skip(1) {
             let id = &row[0];
             let priority: i32 = row[1].parse().unwrap();
-            let rule = simple_rule(id, priority, "placeholder", "value", "log", "matched");
+            let rule = simple_rule(RuleSpec {
+                id,
+                priority,
+                condition: ("placeholder", "value"),
+                action: ("log", "matched"),
+            });
             world.network.add_rule(rule).await.unwrap();
         }
     }
@@ -130,14 +135,12 @@ async fn assert_facts_table(world: &mut World, step: &cucumber::gherkin::Step) {
 
 #[given(expr = "a rule {string} that checks for {string} in content")]
 async fn given_content_check_rule(world: &mut World, rule_id: String, pattern: String) {
-    let rule = simple_rule(
-        &rule_id,
-        10,
-        "new_content_contains",
-        &pattern,
-        "constraint_violation",
-        "Content contains forbidden pattern",
-    );
+    let rule = simple_rule(RuleSpec {
+        id: &rule_id,
+        priority: 10,
+        condition: ("new_content_contains", &pattern),
+        action: ("constraint_violation", "Content contains forbidden pattern"),
+    });
     world.network.add_rule(rule).await.unwrap();
 }
 

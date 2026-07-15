@@ -293,6 +293,19 @@ enum Command {
     /// Rewrites $HOME paths, the username, session ids, and transcript paths;
     /// leaves project-internal content verbatim. Prints scrubbed JSONL to
     /// stdout, or rewrites in place (with a .bak backup) under --write.
+    /// After anonymizing, residual-risk detectors flag credential-bearing
+    /// URLs, private-key headers, token/secret assignments, secret-suggesting
+    /// environment keys, and absolute paths outside the placeholder roots
+    /// (errors: nonzero exit, nothing written — not even the backup), plus
+    /// email addresses and digit-less possible tokens (warnings on stderr,
+    /// exit 0). Diagnostics truncate matched text; suspected secrets are
+    /// never echoed in full. Raw JSON input is accepted by default; shape
+    /// recognition is a parsing convenience, not a safety guarantee.
+    ///
+    /// scrub-payload performs deterministic anonymization and detects several
+    /// common leak classes. It is not a proof that arbitrary source or
+    /// command content contains no secrets. Review scrubbed fixtures before
+    /// committing them.
     ScrubPayload {
         /// Capture file (JSONL from PHRONESIS_CAPTURE_DIR) or a single-JSON fixture.
         path: PathBuf,
@@ -378,9 +391,15 @@ async fn main() -> anyhow::Result<()> {
             dry_run,
             rules_only,
             hooks_only,
-        } => handle_init(
-            path, packs, language, force, dry_run, rules_only, hooks_only,
-        ),
+        } => handle_init(InitCtx {
+            path,
+            packs,
+            language,
+            force,
+            dry_run,
+            rules_only,
+            hooks_only,
+        }),
         Command::Install { dry_run } => handle_install(dry_run),
         Command::Uninstall { dry_run } => handle_uninstall(dry_run),
         Command::ScrubPayload {
@@ -1050,7 +1069,9 @@ fn handle_decision(cmd: DecisionCmd) -> anyhow::Result<()> {
     }
 }
 
-fn handle_init(
+/// Context for the `init` subcommand. Bundled so the handler stays at one
+/// parameter instead of seven.
+struct InitCtx {
     path: PathBuf,
     packs: String,
     language: Option<String>,
@@ -1058,28 +1079,25 @@ fn handle_init(
     dry_run: bool,
     rules_only: bool,
     hooks_only: bool,
-) -> anyhow::Result<()> {
-    // Backward-compat: --language X means --packs llm,X (the old bundled
-    // behavior), unless the user supplied --packs explicitly with a
-    // non-default value. The "none" and "minimal" legacy values are
-    // special-cased to preserve their original semantics: "none" = no
-    // rules at all, "minimal" = just the deflection pack.
-    let packs_str = match &language {
-        Some(lang) if packs == "llm" => match lang.to_lowercase().as_str() {
+}
+
+fn handle_init(ctx: InitCtx) -> anyhow::Result<()> {
+    let packs_str = match &ctx.language {
+        Some(lang) if ctx.packs == "llm" => match lang.to_lowercase().as_str() {
             "none" => "none".to_string(),
             "minimal" => "llm".to_string(),
             other => format!("llm,{}", other),
         },
-        _ => packs,
+        _ => ctx.packs,
     };
     let pack_list = init::parse_packs(&packs_str).map_err(|e| anyhow::anyhow!("{}", e))?;
     let opts = init::InitOpts {
-        project_root: path,
+        project_root: ctx.path,
         packs: pack_list,
-        force,
-        dry_run,
-        rules_only,
-        hooks_only,
+        force: ctx.force,
+        dry_run: ctx.dry_run,
+        rules_only: ctx.rules_only,
+        hooks_only: ctx.hooks_only,
     };
     let report = init::run(opts).map_err(|e| anyhow::anyhow!("{}", e))?;
     for step in &report.steps {
@@ -1088,7 +1106,7 @@ fn handle_init(
     for warning in &report.warnings {
         eprintln!("⚠ {}", warning);
     }
-    if dry_run {
+    if ctx.dry_run {
         println!("\n(dry-run: nothing was written)");
     } else {
         println!(

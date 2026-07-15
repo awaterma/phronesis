@@ -19,12 +19,13 @@ pub mod adapter;
 pub mod bugs;
 pub mod derive;
 pub mod facts;
+pub mod segment;
 pub mod subject;
 pub mod toolchain;
 
 pub use adapter::{extract, handles};
 pub use derive::{band, signals};
-pub use facts::{Band, OutcomeFact};
+pub use facts::{Band, OutcomeFact, is_grounded_outcome_tag};
 
 use std::path::Path;
 

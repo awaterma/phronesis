@@ -77,6 +77,34 @@ pub(super) fn extract_function_param_types(parsed: &ParsedFile) -> Vec<(String, 
     out
 }
 
+/// Returns functions whose individual business-parameter count meets the
+/// threshold. Counting each syntax node independently avoids combining
+/// identically named methods from separate trait implementations.
+pub(super) fn extract_function_param_counts_high(
+    parsed: &ParsedFile,
+    threshold: usize,
+) -> Vec<(String, usize)> {
+    let ParsedFile::Rust { tree, source } = parsed else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut walker = tree.walk();
+    walk_function_items(&mut walker, source.as_bytes(), &mut |fn_node, name| {
+        let Some(params) = fn_node.child_by_field_name("parameters") else {
+            return;
+        };
+        let mut param_walker = params.walk();
+        let count = params
+            .children(&mut param_walker)
+            .filter(|child| child.kind() == "parameter")
+            .count();
+        if count >= threshold {
+            out.push((name.to_string(), count));
+        }
+    });
+    out
+}
+
 /// `async fn` — walks function_item states and checks whether their
 /// `function_modifiers` child contains the `async` keyword.
 pub(super) fn extract_async_functions(parsed: &ParsedFile) -> Vec<String> {
@@ -213,7 +241,8 @@ fn safe() -> Result<u32, MyError> { Ok(0) }
 
     #[test]
     fn invalid_rust_does_not_panic() {
-        let _ = extract("fn !!! broken values here");
+        let result = std::panic::catch_unwind(|| extract("fn !!! broken values here"));
+        assert!(result.is_ok(), "invalid Rust input must not panic");
     }
 
     #[test]
@@ -394,6 +423,21 @@ fn safe() -> Result<u32, MyError> { Ok(0) }
         assert!(
             facts.function_param_counts_high.is_empty(),
             "4 business params + &self should NOT fire the threshold-5 rule"
+        );
+    }
+
+    #[test]
+    fn function_param_counts_do_not_combine_same_named_methods() {
+        let code = r#"
+            trait A { fn invoke_dyn(&self, a: u32); }
+            trait B { fn invoke_dyn(&self, a: u32, b: u32); }
+            impl A for S { fn invoke_dyn(&self, a: u32) {} }
+            impl B for S { fn invoke_dyn(&self, a: u32, b: u32) {} }
+        "#;
+        let facts = extract(code);
+        assert!(
+            facts.function_param_counts_high.is_empty(),
+            "separate methods with the same name must not have their parameters combined"
         );
     }
 

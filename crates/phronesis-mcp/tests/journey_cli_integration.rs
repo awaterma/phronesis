@@ -23,7 +23,9 @@ fn run(args: &[&str], root: &Path) -> (i32, String, String) {
 /// Seed a project tree with a journey.json + rules.json + journal records,
 /// returning the project root. Records are tagged with the supplied `tags`
 /// vec; sid is `s-test`.
-fn seed(root: &Path, rules_json: &str, journey_json: &str, tagged_records: usize, tag: &str) {
+fn seed_project(root: &Path, config: (&str, &str), records: (usize, &str)) {
+    let (rules_json, journey_json) = config;
+    let (tagged_records, tag) = records;
     let phr = root.join(".phronesis");
     let journey = phr.join("journey");
     std::fs::create_dir_all(&journey).unwrap();
@@ -48,6 +50,12 @@ fn seed(root: &Path, rules_json: &str, journey_json: &str, tagged_records: usize
     std::fs::write(journey.join("events.jsonl"), lines.join("\n") + "\n").unwrap();
 }
 
+macro_rules! seed {
+    ($root:expr, $rules:expr, $journey:expr, $count:expr, $tag:expr) => {
+        seed_project($root, ($rules, $journey), ($count, $tag))
+    };
+}
+
 const AUTH_JOURNEY_JSON: &str = r#"{
     "version":1,
     "taggers":[{"tag":"auth","when":[{"file_path_matches":"src/auth/"}]}],
@@ -63,7 +71,7 @@ const AUTH_CHURN_RULES: &str = r#"{"rules":[
 #[test]
 fn journey_command_renders_current_facts() {
     let dir = tempfile::tempdir().unwrap();
-    seed(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 3, "auth");
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 3, "auth");
 
     let (code, stdout, stderr) = run(&["journey", "--json"], dir.path());
     assert_eq!(code, 0, "stderr: {}", stderr);
@@ -92,7 +100,7 @@ fn journey_command_renders_current_facts() {
 #[test]
 fn journey_command_table_default_is_human_readable() {
     let dir = tempfile::tempdir().unwrap();
-    seed(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 3, "auth");
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 3, "auth");
 
     let (code, stdout, stderr) = run(&["journey"], dir.path());
     assert_eq!(code, 0, "stderr: {}", stderr);
@@ -129,7 +137,7 @@ fn journey_command_explain_filters_to_one_rule() {
         "modules":[]
     }"#;
     let dir = tempfile::tempdir().unwrap();
-    seed(dir.path(), rules, journey_json, 3, "auth");
+    seed!(dir.path(), rules, journey_json, 3, "auth");
 
     let (code, stdout, stderr) = run(
         &["journey", "--json", "--explain", "auth-churn"],
@@ -159,7 +167,7 @@ fn journey_command_explain_filters_to_one_rule() {
 #[test]
 fn journey_command_explain_unknown_rule_errors() {
     let dir = tempfile::tempdir().unwrap();
-    seed(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 3, "auth");
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 3, "auth");
 
     let (code, _stdout, stderr) = run(&["journey", "--explain", "no-such-rule"], dir.path());
     assert_eq!(code, 1, "stderr: {}", stderr);

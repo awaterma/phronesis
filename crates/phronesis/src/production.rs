@@ -46,34 +46,26 @@ impl ProductionState {
         use crate::variable_binding::Bindings;
 
         // Extract bindings from the WMEs by matching against rule conditions
-        let mut bindings = Bindings::new();
+        let bindings = self.rule.conditions.iter().zip(wme_list).fold(
+            Bindings::new(),
+            |bindings, (condition, wme)| {
+                bindings.can_bind(condition, &wme.fact).unwrap_or(bindings)
+            },
+        );
 
-        // Match each condition with corresponding WMEs to build bindings
-        for (idx, condition) in self.rule.conditions.iter().enumerate() {
-            if idx < wme_list.len() {
-                let wme = &wme_list[idx];
-                // Try to bind this condition with this WME
-                bindings = bindings.can_bind(condition, &wme.fact).unwrap_or(bindings);
-                // Keep existing bindings if match fails
-            }
-        }
-
-        // Substitute variables in action parameters
-        let mut substituted_actions = Vec::new();
-        for action in &self.rule.actions {
-            let mut substituted_params = Vec::new();
-
-            for param in &action.params {
-                substituted_params.push(apply_bindings(param, &bindings));
-            }
-
-            substituted_actions.push(Action {
+        Ok(self
+            .rule
+            .actions
+            .iter()
+            .map(|action| Action {
                 action_type: action.action_type.clone(),
-                params: substituted_params,
-            });
-        }
-
-        Ok(substituted_actions)
+                params: action
+                    .params
+                    .iter()
+                    .map(|param| apply_bindings(param, &bindings))
+                    .collect(),
+            })
+            .collect())
     }
 }
 

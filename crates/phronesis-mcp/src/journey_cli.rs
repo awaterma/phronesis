@@ -80,7 +80,19 @@ pub async fn compute(
     }
 
     let mut net = ReteNetwork::new();
-    derive::assert_facts(&mut net, project_root, &rules, &cfg, current_sid, now_ts).await?;
+    derive::assert_facts(
+        &mut net,
+        derive::DeriveInput {
+            project_root,
+            rules: &rules,
+            config: &cfg,
+            scope: derive::WindowScope {
+                current_sid,
+                now_ts,
+            },
+        },
+    )
+    .await?;
 
     let facts: Vec<Fact> = net.facts_snapshot()?;
     // Build attribution: for each (predicate, selector) seen in any rule, the

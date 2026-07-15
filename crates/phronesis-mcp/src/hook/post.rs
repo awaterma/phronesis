@@ -126,10 +126,12 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     if let Some(content) = read_disk_content(&file_path).unwrap_or_else(|_| process::exit(1)) {
         assert_post_content_facts(
             &network,
-            &file_path,
-            &content,
-            &content_patterns,
-            &missing_patterns,
+            PostContentInput {
+                file_path: &file_path,
+                content: &content,
+                content_patterns: &content_patterns,
+                missing_patterns: &missing_patterns,
+            },
         )
         .await
         .unwrap_or_else(|_| process::exit(1));
@@ -139,25 +141,20 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         eprintln!("phronesis: WARNING — agenda update failed: {}", e);
         process::exit(1);
     }
-    let consequences = match network.fire_all_consequences() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("phronesis: WARNING — rule execution failed: {}", e);
-            process::exit(1);
-        }
-    };
-
-    let (logged, violations, warnings) = super::collect_logged(&consequences);
-
-    let command_exit = matches!(tool_name.as_str(), "Bash" | "run_shell_command")
-        .then(|| super::journey_record::payload_command_exit(&payload))
-        .flatten();
+    let evaluation = evaluate_network(&network, &payload, &tool_name);
 
     // Post-check can't undo the edit, so violations and warnings collapse to
     // the same exit code (1). The single `consequences` array on the log entry
     // preserves which rule emitted which severity for downstream consumers.
-    if violations.is_empty() && warnings.is_empty() {
-        super::log_hook_event("post", &tool_name, &file_path, 0, command_exit, &logged);
+    if evaluation.violations.is_empty() && evaluation.warnings.is_empty() {
+        super::log_hook_event(&super::LogEventInput {
+            phase: "post",
+            tool_name: &tool_name,
+            file_path: &file_path,
+            exit: 0,
+            command_exit: evaluation.command_exit,
+            consequences: &evaluation.logged,
+        });
         // Journal the executed call at the tail — see SPEC §"Where it
         // plugs into the hook" — after the decision is logged, before the
         // exit.
@@ -165,15 +162,50 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         super::exit_ok();
     }
 
-    for v in &violations {
+    for v in &evaluation.violations {
         eprintln!("phronesis: WARNING — {}", v);
     }
-    for w in &warnings {
+    for w in &evaluation.warnings {
         eprintln!("phronesis: WARNING — {}", w);
     }
-    super::log_hook_event("post", &tool_name, &file_path, 1, command_exit, &logged);
+    super::log_hook_event(&super::LogEventInput {
+        phase: "post",
+        tool_name: &tool_name,
+        file_path: &file_path,
+        exit: 1,
+        command_exit: evaluation.command_exit,
+        consequences: &evaluation.logged,
+    });
     super::journey_record::journey_record_post(&payload, &tool_name, &file_path).await;
     process::exit(1);
+}
+
+struct PostEvaluation {
+    logged: Vec<super::LoggedConsequence>,
+    violations: Vec<String>,
+    warnings: Vec<String>,
+    command_exit: Option<i32>,
+}
+
+fn evaluate_network(
+    network: &phr::ReteNetwork,
+    payload: &super::HookPayload,
+    tool_name: &str,
+) -> PostEvaluation {
+    let consequences = network.fire_all_consequences().unwrap_or_else(|error| {
+        eprintln!("phronesis: WARNING — rule execution failed: {}", error);
+        process::exit(1);
+    });
+    let (logged, violations, warnings) = super::collect_logged(&consequences);
+    let command_exit = matches!(tool_name, "Bash" | "run_shell_command")
+        .then(|| super::journey_record::payload_command_exit(payload))
+        .flatten();
+    PostEvaluation {
+        logged,
+        violations,
+        warnings,
+        command_exit,
+    }
 }
 
 /// Read the post-edited file from disk, capped at the security limit.
@@ -211,13 +243,23 @@ fn read_disk_content(file_path: &str) -> Result<Option<String>, PathViolation> {
 /// values facts, and TDD test-existence facts.  Logs the specific error message
 /// to stderr on failure and returns `Err` — the caller maps that to
 /// `process::exit(1)`.
+struct PostContentInput<'a> {
+    file_path: &'a str,
+    content: &'a str,
+    content_patterns: &'a [String],
+    missing_patterns: &'a [String],
+}
+
 async fn assert_post_content_facts(
     network: &phr::ReteNetwork,
-    file_path: &str,
-    content: &str,
-    content_patterns: &[String],
-    missing_patterns: &[String],
+    input: PostContentInput<'_>,
 ) -> Result<(), HookError> {
+    let PostContentInput {
+        file_path,
+        content,
+        content_patterns,
+        missing_patterns,
+    } = input;
     // Only assert the full content as a fact when small enough to keep
     // working-memory growth bounded. Pattern checks below still operate on
     // the in-memory slice and emit the targeted predicates.

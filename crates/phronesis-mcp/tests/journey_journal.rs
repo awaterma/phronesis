@@ -1,13 +1,13 @@
 use phronesis_mcp::journey::journal::{self, JournalRecord};
 
-fn rec(
-    seq: u64,
-    ts: u64,
-    tool: &str,
-    path: &str,
-    tags: &[&str],
-    subject: Option<&str>,
+fn make_record(
+    timing: (u64, u64),
+    operation: (&str, &str),
+    classification: (&[&str], Option<&str>),
 ) -> JournalRecord {
+    let (seq, ts) = timing;
+    let (tool, path) = operation;
+    let (tags, subject) = classification;
     JournalRecord {
         v: 1,
         ts,
@@ -23,22 +23,28 @@ fn rec(
     }
 }
 
+macro_rules! rec {
+    ($seq:expr, $ts:expr, $tool:expr, $path:expr, $tags:expr, $subject:expr) => {
+        make_record(($seq, $ts), ($tool, $path), ($tags, $subject))
+    };
+}
+
 #[test]
 fn append_and_read_recent_roundtrip() {
     let dir = tempfile::tempdir().unwrap();
     journal::append(
         dir.path(),
-        &rec(1, 1000, "Edit", "src/auth/a.rs", &["auth"], None),
+        &rec!(1, 1000, "Edit", "src/auth/a.rs", &["auth"], None),
     )
     .unwrap();
     journal::append(
         dir.path(),
-        &rec(2, 1010, "Edit", "tests/a.rs", &["tests"], None),
+        &rec!(2, 1010, "Edit", "tests/a.rs", &["tests"], None),
     )
     .unwrap();
     journal::append(
         dir.path(),
-        &rec(3, 1020, "Bash", "<cmd>", &["build"], Some("u1")),
+        &rec!(3, 1020, "Bash", "<cmd>", &["build"], Some("u1")),
     )
     .unwrap();
 
@@ -55,7 +61,7 @@ fn read_recent_bounded_returns_tail() {
     for seq in 1..=10 {
         journal::append(
             dir.path(),
-            &rec(seq, 1000 + seq, "Edit", "src/a.rs", &["auth"], None),
+            &rec!(seq, 1000 + seq, "Edit", "src/a.rs", &["auth"], None),
         )
         .unwrap();
     }
@@ -72,22 +78,22 @@ fn read_recent_subject_filters() {
     let dir = tempfile::tempdir().unwrap();
     journal::append(
         dir.path(),
-        &rec(1, 1000, "Edit", "src/a.rs", &["auth"], None),
+        &rec!(1, 1000, "Edit", "src/a.rs", &["auth"], None),
     )
     .unwrap();
     journal::append(
         dir.path(),
-        &rec(2, 1010, "Bash", "<cmd>", &["build"], Some("u1")),
+        &rec!(2, 1010, "Bash", "<cmd>", &["build"], Some("u1")),
     )
     .unwrap();
     journal::append(
         dir.path(),
-        &rec(3, 1020, "Bash", "<cmd>", &["build"], Some("u2")),
+        &rec!(3, 1020, "Bash", "<cmd>", &["build"], Some("u2")),
     )
     .unwrap();
     journal::append(
         dir.path(),
-        &rec(4, 1030, "Bash", "<cmd>", &["test"], Some("u1")),
+        &rec!(4, 1030, "Bash", "<cmd>", &["test"], Some("u1")),
     )
     .unwrap();
 
@@ -115,7 +121,7 @@ fn malformed_lines_are_skipped() {
     let journey_dir = dir.path().join(".phronesis").join("journey");
     std::fs::create_dir_all(&journey_dir).unwrap();
     let path = journey_dir.join("events.jsonl");
-    let good = serde_json::to_string(&rec(1, 1000, "Edit", "src/a.rs", &["auth"], None)).unwrap();
+    let good = serde_json::to_string(&rec!(1, 1000, "Edit", "src/a.rs", &["auth"], None)).unwrap();
     let mut f = std::fs::File::create(&path).unwrap();
     writeln!(f, "{}", good).unwrap();
     writeln!(f, "{{not json").unwrap();
@@ -139,7 +145,7 @@ fn concurrent_appends_serialize() {
                 let seq = t * 100 + i;
                 journal::append(
                     dir.path(),
-                    &rec(seq, 1000 + seq, "Edit", "src/a.rs", &["auth"], None),
+                    &rec!(seq, 1000 + seq, "Edit", "src/a.rs", &["auth"], None),
                 )
                 .unwrap();
             }
@@ -163,7 +169,7 @@ fn append_errors_when_events_path_is_a_directory() {
     std::fs::create_dir(journey_dir.join("events.jsonl")).unwrap();
     let err = journal::append(
         dir.path(),
-        &rec(1, 1000, "Edit", "src/a.rs", &["auth"], None),
+        &rec!(1, 1000, "Edit", "src/a.rs", &["auth"], None),
     )
     .unwrap_err();
     match &err {
@@ -183,7 +189,7 @@ fn append_errors_when_phronesis_is_a_file() {
     std::fs::write(&phr, b"not a dir").unwrap();
     let err = journal::append(
         dir.path(),
-        &rec(1, 1000, "Edit", "src/a.rs", &["auth"], None),
+        &rec!(1, 1000, "Edit", "src/a.rs", &["auth"], None),
     )
     .unwrap_err();
     // Confirm we get the Io variant with a path that points at the journey dir.

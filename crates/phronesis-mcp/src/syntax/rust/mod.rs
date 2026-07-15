@@ -23,18 +23,9 @@ pub fn extract(content: &str) -> SyntaxFacts {
         .filter(|(_, _, ty)| ty.starts_with("&Vec<") || ty.starts_with("&mut Vec<"))
         .map(|(fn_name, param, _)| (fn_name.clone(), param.clone()))
         .collect();
-    // Group by fn name; emit only when count meets/exceeds the threshold.
-    // Functions with `&self` are not penalized — the param extractor already
-    // skips it, matching the spirit of "method with N business params."
     const PARAM_COUNT_THRESHOLD: usize = 5;
-    let mut per_fn: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
-    for (fn_name, _, _) in &function_param_types {
-        *per_fn.entry(fn_name.clone()).or_insert(0) += 1;
-    }
-    let function_param_counts_high: Vec<(String, usize)> = per_fn
-        .into_iter()
-        .filter(|(_, c)| *c >= PARAM_COUNT_THRESHOLD)
-        .collect();
+    let function_param_counts_high =
+        signatures::extract_function_param_counts_high(&parsed, PARAM_COUNT_THRESHOLD);
     SyntaxFacts {
         functions_returning_result_string: signatures::extract_result_string_returns(&parsed),
         public_functions: signatures::extract_public_functions(&parsed),

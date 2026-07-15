@@ -56,7 +56,7 @@ fn scaffolded_pytest_def_handles_whitespace_but_not_substring() {
     let dir = tempfile::tempdir().unwrap();
 
     let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
-        .args(&["init", "--packs", "confidence"])
+        .args(["init", "--packs", "confidence"])
         .current_dir(dir.path())
         .output()
         .expect("spawn phr-mcp init");
@@ -79,5 +79,75 @@ fn scaffolded_pytest_def_handles_whitespace_but_not_substring() {
     assert!(
         !compiled.handles("pip install pytest-cov"),
         "pip install pytest-cov must NOT match the pytest def"
+    );
+}
+
+#[test]
+fn scaffolded_defs_recognize_command_position_only() {
+    // Evidence-integrity Task 5: the init-scaffolded matchers are
+    // head-anchored and evaluated per command segment. Also an
+    // escape-fidelity guard: the scaffold's `\\s`/`\\d` must survive as
+    // regex classes, or these positive/negative cases diverge.
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["init", "--packs", "confidence"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn phr-mcp init");
+    assert!(out.status.success(), "init stderr={:?}", out.stderr);
+
+    let defs = load_project_defs(dir.path());
+    let compile = |id: &str| {
+        let def = defs.iter().find(|d| d.id == id).expect("scaffolded def");
+        CompiledDef::compile(def.clone(), DefSource::Project).expect("compile scaffolded def")
+    };
+    let pytest = compile("pytest");
+    let tsc = compile("tsc");
+
+    assert!(pytest.handles("pytest"));
+    assert!(pytest.handles("pytest -q"));
+    assert!(pytest.handles("python -m pytest tests/"));
+    assert!(pytest.handles("cd api && pytest -q"));
+    assert!(pytest.handles("FOO=1 pytest"));
+    assert!(!pytest.handles("echo pytest"));
+    assert!(!pytest.handles("cat pytest.ini"));
+    assert!(!pytest.handles("pip install pytest-cov"));
+    assert!(!pytest.handles("# pytest"));
+
+    assert!(tsc.handles("tsc"));
+    assert!(tsc.handles("npx tsc --noEmit"));
+    assert!(tsc.handles("cd web && npx tsc"));
+    assert!(!tsc.handles("echo tsc failed"));
+    assert!(!tsc.handles("touch tsc.log"));
+}
+
+#[test]
+fn repository_toolchain_defs_match_the_confidence_scaffold() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["init", "--packs", "confidence"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn phr-mcp init");
+    assert!(out.status.success(), "init stderr={:?}", out.stderr);
+
+    let generated: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".phronesis/toolchains.json"))
+            .expect("read generated toolchains"),
+    )
+    .expect("parse generated toolchains");
+    let repository_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(".phronesis/toolchains.json");
+    let repository: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&repository_path).expect("read repository toolchains"),
+    )
+    .expect("parse repository toolchains");
+
+    assert_eq!(
+        repository,
+        generated,
+        "{} drifted",
+        repository_path.display()
     );
 }

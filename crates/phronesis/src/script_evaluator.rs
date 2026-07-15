@@ -171,62 +171,56 @@ impl BuiltinScriptEvaluator {
         expr: &str,
         facts: &[Fact],
     ) -> Result<bool, ReteError> {
-        // Parse: "facts_count('predicate', ['arg1', '*']) >= 5"
-        let fc_start = expr
-            .find("facts_count(")
-            .ok_or_else(|| ReteError::ScriptEval(format!("No facts_count in: {}", expr)))?;
-
-        // Find matching closing paren
-        let inner_start = fc_start + "facts_count(".len();
-        let mut depth = 1;
-        let mut close_pos = inner_start;
-        for (i, ch) in expr[inner_start..].char_indices() {
-            match ch {
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        close_pos = inner_start + i;
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        let inner = &expr[inner_start..close_pos];
-        let remainder = expr[close_pos + 1..].trim();
-
-        // Parse the comparison: ">= 5", "> 10", "== 3", etc.
+        let (inner, remainder) = self.split_count_expression(expr)?;
         let (op, threshold) = self.parse_comparison(remainder)?;
-
-        // Count matching facts
         let (predicate_part, args_part) = self.split_predicate_and_args(inner)?;
         let predicate = predicate_part.trim().trim_matches('\'').trim_matches('"');
         let args = self.parse_args_array(args_part.trim())?;
+        let count = Self::count_matching_facts(facts, predicate, &args);
 
-        let count = facts
+        match op {
+            ">=" => Ok(count >= threshold),
+            ">" => Ok(count > threshold),
+            "==" => Ok(count == threshold),
+            "<=" => Ok(count <= threshold),
+            "<" => Ok(count < threshold),
+            _ => Err(ReteError::ScriptEval(format!("Unknown operator: {}", op))),
+        }
+    }
+
+    fn split_count_expression<'a>(&self, expr: &'a str) -> Result<(&'a str, &'a str), ReteError> {
+        let fc_start = expr
+            .find("facts_count(")
+            .ok_or_else(|| ReteError::ScriptEval(format!("No facts_count in: {}", expr)))?;
+        let inner_start = fc_start + "facts_count(".len();
+        let mut depth = 1;
+        let close_pos = expr[inner_start..]
+            .char_indices()
+            .find_map(|(index, ch)| {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0).then_some(inner_start + index)
+            })
+            .ok_or_else(|| ReteError::ScriptEval(format!("Unclosed facts_count in: {expr}")))?;
+        Ok((&expr[inner_start..close_pos], expr[close_pos + 1..].trim()))
+    }
+
+    fn count_matching_facts(facts: &[Fact], predicate: &str, args: &[String]) -> usize {
+        facts
             .iter()
-            .filter(|f| {
-                f.predicate == predicate
-                    && f.args.len() >= args.len()
-                    && f.args
+            .filter(|fact| {
+                fact.predicate == predicate
+                    && fact.args.len() >= args.len()
+                    && fact
+                        .args
                         .iter()
-                        .zip(args.iter())
+                        .zip(args)
                         .all(|(actual, pattern)| pattern == "*" || actual == pattern)
             })
-            .count();
-
-        let result = match op {
-            ">=" => count >= threshold,
-            ">" => count > threshold,
-            "==" => count == threshold,
-            "<=" => count <= threshold,
-            "<" => count < threshold,
-            _ => Err(ReteError::ScriptEval(format!("Unknown operator: {}", op)))?,
-        };
-
-        Ok(result)
+            .count()
     }
 
     /// Parse a comparison operator and threshold from a string like ">= 5" or "< 10".

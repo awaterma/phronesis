@@ -83,10 +83,12 @@ fn from_lookup_uses_snapshot_kind_and_lookup_provenance() {
 fn from_rule_firing_preserves_bound_facts() {
     let payload = serde_json::json!({"score_delta": -3});
     let c = Consequence::from_rule_firing(
-        "score.points_changed",
-        "hand.card_played",
-        vec!["f1".into(), "f2".into()],
-        ConsequenceKind::Event,
+        phronesis::RuleFiringContext::new(
+            "score.points_changed",
+            "hand.card_played",
+            vec!["f1".into(), "f2".into()],
+            ConsequenceKind::Event,
+        ),
         &payload,
     )
     .unwrap();

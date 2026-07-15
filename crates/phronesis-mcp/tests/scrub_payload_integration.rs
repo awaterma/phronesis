@@ -204,3 +204,224 @@ fn single_json_fixture_round_trips_without_envelope() {
     assert_eq!(v["tool_name"], "Edit");
     assert_eq!(v["tool_input"]["file_path"], "/home/dev/project/src/lib.rs");
 }
+
+#[test]
+fn filesystem_root_project_root_exits_nonzero_and_writes_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    let original = r#"{"ts":1,"phase":"pre","raw":{"cwd":"/Users/alicejones/Git/myproject"}}"#;
+    std::fs::write(&capture, original).expect("write capture");
+
+    let (code, stdout, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--write",
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "/",
+    ]);
+    assert_ne!(
+        code, 0,
+        "the filesystem root must be rejected as a project root"
+    );
+    assert!(stdout.is_empty(), "no scrubbed output on a config error");
+    assert!(
+        stderr.contains("project root"),
+        "diagnostic must name the bad root: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&capture).expect("read back"),
+        original,
+        "a rejected configuration must not rewrite the input"
+    );
+    assert!(!dir.path().join("payloads.jsonl.bak").exists());
+}
+
+#[test]
+fn relative_project_root_exits_nonzero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(&capture, r#"{"ts":1,"phase":"pre","raw":{}}"#).expect("write capture");
+
+    let (code, _, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "Git/myproject",
+    ]);
+    assert_ne!(
+        code, 0,
+        "a relative project root is ambiguous and must be rejected"
+    );
+    assert!(
+        stderr.contains("absolute path"),
+        "diagnostic must explain the rejection: {stderr}"
+    );
+}
+
+#[test]
+fn whitespace_home_exits_nonzero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(&capture, r#"{"ts":1,"phase":"pre","raw":{}}"#).expect("write capture");
+
+    let (code, _, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "   ",
+        "--project-root",
+        "/Users/alicejones/Git/myproject",
+    ]);
+    assert_ne!(code, 0, "a whitespace-only home must be rejected");
+    assert!(
+        stderr.contains("home directory"),
+        "diagnostic must name the bad root: {stderr}"
+    );
+}
+
+#[test]
+fn suspected_secret_blocks_write_before_backup() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    let original = r#"{"ts":1,"phase":"pre","raw":{"tool_input":{"command":"export API_KEY=SUPERSECRETVALUE123456"}}}"#;
+    std::fs::write(&capture, original).expect("write capture");
+
+    let (code, stdout, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--write",
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "/Users/alicejones/Git/myproject",
+    ]);
+    assert_ne!(code, 0, "a suspected secret must fail the run");
+    assert!(stdout.is_empty(), "no scrubbed output on a detector error");
+    assert!(
+        stderr.contains("token/secret assignment"),
+        "stderr names the leak class: {stderr}"
+    );
+    assert!(
+        !stderr.contains("SECRETVALUE123456"),
+        "diagnostics must not echo the full secret: {stderr}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&capture).expect("read back"),
+        original,
+        "a failed run must not rewrite the input"
+    );
+    assert!(
+        !dir.path().join("payloads.jsonl.bak").exists(),
+        "errors must abort before the backup is made"
+    );
+}
+
+#[test]
+fn pem_private_key_blocks_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(
+        &capture,
+        r#"{"ts":1,"phase":"pre","raw":{"tool_input":{"new_string":"-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEAfake"}}}"#,
+    )
+    .expect("write capture");
+
+    let (code, stdout, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--write",
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "/Users/alicejones/Git/myproject",
+    ]);
+    assert_ne!(code, 0, "a private-key header must fail the run");
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("private-key header"),
+        "stderr names the leak class: {stderr}"
+    );
+}
+
+#[test]
+fn absolute_path_outside_home_blocks_run() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(
+        &capture,
+        r#"{"ts":1,"phase":"pre","raw":{"tool_input":{"command":"cat /private/tmp/cap/payloads.jsonl"}}}"#,
+    )
+    .expect("write capture");
+
+    let (code, _, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "/Users/alicejones/Git/myproject",
+    ]);
+    assert_ne!(code, 0, "an out-of-home absolute path must fail the run");
+    assert!(
+        stderr.contains("absolute path"),
+        "stderr names the leak class: {stderr}"
+    );
+}
+
+#[test]
+fn email_address_warns_but_exits_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(
+        &capture,
+        r#"{"ts":1,"phase":"pre","raw":{"tool_input":{"command":"git log --author=someone@example.com"}}}"#,
+    )
+    .expect("write capture");
+
+    let (code, stdout, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "/Users/alicejones/Git/myproject",
+    ]);
+    assert_eq!(
+        code, 0,
+        "email addresses are warnings, not errors: {stderr}"
+    );
+    assert!(
+        stderr.contains("email address"),
+        "the warning must be visible on stderr: {stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(v["ts"], 1);
+}
+
+#[test]
+fn benign_password_prose_passes() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(
+        &capture,
+        r#"{"ts":1,"phase":"pre","raw":{"tool_input":{"command":"grep -n password src/lib.rs"}}}"#,
+    )
+    .expect("write capture");
+
+    let (code, stdout, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "/Users/alicejones/Git/myproject",
+    ]);
+    assert_eq!(
+        code, 0,
+        "the bare word password must not fail the run: {stderr}"
+    );
+    assert!(
+        !stderr.contains("scrub error"),
+        "no error-severity finding for a bare keyword: {stderr}"
+    );
+    assert!(
+        stdout.contains("password"),
+        "project content passes through"
+    );
+}
