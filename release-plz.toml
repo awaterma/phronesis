@@ -1,0 +1,31 @@
+[workspace]
+# Release only when the release PR is merged — never on ordinary pushes to main.
+release_always = false
+
+# CHANGELOG.md is hand-curated (Keep a Changelog with Migration sections);
+# release-plz manages versions/tags/publishing only.
+changelog_update = false
+
+# One tag for the unified workspace version (v0.8.1 .. v0.18.0 precedent).
+git_tag_name = "v{{ version }}"
+
+# Pre-1.0 house rule: any user-visible feature bumps MINOR.
+features_always_increment_minor = true
+
+publish_timeout = "30m"
+semver_check = true
+dependencies_update = false
+pr_labels = ["release"]
+
+# Unified version across all three crates (version.workspace = true).
+[[package]]
+name = "phronesis"
+version_group = "workspace"
+
+[[package]]
+name = "phronesis-rhai"
+version_group = "workspace"
+
+[[package]]
+name = "phronesis-mcp"
+version_group = "workspace"
