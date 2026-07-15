@@ -414,7 +414,13 @@ cargo test
 
 ## Versioning
 
-Semver, manually bumped in `Cargo.toml`. We are pre-1.0, so:
+Semver, automated by **release-plz** (see `docs/RELEASING.md`). Version
+bumps, git tags, and crates.io publishing are no longer done by hand:
+release-plz watches conventional commits on `main`, opens/updates a
+Release PR (the human approval gate), and merging that PR publishes all
+three crates via crates.io trusted publishing and tags `vX.Y.Z`.
+
+We are pre-1.0, so:
 - **MINOR** (`0.X.0`) — new features (new subcommand, new pack, new hook
   surface, anything user-visible). Bump and reset PATCH to 0.
 - **PATCH** (`0.X.Y`) — bug fixes, internal refactors, doc-only changes,
@@ -422,13 +428,21 @@ Semver, manually bumped in `Cargo.toml`. We are pre-1.0, so:
 - **MAJOR** (`1.0.0`) — reserved for the first "I'd recommend this to
   someone else" milestone.
 
-After bumping, rebuild and `cargo install --path .` so the user-level
-binary (the one hooks invoke) matches. If the release touched any pack
-rules, also run `phr-mcp catalogue` from the repo root and commit the
-regenerated `docs/catalogue.html` — the page is a generated artifact
-and drifts otherwise. `phr-mcp --version` prints
-the installed version — that's how you check whether a project's hooks
-are running fresh code.
+**Still manual** (release-plz does NOT do these):
+- **CHANGELOG.md entry** — hand-written in (or before) the release PR;
+  `changelog_update = false`, the Keep a Changelog format with Migration
+  sections stays human-curated.
+- **Catalogue regeneration** — if the release touched any pack rules,
+  run `phr-mcp catalogue` from the repo root and commit the regenerated
+  `docs/catalogue.html` before merging the release PR — the page is a
+  generated artifact and drifts otherwise.
+- **Local reinstall** — after each release, `cargo install --path
+  crates/phronesis-mcp` so the user-level binary (the one hooks invoke)
+  matches. `phr-mcp --version` prints the installed version — that's how
+  you check whether a project's hooks are running fresh code.
+- **Conventional-commit PR titles** — squash merges make the PR title
+  the commit message release-plz parses, so PR titles must be
+  conventional-commit shaped (`feat:`, `fix:`, `chore:`, ...).
 
 ## Coding Standards
 

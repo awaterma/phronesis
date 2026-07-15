@@ -566,17 +566,23 @@ GitHub Pages: https://awaterma.github.io/phronesis/
 
 ## Versioning & Releases
 
-**Current version:** `0.20.0` (workspace-wide)
+Current version: see `[workspace.package]` version in `Cargo.toml`
+
+Releases are automated by **release-plz** (see `docs/RELEASING.md`):
+conventional commits on `main` drive a Release PR; merging it publishes
+all three crates via crates.io trusted publishing and tags `vX.Y.Z`.
+Still manual: hand-written CHANGELOG.md entry, `phr-mcp catalogue`
+regeneration if pack rules changed, and conventional-commit-shaped PR
+titles (squash merges).
 
 **Semver (pre-1.0):**
 - **MINOR** (`0.X.0`) - New features (subcommand, pack, hook surface, user-visible)
 - **PATCH** (`0.X.Y`) - Bug fixes, internal refactors, doc-only, rule pack tweaks
 - **MAJOR** (`1.0.0`) - First "production ready" release
 
-**After bumping:**
+**After each release:**
 ```bash
-# Update Cargo.toml versions
-# Rebuild and reinstall
+# Rebuild and reinstall the local binary hooks invoke
 cargo install --path crates/phronesis-mcp
 
 # Verify installed version
