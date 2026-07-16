@@ -7,7 +7,7 @@
 mod journey_record;
 mod post;
 mod pre;
-mod seq;
+pub(crate) mod seq;
 
 pub use post::run_post_check;
 pub use pre::run_pre_check;
@@ -255,31 +255,6 @@ pub(crate) async fn assert_pack_marker_facts(network: &ReteNetwork, project_root
     }
 }
 
-pub(crate) async fn assert_confidence_signals(network: &ReteNetwork) {
-    let root = security::project_root();
-    if !outcomes::enabled(&root) {
-        return;
-    }
-    let Some(subject) = outcomes::subject::current(&root) else {
-        return;
-    };
-    let signals = match outcomes::signals(&root, &subject) {
-        Ok(s) => s,
-        Err(_) => return,
-    };
-    for fact in signals {
-        let id = format!("{}:{}", fact.predicate, fact.args.join(":"));
-        let _ = network
-            .assert_fact(Fact {
-                id,
-                predicate: fact.predicate.to_string(),
-                args: fact.args,
-                timestamp: 0,
-            })
-            .await;
-    }
-}
-
 /// Journey wiring shared by `run_pre_check` and `run_post_check`: derive the
 /// `journey_*` facts the rules reference, assert them into the live network.
 ///
@@ -338,7 +313,7 @@ async fn assert_journey_facts_into(
 /// Pre-check side of confidence scoring: assert the open work unit's
 /// `signal_pass` facts so gate rules (`facts_count('signal_pass', ...)`) can
 /// fire. Opt-in and fail-open.
-async fn assert_confidence_signals(network: &ReteNetwork) {
+pub(crate) async fn assert_confidence_signals(network: &ReteNetwork) {
     let root = security::project_root();
     if !outcomes::enabled(&root) {
         return;

@@ -23,10 +23,10 @@ use phr::Fact;
 use serde::Deserialize;
 
 use crate::action_log;
+use crate::context;
 use crate::journey;
 use crate::outcomes;
 use crate::security;
-use crate::context;
 
 // ---------------------------------------------------------------------------
 // Payload shapes
@@ -52,6 +52,10 @@ struct CodexPayload {
 
 struct PatchFile {
     path: String,
+    /// Lines the patch adds (`+` hunk lines). Used as `new_content` when the
+    /// file isn't readable on disk yet (Add File), and preferred otherwise so
+    /// rules see the incoming content, not just the current file state.
+    added: String,
 }
 
 struct CodexDecision {
@@ -59,6 +63,8 @@ struct CodexDecision {
     block_messages: Vec<String>,
     warn_messages: Vec<String>,
     additional_context: String,
+    /// Paths touched by the tool call; journaled once post-hook wiring lands.
+    #[allow(dead_code)]
     files: Vec<String>,
 }
 
@@ -66,13 +72,12 @@ struct CodexDecision {
 // Entry point
 // ---------------------------------------------------------------------------
 
-pub fn run(event: &str) -> ! {
+pub async fn run(event: &str) -> ! {
     let payload = parse_payload();
     let event = payload.event.as_deref().unwrap_or(event);
     let root = security::project_root();
 
-    let rt = tokio::runtime::Handle::current();
-    let result = rt.block_on(dispatch(&payload, event, &root));
+    let result = dispatch(&payload, event, &root).await;
 
     let response = renderer::render_codex_response(event, &result);
     println!("{}", response);
@@ -108,7 +113,7 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
         "pre-compact" => make_compact_decision(root, true),
         "post-compact" => make_ctx_decision(root, ContextKind::SessionStart),
         "subagent-start" => make_ctx_decision(root, ContextKind::SessionStart),
-        "subagent-stop" | "stop" | _ => empty_decision(),
+        _ => empty_decision(),
     }
 }
 
@@ -157,12 +162,14 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     let command = extract_bash_command(payload);
 
     // Assert content fact
-    let _ = network.assert_fact(Fact {
-        id: "new_content".to_string(),
-        predicate: "new_content".to_string(),
-        args: vec![command.clone()],
-        timestamp: 0,
-    }).await;
+    let _ = network
+        .assert_fact(Fact {
+            id: "new_content".to_string(),
+            predicate: "new_content".to_string(),
+            args: vec![command.clone()],
+            timestamp: 0,
+        })
+        .await;
 
     // Content pattern checks
     let cp = crate::hook_facts::collect_content_patterns(&rules);
@@ -171,7 +178,9 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     let mut violations = Vec::new();
     let mut warnings = Vec::new();
 
-    if let Err(e) = crate::hook_facts::check_content_patterns(&network, &file_path, &command, &cp).await {
+    if let Err(e) =
+        crate::hook_facts::check_content_patterns(&network, &file_path, &command, &cp).await
+    {
         violations.push(e.to_string());
     }
     if let Err(e) = crate::hook_facts::check_bash_command_patterns(&network, &command, &bcp).await {
@@ -201,8 +210,12 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     warn_msgs.extend(warnings);
 
     if !block_msgs.is_empty() {
-        for v in &block_msgs { eprintln!("phronesis: BLOCKED — {}", v); }
-        for w in &warn_msgs { eprintln!("phronesis: WARNING — {}", w); }
+        for v in &block_msgs {
+            eprintln!("phronesis: BLOCKED — {}", v);
+        }
+        for w in &warn_msgs {
+            eprintln!("phronesis: WARNING — {}", w);
+        }
         log_event("pre", payload, "Bash", &file_path, 2, &logged);
         return CodexDecision {
             exit: 2,
@@ -213,7 +226,9 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
         };
     }
     if !warn_msgs.is_empty() {
-        for w in &warn_msgs { eprintln!("phronesis: WARNING — {}", w); }
+        for w in &warn_msgs {
+            eprintln!("phronesis: WARNING — {}", w);
+        }
         log_event("pre", payload, "Bash", &file_path, 1, &logged);
         return CodexDecision {
             exit: 1,
@@ -229,28 +244,29 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
 }
 
 async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDecision {
-    let patch_text = payload
-        .tool_input
-        .as_ref()
-        .and_then(|t| t.get("patch"))
-        .and_then(|p| p.as_str())
+    // Codex has sent the patch body under different keys across versions:
+    // `input` (current apply_patch), `patch`, and `command` (exec-style).
+    let patch_text = ["input", "patch", "command"]
+        .iter()
+        .find_map(|key| {
+            payload
+                .tool_input
+                .as_ref()
+                .and_then(|t| t.get(key))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
         .unwrap_or("");
-    let patch_text = if patch_text.is_empty() {
-        payload
-            .tool_input
-            .as_ref()
-            .and_then(|t| t.get("command"))
-            .and_then(|c| c.as_str())
-            .unwrap_or("")
-    } else {
-        patch_text
-    };
 
     let files = codex_patch::parse_patch(patch_text);
 
-    // Check traversal
+    // Check traversal. NotFound is fine — Add File targets don't exist yet;
+    // only genuine escape attempts (.. segments, outside root) block.
     for pf in &files {
-        if let Err(_) = security::resolve_safe_path(&pf.path, &security::project_root()) {
+        if let Err(
+            security::SecurityError::PathTraversal(_) | security::SecurityError::PathOutsideRoot(_),
+        ) = security::resolve_safe_path(&pf.path, &security::project_root())
+        {
             return CodexDecision {
                 exit: 2,
                 block_messages: vec![format!("path traversal blocked: {}", pf.path)],
@@ -263,51 +279,105 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
 
     let rules = match load_rules("pre") {
         Ok(Some(r)) => r,
-        Ok(None) => return CodexDecision {
-            exit: 0, block_messages: Vec::new(), warn_messages: Vec::new(),
-            additional_context: String::new(),
-            files: files.iter().map(|f| f.path.clone()).collect(),
-        },
-        Err(e) => return CodexDecision {
-            exit: 2, block_messages: vec![format!("rules error: {}", e)],
-            warn_messages: Vec::new(), additional_context: String::new(),
-            files: Vec::new(),
-        },
+        Ok(None) => {
+            return CodexDecision {
+                exit: 0,
+                block_messages: Vec::new(),
+                warn_messages: Vec::new(),
+                additional_context: String::new(),
+                files: files.iter().map(|f| f.path.clone()).collect(),
+            };
+        }
+        Err(e) => {
+            return CodexDecision {
+                exit: 2,
+                block_messages: vec![format!("rules error: {}", e)],
+                warn_messages: Vec::new(),
+                additional_context: String::new(),
+                files: Vec::new(),
+            };
+        }
     };
 
-    let network = build_pre_network(&rules, "", &security::project_root()).await;
-
-    // Assert content per file
+    // Evaluate each file with its own network, mirroring the single-file
+    // contract of the Claude hook: file_path facts (and their per-segment
+    // file_path_matches derivatives) are scoped to one file at a time.
+    let mut logged = Vec::new();
+    let mut block_msgs = Vec::new();
+    let mut warn_msgs = Vec::new();
     for pf in &files {
-        let safe = match security::resolve_safe_path(&pf.path, &security::project_root()) {
-            Ok(p) => p,
-            Err(_) => continue,
+        // Prefer the patch's own added lines (the file may not exist on disk
+        // yet for Add File), falling back to the current on-disk content.
+        let content = if pf.added.is_empty() {
+            match security::resolve_safe_path(&pf.path, &security::project_root()) {
+                Ok(safe) => std::fs::read_to_string(&safe).unwrap_or_default(),
+                Err(_) => continue,
+            }
+        } else {
+            pf.added.clone()
         };
-        if let Ok(content) = std::fs::read_to_string(&safe) {
-            let _ = network.assert_fact(Fact {
-                id: format!("new_content_{}", pf.path.replace('/', "_")),
-                predicate: "new_content".to_string(),
-                args: vec![content],
-                timestamp: 0,
-            }).await;
+
+        let network = build_pre_network(&rules, &pf.path, &security::project_root()).await;
+        if !content.is_empty() {
+            let _ = network
+                .assert_fact(Fact {
+                    id: format!("new_content_{}", pf.path.replace('/', "_")),
+                    predicate: "new_content".to_string(),
+                    args: vec![content.clone()],
+                    timestamp: 0,
+                })
+                .await;
+            // Rules match on derived new_content_contains facts, not the raw
+            // content — mirror the Claude pre-hook's pattern scan.
+            let patterns = crate::hook_facts::collect_content_patterns(&rules);
+            if let Err(e) =
+                crate::hook_facts::check_content_patterns(&network, &pf.path, &content, &patterns)
+                    .await
+            {
+                return CodexDecision {
+                    exit: 2,
+                    block_messages: vec![format!("pattern check failed: {}", e)],
+                    warn_messages: Vec::new(),
+                    additional_context: String::new(),
+                    files: Vec::new(),
+                };
+            }
         }
+
+        let consequences = match network.fire_all_consequences() {
+            Ok(c) => c,
+            Err(e) => {
+                return CodexDecision {
+                    exit: 2,
+                    block_messages: vec![format!("rule execution failed: {}", e)],
+                    warn_messages: Vec::new(),
+                    additional_context: String::new(),
+                    files: Vec::new(),
+                };
+            }
+        };
+
+        let (file_logged, file_blocks, file_warns) = hook::collect_logged(&consequences);
+        logged.extend(file_logged);
+        block_msgs.extend(file_blocks);
+        warn_msgs.extend(file_warns);
     }
 
-    let consequences = match network.fire_all_consequences() {
-        Ok(c) => c,
-        Err(e) => return CodexDecision {
-            exit: 2, block_messages: vec![format!("rule execution failed: {}", e)],
-            warn_messages: Vec::new(), additional_context: String::new(),
-            files: Vec::new(),
-        },
-    };
-
-    let (logged, block_msgs, warn_msgs) = hook::collect_logged(&consequences);
-
     if !block_msgs.is_empty() || !warn_msgs.is_empty() {
-        for v in &block_msgs { eprintln!("phronesis: BLOCKED — {}", v); }
-        for w in &warn_msgs { eprintln!("phronesis: WARNING — {}", w); }
-        log_event("pre", payload, "apply_patch", "", if !block_msgs.is_empty() { 2 } else { 1 }, &logged);
+        for v in &block_msgs {
+            eprintln!("phronesis: BLOCKED — {}", v);
+        }
+        for w in &warn_msgs {
+            eprintln!("phronesis: WARNING — {}", w);
+        }
+        log_event(
+            "pre",
+            payload,
+            "apply_patch",
+            "",
+            if !block_msgs.is_empty() { 2 } else { 1 },
+            &logged,
+        );
         return CodexDecision {
             exit: if !block_msgs.is_empty() { 2 } else { 1 },
             block_messages: block_msgs,
@@ -319,7 +389,9 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
 
     log_event("pre", payload, "apply_patch", "", 0, &logged);
     CodexDecision {
-        exit: 0, block_messages: Vec::new(), warn_messages: Vec::new(),
+        exit: 0,
+        block_messages: Vec::new(),
+        warn_messages: Vec::new(),
         additional_context: String::new(),
         files: files.iter().map(|f| f.path.clone()).collect(),
     }
@@ -347,9 +419,11 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
         Err(e) => {
             journal_post(payload, &file_path);
             return CodexDecision {
-                exit: 0, block_messages: Vec::new(),
+                exit: 0,
+                block_messages: Vec::new(),
                 warn_messages: vec![format!("rules error: {}", e)],
-                additional_context: String::new(), files: Vec::new(),
+                additional_context: String::new(),
+                files: Vec::new(),
             };
         }
     };
@@ -368,9 +442,11 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
         Err(e) => {
             journal_post(payload, &file_path);
             return CodexDecision {
-                exit: 1, block_messages: Vec::new(),
+                exit: 1,
+                block_messages: Vec::new(),
                 warn_messages: vec![format!("rule execution failed: {}", e)],
-                additional_context: String::new(), files: Vec::new(),
+                additional_context: String::new(),
+                files: Vec::new(),
             };
         }
     };
@@ -378,13 +454,20 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
     let (logged, block_msgs, warn_msgs) = hook::collect_logged(&consequences);
 
     if !block_msgs.is_empty() || !warn_msgs.is_empty() {
-        for v in &block_msgs { eprintln!("phronesis: WARNING — {}", v); }
-        for w in &warn_msgs { eprintln!("phronesis: WARNING — {}", w); }
+        for v in &block_msgs {
+            eprintln!("phronesis: WARNING — {}", v);
+        }
+        for w in &warn_msgs {
+            eprintln!("phronesis: WARNING — {}", w);
+        }
         log_event("post", payload, tool_name, &file_path, 1, &logged);
         journal_post(payload, &file_path);
         return CodexDecision {
-            exit: 1, block_messages: block_msgs, warn_messages: warn_msgs,
-            additional_context: String::new(), files: Vec::new(),
+            exit: 1,
+            block_messages: block_msgs,
+            warn_messages: warn_msgs,
+            additional_context: String::new(),
+            files: Vec::new(),
         };
     }
 
@@ -398,7 +481,10 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-enum ContextKind { SessionStart, TurnContext }
+enum ContextKind {
+    SessionStart,
+    TurnContext,
+}
 
 fn make_ctx_decision(root: &Path, kind: ContextKind) -> CodexDecision {
     CodexDecision {
@@ -426,7 +512,10 @@ fn build_context_body(root: &Path, kind: ContextKind) -> String {
         ContextKind::SessionStart => {
             let path = crate::rules_file::default_path(root);
             let rules = crate::rules_file::read(&path).ok();
-            let rules_body = rules.as_ref().map(context::build_session_body).unwrap_or_default();
+            let rules_body = rules
+                .as_ref()
+                .map(context::build_session_body)
+                .unwrap_or_default();
             let durable = context::build_durable_section(&context::read_durable_directives(root));
             match (durable.is_empty(), rules_body.is_empty()) {
                 (true, true) => String::new(),
@@ -497,17 +586,30 @@ async fn assert_journey_facts_into(
     let cfg = match journey::load_config(project_root) {
         Ok(c) => c,
         Err(journey::ConfigError::NotFound(_)) => journey::tagger::TaggerConfig::default(),
-        Err(e) => { eprintln!("phronesis: journey config skipped: {}", e); return Ok(()); }
+        Err(e) => {
+            eprintln!("phronesis: journey config skipped: {}", e);
+            return Ok(());
+        }
     };
     let sid = journey::current_sid(project_root);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let scope = journey::derive::WindowScope { current_sid: &sid, now_ts: now };
-    journey::derive::assert_facts(network, journey::derive::DeriveInput {
-        project_root, rules, config: &cfg, scope,
-    }).await
+    let scope = journey::derive::WindowScope {
+        current_sid: &sid,
+        now_ts: now,
+    };
+    journey::derive::assert_facts(
+        network,
+        journey::derive::DeriveInput {
+            project_root,
+            rules,
+            config: &cfg,
+            scope,
+        },
+    )
+    .await
 }
 
 // ---------------------------------------------------------------------------
@@ -516,13 +618,21 @@ async fn assert_journey_facts_into(
 
 fn load_rules(phase: &str) -> Result<Option<Vec<phr::Rule>>, String> {
     let path_buf = crate::rules_file::default_path(&security::project_root());
-    if !path_buf.exists() { return Ok(None); }
+    if !path_buf.exists() {
+        return Ok(None);
+    }
     let rules_file = crate::rules_file::read(&path_buf).map_err(|e| e.to_string())?;
-    let rules: Vec<phr::Rule> = rules_file.rules.into_iter()
+    let rules: Vec<phr::Rule> = rules_file
+        .rules
+        .into_iter()
         .filter(|r| r.phase == phase)
         .map(|r| crate::rules_file::rule_from_disk(&r).0)
         .collect();
-    if rules.is_empty() { Ok(None) } else { Ok(Some(rules)) }
+    if rules.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(rules))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -530,17 +640,31 @@ fn load_rules(phase: &str) -> Result<Option<Vec<phr::Rule>>, String> {
 // ---------------------------------------------------------------------------
 
 fn extract_file_path(tool_input: Option<&serde_json::Value>) -> String {
-    tool_input.and_then(|t| t.get("file_path"))
-        .and_then(|v| v.as_str()).unwrap_or("").to_string()
+    tool_input
+        .and_then(|t| t.get("file_path"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 fn extract_bash_command(payload: &CodexPayload) -> String {
-    payload.tool_input.as_ref()
+    payload
+        .tool_input
+        .as_ref()
         .and_then(|t| t.get("command"))
-        .and_then(|c| c.as_str()).unwrap_or("").to_string()
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
-fn log_event(phase: &str, payload: &CodexPayload, tool_name: &str, file_path: &str, exit: i32, logged: &[crate::hook_logged::LoggedConsequence]) {
+fn log_event(
+    phase: &str,
+    payload: &CodexPayload,
+    tool_name: &str,
+    file_path: &str,
+    exit: i32,
+    logged: &[crate::hook_logged::LoggedConsequence],
+) {
     let path = action_log::default_path(&security::project_root());
     let mut entry = action_log::LogEntry::new("hook", "codex_hook")
         .with("phase", phase.to_string())
@@ -548,9 +672,15 @@ fn log_event(phase: &str, payload: &CodexPayload, tool_name: &str, file_path: &s
         .with("file", file_path.to_string())
         .with("exit", exit)
         .with("host", "codex".to_string());
-    if let Some(ref sid) = payload.session_id { entry = entry.with("session_id", sid.clone()); }
-    if let Some(ref tid) = payload.turn_id { entry = entry.with("turn_id", tid.clone()); }
-    if let Some(ref tuid) = payload.tool_use_id { entry = entry.with("tool_use_id", tuid.clone()); }
+    if let Some(ref sid) = payload.session_id {
+        entry = entry.with("session_id", sid.clone());
+    }
+    if let Some(ref tid) = payload.turn_id {
+        entry = entry.with("turn_id", tid.clone());
+    }
+    if let Some(ref tuid) = payload.tool_use_id {
+        entry = entry.with("tool_use_id", tuid.clone());
+    }
     if !logged.is_empty() {
         let val = serde_json::to_value(logged).unwrap_or(serde_json::Value::Null);
         entry = entry.with("consequences", val);
@@ -559,39 +689,65 @@ fn log_event(phase: &str, payload: &CodexPayload, tool_name: &str, file_path: &s
 }
 
 fn journal_post(payload: &CodexPayload, file_path: &str) {
-    if std::env::var("PHRONESIS_NO_JOURNEY").is_ok() { return; }
+    if std::env::var("PHRONESIS_NO_JOURNEY").is_ok() {
+        return;
+    }
     let root = security::project_root();
     let tool = payload.tool.as_deref().unwrap_or("");
-    let cfg = match journey::load_config(&root) {
-        Ok(c) => c,
-        Err(_) => journey::tagger::TaggerConfig::default(),
-    };
+    let cfg = journey::load_config(&root).unwrap_or_default();
     let mut facts: Vec<Fact> = Vec::new();
-    facts.push(Fact { id: "file_path".to_string(), predicate: "file_path".to_string(), args: vec![file_path.to_string()], timestamp: 0 });
+    facts.push(Fact {
+        id: "file_path".to_string(),
+        predicate: "file_path".to_string(),
+        args: vec![file_path.to_string()],
+        timestamp: 0,
+    });
     for part in file_path.split('/') {
         if !part.is_empty() {
-            facts.push(Fact { id: format!("file_path_matches_{}", part), predicate: "file_path_matches".to_string(), args: vec![part.to_string()], timestamp: 0 });
+            facts.push(Fact {
+                id: format!("file_path_matches_{}", part),
+                predicate: "file_path_matches".to_string(),
+                args: vec![part.to_string()],
+                timestamp: 0,
+            });
         }
     }
     // Tagger is async — use Handle to poll
-    let tag_result = tokio::runtime::Handle::current().block_on(journey::tagger::fire(&cfg, &facts)).unwrap_or_default();
+    let tag_result = tokio::runtime::Handle::current()
+        .block_on(journey::tagger::fire(&cfg, &facts))
+        .unwrap_or_default();
     let command = extract_bash_command(payload);
     let output = extract_tool_output_text(payload);
-    let (outcome_tags, subject) = outcomes::adapter::extract_from(outcomes::adapter::ExtractFromInput {
-        project_root: &root, tool_name: tool, command: Some(&command), output: &output, command_exit: None,
-    });
-    let ext = std::path::Path::new(file_path).extension().and_then(|s| s.to_str()).map(|s| s.to_string());
+    let (outcome_tags, subject) =
+        outcomes::adapter::extract_from(outcomes::adapter::ExtractFromInput {
+            project_root: &root,
+            tool_name: tool,
+            command: Some(&command),
+            output: &output,
+            command_exit: None,
+        });
+    let ext = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_string());
     let module = journey::tagger::resolve_module(&cfg, file_path);
     let mut all_tags = tag_result.tags;
     all_tags.extend(outcome_tags);
     let record = journey::journal::JournalRecord {
         v: 1,
-        ts: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+        ts: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
         sid: journey::current_sid(&root),
         seq: crate::hook::seq::next_seq(&root),
         tool: tool.to_string(),
         path: file_path.to_string(),
-        ext, module, tags: all_tags, subject, command_exit: None,
+        ext,
+        module,
+        tags: all_tags,
+        subject,
+        command_exit: None,
     };
     let _ = journey::journal::append(&root, &record);
 }
@@ -607,15 +763,16 @@ fn extract_tool_output_text(payload: &CodexPayload) -> String {
                     parts.push(s.to_string());
                 }
             }
-            if parts.is_empty() { v.to_string() } else { parts.join("\n") }
+            if parts.is_empty() {
+                v.to_string()
+            } else {
+                parts.join("\n")
+            }
         }
     }
 }
 
 // Re-exports
 mod hook {
-    pub(crate) use crate::hook::assert_confidence_signals;
-    pub(crate) use crate::hook::assert_pack_marker_facts;
     pub(crate) use crate::hook::collect_logged;
-    pub(crate) use crate::hook::seq::next_seq;
 }

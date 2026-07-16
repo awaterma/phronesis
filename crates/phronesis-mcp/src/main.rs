@@ -422,7 +422,7 @@ async fn main() -> anyhow::Result<()> {
             home,
             project_root,
         } => scrub_payload::run(&path, write, home, project_root),
-        Command::CodexHook { event } => phronesis_mcp::codex_hook::run(&event),
+        Command::CodexHook { event } => phronesis_mcp::codex_hook::run(&event).await,
     }
 }
 

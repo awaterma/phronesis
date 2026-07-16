@@ -18,16 +18,15 @@ use serde::Serialize;
 
 use crate::context;
 
-use super::{CodexDecision, renderer};
+use super::CodexDecision;
 
 /// Render a Codex hook response as a JSON string.
 pub fn render_codex_response(event: &str, decision: &CodexDecision) -> String {
     match event {
         "pre-tool-use" => render_pre(decision),
         "post-tool-use" => render_post(decision),
-        "session-start" | "user-prompt-submit" | "pre-compact" | "post-compact" | "subagent-start" => {
-            render_context(event, decision)
-        }
+        "session-start" | "user-prompt-submit" | "pre-compact" | "post-compact"
+        | "subagent-start" => render_context(event, decision),
         _ => "{}".to_string(),
     }
 }
@@ -53,11 +52,7 @@ fn render_post(d: &CodexDecision) -> String {
     if d.block_messages.is_empty() && d.warn_messages.is_empty() {
         return "{}".to_string();
     }
-    let ctx = [
-        d.block_messages.join(". "),
-        d.warn_messages.join("\n\n"),
-    ]
-    .concat();
+    let ctx = [d.block_messages.join(". "), d.warn_messages.join("\n\n")].concat();
     let obj = codex_post_warn(&ctx);
     serde_json::to_string(&obj).unwrap_or_default()
 }
@@ -88,6 +83,7 @@ fn render_context(event: &str, d: &CodexDecision) -> String {
 
 #[derive(Serialize)]
 struct CodexPreDeny<'a> {
+    #[serde(rename = "hookSpecificOutput")]
     hook_specific_output: HookSpecificPreDeny<'a>,
 }
 
@@ -103,6 +99,7 @@ struct HookSpecificPreDeny<'a> {
 
 #[derive(Serialize)]
 struct CodexPreAllowWarn<'a> {
+    #[serde(rename = "hookSpecificOutput")]
     hook_specific_output: HookSpecificPreAllow<'a>,
 }
 
@@ -124,6 +121,7 @@ struct CodexPostWarn<'a> {
 
 #[derive(Serialize)]
 struct CodexContext<'a> {
+    #[serde(rename = "hookSpecificOutput")]
     hook_specific_output: HookSpecificContext<'a>,
 }
 
@@ -161,7 +159,7 @@ fn codex_post_warn(context: &str) -> CodexPostWarn<'_> {
     }
 }
 
-fn codex_context(event_name: &'static str, context: &str) -> CodexContext<'_> {
+fn codex_context<'a>(event_name: &'a str, context: &'a str) -> CodexContext<'a> {
     CodexContext {
         hook_specific_output: HookSpecificContext {
             event_name,
@@ -172,8 +170,8 @@ fn codex_context(event_name: &'static str, context: &str) -> CodexContext<'_> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::CodexDecision;
+    use super::*;
 
     #[test]
     fn render_pre_block() {
@@ -186,10 +184,7 @@ mod tests {
         };
         let json = render_codex_response("pre-tool-use", &d);
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            val["hookSpecificOutput"]["permissionDecision"],
-            "deny"
-        );
+        assert_eq!(val["hookSpecificOutput"]["permissionDecision"], "deny");
     }
 
     #[test]
@@ -244,10 +239,7 @@ mod tests {
         };
         let json = render_codex_response("session-start", &d);
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(
-            val["hookSpecificOutput"]["hookEventName"],
-            "session-start"
-        );
+        assert_eq!(val["hookSpecificOutput"]["hookEventName"], "session-start");
         assert!(val["hookSpecificOutput"]["additionalContext"].is_string());
     }
 
