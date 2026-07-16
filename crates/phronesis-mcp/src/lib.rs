@@ -3,6 +3,7 @@ pub mod audit;
 pub mod catalogue;
 pub mod claude_md_drift;
 pub mod clock_facts;
+pub mod codex_hook;
 pub mod context;
 pub mod diff_extract;
 pub mod hook;

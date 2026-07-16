@@ -114,7 +114,7 @@ pub fn read_durable_directives(project_root: &Path) -> String {
 /// Compose a body section for durable directives. Empty input → empty
 /// output (caller should suppress the section). Otherwise wraps with a
 /// short heading so the model can recognize the block.
-fn build_durable_section(content: &str) -> String {
+pub(crate) fn build_durable_section(content: &str) -> String {
     if content.is_empty() {
         return String::new();
     }

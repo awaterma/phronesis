@@ -234,7 +234,7 @@ fn extract_multiedit_field(input: &serde_json::Value, field: &str) -> Option<Str
 /// a zero-arg fact (e.g. `confidence_enabled`) for each pack the project has
 /// opted into. Lets rules from one pack self-deactivate when a superseding
 /// pack is active. See `docs/specs/SPEC-pack-opt-in-facts.md`.
-async fn assert_pack_marker_facts(network: &ReteNetwork, project_root: &Path) {
+pub(crate) async fn assert_pack_marker_facts(network: &ReteNetwork, project_root: &Path) {
     for marker in clock_facts::pack_markers(project_root) {
         let fact_id = if marker.args.is_empty() {
             marker.predicate.to_string()
@@ -252,6 +252,31 @@ async fn assert_pack_marker_facts(network: &ReteNetwork, project_root: &Path) {
         {
             eprintln!("phronesis: pack marker assertion skipped: {}", e);
         }
+    }
+}
+
+pub(crate) async fn assert_confidence_signals(network: &ReteNetwork) {
+    let root = security::project_root();
+    if !outcomes::enabled(&root) {
+        return;
+    }
+    let Some(subject) = outcomes::subject::current(&root) else {
+        return;
+    };
+    let signals = match outcomes::signals(&root, &subject) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    for fact in signals {
+        let id = format!("{}:{}", fact.predicate, fact.args.join(":"));
+        let _ = network
+            .assert_fact(Fact {
+                id,
+                predicate: fact.predicate.to_string(),
+                args: fact.args,
+                timestamp: 0,
+            })
+            .await;
     }
 }
 

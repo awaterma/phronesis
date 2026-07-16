@@ -319,6 +319,20 @@ enum Command {
         #[arg(long)]
         project_root: Option<String>,
     },
+    /// Codex hook adapter — reads a Codex hook JSON payload from stdin and
+    /// writes a Codex-specific JSON response to stdout.
+    ///
+    /// Supported events: `pre-tool-use`, `post-tool-use`, `session-start`,
+    /// `user-prompt-submit`, `pre-compact`, `post-compact`, `subagent-start`.
+    ///
+    /// Supported tools: `Bash` (command text) and `apply_patch` (patch
+    /// parsing). MCP calls and other tools are allowed without comment.
+    CodexHook {
+        /// The Codex hook event name. The event from stdin takes precedence
+        /// when available.
+        #[arg(default_value = "pre-tool-use")]
+        event: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -408,6 +422,7 @@ async fn main() -> anyhow::Result<()> {
             home,
             project_root,
         } => scrub_payload::run(&path, write, home, project_root),
+        Command::CodexHook { event } => phronesis_mcp::codex_hook::run(&event),
     }
 }
 
