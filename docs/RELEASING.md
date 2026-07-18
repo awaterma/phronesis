@@ -18,7 +18,14 @@ operator guide.
      changelog; `changelog_update = false`).
    - If pack rules changed, run `phr-mcp catalogue` and commit the
      regenerated `docs/catalogue.html` before merging.
-4. **Merging the Release PR** triggers the release job
+4. **Merge the Release PR with a MERGE COMMIT, not squash.** With the
+   default merge strategy release-plz checks out the PR's final commit
+   before releasing; a squash merge creates a new commit it can't find,
+   which triggers a mid-release failure (`failed to create ref ... the
+   commit likely hasn't been pushed`) that can leave the version group
+   partially published (see Troubleshooting). Ordinary PRs keep using
+   squash — this exception is for Release PRs only.
+5. **Merging the Release PR** triggers the release job
    (`release_always = false`, so ordinary pushes to `main` never
    publish). CI then:
    - publishes `phronesis`, `phronesis-rhai`, `phronesis-mcp` to
@@ -26,7 +33,10 @@ operator guide.
      `CARGO_REGISTRY_TOKEN`),
    - tags `vX.Y.Z`,
    - creates the GitHub release.
-5. **Locally**, after each release: `cargo install --path
+6. **Verify against crates.io**, not the job status: check all three
+   crates show the new version. A green release job does NOT guarantee
+   a complete publish (see "Partial publish" below).
+7. **Locally**, after each release: `cargo install --path
    crates/phronesis-mcp` so the binary your hooks invoke matches.
 
 ## One-time setup
@@ -76,6 +86,19 @@ Done by a human, once:
   not match the workflow — verify owner `awaterma`, repo `phronesis`,
   and workflow filename exactly `release-plz.yml` (a renamed workflow
   file breaks the OIDC claim match), environment empty.
-- **Partial publish** (some crates published, then a failure): re-run
-  the release job — release-plz skips versions already on crates.io and
-  publishes only the remainder.
+- **Partial publish** (some crates published, then a failure — seen on
+  v0.20.1, caused by squash-merging the Release PR): a plain re-run
+  does NOT fix this. If the failed run already created the `vX.Y.Z`
+  tag, the re-run logs `Already published — Tag vX.Y.Z already exists`
+  for every crate and exits green, because with
+  `version_group = "workspace"` the shared tag is taken as proof the
+  whole group is published — the registry is never consulted. Recovery:
+
+  1. Delete the version tag: `git push origin :refs/tags/vX.Y.Z`
+  2. Re-run the release job. Without the tag, release-plz checks
+     crates.io per crate, skips the ones already published, publishes
+     the remainder via OIDC, and recreates the tag on main.
+  3. Confirm all three crates show the new version on crates.io.
+
+  Full post-mortem:
+  `.phronesis/wiki/decisions/2026-07-18-release-tag-masks-partial-publish.md`.
