@@ -1,5 +1,4 @@
 /target
-**/Cargo.lock
 **/*.bak
 **/.phronesis/log.jsonl
 **/.phronesis/log.jsonl.1
