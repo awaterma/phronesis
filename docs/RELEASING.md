@@ -25,6 +25,11 @@ operator guide.
    commit likely hasn't been pushed`) that can leave the version group
    partially published (see Troubleshooting). Ordinary PRs keep using
    squash — this exception is for Release PRs only.
+   NOTE (2026-07-19): a merge commit does NOT reliably prevent this —
+   v0.21.0 was merge-committed and still failed mid-release the same
+   way (release-plz tried to tag a sha that exists nowhere on GitHub).
+   Expect to need the "Partial publish" recovery after every group
+   release until the upstream cause is fixed.
 5. **Merging the Release PR** triggers the release job
    (`release_always = false`, so ordinary pushes to `main` never
    publish). CI then:
@@ -87,7 +92,8 @@ Done by a human, once:
   and workflow filename exactly `release-plz.yml` (a renamed workflow
   file breaks the OIDC claim match), environment empty.
 - **Partial publish** (some crates published, then a failure — seen on
-  v0.20.1, caused by squash-merging the Release PR): a plain re-run
+  v0.20.1 after a squash merge AND on v0.21.0 after a merge commit, so
+  treat it as expected on any group release): a plain re-run
   does NOT fix this. If the failed run already created the `vX.Y.Z`
   tag, the re-run logs `Already published — Tag vX.Y.Z already exists`
   for every crate and exits green, because with
