@@ -98,6 +98,46 @@ fn result_string_rule_allows_proper_error_type() {
 }
 
 #[test]
+fn python_phase_one_predicates_fire_through_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/service.py"),
+        "def existing():\n    pass\n",
+    )
+    .unwrap();
+
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[
+            {"id":"python-print","phase":"pre","priority":5,
+             "when":[{"python_print_call":["?file","?fn"]}],
+             "then":{"warn":"python print call"}},
+            {"id":"python-call-default","phase":"pre","priority":5,
+             "when":[{"python_call_in_default_arg":["?file","?fn","?param","?callee"]}],
+             "then":{"warn":"python call default"}},
+            {"id":"python-handler-pass","phase":"pre","priority":5,
+             "when":[{"python_exception_handler_passes":["?file","?fn","?exception"]}],
+             "then":{"warn":"python handler pass"}}
+        ]}"#,
+    );
+
+    let payload = r#"{
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "src/service.py",
+            "old_string": "def existing():\n    pass\n",
+            "new_string": "def build(value=load_default()):\n    print(value)\n    try:\n        work()\n    except ValueError:\n        pass\n"
+        }
+    }"#;
+    let (code, stderr) = run_hook_with_root(payload, dir.path());
+    assert_eq!(code, 1, "warning rules should return one: {stderr}");
+    assert!(stderr.contains("python print call"), "stderr: {stderr}");
+    assert!(stderr.contains("python call default"), "stderr: {stderr}");
+    assert!(stderr.contains("python handler pass"), "stderr: {stderr}");
+}
+
+#[test]
 fn result_string_rule_ignores_test_blocks() {
     // Regression test: a Result<_, String> function inside #[cfg(test)] mod
     // tests must NOT trigger the production rule. The hook strips test blocks

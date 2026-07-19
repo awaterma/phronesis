@@ -83,6 +83,19 @@ pub struct SyntaxFacts {
     pub python_function_param_counts_high: Vec<(String, usize)>,
     /// Public `def`s (no leading `_`) whose body lacks a docstring.
     pub python_functions_missing_docstring: Vec<String>,
+    /// Enclosing function name (or `<module>`) per `print()` call whose
+    /// callee is the bare identifier `print` (not `x.print()`, `sprint()`,
+    /// etc.).
+    pub python_print_calls: Vec<String>,
+    /// (fn_name, param_name, callee_name) for default arguments whose
+    /// value is a call expression. Corresponds broadly to Bugbear B008.
+    /// Immutable constructors like `list()`, `dict()`, `set()` are
+    /// also included here so projects can selectively ignore them.
+    pub python_call_in_default_args: Vec<(String, String, String)>,
+    /// (fn_name, exception_type) for exception handlers whose body is
+    /// only `pass`, comments, or ellipsis (`...`). Typed handlers only;
+    /// bare handlers are excluded because the bare-except rule catches them.
+    pub python_exception_handler_passes: Vec<(String, String)>,
 
     // ─── TypeScript ─────────────────────────────────────────────────
     /// (fn_name or `<module>`, count) of explicit `any` type annotations.
@@ -128,6 +141,9 @@ impl SyntaxFacts {
         "python_mutable_default_arg",
         "python_function_param_count_high",
         "python_function_missing_docstring",
+        "python_print_call",
+        "python_call_in_default_arg",
+        "python_exception_handler_passes",
         // TypeScript
         "ts_explicit_any",
         "ts_non_null_assertion",
@@ -338,6 +354,41 @@ impl SyntaxFacts {
             });
         }
 
+        for (i, fn_name) in self.python_print_calls.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_print_call_{}_{}", fn_name, i),
+                predicate: "python_print_call".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone()],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, param, callee)) in self.python_call_in_default_args.iter().enumerate() {
+            out.push(Fact {
+                id: format!(
+                    "python_call_in_default_arg_{}_{}_{}_{}",
+                    fn_name, param, callee, i
+                ),
+                predicate: "python_call_in_default_arg".to_string(),
+                args: vec![
+                    file_path.to_string(),
+                    fn_name.clone(),
+                    param.clone(),
+                    callee.clone(),
+                ],
+                timestamp: 0,
+            });
+        }
+
+        for (i, (fn_name, exc)) in self.python_exception_handler_passes.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_exception_handler_passes_{}_{}_{}", fn_name, exc, i),
+                predicate: "python_exception_handler_passes".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), exc.clone()],
+                timestamp: 0,
+            });
+        }
+
         for (i, (fn_name, count)) in self.ts_explicit_anys.iter().enumerate() {
             out.push(Fact {
                 id: format!("ts_explicit_any_{}_{}", fn_name, i),
@@ -467,6 +518,9 @@ mod tests {
             python_mutable_default_args: vec![("a".to_string(), "b".to_string())],
             python_function_param_counts_high: vec![("a".to_string(), 6)],
             python_functions_missing_docstring: vec!["a".to_string()],
+            python_print_calls: vec!["a".to_string()],
+            python_call_in_default_args: vec![("a".to_string(), "b".to_string(), "c".to_string())],
+            python_exception_handler_passes: vec![("a".to_string(), "b".to_string())],
             ts_explicit_anys: vec![("a".to_string(), 1)],
             ts_non_null_assertions: vec![("a".to_string(), 1)],
             ts_suppression_comment_count: 1,

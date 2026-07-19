@@ -1984,7 +1984,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("svc.py"),
-            "def fetch(url):\n    \"\"\"F.\"\"\"\n    try:\n        go(url)\n    except:\n        pass\n",
+            "def fetch(url=load_default()):\n    \"\"\"F.\"\"\"\n    print(url)\n    try:\n        go(url)\n    except:\n        pass\n    try:\n        go(url)\n    except ValueError:\n        pass\n",
         )
         .unwrap();
         std::fs::write(
@@ -2017,6 +2017,21 @@ mod tests {
                     vec!["?file", "?fn"],
                 ),
                 mk(
+                    "audit-python-print-call",
+                    "python_print_call",
+                    vec!["?file", "?fn"],
+                ),
+                mk(
+                    "audit-python-call-default",
+                    "python_call_in_default_arg",
+                    vec!["?file", "?fn", "?param", "?callee"],
+                ),
+                mk(
+                    "audit-python-handler-pass",
+                    "python_exception_handler_passes",
+                    vec!["?file", "?fn", "?exception"],
+                ),
+                mk(
                     "audit-ts-explicit-any",
                     "ts_explicit_any",
                     vec!["?file", "?fn", "?count"],
@@ -2035,6 +2050,18 @@ mod tests {
         assert!(
             ids.contains(&"audit-python-bare-except"),
             "python predicate must audit; got {ids:?}"
+        );
+        assert!(
+            ids.contains(&"audit-python-print-call"),
+            "python print predicate must audit; got {ids:?}"
+        );
+        assert!(
+            ids.contains(&"audit-python-call-default"),
+            "python default-call predicate must audit; got {ids:?}"
+        );
+        assert!(
+            ids.contains(&"audit-python-handler-pass"),
+            "python handler predicate must audit; got {ids:?}"
         );
         assert!(
             ids.contains(&"audit-ts-explicit-any"),
