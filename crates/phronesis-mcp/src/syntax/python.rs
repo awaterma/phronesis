@@ -26,6 +26,9 @@ pub fn extract(content: &str) -> SyntaxFacts {
         python_mutable_default_args: extract_mutable_defaults(root, src),
         python_function_param_counts_high: extract_param_counts_high(root, src),
         python_functions_missing_docstring: extract_missing_docstrings(root, src),
+        python_print_calls: extract_print_calls(root, src),
+        python_call_in_default_args: extract_call_in_default_args(root, src),
+        python_exception_handler_passes: extract_handler_passes(root, src),
         ..SyntaxFacts::default()
     }
 }
@@ -138,15 +141,17 @@ fn extract_param_counts_high(root: Node, src: &[u8]) -> Vec<(String, usize)> {
                         | "typed_parameter"
                         | "default_parameter"
                         | "typed_default_parameter"
+                        | "list_splat_pattern"
+                        | "dictionary_splat_pattern"
                 )
             })
             .enumerate()
         {
             // Skip a leading self/cls receiver.
             if idx == 0
-                && child
-                    .utf8_text(src)
-                    .is_ok_and(|t| t == "self" || t == "cls" || t.starts_with("self:"))
+                && child.utf8_text(src).is_ok_and(|t| {
+                    t == "self" || t == "cls" || t.starts_with("self:") || t.starts_with("cls:")
+                })
             {
                 continue;
             }
@@ -190,6 +195,107 @@ fn extract_missing_docstrings(root: Node, src: &[u8]) -> Vec<String> {
         });
         if !has_docstring {
             out.push(fn_name.to_string());
+        }
+    });
+    out
+}
+
+/// Recognize a call whose callee is the bare identifier `print`.
+/// Excludes: `x.print()` (attribute access), `sprint()` (non-exact name),
+/// comments, and string literals.
+/// Rationale: Python logging HOWTO, <https://docs.python.org/3/howto/logging.html>.
+fn extract_print_calls(root: Node, src: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "call" {
+            return;
+        }
+        let Some(func) = node.child_by_field_name("function") else {
+            return;
+        };
+        // Must be an identifier named exactly "print" (not attribute, not prefix).
+        if func.kind() == "identifier"
+            && let Ok(name) = func.utf8_text(src)
+            && name == "print"
+        {
+            out.push(enclosing_function_name(node, src));
+        }
+    });
+    out
+}
+
+/// `def f(x=some())` — default argument whose value is a call expression.
+/// Records (fn_name, param_name, callee_name). Immutable constructors
+/// (list, dict, set) are also included so projects can selectively ignore
+/// them; the distinction is visible in the callee field.
+/// Upstream: Bugbear B008, <https://docs.astral.sh/ruff/rules/function-call-in-default-argument/>.
+fn extract_call_in_default_args(root: Node, src: &[u8]) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if !matches!(node.kind(), "default_parameter" | "typed_default_parameter") {
+            return;
+        }
+        let Some(value) = node.child_by_field_name("value") else {
+            return;
+        };
+        if value.kind() != "call" {
+            return;
+        }
+        let Some(func) = value.child_by_field_name("function") else {
+            return;
+        };
+        let Ok(callee) = func.utf8_text(src) else {
+            return;
+        };
+        if let Some(name) = node.child_by_field_name("name")
+            && let Ok(param) = name.utf8_text(src)
+        {
+            let fn_name = enclosing_function_name(node, src);
+            out.push((fn_name, param.to_string(), callee.to_string()));
+        }
+    });
+    out
+}
+
+/// Typed exception handlers whose body is only `pass`, comments, or
+/// ellipsis (`...`). Excludes bare handlers (those are caught by the
+/// bare-except rule). The effective body check: strip comments and
+/// ellipsis expressions; if nothing remains, the handler swallows.
+/// Upstream: Bugbear B110, <https://docs.astral.sh/ruff/rules/try-except-pass/>;
+/// this predicate is narrower because it only reports typed handlers.
+fn extract_handler_passes(root: Node, src: &[u8]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "except_clause" {
+            return;
+        }
+        // Skip bare except clauses — they have no exception type child.
+        let has_filter = node
+            .children(&mut node.walk())
+            .any(|c| !matches!(c.kind(), "except" | ":" | "block" | "comment"));
+        if !has_filter {
+            return;
+        }
+        // Typed handler — check the body.
+        let Some(block) = node
+            .children(&mut node.walk())
+            .find(|c| c.kind() == "block")
+        else {
+            return;
+        };
+        let is_empty_body = block.children(&mut block.walk()).all(|stmt| {
+            matches!(stmt.kind(), "comment" | "pass_statement" | "ellipsis")
+                || (stmt.kind() == "expression_statement"
+                    && stmt.child(0).is_some_and(|c| c.kind() == "ellipsis"))
+        });
+        if is_empty_body {
+            // Extract the exception type string.
+            let exc_type = node
+                .children(&mut node.walk())
+                .find(|c| !matches!(c.kind(), "except" | ":" | "block" | "comment"))
+                .and_then(|c| c.utf8_text(src).ok())
+                .unwrap_or("?");
+            out.push((enclosing_function_name(node, src), exc_type.to_string()));
         }
     });
     out
@@ -267,6 +373,241 @@ mod tests {
         assert_eq!(
             facts.python_functions_missing_docstring,
             vec!["naked".to_string()]
+        );
+    }
+
+    // ─── python_print_call tests ───────────────────────────────────
+
+    #[test]
+    fn print_call_is_flagged() {
+        let facts = extract("def process():\n    \"\"\"Process.\"\"\"\n    print('hello')\n");
+        assert_eq!(facts.python_print_calls, vec!["process".to_string()]);
+    }
+
+    #[test]
+    fn print_call_in_nested_function() {
+        let facts = extract(
+            "def outer():\n    \"\"\"Outer.\"\"\"\n    def inner():\n        print('hi')\n",
+        );
+        assert_eq!(facts.python_print_calls, vec!["inner".to_string()]);
+    }
+
+    #[test]
+    fn print_call_excludes_attribute_access() {
+        let facts = extract(
+            "def foo():\n    \"\"\"Foo.\"\"\"\n    logger.print('x')\n    printer.print('y')\n",
+        );
+        assert!(facts.python_print_calls.is_empty());
+    }
+
+    #[test]
+    fn print_call_excludes_similar_names() {
+        let facts = extract(
+            "def foo():\n    \"\"\"Foo.\"\"\"\n    sprint('x')\n    printx('y')\n    xprint('z')\n",
+        );
+        assert!(facts.python_print_calls.is_empty());
+    }
+
+    #[test]
+    fn print_call_excludes_comments() {
+        let facts = extract("def foo():\n    # print('in comment')\n    pass\n");
+        assert!(facts.python_print_calls.is_empty());
+    }
+
+    #[test]
+    fn print_call_excludes_strings() {
+        let facts = extract("def foo():\n    x = \"print('in string')\"\n    pass\n");
+        assert!(facts.python_print_calls.is_empty());
+    }
+
+    #[test]
+    fn print_call_multiple_in_one_function() {
+        let facts = extract("def foo():\n    \"\"\"Foo.\"\"\"\n    print('a')\n    print('b')\n");
+        assert_eq!(facts.python_print_calls.len(), 2);
+        assert!(facts.python_print_calls.iter().all(|n| *n == "foo"));
+    }
+
+    #[test]
+    fn print_call_module_level() {
+        let facts = extract("print('module level')\n");
+        assert_eq!(facts.python_print_calls, vec!["<module>".to_string()]);
+    }
+
+    #[test]
+    fn print_call_async_function() {
+        let facts = extract("async def fetch():\n    \"\"\"Fetch.\"\"\"\n    print('async')\n");
+        assert_eq!(facts.python_print_calls, vec!["fetch".to_string()]);
+    }
+
+    #[test]
+    fn print_call_in_class() {
+        let facts = extract(
+            "class C:\n    def method(self):\n        \"\"\"Method.\"\"\"\n        print('x')\n",
+        );
+        assert_eq!(facts.python_print_calls, vec!["method".to_string()]);
+    }
+
+    // ─── python_call_in_default_args tests ─────────────────────────
+
+    #[test]
+    fn call_in_default_arg_is_flagged() {
+        let facts = extract(
+            "def make(default=[]):\n    \"\"\"Make.\"\"\"\n    return default\n\ndef make2(default=list()):\n    \"\"\"Make2.\"\"\"\n    return default\n\ndef make3(f=get_default()):\n    \"\"\"Make3.\"\"\"\n    return f\n",
+        );
+        // [] is a list literal (not a call), so only make2 and make3 match.
+        assert_eq!(
+            facts.python_call_in_default_args,
+            vec![
+                (
+                    "make2".to_string(),
+                    "default".to_string(),
+                    "list".to_string()
+                ),
+                (
+                    "make3".to_string(),
+                    "f".to_string(),
+                    "get_default".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn call_in_default_arg_nested_call() {
+        let facts = extract("def make(f=config.read()):\n    \"\"\"Make.\"\"\"\n    return f\n");
+        assert_eq!(
+            facts.python_call_in_default_args,
+            vec![(
+                "make".to_string(),
+                "f".to_string(),
+                "config.read".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn no_call_in_default_arg() {
+        let facts = extract("def make(f=1, g='x', h=None):\n    \"\"\"Make.\"\"\"\n    return f\n");
+        assert!(facts.python_call_in_default_args.is_empty());
+    }
+
+    #[test]
+    fn typed_default_parameter_with_call() {
+        let facts = extract("def make(f: list = list()):\n    \"\"\"Make.\"\"\"\n    return f\n");
+        assert_eq!(
+            facts.python_call_in_default_args,
+            vec![("make".to_string(), "f".to_string(), "list".to_string())]
+        );
+    }
+
+    // ─── python_exception_handler_passes tests ─────────────────────
+
+    #[test]
+    fn typed_handler_with_only_pass_is_flagged() {
+        let facts = extract(
+            "def foo():\n    \"\"\"Foo.\"\"\"\n    try:\n        go()\n    except ValueError:\n        pass\n",
+        );
+        assert_eq!(
+            facts.python_exception_handler_passes,
+            vec![("foo".to_string(), "ValueError".to_string())]
+        );
+    }
+
+    #[test]
+    fn typed_handler_with_ellipsis_is_flagged() {
+        let facts = extract(
+            "def foo():\n    \"\"\"Foo.\"\"\"\n    try:\n        go()\n    except ValueError:\n        ...\n",
+        );
+        assert_eq!(
+            facts.python_exception_handler_passes,
+            vec![("foo".to_string(), "ValueError".to_string())]
+        );
+    }
+
+    #[test]
+    fn typed_handler_with_comment_only_is_flagged() {
+        let facts = extract(
+            "def foo():\n    \"\"\"Foo.\"\"\"\n    try:\n        go()\n    except ValueError:\n        # intentional no-op\n        pass\n",
+        );
+        assert!(
+            facts
+                .python_exception_handler_passes
+                .iter()
+                .any(|(fn_, _)| fn_ == "foo"),
+            "expected handler_passes for foo"
+        );
+    }
+
+    #[test]
+    fn typed_handler_with_real_body_is_not_flagged() {
+        let facts = extract(
+            "def foo():\n    \"\"\"Foo.\"\"\"\n    try:\n        go()\n    except ValueError:\n        log_error(e)\n",
+        );
+        assert!(facts.python_exception_handler_passes.is_empty());
+    }
+
+    #[test]
+    fn bare_handler_not_flagged_as_passes() {
+        let facts = extract(
+            "def foo():\n    \"\"\"Foo.\"\"\"\n    try:\n        go()\n    except:\n        pass\n",
+        );
+        assert!(facts.python_exception_handler_passes.is_empty());
+    }
+
+    #[test]
+    fn tuple_exception_type_flagged() {
+        let facts = extract(
+            "def foo():\n    \"\"\"Foo.\"\"\"\n    try:\n        go()\n    except (ValueError, TypeError):\n        pass\n",
+        );
+        // The exception type string will be the text of the tuple node.
+        assert!(
+            facts
+                .python_exception_handler_passes
+                .iter()
+                .any(|(fn_, _)| fn_ == "foo"),
+            "expected handler_passes for foo"
+        );
+    }
+
+    #[test]
+    fn print_call_in_string_literal_not_flagged() {
+        let facts = extract("def foo():\n    \"\"\"Foo.\"\"\"\n    x = \"print('not a call')\"\n");
+        assert!(facts.python_print_calls.is_empty());
+    }
+
+    #[test]
+    fn malformed_source_partial_except_not_crashed() {
+        // tree-sitter is resilient; this shouldn't panic
+        let facts = extract("def foo():\n    try:\n        pass\n    except\n");
+        // May extract partial facts or empty; should not panic
+        let _ = facts.python_bare_excepts;
+        let _ = facts.python_print_calls;
+    }
+
+    #[test]
+    fn positional_only_and_keyword_only_params_counted() {
+        let facts = extract("def f(a, /, b, *, c):\n    \"\"\"F.\"\"\"\n    return a\n");
+        // a, b, c = 3 params, should not trigger threshold
+        assert!(facts.python_function_param_counts_high.is_empty());
+    }
+
+    #[test]
+    fn varargs_and_kwargs_counted_in_param_threshold() {
+        let facts = extract("def f(a, b, c, d, *args, **kwargs):\n    \"\"\"F.\"\"\"\n    pass\n");
+        assert_eq!(
+            facts.python_function_param_counts_high,
+            vec![("f".to_string(), 6)]
+        );
+    }
+
+    #[test]
+    fn cls_not_counted_in_param_threshold() {
+        let facts = extract(
+            "class C:\n    def m(cls, a, b, c, d, e, f):\n        \"\"\"M.\"\"\"\n        pass\n",
+        );
+        assert_eq!(
+            facts.python_function_param_counts_high,
+            vec![("m".to_string(), 6)]
         );
     }
 }

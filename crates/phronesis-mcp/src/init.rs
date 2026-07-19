@@ -1666,30 +1666,22 @@ fn python_rules() -> Value {
                 "id": "warn-print-in-src",
                 "phase": "pre",
                 "priority": 5,
+                "audit": true,
                 "when": [
-                    {"new_content_contains": "print("},
+                    {"python_print_call": ["?file", "?fn"]},
                     {"file_path_matches": "src"}
                 ],
-                "then": {"warn": "print() in src/ — consider logging.info()/debug() instead. Remove debug prints before committing."}
+                "then": {"warn": "print() in ?fn (?file) — consider logging.info()/debug() instead. Remove debug prints before committing. Upstream: style guidance, not a correctness rule."}
             },
             {
                 "id": "enforce-no-bare-except",
                 "phase": "pre",
                 "priority": 10,
-                "when": [
-                    {"new_content_contains": "except:"}
-                ],
-                "then": {"block": "Don't use bare `except:` — catch specific exception types. Bare except swallows KeyboardInterrupt and SystemExit."}
-            },
-            {
-                "id": "audit-python-bare-except",
-                "phase": "audit",
-                "priority": 5,
                 "audit": true,
                 "when": [
                     {"python_bare_except": ["?file", "?fn"]}
                 ],
-                "then": {"warn": "Bare `except:` in ?fn (?file) — catch specific exception types so KeyboardInterrupt/SystemExit pass through."}
+                "then": {"block": "Don't use bare `except:` — catch specific exception types. Bare except swallows KeyboardInterrupt and SystemExit. Upstream: PLE0704 (pylint), Bugbear B001."}
             },
             {
                 "id": "warn-python-mutable-default-arg",
@@ -1699,7 +1691,37 @@ fn python_rules() -> Value {
                 "when": [
                     {"python_mutable_default_arg": ["?file", "?fn", "?param"]}
                 ],
-                "then": {"warn": "Mutable default `?param` in ?fn — defaults are created once at def time and shared across calls. Use None and create inside."}
+                "then": {"warn": "Mutable default `?param` in ?fn — defaults are created once at def time and shared across calls. Use None and create inside. Upstream: Bugbear B006."}
+            },
+            {
+                "id": "audit-python-call-in-default-arg",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"python_call_in_default_arg": ["?file", "?fn", "?param", "?callee"]}
+                ],
+                "then": {"warn": "Function call `?callee()` in default argument `?param` of ?fn — evaluated once at def time. If it returns a mutable or side-effectful value, this is a bug. Upstream: Bugbear B008 (narrower: only flags call expressions, not bare mutable literals which are covered by B006)."}
+            },
+            {
+                "id": "warn-python-swallowed-exception",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_exception_handler_passes": ["?file", "?fn", "?exception"]}
+                ],
+                "then": {"warn": "Handler for ?exception in ?fn is empty (`pass`/`...`/comments) — the exception is silently swallowed. Recommend handling, re-raising, or documenting the intentional fallback. Upstream: Bugbear B110 (narrower: typed handlers only; bare handlers caught by enforce-no-bare-except)."}
+            },
+            {
+                "id": "audit-python-high-param-count",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"python_function_param_count_high": ["?file", "?fn", "?count"]}
+                ],
+                "then": {"warn": "Function ?fn in ?file has ?count parameters — consider grouping into a config object or using the builder pattern. Exclude self/cls. Upstream: design smell (maintainability, not correctness)."}
             },
             {
                 "id": "audit-python-missing-docstring",
@@ -1709,7 +1731,7 @@ fn python_rules() -> Value {
                 "when": [
                     {"python_function_missing_docstring": ["?file", "?fn"]}
                 ],
-                "then": {"warn": "Public def ?fn in ?file has no docstring."}
+                "then": {"warn": "Public def ?fn in ?file has no docstring. Upstream: documentation best practice; audit-only because docstring policy is project-dependent."}
             }
         ]
     })
