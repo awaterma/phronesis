@@ -183,14 +183,15 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     let command = extract_bash_command(payload);
 
     // Assert content fact
-    let _ = network
-        .assert_fact(Fact {
-            id: "new_content".to_string(),
-            predicate: "new_content".to_string(),
-            args: vec![command.clone()],
-            timestamp: 0,
-        })
-        .await;
+    if let Err(error) = assert_new_content(&network, "new_content", &command).await {
+        return CodexDecision {
+            exit: 2,
+            block_messages: vec![format!("failed to assert content fact: {error}")],
+            warn_messages: Vec::new(),
+            additional_context: String::new(),
+            files: Vec::new(),
+        };
+    }
 
     // Content pattern checks
     let cp = crate::hook_facts::collect_content_patterns(&rules);
@@ -359,14 +360,16 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
 
         let network = build_pre_network(&rules, &pf.path, &security::project_root()).await;
         if !content.is_empty() {
-            let _ = network
-                .assert_fact(Fact {
-                    id: format!("new_content_{}", pf.path.replace('/', "_")),
-                    predicate: "new_content".to_string(),
-                    args: vec![content.clone()],
-                    timestamp: 0,
-                })
-                .await;
+            let fact_id = format!("new_content_{}", pf.path.replace('/', "_"));
+            if let Err(error) = assert_new_content(&network, &fact_id, &content).await {
+                return CodexDecision {
+                    exit: 2,
+                    block_messages: vec![format!("failed to assert content fact: {error}")],
+                    warn_messages: Vec::new(),
+                    additional_context: String::new(),
+                    files: Vec::new(),
+                };
+            }
             // Rules match on derived new_content_contains facts, not the raw
             // content — mirror the Claude pre-hook's pattern scan.
             let patterns = crate::hook_facts::collect_content_patterns(&rules);
@@ -697,6 +700,21 @@ fn extract_bash_command(payload: &CodexPayload) -> String {
         .to_string()
 }
 
+async fn assert_new_content(
+    network: &phr::ReteNetwork,
+    fact_id: &str,
+    content: &str,
+) -> Result<(), phr::ReteError> {
+    network
+        .assert_fact(Fact {
+            id: fact_id.to_string(),
+            predicate: "new_content".to_string(),
+            args: vec![content.to_string()],
+            timestamp: 0,
+        })
+        .await
+}
+
 fn log_event(
     phase: &str,
     payload: &CodexPayload,
@@ -837,4 +855,21 @@ fn extract_tool_output_text(payload: &CodexPayload) -> String {
 // Re-exports
 mod hook {
     pub(crate) use crate::hook::collect_logged;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_new_content;
+
+    #[tokio::test]
+    async fn new_content_assertion_surfaces_engine_errors() {
+        let network = phr::ReteNetwork::new();
+        assert_new_content(&network, "incoming", "first")
+            .await
+            .expect("first assertion succeeds");
+        let error = assert_new_content(&network, "incoming", "second")
+            .await
+            .expect_err("duplicate fact id must be propagated");
+        assert!(error.to_string().contains("incoming"));
+    }
 }
