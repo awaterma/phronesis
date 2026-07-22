@@ -402,6 +402,25 @@ fn init_wires_hooks_only_under_event_names_that_exist() {
             "init wired unknown Gemini hook event {key:?}"
         );
     }
+
+    let codex: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".codex/hooks.json")).expect("codex hooks"),
+    )
+    .expect("codex hooks JSON");
+    let valid: Vec<&str> = reg["codex"]
+        .as_array()
+        .expect("list")
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    let keys = hook_keys(&codex);
+    assert!(!keys.is_empty(), "init wrote no Codex hooks at all");
+    for key in keys {
+        assert!(
+            valid.contains(&key.as_str()),
+            "init wired unknown Codex hook event {key:?}"
+        );
+    }
 }
 
 #[test]

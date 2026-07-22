@@ -41,17 +41,7 @@ pub fn parse_patch(input: &str) -> Vec<PatchFile> {
         return files;
     }
 
-    // No file markers anywhere: treat the whole text as a single opaque
-    // entry so downstream path rules still see something to evaluate.
-    let whole = input.trim();
-    if whole.is_empty() || whole == "*** Begin Patch" || whole.starts_with("*** Begin Patch\n") {
-        Vec::new()
-    } else {
-        vec![PatchFile {
-            path: whole.to_string(),
-            added: String::new(),
-        }]
-    }
+    Vec::new()
 }
 
 // ---------------------------------------------------------------------------
@@ -116,10 +106,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_non_patch_text_returns_single_entry() {
+    fn parse_non_patch_text_is_malformed() {
         let files = parse_patch("some random text");
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].path, "some random text");
+        assert!(files.is_empty());
     }
 
     #[test]

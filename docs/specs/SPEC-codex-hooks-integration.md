@@ -1,6 +1,6 @@
 # SPEC: Codex hooks integration
 
-**Status:** draft
+**Status:** implemented via project-local hooks
 **Authors:** Andrew Waterman, Codex
 **Date:** 2026-07-10
 **Target release:** next MINOR release (new supported agent host and plugin surface; no change to the `phr` engine or on-disk rules schema)
@@ -21,7 +21,7 @@ Codex Pre/PostCompact  -> restore durable context through compaction
 Codex SubagentStart    -> give delegated work the same governance context
 ```
 
-Package the integration as a Codex plugin. Rules, journals, decisions, and durable directives remain project-local under `.phronesis/`.
+Wire the integration through project-local `.codex/hooks.json` and `.codex/config.toml`. Rules, journals, decisions, and durable directives remain project-local under `.phronesis/`.
 
 ## Motivation and boundary
 
@@ -132,26 +132,17 @@ For PreToolUse:
 For PostToolUse:
 
 - never claim to undo a completed action;
-- warning or violation -> `additionalContext` plus `continue: false`, replacing normal tool output with actionable Phronesis feedback;
+- warning or violation -> advisory `systemMessage` plus hook-specific `additionalContext`; do not stop the turn or claim to undo the completed action;
 - clean -> `{}`.
 
 Reuse `context.rs` body builders, but extract host-neutral functions that return Markdown bodies. Codex-specific rendering supplies the Codex event-name echo and `additionalContext`. Cap all injected context at `context::DEFAULT_MAX_BYTES`.
 
-## Plugin
+## Project setup
 
-Create `plugins/phronesis-codex/`:
-
-```text
-.codex-plugin/plugin.json
-hooks/hooks.json
-README.md
-```
-
-The hook config invokes installed `phr-mcp codex-hook ...` commands, not a repository-relative debug binary. Match `PreToolUse` and `PostToolUse` for `Bash|apply_patch` (and `Edit|Write` aliases where helpful). Register `SessionStart`, `UserPromptSubmit`, `PreCompact`, `PostCompact`, and `SubagentStart` without a matcher.
-
-The README must explain hook trust/review and the incomplete-interception boundary. It must not market Phronesis as a security boundary.
-
-Do not add `phr-mcp init --codex` until the plugin has been independently dogfooded. That later helper must never silently install or trust hooks.
+`phr-mcp init` non-destructively merges `.codex/hooks.json` and appends the
+project stdio MCP registration to `.codex/config.toml`. The generated hook
+commands invoke installed `phr-mcp codex-hook`, and Codex's `/hooks` review
+remains the only trust path. No marketplace or repository plugin is included.
 
 ## Data and failure policy
 
@@ -223,4 +214,3 @@ Manual dogfood in a trusted Codex project:
 2. Codex supplies `session_id`, while Phronesis currently mints journey IDs. Default recommendation: use the Codex ID as the journey `sid` for this host and log it directly.
 3. Should `apply_patch` normalize to existing Edit/Write actions or remain a dedicated internal action? Decide after inspecting real patch fidelity.
 4. Should the plugin ship in this repository only, or later in a marketplace? Marketplace publication is not a prerequisite.
-

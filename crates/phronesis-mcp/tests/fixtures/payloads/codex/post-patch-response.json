@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "codex",
+    "event": "Codex lifecycle hook",
+    "provenance": "authored",
+    "captured": "2026-07-21",
+    "description": "Authored from the official Codex hook schema; not a runtime capture."
+  },
+  "subcommand": "codex-hook",
+  "packs": "rust",
+  "payload": {
+  "hook_event_name": "PostToolUse",
+  "tool_name": "apply_patch",
+  "session_id": "codex-s-008",
+  "turn_id": "codex-t-008",
+  "tool_use_id": "codex-uid-008",
+  "cwd": "/home/user/project",
+  "tool_input": {
+    "command": "*** Begin Patch\n*** Add File: src/new.rs\n+ pub fn hello() {}\n*** End Patch\n"
+  },
+  "tool_response": {
+    "stdout": "",
+    "stderr": ""
+  }
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}

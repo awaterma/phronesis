@@ -23,10 +23,11 @@ use super::CodexDecision;
 /// Render a Codex hook response as a JSON string.
 pub fn render_codex_response(event: &str, decision: &CodexDecision) -> String {
     match event {
-        "pre-tool-use" => render_pre(decision),
-        "post-tool-use" => render_post(decision),
-        "session-start" | "user-prompt-submit" | "pre-compact" | "post-compact"
-        | "subagent-start" => render_context(event, decision),
+        "PreToolUse" | "pre-tool-use" => render_pre(decision),
+        "PostToolUse" | "post-tool-use" => render_post(decision),
+        "SessionStart" | "UserPromptSubmit" | "PreCompact" | "PostCompact" | "SubagentStart"
+        | "session-start" | "user-prompt-submit" | "pre-compact" | "post-compact"
+        | "subagent-start" => render_context(canonical_event(event), decision),
         _ => "{}".to_string(),
     }
 }
@@ -113,10 +114,10 @@ struct HookSpecificPreAllow<'a> {
 
 #[derive(Serialize)]
 struct CodexPostWarn<'a> {
-    #[serde(rename = "additionalContext")]
-    context: &'a str,
-    #[serde(rename = "continue")]
-    cont: bool,
+    #[serde(rename = "systemMessage")]
+    system_message: &'a str,
+    #[serde(rename = "hookSpecificOutput")]
+    hook_specific_output: HookSpecificContext<'a>,
 }
 
 #[derive(Serialize)]
@@ -154,8 +155,22 @@ fn codex_pre_allow_warn(context: &str) -> CodexPreAllowWarn<'_> {
 
 fn codex_post_warn(context: &str) -> CodexPostWarn<'_> {
     CodexPostWarn {
-        context,
-        cont: false,
+        system_message: context,
+        hook_specific_output: HookSpecificContext {
+            event_name: "PostToolUse",
+            context,
+        },
+    }
+}
+
+fn canonical_event(event: &str) -> &str {
+    match event {
+        "session-start" => "SessionStart",
+        "user-prompt-submit" => "UserPromptSubmit",
+        "pre-compact" => "PreCompact",
+        "post-compact" => "PostCompact",
+        "subagent-start" => "SubagentStart",
+        other => other,
     }
 }
 
@@ -224,8 +239,8 @@ mod tests {
         };
         let json = render_codex_response("post-tool-use", &d);
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(val["continue"], false);
-        assert!(val["additionalContext"].is_string());
+        assert!(val["systemMessage"].is_string());
+        assert_eq!(val["hookSpecificOutput"]["hookEventName"], "PostToolUse");
     }
 
     #[test]
@@ -239,7 +254,7 @@ mod tests {
         };
         let json = render_codex_response("session-start", &d);
         let val: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(val["hookSpecificOutput"]["hookEventName"], "session-start");
+        assert_eq!(val["hookSpecificOutput"]["hookEventName"], "SessionStart");
         assert!(val["hookSpecificOutput"]["additionalContext"].is_string());
     }
 

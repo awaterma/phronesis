@@ -6,8 +6,8 @@
 //! PreCompact, PostCompact, SubagentStart) reuse the context builders.
 //!
 //! **Supported events**:
-//! `pre-tool-use`, `post-tool-use`, `session-start`, `user-prompt-submit`,
-//! `pre-compact`, `post-compact`, `subagent-start`, `subagent-stop`, `stop`
+//! `PreToolUse`, `PostToolUse`, `SessionStart`, `UserPromptSubmit`,
+//! `PreCompact`, `PostCompact`, and `SubagentStart`.
 //!
 //! **Supported tools**: `Bash` (command text), `apply_patch` (patch parsing).
 //! MCP calls and other tools are allowed without comment.
@@ -15,7 +15,6 @@
 mod codex_patch;
 mod renderer;
 
-use std::io::Read as _;
 use std::path::Path;
 use std::process;
 
@@ -33,9 +32,9 @@ use crate::security;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 struct CodexPayload {
-    event: Option<String>,
+    #[serde(default)]
+    hook_event_name: Option<String>,
     #[serde(default)]
     session_id: Option<String>,
     #[serde(default)]
@@ -43,7 +42,7 @@ struct CodexPayload {
     #[serde(default)]
     tool_use_id: Option<String>,
     #[serde(default)]
-    tool: Option<String>,
+    tool_name: Option<String>,
     #[serde(default)]
     tool_input: Option<serde_json::Value>,
     #[serde(default)]
@@ -59,6 +58,7 @@ struct PatchFile {
 }
 
 struct CodexDecision {
+    #[allow(dead_code)]
     exit: i32,
     block_messages: Vec<String>,
     warn_messages: Vec<String>,
@@ -73,46 +73,67 @@ struct CodexDecision {
 // ---------------------------------------------------------------------------
 
 pub async fn run(event: &str) -> ! {
-    let payload = parse_payload();
-    let event = payload.event.as_deref().unwrap_or(event);
     let root = security::project_root();
-
-    let result = dispatch(&payload, event, &root).await;
+    let parsed = parse_payload();
+    let fallback;
+    let (event, result) = match parsed.as_ref() {
+        Ok(payload) => {
+            let event = payload.hook_event_name.as_deref().unwrap_or(event);
+            (event, dispatch(payload, event, &root).await)
+        }
+        Err(error) => {
+            fallback = invalid_payload_decision(event, error);
+            (event, fallback)
+        }
+    };
 
     let response = renderer::render_codex_response(event, &result);
     println!("{}", response);
-    process::exit(result.exit);
+    // Codex consumes structured decisions from stdout. Returning exit 0 keeps
+    // the JSON authoritative; exit 2 is reserved for handlers that cannot
+    // produce a valid response and must block via stderr.
+    process::exit(0);
 }
 
-fn parse_payload() -> CodexPayload {
-    let mut raw = String::new();
-    if std::io::stdin().read_to_string(&mut raw).is_err() {
-        return empty_payload();
-    }
-    serde_json::from_str(&raw).unwrap_or_else(|_| empty_payload())
+fn parse_payload() -> anyhow::Result<CodexPayload> {
+    let raw = security::read_stdin_capped()?;
+    Ok(serde_json::from_str(&raw)?)
 }
 
-fn empty_payload() -> CodexPayload {
-    CodexPayload {
-        event: Some(String::new()),
-        session_id: None,
-        turn_id: None,
-        tool_use_id: None,
-        tool: None,
-        tool_input: None,
-        tool_response: None,
+fn invalid_payload_decision(event: &str, error: &anyhow::Error) -> CodexDecision {
+    let message = format!("invalid Codex hook payload: {error}");
+    if matches!(event, "PreToolUse" | "pre-tool-use") {
+        CodexDecision {
+            exit: 2,
+            block_messages: vec![message],
+            warn_messages: Vec::new(),
+            additional_context: String::new(),
+            files: Vec::new(),
+        }
+    } else if matches!(event, "PostToolUse" | "post-tool-use") {
+        CodexDecision {
+            exit: 1,
+            block_messages: Vec::new(),
+            warn_messages: vec![message],
+            additional_context: String::new(),
+            files: Vec::new(),
+        }
+    } else {
+        empty_decision()
     }
 }
 
 async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDecision {
     match event {
-        "pre-tool-use" => handle_pre(payload, root).await,
-        "post-tool-use" => handle_post(payload, root).await,
-        "session-start" => make_ctx_decision(root, ContextKind::SessionStart),
-        "user-prompt-submit" => make_ctx_decision(root, ContextKind::TurnContext),
-        "pre-compact" => make_compact_decision(root, true),
-        "post-compact" => make_ctx_decision(root, ContextKind::SessionStart),
-        "subagent-start" => make_ctx_decision(root, ContextKind::SessionStart),
+        "PreToolUse" | "pre-tool-use" => handle_pre(payload, root).await,
+        "PostToolUse" | "post-tool-use" => handle_post(payload, root).await,
+        "SessionStart" | "session-start" => make_ctx_decision(root, ContextKind::SessionStart),
+        "UserPromptSubmit" | "user-prompt-submit" => {
+            make_ctx_decision(root, ContextKind::TurnContext)
+        }
+        "PreCompact" | "pre-compact" => make_compact_decision(root, true),
+        "PostCompact" | "post-compact" => make_ctx_decision(root, ContextKind::SessionStart),
+        "SubagentStart" | "subagent-start" => make_ctx_decision(root, ContextKind::SessionStart),
         _ => empty_decision(),
     }
 }
@@ -132,7 +153,7 @@ fn empty_decision() -> CodexDecision {
 // ---------------------------------------------------------------------------
 
 async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
-    let tool_name = payload.tool.as_deref().unwrap_or("");
+    let tool_name = payload.tool_name.as_deref().unwrap_or("");
     let file_path = extract_file_path(payload.tool_input.as_ref());
 
     if tool_name != "Bash" && tool_name != "apply_patch" {
@@ -244,25 +265,44 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
 }
 
 async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDecision {
-    // Codex has sent the patch body under different keys across versions:
-    // `input` (current apply_patch), `patch`, and `command` (exec-style).
-    let patch_text = ["input", "patch", "command"]
-        .iter()
-        .find_map(|key| {
-            payload
-                .tool_input
-                .as_ref()
-                .and_then(|t| t.get(key))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-        })
+    // The current Codex contract supplies both Bash and apply_patch input in
+    // `tool_input.command`.
+    let patch_text = payload
+        .tool_input
+        .as_ref()
+        .and_then(|t| t.get("command"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
         .unwrap_or("");
 
     let files = codex_patch::parse_patch(patch_text);
+    if files.is_empty() {
+        return CodexDecision {
+            exit: 2,
+            block_messages: vec!["malformed apply_patch input: no file blocks".to_string()],
+            warn_messages: Vec::new(),
+            additional_context: String::new(),
+            files: Vec::new(),
+        };
+    }
 
     // Check traversal. NotFound is fine — Add File targets don't exist yet;
     // only genuine escape attempts (.. segments, outside root) block.
     for pf in &files {
+        if Path::new(&pf.path).is_absolute()
+            || pf
+                .path
+                .split(['/', std::path::MAIN_SEPARATOR])
+                .any(|part| part == "..")
+        {
+            return CodexDecision {
+                exit: 2,
+                block_messages: vec![format!("unsafe patch path blocked: {}", pf.path)],
+                warn_messages: Vec::new(),
+                additional_context: String::new(),
+                files: Vec::new(),
+            };
+        }
         if let Err(
             security::SecurityError::PathTraversal(_) | security::SecurityError::PathOutsideRoot(_),
         ) = security::resolve_safe_path(&pf.path, &security::project_root())
@@ -402,22 +442,22 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
 // ---------------------------------------------------------------------------
 
 async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
-    let tool_name = payload.tool.as_deref().unwrap_or("");
+    let tool_name = payload.tool_name.as_deref().unwrap_or("");
     let file_path = extract_file_path(payload.tool_input.as_ref());
 
     if tool_name != "Bash" && tool_name != "apply_patch" {
-        journal_post(payload, &file_path);
         return empty_decision();
     }
 
     let rules = match load_rules("post") {
         Ok(Some(r)) => r,
         Ok(None) => {
-            journal_post(payload, &file_path);
+            log_event("post", payload, tool_name, &file_path, 0, &[]);
+            journal_supported_post(payload, &file_path).await;
             return empty_decision();
         }
         Err(e) => {
-            journal_post(payload, &file_path);
+            journal_supported_post(payload, &file_path).await;
             return CodexDecision {
                 exit: 0,
                 block_messages: Vec::new(),
@@ -440,7 +480,7 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
     let consequences = match network.fire_all_consequences() {
         Ok(c) => c,
         Err(e) => {
-            journal_post(payload, &file_path);
+            journal_supported_post(payload, &file_path).await;
             return CodexDecision {
                 exit: 1,
                 block_messages: Vec::new(),
@@ -461,7 +501,7 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
             eprintln!("phronesis: WARNING — {}", w);
         }
         log_event("post", payload, tool_name, &file_path, 1, &logged);
-        journal_post(payload, &file_path);
+        journal_supported_post(payload, &file_path).await;
         return CodexDecision {
             exit: 1,
             block_messages: block_msgs,
@@ -472,7 +512,7 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
     }
 
     log_event("post", payload, tool_name, &file_path, 0, &logged);
-    journal_post(payload, &file_path);
+    journal_supported_post(payload, &file_path).await;
     empty_decision()
 }
 
@@ -688,12 +728,24 @@ fn log_event(
     let _ = action_log::append(&path, &entry);
 }
 
-fn journal_post(payload: &CodexPayload, file_path: &str) {
+async fn journal_supported_post(payload: &CodexPayload, file_path: &str) {
+    if payload.tool_name.as_deref() == Some("apply_patch") {
+        let patch = extract_bash_command(payload);
+        let files = codex_patch::parse_patch(&patch);
+        for file in files {
+            journal_post(payload, &file.path).await;
+        }
+    } else {
+        journal_post(payload, file_path).await;
+    }
+}
+
+async fn journal_post(payload: &CodexPayload, file_path: &str) {
     if std::env::var("PHRONESIS_NO_JOURNEY").is_ok() {
         return;
     }
     let root = security::project_root();
-    let tool = payload.tool.as_deref().unwrap_or("");
+    let tool = payload.tool_name.as_deref().unwrap_or("");
     let cfg = journey::load_config(&root).unwrap_or_default();
     let mut facts: Vec<Fact> = Vec::new();
     facts.push(Fact {
@@ -712,9 +764,8 @@ fn journal_post(payload: &CodexPayload, file_path: &str) {
             });
         }
     }
-    // Tagger is async — use Handle to poll
-    let tag_result = tokio::runtime::Handle::current()
-        .block_on(journey::tagger::fire(&cfg, &facts))
+    let tag_result = journey::tagger::fire(&cfg, &facts)
+        .await
         .unwrap_or_default();
     let command = extract_bash_command(payload);
     let output = extract_tool_output_text(payload);
@@ -739,7 +790,10 @@ fn journal_post(payload: &CodexPayload, file_path: &str) {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
-        sid: journey::current_sid(&root),
+        sid: payload
+            .session_id
+            .clone()
+            .unwrap_or_else(|| journey::current_sid(&root)),
         seq: crate::hook::seq::next_seq(&root),
         tool: tool.to_string(),
         path: file_path.to_string(),
@@ -747,9 +801,17 @@ fn journal_post(payload: &CodexPayload, file_path: &str) {
         module,
         tags: all_tags,
         subject,
-        command_exit: None,
+        command_exit: extract_command_exit(payload),
     };
     let _ = journey::journal::append(&root, &record);
+}
+
+fn extract_command_exit(payload: &CodexPayload) -> Option<i32> {
+    let response = payload.tool_response.as_ref()?;
+    ["exit_code", "exitCode", "code", "status"]
+        .iter()
+        .find_map(|key| response.get(key).and_then(serde_json::Value::as_i64))
+        .and_then(|value| i32::try_from(value).ok())
 }
 
 fn extract_tool_output_text(payload: &CodexPayload) -> String {

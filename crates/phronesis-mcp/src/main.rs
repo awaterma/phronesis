@@ -322,15 +322,15 @@ enum Command {
     /// Codex hook adapter — reads a Codex hook JSON payload from stdin and
     /// writes a Codex-specific JSON response to stdout.
     ///
-    /// Supported events: `pre-tool-use`, `post-tool-use`, `session-start`,
-    /// `user-prompt-submit`, `pre-compact`, `post-compact`, `subagent-start`.
+    /// The current event is decoded from stdin's `hook_event_name`. An
+    /// optional event argument remains for manual smoke tests.
     ///
     /// Supported tools: `Bash` (command text) and `apply_patch` (patch
     /// parsing). MCP calls and other tools are allowed without comment.
     CodexHook {
         /// The Codex hook event name. The event from stdin takes precedence
         /// when available.
-        #[arg(default_value = "pre-tool-use")]
+        #[arg(default_value = "PreToolUse")]
         event: String,
     },
 }

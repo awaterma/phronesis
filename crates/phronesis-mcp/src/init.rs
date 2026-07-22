@@ -410,6 +410,8 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
         write_settings(&root, &opts, &mut report)?;
         write_mcp_json(&root, &opts, &mut report)?;
         write_gemini_settings(&root, &opts, &mut report)?;
+        write_codex_hooks(&root, &opts, &mut report)?;
+        write_codex_config(&root, &opts, &mut report)?;
     }
     if !opts.hooks_only {
         write_rules_file(&root, &opts, &mut report)?;
@@ -589,6 +591,97 @@ fn write_gemini_settings(
     }
 
     write_json(&path, &settings, opts, ".gemini/settings.json", report)?;
+    Ok(())
+}
+
+fn write_codex_hooks(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    let path = root.join(".codex").join("hooks.json");
+    let existing = read_json(&path)?;
+    let mut settings = existing.unwrap_or_else(|| json!({}));
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    let tool_entry = |event: &str| {
+        json!({
+            "matcher": "^(Bash|apply_patch)$",
+            "hooks": [{"type": "command", "command": format!("phr-mcp codex-hook {event}")}]
+        })
+    };
+    upsert_hook(&mut settings, "PreToolUse", tool_entry("PreToolUse"));
+    upsert_hook(&mut settings, "PostToolUse", tool_entry("PostToolUse"));
+    for event in [
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreCompact",
+        "PostCompact",
+        "SubagentStart",
+    ] {
+        upsert_hook(
+            &mut settings,
+            event,
+            json!({
+                "matcher": "",
+                "hooks": [{"type": "command", "command": format!("phr-mcp codex-hook {event}")}]
+            }),
+        );
+    }
+    write_json(&path, &settings, opts, ".codex/hooks.json", report)?;
+    report.warnings.push(
+        "Codex skips new or changed project hooks until you review and trust them with `/hooks`."
+            .to_string(),
+    );
+    Ok(())
+}
+
+fn write_codex_config(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    let path = root.join(".codex").join("config.toml");
+    let existing = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| InitError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?
+    } else {
+        String::new()
+    };
+    if existing
+        .lines()
+        .any(|line| line.trim() == "[mcp_servers.phronesis]")
+    {
+        report
+            .steps
+            .push("= .codex/config.toml already registers `phronesis` (no changes)".to_string());
+        return Ok(());
+    }
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let updated = format!(
+        "{existing}{separator}\n[mcp_servers.phronesis]\ncommand = \"phr-mcp\"\nargs = [\"serve\"]\n"
+    );
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would register `phronesis` in .codex/config.toml".to_string());
+        return Ok(());
+    }
+    ensure_parent(&path)?;
+    std::fs::write(&path, updated).map_err(|e| InitError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    report
+        .steps
+        .push("+ registered `phronesis` in .codex/config.toml".to_string());
     Ok(())
 }
 

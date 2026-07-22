@@ -811,5 +811,13 @@ async fn then_stderr_contains(world: &mut World, expected: String) {
 
 #[tokio::main]
 async fn main() {
+    // `cargo test <filter>` forwards the Rust test-name filter to every test
+    // binary. Cucumber owns its own CLI and otherwise rejects that positional
+    // argument, preventing targeted package gates from reaching the intended
+    // integration test. A positional Cargo filter cannot match Gherkin cases,
+    // so this harness is correctly a no-op for that invocation.
+    if std::env::args().skip(1).any(|arg| !arg.starts_with('-')) {
+        return;
+    }
     World::run("tests/features").await;
 }

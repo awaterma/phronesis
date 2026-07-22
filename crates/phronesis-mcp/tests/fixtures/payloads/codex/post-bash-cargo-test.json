@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "codex",
+    "event": "Codex lifecycle hook",
+    "provenance": "authored",
+    "captured": "2026-07-21",
+    "description": "Authored from the official Codex hook schema; not a runtime capture."
+  },
+  "subcommand": "codex-hook",
+  "packs": "rust",
+  "payload": {
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "session_id": "codex-s-004",
+  "turn_id": "codex-t-004",
+  "tool_use_id": "codex-uid-004",
+  "tool_input": {
+    "command": "cargo test --workspace"
+  },
+  "tool_response": {
+    "stdout": "running 3 tests\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
+    "stderr": "",
+    "exit_code": 0
+  }
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}
