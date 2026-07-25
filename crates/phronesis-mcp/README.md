@@ -38,10 +38,11 @@ phr-mcp init --packs llm,rust,confidence,journey
   in `.phronesis/journey.json` let rules match cross-call temporal
   patterns (`auth-churn-without-tests`, `build-staleness`, recent SQL)
   without any in-memory accumulation.
-- **Confidence scoring** — per-toolchain adapter (cargo first) parses
-  build / test / known-bug outcomes into grounded signals; gate rules
-  block or warn a `git commit` by confidence band. Opt-in via
-  `.phronesis/confidence.json`.
+- **Confidence scoring** — declarative toolchain definitions (built-in
+  Cargo plus project definitions in `.phronesis/toolchains.json`) feed one
+  generic parser that turns build / test / known-bug outcomes into grounded
+  signals; gate rules block or warn a `git commit` by confidence band.
+  Opt-in via `.phronesis/confidence.json`.
 - **Wiki decisions** — ADR-style pages in `.phronesis/wiki/decisions/`
   travel with the repo and are scored against rules for coverage.
 

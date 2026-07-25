@@ -123,8 +123,9 @@ rule can **block the current action based on the trajectory that led to it** —
 
 A loop's most dangerous moment is when it decides it's *done*. The model is
 optimistic; the build may be red. The `confidence` pack gates `git commit` on
-**grounded signals** — actual build, test, and known-bug outcomes read from a
-per-toolchain adapter (cargo first) — not on syntactic proxies:
+**grounded signals** — actual build, test, and known-bug outcomes read through
+declarative toolchain definitions (built-in Cargo plus project definitions in
+`.phronesis/toolchains.json`) and one generic parser — not on syntactic proxies:
 
 - **low** confidence → blocks the commit
 - **medium** → warns
