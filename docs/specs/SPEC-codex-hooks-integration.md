@@ -3,12 +3,15 @@
 **Status:** implemented via project-local hooks
 **Authors:** Andrew Waterman, Codex
 **Date:** 2026-07-10
-**Target release:** next MINOR release (new supported agent host and plugin surface; no change to the `phr` engine or on-disk rules schema)
-**Affects:** `crates/phronesis-mcp/src/{main.rs,hook/,context.rs,init.rs}`; new Codex adapter module and Codex plugin assets; integration tests and documentation.
+**Target release:** 0.22.0 (new supported agent host; no change to the `phr` engine or on-disk rules schema)
+**Affects:** `crates/phronesis-mcp/src/{main.rs,hook/,context.rs,init.rs}`; Codex adapter modules, project hook configuration, integration tests, and documentation.
 
 ## Summary
 
-Add Codex as a first-class Phronesis hook host. Codex exposes `PreToolUse`, `PostToolUse`, `SessionStart`, `UserPromptSubmit`, compaction, and subagent events. The adapter will translate that protocol into Phronesis's existing rule evaluation, journals, and durable-context mechanisms.
+Codex is a first-class Phronesis hook host. Its `PreToolUse`, `PostToolUse`,
+`SessionStart`, `UserPromptSubmit`, compaction, completion, and subagent events
+are translated into Phronesis rule evaluation, journals, confidence gates, and
+durable-context mechanisms.
 
 This is a host adapter, not a new rules-engine feature:
 
@@ -26,9 +29,15 @@ Wire the integration through project-local `.codex/hooks.json` and `.codex/confi
 
 ## Motivation and boundary
 
-Phronesis needs an action-time hook, an after-action observation point, and durable context injection. Codex has all three. `PreToolUse` can deny supported Bash, `apply_patch`, and MCP calls; `PostToolUse` receives the tool input and response; session, prompt, compaction, and subagent events allow context to persist across the agent lifecycle.
+Phronesis needs an action-time hook, an after-action observation point, and
+durable context injection. Codex has all three. `PreToolUse` can deny supported
+`Bash` and `apply_patch` calls; `PostToolUse` receives the tool input and
+response; session, prompt, compaction, completion, and subagent events allow
+context to persist across the agent lifecycle.
 
-Do not claim complete enforcement. Codex documents PreToolUse as a guardrail: rich `unified_exec` activity and non-shell/non-MCP tools are not fully intercepted. The plugin must state this plainly.
+Do not claim complete enforcement. Codex documents PreToolUse as a guardrail:
+specialized and hosted tools may not traverse these project-local lifecycle
+hooks. The generated documentation states this boundary plainly.
 
 ## Goals
 
@@ -37,7 +46,8 @@ Do not claim complete enforcement. Codex documents PreToolUse as a guardrail: ri
 3. Inject active rules, durable directives, and recent outcomes at session, prompt, compaction, and subagent boundaries.
 4. Share rule evaluation with Claude/Gemini; do not duplicate the fact pipeline.
 5. Keep Phronesis's current failure policy: malformed policy blocks pre-actions, while non-critical journal I/O remains best-effort.
-6. Make hook installation explicit, reviewable, and reversible through a Codex plugin.
+6. Make hook installation explicit, reviewable, and reversible through
+   project-local Codex configuration.
 
 ## Non-goals
 
@@ -66,7 +76,7 @@ Codex can run matching command hooks concurrently. Handlers must be independent 
 
 ### CLI adapter
 
-Add:
+Command:
 
 ```text
 phr-mcp codex-hook <event>
@@ -79,30 +89,24 @@ pre-tool-use | post-tool-use | session-start | user-prompt-submit |
 pre-compact | post-compact | subagent-start | subagent-stop | stop
 ```
 
-The command reads one Codex hook JSON object from stdin and writes only a Codex hook JSON response to stdout. Diagnostics go to stderr. Add `crates/phronesis-mcp/src/codex_hook.rs` for Codex payload decoding, tool normalization, output rendering, and event dispatch.
+The command reads one Codex hook JSON object from stdin and writes only a Codex
+hook JSON response to stdout. Diagnostics go to stderr.
+`crates/phronesis-mcp/src/codex_hook.rs` owns payload decoding, tool
+normalization, event dispatch, and delegates patch parsing and rendering to
+focused submodules.
 
-### Refactor the existing hook seam first
+### Shared evaluation boundary
 
-Current `run_pre_check()` and `run_post_check()` read stdin and terminate with `process::exit`. Refactor around a host-neutral result:
-
-```rust
-pub(crate) struct HookDecision {
-    pub exit: i32, // 0 allow, 1 warning, 2 block
-    pub messages: Vec<String>,
-    pub consequences: Vec<LoggedConsequence>,
-}
-
-pub(crate) async fn evaluate_pre(payload: &HookPayload) -> HookDecision;
-pub(crate) async fn evaluate_post(payload: &HookPayload) -> HookDecision;
-```
-
-These functions retain all present behavior: rules, facts, journey derivation, confidence signals, action logging, and post-action outcome recording. The existing Claude/Gemini commands become thin protocol adapters whose observable behavior remains unchanged.
+The Codex adapter preserves Codex's structured JSON response contract while
+reusing the existing rule-file conversion, fact extractors, syntax predicates,
+journey derivation, confidence outcomes, security resolver, and action-log
+types. Claude/Gemini process-exit behavior remains unchanged.
 
 Do not spawn `phr-mcp pre-check` from the Codex hook. That would create nested protocol adapters and obscure error handling.
 
 ### Tool normalization
 
-| Codex input | Internal action | v1 handling |
+| Codex input | Internal action | v0.22 handling |
 |---|---|---|
 | `Bash`, `tool_input.command` | `Bash` | existing command rules and confidence outcomes |
 | `apply_patch`, `tool_input.command` | `CodexApplyPatch` | parse patch, evaluate each changed file |
@@ -118,7 +122,9 @@ Add a private `codex_patch` module that parses the patch shape Codex supplies:
 - reject malformed input in PreToolUse and warn in PostToolUse;
 - pass every path through the existing security resolver.
 
-This is not a general patch engine. Capture real Codex hook payloads as fixtures before finalizing parser behavior.
+This is not a general patch engine. Schema-authored fixtures protect the
+documented contract; captured payloads must be promoted separately with honest
+provenance.
 
 For multi-file patches, evaluate every changed file and combine results: any block wins; otherwise any warning wins. Log one action event per Codex call with a `files` array (while retaining `file` for single-file compatibility); append one journey record per affected path because tags/modules are path-based.
 
@@ -165,11 +171,13 @@ remains the only trust path. No marketplace or repository plugin is included.
 | action/journey log I/O | preserve rule decision | preserve advisory decision | omit affected activity |
 | unsupported tool | allow | allow | n/a |
 
-Add `host: "codex"` plus supplied `session_id`, `turn_id`, and `tool_use_id` to action-log metadata. These are observability fields, not v1 rule facts.
+Action-log entries include `host: "codex"` plus supplied `session_id`,
+`turn_id`, and `tool_use_id`. These are observability fields, not rule facts.
 
-## Tests
+## Test coverage
 
-Add `crates/phronesis-mcp/tests/codex_hook_integration.rs` using documented and real captured Codex payload fixtures.
+`crates/phronesis-mcp/tests/codex_hook_integration.rs` exercises documented
+Codex payloads and explicitly labeled fixture provenance.
 
 1. PreToolUse Bash violation returns deny JSON.
 2. PreToolUse Bash warning allows the action and injects context.
@@ -187,7 +195,8 @@ Add `crates/phronesis-mcp/tests/codex_hook_integration.rs` using documented and 
 14. Unsupported tools are safe no-ops.
 15. Existing Claude/Gemini hook tests pass unchanged.
 
-Add unit tests for patch parsing, decision combination, and Codex JSON rendering. Assert response JSON shape, not merely process exit status.
+Unit tests cover patch parsing, decision combination, and Codex JSON rendering.
+They assert response JSON shape, not merely process exit status.
 
 ## Verification
 
@@ -203,25 +212,31 @@ cargo test --workspace
 
 Manual dogfood in a trusted Codex project:
 
-1. Enable the plugin and review it through `/hooks`.
+1. Run `phr-mcp init` and review the generated project hooks through `/hooks`.
 2. Add a blocking `.unwrap()` rule and attempt an `apply_patch` edit; it must be denied before execution.
 3. Run `cargo test`; confirm PostToolUse records its outcome.
 4. Start a new session; active rules/directives must appear.
 5. Trigger compaction; durable context must reappear.
 6. Start a subagent; it must receive project governance context.
 
-## Rollout
+## Implemented rollout
 
-1. Refactor to `HookDecision`; prove the existing hosts are behavior-identical.
-2. Implement Codex Bash Pre/PostToolUse.
-3. Implement context events.
-4. Implement patch parsing and multi-file evaluation.
-5. Package and dogfood the plugin.
-6. Only then consider a `phr-mcp init --codex` convenience path.
+1. Codex Bash and `apply_patch` Pre/PostToolUse adapters.
+2. Session, prompt, compaction, completion, and subagent context events.
+3. Multi-file patch parsing, per-file evaluation, and batch predicate context.
+4. Non-destructive `.codex/hooks.json` and `.codex/config.toml` setup through
+   the ordinary `phr-mcp init` flow.
+5. Authored contract fixtures plus live action-log dogfooding.
 
-## Open questions
+## Resolved decisions and remaining boundary
 
-1. Does Codex always pass complete patch text to PreToolUse, including enough old/new information for diff/AST facts? Capture real payloads first.
-2. Codex supplies `session_id`, while Phronesis currently mints journey IDs. Default recommendation: use the Codex ID as the journey `sid` for this host and log it directly.
-3. Should `apply_patch` normalize to existing Edit/Write actions or remain a dedicated internal action? Decide after inspecting real patch fidelity.
-4. Should the plugin ship in this repository only, or later in a marketplace? Marketplace publication is not a prerequisite.
+1. `apply_patch` remains a dedicated internal action. Phronesis parses its
+   structured patch text, evaluates each path, and gives providers one batch
+   `event.files` view before per-file `event.file_path` views.
+2. Codex `session_id`, `turn_id`, and `tool_use_id` are retained in action-log
+   metadata; the Codex session id is used for journey correlation.
+3. Single-file events retain `file`; multi-file events use `files`.
+4. Project setup ships in this repository through `phr-mcp init`. Marketplace
+   publication remains optional.
+5. Payload fixtures are schema-authored unless explicitly labeled captured;
+   authored fixtures prove internal behavior, not current host provenance.

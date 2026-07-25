@@ -13,7 +13,8 @@ context window at every tool call, and cannot be compressed away.
 # Install the binary
 cargo install phronesis-mcp
 
-# Register as a global MCP server (Claude Code + Gemini CLI)
+# Register globally for Claude Code + Gemini CLI.
+# Codex receives project-scoped MCP registration during init.
 phr-mcp install
 
 # Initialize in your project
@@ -26,7 +27,11 @@ phr-mcp init --packs llm,rust,confidence,journey
 - **Pre/post hooks** fire rules against every file edit, blocking violations
   and warning on anti-patterns.
 - **MCP tools** let the model query rules, fire the engine, audit the tree,
-  and detect drift between prose guidance and enforced rules.
+  detect drift between prose guidance and enforced rules, and test/manage
+  sandboxed project predicate providers.
+- **Extensible predicates** — Rhai providers derive project vocabulary from
+  normalized events. Codex `apply_patch` supplies a batch `files` change set
+  before the existing per-file `file_path` evaluation.
 - **Starter packs** ship rules for Rust, Python, TypeScript, Swift, Rhai,
   and LLM-behavior (deflection, unverified claims).
 - **Journey facts** — durable per-call journal + project-defined taggers
@@ -70,7 +75,7 @@ hooks are deterministic guardrails, not a complete security boundary: some
 specialized or hosted tool paths may not traverse local lifecycle hooks.
 
 Codex observes unified shell execution as `Bash`, file edits as `apply_patch`,
-and can expose other local or MCP tools. Phronesis v1 governs only `Bash` and
+and can expose other local or MCP tools. Phronesis v0.22 governs only `Bash` and
 `apply_patch`; unsupported tools are safe no-ops.
 
 ## Documentation

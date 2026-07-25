@@ -712,5 +712,5 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 
 ---
 
-*Last updated: 2026-07-14*
-*Based on phronesis v0.20.0*
+*Last updated: 2026-07-25*
+*Based on phronesis v0.22.0*

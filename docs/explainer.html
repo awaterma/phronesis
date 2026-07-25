@@ -615,7 +615,7 @@
       </p>
       <p class="byline">
         <span class="author primary"><a href="mailto:andrew@waterman.dev">Andrew Waterman</a></span>
-        <span class="secondary"><span class="with">with</span> Claude</span>
+        <span class="secondary"><span class="with">with</span> Claude &amp; Codex</span>
         <span class="affil">Phronesis &amp; the rules <span class="dot">·</span> 2026</span>
       </p>
     </div>
@@ -710,7 +710,7 @@
     <div class="body-grid">
       <div class="main lead">
         <p>
-          Claude Code, Gemini CLI, and the rest of the LLM-assisted
+          Claude Code, OpenAI Codex, Gemini CLI, and the rest of the LLM-assisted
           development family share one startup pattern: load whatever
           project guidance the user has set down — <code>CLAUDE.md</code>,
           <code>AGENTS.md</code>, a system primer — and place it in
@@ -882,10 +882,10 @@
           a single Rust binary that exposes it three ways. It runs as
           an MCP server over stdio, for any MCP-capable client. It
           runs as a set of CLI subcommands that bind directly to the
-          Claude Code and Gemini CLI hook protocols. And it runs as a
+          Claude Code, Codex, and Gemini CLI hook protocols. And it runs as a
           whole-tree audit tool. The hooks are where the durability
           property comes from. They are invoked by the host (Claude
-          Code, Gemini CLI) at well-defined moments — before a tool
+          Code, Codex, Gemini CLI) at well-defined moments — before a tool
           fires, after it applies, when a session opens, when the
           user submits a prompt — and they re-read the rules file
           from disk on every invocation.
@@ -1024,7 +1024,7 @@
         <!-- footer note -->
         <line x1="30" y1="320" x2="800" y2="320" stroke="#C8BC9F" stroke-width="0.5" stroke-dasharray="2 4"/>
         <text class="svg-body svg-body-mute" x="415" y="338" text-anchor="middle">
-          the host (Claude Code · Gemini CLI) honors the exit code · the hook never modifies state itself
+          the host (Claude Code · Codex · Gemini CLI) honors the decision · the hook never modifies source itself
         </text>
       </svg>
     </figure>
@@ -1112,10 +1112,11 @@
       </div>
       <aside class="margin">
         <span class="label">Marginalia, iii.</span>
-        Predicates are a small fixed vocabulary — content matches,
-        file extension gates, AST shapes derived through tree-sitter,
-        Bash command analysis. Adding a new predicate requires Rust
-        code. Writing new rules that use existing predicates does not.
+        Built-in predicates cover content, paths, tree-sitter AST shapes,
+        and shell commands. Projects can extend that vocabulary with
+        sandboxed Rhai providers under
+        <code>.phronesis/predicates/</code>, test them through MCP, and
+        emit ordinary RETE facts without changing Rust.
       </aside>
     </div>
 
@@ -1327,7 +1328,7 @@
         </p>
         <ul class="keys">
           <li>injected by <span class="mono">session-context</span></li>
-          <li>injected by <span class="mono">turn-context</span></li>
+          <li>injected by <span class="mono">interaction-context</span></li>
           <li>prose, not enforced — re-read every turn</li>
         </ul>
       </article>
@@ -1672,7 +1673,10 @@
           <code>.gemini/settings.json</code> for Gemini CLI (which
           also carries Gemini's MCP server registration). A separate
           <code>.mcp.json</code> registers the server for Claude Code
-          and any other MCP-capable client. The starter rules pack
+          and any other MCP-capable client. Codex uses
+          <code>.codex/hooks.json</code> plus
+          <code>.codex/config.toml</code>; changed hooks remain subject
+          to Codex's explicit <code>/hooks</code> trust review. The starter rules pack
           lives at <code>.phronesis/rules.json</code>, and entries are
           appended to <code>.gitignore</code> so phronesis's log and
           backup files are not committed by accident. A wiki scaffold
@@ -1710,6 +1714,16 @@
         </p>
       </div>
       <div class="integration">
+        <span class="path">.codex/hooks.json · config.toml</span>
+        <h4>OpenAI Codex hooks</h4>
+        <p>
+          <code>codex-hook</code> governs Bash and
+          <code>apply_patch</code>, including multi-file change sets,
+          and reinjects context across prompts, compaction, completion,
+          and subagent lifecycle events.
+        </p>
+      </div>
+      <div class="integration">
         <span class="path">.gemini/settings.json</span>
         <h4>Gemini CLI hooks</h4>
         <p>
@@ -1725,6 +1739,15 @@
           Exposes <code>mcp__phronesis__*</code> tools — assert facts, fire
           rules, audit the codebase, query the trend — to any
           MCP-capable client over stdio.
+        </p>
+      </div>
+      <div class="integration">
+        <span class="path">.phronesis/predicates/*.rhai</span>
+        <h4>Project predicate providers</h4>
+        <p>
+          Sandboxed scripts derive project-specific LHS facts from
+          normalized events. Batch <code>files</code> context precedes
+          per-file <code>file_path</code> evaluation.
         </p>
       </div>
       <div class="integration">
@@ -1851,7 +1874,7 @@ $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold
 
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
     <a href="./index.html">Home</a> &middot; <span class="doc-web-here">Explainer</span> &middot; <a href="./catalogue.html">Catalogue</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/docs/loop-programming-guide.md">Guide</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/CHANGELOG.md">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.17.0</span>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.22.0</span>
   </nav>
   <footer>
     <div>
@@ -1859,14 +1882,14 @@ $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold
       Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
       <em>JetBrains Mono</em> for code.<br>
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
-      with Claude.<br>
+      with Claude and Codex.<br>
       2026 &nbsp;&middot;&nbsp;
       <a href="./catalogue.html">the catalogue of rules &rarr;</a> &nbsp;&middot;&nbsp;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
       ⁂
-      <small>End · Vol. 0.13.2</small>
+      <small>End · Vol. 0.22.0</small>
     </div>
   </footer>
 

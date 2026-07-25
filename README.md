@@ -20,7 +20,7 @@ Beyond the syntactic rule packs, two grounded subsystems extend enforcement past
 
 **Journey facts** ([SPEC-journey-facts](docs/specs/)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
 
-**Extensible predicates** ([SPEC-extensible-predicates](docs/specs/SPEC-extensible-predicates.md)) let project Rhai providers under `.phronesis/predicates/` derive new, validated LHS facts from normalized hook events. MCP tools can test and manage providers, allowing an agent to add new predicate vocabulary before adding the rules that consume it.
+**Extensible predicates** ([SPEC-extensible-predicates](docs/specs/SPEC-extensible-predicates.md)) let project Rhai providers under `.phronesis/predicates/` derive new, validated LHS facts from normalized hook events. Multi-file operations expose a once-per-operation `event.files` change-set view before per-file `event.file_path` evaluation. MCP tools can test and manage providers, allowing an agent to add new predicate vocabulary before adding the rules that consume it.
 
 ## The Workspace
 

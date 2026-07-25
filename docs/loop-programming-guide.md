@@ -2,7 +2,8 @@
 
 **A guide to governing the iterative agentic loop so it doesn't drift.**
 
-This guide is for people running Claude (or any hook-capable LLM agent) in a
+This guide is for people running Claude Code, OpenAI Codex, Gemini CLI, or
+another hook-capable LLM agent in a
 long, iterative loop — the *propose → act → observe → propose again* cycle that
 drives real coding work — and who want that loop to stay on the rails from the
 first turn to the thousandth. For the conceptual grounding, see the
@@ -63,8 +64,8 @@ start at layer 1 and add the others as the loop gets longer.
 Two hooks wrap each turn of the loop:
 
 - **`pre-check`** runs *before* a tool call lands. If a rule with `phase: "pre"`
-  matches, the hook exits 2 and the action is **blocked** — Claude sees the
-  message and adjusts before any damage is done.
+  matches, the adapter returns the host's blocking decision — the agent sees
+  the message and adjusts before any damage is done.
 - **`post-check`** runs *after* the action. A `phase: "post"` rule exits 1 and
   **warns** — advisory, the action already happened.
 
@@ -80,6 +81,15 @@ gives you a working set immediately: the `rust` pack blocks `.unwrap()` /
 on bare `git commit -m` to nudge end-to-end verification. (See the
 [Command Reference](../crates/phronesis-mcp/CLAUDE.md) for the full pack
 contents.)
+
+Layer 1 is extensible without recompiling Phronesis. Sandboxed Rhai providers
+under `.phronesis/predicates/*.rhai` receive a normalized `event` and call
+`emit_fact(predicate, args)` to add project vocabulary before RETE matching.
+For a multi-file Codex `apply_patch`, providers first receive the complete
+`event.files` change set and then one `event.file_path` view per file. Use the
+MCP's `test_predicate_provider` before installing a provider. This repository's
+`change_set.rhai` provider demonstrates the pattern by classifying production
+Rust paths, test paths, and production-only change sets.
 
 ### Layer 2 — trajectory awareness (across iterations)
 
@@ -144,14 +154,16 @@ phr-mcp init --packs llm,rust,confidence,journey
 
 `journey` is the pack that unlocks layer 2, and is the one most specific to
 loop-based work. `init` is idempotent and only adds its own entries — existing
-permissions, hooks, and gitignore lines are preserved. After running it, restart
-Claude Code so it picks up the hooks and the MCP server.
+permissions, hooks, and gitignore lines are preserved. After running it,
+restart the agent host so it picks up the hooks and MCP server. Codex users
+must also review changed project hooks with `/hooks`; Phronesis does not bypass
+that trust boundary.
 
 You can sanity-check the install at any time:
 
 ```sh
 $ phr-mcp --version
-phr-mcp 0.15.0
+phr-mcp 0.22.0
 ```
 
 Everything in the rest of this guide is drawn from the actual state of this

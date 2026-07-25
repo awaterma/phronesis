@@ -94,7 +94,7 @@ Wrap each reviewed record in the fixture envelope and place it under
 
 Notes on the `capture` block:
 
-- `host` — host CLI name (`claude-code` or `gemini`); non-empty string.
+- `host` — host CLI name (`claude-code`, `codex`, or `gemini`); non-empty string.
 - `host_version` — the host CLI version if known; explicit `null` if unknown.
   The key itself is always required.
 - `capture_date` — ISO date the payload was recorded; non-empty string.
