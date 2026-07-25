@@ -9,6 +9,7 @@ cargo build
 cargo run -- serve       # MCP stdio server (default)
 cargo run -- pre-check   # PreToolUse hook (blocks violations)
 cargo run -- post-check  # PostToolUse hook (warns on violations)
+cargo run -- codex-hook PreToolUse  # Codex protocol adapter (event varies by hook)
 cargo run -- init             # One-command setup for a project
 cargo run -- session-context  # SessionStart hook (injects active rules + durable directives)
 cargo run -- turn-context     # UserPromptSubmit / BeforeAgent hook (injects recent activity + durable directives)

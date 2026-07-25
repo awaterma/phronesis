@@ -4,10 +4,11 @@
 //! pre/post rule-evaluation pipeline, and writes a Codex-specific JSON
 //! response to stdout. Context events (SessionStart, UserPromptSubmit,
 //! PreCompact, PostCompact, SubagentStart) reuse the context builders.
+//! Stop events enforce the opt-in confidence gate when a work unit is open.
 //!
 //! **Supported events**:
 //! `PreToolUse`, `PostToolUse`, `SessionStart`, `UserPromptSubmit`,
-//! `PreCompact`, `PostCompact`, and `SubagentStart`.
+//! `PreCompact`, `PostCompact`, `SubagentStart`, `SubagentStop`, and `Stop`.
 //!
 //! **Supported tools**: `Bash` (command text), `apply_patch` (patch parsing).
 //! MCP calls and other tools are allowed without comment.
@@ -134,6 +135,7 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
         "PreCompact" | "pre-compact" => make_compact_decision(root, true),
         "PostCompact" | "post-compact" => make_ctx_decision(root, ContextKind::SessionStart),
         "SubagentStart" | "subagent-start" => make_ctx_decision(root, ContextKind::SessionStart),
+        "SubagentStop" | "subagent-stop" | "Stop" | "stop" => make_completion_decision(root),
         _ => empty_decision(),
     }
 }
@@ -143,6 +145,38 @@ fn empty_decision() -> CodexDecision {
         exit: 0,
         block_messages: Vec::new(),
         warn_messages: Vec::new(),
+        additional_context: String::new(),
+        files: Vec::new(),
+    }
+}
+
+fn make_completion_decision(root: &Path) -> CodexDecision {
+    if !outcomes::enabled(root) {
+        return empty_decision();
+    }
+    let Some(report) = outcomes::report(root, None) else {
+        return empty_decision();
+    };
+    let message = match report.band {
+        outcomes::Band::Low => format!(
+            "Low confidence for {} — resolve failing or missing grounded signals before completing.",
+            report.subject
+        ),
+        outcomes::Band::Medium => format!(
+            "Medium confidence for {} — one grounded signal is still missing.",
+            report.subject
+        ),
+        outcomes::Band::High => return empty_decision(),
+    };
+    let (block_messages, warn_messages) = match report.band {
+        outcomes::Band::Low => (vec![message], Vec::new()),
+        outcomes::Band::Medium => (Vec::new(), vec![message]),
+        outcomes::Band::High => unreachable!("high confidence returned above"),
+    };
+    CodexDecision {
+        exit: 0,
+        block_messages,
+        warn_messages,
         additional_context: String::new(),
         files: Vec::new(),
     }
@@ -787,13 +821,14 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
         .unwrap_or_default();
     let command = extract_bash_command(payload);
     let output = extract_tool_output_text(payload);
+    let command_exit = extract_command_exit(payload);
     let (outcome_tags, subject) =
         outcomes::adapter::extract_from(outcomes::adapter::ExtractFromInput {
             project_root: &root,
             tool_name: tool,
             command: Some(&command),
             output: &output,
-            command_exit: None,
+            command_exit,
         });
     let ext = std::path::Path::new(file_path)
         .extension()
@@ -819,7 +854,7 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
         module,
         tags: all_tags,
         subject,
-        command_exit: extract_command_exit(payload),
+        command_exit,
     };
     let _ = journey::journal::append(&root, &record);
 }

@@ -167,6 +167,42 @@ fn codex_hook_cli_posttooluse_captures_output_and_journals_executed_call() {
 }
 
 #[test]
+fn codex_hook_cli_nonzero_exit_grounds_a_failed_outcome() {
+    let project = tempfile::tempdir().expect("temp project");
+    fs::create_dir_all(project.path().join(".phronesis")).expect("confidence config dir");
+    fs::write(project.path().join(".phronesis/confidence.json"), "{}").expect("enable confidence");
+    let payload = json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "session_id": "failed-session",
+        "turn_id": "failed-turn",
+        "tool_use_id": "failed-tool",
+        "tool_input": {"command": "cargo test --workspace"},
+        "tool_response": {
+            "stdout": "",
+            "stderr": "command exited without a parseable cargo diagnostic",
+            "exit_code": 101
+        }
+    });
+
+    assert_eq!(response(&run_hook(project.path(), &payload)), json!({}));
+    let journal = fs::read_to_string(project.path().join(".phronesis/journey/events.jsonl"))
+        .expect("failed command journal");
+    let record: Value =
+        serde_json::from_str(journal.lines().last().expect("journal line")).expect("journal JSON");
+
+    assert_eq!(record["command_exit"], 101);
+    assert!(
+        record["tags"]
+            .as_array()
+            .expect("tags")
+            .iter()
+            .any(|tag| tag == "outcome:compile_error"),
+        "a nonzero Codex command exit must ground a failed outcome: {record}"
+    );
+}
+
+#[test]
 fn codex_hook_cli_post_patch_journals_each_file() {
     let project = tempfile::tempdir().expect("temp project");
     let payload = json!({
@@ -242,12 +278,88 @@ fn codex_hook_cli_context_uses_pascal_event_and_is_bounded() {
 }
 
 #[test]
+fn codex_stop_blocks_low_confidence_but_is_inert_without_an_open_work_unit() {
+    let project = tempfile::tempdir().expect("temp project");
+    fs::create_dir_all(project.path().join(".phronesis/outcomes")).expect("outcomes dir");
+    fs::write(project.path().join(".phronesis/confidence.json"), "{}").expect("enable confidence");
+    let stop = json!({
+        "hook_event_name": "Stop",
+        "session_id": "s",
+        "turn_id": "t"
+    });
+
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+
+    fs::write(
+        project.path().join(".phronesis/outcomes/current"),
+        "active-unit",
+    )
+    .expect("open work unit");
+    let blocked = response(&run_hook(project.path(), &stop));
+    assert_eq!(blocked["continue"], false);
+    assert!(
+        blocked["stopReason"]
+            .as_str()
+            .is_some_and(|s| s.contains("Low confidence"))
+    );
+    assert!(blocked["systemMessage"].is_string());
+
+    let mut subagent_stop = stop.clone();
+    subagent_stop["hook_event_name"] = json!("SubagentStop");
+    assert_eq!(
+        response(&run_hook(project.path(), &subagent_stop))["continue"],
+        false
+    );
+
+    let journal_dir = project.path().join(".phronesis/journey");
+    fs::create_dir_all(&journal_dir).expect("journey dir");
+    let records = [
+        ("outcome:compile_ok", 1),
+        ("outcome:test_pass", 2),
+        ("outcome:bug_caught:known", 3),
+    ]
+    .map(|(tag, seq)| {
+        json!({
+            "v": 1, "ts": seq, "sid": "s", "seq": seq, "tool": "Bash",
+            "path": "", "tags": [tag], "subject": "active-unit"
+        })
+        .to_string()
+    });
+    fs::write(
+        journal_dir.join("events.jsonl"),
+        format!("{}\n", records[..2].join("\n")),
+    )
+    .expect("medium-confidence journal");
+    let medium = response(&run_hook(project.path(), &stop));
+    assert!(medium.get("continue").is_none());
+    assert!(
+        medium["systemMessage"]
+            .as_str()
+            .is_some_and(|s| s.contains("Medium confidence"))
+    );
+
+    fs::write(
+        journal_dir.join("events.jsonl"),
+        format!("{}\n", records.join("\n")),
+    )
+    .expect("high-confidence journal");
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+}
+
+#[test]
 fn init_merges_codex_hooks_and_mcp_idempotently_and_dry_run_is_read_only() {
     let project = tempfile::tempdir().expect("temp project");
     fs::create_dir_all(project.path().join(".codex")).expect("codex dir");
     fs::write(
         project.path().join(".codex/hooks.json"),
-        r#"{"description":"keep me","hooks":{"Stop":[{"hooks":[{"type":"command","command":"other"}]}]}}"#,
+        r#"{
+          "description":"keep me",
+          "hooks":{
+            "Stop":[{"matcher":"","hooks":[{"type":"command","command":"other"}]}],
+            "SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"phr-mcp codex-hook SessionStart"}]}],
+            "PreCompact":[{"matcher":"","hooks":[{"type":"command","command":"phr-mcp codex-hook PreCompact"}]}]
+          }
+        }"#,
     )
     .expect("existing hooks");
     fs::write(
@@ -270,8 +382,51 @@ fn init_merges_codex_hooks_and_mcp_idempotently_and_dry_run_is_read_only() {
         fs::read_to_string(project.path().join(".codex/config.toml")).expect("merged config");
     let hooks: Value = serde_json::from_str(&first_hooks).expect("hooks JSON");
     assert_eq!(hooks["description"], "keep me");
-    assert!(hooks["hooks"]["Stop"].is_array());
+    assert!(
+        hooks["hooks"]["Stop"]
+            .as_array()
+            .expect("Stop hooks")
+            .iter()
+            .any(|entry| entry["hooks"][0]["command"] == "other")
+    );
     assert!(hooks["hooks"]["PreToolUse"].is_array());
+    let session = hooks["hooks"]["SessionStart"]
+        .as_array()
+        .expect("SessionStart hooks");
+    assert!(session.iter().any(|entry| {
+        entry["matcher"] == "startup|resume|clear"
+            && entry["hooks"][0]["command"] == "phr-mcp codex-hook SessionStart"
+    }));
+    assert_eq!(
+        session
+            .iter()
+            .filter(|entry| { entry["hooks"][0]["command"] == "phr-mcp codex-hook SessionStart" })
+            .count(),
+        1,
+        "legacy Phronesis SessionStart entry must be migrated, not duplicated"
+    );
+    for event in ["PreCompact", "PostCompact"] {
+        assert!(
+            hooks["hooks"][event]
+                .as_array()
+                .expect("compact hooks")
+                .iter()
+                .any(|entry| entry["matcher"] == "manual|auto"),
+            "{event} must use the documented compact matcher"
+        );
+    }
+    for event in ["Stop", "SubagentStop"] {
+        assert!(
+            hooks["hooks"][event]
+                .as_array()
+                .expect("completion hooks")
+                .iter()
+                .any(|entry| {
+                    entry["hooks"][0]["command"] == format!("phr-mcp codex-hook {event}")
+                }),
+            "{event} completion gate must be wired"
+        );
+    }
     assert!(first_config.contains("model = \"keep-me\""));
     assert!(first_config.contains("[mcp_servers.phronesis]"));
 

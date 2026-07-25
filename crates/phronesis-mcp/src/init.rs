@@ -611,20 +611,22 @@ fn write_codex_hooks(
             "hooks": [{"type": "command", "command": format!("phr-mcp codex-hook {event}")}]
         })
     };
-    upsert_hook(&mut settings, "PreToolUse", tool_entry("PreToolUse"));
-    upsert_hook(&mut settings, "PostToolUse", tool_entry("PostToolUse"));
-    for event in [
-        "SessionStart",
-        "UserPromptSubmit",
-        "PreCompact",
-        "PostCompact",
-        "SubagentStart",
+    upsert_codex_hook(&mut settings, "PreToolUse", tool_entry("PreToolUse"));
+    upsert_codex_hook(&mut settings, "PostToolUse", tool_entry("PostToolUse"));
+    for (event, matcher) in [
+        ("SessionStart", "startup|resume|clear"),
+        ("UserPromptSubmit", ""),
+        ("PreCompact", "manual|auto"),
+        ("PostCompact", "manual|auto"),
+        ("SubagentStart", ""),
+        ("SubagentStop", ""),
+        ("Stop", ""),
     ] {
-        upsert_hook(
+        upsert_codex_hook(
             &mut settings,
             event,
             json!({
-                "matcher": "",
+                "matcher": matcher,
                 "hooks": [{"type": "command", "command": format!("phr-mcp codex-hook {event}")}]
             }),
         );
@@ -1266,6 +1268,30 @@ fn upsert_hook(settings: &mut Value, event: &str, new_entry: Value) {
     let our_matcher = new_entry["matcher"].as_str().map(String::from);
     let arr = arr.as_array_mut().unwrap();
     arr.retain(|m| m["matcher"].as_str().map(String::from) != our_matcher);
+    arr.push(new_entry);
+}
+
+/// Replace only Phronesis's entry for a Codex event, regardless of its former
+/// matcher. This migrates generated matcher changes without deleting unrelated
+/// user hooks that happen to use the same matcher.
+fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Value) {
+    let hooks = settings.as_object_mut().and_then(|o| {
+        o.entry("hooks".to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+    });
+    let Some(hooks) = hooks else { return };
+    let arr = hooks.entry(event.to_string()).or_insert_with(|| json!([]));
+    if !arr.is_array() {
+        *arr = json!([]);
+    }
+    let command = format!("phr-mcp codex-hook {event}");
+    let arr = arr.as_array_mut().unwrap();
+    arr.retain(|entry| {
+        !entry["hooks"]
+            .as_array()
+            .is_some_and(|handlers| handlers.iter().any(|hook| hook["command"] == command))
+    });
     arr.push(new_entry);
 }
 

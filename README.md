@@ -8,7 +8,7 @@ Rules in Phronesis live on disk, are evaluated by lightweight hooks at the momen
 
 ## The Premise
 
-Anthropic's Claude Code, Google's Gemini CLI, and other LLM environments share a common pattern: they load project-level guidance at session start. As the session continues, that window fills with code, output, and conversation. The directive you most need at hour three may have last been read carefully in token eight hundred.
+Anthropic's Claude Code, OpenAI Codex, Google's Gemini CLI, and other LLM environments share a common pattern: they load project-level guidance at session start. As the session continues, that window fills with code, output, and conversation. The directive you most need at hour three may have last been read carefully in token eight hundred.
 
 **Phronesis moves enforcement out of the conversation entirely.** Rules live in `.phronesis/rules.json`, are re-read by hooks at every tool call, and fire from outside the context window. They cannot be compressed away because they were never loaded into context to begin with.
 
@@ -23,7 +23,7 @@ Beyond the syntactic rule packs, two grounded subsystems extend enforcement past
 ## The Workspace
 
 - **`phronesis`** ([`crates/phronesis`](crates/phronesis)) — The core library: a high-performance, domain-neutral RETE rules engine (Alpha/Beta networks, P-states, join-sharing) with Consequence/Actor/Provenance primitives.
-- **`phronesis-mcp`** ([`crates/phronesis-mcp`](crates/phronesis-mcp)) — An MCP server that hosts the engine behind Claude Code / Gemini CLI hooks. Builds the `phr-mcp` binary.
+- **`phronesis-mcp`** ([`crates/phronesis-mcp`](crates/phronesis-mcp)) — An MCP server that hosts the engine behind Claude Code, Codex, and Gemini CLI hooks. Builds the `phr-mcp` binary.
 - **`phronesis-rhai`** ([`crates/phronesis-rhai`](crates/phronesis-rhai)) — A sandboxed [Rhai](https://rhai.rs) evaluator for `__script__` guard conditions, so rules can express numeric comparisons and boolean combinators over fact arguments. Opt in via the MCP's `rhai` feature.
 
 ## Documentation
@@ -48,6 +48,10 @@ phr-mcp install
 # 3. Initialize Phronesis in your project
 cd /your/project && phr-mcp init --packs llm,rust,confidence,journey
 ```
+
+Codex uses the generated project-local `.codex/hooks.json` and
+`.codex/config.toml`. Review new or changed hooks with `/hooks`; Phronesis does
+not bypass Codex's trust flow.
 
 ## Lineage
 

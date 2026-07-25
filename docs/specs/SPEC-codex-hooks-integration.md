@@ -19,6 +19,7 @@ Codex SessionStart     -> active rules + durable directives
 Codex UserPromptSubmit -> recent decisions + durable directives
 Codex Pre/PostCompact  -> restore durable context through compaction
 Codex SubagentStart    -> give delegated work the same governance context
+Codex Stop events      -> enforce opt-in grounded confidence
 ```
 
 Wire the integration through project-local `.codex/hooks.json` and `.codex/config.toml`. Rules, journals, decisions, and durable directives remain project-local under `.phronesis/`.
@@ -57,7 +58,7 @@ Do not claim complete enforcement. Codex documents PreToolUse as a guardrail: ri
 | `PreCompact` | durable context | inject directives before compaction |
 | `PostCompact` | session context | re-inject rules + directives |
 | `SubagentStart` | session context | project governance for delegated work |
-| `SubagentStop` / `Stop` | none in v1 | no-op; reserve for future summary |
+| `SubagentStop` / `Stop` | confidence report | block low confidence; warn on medium; no-op when disabled, unopened, or high |
 
 Codex can run matching command hooks concurrently. Handlers must be independent and not rely on ordering relative to other hooks. Existing flock-serialized action/journey logs provide write safety.
 
@@ -135,6 +136,15 @@ For PostToolUse:
 - warning or violation -> advisory `systemMessage` plus hook-specific `additionalContext`; do not stop the turn or claim to undo the completed action;
 - clean -> `{}`.
 
+For Stop and SubagentStop, only when `.phronesis/confidence.json` exists and
+a work unit is open:
+
+- low confidence -> `continue: false` with `stopReason` and `systemMessage`;
+- medium confidence -> advisory `systemMessage`;
+- high confidence -> `{}`.
+
+Without opt-in confidence or an open work unit, completion hooks are inert.
+
 Reuse `context.rs` body builders, but extract host-neutral functions that return Markdown bodies. Codex-specific rendering supplies the Codex event-name echo and `additionalContext`. Cap all injected context at `context::DEFAULT_MAX_BYTES`.
 
 ## Project setup
@@ -173,8 +183,9 @@ Add `crates/phronesis-mcp/tests/codex_hook_integration.rs` using documented and 
 10. SessionStart and UserPromptSubmit inject bounded active-rule/durable/recent-outcome context with the Codex event name.
 11. PreCompact/PostCompact restore durable context.
 12. SubagentStart receives governance context.
-13. Unsupported tools are safe no-ops.
-14. Existing Claude/Gemini hook tests pass unchanged.
+13. Stop/SubagentStop enforce low confidence and remain inert without an open work unit.
+14. Unsupported tools are safe no-ops.
+15. Existing Claude/Gemini hook tests pass unchanged.
 
 Add unit tests for patch parsing, decision combination, and Codex JSON rendering. Assert response JSON shape, not merely process exit status.
 

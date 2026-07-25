@@ -1125,7 +1125,7 @@ fn handle_init(ctx: InitCtx) -> anyhow::Result<()> {
         println!("\n(dry-run: nothing was written)");
     } else {
         println!(
-            "\nNext: restart Claude Code / Gemini CLI in this project for hooks to take effect."
+            "\nNext: restart Claude Code / Gemini CLI, or review project hooks with Codex `/hooks`."
         );
     }
     Ok(())
@@ -1143,7 +1143,9 @@ fn handle_install(dry_run: bool) -> anyhow::Result<()> {
         println!("\n(dry-run: nothing was written)");
     } else {
         println!(
-            "\nNext: restart Claude Code / Gemini CLI (any project) to pick up the user-level MCP server."
+            "\nNext: restart Claude Code / Gemini CLI to pick up the user-level MCP server. \
+             Codex setup is project-local; run `phr-mcp init --hooks-only` in each Codex project, \
+             then review the generated hooks with `/hooks`."
         );
     }
     Ok(())

@@ -13,6 +13,11 @@
 //!
 //! Context events (SessionStart, etc.):
 //! → `{ hookSpecificOutput: { hookEventName, additionalContext } }`
+//!
+//! Stop/SubagentStop:
+//! - low confidence → `{ continue: false, stopReason, systemMessage }`
+//! - medium confidence → `{ systemMessage }`
+//! - high/no active work → `{}`
 
 use serde::Serialize;
 
@@ -28,6 +33,7 @@ pub fn render_codex_response(event: &str, decision: &CodexDecision) -> String {
         "SessionStart" | "UserPromptSubmit" | "PreCompact" | "PostCompact" | "SubagentStart"
         | "session-start" | "user-prompt-submit" | "pre-compact" | "post-compact"
         | "subagent-start" => render_context(canonical_event(event), decision),
+        "SubagentStop" | "Stop" | "subagent-stop" | "stop" => render_completion(decision),
         _ => "{}".to_string(),
     }
 }
@@ -78,9 +84,43 @@ fn render_context(event: &str, d: &CodexDecision) -> String {
     serde_json::to_string(&obj).unwrap_or_default()
 }
 
+fn render_completion(d: &CodexDecision) -> String {
+    if let Some(reason) = d.block_messages.first() {
+        return serde_json::to_string(&CodexCompletionBlock {
+            continue_turn: false,
+            stop_reason: reason,
+            system_message: reason,
+        })
+        .unwrap_or_default();
+    }
+    if let Some(message) = d.warn_messages.first() {
+        return serde_json::to_string(&CodexCompletionWarn {
+            system_message: message,
+        })
+        .unwrap_or_default();
+    }
+    "{}".to_string()
+}
+
 // ---------------------------------------------------------------------------
 // JSON shapes
 // ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct CodexCompletionBlock<'a> {
+    #[serde(rename = "continue")]
+    continue_turn: bool,
+    #[serde(rename = "stopReason")]
+    stop_reason: &'a str,
+    #[serde(rename = "systemMessage")]
+    system_message: &'a str,
+}
+
+#[derive(Serialize)]
+struct CodexCompletionWarn<'a> {
+    #[serde(rename = "systemMessage")]
+    system_message: &'a str,
+}
 
 #[derive(Serialize)]
 struct CodexPreDeny<'a> {
