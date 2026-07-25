@@ -227,7 +227,15 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `no_test_for(?name)` | No test found |
 | `function_returns_result_string(?file, ?fn)` | Rust AST: return type is `Result<_, String>` |
 
-**Adding new predicates:** Write tree-sitter queries in `src/values/rust.rs`, assert facts in `assert_values_facts` in `src/hook.rs`.
+Project-defined predicates can be emitted by sandboxed Rhai providers under
+`.phronesis/predicates/*.rhai`. Multi-file operations expose batch
+`event.files`; per-file evaluation exposes `event.file_path`. Built-in AST
+predicates still live under `src/syntax/` and are asserted by the hook.
+
+This repository's `change_set.rhai` provider emits
+`change_set_production_rust`, `change_set_test`,
+`change_set_has_production_rust`, `change_set_has_test`, and
+`change_set_production_without_test`.
 
 #### Packaged Rules
 

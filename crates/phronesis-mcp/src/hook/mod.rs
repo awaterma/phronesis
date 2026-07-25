@@ -226,6 +226,7 @@ pub(crate) fn provider_event(
         phase: phase.to_string(),
         tool_name: tool_name.to_string(),
         file_path: file_path.to_string(),
+        files: Vec::new(),
         old_content: extract_old_content(payload, tool_name).unwrap_or_default(),
         command: matches!(tool_name, "Bash" | "run_shell_command")
             .then_some(new_content.clone())

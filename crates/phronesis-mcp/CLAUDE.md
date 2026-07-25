@@ -153,8 +153,10 @@ phr-mcp init --hooks-only             # refresh hook wiring without touching rul
 
 Project-defined Rhai providers in `.phronesis/predicates/*.rhai` run before
 RETE matching and may call `emit_fact(predicate, args)` against a normalized
-read-only `event`. When a requested rule needs LHS vocabulary that does not
-exist yet:
+read-only `event`. Multi-file operations first provide batch context through
+`event.files`, then per-file context through `event.file_path`; the unused
+field is empty in each view. When a requested rule needs LHS vocabulary that
+does not exist yet:
 
 1. Call `test_predicate_provider` with the proposed script and representative
    event.

@@ -87,6 +87,9 @@ pub struct PredicateProviderEventInput {
     pub tool_name: String,
     #[serde(default)]
     pub file_path: String,
+    /// All project-relative paths in a batch operation. Empty for per-file events.
+    #[serde(default)]
+    pub files: Vec<String>,
     #[serde(default)]
     pub old_content: String,
     #[serde(default)]

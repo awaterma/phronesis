@@ -36,6 +36,7 @@ and receives a read-only `event` map:
 | `phase` | `pre` or `post` |
 | `tool_name` | Host-normalized tool name |
 | `file_path` | Affected project-relative path, when available |
+| `files` | All project-relative paths for a batch operation; empty for per-file evaluation |
 | `old_content` | Replaced content, when supplied by the host |
 | `new_content` | Proposed/resulting content or command |
 | `command` | Shell command for command tools |
@@ -48,6 +49,23 @@ call depth, emitted facts, arguments, and strings.
 
 `__script__` remains a pure Boolean LHS guard. Fact emission is a separate
 pre-matching phase so provider behavior cannot depend on agenda iteration.
+
+For multi-file tools, providers run once with batch context (`files` populated,
+`file_path` empty) and then in the existing per-file context (`file_path`
+populated, `files` empty). Providers can therefore opt into either view without
+double-emitting. This repository dogfoods the batch view in
+`.phronesis/predicates/change_set.rhai`, which emits:
+
+- `change_set_production_rust(path)` for each Rust source path;
+- `change_set_test(path)` for each test path;
+- `change_set_has_production_rust`;
+- `change_set_has_test`;
+- `change_set_production_without_test`.
+
+The last predicate is intentionally vocabulary rather than a default blocking
+rule: test-first and implementation edits frequently occur in separate tool
+calls. A project can combine it with journey or completion facts to enforce its
+preferred TDD window.
 
 ## Failure policy
 

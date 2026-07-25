@@ -9,6 +9,7 @@ fn edit_event() -> FactProviderEvent {
         new_content: "fn parse() { value.unwrap(); }".to_string(),
         command: String::new(),
         output: String::new(),
+        files: Vec::new(),
     }
 }
 
@@ -45,6 +46,81 @@ fn provider_rejects_invalid_fact_shapes() {
         provider
             .evaluate(r#"emit_fact("valid", [#{ nested: true }]);"#, &edit_event())
             .is_err()
+    );
+}
+
+#[test]
+fn provider_can_classify_a_multi_file_change_set() {
+    let provider = RhaiFactProvider::new();
+    let event = FactProviderEvent {
+        phase: "pre".to_string(),
+        tool_name: "apply_patch".to_string(),
+        files: vec!["src/lib.rs".to_string(), "tests/lib.rs".to_string()],
+        ..FactProviderEvent::default()
+    };
+    let script = r#"
+        let production = 0;
+        let tests = 0;
+        for path in event.files {
+            if path.contains("/src/") || path.starts_with("src/") {
+                production += 1;
+            }
+            if path.contains("/tests/") || path.starts_with("tests/") {
+                tests += 1;
+            }
+        }
+        if production > 0 { emit_fact("production_change", []); }
+        if tests > 0 { emit_fact("test_change", []); }
+    "#;
+
+    let facts = provider
+        .evaluate(script, &event)
+        .expect("change-set provider should evaluate");
+
+    assert_eq!(facts.len(), 2);
+    assert_eq!(facts[0].predicate, "production_change");
+    assert_eq!(facts[1].predicate, "test_change");
+}
+
+#[test]
+fn repository_change_set_provider_marks_missing_test_path() {
+    let provider = RhaiFactProvider::new();
+    let script = include_str!("../../../.phronesis/predicates/change_set.rhai");
+    let source_only = FactProviderEvent {
+        phase: "pre".to_string(),
+        tool_name: "apply_patch".to_string(),
+        files: vec!["crates/phronesis/src/network.rs".to_string()],
+        ..FactProviderEvent::default()
+    };
+    let with_test = FactProviderEvent {
+        files: vec![
+            "crates/phronesis/src/network.rs".to_string(),
+            "crates/phronesis/tests/rete_smoke.rs".to_string(),
+        ],
+        ..source_only.clone()
+    };
+
+    let source_only_facts = provider
+        .evaluate(script, &source_only)
+        .expect("repository provider should evaluate");
+    assert!(
+        source_only_facts
+            .iter()
+            .any(|fact| { fact.predicate == "change_set_production_without_test" })
+    );
+
+    let with_test_facts = provider
+        .evaluate(script, &with_test)
+        .expect("repository provider should evaluate");
+    assert!(
+        !with_test_facts
+            .iter()
+            .any(|fact| { fact.predicate == "change_set_production_without_test" })
+    );
+    assert!(
+        with_test_facts
+            .iter()
+            .any(|fact| fact.predicate == "change_set_has_test")
     );
 }
 

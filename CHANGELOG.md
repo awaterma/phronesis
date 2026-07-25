@@ -15,7 +15,9 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 - **Extensible predicates.** Project-owned Rhai providers under
   `.phronesis/predicates/*.rhai` can derive new RETE facts from normalized hook
   events. MCP tools add, inspect, test, list, and remove providers so agents can
-  evolve the rule vocabulary alongside rules.
+  evolve the rule vocabulary alongside rules. Multi-file operations expose a
+  once-per-operation `event.files` batch context before per-file evaluation;
+  the repository includes a dogfood `change_set.rhai` classifier.
 
 ### Changed
 - **Interaction context terminology.** The per-prompt context command is now

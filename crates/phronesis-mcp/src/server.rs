@@ -317,6 +317,7 @@ impl EpistemeMcp {
             phase: params.event.phase,
             tool_name: params.event.tool_name,
             file_path: params.event.file_path,
+            files: params.event.files,
             old_content: params.event.old_content,
             new_content: params.event.new_content,
             command: params.event.command,

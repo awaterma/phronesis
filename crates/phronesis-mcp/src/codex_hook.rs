@@ -392,6 +392,45 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
     let mut logged = Vec::new();
     let mut block_msgs = Vec::new();
     let mut warn_msgs = Vec::new();
+
+    // Providers get one batch-level view before the existing per-file views.
+    // Keeping `file_path` empty and `files` populated makes the two contexts
+    // unambiguous and prevents existing per-file providers from double-firing.
+    let batch_network = build_pre_network(&rules, "", &security::project_root()).await;
+    let mut batch_event = codex_provider_event(payload, "apply_patch", "", "pre", "");
+    batch_event.files = files.iter().map(|file| file.path.clone()).collect();
+    if let Err(error) = crate::predicate_provider::assert_facts(
+        &batch_network,
+        &security::project_root(),
+        &batch_event,
+    )
+    .await
+    {
+        return CodexDecision {
+            exit: 2,
+            block_messages: vec![error.to_string()],
+            warn_messages: Vec::new(),
+            additional_context: String::new(),
+            files: Vec::new(),
+        };
+    }
+    let batch_consequences = match batch_network.fire_all_consequences() {
+        Ok(consequences) => consequences,
+        Err(error) => {
+            return CodexDecision {
+                exit: 2,
+                block_messages: vec![format!("rule execution failed: {error}")],
+                warn_messages: Vec::new(),
+                additional_context: String::new(),
+                files: Vec::new(),
+            };
+        }
+    };
+    let (batch_logged, batch_blocks, batch_warns) = hook::collect_logged(&batch_consequences);
+    logged.extend(batch_logged);
+    block_msgs.extend(batch_blocks);
+    warn_msgs.extend(batch_warns);
+
     for pf in &files {
         // Prefer the patch's own added lines (the file may not exist on disk
         // yet for Add File), falling back to the current on-disk content.
@@ -547,8 +586,14 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
     } else {
         String::new()
     };
-    let provider_event =
+    let mut provider_event =
         codex_provider_event(payload, tool_name, &file_path, "post", &provider_content);
+    if tool_name == "apply_patch" {
+        provider_event.files = codex_patch::parse_patch(&extract_bash_command(payload))
+            .into_iter()
+            .map(|file| file.path)
+            .collect();
+    }
     if let Err(error) =
         crate::predicate_provider::assert_facts(&network, root, &provider_event).await
     {
@@ -793,6 +838,7 @@ fn codex_provider_event(
         phase: phase.to_string(),
         tool_name: tool_name.to_string(),
         file_path: file_path.to_string(),
+        files: Vec::new(),
         old_content: String::new(),
         new_content: content.to_string(),
         command: if tool_name == "Bash" {

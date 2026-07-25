@@ -198,6 +198,63 @@ fn codex_hook_cli_multi_file_patch_combines_decisions() {
 }
 
 #[test]
+fn codex_hook_cli_change_set_provider_sees_all_patch_files_once() {
+    let project = tempfile::tempdir().expect("temp project");
+    write_rules(
+        project.path(),
+        json!({
+            "version": 2,
+            "rules": [{
+                "id": "production-without-test",
+                "phase": "pre",
+                "priority": 10,
+                "conditions": [{"predicate": "production_change_without_test_change", "args": []}],
+                "actions": [{
+                    "action_type": "constraint_violation",
+                    "params": ["Production changed without a test change"]
+                }]
+            }]
+        }),
+    );
+    let providers = project.path().join(".phronesis/predicates");
+    fs::create_dir_all(&providers).expect("provider directory");
+    fs::write(
+        providers.join("change_set.rhai"),
+        r#"
+            let production = 0;
+            let tests = 0;
+            for path in event.files {
+                if path.contains("/src/") || path.starts_with("src/") {
+                    production += 1;
+                }
+                if path.contains("/tests/") || path.starts_with("tests/") {
+                    tests += 1;
+                }
+            }
+            if production > 0 && tests == 0 {
+                emit_fact("production_change_without_test_change", []);
+            }
+        "#,
+    )
+    .expect("change-set provider");
+
+    let with_test = json!({
+        "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+        "tool_input": {"command": "*** Begin Patch\n*** Add File: src/lib.rs\n+pub fn value() {}\n*** Add File: tests/lib.rs\n+#[test] fn value() {}\n*** End Patch\n"}
+    });
+    assert_eq!(response(&run_hook(project.path(), &with_test)), json!({}));
+
+    let without_test = json!({
+        "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+        "tool_input": {"command": "*** Begin Patch\n*** Add File: src/lib.rs\n+pub fn value() {}\n*** Add File: README.md\n+docs\n*** End Patch\n"}
+    });
+    assert_eq!(
+        response(&run_hook(project.path(), &without_test))["hookSpecificOutput"]["permissionDecision"],
+        "deny"
+    );
+}
+
+#[test]
 fn codex_hook_cli_single_file_patch_keeps_singular_file_log_shape() {
     let project = tempfile::tempdir().expect("temp project");
     write_rules(project.path(), block_rule());

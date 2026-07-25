@@ -113,6 +113,7 @@ pub struct FactProviderEvent {
     pub phase: String,
     pub tool_name: String,
     pub file_path: String,
+    pub files: Vec<String>,
     pub old_content: String,
     pub new_content: String,
     pub command: String,
@@ -121,7 +122,7 @@ pub struct FactProviderEvent {
 
 impl FactProviderEvent {
     fn to_dynamic(&self) -> Map {
-        [
+        let mut event: Map = [
             ("phase", &self.phase),
             ("tool_name", &self.tool_name),
             ("file_path", &self.file_path),
@@ -132,7 +133,14 @@ impl FactProviderEvent {
         ]
         .into_iter()
         .map(|(key, value)| (key.into(), Dynamic::from(value.clone())))
-        .collect()
+        .collect();
+        let files: Array = self
+            .files
+            .iter()
+            .map(|path| Dynamic::from(path.clone()))
+            .collect();
+        event.insert("files".into(), Dynamic::from(files));
+        event
     }
 }
 

@@ -57,6 +57,12 @@ reach the host.
 `--no-default-features` to retain only the dependency-minimal builtin DSL;
 configured predicate providers are then rejected rather than silently ignored.
 
+Predicate providers receive a normalized read-only `event` map and emit facts
+with `emit_fact(predicate, args)`. Besides the per-file `file_path`, the map
+contains batch `files`. Multi-file hosts evaluate providers once with `files`
+populated and separately for each file with `file_path` populated, allowing a
+provider to opt into either context without double-emitting.
+
 ## License
 
 MIT.
