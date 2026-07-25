@@ -4,7 +4,7 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
-## [0.22.0] - 2026-07-21
+## [0.22.0] - 2026-07-25
 
 ### Added
 - **Codex lifecycle integration.** `phr-mcp codex-hook` now implements the
