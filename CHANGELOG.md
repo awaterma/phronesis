@@ -4,6 +4,36 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.22.0] - 2026-07-21
+
+### Added
+- **Codex lifecycle integration.** `phr-mcp codex-hook` now implements the
+  current `PreToolUse`, `PostToolUse`, session, prompt, compaction, and
+  subagent contracts for Bash and `apply_patch`; `phr-mcp init` safely merges
+  project hooks and project-scoped stdio MCP registration without bypassing
+  Codex's `/hooks` trust review.
+- **Extensible predicates.** Project-owned Rhai providers under
+  `.phronesis/predicates/*.rhai` can derive new RETE facts from normalized hook
+  events. MCP tools add, inspect, test, list, and remove providers so agents can
+  evolve the rule vocabulary alongside rules. Multi-file operations expose a
+  once-per-operation `event.files` batch context before per-file evaluation;
+  the repository includes a dogfood `change_set.rhai` classifier.
+
+### Changed
+- **Interaction context terminology.** The per-prompt context command is now
+  `interaction-context`; `turn-context` remains a compatible CLI alias and the
+  old Rust helpers remain deprecated wrappers. The unrelated markdown
+  `set_section_context` MCP workflow is unchanged.
+
+### Fixed
+- **Contract-grounded hook behavior.** Current snake-case payload fields and
+  PascalCase event names are decoded, pre-action violations return a real deny
+  decision, post-action feedback remains advisory, patch paths are validated,
+  and executed calls retain action-log, journey, and grounded outcome data.
+- **Honest Codex fixtures.** Schema-authored fixtures are labeled `authored`
+  and use the payload-corpus envelope instead of claiming unverified runtime
+  capture provenance.
+
 ## [0.20.0] - 2026-07-13
 
 ### Changed

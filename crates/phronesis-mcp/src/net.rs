@@ -3,9 +3,9 @@
 //! All rule-evaluating sites build their [`phr::ReteNetwork`] through
 //! [`build_network`] so the `__script__` evaluator is chosen in one place.
 //!
-//! With the `rhai` cargo feature **off** (the default), the network uses
-//! the engine's dependency-free `BuiltinScriptEvaluator` — behavior is
-//! unchanged. With `--features rhai`, it uses the *composite* evaluator
+//! With the `rhai` cargo feature **off**, the network uses the engine's
+//! dependency-free `BuiltinScriptEvaluator`. The feature is enabled by
+//! default; with it, the network uses the *composite* evaluator
 //! from `phronesis-rhai`: the builtin-DSL forms (`facts_contain`/
 //! `facts_count`) that the shipped confidence and journey packs rely on
 //! still route to the builtin evaluator, while any other `__script__`

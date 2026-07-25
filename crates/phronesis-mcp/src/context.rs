@@ -114,14 +114,14 @@ pub fn read_durable_directives(project_root: &Path) -> String {
 /// Compose a body section for durable directives. Empty input → empty
 /// output (caller should suppress the section). Otherwise wraps with a
 /// short heading so the model can recognize the block.
-fn build_durable_section(content: &str) -> String {
+pub(crate) fn build_durable_section(content: &str) -> String {
     if content.is_empty() {
         return String::new();
     }
     format!("## Durable directives\n{}\n", content)
 }
 
-/// Top-level entry point for the `turn-context` subcommand.
+/// Top-level entry point for the `interaction-context` subcommand.
 ///
 /// Reads up to `last_n` recent `kind=hook` entries from
 /// `<project_root>/.phronesis/log.jsonl` (including its rotated
@@ -131,7 +131,7 @@ fn build_durable_section(content: &str) -> String {
 ///
 /// Never panics. Any I/O or parse error is swallowed and produces
 /// empty output: context injection must never break the model turn.
-pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) -> String {
+pub fn run_interaction_context(project_root: &Path, last_n: usize, max_bytes: usize) -> String {
     let path = action_log::default_path(project_root);
     let opts = ReadOpts {
         limit: Some(last_n),
@@ -143,7 +143,7 @@ pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) ->
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let activity = build_turn_body(&entries, now);
+    let activity = build_interaction_body(&entries, now);
 
     let durable = build_durable_section(&read_durable_directives(project_root));
 
@@ -157,6 +157,12 @@ pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) ->
     // BeforeAgent hook reads only `additionalContext` and ignores the
     // event-name echo, so one constant serves both CLIs.
     wrap_additional_context("UserPromptSubmit", &body, max_bytes)
+}
+
+/// Backwards-compatible name for [`run_interaction_context`].
+#[deprecated(note = "use run_interaction_context")]
+pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) -> String {
+    run_interaction_context(project_root, last_n, max_bytes)
 }
 
 /// Top-level entry point for the `session-context` subcommand.
@@ -244,7 +250,7 @@ fn render_entry_bullets(entry: &LogEntry, now_secs: u64) -> Vec<String> {
 ///
 /// `now_secs` is taken as a parameter so tests can pin "Ns ago" formatting
 /// deterministically.
-pub fn build_turn_body(entries: &[LogEntry], now_secs: u64) -> String {
+pub fn build_interaction_body(entries: &[LogEntry], now_secs: u64) -> String {
     // Newest first, matching the spec's example output.
     let rendered: Vec<String> = entries
         .iter()
@@ -255,6 +261,12 @@ pub fn build_turn_body(entries: &[LogEntry], now_secs: u64) -> String {
         return String::new();
     }
     format!("## Recent phronesis activity\n{}\n", rendered.join("\n"))
+}
+
+/// Backwards-compatible name for [`build_interaction_body`].
+#[deprecated(note = "use build_interaction_body")]
+pub fn build_turn_body(entries: &[LogEntry], now_secs: u64) -> String {
+    build_interaction_body(entries, now_secs)
 }
 
 fn humanize_ago(secs: u64) -> String {
@@ -417,7 +429,7 @@ mod tests {
                 "bindings": {}
             }]),
         )];
-        let body = build_turn_body(&entries, 1_700_000_120); // 120s later
+        let body = build_interaction_body(&entries, 1_700_000_120); // 120s later
         assert!(body.contains("Recent phronesis activity"));
         assert!(body.contains("BLOCKED"));
         assert!(body.contains("no-unwrap"));
@@ -437,7 +449,7 @@ mod tests {
                 "bindings": {}
             }]),
         )];
-        let body = build_turn_body(&entries, 1_700_000_005);
+        let body = build_interaction_body(&entries, 1_700_000_005);
         assert!(body.contains("WARNED"));
         assert!(body.contains("warn-clone"));
     }
@@ -445,13 +457,13 @@ mod tests {
     #[test]
     fn turn_body_empty_when_no_consequences() {
         let entries = vec![hook_entry("pre_check", "src/ok.rs", 0, json!([]))];
-        let body = build_turn_body(&entries, 1_700_000_010);
+        let body = build_interaction_body(&entries, 1_700_000_010);
         assert_eq!(body, "", "passing checks must not produce noise");
     }
 
     #[test]
     fn turn_body_empty_when_no_entries() {
-        let body = build_turn_body(&[], 1_700_000_000);
+        let body = build_interaction_body(&[], 1_700_000_000);
         assert_eq!(body, "");
     }
 
@@ -543,7 +555,7 @@ mod tests {
         let ep = dir.path().join(".phronesis");
         std::fs::create_dir_all(&ep).unwrap();
         std::fs::write(ep.join("durable.md"), "Keep responses concise.").unwrap();
-        let out = run_turn_context(dir.path(), 5, DEFAULT_MAX_BYTES);
+        let out = run_interaction_context(dir.path(), 5, DEFAULT_MAX_BYTES);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
         assert!(
@@ -584,8 +596,8 @@ mod tests {
         );
         newer.ts = 1_700_000_100;
 
-        // read_recent returns oldest-first; build_turn_body must reorder.
-        let body = build_turn_body(&[older, newer], 1_700_000_200);
+        // read_recent returns oldest-first; interaction context must reorder.
+        let body = build_interaction_body(&[older, newer], 1_700_000_200);
         let p_newer = body.find("src/newer.rs").unwrap();
         let p_older = body.find("src/older.rs").unwrap();
         assert!(p_newer < p_older, "newest entry must appear first");
@@ -594,7 +606,7 @@ mod tests {
     #[test]
     fn turn_driver_returns_empty_when_log_missing() {
         let dir = tempfile::tempdir().unwrap();
-        let out = run_turn_context(dir.path(), 5, DEFAULT_MAX_BYTES);
+        let out = run_interaction_context(dir.path(), 5, DEFAULT_MAX_BYTES);
         assert_eq!(out, "");
     }
 
@@ -619,7 +631,7 @@ mod tests {
             );
         action_log::append(&log_path, &entry).unwrap();
 
-        let out = run_turn_context(dir.path(), 5, DEFAULT_MAX_BYTES);
+        let out = run_interaction_context(dir.path(), 5, DEFAULT_MAX_BYTES);
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
         let ctx = v["hookSpecificOutput"]["additionalContext"]

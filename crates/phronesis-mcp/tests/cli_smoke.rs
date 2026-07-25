@@ -168,3 +168,28 @@ fn memory_drift_exits_nonzero_when_memory_dir_missing() {
         "expected 'memory directory' in stderr, got: {stderr}"
     );
 }
+
+#[test]
+fn interaction_context_is_canonical_and_turn_context_remains_an_alias() {
+    let dir = tempfile::tempdir().unwrap();
+    make_project(dir.path());
+    std::fs::write(
+        dir.path().join(".phronesis/durable.md"),
+        "interaction guidance",
+    )
+    .unwrap();
+    let run = |command: &str| {
+        Command::new(bin())
+            .arg(command)
+            .env("PHRONESIS_PROJECT_ROOT", dir.path())
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+    };
+    let canonical = run("interaction-context");
+    let legacy = run("turn-context");
+    assert!(canonical.status.success());
+    assert!(legacy.status.success());
+    assert_eq!(canonical.stdout, legacy.stdout);
+    assert!(String::from_utf8_lossy(&canonical.stdout).contains("interaction guidance"));
+}

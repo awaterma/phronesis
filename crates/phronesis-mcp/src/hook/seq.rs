@@ -8,7 +8,7 @@ use std::path::Path;
 /// degrades gracefully when many calls share seq=0 (call-window aggregators
 /// use record position, not seq, for windowing). The seq is mostly a debug
 /// aid in v1.
-pub(super) fn next_seq(project_root: &Path) -> u64 {
+pub(crate) fn next_seq(project_root: &Path) -> u64 {
     let dir = project_root.join(".phronesis").join("journey");
     if std::fs::create_dir_all(&dir).is_err() {
         return 0;

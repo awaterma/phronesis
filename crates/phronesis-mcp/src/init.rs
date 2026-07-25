@@ -410,6 +410,8 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
         write_settings(&root, &opts, &mut report)?;
         write_mcp_json(&root, &opts, &mut report)?;
         write_gemini_settings(&root, &opts, &mut report)?;
+        write_codex_hooks(&root, &opts, &mut report)?;
+        write_codex_config(&root, &opts, &mut report)?;
     }
     if !opts.hooks_only {
         write_rules_file(&root, &opts, &mut report)?;
@@ -492,7 +494,7 @@ fn write_settings(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Resu
     upsert_hook(
         &mut settings,
         "UserPromptSubmit",
-        context_entry("phr-mcp turn-context"),
+        context_entry("phr-mcp interaction-context"),
     );
 
     write_json(&path, &settings, opts, "settings.local.json", report)?;
@@ -580,7 +582,7 @@ fn write_gemini_settings(
     upsert_hook(
         &mut settings,
         "BeforeAgent",
-        context_entry("phr-mcp turn-context"),
+        context_entry("phr-mcp interaction-context"),
     );
 
     // Clean up legacy BeforeModelRequest hook if present
@@ -589,6 +591,99 @@ fn write_gemini_settings(
     }
 
     write_json(&path, &settings, opts, ".gemini/settings.json", report)?;
+    Ok(())
+}
+
+fn write_codex_hooks(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    let path = root.join(".codex").join("hooks.json");
+    let existing = read_json(&path)?;
+    let mut settings = existing.unwrap_or_else(|| json!({}));
+    if !settings.is_object() {
+        settings = json!({});
+    }
+    let tool_entry = |event: &str| {
+        json!({
+            "matcher": "^(Bash|apply_patch)$",
+            "hooks": [{"type": "command", "command": format!("phr-mcp codex-hook {event}")}]
+        })
+    };
+    upsert_codex_hook(&mut settings, "PreToolUse", tool_entry("PreToolUse"));
+    upsert_codex_hook(&mut settings, "PostToolUse", tool_entry("PostToolUse"));
+    for (event, matcher) in [
+        ("SessionStart", "startup|resume|clear"),
+        ("UserPromptSubmit", ""),
+        ("PreCompact", "manual|auto"),
+        ("PostCompact", "manual|auto"),
+        ("SubagentStart", ""),
+        ("SubagentStop", ""),
+        ("Stop", ""),
+    ] {
+        upsert_codex_hook(
+            &mut settings,
+            event,
+            json!({
+                "matcher": matcher,
+                "hooks": [{"type": "command", "command": format!("phr-mcp codex-hook {event}")}]
+            }),
+        );
+    }
+    write_json(&path, &settings, opts, ".codex/hooks.json", report)?;
+    report.warnings.push(
+        "Codex skips new or changed project hooks until you review and trust them with `/hooks`."
+            .to_string(),
+    );
+    Ok(())
+}
+
+fn write_codex_config(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    let path = root.join(".codex").join("config.toml");
+    let existing = if path.exists() {
+        std::fs::read_to_string(&path).map_err(|e| InitError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?
+    } else {
+        String::new()
+    };
+    if existing
+        .lines()
+        .any(|line| line.trim() == "[mcp_servers.phronesis]")
+    {
+        report
+            .steps
+            .push("= .codex/config.toml already registers `phronesis` (no changes)".to_string());
+        return Ok(());
+    }
+    let separator = if existing.is_empty() || existing.ends_with('\n') {
+        ""
+    } else {
+        "\n"
+    };
+    let updated = format!(
+        "{existing}{separator}\n[mcp_servers.phronesis]\ncommand = \"phr-mcp\"\nargs = [\"serve\"]\n"
+    );
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would register `phronesis` in .codex/config.toml".to_string());
+        return Ok(());
+    }
+    ensure_parent(&path)?;
+    std::fs::write(&path, updated).map_err(|e| InitError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    report
+        .steps
+        .push("+ registered `phronesis` in .codex/config.toml".to_string());
     Ok(())
 }
 
@@ -958,6 +1053,10 @@ fn update_gitignore(
         ".phronesis/*",
         "!.phronesis/wiki/",
         "!.phronesis/wiki/**",
+        // Predicate providers are durable project policy and should travel
+        // with the repository; runtime journals and outcomes remain ignored.
+        "!.phronesis/predicates/",
+        "!.phronesis/predicates/**",
     ];
     // Confidence config is project knowledge (track it); the per-subject
     // outcome ledger under .phronesis/outcomes/ stays ignored via `.phronesis/*`.
@@ -1173,6 +1272,30 @@ fn upsert_hook(settings: &mut Value, event: &str, new_entry: Value) {
     let our_matcher = new_entry["matcher"].as_str().map(String::from);
     let arr = arr.as_array_mut().unwrap();
     arr.retain(|m| m["matcher"].as_str().map(String::from) != our_matcher);
+    arr.push(new_entry);
+}
+
+/// Replace only Phronesis's entry for a Codex event, regardless of its former
+/// matcher. This migrates generated matcher changes without deleting unrelated
+/// user hooks that happen to use the same matcher.
+fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Value) {
+    let hooks = settings.as_object_mut().and_then(|o| {
+        o.entry("hooks".to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+    });
+    let Some(hooks) = hooks else { return };
+    let arr = hooks.entry(event.to_string()).or_insert_with(|| json!([]));
+    if !arr.is_array() {
+        *arr = json!([]);
+    }
+    let command = format!("phr-mcp codex-hook {event}");
+    let arr = arr.as_array_mut().unwrap();
+    arr.retain(|entry| {
+        !entry["hooks"]
+            .as_array()
+            .is_some_and(|handlers| handlers.iter().any(|hook| hook["command"] == command))
+    });
     arr.push(new_entry);
 }
 
@@ -2754,7 +2877,7 @@ mod tests {
         let prompt = content["hooks"]["UserPromptSubmit"].as_array().unwrap();
         assert!(!prompt.is_empty(), "UserPromptSubmit must be wired");
         let prompt_cmd = prompt[0]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(prompt_cmd, "phr-mcp turn-context");
+        assert_eq!(prompt_cmd, "phr-mcp interaction-context");
     }
 
     #[test]
@@ -2789,7 +2912,7 @@ mod tests {
         let cmd = before[0]["hooks"][0]["command"]
             .as_str()
             .expect("command not string");
-        assert_eq!(cmd, "phr-mcp turn-context");
+        assert_eq!(cmd, "phr-mcp interaction-context");
     }
 
     #[test]

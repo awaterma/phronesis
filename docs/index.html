@@ -417,7 +417,7 @@
   <!-- ─── STATS ─── -->
   <div class="stats">
     <div class="stat">
-      <span class="num">59</span>
+      <span class="num">61</span>
       <span class="desc">Rules shipped</span>
     </div>
     <div class="stat">
@@ -425,7 +425,7 @@
       <span class="desc">Default packs</span>
     </div>
     <div class="stat">
-      <span class="num">6</span>
+      <span class="num">7</span>
       <span class="desc">Enforcement surfaces</span>
     </div>
     <div class="stat">
@@ -445,17 +445,26 @@
     was first imagined.
   </blockquote>
 
-  <!-- ─── SIX SURFACES ─── -->
+  <!-- ─── SEVEN SURFACES ─── -->
   <section class="surfaces">
-    <div class="label" style="margin-bottom: 0.6rem;">Six surfaces — one rule format</div>
+    <div class="label" style="margin-bottom: 0.6rem;">Seven surfaces — one rule format</div>
     <div class="surfaces-grid">
       <article class="surface">
         <h2>Hook-time</h2>
         <span class="role">block · warn · allow</span>
         <p>
-          Pre-check rules fire before an Edit, Write, or Bash call.
-          Post-check rules warn after. Evaluated from disk on every
-          tool invocation — no context-window cost.
+          Pre-check rules fire before edits, patches, or shell calls.
+          Post-check rules warn after. Claude Code, Codex, and Gemini
+          are normalized into the same fact vocabulary.
+        </p>
+      </article>
+      <article class="surface">
+        <h2>Extensible predicates</h2>
+        <span class="role">Rhai · derive · compose</span>
+        <p>
+          Sandboxed project providers derive new LHS facts from normalized
+          events. Multi-file tools expose a batch <code>files</code> view
+          before per-file evaluation; MCP tools test and manage providers.
         </p>
       </article>
       <article class="surface">
@@ -472,7 +481,7 @@
         <span class="role">prose · re-inject</span>
         <p>
           A markdown file re-injected at every SessionStart and
-          UserPromptSubmit. CLAUDE.md fades; this does not.
+          user interaction. Project guidance fades; this does not.
         </p>
       </article>
       <article class="surface">
@@ -521,8 +530,9 @@
         is a fresh process that reads, evaluates, and exits.
       </p>
       <p>
-        Works with <strong>Claude Code</strong> and <strong>Gemini
-        CLI</strong>. Exposes MCP tools to any MCP-capable client.
+        Works with <strong>Claude Code</strong>, <strong>OpenAI
+        Codex</strong>, and <strong>Gemini CLI</strong>. Exposes MCP
+        tools to any MCP-capable client.
       </p>
     </div>
     <div>
@@ -576,6 +586,8 @@
       </p>
       <p>
         Landmark designs:
+        <a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-codex-hooks-integration.md">Codex lifecycle hooks</a>,
+        <a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-extensible-predicates.md">extensible predicates</a>,
         <a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-journey-facts.md">journey facts</a>,
         <a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-confidence-scoring.md">confidence scoring</a>,
         <a href="https://github.com/awaterma/phronesis/blob/main/docs/superpowers/specs/2026-06-01-rhai-script-evaluator-design.md">the Rhai script evaluator</a>, and
@@ -587,7 +599,7 @@
   <!-- ─── FOOTER ─── -->
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
     <span class="doc-web-here">Home</span> &middot; <a href="./explainer.html">Explainer</a> &middot; <a href="./catalogue.html">Catalogue</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/docs/loop-programming-guide.md">Guide</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/CHANGELOG.md">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.17.0</span>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.22.0</span>
   </nav>
   <footer>
     <div>
@@ -595,13 +607,13 @@
       Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
       <em>JetBrains Mono</em> for code.<br>
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
-      with Claude.<br>
-      v 0.17.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
+      with Claude and Codex.<br>
+      v 0.22.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
       ⁂
-      <small>Phronesis · v 0.17.0</small>
+      <small>Phronesis · v 0.22.0</small>
     </div>
   </footer>
 

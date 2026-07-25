@@ -7,7 +7,7 @@
 mod journey_record;
 mod post;
 mod pre;
-mod seq;
+pub(crate) mod seq;
 
 pub use post::run_post_check;
 pub use pre::run_pre_check;
@@ -215,6 +215,31 @@ fn extract_old_content(payload: &HookPayload, tool_name: &str) -> Option<String>
     }
 }
 
+pub(crate) fn provider_event(
+    payload: &HookPayload,
+    tool_name: &str,
+    file_path: &str,
+    phase: &str,
+) -> crate::predicate_provider::ProviderEvent {
+    let new_content = extract_new_content(payload, tool_name).unwrap_or_default();
+    crate::predicate_provider::ProviderEvent {
+        phase: phase.to_string(),
+        tool_name: tool_name.to_string(),
+        file_path: file_path.to_string(),
+        files: Vec::new(),
+        old_content: extract_old_content(payload, tool_name).unwrap_or_default(),
+        command: matches!(tool_name, "Bash" | "run_shell_command")
+            .then_some(new_content.clone())
+            .unwrap_or_default(),
+        new_content,
+        output: payload
+            .tool_output
+            .as_ref()
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default(),
+    }
+}
+
 /// Collect a single string field from each entry in a MultiEdit `edits` array,
 /// joining them with newlines. Returns `None` when the array is missing or empty.
 fn extract_multiedit_field(input: &serde_json::Value, field: &str) -> Option<String> {
@@ -234,7 +259,7 @@ fn extract_multiedit_field(input: &serde_json::Value, field: &str) -> Option<Str
 /// a zero-arg fact (e.g. `confidence_enabled`) for each pack the project has
 /// opted into. Lets rules from one pack self-deactivate when a superseding
 /// pack is active. See `docs/specs/SPEC-pack-opt-in-facts.md`.
-async fn assert_pack_marker_facts(network: &ReteNetwork, project_root: &Path) {
+pub(crate) async fn assert_pack_marker_facts(network: &ReteNetwork, project_root: &Path) {
     for marker in clock_facts::pack_markers(project_root) {
         let fact_id = if marker.args.is_empty() {
             marker.predicate.to_string()
@@ -313,7 +338,7 @@ async fn assert_journey_facts_into(
 /// Pre-check side of confidence scoring: assert the open work unit's
 /// `signal_pass` facts so gate rules (`facts_count('signal_pass', ...)`) can
 /// fire. Opt-in and fail-open.
-async fn assert_confidence_signals(network: &ReteNetwork) {
+pub(crate) async fn assert_confidence_signals(network: &ReteNetwork) {
     let root = security::project_root();
     if !outcomes::enabled(&root) {
         return;

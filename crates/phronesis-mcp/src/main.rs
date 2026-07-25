@@ -49,7 +49,8 @@ enum Command {
     /// UserPromptSubmit (Claude) / BeforeAgent (Gemini) hook: emit
     /// `additionalContext` JSON summarizing the last few hook decisions.
     /// Exit 0 with empty stdout when there's nothing recent to report.
-    TurnContext {
+    #[command(name = "interaction-context", alias = "turn-context")]
+    InteractionContext {
         /// Number of recent log entries to consider. Default 5.
         #[arg(long, default_value_t = 5)]
         last: usize,
@@ -319,6 +320,20 @@ enum Command {
         #[arg(long)]
         project_root: Option<String>,
     },
+    /// Codex hook adapter — reads a Codex hook JSON payload from stdin and
+    /// writes a Codex-specific JSON response to stdout.
+    ///
+    /// The current event is decoded from stdin's `hook_event_name`. An
+    /// optional event argument remains for manual smoke tests.
+    ///
+    /// Supported tools: `Bash` (command text) and `apply_patch` (patch
+    /// parsing). MCP calls and other tools are allowed without comment.
+    CodexHook {
+        /// The Codex hook event name. The event from stdin takes precedence
+        /// when available.
+        #[arg(default_value = "PreToolUse")]
+        event: String,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -343,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
         Command::PreCheck => hook::run_pre_check().await,
         Command::PostCheck => hook::run_post_check().await,
         Command::SessionContext => handle_session_context(),
-        Command::TurnContext { last } => handle_turn_context(last),
+        Command::InteractionContext { last } => handle_interaction_context(last),
         Command::Stats { since, rule, json } => handle_stats(since, rule, json),
         Command::Confidence { subject, json } => handle_confidence(subject, json),
         Command::Toolchains { json } => handle_toolchains(json),
@@ -408,6 +423,7 @@ async fn main() -> anyhow::Result<()> {
             home,
             project_root,
         } => scrub_payload::run(&path, write, home, project_root),
+        Command::CodexHook { event } => phronesis_mcp::codex_hook::run(&event).await,
     }
 }
 
@@ -443,9 +459,9 @@ fn handle_session_context() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_turn_context(last: usize) -> anyhow::Result<()> {
+fn handle_interaction_context(last: usize) -> anyhow::Result<()> {
     let root = phronesis_mcp::security::project_root();
-    let out = phronesis_mcp::context::run_turn_context(
+    let out = phronesis_mcp::context::run_interaction_context(
         &root,
         last,
         phronesis_mcp::context::DEFAULT_MAX_BYTES,
@@ -1110,7 +1126,7 @@ fn handle_init(ctx: InitCtx) -> anyhow::Result<()> {
         println!("\n(dry-run: nothing was written)");
     } else {
         println!(
-            "\nNext: restart Claude Code / Gemini CLI in this project for hooks to take effect."
+            "\nNext: restart Claude Code / Gemini CLI, or review project hooks with Codex `/hooks`."
         );
     }
     Ok(())
@@ -1128,7 +1144,9 @@ fn handle_install(dry_run: bool) -> anyhow::Result<()> {
         println!("\n(dry-run: nothing was written)");
     } else {
         println!(
-            "\nNext: restart Claude Code / Gemini CLI (any project) to pick up the user-level MCP server."
+            "\nNext: restart Claude Code / Gemini CLI to pick up the user-level MCP server. \
+             Codex setup is project-local; run `phr-mcp init --hooks-only` in each Codex project, \
+             then review the generated hooks with `/hooks`."
         );
     }
     Ok(())

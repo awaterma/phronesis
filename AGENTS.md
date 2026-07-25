@@ -6,7 +6,7 @@ This is a Rust workspace with three crates:
 
 - **`phronesis`** - Core RETE rules engine library
 - **`phronesis-mcp`** - MCP server for LLM-agent governance (CLAUDE.md hook integration)
-- **`phronesis-rhai`** - Sandboxed Rhai evaluator for `__script__` guard conditions (numeric comparisons and boolean combinators over fact arguments); opt in via the MCP's `rhai` feature
+- **`phronesis-rhai`** - Sandboxed Rhai evaluator for `__script__` guard conditions and extensible predicate providers; enabled by default in the MCP binary
 
 **Project type:** Rust workspace with MCP (Model Context Protocol) integration for AI agent governance.
 
@@ -151,7 +151,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `pre-check` | Block edits that violate rules |
 | `post-check` | Warn about edits that violate rules |
 | `session-context` | Inject active rules summary on SessionStart |
-| `turn-context` | Inject recent hook activity on UserPromptSubmit |
+| `interaction-context` | Inject recent hook activity on UserPromptSubmit (`turn-context` is a legacy alias) |
 | `stats` | Read `.phronesis/log.jsonl`, show per-rule summary |
 | `audit` | Scan whole tree for rule violations |
 | `trend` | Debt-over-time from audit snapshots |
@@ -170,7 +170,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 **`pre-check`**: Blocks edits with violations → exit 2
 **`post-check`**: Warns about violations → exit 1
 **`session-context`**: Emits JSON with active rules + durable directives
-**`turn-context`**: Emits JSON with last N hook decisions
+**`interaction-context`**: Emits JSON with last N hook decisions
 
 #### Rules File (`.phronesis/rules.json`)
 
@@ -227,7 +227,15 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `no_test_for(?name)` | No test found |
 | `function_returns_result_string(?file, ?fn)` | Rust AST: return type is `Result<_, String>` |
 
-**Adding new predicates:** Write tree-sitter queries in `src/values/rust.rs`, assert facts in `assert_values_facts` in `src/hook.rs`.
+Project-defined predicates can be emitted by sandboxed Rhai providers under
+`.phronesis/predicates/*.rhai`. Multi-file operations expose batch
+`event.files`; per-file evaluation exposes `event.file_path`. Built-in AST
+predicates still live under `src/syntax/` and are asserted by the hook.
+
+This repository's `change_set.rhai` provider emits
+`change_set_production_rust`, `change_set_test`,
+`change_set_has_production_rust`, `change_set_has_test`, and
+`change_set_production_without_test`.
 
 #### Packaged Rules
 
@@ -601,6 +609,11 @@ The `phr-mcp serve` command exposes these tools:
 | `list_rules` | List all rules | `{ "rules": [...] }` |
 | `get_rule` | Get single rule by ID | `{ "rule": {...} }` |
 | `remove_rule` | Remove rule by ID | `CallToolResult` |
+| `add_predicate_provider` | Validate and create a Rhai LHS fact provider | `CallToolResult` |
+| `list_predicate_providers` | List project predicate providers | `{ "providers": [...] }` |
+| `get_predicate_provider` | Read one predicate provider | `{ "name", "script" }` |
+| `test_predicate_provider` | Dry-run a provider against a normalized event | `{ "facts": [...] }` |
+| `remove_predicate_provider` | Remove a predicate provider | `CallToolResult` |
 | `extract_rules` | Extract rules from markdown | `CallToolResult` |
 | `save_rules` | Persist in-memory rules to disk | `CallToolResult` |
 | `load_rules_file` | Load rules from disk | `CallToolResult` |
@@ -699,5 +712,5 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 
 ---
 
-*Last updated: 2026-07-14*
-*Based on phronesis v0.20.0*
+*Last updated: 2026-07-25*
+*Based on phronesis v0.22.0*

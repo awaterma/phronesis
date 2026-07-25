@@ -38,10 +38,11 @@
 //! or touch the host.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use phronesis::{BuiltinScriptEvaluator, Fact, ScriptEval};
 use rhai::packages::{Package, StandardPackage};
-use rhai::{Array, Dynamic, Engine, Map, Scope};
+use rhai::{Array, Dynamic, Engine, ImmutableString, Map, Scope};
 
 /// Maximum Rhai operations per script evaluation.
 const MAX_OPERATIONS: u64 = 100_000;
@@ -49,6 +50,21 @@ const MAX_OPERATIONS: u64 = 100_000;
 const MAX_CALL_LEVELS: usize = 16;
 /// Maximum string size (bytes) a script may construct.
 const MAX_STRING_SIZE: usize = 4096;
+/// Maximum facts one provider may emit during one hook invocation.
+const MAX_EMITTED_FACTS: usize = 128;
+const MAX_EMITTED_ARGS: usize = 32;
+
+fn sandbox_engine() -> Engine {
+    let mut engine = Engine::new_raw();
+    let package = StandardPackage::new();
+    package.register_into_engine(&mut engine);
+    engine.set_max_operations(MAX_OPERATIONS);
+    engine.set_max_call_levels(MAX_CALL_LEVELS);
+    engine.set_max_string_size(MAX_STRING_SIZE);
+    engine.set_max_array_size(4096);
+    engine.set_max_map_size(4096);
+    engine
+}
 
 /// A [`ScriptEval`] implementation backed by a sandboxed Rhai engine.
 ///
@@ -62,23 +78,9 @@ pub struct RhaiScriptEvaluator {
 impl RhaiScriptEvaluator {
     /// Build a new evaluator with the standard package and sandbox limits.
     pub fn new() -> Self {
-        let mut engine = Engine::new_raw();
-
-        // Register the standard package: arithmetic, logic, comparison,
-        // string, array, and map operations. It deliberately excludes file
-        // I/O and networking (Rhai has none built in) and we never register
-        // `eval`, so scripts cannot reach the host.
-        let package = StandardPackage::new();
-        package.register_into_engine(&mut engine);
-
-        engine.set_max_operations(MAX_OPERATIONS);
-        engine.set_max_call_levels(MAX_CALL_LEVELS);
-        engine.set_max_string_size(MAX_STRING_SIZE);
-        // No expression-array or map-size explosion: guards are small.
-        engine.set_max_array_size(4096);
-        engine.set_max_map_size(4096);
-
-        Self { engine }
+        Self {
+            engine: sandbox_engine(),
+        }
     }
 
     /// Build the Rhai `facts` array: one map per fact with `predicate` and
@@ -103,6 +105,149 @@ impl RhaiScriptEvaluator {
             .map(|(k, v)| (k.into(), Dynamic::from(v.clone())))
             .collect()
     }
+}
+
+/// Normalized, host-neutral tool event visible to a Rhai fact provider.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FactProviderEvent {
+    pub phase: String,
+    pub tool_name: String,
+    pub file_path: String,
+    pub files: Vec<String>,
+    pub old_content: String,
+    pub new_content: String,
+    pub command: String,
+    pub output: String,
+}
+
+impl FactProviderEvent {
+    fn to_dynamic(&self) -> Map {
+        let mut event: Map = [
+            ("phase", &self.phase),
+            ("tool_name", &self.tool_name),
+            ("file_path", &self.file_path),
+            ("old_content", &self.old_content),
+            ("new_content", &self.new_content),
+            ("command", &self.command),
+            ("output", &self.output),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.into(), Dynamic::from(value.clone())))
+        .collect();
+        let files: Array = self
+            .files
+            .iter()
+            .map(|path| Dynamic::from(path.clone()))
+            .collect();
+        event.insert("files".into(), Dynamic::from(files));
+        event
+    }
+}
+
+/// A validated predicate fact emitted by a project Rhai provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EmittedFact {
+    pub predicate: String,
+    pub args: Vec<String>,
+}
+
+#[derive(Default)]
+struct EmitterState {
+    facts: Vec<EmittedFact>,
+    error: Option<String>,
+}
+
+/// Sandboxed evaluator for project-defined LHS predicate providers.
+///
+/// Providers receive a read-only `event` map and may call
+/// `emit_fact(predicate, args)`. Emitted facts are collected outside Rhai and
+/// asserted by the host after the provider completes.
+#[derive(Debug, Default)]
+pub struct RhaiFactProvider;
+
+impl RhaiFactProvider {
+    pub fn new() -> Self {
+        Self
+    }
+
+    pub fn validate(&self, script: &str) -> Result<(), String> {
+        sandbox_engine()
+            .compile(script)
+            .map(|_| ())
+            .map_err(|error| format!("rhai fact provider compile error: {error}"))
+    }
+
+    pub fn evaluate(
+        &self,
+        script: &str,
+        event: &FactProviderEvent,
+    ) -> Result<Vec<EmittedFact>, String> {
+        let state = Arc::new(Mutex::new(EmitterState::default()));
+        let emitter_state = Arc::clone(&state);
+        let mut engine = sandbox_engine();
+        engine.register_fn(
+            "emit_fact",
+            move |predicate: ImmutableString, args: Array| {
+                let mut state = emitter_state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.error.is_some() {
+                    return;
+                }
+                if state.facts.len() >= MAX_EMITTED_FACTS {
+                    state.error = Some(format!(
+                        "provider emitted more than {MAX_EMITTED_FACTS} facts"
+                    ));
+                    return;
+                }
+                let predicate = predicate.to_string();
+                if !valid_predicate(&predicate) {
+                    state.error = Some(format!("invalid emitted predicate `{predicate}`"));
+                    return;
+                }
+                if args.len() > MAX_EMITTED_ARGS {
+                    state.error = Some(format!(
+                        "emitted facts may have at most {MAX_EMITTED_ARGS} arguments"
+                    ));
+                    return;
+                }
+                let mut strings = Vec::with_capacity(args.len());
+                for arg in args {
+                    let Some(value) = arg.try_cast::<ImmutableString>() else {
+                        state.error =
+                            Some("emitted fact arguments must all be strings".to_string());
+                        return;
+                    };
+                    if value.len() > MAX_STRING_SIZE {
+                        state.error = Some(format!(
+                            "emitted fact arguments may not exceed {MAX_STRING_SIZE} bytes"
+                        ));
+                        return;
+                    }
+                    strings.push(value.to_string());
+                }
+                state.facts.push(EmittedFact {
+                    predicate,
+                    args: strings,
+                });
+            },
+        );
+        let mut scope = Scope::new();
+        scope.push("event", event.to_dynamic());
+        let _ = engine
+            .eval_with_scope::<Dynamic>(&mut scope, script)
+            .map_err(|e| format!("rhai fact provider error: {e}"))?;
+        let mut state = state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(error) = state.error.take() {
+            return Err(error);
+        }
+        Ok(std::mem::take(&mut state.facts))
+    }
+}
+
+fn valid_predicate(predicate: &str) -> bool {
+    let mut chars = predicate.chars();
+    matches!(chars.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
+        && predicate.len() <= 128
+        && chars.all(|ch| ch == '_' || ch == '.' || ch == '-' || ch.is_ascii_alphanumeric())
 }
 
 impl Default for RhaiScriptEvaluator {

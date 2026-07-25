@@ -1,0 +1,4 @@
+
+[mcp_servers.phronesis]
+command = "phr-mcp"
+args = ["serve"]

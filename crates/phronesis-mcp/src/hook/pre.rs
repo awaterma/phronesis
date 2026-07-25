@@ -107,6 +107,18 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         process::exit(2);
     }
 
+    let provider_event = super::provider_event(&payload, &tool_name, &file_path, "pre");
+    if let Err(error) = crate::predicate_provider::assert_facts(
+        &network,
+        &security::project_root(),
+        &provider_event,
+    )
+    .await
+    {
+        eprintln!("phronesis: BLOCKED — {error}");
+        process::exit(2);
+    }
+
     if let Err(e) = network.update_agenda().await {
         eprintln!("phronesis: BLOCKED — agenda update failed: {}", e);
         process::exit(2);

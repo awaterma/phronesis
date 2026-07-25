@@ -569,7 +569,7 @@
   <header class="colophon" role="banner">
     <div class="left"><a href="./explainer.html">← The Explainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
-    <div class="right">Vol. 0.13.2 — Edition III</div>
+    <div class="right">Vol. 0.22.0 — Edition IV</div>
   </header>
 
   <!-- ─── COVER ─── -->
@@ -704,7 +704,7 @@
   </section>
 
 <!-- BEGIN GENERATED RULES -->
-<p class="catalogue-stamp">documents the default packs as of v0.17.0</p>
+<p class="catalogue-stamp">documents the default packs as of v0.22.0</p>
 <section class="pack-section" id="pack-llm">
 <h2 class="pack-name">llm pack</h2>
 <article class="rule" data-level="block" id="enforce-no-pre-existing-issue">
@@ -1081,8 +1081,8 @@
   <div class="rule-content">
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python</span></div>
     <h3 class="rule-id">warn-print-in-src</h3>
-    <p class="rule-summary">print() in src/ — consider logging.info()/debug() instead. Remove debug prints before committing.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <p class="rule-summary">print() in ?fn (?file) — consider logging.info()/debug() instead. Remove debug prints before committing. Upstream: style guidance, not a correctness rule.</p>
+    <div class="rule-body"><code>python_print_call + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="enforce-no-bare-except">
@@ -1090,16 +1090,7 @@
   <div class="rule-content">
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">python</span></div>
     <h3 class="rule-id">enforce-no-bare-except</h3>
-    <p class="rule-summary">Don't use bare `except:` — catch specific exception types. Bare except swallows KeyboardInterrupt and SystemExit.</p>
-    <div class="rule-body"><code>new_content_contains</code></div>
-  </div>
-</article>
-<article class="rule" data-level="warn" id="audit-python-bare-except">
-  <div class="rule-mark" aria-hidden="true">!</div>
-  <div class="rule-content">
-    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python</span></div>
-    <h3 class="rule-id">audit-python-bare-except</h3>
-    <p class="rule-summary">Bare `except:` in ?fn (?file) — catch specific exception types so KeyboardInterrupt/SystemExit pass through.</p>
+    <p class="rule-summary">Don't use bare `except:` — catch specific exception types. Bare except swallows KeyboardInterrupt and SystemExit. Upstream: PLE0704 (pylint), Bugbear B001.</p>
     <div class="rule-body"><code>python_bare_except</code></div>
   </div>
 </article>
@@ -1108,8 +1099,35 @@
   <div class="rule-content">
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python</span></div>
     <h3 class="rule-id">warn-python-mutable-default-arg</h3>
-    <p class="rule-summary">Mutable default `?param` in ?fn — defaults are created once at def time and shared across calls. Use None and create inside.</p>
+    <p class="rule-summary">Mutable default `?param` in ?fn — defaults are created once at def time and shared across calls. Use None and create inside. Upstream: Bugbear B006.</p>
     <div class="rule-body"><code>python_mutable_default_arg</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-call-in-default-arg">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python</span></div>
+    <h3 class="rule-id">audit-python-call-in-default-arg</h3>
+    <p class="rule-summary">Function call `?callee()` in default argument `?param` of ?fn — evaluated once at def time. If it returns a mutable or side-effectful value, this is a bug. Upstream: Bugbear B008 (narrower: only flags call expressions, not bare mutable literals which are covered by B006).</p>
+    <div class="rule-body"><code>python_call_in_default_arg</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-swallowed-exception">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python</span></div>
+    <h3 class="rule-id">warn-python-swallowed-exception</h3>
+    <p class="rule-summary">Handler for ?exception in ?fn is empty (`pass`/`...`/comments) — the exception is silently swallowed. Recommend handling, re-raising, or documenting the intentional fallback. Upstream: Bugbear B110 (narrower: typed handlers only; bare handlers caught by enforce-no-bare-except).</p>
+    <div class="rule-body"><code>python_exception_handler_passes</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-high-param-count">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python</span></div>
+    <h3 class="rule-id">audit-python-high-param-count</h3>
+    <p class="rule-summary">Function ?fn in ?file has ?count parameters — consider grouping into a config object or using the builder pattern. Exclude self/cls. Upstream: design smell (maintainability, not correctness).</p>
+    <div class="rule-body"><code>python_function_param_count_high</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-python-missing-docstring">
@@ -1117,7 +1135,7 @@
   <div class="rule-content">
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python</span></div>
     <h3 class="rule-id">audit-python-missing-docstring</h3>
-    <p class="rule-summary">Public def ?fn in ?file has no docstring.</p>
+    <p class="rule-summary">Public def ?fn in ?file has no docstring. Upstream: documentation best practice; audit-only because docstring policy is project-dependent.</p>
     <div class="rule-body"><code>python_function_missing_docstring</code></div>
   </div>
 </article>
@@ -1260,7 +1278,7 @@
 <!-- END GENERATED RULES -->
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
     <a href="./index.html">Home</a> &middot; <a href="./explainer.html">Explainer</a> &middot; <span class="doc-web-here">Catalogue</span> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/docs/loop-programming-guide.md">Guide</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/CHANGELOG.md">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.17.0</span>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.22.0</span>
   </nav>
   <footer>
     <div>
@@ -1268,9 +1286,9 @@
       Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
       <em>JetBrains Mono</em> for code.<br>
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
-      with Claude.<br>
+      with Claude and Codex.<br>
       Pairs with <a href="./explainer.html">the explainer</a> &middot;
-      v 0.17.0 &middot; 2026 &middot;
+      v 0.22.0 &middot; 2026 &middot;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">

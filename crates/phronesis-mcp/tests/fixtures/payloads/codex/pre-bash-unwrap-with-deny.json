@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "codex",
+    "event": "Codex lifecycle hook",
+    "provenance": "authored",
+    "captured": "2026-07-21",
+    "description": "Authored from the official Codex hook schema; not a runtime capture."
+  },
+  "subcommand": "codex-hook",
+  "packs": "rust",
+  "payload": {
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "session_id": "codex-s-002",
+  "turn_id": "codex-t-002",
+  "tool_use_id": "codex-uid-002",
+  "tool_input": {
+    "command": "echo '.unwrap() in src' && echo 'pub fn x() { y.unwrap(); }' > src/leak.rs"
+  }
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}

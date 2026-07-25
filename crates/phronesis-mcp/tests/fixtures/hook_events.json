@@ -1,4 +1,5 @@
 {
   "claude-code": ["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit"],
-  "gemini": ["BeforeTool", "AfterTool", "SessionStart", "BeforeAgent"]
+  "gemini": ["BeforeTool", "AfterTool", "SessionStart", "BeforeAgent"],
+  "codex": ["PreToolUse", "PostToolUse", "SessionStart", "UserPromptSubmit", "PreCompact", "PostCompact", "SubagentStart", "SubagentStop", "Stop"]
 }
