@@ -22,10 +22,10 @@ name = "phr-mcp"
 path = "src/main.rs"
 
 [features]
-default = []
-# Route `__script__` conditions through the sandboxed Rhai evaluator
-# instead of the builtin two-primitive DSL. Off by default; opt in for
-# projects whose rules use expressive guard expressions.
+default = ["rhai"]
+# Route expressive `__script__` conditions through the sandboxed Rhai
+# evaluator and enable project predicate providers. Enabled by default;
+# `--no-default-features` retains the dependency-minimal builtin DSL.
 rhai = ["dep:phronesis-rhai"]
 
 [dependencies]

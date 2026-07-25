@@ -130,7 +130,7 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
         "PostToolUse" | "post-tool-use" => handle_post(payload, root).await,
         "SessionStart" | "session-start" => make_ctx_decision(root, ContextKind::SessionStart),
         "UserPromptSubmit" | "user-prompt-submit" => {
-            make_ctx_decision(root, ContextKind::TurnContext)
+            make_ctx_decision(root, ContextKind::InteractionContext)
         }
         "PreCompact" | "pre-compact" => make_compact_decision(root, true),
         "PostCompact" | "post-compact" => make_ctx_decision(root, ContextKind::SessionStart),
@@ -245,6 +245,18 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
 
     // Cargo workspace scanner (sync-safe)
     crate::hook::assert_cargo_workspace_facts(&network, &command).await;
+    let provider_event = codex_provider_event(payload, "Bash", &file_path, "pre", &command);
+    if let Err(error) =
+        crate::predicate_provider::assert_facts(&network, root, &provider_event).await
+    {
+        return CodexDecision {
+            exit: 2,
+            block_messages: vec![error.to_string()],
+            warn_messages: Vec::new(),
+            additional_context: String::new(),
+            files: Vec::new(),
+        };
+    }
 
     // Fire rules
     let consequences = match network.fire_all_consequences() {
@@ -420,6 +432,23 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
                 };
             }
         }
+        let provider_event =
+            codex_provider_event(payload, "apply_patch", &pf.path, "pre", &content);
+        if let Err(error) = crate::predicate_provider::assert_facts(
+            &network,
+            &security::project_root(),
+            &provider_event,
+        )
+        .await
+        {
+            return CodexDecision {
+                exit: 2,
+                block_messages: vec![error.to_string()],
+                warn_messages: Vec::new(),
+                additional_context: String::new(),
+                files: Vec::new(),
+            };
+        }
 
         let consequences = match network.fire_all_consequences() {
             Ok(c) => c,
@@ -513,6 +542,25 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
         let bcp = crate::hook_facts::collect_bash_command_patterns(&rules);
         let _ = crate::hook_facts::check_bash_command_patterns(&network, &command, &bcp).await;
     }
+    let provider_content = if tool_name == "Bash" {
+        extract_bash_command(payload)
+    } else {
+        String::new()
+    };
+    let provider_event =
+        codex_provider_event(payload, tool_name, &file_path, "post", &provider_content);
+    if let Err(error) =
+        crate::predicate_provider::assert_facts(&network, root, &provider_event).await
+    {
+        journal_supported_post(payload, &file_path).await;
+        return CodexDecision {
+            exit: 1,
+            block_messages: Vec::new(),
+            warn_messages: vec![error.to_string()],
+            additional_context: String::new(),
+            files: Vec::new(),
+        };
+    }
 
     let consequences = match network.fire_all_consequences() {
         Ok(c) => c,
@@ -560,7 +608,7 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
 #[derive(Clone, Copy)]
 enum ContextKind {
     SessionStart,
-    TurnContext,
+    InteractionContext,
 }
 
 fn make_ctx_decision(root: &Path, kind: ContextKind) -> CodexDecision {
@@ -601,7 +649,7 @@ fn build_context_body(root: &Path, kind: ContextKind) -> String {
                 (false, false) => format!("{}\n{}", durable, rules_body),
             }
         }
-        ContextKind::TurnContext => {
+        ContextKind::InteractionContext => {
             let path = action_log::default_path(root);
             let opts = action_log::ReadOpts {
                 limit: Some(5),
@@ -613,7 +661,7 @@ fn build_context_body(root: &Path, kind: ContextKind) -> String {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let activity = context::build_turn_body(&entries, now);
+            let activity = context::build_interaction_body(&entries, now);
             let durable = context::build_durable_section(&context::read_durable_directives(root));
             match (durable.is_empty(), activity.is_empty()) {
                 (true, true) => String::new(),
@@ -732,6 +780,28 @@ fn extract_bash_command(payload: &CodexPayload) -> String {
         .and_then(|c| c.as_str())
         .unwrap_or("")
         .to_string()
+}
+
+fn codex_provider_event(
+    payload: &CodexPayload,
+    tool_name: &str,
+    file_path: &str,
+    phase: &str,
+    content: &str,
+) -> crate::predicate_provider::ProviderEvent {
+    crate::predicate_provider::ProviderEvent {
+        phase: phase.to_string(),
+        tool_name: tool_name.to_string(),
+        file_path: file_path.to_string(),
+        old_content: String::new(),
+        new_content: content.to_string(),
+        command: if tool_name == "Bash" {
+            content.to_string()
+        } else {
+            String::new()
+        },
+        output: extract_tool_output_text(payload),
+    }
 }
 
 async fn assert_new_content(

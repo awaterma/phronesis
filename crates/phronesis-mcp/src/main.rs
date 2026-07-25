@@ -49,7 +49,8 @@ enum Command {
     /// UserPromptSubmit (Claude) / BeforeAgent (Gemini) hook: emit
     /// `additionalContext` JSON summarizing the last few hook decisions.
     /// Exit 0 with empty stdout when there's nothing recent to report.
-    TurnContext {
+    #[command(name = "interaction-context", alias = "turn-context")]
+    InteractionContext {
         /// Number of recent log entries to consider. Default 5.
         #[arg(long, default_value_t = 5)]
         last: usize,
@@ -357,7 +358,7 @@ async fn main() -> anyhow::Result<()> {
         Command::PreCheck => hook::run_pre_check().await,
         Command::PostCheck => hook::run_post_check().await,
         Command::SessionContext => handle_session_context(),
-        Command::TurnContext { last } => handle_turn_context(last),
+        Command::InteractionContext { last } => handle_interaction_context(last),
         Command::Stats { since, rule, json } => handle_stats(since, rule, json),
         Command::Confidence { subject, json } => handle_confidence(subject, json),
         Command::Toolchains { json } => handle_toolchains(json),
@@ -458,9 +459,9 @@ fn handle_session_context() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_turn_context(last: usize) -> anyhow::Result<()> {
+fn handle_interaction_context(last: usize) -> anyhow::Result<()> {
     let root = phronesis_mcp::security::project_root();
-    let out = phronesis_mcp::context::run_turn_context(
+    let out = phronesis_mcp::context::run_interaction_context(
         &root,
         last,
         phronesis_mcp::context::DEFAULT_MAX_BYTES,

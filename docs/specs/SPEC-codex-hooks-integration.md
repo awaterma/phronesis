@@ -54,7 +54,7 @@ Do not claim complete enforcement. Codex documents PreToolUse as a guardrail: ri
 | `PreToolUse` | pre-phase check | deny violations; context for warnings |
 | `PostToolUse` | post-phase check | advisory context; action/journey/outcome records |
 | `SessionStart` | session context | active rules + durable directives; session identity |
-| `UserPromptSubmit` | turn context | durable directives + recent decisions |
+| `UserPromptSubmit` | interaction context | durable directives + recent decisions |
 | `PreCompact` | durable context | inject directives before compaction |
 | `PostCompact` | session context | re-inject rules + directives |
 | `SubagentStart` | session context | project governance for delegated work |

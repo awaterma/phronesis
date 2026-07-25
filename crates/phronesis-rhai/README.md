@@ -52,10 +52,10 @@ reach the host.
 
 ## MCP integration
 
-`phronesis-mcp` exposes this behind an off-by-default `rhai` cargo feature.
-Build the server with `--features rhai` to route `__script__` conditions
-through the Rhai evaluator; without it, the builtin DSL is used and behavior
-is unchanged.
+`phronesis-mcp` enables its `rhai` cargo feature by default for expressive
+`__script__` guards and project predicate providers. Build it with
+`--no-default-features` to retain only the dependency-minimal builtin DSL;
+configured predicate providers are then rejected rather than silently ignored.
 
 ## License
 

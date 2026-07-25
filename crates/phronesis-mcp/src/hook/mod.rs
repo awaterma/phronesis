@@ -215,6 +215,30 @@ fn extract_old_content(payload: &HookPayload, tool_name: &str) -> Option<String>
     }
 }
 
+pub(crate) fn provider_event(
+    payload: &HookPayload,
+    tool_name: &str,
+    file_path: &str,
+    phase: &str,
+) -> crate::predicate_provider::ProviderEvent {
+    let new_content = extract_new_content(payload, tool_name).unwrap_or_default();
+    crate::predicate_provider::ProviderEvent {
+        phase: phase.to_string(),
+        tool_name: tool_name.to_string(),
+        file_path: file_path.to_string(),
+        old_content: extract_old_content(payload, tool_name).unwrap_or_default(),
+        command: matches!(tool_name, "Bash" | "run_shell_command")
+            .then_some(new_content.clone())
+            .unwrap_or_default(),
+        new_content,
+        output: payload
+            .tool_output
+            .as_ref()
+            .map(serde_json::Value::to_string)
+            .unwrap_or_default(),
+    }
+}
+
 /// Collect a single string field from each entry in a MultiEdit `edits` array,
 /// joining them with newlines. Returns `None` when the array is missing or empty.
 fn extract_multiedit_field(input: &serde_json::Value, field: &str) -> Option<String> {

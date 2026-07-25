@@ -40,6 +40,72 @@ fn write_rules_file(dir: &Path, contents: &str) {
     std::fs::write(phronesis.join("rules.json"), contents).unwrap();
 }
 
+fn write_predicate_provider(dir: &Path, name: &str, script: &str) {
+    let predicates = dir.join(".phronesis/predicates");
+    std::fs::create_dir_all(&predicates).unwrap();
+    std::fs::write(predicates.join(name), script).unwrap();
+}
+
+#[test]
+fn rhai_provider_extends_the_pre_hook_lhs() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{
+            "id":"parser-change","phase":"pre","priority":10,
+            "when":[{"parser_changed":"?file"}],
+            "then":{"block":"Parser policy applies to ?file"}
+        }]}"#,
+    );
+    write_predicate_provider(
+        dir.path(),
+        "parser.rhai",
+        r#"
+            if event.tool_name == "Edit" && event.file_path.starts_with("src/parser/") {
+                emit_fact("parser_changed", [event.file_path]);
+            }
+        "#,
+    );
+    let payload = r#"{
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "src/parser/mod.rs",
+            "old_string": "old",
+            "new_string": "new"
+        }
+    }"#;
+
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2, "provider-derived predicate must fire: {stderr}");
+    assert!(stderr.contains("Parser policy applies to src/parser/mod.rs"));
+}
+
+#[test]
+fn broken_rhai_provider_fails_closed_before_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{
+            "id":"any-edit","phase":"pre","priority":1,
+            "when":[{"tool_name":"Edit"}],
+            "then":{"warn":"ordinary rule"}
+        }]}"#,
+    );
+    write_predicate_provider(dir.path(), "broken.rhai", "this is not valid Rhai !!!");
+    let payload = r#"{
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "src/lib.rs",
+            "old_string": "old",
+            "new_string": "new"
+        }
+    }"#;
+
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2, "broken provider must block: {stderr}");
+    assert!(stderr.contains("broken.rhai"), "stderr: {stderr}");
+}
+
 #[test]
 fn pre_check_allows_non_edit_tool() {
     let payload = r#"{"tool_name": "Read", "tool_input": {"file_path": "src/main.rs"}}"#;

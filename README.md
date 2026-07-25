@@ -20,11 +20,13 @@ Beyond the syntactic rule packs, two grounded subsystems extend enforcement past
 
 **Journey facts** ([SPEC-journey-facts](docs/specs/)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
 
+**Extensible predicates** ([SPEC-extensible-predicates](docs/specs/SPEC-extensible-predicates.md)) let project Rhai providers under `.phronesis/predicates/` derive new, validated LHS facts from normalized hook events. MCP tools can test and manage providers, allowing an agent to add new predicate vocabulary before adding the rules that consume it.
+
 ## The Workspace
 
 - **`phronesis`** ([`crates/phronesis`](crates/phronesis)) — The core library: a high-performance, domain-neutral RETE rules engine (Alpha/Beta networks, P-states, join-sharing) with Consequence/Actor/Provenance primitives.
 - **`phronesis-mcp`** ([`crates/phronesis-mcp`](crates/phronesis-mcp)) — An MCP server that hosts the engine behind Claude Code, Codex, and Gemini CLI hooks. Builds the `phr-mcp` binary.
-- **`phronesis-rhai`** ([`crates/phronesis-rhai`](crates/phronesis-rhai)) — A sandboxed [Rhai](https://rhai.rs) evaluator for `__script__` guard conditions, so rules can express numeric comparisons and boolean combinators over fact arguments. Opt in via the MCP's `rhai` feature.
+- **`phronesis-rhai`** ([`crates/phronesis-rhai`](crates/phronesis-rhai)) — A sandboxed [Rhai](https://rhai.rs) evaluator for `__script__` guard conditions and extensible predicate providers. The MCP binary enables it by default.
 
 ## Documentation
 

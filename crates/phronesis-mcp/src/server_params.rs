@@ -61,6 +61,50 @@ pub struct RuleIdParam {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct AddPredicateProviderParams {
+    /// Provider filename without the `.rhai` extension.
+    pub name: String,
+    /// Sandboxed Rhai source using `event` and `emit_fact(predicate, args)`.
+    pub script: String,
+    /// Explicitly replace an existing provider with the same name.
+    #[serde(default)]
+    pub replace: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct PredicateProviderNameParam {
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct ListPredicateProvidersParams {}
+
+#[derive(Debug, Default, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct PredicateProviderEventInput {
+    #[serde(default)]
+    pub phase: String,
+    #[serde(default)]
+    pub tool_name: String,
+    #[serde(default)]
+    pub file_path: String,
+    #[serde(default)]
+    pub old_content: String,
+    #[serde(default)]
+    pub new_content: String,
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub output: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct TestPredicateProviderParams {
+    pub script: String,
+    #[serde(default)]
+    pub event: PredicateProviderEventInput,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct AssertFactParams {
     pub id: String,
     pub predicate: String,

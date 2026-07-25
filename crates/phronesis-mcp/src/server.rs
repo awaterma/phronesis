@@ -252,6 +252,97 @@ impl EpistemeMcp {
         Self::ok_text(format!("Rule '{}' removed", params.rule_id))
     }
 
+    // ── Extensible Predicate Providers ──
+
+    #[tool(
+        description = "Create a sandboxed Rhai fact provider under `.phronesis/predicates/`. Providers receive a normalized read-only `event` and call `emit_fact(predicate, args)` to add project-defined LHS predicates before RETE matching. The script is validated before writing. Existing providers are never replaced unless `replace=true`."
+    )]
+    async fn add_predicate_provider(
+        &self,
+        Parameters(params): Parameters<AddPredicateProviderParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        let path =
+            crate::predicate_provider::add(&root, &params.name, &params.script, params.replace)
+                .map_err(Self::err)?;
+        Self::log_event("add_predicate_provider", |entry| {
+            entry
+                .with("provider", params.name.clone())
+                .with("path", path.display().to_string())
+                .with("replace", params.replace)
+        });
+        Self::ok_text(format!(
+            "Predicate provider '{}' written to {}",
+            params.name,
+            path.display()
+        ))
+    }
+
+    #[tool(description = "List project Rhai predicate providers in deterministic load order")]
+    async fn list_predicate_providers(
+        &self,
+        Parameters(_params): Parameters<ListPredicateProvidersParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let providers =
+            crate::predicate_provider::list(&security::project_root()).map_err(Self::err)?;
+        Self::ok_text(
+            serde_json::to_string_pretty(&serde_json::json!({"providers": providers}))
+                .map_err(Self::err)?,
+        )
+    }
+
+    #[tool(description = "Read one project Rhai predicate provider by name")]
+    async fn get_predicate_provider(
+        &self,
+        Parameters(params): Parameters<PredicateProviderNameParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let script = crate::predicate_provider::get(&security::project_root(), &params.name)
+            .map_err(Self::err)?;
+        Self::ok_text(
+            serde_json::to_string_pretty(
+                &serde_json::json!({"name": params.name, "script": script}),
+            )
+            .map_err(Self::err)?,
+        )
+    }
+
+    #[tool(
+        description = "Evaluate a Rhai predicate-provider script against a supplied normalized event without writing it. Returns the facts it would emit; use this before add_predicate_provider."
+    )]
+    async fn test_predicate_provider(
+        &self,
+        Parameters(params): Parameters<TestPredicateProviderParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let event = crate::predicate_provider::ProviderEvent {
+            phase: params.event.phase,
+            tool_name: params.event.tool_name,
+            file_path: params.event.file_path,
+            old_content: params.event.old_content,
+            new_content: params.event.new_content,
+            command: params.event.command,
+            output: params.event.output,
+        };
+        let facts =
+            crate::predicate_provider::test_script(&params.script, &event).map_err(Self::err)?;
+        Self::ok_text(
+            serde_json::to_string_pretty(&serde_json::json!({"facts": facts}))
+                .map_err(Self::err)?,
+        )
+    }
+
+    #[tool(description = "Remove one project Rhai predicate provider by name")]
+    async fn remove_predicate_provider(
+        &self,
+        Parameters(params): Parameters<PredicateProviderNameParam>,
+    ) -> Result<CallToolResult, McpError> {
+        crate::predicate_provider::remove(&security::project_root(), &params.name)
+            .map_err(Self::err)?;
+        Self::log_event("remove_predicate_provider", |entry| {
+            entry.with("provider", params.name.clone())
+        });
+        Self::ok_text(format!("Predicate provider '{}' removed", params.name))
+    }
+
     // ── Facts Management ──
 
     #[tool(description = "Assert a fact into working memory")]

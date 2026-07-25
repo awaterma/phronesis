@@ -12,7 +12,7 @@ cargo run -- post-check  # PostToolUse hook (warns on violations)
 cargo run -- codex-hook PreToolUse  # Codex protocol adapter (event varies by hook)
 cargo run -- init             # One-command setup for a project
 cargo run -- session-context  # SessionStart hook (injects active rules + durable directives)
-cargo run -- turn-context     # UserPromptSubmit / BeforeAgent hook (injects recent activity + durable directives)
+cargo run -- interaction-context # UserPromptSubmit / BeforeAgent hook (injects recent activity + durable directives)
 cargo run -- stats             # Read-only per-rule summary of .phronesis/log.jsonl
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
@@ -148,6 +148,23 @@ phr-mcp init --hooks-only             # refresh hook wiring without touching rul
 ```
 
 `setup` and `configure` are aliases for `init` if those feel more natural.
+
+### Extensible predicates
+
+Project-defined Rhai providers in `.phronesis/predicates/*.rhai` run before
+RETE matching and may call `emit_fact(predicate, args)` against a normalized
+read-only `event`. When a requested rule needs LHS vocabulary that does not
+exist yet:
+
+1. Call `test_predicate_provider` with the proposed script and representative
+   event.
+2. Call `add_predicate_provider` to write the validated provider.
+3. Call `add_rule` with a condition matching the emitted predicate.
+
+Use `list_predicate_providers`, `get_predicate_provider`, and
+`remove_predicate_provider` for review and lifecycle management. Existing
+providers require explicit `replace: true`; pre-hook provider failures block,
+while post-hook failures warn because the action has already executed.
 
 The packs are composable and **independent**:
 - `llm` — LLM-behavior rules. Blocks the deflection family (disclaimers
@@ -456,7 +473,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `turn-context`, `stats`, `confidence`, `journey`, `audit`, `trend`, `claude-md-drift` (alias: `drift`), `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`.
+- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `claude-md-drift` (alias: `drift`), `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`.
 - `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift, get_wiki_drift, get_confidence, submit_suggestion, get_journey)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.

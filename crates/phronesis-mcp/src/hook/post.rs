@@ -137,6 +137,18 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         .unwrap_or_else(|_| process::exit(1));
     }
 
+    let provider_event = super::provider_event(&payload, &tool_name, &file_path, "post");
+    if let Err(error) = crate::predicate_provider::assert_facts(
+        &network,
+        &security::project_root(),
+        &provider_event,
+    )
+    .await
+    {
+        eprintln!("phronesis: WARNING — {error}");
+        process::exit(1);
+    }
+
     if let Err(e) = network.update_agenda().await {
         eprintln!("phronesis: WARNING — agenda update failed: {}", e);
         process::exit(1);

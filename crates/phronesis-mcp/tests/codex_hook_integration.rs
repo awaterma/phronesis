@@ -73,6 +73,53 @@ fn warning_rule() -> Value {
     }]})
 }
 
+fn write_predicate_provider(root: &std::path::Path, name: &str, script: &str) {
+    let predicates = root.join(".phronesis/predicates");
+    fs::create_dir_all(&predicates).expect("predicate provider dir");
+    fs::write(predicates.join(name), script).expect("predicate provider");
+}
+
+#[test]
+fn codex_hook_uses_rhai_provider_predicates() {
+    let project = tempfile::tempdir().expect("temp project");
+    write_rules(
+        project.path(),
+        json!({"version": 2, "rules": [{
+            "id": "release-command", "phase": "pre", "priority": 10,
+            "when": [{"release_attempted": "?command"}],
+            "then": {"block": "Release policy applies to ?command"}
+        }]}),
+    );
+    write_predicate_provider(
+        project.path(),
+        "release.rhai",
+        r#"
+            if event.tool_name == "Bash" && event.command.starts_with("cargo publish") {
+                emit_fact("release_attempted", [event.command]);
+            }
+        "#,
+    );
+    let payload = json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Bash",
+        "session_id": "s",
+        "turn_id": "t",
+        "tool_use_id": "u",
+        "tool_input": {"command": "cargo publish --dry-run"}
+    });
+
+    let body = response(&run_hook(project.path(), &payload));
+    assert_eq!(
+        body["hookSpecificOutput"]["permissionDecision"], "deny",
+        "Codex must consume provider-derived predicates: {body}"
+    );
+    assert!(
+        body["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("cargo publish --dry-run"))
+    );
+}
+
 #[test]
 fn codex_hook_cli_decodes_current_pretooluse_and_denies() {
     let project = tempfile::tempdir().expect("temp project");

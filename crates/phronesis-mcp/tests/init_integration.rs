@@ -213,6 +213,16 @@ fn init_appends_to_existing_gitignore() {
 }
 
 #[test]
+fn init_unignores_extensible_predicate_providers() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    assert!(out.status.success());
+    let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
+    assert!(gitignore.contains("!.phronesis/predicates/"));
+    assert!(gitignore.contains("!.phronesis/predicates/**"));
+}
+
+#[test]
 fn init_rejects_unknown_language() {
     // --language is a thin backward-compat wrapper around --packs; an unknown
     // value still errors out, just via the pack parser's message wording.

@@ -126,6 +126,55 @@ fn simple_rule(id: &str, predicate: &str, arg: &str) -> serde_json::Value {
     })
 }
 
+#[test]
+fn mcp_manages_and_tests_rhai_predicate_providers() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = McpClient::spawn_with_autopersist(dir.path());
+    let script = r#"
+        if event.command.starts_with("cargo publish") {
+            emit_fact("release_attempted", [event.command]);
+        }
+    "#;
+
+    let added = client.tool_text(
+        "add_predicate_provider",
+        serde_json::json!({"name":"release", "script":script}),
+    );
+    assert!(added.contains("release"), "add response: {added}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".phronesis/predicates/release.rhai")).unwrap(),
+        script
+    );
+
+    let tested = client.tool(
+        "test_predicate_provider",
+        serde_json::json!({
+            "script": script,
+            "event": {
+                "phase": "pre",
+                "tool_name": "Bash",
+                "command": "cargo publish --dry-run"
+            }
+        }),
+    );
+    assert_eq!(tested["facts"][0]["predicate"], "release_attempted");
+    assert_eq!(tested["facts"][0]["args"][0], "cargo publish --dry-run");
+
+    let listed = client.tool("list_predicate_providers", serde_json::json!({}));
+    assert_eq!(listed["providers"][0]["name"], "release");
+
+    let removed = client.tool_text(
+        "remove_predicate_provider",
+        serde_json::json!({"name":"release"}),
+    );
+    assert!(removed.contains("release"));
+    assert!(
+        !dir.path()
+            .join(".phronesis/predicates/release.rhai")
+            .exists()
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // save_rules
 // ─────────────────────────────────────────────────────────────────────

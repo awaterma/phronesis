@@ -12,6 +12,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   subagent contracts for Bash and `apply_patch`; `phr-mcp init` safely merges
   project hooks and project-scoped stdio MCP registration without bypassing
   Codex's `/hooks` trust review.
+- **Extensible predicates.** Project-owned Rhai providers under
+  `.phronesis/predicates/*.rhai` can derive new RETE facts from normalized hook
+  events. MCP tools add, inspect, test, list, and remove providers so agents can
+  evolve the rule vocabulary alongside rules.
+
+### Changed
+- **Interaction context terminology.** The per-prompt context command is now
+  `interaction-context`; `turn-context` remains a compatible CLI alias and the
+  old Rust helpers remain deprecated wrappers. The unrelated markdown
+  `set_section_context` MCP workflow is unchanged.
 
 ### Fixed
 - **Contract-grounded hook behavior.** Current snake-case payload fields and

@@ -17,6 +17,7 @@ pub mod migrate_extracted;
 pub mod net;
 pub mod outcomes;
 pub mod payload_scrub;
+pub mod predicate_provider;
 pub mod rules_file;
 pub mod scrub_payload;
 pub mod security;

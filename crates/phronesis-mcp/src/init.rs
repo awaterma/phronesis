@@ -494,7 +494,7 @@ fn write_settings(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Resu
     upsert_hook(
         &mut settings,
         "UserPromptSubmit",
-        context_entry("phr-mcp turn-context"),
+        context_entry("phr-mcp interaction-context"),
     );
 
     write_json(&path, &settings, opts, "settings.local.json", report)?;
@@ -582,7 +582,7 @@ fn write_gemini_settings(
     upsert_hook(
         &mut settings,
         "BeforeAgent",
-        context_entry("phr-mcp turn-context"),
+        context_entry("phr-mcp interaction-context"),
     );
 
     // Clean up legacy BeforeModelRequest hook if present
@@ -1053,6 +1053,10 @@ fn update_gitignore(
         ".phronesis/*",
         "!.phronesis/wiki/",
         "!.phronesis/wiki/**",
+        // Predicate providers are durable project policy and should travel
+        // with the repository; runtime journals and outcomes remain ignored.
+        "!.phronesis/predicates/",
+        "!.phronesis/predicates/**",
     ];
     // Confidence config is project knowledge (track it); the per-subject
     // outcome ledger under .phronesis/outcomes/ stays ignored via `.phronesis/*`.
@@ -2873,7 +2877,7 @@ mod tests {
         let prompt = content["hooks"]["UserPromptSubmit"].as_array().unwrap();
         assert!(!prompt.is_empty(), "UserPromptSubmit must be wired");
         let prompt_cmd = prompt[0]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(prompt_cmd, "phr-mcp turn-context");
+        assert_eq!(prompt_cmd, "phr-mcp interaction-context");
     }
 
     #[test]
@@ -2908,7 +2912,7 @@ mod tests {
         let cmd = before[0]["hooks"][0]["command"]
             .as_str()
             .expect("command not string");
-        assert_eq!(cmd, "phr-mcp turn-context");
+        assert_eq!(cmd, "phr-mcp interaction-context");
     }
 
     #[test]
