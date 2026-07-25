@@ -187,6 +187,36 @@ fn codex_hook_cli_multi_file_patch_combines_decisions() {
         response(&run_hook(project.path(), &payload))["hookSpecificOutput"]["permissionDecision"],
         "deny"
     );
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl")).expect("action log");
+    let entry: Value =
+        serde_json::from_str(log.lines().last().expect("log line")).expect("log JSON");
+    assert_eq!(entry["files"], json!(["src/clean.rs", "src/bad.rs"]));
+    assert!(
+        entry.get("file").is_none(),
+        "multi-file events must not invent a singular file"
+    );
+}
+
+#[test]
+fn codex_hook_cli_single_file_patch_keeps_singular_file_log_shape() {
+    let project = tempfile::tempdir().expect("temp project");
+    write_rules(project.path(), block_rule());
+    let payload = fixture_payload(include_str!(
+        "fixtures/payloads/codex/pre-patch-unwrap.json"
+    ));
+
+    assert_eq!(
+        response(&run_hook(project.path(), &payload))["hookSpecificOutput"]["permissionDecision"],
+        "deny"
+    );
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl")).expect("action log");
+    let entry: Value =
+        serde_json::from_str(log.lines().last().expect("log line")).expect("log JSON");
+    assert_eq!(entry["file"], "src/lib.rs");
+    assert!(
+        entry.get("files").is_none(),
+        "single-file events must retain the existing singular schema"
+    );
 }
 
 #[test]
@@ -271,6 +301,12 @@ fn codex_hook_cli_post_patch_journals_each_file() {
         })
         .collect();
     assert_eq!(paths, ["src/a.rs", "tests/a.rs"]);
+
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl")).expect("action log");
+    let entry: Value =
+        serde_json::from_str(log.lines().last().expect("log line")).expect("log JSON");
+    assert_eq!(entry["files"], json!(["src/a.rs", "tests/a.rs"]));
+    assert!(entry.get("file").is_none());
 }
 
 #[test]

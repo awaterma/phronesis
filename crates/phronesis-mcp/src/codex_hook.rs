@@ -831,9 +831,35 @@ fn log_event(
     let mut entry = action_log::LogEntry::new("hook", "codex_hook")
         .with("phase", phase.to_string())
         .with("tool", tool_name.to_string())
-        .with("file", file_path.to_string())
         .with("exit", exit)
         .with("host", "codex".to_string());
+    let affected_files = if tool_name == "apply_patch" {
+        codex_patch::parse_patch(&extract_bash_command(payload))
+            .into_iter()
+            .map(|file| file.path)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    if affected_files.len() > 1 {
+        entry = entry.with(
+            "files",
+            serde_json::Value::Array(
+                affected_files
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect(),
+            ),
+        );
+    } else {
+        entry = entry.with(
+            "file",
+            affected_files
+                .first()
+                .cloned()
+                .unwrap_or_else(|| file_path.to_string()),
+        );
+    }
     if let Some(ref sid) = payload.session_id {
         entry = entry.with("session_id", sid.clone());
     }
