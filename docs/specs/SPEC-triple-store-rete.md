@@ -396,7 +396,7 @@ For module-keyed relations, `declares_module` bridges file to module:
 * Kept machinery health out of working memory: staleness is returned to the harness, which demotes affected rules' violations to warnings. An intermediate draft asserted a `graph_fresh` fact and was rejected — the fact base models the codebase, not the tool's self-diagnostics (§5.4).
 * Measured the first corpus; `untested` alone is too noisy for a rule of its own (§10).
 * Added `edited_file` + `declares_module` and required every structural rule to scope to the edited file. Found by running the shipped pack, not by review: the §5.1/§5.2 rules as written matched repo-wide state and fired on every tool call (§5.7).
-* Shipped the `structural` pack (`phr-mcp init --packs structural`) with both measured rules, warn-only.
+* Shipped the `structural` pack (`phr-mcp init --packs structural`) with both measured rules, warn-only. `init` builds the graph itself: without it the pack installs silent, and a rule that cannot fire is indistinguishable from one that found nothing. The build is non-fatal — writing config is what `init` is for, and a missing graph is recoverable with `graph rebuild` while a failed `init` leaves no enforcement at all.
 * Deleted the `provenance` row from §1.2 — provenance is the `src` field on each edge, never a relation.
 
 **Revision 2** — applied engine cross-check review (`wme.rs`, `engine_types.rs`, `beta_network.rs`, `variable_binding.rs`):

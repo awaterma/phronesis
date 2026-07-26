@@ -282,3 +282,27 @@ fn a_cycle_warning_names_only_the_edited_modules_cycle() {
         "editing a.rs must not warn about b.rs: {stderr}"
     );
 }
+
+#[test]
+fn init_alone_is_enough_for_the_pack_to_fire() {
+    // `packaged_project` calls rebuild explicitly; this asserts the path a
+    // real user takes, where `init` is the only command they run. A pack that
+    // needs an undocumented second step reads as broken, not as unbuilt.
+    let d = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(d.path().join("src")).expect("mkdir src");
+    std::fs::write(d.path().join("src/risky.rs"), RISKY_SOURCE).expect("risky");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(d.path())
+        .args(["init", "--packs", "structural", "."])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run init");
+    assert!(status.success(), "init failed");
+
+    // No rebuild_graph() call here — that is the point of the test.
+    let (code, stderr) = pre_check_file(d.path(), "src/risky.rs");
+    assert_eq!(code, 1, "pack must work straight after init: {stderr}");
+    assert!(stderr.contains("crate::risky::danger"), "{stderr}");
+}

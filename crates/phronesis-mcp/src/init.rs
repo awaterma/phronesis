@@ -423,6 +423,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
         write_wiki_scaffold(&root, &opts, &mut report)?;
         write_confidence_scaffold(&root, &opts, &mut report)?;
         write_journey_scaffold(&root, &opts, &mut report)?;
+        build_structural_graph(&root, &opts, &mut report);
     }
     if !opts.rules_only && !opts.hooks_only {
         update_gitignore(&root, &opts, &mut report)?;
@@ -1037,6 +1038,40 @@ fn write_journey_scaffold(
         .steps
         .push("+ created .phronesis/journey.json".to_string());
     Ok(())
+}
+
+/// Build `.phronesis/graph.jsonl` so the structural pack works immediately.
+///
+/// Without this the pack installs *silent*: the rules load, hydration finds an
+/// empty graph, nothing ever matches, and the user reasonably concludes the
+/// feature is broken rather than unbuilt. A rule that cannot fire is
+/// indistinguishable from a rule that found nothing.
+///
+/// Deliberately infallible. Writing hook config and rules is what `init`
+/// exists to do; a graph that cannot be built is fully recoverable with
+/// `phr-mcp graph rebuild`, whereas a failed `init` leaves a project with no
+/// enforcement at all. Failures are reported as warnings and named, so the
+/// user knows to run the rebuild by hand.
+fn build_structural_graph(root: &Path, opts: &InitOpts, report: &mut InitReport) {
+    if !opts.packs.contains(&Pack::Structural) {
+        return;
+    }
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would build .phronesis/graph.jsonl (structural graph)".to_string());
+        return;
+    }
+    match crate::graph::sync::rebuild(root) {
+        Ok(out) => report.steps.push(format!(
+            "+ built .phronesis/graph.jsonl ({} edges, {} derived)",
+            out.base, out.derived
+        )),
+        Err(e) => report.warnings.push(format!(
+            "could not build the structural graph ({e}). \
+             Structural rules stay silent until you run `phr-mcp graph rebuild`."
+        )),
+    }
 }
 
 fn update_gitignore(
@@ -2092,6 +2127,95 @@ mod tests {
     /// The Rhai pack carries the two formerly-rust-bundled rules with
     /// generalized (non-project-specific) messages, and the rust pack no
     /// longer ships them. This pins the 0.6.1 pack split against regression.
+    fn structural_opts(root: &Path, dry_run: bool) -> InitOpts {
+        InitOpts {
+            project_root: root.to_path_buf(),
+            packs: vec![Pack::Structural],
+            force: false,
+            dry_run,
+            rules_only: false,
+            hooks_only: false,
+        }
+    }
+
+    /// A project with one flaggable file, so the graph has something to find.
+    fn structural_project() -> tempfile::TempDir {
+        let d = tempfile::TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(d.path().join("src")).expect("mkdir");
+        std::fs::write(
+            d.path().join("src/risky.rs"),
+            "pub fn danger(v: Vec<u32>) -> u32 { *v.first().expect(\"empty\") }\n",
+        )
+        .expect("write");
+        d
+    }
+
+    #[test]
+    fn init_builds_the_graph_when_the_structural_pack_is_selected() {
+        // Without this the pack installs silent: the rules load, find no
+        // edges, and read as broken rather than as "not built yet".
+        let d = structural_project();
+        run(structural_opts(d.path(), false)).expect("init");
+        let graph = d.path().join(".phronesis/graph.jsonl");
+        assert!(graph.exists(), "init must leave a usable graph behind");
+        let body = std::fs::read_to_string(&graph).expect("read graph");
+        assert!(body.contains("defines_fn"), "graph should hold real edges");
+        assert!(body.contains("untested"), "derived facts must be present");
+    }
+
+    #[test]
+    fn init_reports_the_graph_build() {
+        let d = structural_project();
+        let report = run(structural_opts(d.path(), false)).expect("init");
+        assert!(
+            report.steps.iter().any(|s| s.contains("graph.jsonl")),
+            "steps: {:?}",
+            report.steps
+        );
+    }
+
+    #[test]
+    fn init_without_the_structural_pack_builds_no_graph() {
+        let d = structural_project();
+        let opts = InitOpts {
+            project_root: d.path().to_path_buf(),
+            packs: vec![Pack::Llm],
+            force: false,
+            dry_run: false,
+            rules_only: false,
+            hooks_only: false,
+        };
+        run(opts).expect("init");
+        assert!(!d.path().join(".phronesis/graph.jsonl").exists());
+    }
+
+    #[test]
+    fn dry_run_builds_no_graph() {
+        let d = structural_project();
+        let report = run(structural_opts(d.path(), true)).expect("init");
+        assert!(!d.path().join(".phronesis/graph.jsonl").exists());
+        assert!(
+            report.steps.iter().any(|s| s.contains("would")),
+            "dry run must still say what it would do: {:?}",
+            report.steps
+        );
+    }
+
+    #[test]
+    fn a_failed_graph_build_warns_rather_than_failing_init() {
+        // Config writing is init's real job. A graph that cannot be built is
+        // recoverable with `phr-mcp graph rebuild`; a failed init is not.
+        let d = structural_project();
+        // Occupy the graph path with a directory so the write cannot succeed.
+        std::fs::create_dir_all(d.path().join(".phronesis/graph.jsonl")).expect("mkdir");
+        let report = run(structural_opts(d.path(), false)).expect("init must still succeed");
+        assert!(
+            report.warnings.iter().any(|w| w.contains("graph")),
+            "warnings: {:?}",
+            report.warnings
+        );
+    }
+
     #[test]
     fn parses_structural_pack() {
         assert_eq!(
