@@ -86,6 +86,24 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         }
         super::assert_pack_marker_facts(&net, &security::project_root()).await;
         super::assert_confidence_signals(&net).await;
+        // Structural graph facts. Costs nothing unless a loaded rule names a
+        // graph relation; `graph_fresh` lets such a rule decide for itself
+        // whether it may block on a graph that may have drifted.
+        {
+            let h = crate::graph::hydrate::hydrate(&security::project_root(), &rules_for_journey);
+            if !h.fresh && !h.facts.is_empty() {
+                eprintln!(
+                    "phronesis: NOTE — structural graph is stale ({} file(s) changed outside the hook). Run `phr-mcp graph rebuild`.",
+                    h.drifted.len()
+                );
+            }
+            for fact in h.facts {
+                if let Err(e) = net.assert_fact(fact).await {
+                    eprintln!("phronesis: WARNING — graph fact rejected: {}", e);
+                    break;
+                }
+            }
+        }
         net
     };
 

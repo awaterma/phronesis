@@ -237,6 +237,13 @@ enum Command {
         #[command(subcommand)]
         cmd: DecisionCmd,
     },
+    /// Structural code-graph helpers. The graph at `.phronesis/graph.jsonl`
+    /// is derived, gitignored state; rebuild it after `git checkout`, `git
+    /// mv`, or a rebase, which bypass the PostToolUse sensor.
+    Graph {
+        #[command(subcommand)]
+        cmd: GraphCmd,
+    },
     /// One-command setup for a project. Writes hook config, MCP server
     /// registration, a starter rules file, and updates .gitignore.
     /// Also reachable as `setup` and `configure`.
@@ -337,6 +344,28 @@ enum Command {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum GraphCmd {
+    /// Rescan every tracked Rust file and rewrite the graph from scratch.
+    Rebuild {
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Emit JSON instead of a human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report whether the graph still matches what is on disk.
+    Status {
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Emit JSON instead of a human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum DecisionCmd {
     /// Scaffold a new decision page at
     /// `.phronesis/wiki/decisions/<today>-<slug>.md`.
@@ -398,6 +427,7 @@ async fn main() -> anyhow::Result<()> {
             suggest,
         } => handle_wiki_drift(path, wiki_dir, json, suggest),
         Command::Decision { cmd } => handle_decision(cmd),
+        Command::Graph { cmd } => handle_graph(cmd),
         Command::Init {
             path,
             packs,
@@ -1005,6 +1035,60 @@ fn handle_wiki_drift(
         Err(e) => {
             eprintln!("error: {}", e);
             std::process::exit(1);
+        }
+    }
+}
+
+fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
+    use phronesis_mcp::graph::sync;
+
+    match cmd {
+        GraphCmd::Rebuild { path, json } => {
+            let out = sync::rebuild(&path)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "base_edges": out.base,
+                        "derived_edges": out.derived,
+                        "skipped_items": out.skipped,
+                    })
+                );
+            } else {
+                println!(
+                    "Rebuilt graph: {} base edges, {} derived, {} items skipped.",
+                    out.base, out.derived, out.skipped
+                );
+            }
+            Ok(())
+        }
+        GraphCmd::Status { path, json } => {
+            let index = sync::load_index(&sync::index_path(&path))?;
+            let drifted = match sync::check_freshness(&path, &index) {
+                sync::Freshness::Fresh => Vec::new(),
+                sync::Freshness::Stale(files) => files,
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "fresh": drifted.is_empty(),
+                        "drifted_files": drifted,
+                    })
+                );
+            } else if drifted.is_empty() {
+                println!("Graph is fresh.");
+            } else {
+                println!(
+                    "Graph is stale: {} file(s) drifted. Structural rules will warn, not block.",
+                    drifted.len()
+                );
+                for f in drifted.iter().take(10) {
+                    println!("  {f}");
+                }
+                println!("Run `phr-mcp graph rebuild` to resync.");
+            }
+            Ok(())
         }
     }
 }

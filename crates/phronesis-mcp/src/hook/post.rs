@@ -108,6 +108,13 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         net
     };
 
+    // Structural sensor: re-extract the edited file and re-derive whole-graph
+    // facts. Best-effort — the edit has already happened, so a graph write
+    // failure must not interrupt the user (see `graph::sync`).
+    if !file_path.is_empty() {
+        crate::graph::sync::record_from_disk(&security::project_root(), &file_path);
+    }
+
     // Command tools carry no file_path, so the disk-read below yields no
     // content for them — their "content" is the command itself, taken from
     // the payload. Post-phase command rules are advisory (the command
