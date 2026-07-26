@@ -14,11 +14,11 @@ Anthropic's Claude Code, OpenAI Codex, Google's Gemini CLI, and other LLM enviro
 
 ## Subsystems
 
-Beyond the syntactic rule packs, two grounded subsystems extend enforcement past pattern-matching on edits.
+Beyond the syntactic rule packs, three grounded subsystems extend enforcement past pattern-matching on edits.
 
-**Confidence scoring** ([SPEC-confidence-scoring](docs/specs/)) reads build, test, and known-bug signals from a per-toolchain adapter (cargo first) and gates `git commit` by confidence band — three grounded signals say "this is real," not three syntactic checks. Opt in by writing `.phronesis/confidence.json`; the `confidence` pack ships the commit-gate rules and `phr-mcp confidence` reports the current band.
+**Confidence scoring** ([SPEC-confidence-scoring](docs/specs/SPEC-confidence-scoring.md)) reads build, test, and known-bug signals through declarative toolchain definitions: Cargo ships as a built-in, while `.phronesis/toolchains.json` can extend or override the registry for other toolchains. A generic parser turns matched command outcomes into neutral signals and gates `git commit` by confidence band — three grounded signals say "this is real," not three syntactic checks. Opt in by writing `.phronesis/confidence.json`; the `confidence` pack ships the commit-gate rules and `phr-mcp confidence` reports the current band.
 
-**Journey facts** ([SPEC-journey-facts](docs/specs/)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
+**Journey facts** ([SPEC-journey-facts](docs/specs/SPEC-journey-facts.md)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
 
 **Extensible predicates** ([SPEC-extensible-predicates](docs/specs/SPEC-extensible-predicates.md)) let project Rhai providers under `.phronesis/predicates/` derive new, validated LHS facts from normalized hook events. Multi-file operations expose a once-per-operation `event.files` change-set view before per-file `event.file_path` evaluation. MCP tools can test and manage providers, allowing an agent to add new predicate vocabulary before adding the rules that consume it.
 

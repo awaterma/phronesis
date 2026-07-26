@@ -246,13 +246,15 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
         /// Comma-separated starter packs. Available: llm, rust, rhai, python,
-        /// typescript, swift, confidence, none. The `llm` pack carries
+        /// typescript, swift, confidence, journey, none. The `llm` pack carries
         /// deflection rules that catch LLM-bad-behavior phrases ("pre-existing
         /// issue", etc.) and is independent of language. Language packs carry
         /// only language-specific enforcement. The `confidence` pack adds the
         /// commit-gating rules plus a .phronesis/confidence.json opt-in marker
-        /// and a .phronesis/bugs.json registry. Compose freely (e.g.
-        /// "llm,rust,confidence").
+        /// and a .phronesis/bugs.json registry. The `journey` pack scaffolds
+        /// .phronesis/journey.json for project-defined cross-call taggers;
+        /// projects add the journey_* rules they need. Compose freely (e.g.
+        /// "llm,rust,confidence,journey").
         #[arg(long, default_value = "llm")]
         packs: String,
         /// Deprecated alias for --packs. Single value; auto-composed with

@@ -509,8 +509,10 @@
         <h2>Grounded outcomes</h2>
         <span class="role">compile · test · catch-the-bug</span>
         <p>
-          A per-toolchain adapter (cargo first) parses build and
-          test output into neutral <code>signal_pass</code> facts;
+          Declarative toolchain definitions feed one generic parser:
+          Cargo ships as a built-in, while project definitions can
+          extend or override it. Matched command outcomes become
+          neutral <code>signal_pass</code> facts;
           gate rules block or warn a <code>git commit</code> by
           confidence band. Three grounded signals say "this is
           real," not three syntactic checks.

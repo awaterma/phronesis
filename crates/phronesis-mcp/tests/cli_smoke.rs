@@ -45,6 +45,24 @@ fn make_project(dir: &Path) {
 }
 
 #[test]
+fn init_help_lists_journey_as_an_installable_pack() {
+    let out = Command::new(bin())
+        .args(["init", "--help"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "init --help exited non-zero: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("swift, confidence, journey, none"),
+        "installable journey pack missing from help: {stdout}"
+    );
+}
+
+#[test]
 fn audit_exits_zero_and_emits_audit_output() {
     let dir = tempfile::tempdir().unwrap();
     make_project_with_audit_rule(dir.path());
