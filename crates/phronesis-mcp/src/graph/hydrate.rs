@@ -8,7 +8,7 @@
 use super::model::Edge;
 use super::store;
 use super::sync::{Freshness, check_freshness, index_path, load_index};
-use phr::{Fact, Rule};
+use phr::{Fact, Rule, RuleId};
 use std::collections::BTreeSet;
 use std::path::Path;
 
@@ -37,20 +37,38 @@ pub fn needed_relations(rules: &[Rule]) -> BTreeSet<String> {
     needed
 }
 
+/// Ids of rules that depend on the graph, and would therefore be reasoning
+/// from stale data if the graph has drifted.
+pub fn graph_rule_ids(rules: &[Rule]) -> BTreeSet<RuleId> {
+    rules
+        .iter()
+        .filter(|r| {
+            r.conditions
+                .iter()
+                .any(|c| GRAPH_RELATIONS.contains(&c.predicate.as_str()))
+        })
+        .map(|r| RuleId::from(r.id.as_str()))
+        .collect()
+}
+
 /// Edges to assert, plus whether the graph still matches the working tree.
 pub struct Hydration {
     pub facts: Vec<Fact>,
     pub fresh: bool,
     /// Files that drifted, when not fresh.
     pub drifted: Vec<String>,
+    /// Rules reasoning over the graph. When `fresh` is false, the harness
+    /// downgrades these rules' violations to warnings.
+    pub graph_rules: BTreeSet<RuleId>,
 }
 
 /// Select the facts to assert for `rules`.
 ///
-/// Emits a `graph_fresh` fact alongside the structural ones. Freshness is
-/// surfaced as a *fact* rather than enforced in the harness so that a rule
-/// decides for itself whether it may block on a possibly-stale graph — the
-/// same participatory model the rest of phronesis uses.
+/// Only relations named by some rule are loaded, and only facts *about the
+/// code* are asserted. Whether the graph is currently trustworthy is a
+/// property of the enforcement machinery, not of the codebase, so it is
+/// returned to the caller rather than injected into working memory — rules
+/// describe the world, not the health of the tool observing it.
 pub fn hydrate(root: &Path, rules: &[Rule]) -> Hydration {
     let needed = needed_relations(rules);
     if needed.is_empty() {
@@ -58,6 +76,7 @@ pub fn hydrate(root: &Path, rules: &[Rule]) -> Hydration {
             facts: Vec::new(),
             fresh: true,
             drifted: Vec::new(),
+            graph_rules: BTreeSet::new(),
         };
     }
 
@@ -68,22 +87,17 @@ pub fn hydrate(root: &Path, rules: &[Rule]) -> Hydration {
         Freshness::Stale(files) => (false, files),
     };
 
-    let mut facts: Vec<Fact> = edges
+    let facts: Vec<Fact> = edges
         .iter()
         .filter(|e| needed.contains(&e.p))
         .map(Edge::to_fact)
         .collect();
-    facts.push(Fact {
-        id: "graph_fresh".to_string(),
-        predicate: "graph_fresh".to_string(),
-        args: vec![fresh.to_string()],
-        timestamp: 0,
-    });
 
     Hydration {
         facts,
         fresh,
         drifted,
+        graph_rules: graph_rule_ids(rules),
     }
 }
 
@@ -96,7 +110,7 @@ mod tests {
 
     fn rule_using(predicate: &str) -> Rule {
         Rule {
-            id: "r".into(),
+            id: format!("uses-{predicate}"),
             priority: 0,
             conditions: vec![Condition {
                 predicate: predicate.into(),
@@ -146,11 +160,7 @@ mod tests {
         let d = project_with_graph();
         let h = hydrate(d.path(), &[rule_using("defines_fn")]);
         assert!(h.fresh);
-        assert!(
-            h.facts
-                .iter()
-                .any(|f| f.predicate == "graph_fresh" && f.args == vec!["true".to_string()])
-        );
+        assert!(h.drifted.is_empty());
     }
 
     #[test]
@@ -160,18 +170,41 @@ mod tests {
         let h = hydrate(d.path(), &[rule_using("defines_fn")]);
         assert!(!h.fresh);
         assert_eq!(h.drifted, vec!["src/a.rs".to_string()]);
+    }
+
+    #[test]
+    fn only_facts_about_code_reach_working_memory() {
+        // Graph health is a property of the enforcement machinery, not of the
+        // codebase. It is returned to the caller, never asserted.
+        let d = project_with_graph();
+        std::fs::write(d.path().join("src/a.rs"), "fn f() {}\nfn sneaky() {}").expect("write");
+        let h = hydrate(d.path(), &[rule_using("defines_fn")]);
+        assert!(!h.fresh, "precondition: this graph is stale");
         assert!(
             h.facts
                 .iter()
-                .any(|f| f.predicate == "graph_fresh" && f.args == vec!["false".to_string()])
+                .all(|f| GRAPH_RELATIONS.contains(&f.predicate.as_str())),
+            "only closed-set code relations may be asserted"
         );
     }
 
     #[test]
-    fn a_missing_graph_yields_only_the_freshness_fact() {
+    fn a_missing_graph_asserts_nothing() {
         let d = TempDir::new().expect("tempdir");
         let h = hydrate(d.path(), &[rule_using("defines_fn")]);
-        assert_eq!(h.facts.len(), 1);
-        assert_eq!(h.facts[0].predicate, "graph_fresh");
+        assert!(h.facts.is_empty());
+    }
+
+    #[test]
+    fn rules_reading_the_graph_are_identified_for_downgrade() {
+        let ids = graph_rule_ids(&[rule_using("untested"), rule_using("file_path")]);
+        assert_eq!(ids.len(), 1);
+        assert!(ids.contains(&"uses-untested".into()));
+    }
+
+    #[test]
+    fn a_rule_that_ignores_the_graph_is_never_downgraded() {
+        let ids = graph_rule_ids(&[rule_using("file_path")]);
+        assert!(ids.is_empty());
     }
 }

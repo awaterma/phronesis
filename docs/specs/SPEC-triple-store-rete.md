@@ -124,7 +124,7 @@ Read-filter-rewrite of the entire file on every save is not log-structured merge
 `git checkout`, `git mv`, branch switches, rebases, and plain shell edits never reach `PostToolUse`. The graph silently drifts, and drift in an enforcement layer means false blocks. Phase One mitigations:
 
 * **Content hash per source file** stored alongside the graph (`.phronesis/graph.index`). At hydrate time, cheaply stat/hash tracked files; if any hash mismatches, mark the graph **stale**.
-* **Stale graph downgrades enforcement to warn**, never block, and emits a one-line notice with the resync command.
+* **Stale graph downgrades enforcement to warn**, never block. The downgrade is applied by the harness to the rules that read graph relations (§5.4), with a one-line stderr notice naming the resync command.
 * **`phr-mcp graph rebuild`** performs a full scan. Recommended as a `post-checkout` / `post-merge` git hook; documented, not auto-installed.
 
 ---
@@ -241,11 +241,15 @@ Rules are ordinary Phronesis rules over the relations in §1.2 — no new syntax
 
 All Phase-One structural rules ship as `warn`. Promotion to `constraint_violation` requires a measured false-positive rate from real use (§8, task 6). Blocking on a heuristic that has never been measured is how an enforcement layer loses the user's trust permanently.
 
-### 5.4 Freshness is a fact, not harness logic
+### 5.4 Freshness is harness state, never a fact
 
-Hydration asserts `graph_fresh(true|false)` alongside the structural relations. A rule that wants to *block* must include `{"predicate": "graph_fresh", "args": ["true"]}` in its `when`; a rule content to warn on possibly-drifted data can omit it.
+**Only facts about the code are asserted.** Working memory holds the closed relation set of §1.2 and nothing else. Whether the graph is currently trustworthy is a property of the *enforcement machinery*, not of the codebase, and it does not belong in the fact base.
 
-This keeps the stale-downgrade decision in `rules.json` rather than hard-coded in the hook, which is the same participatory model the rest of phronesis uses — and it means the policy is reviewable in git.
+An earlier revision proposed asserting `graph_fresh(true|false)` and requiring every blocking rule to carry a `graph_fresh true` condition. **That design is rejected.** It conflates two different kinds of statement — "this function is untested" describes the world; "my index is current" describes the tool — and it taxes every rule author with boilerplate about machinery they did not ask to know about. A fact base that mixes domain facts with self-diagnostics stops being a model of the codebase.
+
+Instead, `hydrate` *returns* freshness to the caller along with the set of rule ids that read graph relations. When the graph has drifted, the hook demotes those rules' violations to warnings (`hook_logged::demote_violations_from`) before deciding the exit code. The rule is untouched and still says `block`; the harness declines to act on a verdict whose evidence it cannot vouch for, and says so on stderr.
+
+The same seam generalizes: any future evidence source that can go stale gets a downgrade, without inventing a fact per source.
 
 ### 5.5 Demand-gated hydration
 
@@ -355,7 +359,7 @@ The graph is loaded only if some rule in `rules.json` names one of the relations
 
 * Recorded measured latency for both hook paths and made hydration demand-gated (§2.3, §5.5).
 * Corrected §4.4's error-direction claim: short-name matching over-approximates coverage, so the heuristic errs toward silence, not toward false accusation. The earlier text claimed the opposite.
-* Added `graph_fresh` as an asserted fact so the stale-downgrade policy lives in `rules.json` (§5.4).
+* Kept machinery health out of working memory: staleness is returned to the harness, which demotes affected rules' violations to warnings. An intermediate draft asserted a `graph_fresh` fact and was rejected — the fact base models the codebase, not the tool's self-diagnostics (§5.4).
 * Measured the first corpus; `untested` alone is too noisy for a rule of its own (§10).
 
 **Revision 2** — applied engine cross-check review (`wme.rs`, `engine_types.rs`, `beta_network.rs`, `variable_binding.rs`):

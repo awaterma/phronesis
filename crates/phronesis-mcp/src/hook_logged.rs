@@ -56,6 +56,30 @@ impl LoggedConsequence {
     }
 }
 
+/// Demote violations raised by `rule_ids` to warnings, in place.
+///
+/// Used when a rule's evidence base is known to be untrustworthy — today,
+/// when the structural graph has drifted from the working tree. The rule
+/// itself is unchanged and still says "block"; the harness declines to act
+/// on that verdict because it cannot vouch for the input. Keeping this
+/// decision here rather than in `rules.json` means rule authors describe the
+/// code, not the reliability of the machinery reading it.
+///
+/// Returns the number of consequences demoted.
+pub(crate) fn demote_violations_from(
+    items: &mut [LoggedConsequence],
+    rule_ids: &std::collections::BTreeSet<phr::RuleId>,
+) -> usize {
+    let mut demoted = 0;
+    for c in items.iter_mut() {
+        if c.action_type == "constraint_violation" && rule_ids.contains(&c.rule_id) {
+            c.action_type = "constraint_warning".to_string();
+            demoted += 1;
+        }
+    }
+    demoted
+}
+
 /// Split `LoggedConsequence`s into the (violations, warnings) string-lists
 /// the hook uses for stderr output. Violations are messages whose
 /// `action_type == "constraint_violation"`, warnings are
@@ -73,4 +97,63 @@ pub(crate) fn split_messages_by_action_type(
         }
     }
     (violations, warnings)
+}
+
+#[cfg(test)]
+mod demote_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn consequence(rule_id: &str, action_type: &str) -> LoggedConsequence {
+        LoggedConsequence {
+            rule_id: rule_id.into(),
+            action_type: action_type.to_string(),
+            message: format!("from {rule_id}"),
+            bindings: HashMap::new(),
+        }
+    }
+
+    fn ids(names: &[&str]) -> BTreeSet<phr::RuleId> {
+        names.iter().map(|n| phr::RuleId::from(*n)).collect()
+    }
+
+    #[test]
+    fn a_named_rules_violation_becomes_a_warning() {
+        let mut items = vec![consequence("graph-rule", "constraint_violation")];
+        assert_eq!(demote_violations_from(&mut items, &ids(&["graph-rule"])), 1);
+        assert_eq!(items[0].action_type, "constraint_warning");
+    }
+
+    #[test]
+    fn an_unnamed_rules_violation_still_blocks() {
+        let mut items = vec![consequence("other-rule", "constraint_violation")];
+        assert_eq!(demote_violations_from(&mut items, &ids(&["graph-rule"])), 0);
+        assert_eq!(items[0].action_type, "constraint_violation");
+    }
+
+    #[test]
+    fn an_existing_warning_is_left_alone() {
+        let mut items = vec![consequence("graph-rule", "constraint_warning")];
+        assert_eq!(demote_violations_from(&mut items, &ids(&["graph-rule"])), 0);
+        assert_eq!(items[0].action_type, "constraint_warning");
+    }
+
+    #[test]
+    fn the_message_survives_demotion() {
+        let mut items = vec![consequence("graph-rule", "constraint_violation")];
+        demote_violations_from(&mut items, &ids(&["graph-rule"]));
+        assert_eq!(items[0].message, "from graph-rule");
+    }
+
+    #[test]
+    fn demotion_makes_the_split_report_it_as_a_warning() {
+        let mut items = vec![consequence("graph-rule", "constraint_violation")];
+        demote_violations_from(&mut items, &ids(&["graph-rule"]));
+        let (violations, warnings) = split_messages_by_action_type(&items);
+        assert!(
+            violations.is_empty(),
+            "a stale-evidence rule must not block"
+        );
+        assert_eq!(warnings.len(), 1);
+    }
 }
