@@ -587,14 +587,16 @@
       </h1>
       <p class="lede">
         A reader's guide to the rules that ship by default in
-        <code>phr-mcp init --packs llm,rust,confidence,journey</code>.
+        <code>phr-mcp init --packs llm,rust,confidence,journey,structural</code>.
         Each entry carries its predicate, its severity, a one-line
         distillation, and a worked example drawn from real-world
         Rust code. The <em>confidence</em> pack adds two gate rules
         that count grounded build/test/known-bug signals; the
         <em>journey</em> pack ships taggers and aggregator-fact
         references that let projects write their own trajectory
-        rules.
+        rules. The <em>structural</em> pack reasons over a
+        code graph built at the hook boundary, flagging untested
+        panicking paths and import cycles in the file you are editing.
       </p>
     </div>
     <div class="values">
@@ -694,6 +696,12 @@
         <li><a href="#journey-predicates">Aggregator predicates</a></li>
         <li><a href="#journey-taggers">Project-defined taggers</a></li>
         <li><a href="#journey-examples">Example rules (project-defined)</a></li>
+      </ol>
+
+      <div class="pack-head">Pack · Structural</div>
+      <ol>
+        <li><a href="#warn-untested-risky-call">Untested call to a panicking API</a></li>
+        <li><a href="#warn-import-cycle">Module in an import cycle</a></li>
       </ol>
 
       <div class="pack-head">Other packs</div>
@@ -1272,6 +1280,27 @@
     <h3 class="rule-id">confidence-medium-warns-commit</h3>
     <p class="rule-summary">Medium confidence — one grounded signal is missing. Review before presenting this as done.</p>
     <div class="rule-body"><code>bash_command_matches + __script__</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-structural">
+<h2 class="pack-name">structural pack</h2>
+<article class="rule" data-level="warn" id="warn-untested-risky-call">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">structural</span></div>
+    <h3 class="rule-id">warn-untested-risky-call</h3>
+    <p class="rule-summary">`?func` (in ?file) calls `?api`, which can panic, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged.</p>
+    <div class="rule-body"><code>edited_file + file_type + defines_fn + calls_api + untested</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-import-cycle">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">structural</span></div>
+    <h3 class="rule-id">warn-import-cycle</h3>
+    <p class="rule-summary">Module `?module` is part of import cycle `?cycle`. Mutually importing modules can't be understood, tested, or extracted independently, and the cycle tends to attract more coupling over time. Move the shared items into a third module both can depend on.</p>
+    <div class="rule-body"><code>edited_file + declares_module + in_cycle</code></div>
   </div>
 </article>
 </section>

@@ -10,17 +10,14 @@ use crate::init::Pack;
 pub const BEGIN_MARKER: &str = "<!-- BEGIN GENERATED RULES -->";
 pub const END_MARKER: &str = "<!-- END GENERATED RULES -->";
 
-/// Content-bearing default packs, in catalogue order. `Journey` and
-/// `None` ship no starter rules and are omitted.
-pub const CATALOGUE_PACKS: &[Pack] = &[
-    Pack::Llm,
-    Pack::Rust,
-    Pack::Rhai,
-    Pack::Python,
-    Pack::TypeScript,
-    Pack::Swift,
-    Pack::Confidence,
-];
+/// Packs the catalogue documents: every pack that ships rules.
+///
+/// Derived from `Pack::ALL` rather than kept as a second hand-maintained
+/// list. The previous hard-coded list drifted the moment a pack was added —
+/// the rules shipped, the page did not mention them, and nothing failed.
+/// Packs with no starter rules (`journey`, `none`) fall out naturally,
+/// because `render_rules_html` skips empty rule sets.
+pub const CATALOGUE_PACKS: &[Pack] = Pack::ALL;
 
 /// Render the generated region: a version stamp followed by one
 /// `<section>` per pack, one `<article class="rule">` per rule.
@@ -215,6 +212,45 @@ mod tests {
                 !html.contains(bad),
                 "unescaped fragment {bad:?} leaked into output"
             );
+        }
+    }
+
+    /// The bug this pins: `CATALOGUE_PACKS` used to be a second, hand-kept
+    /// list of packs. Shipping the `structural` pack updated `Pack` but not
+    /// that list, so two real rules silently never reached the published
+    /// page — and nothing failed. Every rule a user can install must appear.
+    #[test]
+    fn every_shipped_rule_appears_in_the_catalogue() {
+        let html = render_rules_html();
+        for pack in Pack::ALL {
+            let rules = pack.rules();
+            for rule in rules["rules"].as_array().cloned().unwrap_or_default() {
+                let id = rule["id"].as_str().unwrap_or_default();
+                assert!(
+                    html.contains(id),
+                    "rule `{id}` from the {} pack is missing from the catalogue",
+                    pack.label()
+                );
+            }
+        }
+    }
+
+    /// A pack that ships rules must get its own section heading, so readers
+    /// can see which packs exist rather than only which rules do.
+    #[test]
+    fn every_pack_with_rules_gets_a_section() {
+        let html = render_rules_html();
+        for pack in Pack::ALL {
+            let has_rules = pack.rules()["rules"]
+                .as_array()
+                .is_some_and(|r| !r.is_empty());
+            if has_rules {
+                assert!(
+                    html.contains(&format!("id=\"pack-{}\"", pack.label())),
+                    "the {} pack ships rules but has no catalogue section",
+                    pack.label()
+                );
+            }
         }
     }
 }

@@ -44,6 +44,25 @@ pub enum Pack {
 }
 
 impl Pack {
+    /// Every pack, in the order documentation should present them.
+    ///
+    /// Consumers that must cover all packs (the catalogue generator) iterate
+    /// this rather than keeping their own list, so a new pack cannot ship
+    /// undocumented. `label()` below matches exhaustively, so adding a variant
+    /// breaks the build — at which point this list is the next thing to fix.
+    pub const ALL: &'static [Pack] = &[
+        Self::Llm,
+        Self::Rust,
+        Self::Rhai,
+        Self::Python,
+        Self::TypeScript,
+        Self::Swift,
+        Self::Confidence,
+        Self::Journey,
+        Self::Structural,
+        Self::None,
+    ];
+
     fn parse(s: &str) -> Result<Self, InitError> {
         match s.trim().to_lowercase().as_str() {
             // `llm` and the deprecated alias `minimal` (pre-pack-split naming)
