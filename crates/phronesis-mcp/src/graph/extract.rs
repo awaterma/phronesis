@@ -72,14 +72,47 @@ fn text<'a>(node: Node, source: &'a [u8]) -> &'a str {
     node.utf8_text(source).unwrap_or("")
 }
 
-/// True when an attribute attached to `node` mentions `test` — covers
-/// `#[test]`, `#[tokio::test]`, and `#[cfg(test)]`.
+/// True when `attr` is a test marker: `#[test]`, `#[tokio::test]`, or a
+/// `cfg` gate naming `test`.
+///
+/// Matches the attribute's **path**, not its text. A substring search for
+/// `test` treats `#[tool(description = "...which tests cover...")]` as a test
+/// marker, which removes the function from `defines_fn` and — far worse —
+/// turns every call in its body into a `tested_by` edge, silently inflating
+/// coverage across the graph.
+fn is_test_attribute(attr_text: &str) -> bool {
+    let inner = attr_text
+        .trim()
+        .trim_start_matches("#")
+        .trim_start_matches("[")
+        .trim_end_matches("]")
+        .trim();
+    // The path is everything before any argument list.
+    let path = inner.split('(').next().unwrap_or("").trim();
+    if path == "test" || path.ends_with("::test") {
+        return true;
+    }
+    // `#[cfg(test)]`, `#[cfg(all(test, ...))]` — the gate names `test` as a
+    // bare token, never as part of a longer identifier or a string.
+    if path == "cfg" {
+        let args = inner
+            .split_once('(')
+            .map(|(_, rest)| rest.trim_end_matches(')'))
+            .unwrap_or("");
+        return args
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|tok| tok == "test");
+    }
+    false
+}
+
+/// True when a test-marker attribute is attached to `node`.
 fn has_test_attribute(node: Node, source: &[u8]) -> bool {
     let mut sib = node.prev_sibling();
     while let Some(s) = sib {
         match s.kind() {
             "attribute_item" => {
-                if text(s, source).contains("test") {
+                if is_test_attribute(text(s, source)) {
                     return true;
                 }
             }
@@ -644,6 +677,35 @@ mod tests {
     fn a_non_test_function_does_not_create_coverage() {
         let out = run("src/a.rs", "fn helper() { fire(); }");
         assert!(edges_of(&out, "tested_by").is_empty());
+    }
+
+    #[test]
+    fn an_attribute_that_merely_mentions_tests_is_not_a_test_attribute() {
+        // `#[tool(description = "...which tests cover...")]` in server.rs was
+        // read as `#[test]` by a substring match. The function then vanished
+        // from `defines_fn` and — far worse — every call in its body became a
+        // `tested_by` edge, silently inflating coverage.
+        let src =
+            "#[tool(description = \"which tests cover a function\")]\nfn handler() { helper(); }";
+        let out = run("src/a.rs", src);
+        assert!(
+            edges_of(&out, "tested_by").is_empty(),
+            "must not emit coverage: {:?}",
+            edges_of(&out, "tested_by")
+        );
+        assert_eq!(
+            edges_of(&out, "defines_fn")[0][1],
+            "crate::a::handler",
+            "must still be a defined function"
+        );
+    }
+
+    #[test]
+    fn a_doc_comment_mentioning_tests_is_not_a_test_attribute() {
+        let src = "#[doc = \"run the tests first\"]\nfn helper() { inner(); }";
+        let out = run("src/a.rs", src);
+        assert!(edges_of(&out, "tested_by").is_empty());
+        assert_eq!(edges_of(&out, "defines_fn").len(), 1);
     }
 
     #[test]
