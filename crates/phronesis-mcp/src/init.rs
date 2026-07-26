@@ -1867,6 +1867,7 @@ fn structural_rules() -> Value {
                 "id": "warn-untested-risky-call",
                 "phase": "pre",
                 "priority": 20,
+                "audit": true,
                 "when": [
                     {"edited_file": "?file"},
                     {"file_type": ["?file", "production"]},
@@ -1880,6 +1881,7 @@ fn structural_rules() -> Value {
                 "id": "warn-import-cycle",
                 "phase": "pre",
                 "priority": 20,
+                "audit": true,
                 "when": [
                     {"edited_file": "?file"},
                     {"declares_module": ["?file", "?module"]},
@@ -2278,14 +2280,16 @@ mod tests {
     }
 
     #[test]
-    fn structural_rules_are_not_audit_scannable() {
-        // The audit engine only understands content/path predicates; a graph
-        // rule marked `audit: true` would silently scan nothing and read as
-        // "zero violations" rather than "not applicable".
+    fn structural_rules_opt_into_audit() {
+        // Graph rules are invisible to the file-scanning audit loop, but
+        // `graph::audit` evaluates them against the whole graph and merges
+        // the findings. Opting in is what routes them there — without it a
+        // clean audit would mean "never checked", not "nothing found".
         for rule in structural_rules_vec() {
-            assert!(
-                rule.get("audit").is_none(),
-                "rule {} must not opt into audit",
+            assert_eq!(
+                rule.get("audit").and_then(|v| v.as_bool()),
+                Some(true),
+                "rule {} must opt into audit",
                 rule["id"]
             );
         }

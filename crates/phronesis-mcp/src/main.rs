@@ -397,7 +397,7 @@ async fn main() -> anyhow::Result<()> {
             path,
             json,
             fail_on,
-        } => handle_audit(rule, path, json, fail_on),
+        } => handle_audit(rule, path, json, fail_on).await,
         Command::Trend {
             last,
             since,
@@ -655,7 +655,7 @@ async fn handle_journey(json: bool, explain: Option<String>) -> anyhow::Result<(
     Ok(())
 }
 
-fn handle_audit(
+async fn handle_audit(
     rule: Option<String>,
     path: Option<PathBuf>,
     json: bool,
@@ -694,7 +694,22 @@ fn handle_audit(
             scan_root,
             rule_filter: rule.clone(),
         };
-        let report = run(&rules, &opts);
+        let mut report = run(&rules, &opts);
+        // Structural rules join relations across the whole repository, so the
+        // file-scan loop above skips them. Evaluate them against the graph and
+        // fold the findings in.
+        {
+            let engine_rules: Vec<phr::Rule> = rules
+                .rules
+                .iter()
+                .filter(|r| r.audit == Some(true))
+                .map(|r| rules_file::rule_from_disk(r).0)
+                .collect();
+            let hits =
+                phronesis_mcp::graph::audit::audit_graph_rules(&project_root, &engine_rules).await;
+            phronesis_mcp::audit::merge_graph_hits(&mut report, &hits, rule.as_deref());
+        }
+        let report = report;
         let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
         let diag = phronesis_mcp::audit::empty_result_diagnostic(
             &report,

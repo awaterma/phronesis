@@ -289,6 +289,16 @@ For module-keyed relations, `declares_module` bridges file to module:
 
 `edited_file` exists because the pre-existing `file_path` fact cannot serve this purpose: hosts send **absolute** paths while the graph is keyed **repo-relative**, so joining the two silently never matches — a failure that looks exactly like "no violations found". `hydrate` normalizes the host's path into the graph's form, and drops paths outside the project.
 
+### 5.9 Whole-tree audit
+
+`phr-mcp audit` sweeps the repository rather than one edit. Graph rules are invisible to its file-scanning loop — their conditions join relations across the whole project instead of matching text in one file — so they are evaluated separately and merged.
+
+The evaluation is one line of insight: **assert every file as the `edited_file`, then fire once.** A hook asks "is there a problem in this file?"; an audit asks the same question with that binding freed.
+
+Critically, this runs the *real* network with the *same* rules. A bespoke matcher for audit would be a second implementation of joins and variable binding, free to drift — and a rule that blocks at the hook while reporting clean in the audit is worse than having no audit. Reusing the engine makes disagreement impossible by construction.
+
+Structural rules therefore set `audit: true`. Findings carry no line number (the graph records *that* a function is untested, not where), so they use the line-1 placeholder plus detail string that AST hits already use. The detail is the bound entities, not the rule's prose: audit lists many hits per rule, and repeating a paragraph of guidance for each buries the only part that differs.
+
 ### 5.8 Evaluation pipeline
 
 ```
@@ -396,7 +406,7 @@ For module-keyed relations, `declares_module` bridges file to module:
 * Kept machinery health out of working memory: staleness is returned to the harness, which demotes affected rules' violations to warnings. An intermediate draft asserted a `graph_fresh` fact and was rejected — the fact base models the codebase, not the tool's self-diagnostics (§5.4).
 * Measured the first corpus; `untested` alone is too noisy for a rule of its own (§10).
 * Added `edited_file` + `declares_module` and required every structural rule to scope to the edited file. Found by running the shipped pack, not by review: the §5.1/§5.2 rules as written matched repo-wide state and fired on every tool call (§5.7).
-* Shipped the `structural` pack (`phr-mcp init --packs structural`) with both measured rules, warn-only. `init` builds the graph itself: without it the pack installs silent, and a rule that cannot fire is indistinguishable from one that found nothing. The build is non-fatal — writing config is what `init` is for, and a missing graph is recoverable with `graph rebuild` while a failed `init` leaves no enforcement at all.
+* Shipped the `structural` pack (`phr-mcp init --packs structural`) with both measured rules, warn-only, and made them auditable — `phr-mcp audit` sweeps the whole tree by asserting every file as the edited file and firing the real network once (§5.9). `init` builds the graph itself: without it the pack installs silent, and a rule that cannot fire is indistinguishable from one that found nothing. The build is non-fatal — writing config is what `init` is for, and a missing graph is recoverable with `graph rebuild` while a failed `init` leaves no enforcement at all.
 * Deleted the `provenance` row from §1.2 — provenance is the `src` field on each edge, never a relation.
 
 **Revision 2** — applied engine cross-check review (`wme.rs`, `engine_types.rs`, `beta_network.rs`, `variable_binding.rs`):

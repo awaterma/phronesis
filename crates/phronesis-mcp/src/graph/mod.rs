@@ -8,6 +8,7 @@
 //! No engine changes are required: edges hydrate as ordinary
 //! `Fact { predicate, args }` with the relation as the predicate.
 
+pub mod audit;
 pub mod derive;
 pub mod extract;
 pub mod hydrate;
