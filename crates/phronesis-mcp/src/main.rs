@@ -354,6 +354,28 @@ enum GraphCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Query the graph by relation and positional arguments. `*` is a
+    /// wildcard in any position; omitting the relation lists the vocabulary.
+    ///
+    /// Examples:
+    ///   graph query                              # what relations exist
+    ///   graph query tested_by fire_all            # which tests cover it
+    ///   graph query imports '*' crate::wme        # what depends on wme
+    ///   graph query untested                      # every untested function
+    Query {
+        /// Relation, then positional argument constraints. `*` matches any.
+        #[arg(value_name = "RELATION [ARG...]")]
+        pattern: Vec<String>,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Maximum rows to print. 0 means no limit.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Report whether the graph still matches what is on disk.
     Status {
         /// Project root (defaults to current directory).
@@ -1074,6 +1096,76 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                     "Rebuilt graph: {} base edges, {} derived, {} items skipped.",
                     out.base, out.derived, out.skipped
                 );
+            }
+            Ok(())
+        }
+        GraphCmd::Query {
+            pattern,
+            path,
+            limit,
+            json,
+        } => {
+            use phronesis_mcp::graph::{query as q, store};
+            let edges = store::load(&store::graph_path(&path))?;
+            if edges.is_empty() {
+                eprintln!(
+                    "phronesis: no graph at {}. Run `phr-mcp graph rebuild` first.",
+                    store::graph_path(&path).display()
+                );
+                return Ok(());
+            }
+            // No pattern is a discovery request, not an empty result set.
+            if pattern.is_empty() {
+                let summary = q::relation_summary(&edges);
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "relations": summary
+                        .iter()
+                        .map(|(r, n)| serde_json::json!({"relation": r, "edges": n}))
+                        .collect::<Vec<_>>() })
+                    );
+                } else {
+                    println!("{:<18} {:>7}", "Relation", "Edges");
+                    for (r, n) in &summary {
+                        println!("{r:<18} {n:>7}");
+                    }
+                    println!("\nQuery with: phr-mcp graph query <relation> [arg...]  ('*' = any)");
+                }
+                return Ok(());
+            }
+
+            let pat = q::Pattern::parse(&pattern);
+            let total = q::count(&edges, &pat);
+            let rows = q::query(&edges, &pat, limit);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "total": total,
+                        "returned": rows.len(),
+                        "results": rows
+                            .iter()
+                            .map(|e| serde_json::json!({
+                                "relation": e.p, "args": e.a, "derived": e.d,
+                            }))
+                            .collect::<Vec<_>>(),
+                    })
+                );
+            } else {
+                for e in &rows {
+                    println!("{:<18} {}", e.p, e.a.join("  "));
+                }
+                // Always state the total: a capped list that reported only its
+                // own length would read as a complete answer.
+                if rows.len() < total {
+                    println!(
+                        "\n{} of {total} match(es); raise --limit for more.",
+                        rows.len()
+                    );
+                } else {
+                    println!("\n{total} match(es).");
+                }
             }
             Ok(())
         }

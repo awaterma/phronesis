@@ -294,3 +294,21 @@ pub struct SubmitSuggestionParams {
     #[serde(default)]
     pub summary: Option<String>,
 }
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct QueryCodeGraphParams {
+    /// Relation to match, e.g. `tested_by`, `defines_fn`, `imports`,
+    /// `untested`, `in_cycle`, `calls_api`, `file_type`, `declares_module`.
+    /// Omit to list the available relations and their edge counts.
+    #[serde(default)]
+    pub relation: Option<String>,
+    /// Positional argument constraints, in order. Use `"*"` to leave a
+    /// position unconstrained — e.g. `["*", "crate::wme"]` on `imports`
+    /// asks "what depends on crate::wme?".
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// Maximum rows returned. Defaults to 50; `0` means no limit. The
+    /// response always reports the unlimited total so truncation is visible.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}

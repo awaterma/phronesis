@@ -49,7 +49,7 @@ This works in the engine **today, unmodified**. It reuses the predicate index fo
 | `file_type` | `[file, kind]` | `production` \| `test` \| `example` \| `build` |
 | `defines_fn` | `[file, func]` | Fully-qualified function path defined in file |
 | `calls_api` | `[func, callee]` | Call edge to a watched API (closed watchlist, §4.3) |
-| `imports` | `[file, module]` | Module-level dependency edge |
+| `imports` | `[module, module]` | Intra-crate module dependency. `crate::`, `super::` and `self::` anchors all resolve to absolute module paths (§4.7) |
 | `tested_by` | `[func, test_func]` | Test coverage edge (§4.4) |
 | `in_cycle` | `[module, cycle_id]` | Module participates in an import cycle (§4.5) |
 | `declares_module` | `[file, module]` | Links a file to its module, so module-keyed relations can be scoped to a file (§5.7) |
@@ -289,6 +289,23 @@ For module-keyed relations, `declares_module` bridges file to module:
 
 `edited_file` exists because the pre-existing `file_path` fact cannot serve this purpose: hosts send **absolute** paths while the graph is keyed **repo-relative**, so joining the two silently never matches — a failure that looks exactly like "no violations found". `hydrate` normalizes the host's path into the graph's form, and drops paths outside the project.
 
+### 4.7 Relative import anchors
+
+`use super::` accounts for roughly 40% of this repository's intra-crate use statements. An earlier revision recorded only `crate::`-anchored paths, which silently dropped them: fan-in was understated, orphan-module counts were meaningless, and — most seriously — **cycle detection could not see any cycle formed through a relative import**. That is a recall failure, invisible by construction, in one of the two shipped rules.
+
+Anchors now resolve against the module the statement is *written in*, not the file:
+
+* `crate::a::b::Item` → `crate::a::b`
+* `super::x::Item` from `crate::a::b` → `crate::a::x`
+* `self::x` from `crate::a::b` → `crate::a::b::x`
+* repeated `super::` climbs one level each; climbing past `crate` yields no edge
+
+Resolving against the enclosing scope rather than the file matters for the single most common use statement in Rust: `#[cfg(test)] mod tests { use super::*; }`. Against the file it would invent an edge to the file's *parent*; against the scope it correctly reduces to a self-import and is dropped.
+
+Effect on this repository: `imports` rose from 99 to 138 edges (+39%). Cycle count was unchanged at 2, which retroactively confirms the earlier finding was complete — but that was luck, not design.
+
+---
+
 ### 5.9 Whole-tree audit
 
 `phr-mcp audit` sweeps the repository rather than one edit. Graph rules are invisible to its file-scanning loop — their conditions join relations across the whole project instead of matching text in one file — so they are evaluated separately and merged.
@@ -397,6 +414,16 @@ Structural rules therefore set `audit: true`. Findings carry no line number (the
 
 ---
 
+## 10.1 Query surface
+
+`phr-mcp graph query <relation> [arg...]` and the `query_code_graph` MCP tool expose the graph directly. The pattern language mirrors the fact shape — relation plus positional arguments, `*` for a wildcard — rather than inventing a vocabulary of named questions: one concept to learn, and it composes with any relation added later instead of needing a new verb per question.
+
+Both always report the unlimited total alongside a truncated result set. A capped list that reported only its own length would read as a complete answer.
+
+Omitting the relation returns the relation inventory with edge counts, so the vocabulary is discoverable without the spec.
+
+---
+
 ## 11. Revision History
 
 **Revision 3** — Phase One implemented (`crates/phronesis-mcp/src/graph/`), 92 unit tests:
@@ -407,6 +434,8 @@ Structural rules therefore set `audit: true`. Findings carry no line number (the
 * Measured the first corpus; `untested` alone is too noisy for a rule of its own (§10).
 * Added `edited_file` + `declares_module` and required every structural rule to scope to the edited file. Found by running the shipped pack, not by review: the §5.1/§5.2 rules as written matched repo-wide state and fired on every tool call (§5.7).
 * Shipped the `structural` pack (`phr-mcp init --packs structural`) with both measured rules, warn-only, and made them auditable — `phr-mcp audit` sweeps the whole tree by asserting every file as the edited file and firing the real network once (§5.9). `init` builds the graph itself: without it the pack installs silent, and a rule that cannot fire is indistinguishable from one that found nothing. The build is non-fatal — writing config is what `init` is for, and a missing graph is recoverable with `graph rebuild` while a failed `init` leaves no enforcement at all.
+* Fixed `use super::`/`self::` resolution — 40% of intra-crate imports were being dropped, leaving cycle detection blind to any cycle formed through a relative import (§4.7).
+* Added a query surface: `phr-mcp graph query` and the `query_code_graph` MCP tool (§10.1).
 * Deleted the `provenance` row from §1.2 — provenance is the `src` field on each edge, never a relation.
 
 **Revision 2** — applied engine cross-check review (`wme.rs`, `engine_types.rs`, `beta_network.rs`, `variable_binding.rs`):

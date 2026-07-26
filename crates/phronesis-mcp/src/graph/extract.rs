@@ -149,7 +149,7 @@ impl Sensor<'_> {
                 self.walk_children(node, &inner);
             }
             "function_item" => self.visit_function(node, scope),
-            "use_declaration" => self.visit_use(node),
+            "use_declaration" => self.visit_use(node, scope),
             _ => self.walk_children(node, scope),
         }
     }
@@ -249,7 +249,13 @@ impl Sensor<'_> {
 
     /// Intra-crate `use` declarations become `imports` edges. External crates
     /// are ignored: only intra-crate edges can form the cycles we detect.
-    fn visit_use(&mut self, node: Node) {
+    ///
+    /// Relative anchors (`super::`, `self::`) resolve against `scope`, the
+    /// module the statement is written in — not the file. `#[cfg(test)] mod
+    /// tests { use super::*; }` is the most common use statement in Rust, and
+    /// resolving it against the file would invent an edge to the file's
+    /// parent instead of correctly recognizing a self-import.
+    fn visit_use(&mut self, node: Node, scope: &Scope) {
         let Some(arg) = node.child_by_field_name("argument") else {
             return;
         };
@@ -261,15 +267,41 @@ impl Sensor<'_> {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .collect();
-        if segments.first() != Some(&"crate") {
-            return;
-        }
+
+        // Resolve the leading anchor to an absolute module path.
+        let mut resolved: Vec<String> = match segments.first() {
+            Some(&"crate") => {
+                segments.remove(0);
+                vec!["crate".to_string()]
+            }
+            Some(&"self") => {
+                segments.remove(0);
+                scope.path.clone()
+            }
+            Some(&"super") => {
+                let mut base = scope.path.clone();
+                while segments.first() == Some(&"super") {
+                    segments.remove(0);
+                    // `crate` is the root; climbing past it is not a path we
+                    // can name, so the statement contributes no edge.
+                    if base.len() <= 1 {
+                        return;
+                    }
+                    base.pop();
+                }
+                base
+            }
+            // An external crate, or a bare item already in scope.
+            _ => return,
+        };
+        resolved.extend(segments.iter().map(|s| (*s).to_string()));
+
         // Drop the imported item, leaving its module. A trailing `::` means a
-        // brace group followed, so we are already at the module.
-        if !head.ends_with("::") && segments.len() > 1 {
-            segments.pop();
+        // brace group or glob followed, so we are already at the module.
+        if !head.ends_with("::") && resolved.len() > 1 {
+            resolved.pop();
         }
-        let target = segments.join("::");
+        let target = resolved.join("::");
         if target.is_empty() || target == self.self_module {
             return;
         }
@@ -524,6 +556,69 @@ mod tests {
     #[test]
     fn a_self_import_is_not_recorded() {
         let out = run("src/a.rs", "use crate::a::Thing;");
+        assert!(edges_of(&out, "imports").is_empty());
+    }
+
+    #[test]
+    fn a_super_import_resolves_against_the_enclosing_module() {
+        // ~40% of this repo's intra-crate `use` statements are `super::`.
+        // Dropping them understates fan-in and hides import cycles.
+        let out = run("src/syntax/rust/signatures.rs", "use super::walk::helper;");
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "crate::syntax::rust::signatures".to_string(),
+                "crate::syntax::rust::walk".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_super_import_of_a_bare_item_targets_the_parent_module() {
+        let out = run("src/syntax/rust/signatures.rs", "use super::Thing;");
+        assert_eq!(edges_of(&out, "imports")[0][1], "crate::syntax::rust");
+    }
+
+    #[test]
+    fn a_doubled_super_climbs_two_levels() {
+        let out = run(
+            "src/syntax/rust/signatures.rs",
+            "use super::super::facts::F;",
+        );
+        assert_eq!(edges_of(&out, "imports")[0][1], "crate::syntax::facts");
+    }
+
+    #[test]
+    fn a_super_glob_targets_the_parent_module() {
+        let out = run("src/syntax/rust/signatures.rs", "use super::*;");
+        assert_eq!(edges_of(&out, "imports")[0][1], "crate::syntax::rust");
+    }
+
+    #[test]
+    fn a_test_modules_super_glob_is_a_self_import_not_a_parent_edge() {
+        // `#[cfg(test)] mod tests { use super::*; }` is the single most common
+        // use statement in Rust. Resolving it against the file rather than the
+        // inline module would invent an edge to the file's parent.
+        let out = run("src/a.rs", "#[cfg(test)]\nmod tests { use super::*; }");
+        assert!(
+            edges_of(&out, "imports").is_empty(),
+            "expected no edge, got {:?}",
+            edges_of(&out, "imports")
+        );
+    }
+
+    #[test]
+    fn a_self_import_resolves_to_the_current_module() {
+        let out = run("src/syntax/rust/signatures.rs", "use self::inner::Thing;");
+        assert_eq!(
+            edges_of(&out, "imports")[0][1],
+            "crate::syntax::rust::signatures::inner"
+        );
+    }
+
+    #[test]
+    fn a_super_import_that_would_climb_above_the_crate_root_is_ignored() {
+        let out = run("src/a.rs", "use super::super::super::Thing;");
         assert!(edges_of(&out, "imports").is_empty());
     }
 

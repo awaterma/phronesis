@@ -13,6 +13,7 @@ pub mod derive;
 pub mod extract;
 pub mod hydrate;
 pub mod model;
+pub mod query;
 pub mod store;
 pub mod sync;
 
