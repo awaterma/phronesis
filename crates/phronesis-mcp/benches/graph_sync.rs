@@ -140,7 +140,7 @@ fn bench_hydrate(c: &mut Criterion) {
         group.throughput(Throughput::Elements(n as u64));
         group.bench_with_input(BenchmarkId::from_parameter(n), &n, |b, _| {
             b.iter(|| {
-                let h = hydrate::hydrate(&root, &rules);
+                let h = hydrate::hydrate(&root, &rules, Some("src/subject.rs"));
                 std::hint::black_box(h.facts.len());
             });
         });
@@ -157,7 +157,7 @@ fn bench_hydrate_unused(c: &mut Criterion) {
     setup_project(&root, 15_000);
     c.bench_function("graph/hydrate_unused_15000", |b| {
         b.iter(|| {
-            let h = hydrate::hydrate(&root, &rules);
+            let h = hydrate::hydrate(&root, &rules, Some("src/subject.rs"));
             std::hint::black_box(h.facts.len());
         });
     });

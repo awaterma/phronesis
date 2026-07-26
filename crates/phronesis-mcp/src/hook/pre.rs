@@ -95,7 +95,12 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         // graph relation. Only facts about the code are asserted; whether the
         // graph is trustworthy is machinery health, handled below.
         {
-            let h = crate::graph::hydrate::hydrate(&security::project_root(), &rules_for_journey);
+            let edited = (!file_path.is_empty()).then_some(file_path.as_str());
+            let h = crate::graph::hydrate::hydrate(
+                &security::project_root(),
+                &rules_for_journey,
+                edited,
+            );
             if !h.fresh && !h.facts.is_empty() {
                 eprintln!(
                     "phronesis: NOTE — structural graph is stale ({} file(s) changed outside the hook); structural rules will warn, not block. Run `phr-mcp graph rebuild`.",

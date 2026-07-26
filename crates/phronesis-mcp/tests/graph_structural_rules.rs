@@ -171,3 +171,114 @@ fn a_covered_function_produces_no_verdict() {
     let (code, stderr) = pre_check(d.path());
     assert_eq!(code, 0, "a tested function must not be flagged: {stderr}");
 }
+
+// ─── the shipped `structural` pack ──────────────────────────────────
+//
+// The tests above drive hand-written rules. These drive the pack a user
+// actually gets from `phr-mcp init --packs structural`, which is the only
+// thing that proves the shipped JSON is well-formed and scoped.
+
+/// A project wired by the real `init`, with a risky file, an import cycle,
+/// and a file with neither.
+fn packaged_project() -> TempDir {
+    let d = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(d.path().join("src")).expect("mkdir src");
+    std::fs::write(d.path().join("src/risky.rs"), RISKY_SOURCE).expect("risky");
+    std::fs::write(
+        d.path().join("src/a.rs"),
+        "use crate::b::Thing;\npub fn from_a() -> Thing { Thing }\n",
+    )
+    .expect("a");
+    std::fs::write(
+        d.path().join("src/b.rs"),
+        "use crate::a::from_a;\npub struct Thing;\npub fn from_b() { from_a(); }\n",
+    )
+    .expect("b");
+    std::fs::write(
+        d.path().join("src/clean.rs"),
+        "pub fn clean() -> u32 { 1 }\n",
+    )
+    .expect("clean");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(d.path())
+        .args(["init", "--packs", "structural", "."])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run init");
+    assert!(status.success(), "init failed");
+    rebuild_graph(d.path());
+    d
+}
+
+/// Run pre-check over an Edit of an arbitrary file.
+fn pre_check_file(dir: &Path, rel: &str) -> (i32, String) {
+    let payload = format!(
+        r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PreToolUse","tool_name":"Edit",
+            "tool_input":{{"file_path":"{rel}","old_string":"a","new_string":"b"}}}}"#,
+        dir.display()
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(dir)
+        .arg("pre-check")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write");
+    let out = child.wait_with_output().expect("wait");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+#[test]
+fn the_shipped_pack_flags_a_risky_function() {
+    let d = packaged_project();
+    let (code, stderr) = pre_check_file(d.path(), "src/risky.rs");
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("crate::risky::danger"), "{stderr}");
+    assert!(stderr.contains("expect"), "{stderr}");
+}
+
+#[test]
+fn the_shipped_pack_flags_an_import_cycle() {
+    let d = packaged_project();
+    let (code, stderr) = pre_check_file(d.path(), "src/a.rs");
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("import cycle"), "{stderr}");
+}
+
+#[test]
+fn editing_an_unrelated_file_stays_silent() {
+    // The scoping guarantee. Graph relations are repo-wide, so without the
+    // `edited_file` join every edit would re-report every violation in the
+    // project — which is how a pack earns itself an uninstall.
+    let d = packaged_project();
+    let (code, stderr) = pre_check_file(d.path(), "src/clean.rs");
+    assert_eq!(
+        code, 0,
+        "a clean file must produce no structural noise: {stderr}"
+    );
+    assert!(!stderr.contains("WARNING"), "{stderr}");
+}
+
+#[test]
+fn a_cycle_warning_names_only_the_edited_modules_cycle() {
+    // Both modules are in the cycle; editing one must not report the other.
+    let d = packaged_project();
+    let (_, stderr) = pre_check_file(d.path(), "src/a.rs");
+    assert!(stderr.contains("crate::a"), "{stderr}");
+    assert!(
+        !stderr.contains("Module `crate::b`"),
+        "editing a.rs must not warn about b.rs: {stderr}"
+    );
+}

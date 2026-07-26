@@ -306,6 +306,9 @@ pub fn extract_rust(file_path: &str, content: &str, watchlist: &[&str]) -> Extra
         skipped: 0,
     };
     sensor.emit("file_type", &[file_path, file_type(file_path)]);
+    // Links a file to its module, so a rule matching on module-keyed
+    // relations (`in_cycle`) can be scoped to the file being edited.
+    sensor.emit("declares_module", &[file_path, &self_module]);
 
     let root_scope = Scope {
         path: self_module.split("::").map(str::to_string).collect(),
@@ -402,6 +405,17 @@ mod tests {
     }
 
     // ─── defines_fn ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_file_declares_its_own_module() {
+        assert_eq!(
+            edges_of(&run("src/network.rs", "fn f() {}"), "declares_module"),
+            vec![vec![
+                "src/network.rs".to_string(),
+                "crate::network".to_string()
+            ]]
+        );
+    }
 
     #[test]
     fn a_free_function_is_defined_with_its_qualified_name() {

@@ -52,7 +52,10 @@ This works in the engine **today, unmodified**. It reuses the predicate index fo
 | `imports` | `[file, module]` | Module-level dependency edge |
 | `tested_by` | `[func, test_func]` | Test coverage edge (§4.4) |
 | `in_cycle` | `[module, cycle_id]` | Module participates in an import cycle (§4.5) |
-| `provenance` | `[entity, file]` | Source file that produced facts about `entity` (§3) |
+| `declares_module` | `[file, module]` | Links a file to its module, so module-keyed relations can be scoped to a file (§5.7) |
+| `edited_file` | `[file]` | The file the current call is touching, repo-relative. Not stored on disk — asserted per invocation (§5.7) |
+
+Provenance is **not** a relation. It is the `src` field on every stored edge (§2.1), and is never asserted into working memory.
 
 The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user.
 
@@ -204,6 +207,7 @@ Rules are ordinary Phronesis rules over the relations in §1.2 — no new syntax
       "phase": "pre",
       "priority": 100,
       "when": [
+        { "predicate": "edited_file", "args": ["?file"] },
         { "predicate": "file_type",  "args": ["?file", "production"] },
         { "predicate": "defines_fn", "args": ["?file", "?func"] },
         { "predicate": "calls_api",  "args": ["?func", "std::unwrap"] },
@@ -228,6 +232,8 @@ Rules are ordinary Phronesis rules over the relations in §1.2 — no new syntax
   "phase": "pre",
   "priority": 90,
   "when": [
+    { "predicate": "edited_file", "args": ["?file"] },
+    { "predicate": "declares_module", "args": ["?file", "?module"] },
     { "predicate": "in_cycle", "args": ["?module", "?cycle"] }
   ],
   "then": {
@@ -255,7 +261,35 @@ The same seam generalizes: any future evidence source that can go stale gets a d
 
 The graph is loaded only if some rule in `rules.json` names one of the relations in §1.2. A project with no structural rules performs no file I/O and asserts no facts (measured at 6.7 ns, §2.3). This is what makes the feature safe to ship enabled.
 
-### 5.6 Evaluation pipeline
+### 5.7 Every structural rule must be scoped to the edited file
+
+Graph relations describe the **whole repository**. A rule written over them alone therefore matches repo-wide state and fires on *every* tool call, regardless of what is being edited — the same warnings, every time.
+
+This was found by running the shipped pack against a real project, not by reading the spec: earlier drafts of §5.1 and §5.2 both had this flaw. On this repository the unscoped pair would have emitted 6 untested-call warnings plus 4 cycle warnings on every single edit, none of them about the file in front of the user. That is not a tuning problem; it is the fastest possible way to get a pack switched off.
+
+**Every structural rule opens with `edited_file`:**
+
+```json
+{ "when": [
+    { "edited_file": "?file" },
+    { "defines_fn": ["?file", "?func"] },
+    { "untested": ["?func"] }
+] }
+```
+
+For module-keyed relations, `declares_module` bridges file to module:
+
+```json
+{ "when": [
+    { "edited_file": "?file" },
+    { "declares_module": ["?file", "?module"] },
+    { "in_cycle": ["?module", "?cycle"] }
+] }
+```
+
+`edited_file` exists because the pre-existing `file_path` fact cannot serve this purpose: hosts send **absolute** paths while the graph is keyed **repo-relative**, so joining the two silently never matches — a failure that looks exactly like "no violations found". `hydrate` normalizes the host's path into the graph's form, and drops paths outside the project.
+
+### 5.8 Evaluation pipeline
 
 ```
                [ .phronesis/graph.jsonl ]
@@ -361,6 +395,9 @@ The graph is loaded only if some rule in `rules.json` names one of the relations
 * Corrected §4.4's error-direction claim: short-name matching over-approximates coverage, so the heuristic errs toward silence, not toward false accusation. The earlier text claimed the opposite.
 * Kept machinery health out of working memory: staleness is returned to the harness, which demotes affected rules' violations to warnings. An intermediate draft asserted a `graph_fresh` fact and was rejected — the fact base models the codebase, not the tool's self-diagnostics (§5.4).
 * Measured the first corpus; `untested` alone is too noisy for a rule of its own (§10).
+* Added `edited_file` + `declares_module` and required every structural rule to scope to the edited file. Found by running the shipped pack, not by review: the §5.1/§5.2 rules as written matched repo-wide state and fired on every tool call (§5.7).
+* Shipped the `structural` pack (`phr-mcp init --packs structural`) with both measured rules, warn-only.
+* Deleted the `provenance` row from §1.2 — provenance is the `src` field on each edge, never a relation.
 
 **Revision 2** — applied engine cross-check review (`wme.rs`, `engine_types.rs`, `beta_network.rs`, `variable_binding.rs`):
 
