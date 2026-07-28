@@ -13,6 +13,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use phronesis_mcp::graph::store;
 use tempfile::TempDir;
 
 /// A production function calling a watched API, with no test anywhere.
@@ -113,7 +114,7 @@ fn the_verdict_names_the_bound_file_and_function() {
     let d = project("block");
     let (_, stderr) = pre_check(d.path());
     assert!(stderr.contains("src/risky.rs"), "{stderr}");
-    assert!(stderr.contains("crate::risky::danger"), "{stderr}");
+    assert!(stderr.contains("rust:crate::risky::danger"), "{stderr}");
 }
 
 #[test]
@@ -245,7 +246,7 @@ fn the_shipped_pack_flags_a_risky_function() {
     let d = packaged_project();
     let (code, stderr) = pre_check_file(d.path(), "src/risky.rs");
     assert_eq!(code, 1, "{stderr}");
-    assert!(stderr.contains("crate::risky::danger"), "{stderr}");
+    assert!(stderr.contains("rust:crate::risky::danger"), "{stderr}");
     assert!(stderr.contains("expect"), "{stderr}");
 }
 
@@ -276,9 +277,9 @@ fn a_cycle_warning_names_only_the_edited_modules_cycle() {
     // Both modules are in the cycle; editing one must not report the other.
     let d = packaged_project();
     let (_, stderr) = pre_check_file(d.path(), "src/a.rs");
-    assert!(stderr.contains("crate::a"), "{stderr}");
+    assert!(stderr.contains("rust:crate::a"), "{stderr}");
     assert!(
-        !stderr.contains("Module `crate::b`"),
+        !stderr.contains("Module `rust:crate::b`"),
         "editing a.rs must not warn about b.rs: {stderr}"
     );
 }
@@ -304,5 +305,86 @@ fn init_alone_is_enough_for_the_pack_to_fire() {
     // No rebuild_graph() call here — that is the point of the test.
     let (code, stderr) = pre_check_file(d.path(), "src/risky.rs");
     assert_eq!(code, 1, "pack must work straight after init: {stderr}");
-    assert!(stderr.contains("crate::risky::danger"), "{stderr}");
+    assert!(stderr.contains("rust:crate::risky::danger"), "{stderr}");
+}
+
+#[test]
+fn workspace_members_with_the_same_modules_keep_distinct_graph_identities() {
+    let d = TempDir::new().expect("tempdir");
+    std::fs::write(
+        d.path().join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\"]\nresolver = \"2\"\n",
+    )
+    .expect("workspace manifest");
+
+    for package in ["alpha", "beta"] {
+        let root = d.path().join("crates").join(package);
+        std::fs::create_dir_all(root.join("src")).expect("mkdir package");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            format!("[package]\nname = \"{package}\"\nversion = \"0.1.0\"\n"),
+        )
+        .expect("package manifest");
+        std::fs::write(root.join("src/lib.rs"), "mod left;\nmod right;\n").expect("lib");
+        std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("main");
+        std::fs::write(
+            root.join("src/left.rs"),
+            "use crate::right::Right;\npub struct Left(pub Right);\n",
+        )
+        .expect("left");
+        std::fs::write(
+            root.join("src/right.rs"),
+            "use crate::left::Left;\npub struct Right(pub Option<Box<Left>>);\n",
+        )
+        .expect("right");
+    }
+
+    rebuild_graph(d.path());
+    let edges = store::load(&store::graph_path(d.path())).expect("load graph");
+    let modules: Vec<_> = edges
+        .iter()
+        .filter(|edge| edge.p == "declares_module")
+        .filter_map(|edge| edge.a.get(1))
+        .cloned()
+        .collect();
+    assert!(
+        modules.contains(&"rust:alpha::left".to_string()),
+        "{modules:?}"
+    );
+    assert!(
+        modules.contains(&"rust:beta::left".to_string()),
+        "{modules:?}"
+    );
+    assert!(modules.contains(&"rust:alpha".to_string()), "{modules:?}");
+    assert!(
+        modules.contains(&"rust:alpha#bin:alpha".to_string()),
+        "library and default binary are separate compilation units: {modules:?}"
+    );
+
+    let cycles: Vec<_> = edges
+        .iter()
+        .filter(|edge| edge.p == "in_cycle")
+        .map(|edge| edge.a.clone())
+        .collect();
+    assert!(
+        cycles
+            .iter()
+            .any(|args| args.first().is_some_and(|m| m == "rust:alpha::left")),
+        "{cycles:?}"
+    );
+    assert!(
+        cycles
+            .iter()
+            .any(|args| args.first().is_some_and(|m| m == "rust:beta::left")),
+        "{cycles:?}"
+    );
+    assert_eq!(
+        cycles
+            .iter()
+            .filter_map(|args| args.get(1))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        2,
+        "each package must retain its own strongly connected component: {cycles:?}"
+    );
 }

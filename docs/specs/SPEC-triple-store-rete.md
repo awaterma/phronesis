@@ -2,7 +2,7 @@
 
 **Status:** Phase One implemented on `feat/structural-graph-facts`; measurements in §2.3 and §10
 **Target release:** 0.23.0
-**Revision:** 3 — engine cross-check review applied, then implemented and measured (see §11)
+**Revision:** 4 — compilation-unit-qualified identity added for workspace soundness
 
 ## Summary
 
@@ -69,9 +69,9 @@ Stored at `.phronesis/graph.jsonl`, gitignored. Each line is one standalone JSON
 
 ```json
 {"p": "file_type",  "a": ["crates/phronesis/src/network.rs", "production"],        "src": "crates/phronesis/src/network.rs"}
-{"p": "defines_fn", "a": ["crates/phronesis/src/network.rs", "fire_all_consequences"], "src": "crates/phronesis/src/network.rs"}
-{"p": "calls_api",  "a": ["fire_all_consequences", "std::unwrap"],                  "src": "crates/phronesis/src/network.rs"}
-{"p": "tested_by",  "a": ["fire_all_consequences", "tests::test_fire_all"],         "src": "crates/phronesis/tests/network_test.rs"}
+{"p": "defines_fn", "a": ["crates/phronesis/src/network.rs", "rust:phronesis::network::fire_all_consequences"], "src": "crates/phronesis/src/network.rs"}
+{"p": "calls_api",  "a": ["rust:phronesis::network::fire_all_consequences", "unwrap"], "src": "crates/phronesis/src/network.rs"}
+{"p": "tested_by",  "a": ["fire_all_consequences", "rust:phronesis::tests::test_fire_all"], "src": "crates/phronesis/tests/network_test.rs"}
 ```
 
 `p` and `a` map directly onto `Fact { predicate, args }`. `src` is metadata for compaction and is not asserted into working memory.
@@ -142,7 +142,66 @@ This is the hard part of the spec and the main Phase-One risk. A structural enfo
 
 ### 4.2 Entity naming
 
-Functions are identified by module-qualified path (`crate::network::fire_all_consequences`) derived from file path plus enclosing `mod` blocks. Trait impl methods are qualified with the impl type (`crate::network::Network::fire`). Ambiguity (macro-generated items, `#[path]` attributes) causes the item to be **skipped and counted**, not guessed.
+Entities are identified by
+`<language>:<package>[#<target-kind>:<target-name>]::<module-path>`. A Cargo
+package's library uses the unsuffixed package identity. Its other compilation
+targets use an explicit suffix, so both workspace members and targets within a
+member remain distinct:
+
+```text
+rust:phronesis::wme
+rust:phronesis-mcp::wme
+rust:phronesis-mcp#bin:phronesis-mcp
+rust:phronesis-mcp#test:hook_integration
+```
+
+The extractor discovers Cargo packages from their manifests and resolves each
+source file to the innermost containing package and then to its library,
+default or named binary, integration test, example, benchmark, or build-script
+target. Dependency aliases are mapped to sibling package identities, including
+aliases inherited from `[workspace.dependencies]`. Non-library targets can
+also resolve their own package's library through its normalized Rust extern
+name. Third-party dependencies are ignored because the project graph has no
+definitions for them.
+
+Functions append their item path
+(`rust:phronesis::network::fire_all_consequences`). Trait impl methods append
+the impl type (`rust:phronesis::network::Network::fire`). A Rust file not
+claimed by a discoverable package uses the explicit fallback unit
+`rust:crate`; it never falls back to the ambiguous bare `crate` namespace.
+Ambiguity (macro-generated items, `#[path]` attributes) causes the item to be
+**skipped and counted**, not guessed.
+
+The language prefix is part of identity even though Phase One has only a Rust
+extractor. This lets later extractors coexist in one graph without a
+repository-wide identity migration.
+
+#### 4.2.1 Migration
+
+The graph and its index are derived, gitignored state. Revision 4 changes every
+Rust entity identity from `crate::…` to `rust:<package>::…`; an existing graph
+must therefore be regenerated with:
+
+```bash
+phr-mcp graph rebuild
+```
+
+Rebuild rewrites all base edges under the new identities and recomputes all
+derived `untested` and `in_cycle` edges. Incremental compaction alone is not a
+migration because it only replaces edges belonging to the edited file.
+
+#### 4.2.2 Module-path anchoring
+
+The module part of an identity is anchored at the owning target's crate-root
+file, not at the repository root. `crates/app/benches/sync.rs` is
+`rust:app#bench:sync`, not
+`rust:app#bench:sync::crates::app::benches::sync` — the prefix already states
+the package and target, and restating the path would also make identity
+depend on where the package sits in the repo. Modules resolve against the
+crate-root file's *directory*, matching Rust: a target root
+`tests/hooks.rs` declaring `mod helper;` means `tests/helper.rs`. A file no
+manifest claims keeps the older `src/`-anchored heuristic, since there is no
+known prefix to strip.
 
 ### 4.3 Watched-API list
 

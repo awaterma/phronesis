@@ -9,6 +9,7 @@
 //! `in_cycle`) are computed separately in `super::derive`.
 
 use super::model::Edge;
+use super::unit::UnitContext;
 use crate::syntax::parsed::ParsedFile;
 use std::collections::BTreeSet;
 use tree_sitter::Node;
@@ -43,28 +44,62 @@ fn file_type(file_path: &str) -> &'static str {
     }
 }
 
-/// Module path for a source file, e.g. `src/network.rs` -> `crate::network`.
+/// Module path for a source file, e.g. `src/network.rs` ->
+/// `rust:phronesis::network`.
 ///
-/// Anchored on the last `src/` component so workspace layouts
-/// (`crates/foo/src/graph/store.rs`) resolve the same way as flat ones.
-pub fn module_path(file_path: &str) -> String {
-    let rel = match file_path.rfind("src/") {
-        Some(i) => &file_path[i + 4..],
-        None => file_path
-            .trim_start_matches("tests/")
-            .trim_start_matches("examples/")
-            .trim_start_matches("benches/"),
-    };
+/// The unit prefix already names the package and the compilation target, so
+/// the module part is anchored at that target's own module root and carries
+/// only what the prefix does not already say.
+pub fn module_path(file_path: &str, unit: &UnitContext) -> String {
+    let rel = module_relative(file_path, unit);
     let trimmed = rel.strip_suffix(".rs").unwrap_or(rel);
     let mut segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
     // `lib.rs`, `main.rs` and `mod.rs` name their parent, not themselves.
     if matches!(segments.last(), Some(&"lib" | &"main" | &"mod")) {
         segments.pop();
     }
-    std::iter::once("crate")
+    std::iter::once(unit.id.as_str())
         .chain(segments)
         .collect::<Vec<_>>()
         .join("::")
+}
+
+/// Strip everything the unit prefix already encodes, leaving the part of the
+/// path that is genuinely a module path.
+///
+/// A target's module root is the directory of its crate-root file, and the
+/// crate-root file itself is the target root. `module_base` names that root
+/// without the `.rs` — so `benches/graph_sync.rs` yields nothing (the target
+/// root) and `benches/graph_sync/fixtures.rs` yields `fixtures`. Without
+/// this, a non-`src/` target restated its entire repo-relative path inside an
+/// identity that already began with `rust:pkg#bench:graph_sync`.
+fn module_relative<'a>(file_path: &'a str, unit: &UnitContext) -> &'a str {
+    if !unit.module_base.is_empty() {
+        if file_path.strip_prefix(unit.module_base.as_str()) == Some(".rs") {
+            // The crate-root file itself is the target root, not a module
+            // inside it.
+            return "";
+        }
+        // Every other module resolves against the crate-root file's
+        // *directory* — `benches/x.rs` declaring `mod helpers;` means
+        // `benches/helpers.rs`, not `benches/x/helpers.rs`.
+        let dir = unit.module_base.rsplit_once('/').map_or("", |(dir, _)| dir);
+        if let Some(rest) = file_path
+            .strip_prefix(dir)
+            .and_then(|rest| rest.strip_prefix('/'))
+        {
+            return rest;
+        }
+    }
+    // No manifest claimed this file: fall back to anchoring on the last
+    // `src/`, which resolves flat and workspace layouts alike.
+    match file_path.rfind("src/") {
+        Some(i) => &file_path[i + 4..],
+        None => file_path
+            .trim_start_matches("tests/")
+            .trim_start_matches("examples/")
+            .trim_start_matches("benches/"),
+    }
 }
 
 /// Text of a node, or empty when it is not valid UTF-8.
@@ -151,6 +186,7 @@ struct Sensor<'a> {
     source: &'a [u8],
     watchlist: &'a [&'a str],
     self_module: String,
+    unit: &'a UnitContext,
     /// A set, so a function calling `.expect()` twice yields one edge.
     out: BTreeSet<(String, Vec<String>)>,
     skipped: usize,
@@ -305,7 +341,7 @@ impl Sensor<'_> {
         let mut resolved: Vec<String> = match segments.first() {
             Some(&"crate") => {
                 segments.remove(0);
-                vec!["crate".to_string()]
+                vec![self.unit.id.clone()]
             }
             Some(&"self") => {
                 segments.remove(0);
@@ -324,8 +360,15 @@ impl Sensor<'_> {
                 }
                 base
             }
-            // An external crate, or a bare item already in scope.
-            _ => return,
+            Some(alias) => {
+                let Some(target) = self.unit.siblings.get(*alias) else {
+                    // An external crate, or a bare item already in scope.
+                    return;
+                };
+                segments.remove(0);
+                vec![target.clone()]
+            }
+            None => return,
         };
         resolved.extend(segments.iter().map(|s| (*s).to_string()));
 
@@ -344,7 +387,12 @@ impl Sensor<'_> {
 }
 
 /// Extract every base relation from one Rust file.
-pub fn extract_rust(file_path: &str, content: &str, watchlist: &[&str]) -> Extracted {
+pub fn extract_rust(
+    file_path: &str,
+    content: &str,
+    watchlist: &[&str],
+    unit: &UnitContext,
+) -> Extracted {
     if !file_path.ends_with(".rs") {
         return Extracted::default();
     }
@@ -361,12 +409,13 @@ pub fn extract_rust(file_path: &str, content: &str, watchlist: &[&str]) -> Extra
         return Extracted::default();
     };
 
-    let self_module = module_path(file_path);
+    let self_module = module_path(file_path, unit);
     let mut sensor = Sensor {
         file_path,
         source: source.as_bytes(),
         watchlist,
         self_module: self_module.clone(),
+        unit,
         out: BTreeSet::new(),
         skipped: 0,
     };
@@ -400,6 +449,7 @@ pub fn extract_rust(file_path: &str, content: &str, watchlist: &[&str]) -> Extra
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn edges_of(x: &Extracted, p: &str) -> Vec<Vec<String>> {
         x.edges
@@ -410,29 +460,91 @@ mod tests {
     }
 
     fn run(path: &str, src: &str) -> Extracted {
-        extract_rust(path, src, DEFAULT_WATCHLIST)
+        extract_rust(path, src, DEFAULT_WATCHLIST, &UnitContext::default())
     }
 
     // ─── module naming ──────────────────────────────────────────────
 
     #[test]
     fn a_module_file_maps_to_its_module_path() {
-        assert_eq!(module_path("src/network.rs"), "crate::network");
+        assert_eq!(
+            module_path("src/network.rs", &UnitContext::default()),
+            "rust:crate::network"
+        );
     }
 
     #[test]
     fn lib_rs_maps_to_the_crate_root() {
-        assert_eq!(module_path("src/lib.rs"), "crate");
+        assert_eq!(
+            module_path("src/lib.rs", &UnitContext::default()),
+            "rust:crate"
+        );
     }
 
     #[test]
     fn a_nested_directory_becomes_a_nested_module_path() {
-        assert_eq!(module_path("src/graph/store.rs"), "crate::graph::store");
+        assert_eq!(
+            module_path("src/graph/store.rs", &UnitContext::default()),
+            "rust:crate::graph::store"
+        );
     }
 
     #[test]
     fn a_mod_rs_file_names_its_directory() {
-        assert_eq!(module_path("src/graph/mod.rs"), "crate::graph");
+        assert_eq!(
+            module_path("src/graph/mod.rs", &UnitContext::default()),
+            "rust:crate::graph"
+        );
+    }
+
+    #[test]
+    fn a_targets_module_path_does_not_restate_its_own_path() {
+        // The unit prefix already says `#bench:graph_sync`; repeating
+        // `crates::phronesis_mcp::benches::graph_sync` after it is noise that
+        // also makes the identity depend on where the package sits in the
+        // repo.
+        let unit = UnitContext {
+            id: "rust:app#bench:sync".to_string(),
+            module_base: "crates/app/benches/sync".to_string(),
+            siblings: BTreeMap::new(),
+        };
+        assert_eq!(
+            module_path("crates/app/benches/sync.rs", &unit),
+            "rust:app#bench:sync"
+        );
+    }
+
+    #[test]
+    fn a_module_beside_a_crate_root_file_is_named_relative_to_it() {
+        // Rust resolves `mod helper;` in a target root against the root
+        // file's directory, so the graph must too.
+        let unit = UnitContext {
+            id: "rust:app#test:hooks".to_string(),
+            module_base: "crates/app/tests/hooks".to_string(),
+            siblings: BTreeMap::new(),
+        };
+        assert_eq!(
+            module_path("crates/app/tests/helper.rs", &unit),
+            "rust:app#test:hooks::helper"
+        );
+    }
+
+    #[test]
+    fn a_library_module_is_named_relative_to_the_source_root() {
+        let unit = UnitContext {
+            id: "rust:app".to_string(),
+            module_base: "crates/app/src/lib".to_string(),
+            siblings: BTreeMap::new(),
+        };
+        assert_eq!(module_path("crates/app/src/lib.rs", &unit), "rust:app");
+        assert_eq!(
+            module_path("crates/app/src/graph/store.rs", &unit),
+            "rust:app::graph::store"
+        );
+        assert_eq!(
+            module_path("crates/app/src/graph/mod.rs", &unit),
+            "rust:app::graph"
+        );
     }
 
     // ─── file_type ──────────────────────────────────────────────────
@@ -477,7 +589,7 @@ mod tests {
             edges_of(&run("src/network.rs", "fn f() {}"), "declares_module"),
             vec![vec![
                 "src/network.rs".to_string(),
-                "crate::network".to_string()
+                "rust:crate::network".to_string()
             ]]
         );
     }
@@ -489,7 +601,7 @@ mod tests {
             edges_of(&out, "defines_fn"),
             vec![vec![
                 "src/network.rs".to_string(),
-                "crate::network::fire".to_string()
+                "rust:crate::network::fire".to_string()
             ]]
         );
     }
@@ -499,7 +611,7 @@ mod tests {
         let out = run("src/network.rs", "mod inner { fn fire() {} }");
         assert_eq!(
             edges_of(&out, "defines_fn")[0][1],
-            "crate::network::inner::fire"
+            "rust:crate::network::inner::fire"
         );
     }
 
@@ -508,7 +620,7 @@ mod tests {
         let out = run("src/network.rs", "impl Network { fn fire(&self) {} }");
         assert_eq!(
             edges_of(&out, "defines_fn")[0][1],
-            "crate::network::Network::fire"
+            "rust:crate::network::Network::fire"
         );
     }
 
@@ -528,7 +640,7 @@ mod tests {
         let out = run("src/a.rs", "fn f() { let x = g().expect(\"m\"); }");
         assert_eq!(
             edges_of(&out, "calls_api"),
-            vec![vec!["crate::a::f".to_string(), "expect".to_string()]]
+            vec![vec!["rust:crate::a::f".to_string(), "expect".to_string()]]
         );
     }
 
@@ -537,7 +649,7 @@ mod tests {
         let out = run("src/a.rs", "fn f() { panic!(\"boom\"); }");
         assert_eq!(
             edges_of(&out, "calls_api"),
-            vec![vec!["crate::a::f".to_string(), "panic".to_string()]]
+            vec![vec!["rust:crate::a::f".to_string(), "panic".to_string()]]
         );
     }
 
@@ -562,7 +674,12 @@ mod tests {
 
     #[test]
     fn the_watchlist_bounds_what_is_recorded() {
-        let out = extract_rust("src/a.rs", "fn f() { g().expect(\"m\"); }", &["unwrap"]);
+        let out = extract_rust(
+            "src/a.rs",
+            "fn f() { g().expect(\"m\"); }",
+            &["unwrap"],
+            &UnitContext::default(),
+        );
         assert!(edges_of(&out, "calls_api").is_empty());
     }
 
@@ -582,7 +699,10 @@ mod tests {
         let out = run("src/a.rs", "use crate::network::Thing;");
         assert_eq!(
             edges_of(&out, "imports"),
-            vec![vec!["crate::a".to_string(), "crate::network".to_string()]]
+            vec![vec![
+                "rust:crate::a".to_string(),
+                "rust:crate::network".to_string()
+            ]]
         );
     }
 
@@ -600,8 +720,8 @@ mod tests {
         assert_eq!(
             edges_of(&out, "imports"),
             vec![vec![
-                "crate::syntax::rust::signatures".to_string(),
-                "crate::syntax::rust::walk".to_string()
+                "rust:crate::syntax::rust::signatures".to_string(),
+                "rust:crate::syntax::rust::walk".to_string()
             ]]
         );
     }
@@ -609,7 +729,7 @@ mod tests {
     #[test]
     fn a_super_import_of_a_bare_item_targets_the_parent_module() {
         let out = run("src/syntax/rust/signatures.rs", "use super::Thing;");
-        assert_eq!(edges_of(&out, "imports")[0][1], "crate::syntax::rust");
+        assert_eq!(edges_of(&out, "imports")[0][1], "rust:crate::syntax::rust");
     }
 
     #[test]
@@ -618,13 +738,13 @@ mod tests {
             "src/syntax/rust/signatures.rs",
             "use super::super::facts::F;",
         );
-        assert_eq!(edges_of(&out, "imports")[0][1], "crate::syntax::facts");
+        assert_eq!(edges_of(&out, "imports")[0][1], "rust:crate::syntax::facts");
     }
 
     #[test]
     fn a_super_glob_targets_the_parent_module() {
         let out = run("src/syntax/rust/signatures.rs", "use super::*;");
-        assert_eq!(edges_of(&out, "imports")[0][1], "crate::syntax::rust");
+        assert_eq!(edges_of(&out, "imports")[0][1], "rust:crate::syntax::rust");
     }
 
     #[test]
@@ -645,7 +765,7 @@ mod tests {
         let out = run("src/syntax/rust/signatures.rs", "use self::inner::Thing;");
         assert_eq!(
             edges_of(&out, "imports")[0][1],
-            "crate::syntax::rust::signatures::inner"
+            "rust:crate::syntax::rust::signatures::inner"
         );
     }
 
@@ -660,6 +780,28 @@ mod tests {
         // Only intra-crate edges matter for cycle detection.
         let out = run("src/a.rs", "use serde::Serialize;");
         assert!(edges_of(&out, "imports").is_empty());
+    }
+
+    #[test]
+    fn a_sibling_dependency_alias_resolves_to_the_siblings_unit() {
+        let unit = UnitContext {
+            id: "rust:app".to_string(),
+            module_base: "crates/app/src/lib".to_string(),
+            siblings: BTreeMap::from([("core".to_string(), "rust:core-lib".to_string())]),
+        };
+        let out = extract_rust(
+            "crates/app/src/a.rs",
+            "use core::network::Thing;",
+            DEFAULT_WATCHLIST,
+            &unit,
+        );
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "rust:app::a".to_string(),
+                "rust:core-lib::network".to_string()
+            ]]
+        );
     }
 
     // ─── tested_by ──────────────────────────────────────────────────
@@ -695,7 +837,7 @@ mod tests {
         );
         assert_eq!(
             edges_of(&out, "defines_fn")[0][1],
-            "crate::a::handler",
+            "rust:crate::a::handler",
             "must still be a defined function"
         );
     }

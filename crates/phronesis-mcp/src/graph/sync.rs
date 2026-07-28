@@ -13,6 +13,7 @@ use super::derive::derive_all;
 use super::extract::{DEFAULT_WATCHLIST, extract_rust};
 use super::model::Edge;
 use super::store;
+use super::unit::UnitMap;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -176,7 +177,9 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             skipped: 0,
         });
     }
-    let extracted = extract_rust(file_path, content, DEFAULT_WATCHLIST);
+    let units = UnitMap::discover(root);
+    let unit = units.context_for(file_path);
+    let extracted = extract_rust(file_path, content, DEFAULT_WATCHLIST, &unit);
     let existing = store::load(&store::graph_path(root))?;
     let base = store::compact(existing, file_path, extracted.edges);
     let (n_base, n_derived) = persist(root, base)?;
@@ -221,12 +224,14 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     let mut base = Vec::new();
     let mut index = Index::default();
     let mut skipped = 0;
+    let units = UnitMap::discover(root);
 
     for rel in tracked_files(root) {
         let Ok(content) = std::fs::read_to_string(root.join(&rel)) else {
             continue;
         };
-        let extracted = extract_rust(&rel, &content, DEFAULT_WATCHLIST);
+        let unit = units.context_for(&rel);
+        let extracted = extract_rust(&rel, &content, DEFAULT_WATCHLIST, &unit);
         skipped += extracted.skipped;
         base.extend(extracted.edges);
         index.entries.insert(rel, hash_content(&content));
@@ -361,7 +366,7 @@ mod tests {
             .filter(|e| e.p == "defines_fn")
             .filter_map(|e| e.a.get(1).cloned())
             .collect();
-        assert_eq!(names, vec!["crate::a::f".to_string()]);
+        assert_eq!(names, vec!["rust:crate::a::f".to_string()]);
     }
 
     #[test]
