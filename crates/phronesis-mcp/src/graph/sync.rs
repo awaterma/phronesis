@@ -20,9 +20,26 @@ use std::path::{Path, PathBuf};
 /// Location of the staleness index, relative to project root.
 pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 
+/// Identity scheme the extractor writes. Bumped whenever entity naming
+/// changes, because such a change invalidates every edge already on disk
+/// while leaving file contents — and therefore content hashes — untouched.
+/// Without it, an upgrade silently yields a graph half in the old naming and
+/// half in the new, whose `imports` never join to its `declares_module`.
+///
+/// 4 — `<lang>:<package>[#<target>]::<module path>` (spec rev 4).
+/// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
+pub const GRAPH_FORMAT: u32 = 4;
+
+/// Header line stamping the format into the index file.
+const FORMAT_KEY: &str = "# format";
+
 /// Content hashes of every file the graph was built from.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Index {
+    /// Identity scheme the graph was built under; 0 for a pre-versioning or
+    /// absent index. Only meaningful on load — writes always stamp the
+    /// current format, because what we write is by definition current.
+    pub format: u32,
     pub entries: BTreeMap<String, u64>,
 }
 
@@ -32,6 +49,13 @@ pub enum Freshness {
     Fresh,
     /// Files whose content no longer matches the index, sorted.
     Stale(Vec<String>),
+    /// The graph was built under a different identity scheme. Content hashes
+    /// prove nothing here: the files are untouched and every edge is still
+    /// wrong. Only a rebuild resolves it.
+    Outdated {
+        found: u32,
+        expected: u32,
+    },
 }
 
 /// Outcome of a single-file save.
@@ -73,21 +97,26 @@ pub fn load_index(path: &Path) -> std::io::Result<Index> {
         Err(e) => return Err(e),
     };
     let mut entries = BTreeMap::new();
+    let mut format = 0;
     for line in body.lines() {
+        if let Some(rest) = line.strip_prefix(FORMAT_KEY) {
+            format = rest.trim().parse::<u32>().unwrap_or(0);
+            continue;
+        }
         if let Some((hash, rel)) = line.split_once(' ')
             && let Ok(h) = hash.parse::<u64>()
         {
             entries.insert(rel.to_string(), h);
         }
     }
-    Ok(Index { entries })
+    Ok(Index { format, entries })
 }
 
 pub fn save_index(path: &Path, index: &Index) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut body = String::new();
+    let mut body = format!("{FORMAT_KEY} {GRAPH_FORMAT}\n");
     for (rel, hash) in &index.entries {
         body.push_str(&format!("{hash} {rel}\n"));
     }
@@ -125,6 +154,15 @@ fn tracked_files(root: &Path) -> Vec<String> {
 
 /// Compare the index against what is on disk under `root`.
 pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
+    // An empty index is "nothing built yet", which the per-file loop below
+    // already reports as wholly stale. Only an index that actually describes
+    // a graph can be outdated.
+    if !index.entries.is_empty() && index.format != GRAPH_FORMAT {
+        return Freshness::Outdated {
+            found: index.format,
+            expected: GRAPH_FORMAT,
+        };
+    }
     let mut drifted = Vec::new();
     let on_disk = tracked_files(root);
 
@@ -177,6 +215,17 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             skipped: 0,
         });
     }
+    let ipath = index_path(root);
+    let mut index = load_index(&ipath)?;
+    // A graph written under an older identity scheme cannot be patched one
+    // file at a time: compaction replaces only the edited file's edges, so
+    // every other file would keep its old names and the two halves would
+    // never join. Rebuild once, then record this edit on top of the result.
+    if !index.entries.is_empty() && index.format != GRAPH_FORMAT {
+        rebuild(root)?;
+        index = load_index(&ipath)?;
+    }
+
     let units = UnitMap::discover(root);
     let unit = units.context_for(file_path);
     let extracted = extract_rust(file_path, content, DEFAULT_WATCHLIST, &unit);
@@ -184,8 +233,6 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     let base = store::compact(existing, file_path, extracted.edges);
     let (n_base, n_derived) = persist(root, base)?;
 
-    let ipath = index_path(root);
-    let mut index = load_index(&ipath)?;
     index
         .entries
         .insert(file_path.to_string(), hash_content(content));
@@ -303,7 +350,110 @@ mod tests {
         idx.entries.insert("src/a.rs".into(), 42);
         let p = index_path(d.path());
         save_index(&p, &idx).expect("save");
-        assert_eq!(load_index(&p).expect("load"), idx);
+        assert_eq!(load_index(&p).expect("load").entries, idx.entries);
+    }
+
+    #[test]
+    fn a_written_index_is_stamped_with_the_current_format() {
+        let d = project();
+        let p = index_path(d.path());
+        save_index(&p, &Index::default()).expect("save");
+        assert_eq!(load_index(&p).expect("load").format, GRAPH_FORMAT);
+    }
+
+    #[test]
+    fn an_index_without_a_format_header_reads_as_format_zero() {
+        // The shape written before identity versioning existed.
+        let d = project();
+        let p = index_path(d.path());
+        write(d.path(), INDEX_REL_PATH, "42 src/a.rs\n");
+        let idx = load_index(&p).expect("load");
+        assert_eq!(idx.format, 0);
+        assert_eq!(idx.entries.get("src/a.rs"), Some(&42));
+    }
+
+    // ─── identity-format migration ──────────────────────────────────
+
+    #[test]
+    fn a_graph_built_under_an_older_identity_format_is_not_fresh() {
+        // Content hashes match exactly — nothing on disk changed. Only the
+        // format header betrays that every edge carries the old naming.
+        let d = project();
+        write(d.path(), "src/a.rs", "fn f() {}");
+        let index = Index {
+            format: 0,
+            entries: BTreeMap::from([("src/a.rs".to_string(), hash_content("fn f() {}"))]),
+        };
+        assert_eq!(
+            check_freshness(d.path(), &index),
+            Freshness::Outdated {
+                found: 0,
+                expected: GRAPH_FORMAT,
+            }
+        );
+    }
+
+    #[test]
+    fn an_index_that_describes_nothing_is_never_reported_as_outdated() {
+        // A project that has never built a graph has format 0 too; calling
+        // that a migration would demand a rebuild of an empty graph.
+        let d = project();
+        assert_ne!(
+            check_freshness(d.path(), &Index::default()),
+            Freshness::Outdated {
+                found: 0,
+                expected: GRAPH_FORMAT,
+            }
+        );
+    }
+
+    #[test]
+    fn saving_into_an_older_format_graph_rebuilds_every_file() {
+        let d = project();
+        write(d.path(), "src/a.rs", "fn alpha() {}");
+        write(d.path(), "src/b.rs", "fn beta() {}");
+        // A graph in the pre-versioning naming, with an index that says it is
+        // current for both files.
+        store::write_atomic(
+            &store::graph_path(d.path()),
+            &[
+                Edge::base("defines_fn", &["src/a.rs", "crate::a::alpha"], "src/a.rs"),
+                Edge::base("defines_fn", &["src/b.rs", "crate::b::beta"], "src/b.rs"),
+            ],
+        )
+        .expect("seed graph");
+        save_index(
+            &index_path(d.path()),
+            &Index {
+                format: 0,
+                entries: BTreeMap::from([
+                    ("src/a.rs".to_string(), hash_content("fn alpha() {}")),
+                    ("src/b.rs".to_string(), hash_content("fn beta() {}")),
+                ]),
+            },
+        )
+        .expect("seed index");
+        // Written by `save_index`, which always stamps the current format;
+        // force the legacy shape back onto disk.
+        std::fs::write(index_path(d.path()), "0 src/a.rs\n0 src/b.rs\n").expect("legacy index");
+
+        on_save(d.path(), "src/a.rs", "fn alpha() {}").expect("save");
+
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(
+            names.iter().all(|n| n.starts_with("rust:")),
+            "the unedited file must be migrated too, not left in the old naming: {names:?}"
+        );
+        assert!(names.iter().any(|n| n.ends_with("::beta")), "{names:?}");
+        assert_eq!(
+            load_index(&index_path(d.path())).expect("load").format,
+            GRAPH_FORMAT,
+            "a migrated graph must stop reporting itself outdated"
+        );
     }
 
     // ─── the per-save pipeline ──────────────────────────────────────

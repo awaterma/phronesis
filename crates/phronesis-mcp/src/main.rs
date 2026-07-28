@@ -1171,18 +1171,30 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
         }
         GraphCmd::Status { path, json } => {
             let index = sync::load_index(&sync::index_path(&path))?;
-            let drifted = match sync::check_freshness(&path, &index) {
-                sync::Freshness::Fresh => Vec::new(),
+            let freshness = sync::check_freshness(&path, &index);
+            let outdated = matches!(freshness, sync::Freshness::Outdated { .. });
+            let drifted = match freshness {
+                sync::Freshness::Fresh | sync::Freshness::Outdated { .. } => Vec::new(),
                 sync::Freshness::Stale(files) => files,
             };
             if json {
                 println!(
                     "{}",
                     serde_json::json!({
-                        "fresh": drifted.is_empty(),
+                        "fresh": !outdated && drifted.is_empty(),
+                        "outdated_format": outdated,
+                        "graph_format": index.format,
+                        "expected_format": sync::GRAPH_FORMAT,
                         "drifted_files": drifted,
                     })
                 );
+            } else if outdated {
+                println!(
+                    "Graph was built under identity format {} (current is {}). Structural rules will warn, not block.",
+                    index.format,
+                    sync::GRAPH_FORMAT
+                );
+                println!("Run `phr-mcp graph rebuild` to resync.");
             } else if drifted.is_empty() {
                 println!("Graph is fresh.");
             } else {

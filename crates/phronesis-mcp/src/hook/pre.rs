@@ -102,9 +102,16 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                 edited,
             );
             if !h.fresh && !h.facts.is_empty() {
+                let cause = if h.outdated {
+                    "was built by an older phronesis and names entities differently".to_string()
+                } else {
+                    format!(
+                        "is stale ({} file(s) changed outside the hook)",
+                        h.drifted.len()
+                    )
+                };
                 eprintln!(
-                    "phronesis: NOTE — structural graph is stale ({} file(s) changed outside the hook); structural rules will warn, not block. Run `phr-mcp graph rebuild`.",
-                    h.drifted.len()
+                    "phronesis: NOTE — structural graph {cause}; structural rules will warn, not block. Run `phr-mcp graph rebuild`."
                 );
                 // Rules reading a drifted graph reason from evidence we can't
                 // vouch for, so the harness declines to act on their verdicts.

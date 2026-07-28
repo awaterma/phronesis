@@ -85,6 +85,9 @@ pub struct Hydration {
     pub fresh: bool,
     /// Files that drifted, when not fresh.
     pub drifted: Vec<String>,
+    /// The graph was built under an older identity scheme rather than having
+    /// drifted. Same enforcement consequence, different remedy to report.
+    pub outdated: bool,
     /// Rules reasoning over the graph. When `fresh` is false, the harness
     /// downgrades these rules' violations to warnings.
     pub graph_rules: BTreeSet<RuleId>,
@@ -104,15 +107,18 @@ pub fn hydrate(root: &Path, rules: &[Rule], edited_file: Option<&str>) -> Hydrat
             facts: Vec::new(),
             fresh: true,
             drifted: Vec::new(),
+            outdated: false,
             graph_rules: BTreeSet::new(),
         };
     }
 
     let edges: Vec<Edge> = store::load(&store::graph_path(root)).unwrap_or_default();
     let index = load_index(&index_path(root)).unwrap_or_default();
-    let (fresh, drifted) = match check_freshness(root, &index) {
-        Freshness::Fresh => (true, Vec::new()),
-        Freshness::Stale(files) => (false, files),
+    let (fresh, drifted, outdated) = match check_freshness(root, &index) {
+        Freshness::Fresh => (true, Vec::new(), false),
+        Freshness::Stale(files) => (false, files, false),
+        // No file drifted; the whole graph speaks an older identity scheme.
+        Freshness::Outdated { .. } => (false, Vec::new(), true),
     };
 
     let mut facts: Vec<Fact> = edges
@@ -134,6 +140,7 @@ pub fn hydrate(root: &Path, rules: &[Rule], edited_file: Option<&str>) -> Hydrat
         facts,
         fresh,
         drifted,
+        outdated,
         graph_rules: graph_rule_ids(rules),
     }
 }

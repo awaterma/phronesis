@@ -179,16 +179,34 @@ repository-wide identity migration.
 #### 4.2.1 Migration
 
 The graph and its index are derived, gitignored state. Revision 4 changes every
-Rust entity identity from `crate::…` to `rust:<package>::…`; an existing graph
-must therefore be regenerated with:
+Rust entity identity from `crate::…` to `rust:<package>::…`, so an existing
+graph must be regenerated.
 
-```bash
-phr-mcp graph rebuild
-```
+Nothing about the *files* changes across such a revision, so the content-hash
+index cannot detect it: every hash still matches and the graph reports itself
+fresh while half its edges are unjoinable. The index therefore carries the
+identity scheme it was built under, as a `# format <n>` header:
 
-Rebuild rewrites all base edges under the new identities and recomputes all
-derived `untested` and `in_cycle` edges. Incremental compaction alone is not a
-migration because it only replaces edges belonging to the edited file.
+| format | identity scheme |
+|--------|-----------------|
+| 0 | pre-versioning; bare `crate::…` |
+| 4 | `<lang>:<package>[#<target>]::<module path>` |
+
+A non-empty index whose format differs from the running binary's is reported
+as `Outdated` — distinct from `Stale`, because no file drifted and only a
+rebuild resolves it. Enforcement downgrades to warn exactly as it does for
+drift, and both `phr-mcp graph status` and the pre-hook name the older format
+rather than reporting "0 files changed".
+
+Recovery is automatic: the next `PostToolUse` save into an outdated graph runs
+a full rebuild before applying the edit. Incremental compaction alone is not a
+migration, because it only replaces edges belonging to the edited file — the
+rest would keep the old naming and never join to the new. `phr-mcp graph
+rebuild` does the same thing on demand.
+
+An empty index is never "outdated": a project that has never built a graph has
+no old edges to migrate, and treating it as a migration would demand a rebuild
+of nothing.
 
 #### 4.2.2 Module-path anchoring
 
