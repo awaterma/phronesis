@@ -2,7 +2,7 @@
 
 **Status:** Phase One implemented on `feat/structural-graph-facts`; measurements in §2.3 and §10
 **Target release:** 0.23.0
-**Revision:** 4 — compilation-unit-qualified identity added for workspace soundness
+**Revision:** 6 — first-class elements and state-bound journey evidence specified
 
 ## Summary
 
@@ -42,7 +42,7 @@ Fact {
 
 This works in the engine **today, unmodified**. It reuses the predicate index for free, keeps each alpha memory small and per-relation, and eliminates the proposed `TripleWme` type entirely.
 
-### 1.2 Closed Relation Set (Phase One, Rust only)
+### 1.2 Closed Relation Set
 
 | Relation | args | Meaning |
 |---|---|---|
@@ -54,6 +54,12 @@ This works in the engine **today, unmodified**. It reuses the predicate index fo
 | `in_cycle` | `[module, cycle_id]` | Module participates in an import cycle (§4.5) |
 | `declares_module` | `[file, module]` | Links a file to its module, so module-keyed relations can be scoped to a file (§5.7) |
 | `edited_file` | `[file]` | The file the current call is touching, repo-relative. Not stored on disk — asserted per invocation (§5.7) |
+| `graph_file` | `[file]` | A source file known to the graph, including an otherwise-empty file (§9.1) |
+| `graph_module` | `[module]` | A language-qualified module identity (§9.1) |
+| `graph_function` | `[function]` | A callable function or method identity, including tests (§9.1) |
+| `graph_test` | `[test]` | A test function identity. Tests are also functions (§9.1) |
+| `element_in_file` | `[element, file]` | Exact containment used to scope any element kind to a file (§9.1) |
+| `element_in_module` | `[element, module]` | Exact containment used to roll function/test evidence up to a module (§9.1) |
 
 Provenance is **not** a relation. It is the `src` field on every stored edge (§2.1), and is never asserted into working memory.
 
@@ -138,7 +144,9 @@ This is the hard part of the spec and the main Phase-One risk. A structural enfo
 
 ### 4.1 Language scope
 
-**Phase One is Rust only.** The extractor uses `tree-sitter-rust`. Regex extraction is explicitly rejected — it cannot distinguish a call inside a string literal, a comment, or a `cfg`-disabled block, and each of those is a false-block generator. Other languages are out of scope until the Rust extractor's false-positive rate is measured.
+**Extraction is AST-based, per language.** Rust uses `tree-sitter-rust`; Python uses `tree-sitter-python`. Regex extraction is explicitly rejected — it cannot distinguish a call inside a string literal, a comment, or a `cfg`-disabled block, and each of those is a false-block generator.
+
+The two extractors share the edge vocabulary of §1.2, `::` as the segment separator, and nothing else. Rust's module tree is declared (`mod x;`) while Python's is the directory layout; Rust qualifies by compilation target while Python has none; Rust's imports name modules while Python's name modules *or* the objects inside them. A shared "generic extractor" would be an abstraction over two genuinely different languages, so each is written out.
 
 ### 4.2 Entity naming
 
@@ -221,6 +229,46 @@ crate-root file's *directory*, matching Rust: a target root
 manifest claims keeps the older `src/`-anchored heuristic, since there is no
 known prefix to strip.
 
+#### 4.2.3 Python identity
+
+A Python entity is `python:<distribution>::<module path>`, with **no target
+suffix**. Cargo's `#bin:` / `#test:` split exists because those genuinely
+compile as separate crates with separate `crate` roots; Python has no
+equivalent, and a test module is an ordinary module. Inventing a suffix by
+analogy would split one namespace into several that can never join.
+
+The distribution name comes from the nearest `pyproject.toml`, under PEP 621's
+`[project]` or Poetry's `[tool.poetry]`. Import paths are rooted at the
+layout's import root, read from disk rather than guessed: a `src/` directory
+beside the manifest means the src layout, otherwise the flat layout. A `.py`
+file no manifest claims falls back to `python:project` — its own language's
+word for an unnamed root, never Rust's `crate`.
+
+Segments join with `::`, not `.`, even though Python source writes dots. The
+separator belongs to the graph's data model: `derive::untested` bridges
+`tested_by`'s bare callee names to `defines_fn`'s qualified ones by splitting
+on it, so a dotted identity would make every tested Python function report as
+untested.
+
+Unit resolution filters by the file's own language. A repository can hold a
+`pyproject.toml` at the root and a `Cargo.toml` under `crates/`, and
+innermost-root alone would hand a `.py` file beside the Rust code a Cargo
+package.
+
+**`calls_api` is deliberately empty for Python.** The Rust watchlist works
+because `unwrap`/`expect`/`panic!` are a closed, idiomatic set of
+panic-introducing calls. Python has no trustworthy equivalent — `open`,
+`int`, and dictionary access all raise, and flagging them would bury the
+signal. Inventing one would undermine the precision gate that earns these
+rules the right to block. The consequence is that the untested-risky-call rule
+does not fire on Python; of the two shipped structural rules, only
+`warn-import-cycle` can fire in a Python project. `warn-untested-risky-call`
+is Rust-only.
+
+Adding Python needed no `GRAPH_FORMAT` bump. Rust identities are unchanged,
+and `.py` files were previously untracked, so they are absent from the index
+and the ordinary drift path reports them — warn, then rebuild.
+
 ### 4.3 Watched-API list
 
 `calls_api` is emitted only for a closed watchlist configured in `.phronesis/graph.toml` (default: `unwrap`, `expect`, `panic!`, `todo!`, `unimplemented!`). Resolution is syntactic — a method call named `unwrap` on any receiver counts. This over-approximates (a user type with an `unwrap` method matches); the watchlist being explicit and small keeps that tractable.
@@ -266,7 +314,11 @@ Both derivations are pure functions of the edge set, so they are also the cheape
 
 ### 4.6 Failure behavior
 
-Parse failure on a file drops that file's edges and marks the graph stale for that file. The extractor never emits partial edge sets for a file it could not fully parse.
+Parse failure preserves the file's previous edges and leaves its old content
+hash in the index, which makes freshness report that file as drifted. The
+extractor never emits partial edge sets for a file it could not fully parse.
+Treating "could not parse" as an empty successful extraction would erase
+trusted structure and then certify the resulting graph as fresh.
 
 ---
 
@@ -447,7 +499,9 @@ Structural rules therefore set `audit: true`. Findings carry no line number (the
 
 ## 7. Explicitly Out of Scope for Phase One
 
-* Non-Rust languages.
+* Languages beyond Rust and Python. (Revision 5 added the Python extractor;
+  `calls_api` remains Rust-only, so only `warn-import-cycle` fires on a
+  Python project — see §4.2.3.)
 * Blocking (as opposed to warning) on any structural rule.
 * Transitive/recursive rule evaluation in the engine; cycles are precomputed (§4.5).
 * Any change to `crates/phronesis` engine internals — including `TripleWme`, which is **cut**.
@@ -465,6 +519,354 @@ Structural rules therefore set `audit: true`. Findings carry no line number (the
 6. **Benchmark:** measure (a) hydrate latency at 15k edges against the PreToolUse budget and (b) the per-save parse+compact+derive round trip against the PostToolUse budget. Acceptance gates, not assumptions.
 7. **False-positive measurement:** run the extractor over this repo and at least one additional Rust codebase of comparable size; report `untested` and `in_cycle` precision by hand-audit. Gates any future promotion from warn to block. **First corpus measured — see §10.**
 8. **Integration tests:** cycle detection and untested-call detection fire deterministically, without LLM invocation; stale graph downgrades to warn.
+
+---
+
+## 9. Phase Two: First-Class Elements and Grounded Evidence
+
+Phase One answers structural questions over relations. Phase Two makes the
+things at the ends of those relations independently addressable and joins
+them with evidence of actions that actually happened. The graph remains the
+durable structural model; the journey journal remains the durable observation
+log; RETE combines fresh snapshots of both and emits consequences.
+
+This phase does not add a new engine primitive. Element declarations,
+relations, observations, and evaluation-local conclusions all use the existing
+`Fact { predicate, args }` shape.
+
+### 9.1 Element predicates and containment
+
+Elements are positive unary facts:
+
+```text
+graph_file("crates/phronesis/src/network.rs")
+graph_module("rust:phronesis::network")
+graph_function("rust:phronesis::network::fire")
+graph_test("rust:phronesis::network::tests::fire_works")
+```
+
+Dedicated predicates are intentional. A generic
+`element(id, kind)` predicate would put every code entity in one alpha-memory
+bucket and give up the predicate index described in §1.1.
+
+Classifications may overlap. Every `graph_test(T)` also has
+`graph_function(T)` because a test is a function with an additional role.
+`graph_function` therefore means "callable function or method"; rules that
+mean production callable add a
+`file_type(File, "production")` join. Future kinds such as `graph_class` and
+`graph_type` follow the same additive rule rather than creating a disjoint
+type hierarchy.
+
+Containment is explicit:
+
+```text
+element_in_file(Element, File)
+element_in_module(Element, Module)
+```
+
+`defines_fn(File, Function)` and `declares_module(File, Module)` remain in the
+v1 vocabulary for compatibility and relation-specific queries. The extractor
+emits the corresponding generic containment facts from the same AST node; the
+two representations must agree in contract tests.
+
+The identities are exactly those of §4.2. Files remain normalized,
+repo-relative paths. Modules, functions, and tests carry the Rust/Python unit
+prefix. No display name, line number, or short test name is an identity.
+Renaming an element is deletion plus addition; Phase Two does not attempt
+heuristic rename detection.
+
+An otherwise-empty parseable source file still emits `graph_file(File)`.
+Likewise, a module or test with no qualifying relation remains queryable
+through its unary predicate. Every element and containment fact is a base edge
+whose `src` is the file that declared the element.
+
+### 9.2 Fact classes and their authority
+
+The predicate name alone does not imply how a fact became true. Phase Two
+defines four classes with distinct persistence:
+
+| Class | Examples | Authority | Persistence |
+|---|---|---|---|
+| Extracted structure | `graph_function`, `tested_by`, `element_in_file` | AST sensor | `graph.jsonl`, provenance-keyed |
+| Graph-derived structure | `untested`, `in_cycle` | Pure computation over the complete graph | Regenerated in `graph.jsonl`, `d: true` |
+| Observed evidence | `test_executed`, `test_result`, `run_state` | Post-hook outcome adapter parsing an executed command | Journey journal |
+| Evaluation-local inference | `introduced_element`, `verified_at_state`, `verification_missing` | Host derivation over graph + baseline + evidence + current state | Fresh network only |
+
+Only the observation adapter may assert that a test executed or passed.
+Neither the presence of `graph_test(T)` nor the structural edge
+`tested_by(F, T)` is evidence that `T` ran. Absence of failure evidence is
+`unknown`, never `pass`, following `SPEC-confidence-scoring.md`.
+
+RETE RHS actions continue to emit consequences; they do not persist inferred
+graph edges and do not forward-chain. Conclusions needed by an LHS are
+precomputed by a pure host derivation before `update_agenda`, just as
+`untested`, `in_cycle`, journey aggregators, and confidence signals are today.
+
+### 9.3 Incremental save lifecycle
+
+On every successful source-file PostToolUse/save:
+
+1. Parse the saved file completely.
+2. Produce its complete base subgraph: unary elements, containment, and
+   language relations.
+3. If parsing failed, preserve the previous subgraph and index hash; freshness
+   becomes false for that file.
+4. Otherwise remove every base edge with `src == saved_file`, insert the new
+   subgraph, and record the new file hash.
+5. Recompute all whole-graph derived edges.
+6. Compute the graph state id (§9.5).
+7. Atomically replace `graph.jsonl` and its index.
+
+Deleting a file removes every base edge with that file's provenance, removes
+its index entry, and reruns derivation. A test file owns the `tested_by` edges
+inferred from its test bodies, even when their subject is a function declared
+elsewhere; saving or deleting the test therefore replaces that evidence
+correctly.
+
+This is subgraph replacement, not an append-only graph. It makes removal and
+rename semantics deterministic without a truth-maintenance system.
+
+### 9.4 “Introduced” means relative to the open work-unit baseline
+
+Transient comparison with the immediately previous save is useful for
+diagnostics but is not the meaning of "new in this change": after a second
+save, the element would incorrectly stop being new.
+
+The normative baseline is the structural graph state captured when the
+current outcomes/journey subject opens. The pre-hook that observes the first
+mutating call must open the subject and snapshot the graph *before* that call
+executes; capturing it at post-hook time would already include the first new
+element.
+
+The snapshot is a compact, sorted set of unary element identities plus the
+baseline state id, stored under
+`.phronesis/outcomes/baselines/<subject>.json`. It does not duplicate
+relations: introduction is an identity-set comparison, while current
+containment and test relationships come from the current graph. Subject
+creation and baseline writing are one lock-serialized operation; a subject is
+not considered open until its baseline has been atomically renamed into place.
+
+Host derivation emits:
+
+```text
+introduced_element(Subject, Element)
+introduced_file(Subject, File)
+introduced_function(Subject, Function)
+introduced_module(Subject, Module)
+introduced_test(Subject, Test)
+```
+
+Specific predicates are conveniences derived from the unary element kind plus
+`introduced_element`; they are not separately extracted. An element is
+introduced when its stable identity is present in the current fresh graph and
+absent from the baseline graph. A rename is therefore one removed identity
+and one introduced identity.
+
+If no subject is open, the baseline cannot be loaded, or either graph is stale, no
+`introduced_*` fact is asserted. Rules depending on introduction are
+downgraded through the same harness-health seam as stale structural rules;
+missing baseline evidence must not become a blocking negative claim.
+
+### 9.5 Structural state identity
+
+Passing evidence is valid only for the source state against which the command
+ran. Phase Two uses a conservative project-wide structural state id:
+
+```text
+state_id = sha256(
+    GRAPH_FORMAT || "\n" ||
+    sorted(repo_relative_path || US || content_hash || "\n")
+)
+```
+
+The file hashes are the same hashes maintained by `graph.index`; `US` is the
+U+001F separator already used in stable graph fact identities. The state id is
+available only when the index is fresh. This deliberately invalidates all
+structural verification after any tracked source file changes. Per-element
+dependency fingerprints may narrow invalidation later, but cannot replace
+this conservative contract without a spec revision.
+
+`current_state(State)` is invocation-local machinery asserted only for the
+evidence join. Unlike the rejected `graph_fresh` condition (§5.4), rule
+authors do not use it to decide whether stale machinery is acceptable:
+freshness demotion remains the harness's responsibility.
+
+### 9.6 Journey evidence schema
+
+The journey journal remains one record per executed tool call. Its next schema
+version adds optional `run`, `state`, and `atoms` fields:
+
+```json
+{
+  "v": 2,
+  "ts": 1718700000,
+  "sid": "s-2026-06-18-a1b2",
+  "seq": 4137,
+  "tool": "Bash",
+  "tags": ["test", "outcome:test_pass"],
+  "subject": "auth-fix-3",
+  "run": "s-2026-06-18-a1b2:4137",
+  "state": "sha256:…",
+  "atoms": [
+    {"p": "test_result", "a": ["rust:phronesis::network::tests::fire_works", "pass"]}
+  ]
+}
+```
+
+`run` is deterministically `<sid>:<seq>`. `state` is the fresh graph state
+observed when the command completes. If graph state is unavailable, the event
+may still carry aggregate outcome tags, but it cannot verify an element.
+
+`atoms` revives the deliberately deferred atom seam in
+`SPEC-journey-facts.md` for this concrete consumer. Adapters emit only
+normalized, bounded facts:
+
+```text
+test_result(Test, "pass" | "fail")
+```
+
+The derivation expands a record into:
+
+```text
+test_executed(Run, Test)
+test_result(Run, Test, Status)
+run_state(Run, State)
+run_subject(Run, Subject)
+```
+
+The on-disk atom omits `Run` because the containing record supplies it.
+Aggregate summaries remain `test_outcome`; they prove that a test command ran
+but cannot prove that a particular graph test passed.
+
+Adapters must resolve runner names to the exact graph test identity from
+§9.1. Rust adapters account for package/target identity; pytest adapters map
+node ids to Python module/function identities. Ambiguous, truncated, filtered,
+or unresolvable names produce no element-level atom. Short-name matching is
+acceptable for the warning-oriented structural `tested_by` heuristic (§4.4)
+but is forbidden for passing evidence.
+
+To bound journal growth, an adapter records at most the configured atom cap
+per run and marks truncation in the record. A truncated run can verify the
+tests whose atoms are present; it makes no claim about omitted tests.
+
+### 9.7 Joining structure to observed evidence
+
+Before agenda construction, a pure derivation joins exact identities:
+
+```text
+tested_by(Function, Test)
+test_result(Run, Test, "pass")
+run_state(Run, State)
+current_state(State)
+    => verified_at_state(Function, Test, Run, State)
+```
+
+The arrow describes host derivation, not RETE forward chaining. The resulting
+fact is asserted into the fresh network so ordinary rules can consume it.
+
+A rule governing introduced functions can then be flat:
+
+```json
+{
+  "id": "introduced-function-needs-current-passing-test",
+  "phase": "pre",
+  "conditions": [
+    {"predicate": "current_subject", "args": ["?subject"]},
+    {"predicate": "introduced_function", "args": ["?subject", "?function"]},
+    {"predicate": "element_in_file", "args": ["?function", "?file"]},
+    {"predicate": "edited_file", "args": ["?file"]},
+    {"predicate": "verification_missing", "args": ["?function"]}
+  ],
+  "actions": [
+    {
+      "action_type": "constraint_violation",
+      "params": ["Introduced function ?function has no observed passing test for the current source state."]
+    }
+  ]
+}
+```
+
+Because the engine has no negation-as-failure, the host derivation emits
+`verification_missing(Function)` by set difference over the in-scope
+introduced functions and `verified_at_state` facts. It emits
+`verification_stale(Function, Run)` only when a linked passing run exists at a
+different state; stale is explanatory evidence, not a substitute for
+`verification_missing`.
+
+File and module verification roll up from their contained introduced
+functions:
+
+* `verified_file(File)` iff every in-scope introduced function in `File` has a
+  `verified_at_state` fact.
+* `verified_module(Module)` iff every in-scope introduced function in `Module`
+  has a `verified_at_state` fact.
+* A newly introduced empty file/module is not silently considered tested.
+  Projects must choose an explicit policy rule (warn, exempt, or require a
+  module-level smoke test).
+
+These are evidence claims, not correctness claims. They mean an exactly
+identified linked test was observed passing at the current structural state;
+they do not establish behavioral adequacy or runtime coverage of every path.
+
+### 9.8 Cross-store hydration and freshness
+
+The hook evaluation order is normative:
+
+1. Load rules and determine demanded graph, journey, and evidence predicates.
+2. Hydrate the fresh structural relations needed by those rules.
+3. Load the open subject and its baseline.
+4. Read the bounded relevant journey suffix and expand evidence atoms.
+5. Assert `current_subject` and the current structural state.
+6. Host-derive introduction, verification, and missing/stale facts.
+7. Assert those facts, call `update_agenda`, and fire once.
+8. Discard the network and all evaluation-local facts.
+
+Demand gating remains predicate-driven: projects with no element/evidence
+rules do not read the additional journey data or compute baselines.
+
+Each source reports freshness separately. A blocking consequence whose bound
+facts depend on a stale graph, missing baseline, truncated evidence for the
+claimed test, or unavailable current state is demoted to a warning. Positive
+evidence facts are never synthesized to make evaluation proceed.
+
+### 9.9 Phase-Two implementation requirements and acceptance tests
+
+1. Extend the closed relation set, hydration allowlist, graph query inventory,
+   Rust extractor, and Python extractor with unary elements and containment.
+2. Preserve the existing `Edge` JSONL shape; the new graph predicates require
+   a `GRAPH_FORMAT` bump because full rebuild is required to populate them for
+   previously indexed files.
+3. Add pre-mutation, atomic baseline capture to the open-subject lifecycle and
+   deterministic introduction derivation.
+4. Add graph state-id computation over the freshness index.
+5. Version the journey record and add bounded outcome atoms without changing
+   the existing tag aggregators' behavior.
+6. Normalize exact per-test identities in Cargo and pytest adapters; unresolved
+   names remain aggregate-only evidence.
+7. Add demand-gated cross-store derivation before agenda construction.
+8. Ship new enforcement rules as warnings until false-positive and
+   false-negative behavior is measured on at least two corpora.
+
+Acceptance tests must prove:
+
+* An isolated file, module, function, and test remains queryable.
+* Saving a file removes deleted/renamed elements and inserts new elements
+  without reparsing unrelated files.
+* Parse failure preserves prior edges and makes graph-dependent blocking
+  verdicts fail open.
+* A function remains introduced across repeated saves in the same subject.
+* A directly linked exact-name test passing at the current state verifies its
+  function.
+* An aggregate passing summary, unresolved test name, failed test, stale-state
+  pass, or missing state does not verify a function.
+* Editing any tracked source file invalidates project-wide verification until
+  a new matching run is observed.
+* Saving/deleting a test replaces its cross-file `tested_by` edges.
+* File/module rollups require all introduced contained functions and do not
+  vacuously verify empty elements.
+* Replaying identical graph bytes, baseline, journal bytes, and invocation
+  timestamp produces identical facts and consequences.
+* Projects whose rules mention no Phase-Two predicate do no Phase-Two I/O.
 
 ---
 
@@ -502,6 +904,38 @@ Omitting the relation returns the relation inventory with edge counts, so the vo
 ---
 
 ## 11. Revision History
+
+**Revision 6** — specified first-class elements and grounded evidence:
+
+* Added unary file/module/function/test predicates plus generic containment,
+  preserving per-predicate alpha indexing and isolated elements (§9.1).
+* Separated extracted, graph-derived, observed, and evaluation-local facts;
+  only post-hook outcome adapters may claim execution or success (§9.2).
+* Made the open work-unit graph the normative baseline for
+  `introduced_*` facts and defined conservative fallback/fail-open behavior
+  (§9.4).
+* Bound per-test journey evidence to an exact graph identity and a
+  project-wide structural state id; stale or ambiguous evidence cannot verify
+  an element (§9.5–§9.7).
+* Defined cross-store hydration order, demand gating, derivation ownership,
+  freshness demotion, format migration, and acceptance tests (§9.8–§9.9).
+* Corrected §4.6 to match the implemented safe behavior: parse failure
+  preserves prior edges and leaves the graph stale rather than erasing the
+  file's subgraph.
+
+**Revision 5** — added the Python extractor:
+
+* Defined distribution-qualified Python identities and `::` normalization so
+  Python facts join the language-neutral graph vocabulary (§4.2.3).
+* Kept `calls_api` Rust-only rather than inventing a noisy Python watchlist.
+* Required language-aware unit resolution in mixed Cargo/Python repositories.
+
+**Revision 4** — made identity compilation-unit-aware:
+
+* Qualified Rust identities by package and target so workspace crates,
+  integration tests, examples, and benches cannot collapse into one node.
+* Defined target-root-relative module paths and a graph-format migration for
+  identities generated by the earlier scheme (§4.2).
 
 **Revision 3** — Phase One implemented (`crates/phronesis-mcp/src/graph/`), 92 unit tests:
 
