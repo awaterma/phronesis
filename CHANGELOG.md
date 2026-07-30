@@ -4,6 +4,78 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.23.0] - 2026-07-30
+
+### Added
+- **Structural code-graph facts** (`structural` pack, alias `graph`). A
+  durable, gitignored graph of architectural relations at
+  `.phronesis/graph.jsonl`, extracted by the `PostToolUse` sensor and
+  hydrated into the RETE network at `PreToolUse`. Ships two `warn` rules:
+  `warn-untested-risky-call` (a production function calling a panicking API
+  with no direct test) and `warn-import-cycle` (a module in an import
+  cycle). Both join `edited_file`, so they report the file in front of you
+  rather than the whole repository on every edit. See
+  `docs/specs/SPEC-triple-store-rete.md`.
+- **Rust and Python extractors.** Entity identity is
+  `<lang>:<package>[#<target>]::<module path>`. Rust resolves Cargo packages,
+  compilation targets, and dependency aliases including
+  `[workspace.dependencies]` inheritance; Python resolves distributions from
+  `pyproject.toml` (PEP 621 and Poetry), both `src/` and flat layouts, and
+  imports across sibling distributions in one repository.
+- **Graph CLI and MCP surface.** `phr-mcp graph rebuild`, `graph status`, and
+  `graph query`, plus the `query_code_graph` MCP tool.
+- **`event.file_rel` for Rhai predicate providers** — the edited path in the
+  repo-relative form the graph keys files by, so provider-emitted facts can
+  join graph facts on a path. `event.file_path` remains the host's absolute
+  path.
+
+### Changed
+- **Graph identity carries an explicit format stamp.** `.phronesis/graph.index`
+  records the identity scheme it was built under. A graph built by an older
+  version is reported as outdated rather than fresh, and the next save
+  rebuilds it — content hashes cannot detect an identity change, because the
+  files themselves do not change.
+
+### Fixed
+- **The `PostToolUse` graph sensor never ran through a real hook.** A
+  traversal guard rejected absolute paths, which is the only form hosts send;
+  the sensor was additionally gated behind post-phase rules, which a
+  pre-phase-only pack never has. Both are fixed, and `repo_relative` now
+  resolves symlinked project roots (`/var` vs `/private/var` on macOS).
+- **A parse failure destroyed the file's graph evidence and reported
+  success.** An empty extraction was indistinguishable from "this file
+  defines nothing", so a malformed mid-edit save erased every function, call,
+  and import the file had and recorded its hash as successfully indexed.
+  Parse failure now preserves prior evidence and leaves the file reported
+  stale.
+- **`#[cfg(not(test))]` and `#[cfg(feature = "test-utils")]` were classified
+  as test attributes**, dropping production functions from `defines_fn` and
+  turning their calls into coverage edges. `cfg` predicates are now parsed
+  rather than token-scanned.
+- **A deleted file kept its edges and its index entry**, leaving the graph
+  permanently reporting drift.
+- **The Codex adapter was not wired for the code graph** — no sensor, no
+  hydration, and no agenda update before firing, so every purely
+  RETE-derived verdict was computed and discarded.
+- **The MCP `audit_codebase` tool omitted the graph merge** the CLI performs,
+  reporting zero structural debt regardless of the graph's contents and
+  writing that zero into the debt trend.
+
+### Known limits
+- `calls_api` is deliberately empty for Python: there is no defensible
+  equivalent of Rust's closed panic watchlist. Python projects therefore fire
+  `warn-import-cycle` only.
+- `tested_by` matches by bare short name and over-approximates coverage, so
+  `untested` under-approximates. That direction is chosen — a missed warning
+  is recoverable, a false "untested" verdict is not.
+- Both rules `warn`. Promotion to `block` awaits a second measured corpus.
+
+### Migration
+- The graph and its index are derived, gitignored state; nothing needs to be
+  committed or hand-edited. An existing graph is detected as outdated and
+  rebuilt automatically on the next save, or on demand with
+  `phr-mcp graph rebuild`.
+
 ## [0.22.0] - 2026-07-25
 
 ### Added
