@@ -1,6 +1,18 @@
 [workspace]
-# Release only when the release PR is merged — never on ordinary pushes to main.
-release_always = false
+# Publish whenever `main` holds a version crates.io does not.
+#
+# This was `false`, meaning "only release from a Release PR" — but release-plz
+# reads that as "only from a Release PR *it authored*". A hand-authored
+# Release PR (needed when release-plz itself cannot compute a version, as
+# happened when v0.22.1 was tagged but never published) merged the version
+# bump and was then skipped with "current commit is not from a release PR",
+# exiting green having published nothing.
+#
+# `true` is not less safe here: versions only change through a Release PR, so
+# on an ordinary push the workspace version already matches the registry and
+# there is nothing to publish. What it removes is the dependence on who
+# authored the PR. `scripts/verify-crates-io.py` enforces the invariant.
+release_always = true
 
 # CHANGELOG.md is hand-curated (Keep a Changelog with Migration sections);
 # release-plz manages versions/tags/publishing only.
