@@ -13,7 +13,7 @@ keywords = ["rules-engine", "rete", "rhai", "scripting"]
 categories = ["development-tools"]
 
 [dependencies]
-phronesis = { path = "../phronesis", version = "0.22" }
+phronesis = { path = "../phronesis", version = "0.23" }
 # `sync` makes the Rhai `Engine`/`Dynamic` Send + Sync, which the
 # `ScriptEval` trait requires (the network is shared behind Arc<Mutex<_>>).
 # `no_module`/`no_closure` shrink the sandbox surface.
