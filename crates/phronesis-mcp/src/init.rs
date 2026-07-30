@@ -1852,9 +1852,12 @@ fn rhai_rules() -> Value {
 /// with a hand-audited true positive — precise enough to surface, not yet
 /// measured on a second corpus, which is what promotion to `block` requires.
 ///
-/// Neither rule sets `audit: true`: the audit engine understands only
-/// content and path predicates, so a graph rule would scan nothing and
-/// report "zero violations" rather than "not applicable".
+/// Both rules set `audit: true`. The file-scanning audit engine understands
+/// only content and path predicates, so `phr-mcp audit` routes graph rules
+/// through `graph::audit::audit_graph_rules` and folds the findings in with
+/// `audit::merge_graph_hits`. Without opting in they would be filtered out
+/// before that step, and a clean audit would mean "never checked" rather than
+/// "nothing found".
 ///
 /// Both rules open on `edited_file`, which scopes them to the file in front
 /// of the user. Graph relations describe the whole repository, so without

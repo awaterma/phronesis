@@ -213,7 +213,7 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
         }
     };
 
-    let network = build_pre_network(&rules, &file_path, root).await;
+    let (network, stale_graph_rules) = build_pre_network(&rules, &file_path, root).await;
     let command = extract_bash_command(payload);
 
     // Assert content fact
@@ -259,6 +259,11 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     }
 
     // Fire rules
+    // RETE consequences reach the agenda only after an explicit update, as
+    // the Claude hook does before firing. Without it any verdict derived
+    // purely from fact matching — every structural graph rule — is computed
+    // and then dropped.
+    let _ = network.update_agenda().await;
     let consequences = match network.fire_all_consequences() {
         Ok(c) => c,
         Err(e) => {
@@ -272,7 +277,15 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
         }
     };
 
-    let (logged, mut block_msgs, mut warn_msgs) = hook::collect_logged(&consequences);
+    let (mut logged, mut block_msgs, mut warn_msgs) = hook::collect_logged(&consequences);
+    // Rules reading a drifted graph reason from evidence we cannot vouch for,
+    // so the harness declines to act on their verdicts.
+    if !stale_graph_rules.is_empty() {
+        crate::hook_logged::demote_violations_from(&mut logged, &stale_graph_rules);
+        let (v, w) = crate::hook_logged::split_messages_by_action_type(&logged);
+        block_msgs = v;
+        warn_msgs = w;
+    }
 
     block_msgs.extend(violations);
     warn_msgs.extend(warnings);
@@ -396,7 +409,7 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
     // Providers get one batch-level view before the existing per-file views.
     // Keeping `file_path` empty and `files` populated makes the two contexts
     // unambiguous and prevents existing per-file providers from double-firing.
-    let batch_network = build_pre_network(&rules, "", &security::project_root()).await;
+    let (batch_network, _) = build_pre_network(&rules, "", &security::project_root()).await;
     let mut batch_event = codex_provider_event(payload, "apply_patch", "", "pre", "");
     batch_event.files = files.iter().map(|file| file.path.clone()).collect();
     if let Err(error) = crate::predicate_provider::assert_facts(
@@ -414,6 +427,7 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             files: Vec::new(),
         };
     }
+    let _ = batch_network.update_agenda().await;
     let batch_consequences = match batch_network.fire_all_consequences() {
         Ok(consequences) => consequences,
         Err(error) => {
@@ -443,7 +457,8 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             pf.added.clone()
         };
 
-        let network = build_pre_network(&rules, &pf.path, &security::project_root()).await;
+        let (network, stale_graph_rules) =
+            build_pre_network(&rules, &pf.path, &security::project_root()).await;
         if !content.is_empty() {
             let fact_id = format!("new_content_{}", pf.path.replace('/', "_"));
             if let Err(error) = assert_new_content(&network, &fact_id, &content).await {
@@ -489,6 +504,11 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             };
         }
 
+        // RETE consequences reach the agenda only after an explicit update, as
+        // the Claude hook does before firing. Without it any verdict derived
+        // purely from fact matching — every structural graph rule — is computed
+        // and then dropped.
+        let _ = network.update_agenda().await;
         let consequences = match network.fire_all_consequences() {
             Ok(c) => c,
             Err(e) => {
@@ -502,7 +522,16 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             }
         };
 
-        let (file_logged, file_blocks, file_warns) = hook::collect_logged(&consequences);
+        let (mut file_logged, file_blocks, file_warns) = hook::collect_logged(&consequences);
+        // A drifted graph makes structural verdicts unreliable, so they warn
+        // rather than block — the harness declining to enforce on evidence it
+        // cannot vouch for, exactly as the Claude pre-hook does.
+        let (file_blocks, file_warns) = if stale_graph_rules.is_empty() {
+            (file_blocks, file_warns)
+        } else {
+            crate::hook_logged::demote_violations_from(&mut file_logged, &stale_graph_rules);
+            crate::hook_logged::split_messages_by_action_type(&file_logged)
+        };
         logged.extend(file_logged);
         block_msgs.extend(file_blocks);
         warn_msgs.extend(file_warns);
@@ -552,6 +581,18 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
 
     if tool_name != "Bash" && tool_name != "apply_patch" {
         return empty_decision();
+    }
+
+    // Structural sensor, matching the Claude post-hook. Without it a Codex
+    // project's graph goes stale on every edit and its structural rules stay
+    // demoted to warnings until someone runs `graph rebuild` by hand.
+    // `apply_patch` writes several files at once, so each is recorded.
+    if tool_name == "apply_patch" {
+        for file in codex_patch::parse_patch(&extract_bash_command(payload)) {
+            crate::graph::sync::record_from_disk(root, &file.path);
+        }
+    } else if !file_path.is_empty() {
+        crate::graph::sync::record_from_disk(root, &file_path);
     }
 
     let rules = match load_rules("post") {
@@ -607,6 +648,11 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
         };
     }
 
+    // RETE consequences reach the agenda only after an explicit update, as
+    // the Claude hook does before firing. Without it any verdict derived
+    // purely from fact matching — every structural graph rule — is computed
+    // and then dropped.
+    let _ = network.update_agenda().await;
     let consequences = match network.fire_all_consequences() {
         Ok(c) => c,
         Err(e) => {
@@ -722,7 +768,18 @@ fn build_context_body(root: &Path, kind: ContextKind) -> String {
 // Network builders (async)
 // ---------------------------------------------------------------------------
 
-async fn build_pre_network(rules: &[phr::Rule], file_path: &str, root: &Path) -> phr::ReteNetwork {
+/// Build the pre-check network, returning it alongside the rules whose
+/// verdicts must be demoted because the code graph they read has drifted.
+///
+/// Hydration is not optional decoration: both shipped structural rules open
+/// on `edited_file`, and that fact exists only inside `hydrate`. Without this
+/// the Codex host maintained a graph on every save that nothing ever read,
+/// and the pack produced zero warnings while appearing installed.
+async fn build_pre_network(
+    rules: &[phr::Rule],
+    file_path: &str,
+    root: &Path,
+) -> (phr::ReteNetwork, std::collections::BTreeSet<phr::RuleId>) {
     let mut net = crate::net::build_network();
     for rule in rules {
         let _ = net.add_rule(rule.clone()).await;
@@ -731,7 +788,30 @@ async fn build_pre_network(rules: &[phr::Rule], file_path: &str, root: &Path) ->
     let _ = assert_journey_facts_into(&mut net, root, rules).await;
     crate::hook::assert_pack_marker_facts(&net, root).await;
     crate::hook::assert_confidence_signals(&net).await;
-    net
+
+    let mut stale_graph_rules = std::collections::BTreeSet::new();
+    let edited = (!file_path.is_empty()).then_some(file_path);
+    let hydration = crate::graph::hydrate::hydrate(root, rules, edited);
+    if !hydration.fresh && !hydration.facts.is_empty() {
+        let cause = if hydration.outdated {
+            "was built by an older phronesis and names entities differently".to_string()
+        } else {
+            format!(
+                "is stale ({} file(s) changed outside the hook)",
+                hydration.drifted.len()
+            )
+        };
+        eprintln!(
+            "phronesis: NOTE — structural graph {cause}; structural rules will warn, not block. Run `phr-mcp graph rebuild`."
+        );
+        stale_graph_rules = hydration.graph_rules;
+    }
+    for fact in hydration.facts {
+        if net.assert_fact(fact).await.is_err() {
+            break;
+        }
+    }
+    (net, stale_graph_rules)
 }
 
 async fn build_post_network(rules: &[phr::Rule], file_path: &str, root: &Path) -> phr::ReteNetwork {
@@ -838,6 +918,8 @@ fn codex_provider_event(
         phase: phase.to_string(),
         tool_name: tool_name.to_string(),
         file_path: file_path.to_string(),
+        file_rel: crate::graph::hydrate::repo_relative(&crate::security::project_root(), file_path)
+            .unwrap_or_default(),
         files: Vec::new(),
         old_content: String::new(),
         new_content: content.to_string(),

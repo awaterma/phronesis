@@ -316,6 +316,14 @@ impl EpistemeMcp {
         let event = crate::predicate_provider::ProviderEvent {
             phase: params.event.phase,
             tool_name: params.event.tool_name,
+            // Derived, not supplied: the test surface must relativize exactly
+            // as the real hook does, or a script that joins graph facts would
+            // pass here and silently never fire in production.
+            file_rel: crate::graph::hydrate::repo_relative(
+                &crate::security::project_root(),
+                &params.event.file_path,
+            )
+            .unwrap_or_default(),
             file_path: params.event.file_path,
             files: params.event.files,
             old_content: params.event.old_content,
@@ -862,7 +870,24 @@ impl EpistemeMcp {
                 scan_root,
                 rule_filter: params.rule.clone(),
             };
-            let report = run(&rules, &opts);
+            let mut report = run(&rules, &opts);
+            // Structural rules join relations across the whole repository, so
+            // the file-scan loop skips them. Mirror the CLI and fold in the
+            // graph findings — otherwise this tool reports zero structural
+            // debt however much the graph holds, and the snapshot below
+            // teaches `get_debt_trend` the same falsehood permanently.
+            {
+                let engine_rules: Vec<phr::Rule> = rules
+                    .rules
+                    .iter()
+                    .filter(|r| r.audit == Some(true))
+                    .map(|r| crate::rules_file::rule_from_disk(r).0)
+                    .collect();
+                let hits =
+                    crate::graph::audit::audit_graph_rules(&project_root, &engine_rules).await;
+                crate::audit::merge_graph_hits(&mut report, &hits, params.rule.as_deref());
+            }
+            let report = report;
             let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
             let diag =
                 crate::audit::empty_result_diagnostic(&report, audit_tagged_count, &opts.scan_root);

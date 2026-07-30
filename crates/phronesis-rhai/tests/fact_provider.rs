@@ -5,6 +5,7 @@ fn edit_event() -> FactProviderEvent {
         phase: "pre".to_string(),
         tool_name: "Edit".to_string(),
         file_path: "src/parser/mod.rs".to_string(),
+        file_rel: "src/parser/mod.rs".to_string(),
         old_content: "fn parse() {}".to_string(),
         new_content: "fn parse() { value.unwrap(); }".to_string(),
         command: String::new(),
@@ -130,4 +131,20 @@ fn provider_scope_is_fresh_between_evaluations() {
     let script = r#"emit_fact("one_per_run", [event.file_path]);"#;
     assert_eq!(provider.evaluate(script, &edit_event()).unwrap().len(), 1);
     assert_eq!(provider.evaluate(script, &edit_event()).unwrap().len(), 1);
+}
+
+#[test]
+fn the_event_exposes_a_repo_relative_path_for_joining_graph_facts() {
+    // Hosts send absolute paths, but the code graph keys files repo-relative.
+    // Without a relative form here, a provider fact and a graph fact can never
+    // join on a path — and the rule silently never fires rather than erroring.
+    let event = FactProviderEvent {
+        file_path: "/Users/dev/proj/src/parser/mod.rs".to_string(),
+        file_rel: "src/parser/mod.rs".to_string(),
+        ..edit_event()
+    };
+    let facts = RhaiFactProvider::new()
+        .evaluate(r#"emit_fact("touched", [event.file_rel]);"#, &event)
+        .expect("provider evaluates");
+    assert_eq!(facts[0].args, ["src/parser/mod.rs"]);
 }
