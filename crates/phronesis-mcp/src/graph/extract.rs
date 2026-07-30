@@ -1,6 +1,7 @@
 //! The sensor: derives structural edges from one Rust source file.
 //!
-//! Phase One is Rust only, via tree-sitter. Regex extraction is deliberately
+//! The Rust extractor, via tree-sitter; `super::python` is its counterpart.
+//! Regex extraction is deliberately
 //! rejected — it cannot tell a call inside a string literal, a comment, or a
 //! `cfg`-disabled block from a real one, and each of those is a false-block
 //! generator in an enforcement layer (spec §4.1).
