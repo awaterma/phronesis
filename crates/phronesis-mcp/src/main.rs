@@ -237,6 +237,13 @@ enum Command {
         #[command(subcommand)]
         cmd: DecisionCmd,
     },
+    /// Structural code-graph helpers. The graph at `.phronesis/graph.jsonl`
+    /// is derived, gitignored state; rebuild it after `git checkout`, `git
+    /// mv`, or a rebase, which bypass the PostToolUse sensor.
+    Graph {
+        #[command(subcommand)]
+        cmd: GraphCmd,
+    },
     /// One-command setup for a project. Writes hook config, MCP server
     /// registration, a starter rules file, and updates .gitignore.
     /// Also reachable as `setup` and `configure`.
@@ -339,6 +346,50 @@ enum Command {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum GraphCmd {
+    /// Rescan every tracked Rust file and rewrite the graph from scratch.
+    Rebuild {
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Emit JSON instead of a human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Query the graph by relation and positional arguments. `*` is a
+    /// wildcard in any position; omitting the relation lists the vocabulary.
+    ///
+    /// Examples:
+    ///   graph query                              # what relations exist
+    ///   graph query tested_by fire_all            # which tests cover it
+    ///   graph query imports '*' crate::wme        # what depends on wme
+    ///   graph query untested                      # every untested function
+    Query {
+        /// Relation, then positional argument constraints. `*` matches any.
+        #[arg(value_name = "RELATION [ARG...]")]
+        pattern: Vec<String>,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Maximum rows to print. 0 means no limit.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report whether the graph still matches what is on disk.
+    Status {
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Emit JSON instead of a human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum DecisionCmd {
     /// Scaffold a new decision page at
     /// `.phronesis/wiki/decisions/<today>-<slug>.md`.
@@ -370,7 +421,7 @@ async fn main() -> anyhow::Result<()> {
             path,
             json,
             fail_on,
-        } => handle_audit(rule, path, json, fail_on),
+        } => handle_audit(rule, path, json, fail_on).await,
         Command::Trend {
             last,
             since,
@@ -400,6 +451,7 @@ async fn main() -> anyhow::Result<()> {
             suggest,
         } => handle_wiki_drift(path, wiki_dir, json, suggest),
         Command::Decision { cmd } => handle_decision(cmd),
+        Command::Graph { cmd } => handle_graph(cmd),
         Command::Init {
             path,
             packs,
@@ -627,7 +679,7 @@ async fn handle_journey(json: bool, explain: Option<String>) -> anyhow::Result<(
     Ok(())
 }
 
-fn handle_audit(
+async fn handle_audit(
     rule: Option<String>,
     path: Option<PathBuf>,
     json: bool,
@@ -666,7 +718,22 @@ fn handle_audit(
             scan_root,
             rule_filter: rule.clone(),
         };
-        let report = run(&rules, &opts);
+        let mut report = run(&rules, &opts);
+        // Structural rules join relations across the whole repository, so the
+        // file-scan loop above skips them. Evaluate them against the graph and
+        // fold the findings in.
+        {
+            let engine_rules: Vec<phr::Rule> = rules
+                .rules
+                .iter()
+                .filter(|r| r.audit == Some(true))
+                .map(|r| rules_file::rule_from_disk(r).0)
+                .collect();
+            let hits =
+                phronesis_mcp::graph::audit::audit_graph_rules(&project_root, &engine_rules).await;
+            phronesis_mcp::audit::merge_graph_hits(&mut report, &hits, rule.as_deref());
+        }
+        let report = report;
         let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
         let diag = phronesis_mcp::audit::empty_result_diagnostic(
             &report,
@@ -1007,6 +1074,142 @@ fn handle_wiki_drift(
         Err(e) => {
             eprintln!("error: {}", e);
             std::process::exit(1);
+        }
+    }
+}
+
+fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
+    use phronesis_mcp::graph::sync;
+
+    match cmd {
+        GraphCmd::Rebuild { path, json } => {
+            let out = sync::rebuild(&path)?;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "base_edges": out.base,
+                        "derived_edges": out.derived,
+                        "skipped_items": out.skipped,
+                    })
+                );
+            } else {
+                println!(
+                    "Rebuilt graph: {} base edges, {} derived, {} items skipped.",
+                    out.base, out.derived, out.skipped
+                );
+            }
+            Ok(())
+        }
+        GraphCmd::Query {
+            pattern,
+            path,
+            limit,
+            json,
+        } => {
+            use phronesis_mcp::graph::{query as q, store};
+            let edges = store::load(&store::graph_path(&path))?;
+            if edges.is_empty() {
+                eprintln!(
+                    "phronesis: no graph at {}. Run `phr-mcp graph rebuild` first.",
+                    store::graph_path(&path).display()
+                );
+                return Ok(());
+            }
+            // No pattern is a discovery request, not an empty result set.
+            if pattern.is_empty() {
+                let summary = q::relation_summary(&edges);
+                if json {
+                    println!(
+                        "{}",
+                        serde_json::json!({ "relations": summary
+                        .iter()
+                        .map(|(r, n)| serde_json::json!({"relation": r, "edges": n}))
+                        .collect::<Vec<_>>() })
+                    );
+                } else {
+                    println!("{:<18} {:>7}", "Relation", "Edges");
+                    for (r, n) in &summary {
+                        println!("{r:<18} {n:>7}");
+                    }
+                    println!("\nQuery with: phr-mcp graph query <relation> [arg...]  ('*' = any)");
+                }
+                return Ok(());
+            }
+
+            let pat = q::Pattern::parse(&pattern);
+            let total = q::count(&edges, &pat);
+            let rows = q::query(&edges, &pat, limit);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "total": total,
+                        "returned": rows.len(),
+                        "results": rows
+                            .iter()
+                            .map(|e| serde_json::json!({
+                                "relation": e.p, "args": e.a, "derived": e.d,
+                            }))
+                            .collect::<Vec<_>>(),
+                    })
+                );
+            } else {
+                for e in &rows {
+                    println!("{:<18} {}", e.p, e.a.join("  "));
+                }
+                // Always state the total: a capped list that reported only its
+                // own length would read as a complete answer.
+                if rows.len() < total {
+                    println!(
+                        "\n{} of {total} match(es); raise --limit for more.",
+                        rows.len()
+                    );
+                } else {
+                    println!("\n{total} match(es).");
+                }
+            }
+            Ok(())
+        }
+        GraphCmd::Status { path, json } => {
+            let index = sync::load_index(&sync::index_path(&path))?;
+            let freshness = sync::check_freshness(&path, &index);
+            let outdated = matches!(freshness, sync::Freshness::Outdated { .. });
+            let drifted = match freshness {
+                sync::Freshness::Fresh | sync::Freshness::Outdated { .. } => Vec::new(),
+                sync::Freshness::Stale(files) => files,
+            };
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "fresh": !outdated && drifted.is_empty(),
+                        "outdated_format": outdated,
+                        "graph_format": index.format,
+                        "expected_format": sync::GRAPH_FORMAT,
+                        "drifted_files": drifted,
+                    })
+                );
+            } else if outdated {
+                println!(
+                    "Graph was built under identity format {} (current is {}). Structural rules will warn, not block.",
+                    index.format,
+                    sync::GRAPH_FORMAT
+                );
+                println!("Run `phr-mcp graph rebuild` to resync.");
+            } else if drifted.is_empty() {
+                println!("Graph is fresh.");
+            } else {
+                println!(
+                    "Graph is stale: {} file(s) drifted. Structural rules will warn, not block.",
+                    drifted.len()
+                );
+                for f in drifted.iter().take(10) {
+                    println!("  {f}");
+                }
+                println!("Run `phr-mcp graph rebuild` to resync.");
+            }
+            Ok(())
         }
     }
 }

@@ -316,6 +316,14 @@ impl EpistemeMcp {
         let event = crate::predicate_provider::ProviderEvent {
             phase: params.event.phase,
             tool_name: params.event.tool_name,
+            // Derived, not supplied: the test surface must relativize exactly
+            // as the real hook does, or a script that joins graph facts would
+            // pass here and silently never fire in production.
+            file_rel: crate::graph::hydrate::repo_relative(
+                &crate::security::project_root(),
+                &params.event.file_path,
+            )
+            .unwrap_or_default(),
             file_path: params.event.file_path,
             files: params.event.files,
             old_content: params.event.old_content,
@@ -862,7 +870,24 @@ impl EpistemeMcp {
                 scan_root,
                 rule_filter: params.rule.clone(),
             };
-            let report = run(&rules, &opts);
+            let mut report = run(&rules, &opts);
+            // Structural rules join relations across the whole repository, so
+            // the file-scan loop skips them. Mirror the CLI and fold in the
+            // graph findings — otherwise this tool reports zero structural
+            // debt however much the graph holds, and the snapshot below
+            // teaches `get_debt_trend` the same falsehood permanently.
+            {
+                let engine_rules: Vec<phr::Rule> = rules
+                    .rules
+                    .iter()
+                    .filter(|r| r.audit == Some(true))
+                    .map(|r| crate::rules_file::rule_from_disk(r).0)
+                    .collect();
+                let hits =
+                    crate::graph::audit::audit_graph_rules(&project_root, &engine_rules).await;
+                crate::audit::merge_graph_hits(&mut report, &hits, params.rule.as_deref());
+            }
+            let report = report;
             let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
             let diag =
                 crate::audit::empty_result_diagnostic(&report, audit_tagged_count, &opts.scan_root);
@@ -1043,6 +1068,67 @@ impl EpistemeMcp {
             Some("table") => Self::ok_text(render_table(&report)),
             _ => Self::ok_text(render_json(&report)),
         }
+    }
+
+    #[tool(
+        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of the codebase built by the PostToolUse sensor. Answers questions about code structure without reading source files. Relations: `defines_fn` [file, function], `tested_by` [function, test] (a test that calls it *directly*), `untested` [function], `calls_api` [function, api] (panicking APIs: unwrap/expect/panic/todo/unimplemented), `imports` [module, module], `in_cycle` [module, cycle_id], `file_type` [file, production|test|example|build], `declares_module` [file, module]. Use `\"*\"` for an unconstrained position. Worked examples: which tests cover a function -> relation `tested_by`, args `[\"my_fn\", \"*\"]` (use this to pick which tests to run after a change); what depends on a module -> relation `imports`, args `[\"*\", \"crate::wme\"]`; untested functions in a file -> relation `defines_fn`, args `[\"src/x.rs\", \"*\"]` then cross-check `untested`. Omit `relation` to list the vocabulary. Rust only. `tested_by` is a direct-call heuristic, so transitively-covered code can still appear untested. Requires `phr-mcp graph rebuild` if the graph has never been built."
+    )]
+    async fn query_code_graph(
+        &self,
+        Parameters(params): Parameters<QueryCodeGraphParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::graph::{query as q, store};
+
+        let root = security::project_root();
+        let edges = store::load(&store::graph_path(&root)).unwrap_or_default();
+        if edges.is_empty() {
+            return Self::ok_text(
+                serde_json::json!({
+                    "error": "no code graph found",
+                    "fix": "run `phr-mcp graph rebuild` in the project root",
+                })
+                .to_string(),
+            );
+        }
+
+        // No relation is a discovery request, not an empty result.
+        let Some(relation) = params.relation.as_deref() else {
+            let summary = q::relation_summary(&edges);
+            return Self::ok_text(
+                serde_json::json!({
+                    "relations": summary
+                        .iter()
+                        .map(|(r, n)| serde_json::json!({"relation": r, "edges": n}))
+                        .collect::<Vec<_>>(),
+                })
+                .to_string(),
+            );
+        };
+
+        let mut tokens = vec![relation.to_string()];
+        tokens.extend(params.args.clone().unwrap_or_default());
+        let pattern = q::Pattern::parse(&tokens);
+        let limit = params.limit.unwrap_or(50);
+        let total = q::count(&edges, &pattern);
+        let rows = q::query(&edges, &pattern, limit);
+
+        Self::log_event("query_code_graph", |e| {
+            e.with("relation", relation.to_string())
+                .with("matches", total as u64)
+        });
+
+        Self::ok_text(
+            serde_json::json!({
+                "total": total,
+                "returned": rows.len(),
+                "truncated": rows.len() < total,
+                "results": rows
+                    .iter()
+                    .map(|e| serde_json::json!({"relation": e.p, "args": e.a, "derived": e.d}))
+                    .collect::<Vec<_>>(),
+            })
+            .to_string(),
+        )
     }
 
     #[tool(
@@ -1611,6 +1697,15 @@ mod tool_registration_tests {
     }
 
     /// Regression: `get_wiki_drift` (0.9.0) is registered.
+    #[test]
+    fn code_graph_query_tool_is_registered() {
+        let mcp = EpistemeMcp::new();
+        assert!(
+            mcp.tool_router.has_route("query_code_graph"),
+            "query_code_graph tool must be registered (matches `phr-mcp graph query` CLI)"
+        );
+    }
+
     #[test]
     fn wiki_drift_tool_is_registered() {
         let mcp = EpistemeMcp::new();

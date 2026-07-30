@@ -23,6 +23,8 @@ cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a ma
 cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
 cargo run -- wiki-drift      # Heuristic: which .phronesis/wiki/decisions/ ADRs lack rule coverage?
 cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
+cargo run -- graph rebuild        # Rescan every Rust file into .phronesis/graph.jsonl (resync after git checkout/rebase)
+cargo run -- graph status         # Does the code graph still match the working tree?
 cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shape to the v2 shape
 cargo run -- migrate-extracted-rules <path>  # Salvage pre-0.14.0 extract_rules output: strip prefixes, demote actions
 cargo run -- catalogue        # Regenerate docs/catalogue.html from the shipped packs (run from repo root)
@@ -238,6 +240,18 @@ The packs are composable and **independent**:
   write-side compaction (`PHRONESIS_MAX_JOURNAL_BYTES`, default 16 MiB) that
   preserves each subject's latest grounded outcome.
 - `journey` — project-defined taggers + journey_* aggregator facts (cross-call temporal predicates)
+- `structural` (alias `graph`) — rules over the code graph
+  (SPEC-triple-store-rete). Warns on a production function that calls a
+  panicking API with no direct test, and on a module in an import cycle.
+  `init` builds `.phronesis/graph.jsonl` for you; the `PostToolUse` sensor
+  keeps it current thereafter. Edits that bypass the hook (`git checkout`,
+  rebase, shell edits) mark the graph stale, which downgrades these rules to
+  warnings until `phr-mcp graph rebuild`. Rust and Python both produce graph
+  facts, but `warn-untested-risky-call` needs a language-specific watchlist
+  of panic-introducing APIs, and only Rust has a defensible one today; Python
+  can fire `warn-import-cycle` but not that risky-call rule. Both rules
+  `warn` — measured precision is in the spec's first-corpus section, and
+  promotion to `block` awaits a second corpus.
 - `none` — empty rules array (hooks still wired)
 
 `init` writes/merges seven files:

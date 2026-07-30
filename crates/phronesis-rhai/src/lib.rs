@@ -113,6 +113,14 @@ pub struct FactProviderEvent {
     pub phase: String,
     pub tool_name: String,
     pub file_path: String,
+    /// `file_path` expressed relative to the project root, forward-slashed,
+    /// and empty when the path lies outside the project.
+    ///
+    /// Hosts send absolute paths, but the code graph keys files
+    /// repo-relative. Without this, a provider fact and a graph fact can
+    /// never join on a path — and the rule silently never fires rather than
+    /// erroring, which is the worst failure mode a rules engine has.
+    pub file_rel: String,
     pub files: Vec<String>,
     pub old_content: String,
     pub new_content: String,
@@ -126,6 +134,7 @@ impl FactProviderEvent {
             ("phase", &self.phase),
             ("tool_name", &self.tool_name),
             ("file_path", &self.file_path),
+            ("file_rel", &self.file_rel),
             ("old_content", &self.old_content),
             ("new_content", &self.new_content),
             ("command", &self.command),

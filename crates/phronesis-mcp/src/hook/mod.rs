@@ -226,6 +226,11 @@ pub(crate) fn provider_event(
         phase: phase.to_string(),
         tool_name: tool_name.to_string(),
         file_path: file_path.to_string(),
+        // Relativized with the *same* helper the graph hydrator uses, so the
+        // two agree by construction rather than by coincidence. A provider
+        // fact and a graph fact can then join on a path.
+        file_rel: crate::graph::hydrate::repo_relative(&crate::security::project_root(), file_path)
+            .unwrap_or_default(),
         files: Vec::new(),
         old_content: extract_old_content(payload, tool_name).unwrap_or_default(),
         command: matches!(tool_name, "Bash" | "run_shell_command")

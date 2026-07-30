@@ -56,6 +56,11 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         (rules, cp, bcp)
     };
 
+    // Populated only when the structural graph has drifted; these rules'
+    // violations are demoted to warnings before the exit decision.
+    let mut stale_graph_rules: std::collections::BTreeSet<phr::RuleId> =
+        std::collections::BTreeSet::new();
+
     let (new_content, file_path) = (
         super::extract_new_content(&payload, &tool_name),
         super::extract_file_path(&payload),
@@ -86,6 +91,39 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         }
         super::assert_pack_marker_facts(&net, &security::project_root()).await;
         super::assert_confidence_signals(&net).await;
+        // Structural graph facts. Costs nothing unless a loaded rule names a
+        // graph relation. Only facts about the code are asserted; whether the
+        // graph is trustworthy is machinery health, handled below.
+        {
+            let edited = (!file_path.is_empty()).then_some(file_path.as_str());
+            let h = crate::graph::hydrate::hydrate(
+                &security::project_root(),
+                &rules_for_journey,
+                edited,
+            );
+            if !h.fresh && !h.facts.is_empty() {
+                let cause = if h.outdated {
+                    "was built by an older phronesis and names entities differently".to_string()
+                } else {
+                    format!(
+                        "is stale ({} file(s) changed outside the hook)",
+                        h.drifted.len()
+                    )
+                };
+                eprintln!(
+                    "phronesis: NOTE — structural graph {cause}; structural rules will warn, not block. Run `phr-mcp graph rebuild`."
+                );
+                // Rules reading a drifted graph reason from evidence we can't
+                // vouch for, so the harness declines to act on their verdicts.
+                stale_graph_rules = h.graph_rules;
+            }
+            for fact in h.facts {
+                if let Err(e) = net.assert_fact(fact).await {
+                    eprintln!("phronesis: WARNING — graph fact rejected: {}", e);
+                    break;
+                }
+            }
+        }
         net
     };
 
@@ -131,7 +169,16 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         }
     };
 
-    let (logged, violations, warnings) = super::collect_logged(&consequences);
+    let (mut logged, violations, warnings) = super::collect_logged(&consequences);
+    // A drifted graph makes structural verdicts unreliable, so they warn
+    // rather than block. The rules themselves are untouched — this is the
+    // harness declining to enforce on evidence it cannot vouch for.
+    let (violations, warnings) = if stale_graph_rules.is_empty() {
+        (violations, warnings)
+    } else {
+        crate::hook_logged::demote_violations_from(&mut logged, &stale_graph_rules);
+        super::split_messages_by_action_type(&logged)
+    };
 
     // Severity order: violations (block) > warnings (allow-with-message) > clean.
     if !violations.is_empty() {

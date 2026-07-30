@@ -67,3 +67,7 @@ harness = false
 [[bench]]
 name = "journey_derive"
 harness = false
+
+[[bench]]
+name = "graph_sync"
+harness = false

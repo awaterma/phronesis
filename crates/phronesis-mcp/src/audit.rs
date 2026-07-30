@@ -589,17 +589,22 @@ fn build_per_rule(
             }
         })
         .collect();
-    per_rule.sort_by(|a, b| {
-        // Block > Warn
-        let lvl = match (a.level, b.level) {
-            (Level::Block, Level::Warn) => std::cmp::Ordering::Less,
-            (Level::Warn, Level::Block) => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        };
-        lvl.then_with(|| b.hits.cmp(&a.hits))
-            .then_with(|| a.rule_id.cmp(&b.rule_id))
-    });
+    per_rule.sort_by(rule_report_order);
     per_rule
+}
+
+/// Report ordering: blocks before warnings, then most hits, then rule id.
+///
+/// Shared by the file-scan pass and the structural merge so a merged report
+/// cannot end up sorted two different ways.
+fn rule_report_order(a: &RuleAudit, b: &RuleAudit) -> std::cmp::Ordering {
+    let lvl = match (a.level, b.level) {
+        (Level::Block, Level::Warn) => std::cmp::Ordering::Less,
+        (Level::Warn, Level::Block) => std::cmp::Ordering::Greater,
+        _ => std::cmp::Ordering::Equal,
+    };
+    lvl.then_with(|| b.hits.cmp(&a.hits))
+        .then_with(|| a.rule_id.cmp(&b.rule_id))
 }
 
 /// Shared scan core used by both [`run`] and [`run_profiled`].
@@ -3144,5 +3149,143 @@ fn short() {
             times.total,
             times.match_loop
         );
+    }
+}
+
+// ── Structural (graph) rules ────────────────────────────────────────────────
+
+/// Fold structural findings into an `AuditReport`.
+///
+/// Graph rules cannot be evaluated by the file-scanning loop above — their
+/// conditions join relations across the whole repository rather than matching
+/// text in one file — so they are evaluated separately by
+/// `graph::audit::audit_graph_rules` and merged here.
+///
+/// Findings carry no line number: the graph records that a function is
+/// untested, not where it sits. They use the same line-1 placeholder plus
+/// detail string that AST hits already use, so renderers need no new case.
+pub fn merge_graph_hits(
+    report: &mut AuditReport,
+    hits: &[crate::graph::audit::GraphHit],
+    rule_filter: Option<&str>,
+) {
+    let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
+    for hit in hits {
+        if let Some(want) = rule_filter
+            && hit.rule_id != want
+        {
+            continue;
+        }
+        let Some(level) = Level::from_action_type(&hit.action_type) else {
+            continue;
+        };
+        let entry = accum
+            .entry(hit.rule_id.clone())
+            .or_insert_with(|| (level, BTreeMap::new()));
+        entry
+            .1
+            .entry(PathBuf::from(&hit.file))
+            .or_default()
+            .push_detail(hit.detail.clone());
+    }
+    report.per_rule.extend(build_per_rule(accum));
+    // `build_per_rule` sorts within its own batch; re-sort the union so the
+    // merged report keeps the documented ordering rather than showing
+    // structural rules bolted on the end.
+    report.per_rule.sort_by(rule_report_order);
+}
+
+#[cfg(test)]
+mod graph_merge_tests {
+    use super::*;
+    use crate::graph::audit::GraphHit;
+
+    fn hit(rule: &str, file: &str, action: &str) -> GraphHit {
+        GraphHit {
+            rule_id: rule.to_string(),
+            action_type: action.to_string(),
+            file: file.to_string(),
+            detail: format!("{rule} on {file}"),
+        }
+    }
+
+    fn empty_report() -> AuditReport {
+        AuditReport {
+            generated_at: 0,
+            scan_duration_ms: 0,
+            files_scanned: 0,
+            per_rule: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn structural_hits_become_audit_entries() {
+        let mut r = empty_report();
+        merge_graph_hits(
+            &mut r,
+            &[hit("warn-import-cycle", "src/a.rs", "constraint_warning")],
+            None,
+        );
+        assert_eq!(r.per_rule.len(), 1);
+        assert_eq!(r.per_rule[0].hits, 1);
+    }
+
+    #[test]
+    fn hits_in_the_same_rule_group_by_file() {
+        let mut r = empty_report();
+        merge_graph_hits(
+            &mut r,
+            &[
+                hit("warn-import-cycle", "src/a.rs", "constraint_warning"),
+                hit("warn-import-cycle", "src/b.rs", "constraint_warning"),
+            ],
+            None,
+        );
+        assert_eq!(r.per_rule.len(), 1, "one rule");
+        assert_eq!(r.per_rule[0].files.len(), 2, "two files");
+        assert_eq!(r.per_rule[0].hits, 2);
+    }
+
+    #[test]
+    fn the_rule_filter_is_honored() {
+        let mut r = empty_report();
+        merge_graph_hits(
+            &mut r,
+            &[
+                hit("warn-import-cycle", "src/a.rs", "constraint_warning"),
+                hit("warn-untested-risky-call", "src/b.rs", "constraint_warning"),
+            ],
+            Some("warn-import-cycle"),
+        );
+        assert_eq!(r.per_rule.len(), 1);
+        assert_eq!(r.per_rule[0].rule_id.to_string(), "warn-import-cycle");
+    }
+
+    #[test]
+    fn the_message_is_preserved_as_per_hit_detail() {
+        let mut r = empty_report();
+        merge_graph_hits(
+            &mut r,
+            &[hit("warn-import-cycle", "src/a.rs", "constraint_warning")],
+            None,
+        );
+        assert_eq!(
+            r.per_rule[0].files[0].details[0],
+            "warn-import-cycle on src/a.rs"
+        );
+    }
+
+    #[test]
+    fn blocking_structural_rules_outrank_warnings_in_the_merged_report() {
+        let mut r = empty_report();
+        merge_graph_hits(
+            &mut r,
+            &[
+                hit("a-warn", "src/a.rs", "constraint_warning"),
+                hit("z-block", "src/b.rs", "constraint_violation"),
+            ],
+            None,
+        );
+        assert_eq!(r.per_rule[0].rule_id.to_string(), "z-block");
     }
 }

@@ -39,10 +39,30 @@ pub enum Pack {
     Swift,
     Confidence,
     Journey,
+    Structural,
     None,
 }
 
 impl Pack {
+    /// Every pack, in the order documentation should present them.
+    ///
+    /// Consumers that must cover all packs (the catalogue generator) iterate
+    /// this rather than keeping their own list, so a new pack cannot ship
+    /// undocumented. `label()` below matches exhaustively, so adding a variant
+    /// breaks the build — at which point this list is the next thing to fix.
+    pub const ALL: &'static [Pack] = &[
+        Self::Llm,
+        Self::Rust,
+        Self::Rhai,
+        Self::Python,
+        Self::TypeScript,
+        Self::Swift,
+        Self::Confidence,
+        Self::Journey,
+        Self::Structural,
+        Self::None,
+    ];
+
     fn parse(s: &str) -> Result<Self, InitError> {
         match s.trim().to_lowercase().as_str() {
             // `llm` and the deprecated alias `minimal` (pre-pack-split naming)
@@ -54,6 +74,7 @@ impl Pack {
             "swift" => Ok(Self::Swift),
             "confidence" => Ok(Self::Confidence),
             "journey" => Ok(Self::Journey),
+            "structural" | "graph" => Ok(Self::Structural),
             "none" => Ok(Self::None),
             other => Err(InitError::UnknownPack(other.to_string())),
         }
@@ -69,6 +90,7 @@ impl Pack {
             Self::TypeScript => typescript_rules(),
             Self::Swift => swift_rules(),
             Self::Confidence => confidence_rules(),
+            Self::Structural => structural_rules(),
             // Journey ships no starter rules in v1 — the project defines its
             // own risk surface via `journey.json` and adds journey_* rules to
             // rules.json. The pack's contribution is the journey.json starter
@@ -87,6 +109,7 @@ impl Pack {
             Self::Swift => "swift",
             Self::Confidence => "confidence",
             Self::Journey => "journey",
+            Self::Structural => "structural",
             Self::None => "none",
         }
     }
@@ -419,6 +442,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
         write_wiki_scaffold(&root, &opts, &mut report)?;
         write_confidence_scaffold(&root, &opts, &mut report)?;
         write_journey_scaffold(&root, &opts, &mut report)?;
+        build_structural_graph(&root, &opts, &mut report);
     }
     if !opts.rules_only && !opts.hooks_only {
         update_gitignore(&root, &opts, &mut report)?;
@@ -1033,6 +1057,40 @@ fn write_journey_scaffold(
         .steps
         .push("+ created .phronesis/journey.json".to_string());
     Ok(())
+}
+
+/// Build `.phronesis/graph.jsonl` so the structural pack works immediately.
+///
+/// Without this the pack installs *silent*: the rules load, hydration finds an
+/// empty graph, nothing ever matches, and the user reasonably concludes the
+/// feature is broken rather than unbuilt. A rule that cannot fire is
+/// indistinguishable from a rule that found nothing.
+///
+/// Deliberately infallible. Writing hook config and rules is what `init`
+/// exists to do; a graph that cannot be built is fully recoverable with
+/// `phr-mcp graph rebuild`, whereas a failed `init` leaves a project with no
+/// enforcement at all. Failures are reported as warnings and named, so the
+/// user knows to run the rebuild by hand.
+fn build_structural_graph(root: &Path, opts: &InitOpts, report: &mut InitReport) {
+    if !opts.packs.contains(&Pack::Structural) {
+        return;
+    }
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would build .phronesis/graph.jsonl (structural graph)".to_string());
+        return;
+    }
+    match crate::graph::sync::rebuild(root) {
+        Ok(out) => report.steps.push(format!(
+            "+ built .phronesis/graph.jsonl ({} edges, {} derived)",
+            out.base, out.derived
+        )),
+        Err(e) => report.warnings.push(format!(
+            "could not build the structural graph ({e}). \
+             Structural rules stay silent until you run `phr-mcp graph rebuild`."
+        )),
+    }
 }
 
 fn update_gitignore(
@@ -1782,6 +1840,62 @@ fn rhai_rules() -> Value {
     })
 }
 
+/// Structural rules over the code graph (`docs/specs/SPEC-triple-store-rete.md`).
+///
+/// Both rules read relations supplied by `graph::hydrate`, so they only fire
+/// once `.phronesis/graph.jsonl` exists — run `phr-mcp graph rebuild` after
+/// adding this pack. Until then hydration finds no edges and the rules are
+/// silent rather than wrong.
+///
+/// Both **warn** rather than block. Measured on this repository (spec §10),
+/// `in_cycle` was 2/2 genuine and the untested-risky-call join fired 6 times
+/// with a hand-audited true positive — precise enough to surface, not yet
+/// measured on a second corpus, which is what promotion to `block` requires.
+///
+/// Both rules set `audit: true`. The file-scanning audit engine understands
+/// only content and path predicates, so `phr-mcp audit` routes graph rules
+/// through `graph::audit::audit_graph_rules` and folds the findings in with
+/// `audit::merge_graph_hits`. Without opting in they would be filtered out
+/// before that step, and a clean audit would mean "never checked" rather than
+/// "nothing found".
+///
+/// Both rules open on `edited_file`, which scopes them to the file in front
+/// of the user. Graph relations describe the whole repository, so without
+/// that join a rule re-reports every violation in the project on every single
+/// edit — the fastest way to get a pack switched off.
+fn structural_rules() -> Value {
+    json!({
+        "rules": [
+            {
+                "id": "warn-untested-risky-call",
+                "phase": "pre",
+                "priority": 20,
+                "audit": true,
+                "when": [
+                    {"edited_file": "?file"},
+                    {"file_type": ["?file", "production"]},
+                    {"defines_fn": ["?file", "?func"]},
+                    {"calls_api": ["?func", "?api"]},
+                    {"untested": ["?func"]}
+                ],
+                "then": {"warn": "`?func` (in ?file) calls `?api`, which can panic, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged."}
+            },
+            {
+                "id": "warn-import-cycle",
+                "phase": "pre",
+                "priority": 20,
+                "audit": true,
+                "when": [
+                    {"edited_file": "?file"},
+                    {"declares_module": ["?file", "?module"]},
+                    {"in_cycle": ["?module", "?cycle"]}
+                ],
+                "then": {"warn": "Module `?module` is part of import cycle `?cycle`. Mutually importing modules can't be understood, tested, or extracted independently, and the cycle tends to attract more coupling over time. Move the shared items into a third module both can depend on."}
+            }
+        ]
+    })
+}
+
 fn python_rules() -> Value {
     json!({
         "rules": [
@@ -2037,6 +2151,184 @@ mod tests {
     /// The Rhai pack carries the two formerly-rust-bundled rules with
     /// generalized (non-project-specific) messages, and the rust pack no
     /// longer ships them. This pins the 0.6.1 pack split against regression.
+    fn structural_opts(root: &Path, dry_run: bool) -> InitOpts {
+        InitOpts {
+            project_root: root.to_path_buf(),
+            packs: vec![Pack::Structural],
+            force: false,
+            dry_run,
+            rules_only: false,
+            hooks_only: false,
+        }
+    }
+
+    /// A project with one flaggable file, so the graph has something to find.
+    fn structural_project() -> tempfile::TempDir {
+        let d = tempfile::TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(d.path().join("src")).expect("mkdir");
+        std::fs::write(
+            d.path().join("src/risky.rs"),
+            "pub fn danger(v: Vec<u32>) -> u32 { *v.first().expect(\"empty\") }\n",
+        )
+        .expect("write");
+        d
+    }
+
+    #[test]
+    fn init_builds_the_graph_when_the_structural_pack_is_selected() {
+        // Without this the pack installs silent: the rules load, find no
+        // edges, and read as broken rather than as "not built yet".
+        let d = structural_project();
+        run(structural_opts(d.path(), false)).expect("init");
+        let graph = d.path().join(".phronesis/graph.jsonl");
+        assert!(graph.exists(), "init must leave a usable graph behind");
+        let body = std::fs::read_to_string(&graph).expect("read graph");
+        assert!(body.contains("defines_fn"), "graph should hold real edges");
+        assert!(body.contains("untested"), "derived facts must be present");
+    }
+
+    #[test]
+    fn init_reports_the_graph_build() {
+        let d = structural_project();
+        let report = run(structural_opts(d.path(), false)).expect("init");
+        assert!(
+            report.steps.iter().any(|s| s.contains("graph.jsonl")),
+            "steps: {:?}",
+            report.steps
+        );
+    }
+
+    #[test]
+    fn init_without_the_structural_pack_builds_no_graph() {
+        let d = structural_project();
+        let opts = InitOpts {
+            project_root: d.path().to_path_buf(),
+            packs: vec![Pack::Llm],
+            force: false,
+            dry_run: false,
+            rules_only: false,
+            hooks_only: false,
+        };
+        run(opts).expect("init");
+        assert!(!d.path().join(".phronesis/graph.jsonl").exists());
+    }
+
+    #[test]
+    fn dry_run_builds_no_graph() {
+        let d = structural_project();
+        let report = run(structural_opts(d.path(), true)).expect("init");
+        assert!(!d.path().join(".phronesis/graph.jsonl").exists());
+        assert!(
+            report.steps.iter().any(|s| s.contains("would")),
+            "dry run must still say what it would do: {:?}",
+            report.steps
+        );
+    }
+
+    #[test]
+    fn a_failed_graph_build_warns_rather_than_failing_init() {
+        // Config writing is init's real job. A graph that cannot be built is
+        // recoverable with `phr-mcp graph rebuild`; a failed init is not.
+        let d = structural_project();
+        // Occupy the graph path with a directory so the write cannot succeed.
+        std::fs::create_dir_all(d.path().join(".phronesis/graph.jsonl")).expect("mkdir");
+        let report = run(structural_opts(d.path(), false)).expect("init must still succeed");
+        assert!(
+            report.warnings.iter().any(|w| w.contains("graph")),
+            "warnings: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn parses_structural_pack() {
+        assert_eq!(
+            Pack::parse("structural").expect("structural"),
+            Pack::Structural
+        );
+        assert_eq!(Pack::parse("graph").expect("graph alias"), Pack::Structural);
+    }
+
+    /// The structural pack's rules, as a vector.
+    fn structural_rules_vec() -> Vec<serde_json::Value> {
+        Pack::Structural.rules()["rules"]
+            .as_array()
+            .expect("rules array")
+            .clone()
+    }
+
+    #[test]
+    fn structural_pack_ships_the_two_measured_rules() {
+        let ids: Vec<String> = structural_rules_vec()
+            .iter()
+            .filter_map(|r| r["id"].as_str().map(str::to_string))
+            .collect();
+        assert!(ids.contains(&"warn-untested-risky-call".to_string()));
+        assert!(ids.contains(&"warn-import-cycle".to_string()));
+    }
+
+    #[test]
+    fn structural_rules_only_warn() {
+        // Spec §5.3: nothing blocks until a second corpus is measured. A
+        // heuristic that has never been measured must not be able to stop work.
+        for rule in structural_rules_vec() {
+            let then = &rule["then"];
+            assert!(
+                then.get("block").is_none(),
+                "structural rule {} must not block",
+                rule["id"]
+            );
+            assert!(then.get("warn").is_some(), "rule {} must warn", rule["id"]);
+        }
+    }
+
+    #[test]
+    fn structural_rules_opt_into_audit() {
+        // Graph rules are invisible to the file-scanning audit loop, but
+        // `graph::audit` evaluates them against the whole graph and merges
+        // the findings. Opting in is what routes them there — without it a
+        // clean audit would mean "never checked", not "nothing found".
+        for rule in structural_rules_vec() {
+            assert_eq!(
+                rule.get("audit").and_then(|v| v.as_bool()),
+                Some(true),
+                "rule {} must opt into audit",
+                rule["id"]
+            );
+        }
+    }
+
+    #[test]
+    fn structural_rules_reference_only_graph_relations() {
+        // Every condition must name a relation hydration can supply, or the
+        // rule is dead weight that never matches.
+        let relations = crate::graph::hydrate::GRAPH_RELATIONS;
+        for rule in structural_rules_vec() {
+            for cond in rule["when"].as_array().expect("when array") {
+                let key = cond
+                    .as_object()
+                    .and_then(|o| o.keys().next().cloned())
+                    .expect("condition key");
+                assert!(
+                    relations.contains(&key.as_str()),
+                    "rule {} uses unknown relation {key}",
+                    rule["id"]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rust_pack_does_not_carry_structural_rules() {
+        let rust_ids: Vec<String> = Pack::Rust.rules()["rules"]
+            .as_array()
+            .expect("rules")
+            .iter()
+            .filter_map(|r| r["id"].as_str().map(str::to_string))
+            .collect();
+        assert!(!rust_ids.contains(&"warn-import-cycle".to_string()));
+    }
+
     #[test]
     fn rhai_pack_carries_rhai_rules_and_rust_does_not() {
         let rhai = Pack::Rhai.rules();

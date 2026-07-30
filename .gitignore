@@ -4,6 +4,11 @@
 **/.phronesis/log.jsonl.1
 **/.phronesis/rules.json.bak
 **/.phronesis/journey/
+**/.phronesis/graph.jsonl
+**/.phronesis/graph.index
+
+# Local agent worktrees
+.worktrees/
 
 # Private cross-project docs — keep local, never publish
 docs/specs/*-migration-map.md
