@@ -50,6 +50,25 @@ time, verified against crates.io 2026-07-19.
    one at 0.20.0). A green release job therefore does NOT imply all
    crates are published.
 
+**2026-07-30 — a third mechanism, and the fix.** v0.22.1 repeated the
+partial publish (`phronesis-mcp` again). Recovery required a hand-authored
+Release PR, because `release-plz-pr` refuses to compute a next version
+while a tagged version is missing from the registry. That PR merged the
+bump to `main` as a merge commit — and the release job skipped it:
+`skipping release: current commit is not from a release PR`, exiting
+green having published nothing. `release_always = false` means "only from
+a Release PR **release-plz itself authored**", not "only when a Release PR
+merges".
+
+That is three distinct mechanisms across four releases, all sharing one
+property: **the job reported success and nothing checked the registry.**
+The prescription below ("verify releases against crates.io, not job
+status") was correct and was not followed, because it depended on a human
+remembering it. It is now enforced by `scripts/verify-crates-io.py`, run
+from the release workflow after the release job, failing the build when
+the workspace version is not on crates.io. `release_always` is now `true`,
+which decouples publishing from PR authorship.
+
 ## Decision
 
 - **Merge Release PRs with a merge commit, not squash.** release-plz's
@@ -72,11 +91,21 @@ time, verified against crates.io 2026-07-19.
   remainder via OIDC, and recreates the tag. Verified 2026-07-18.
 - **Verify releases against crates.io, not job status**: after any
   release run, check all three crates' latest version on crates.io.
+  *2026-07-30: automated as `scripts/verify-crates-io.py`, wired into the
+  release workflow. This is now a build failure rather than a habit.*
+- **`release_always = true`**: publishing depends on the workspace version
+  being absent from crates.io, not on who authored the Release PR. A
+  hand-authored Release PR is sometimes the only way forward, and it must
+  still release.
 
 ## Enforcement
 
-- No automated rule — merge-method choice and registry verification are
-  process steps GitHub/CI can't express as phronesis predicates.
+- Registry verification is enforced by `scripts/verify-crates-io.py` in the
+  `verify-crates-io` job of `.github/workflows/release-plz.yml`. It runs on
+  every push to `main`: an ordinary push has the workspace version already on
+  crates.io and passes, while a release that silently published nothing
+  fails the build.
+- Merge-method choice remains a process step no rule can express.
   Documented in `docs/RELEASING.md` (flow step and Troubleshooting).
 
 ## Consequences
