@@ -287,6 +287,16 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
 /// turn into a hook error that interrupts the user's work. Failures leave the
 /// file's hash stale, which the freshness check will catch and report.
 pub fn record_from_disk(root: &Path, file_path: &str) {
+    // Only maintain a graph the project actually opted into. The sensor runs
+    // before rules are loaded — it has to, since the structural pack ships
+    // `phase: "pre"` rules exclusively — so it cannot ask whether a graph
+    // rule exists. The graph's own presence is the opt-in signal: `init
+    // --packs structural` builds it, and `graph rebuild` restores it. Without
+    // this, every phronesis project would start building and rewriting a code
+    // graph on every save whether or not it has a single structural rule.
+    if !store::graph_path(root).exists() && !index_path(root).exists() {
+        return;
+    }
     // Hosts send absolute paths while the graph is keyed repo-relative, so
     // relativize first. Rejecting an absolute path outright — as this guard
     // once did — turned the sensor off for every real host, and because the
@@ -633,15 +643,58 @@ mod tests {
     // ─── the hook entry point ───────────────────────────────────────
 
     #[test]
+    fn a_project_that_never_opted_into_the_graph_gets_no_graph() {
+        // The sensor runs before rules load, so it cannot key off rule
+        // phases. Without an explicit gate it builds a graph in every
+        // phronesis project on the first edit — imposing a per-save tree walk
+        // and an unasked-for file on users who only wanted the `llm` pack.
+        let d = project();
+        write(d.path(), "src/a.rs", "fn f() {}");
+        record_from_disk(d.path(), "src/a.rs");
+        assert!(
+            !store::graph_path(d.path()).exists(),
+            "no graph existed, so none should be created"
+        );
+        assert!(!index_path(d.path()).exists());
+    }
+
+    #[test]
+    fn an_existing_graph_is_still_kept_current() {
+        // `init --packs structural` builds the graph; its presence is the
+        // opt-in signal the sensor keys off.
+        let d = project();
+        write(d.path(), "src/a.rs", "fn f() {}");
+        rebuild(d.path()).expect("rebuild opts the project in");
+        write(d.path(), "src/a.rs", "fn f() {}\nfn added() {}");
+        record_from_disk(d.path(), "src/a.rs");
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("::added")), "{names:?}");
+    }
+
+    #[test]
     fn recording_from_disk_accepts_the_absolute_path_a_host_sends() {
         // Every real host sends an absolute path. A guard that rejected them
         // silently disabled the sensor everywhere, and because the sensor is
         // best-effort by design nothing reported it.
         let d = project();
         write(d.path(), "src/a.rs", "fn f() {}");
+        rebuild(d.path()).expect("opt the project into the graph");
+        write(d.path(), "src/a.rs", "fn f() {}\nfn added() {}");
         let absolute = d.path().join("src/a.rs");
         record_from_disk(d.path(), absolute.to_str().expect("utf8"));
-        assert!(has(d.path(), "defines_fn"), "sensor must record the edit");
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("::added")),
+            "sensor must record the edit: {names:?}"
+        );
     }
 
     #[test]
@@ -747,8 +800,15 @@ mod tests {
     fn recording_from_disk_reads_the_current_file_content() {
         let d = project();
         write(d.path(), "src/a.rs", "fn f() {}");
+        rebuild(d.path()).expect("opt the project into the graph");
+        write(d.path(), "src/a.rs", "fn f() {}\nfn later() {}");
         record_from_disk(d.path(), "src/a.rs");
-        assert!(has(d.path(), "defines_fn"));
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(names.iter().any(|n| n.ends_with("::later")), "{names:?}");
     }
 
     #[test]
