@@ -25,10 +25,34 @@ use std::sync::LazyLock;
 /// Language tag for the Rust extractor.
 pub const LANG_RUST: &str = "rust";
 
-/// Unit name used when no manifest claims a file. Deliberately the same token
-/// Rust itself uses for an unnamed root, so a single-crate project with no
-/// discoverable `Cargo.toml` still reads naturally.
+/// Language tag for the Python extractor.
+pub const LANG_PYTHON: &str = "python";
+
+/// The language that owns a source file, by extension. A file in no known
+/// language belongs to no unit — better to name nothing than to name it under
+/// whichever manifest happens to sit nearest.
+pub fn lang_of_path(file_rel: &str) -> Option<&'static str> {
+    match file_rel.rsplit_once('.') {
+        Some((_, "rs")) => Some(LANG_RUST),
+        Some((_, "py")) => Some(LANG_PYTHON),
+        _ => None,
+    }
+}
+
+/// Unit name used when no manifest claims a Rust file. Deliberately the same
+/// token Rust itself uses for an unnamed root, so a single-crate project with
+/// no discoverable `Cargo.toml` still reads naturally.
 pub const UNNAMED: &str = "crate";
+
+/// Unit name for a file no manifest claims, in that file's own language.
+/// Each language borrows its own word for an unnamed root rather than
+/// inheriting Rust's.
+fn unnamed_name(lang: &str) -> &'static str {
+    match lang {
+        LANG_PYTHON => "project",
+        _ => UNNAMED,
+    }
+}
 
 /// One package — a Cargo package, and later a Python distribution or an npm
 /// workspace member. `UnitContext` refines this to a compilation target.
@@ -43,6 +67,16 @@ pub struct Unit {
     /// `phr = { package = "phronesis" }` means source says `phr::`, and
     /// without this map the edge to `phronesis` is silently dropped.
     pub deps: BTreeMap<String, String>,
+    /// Repo-relative directory that import paths are rooted at, for languages
+    /// where layout decides it rather than convention. Python's `src/` layout
+    /// puts it at `<root>/src`; the flat layout puts it at `<root>`. Unused
+    /// for Rust, where each Cargo target computes its own root.
+    pub import_root: String,
+    /// Top-level import package names this unit provides, as they appear in
+    /// source. Python only: a distribution's name need not match the package
+    /// it ships (`core-lib` providing `core`), and `import core` names the
+    /// package, so the distribution name cannot serve as the key.
+    pub packages: Vec<String>,
 }
 
 impl Unit {
@@ -71,10 +105,20 @@ pub struct UnitContext {
 }
 
 impl UnitContext {
-    /// Context for a file no manifest claims.
+    /// Context for a Rust file no manifest claims.
     pub fn unnamed() -> Self {
+        Self::unnamed_for(LANG_RUST)
+    }
+
+    /// Context for a file of `lang` that no manifest claims.
+    ///
+    /// The fallback follows the file's own language: naming a stray `.py`
+    /// file `rust:crate::…` would merge it with Rust modules of the same
+    /// name, making the language tag wrong precisely where the evidence is
+    /// thinnest.
+    pub fn unnamed_for(lang: &str) -> Self {
         UnitContext {
-            id: format!("{LANG_RUST}:{UNNAMED}"),
+            id: format!("{lang}:{}", unnamed_name(lang)),
             module_base: String::new(),
             siblings: BTreeMap::new(),
         }
@@ -268,6 +312,37 @@ fn record_dep_named(out: &mut Manifest, section: &str, package: String) {
     target.insert(alias.to_string(), package);
 }
 
+/// Parse the subset of `pyproject.toml` that bears on identity: the
+/// distribution name, under PEP 621's `[project]` or Poetry's `[tool.poetry]`.
+///
+/// No dependency aliases. Python has no rename-on-import at the distribution
+/// level — `import x` names the import package directly — so the alias map
+/// that Cargo needs has no Python counterpart.
+pub fn parse_pyproject_manifest(text: &str) -> Manifest {
+    let mut out = Manifest::default();
+    let mut section = String::new();
+    for raw in text.lines() {
+        let line = strip_comment(raw).trim();
+        if line.starts_with('[') {
+            section = line.trim_matches(['[', ']']).trim().to_string();
+            continue;
+        }
+        if section != "project" && section != "tool.poetry" {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=')
+            && unquote(key) == "name"
+        {
+            out.package = Some(unquote(value).to_string());
+            // PEP 621 wins over Poetry when a file carries both.
+            if section == "project" {
+                return out;
+            }
+        }
+    }
+    out
+}
+
 /// Every unit in a project, resolvable by file path.
 #[derive(Debug, Default, Clone)]
 pub struct UnitMap {
@@ -290,13 +365,19 @@ impl UnitMap {
             .build()
             .flatten()
         {
-            if entry.file_name() != "Cargo.toml" {
-                continue;
-            }
+            let lang = match entry.file_name().to_str() {
+                Some("Cargo.toml") => LANG_RUST,
+                Some("pyproject.toml") => LANG_PYTHON,
+                _ => continue,
+            };
             let Ok(text) = std::fs::read_to_string(entry.path()) else {
                 continue;
             };
-            let manifest = parse_cargo_manifest(&text);
+            let manifest = if lang == LANG_RUST {
+                parse_cargo_manifest(&text)
+            } else {
+                parse_pyproject_manifest(&text)
+            };
             workspace_deps.extend(manifest.workspace_deps.clone());
 
             let dir = entry
@@ -307,11 +388,28 @@ impl UnitMap {
                 .map(|p| p.replace('\\', "/"))
                 .unwrap_or_default();
             if let Some(name) = manifest.package.clone() {
+                // A `src/` directory beside the manifest means the src
+                // layout, where imports are rooted one level deeper. Read
+                // from disk rather than guessed: both layouts are current
+                // practice and neither is declared in the manifest.
+                let import_root =
+                    if lang == LANG_PYTHON && entry.path().with_file_name("src").is_dir() {
+                        join_rel(&dir, "src")
+                    } else {
+                        dir.clone()
+                    };
+                let packages = if lang == LANG_PYTHON {
+                    top_level_packages(&root.join(&import_root))
+                } else {
+                    Vec::new()
+                };
                 manifests.push(Unit {
-                    lang: LANG_RUST,
+                    lang,
                     name,
                     root: dir,
                     deps: manifest.deps,
+                    import_root,
+                    packages,
                 });
             }
         }
@@ -338,13 +436,22 @@ impl UnitMap {
         self.units.is_empty()
     }
 
-    /// The innermost unit whose root contains `file_rel`.
+    /// The innermost unit **of the file's own language** whose root contains
+    /// `file_rel`.
+    ///
+    /// The language filter is not a refinement, it is the point: a repository
+    /// can hold a `pyproject.toml` at the root and a `Cargo.toml` under
+    /// `crates/`, and innermost-root alone would hand a `.py` file beside the
+    /// Rust code a Cargo package — naming it `rust:inner::…` and merging it
+    /// with whatever Rust module shares its path.
     pub fn resolve(&self, file_rel: &str) -> Option<&Unit> {
+        let lang = lang_of_path(file_rel)?;
         self.units.iter().find(|u| {
-            u.root.is_empty()
-                || file_rel
-                    .strip_prefix(&u.root)
-                    .is_some_and(|rest| rest.starts_with('/'))
+            u.lang == lang
+                && (u.root.is_empty()
+                    || file_rel
+                        .strip_prefix(&u.root)
+                        .is_some_and(|rest| rest.starts_with('/')))
         })
     }
 
@@ -352,14 +459,33 @@ impl UnitMap {
     /// which it can reach other units *in this project*.
     pub fn context_for(&self, file_rel: &str) -> UnitContext {
         let Some(unit) = self.resolve(file_rel) else {
-            return UnitContext::unnamed();
+            return UnitContext::unnamed_for(lang_of_path(file_rel).unwrap_or(LANG_RUST));
         };
         let (id, module_base) = target_of(unit, file_rel);
         let known: BTreeSet<&str> = self.units.iter().map(|u| u.name.as_str()).collect();
 
+        let mut siblings = BTreeMap::new();
+        if unit.lang == LANG_PYTHON {
+            // Every package shipped by another distribution in this project.
+            // Third-party imports still resolve to nothing, because nothing
+            // outside the project defines a unit.
+            for other in self.units.iter().filter(|u| u.lang == LANG_PYTHON) {
+                if other.name == unit.name {
+                    continue;
+                }
+                for package in &other.packages {
+                    siblings.insert(package.clone(), other.id());
+                }
+            }
+            return UnitContext {
+                id,
+                module_base,
+                siblings,
+            };
+        }
+
         // Workspace-level aliases first so a member's own declaration, which
         // is the more specific statement, overrides them.
-        let mut siblings = BTreeMap::new();
         for (alias, package) in self.workspace_deps.iter().chain(unit.deps.iter()) {
             if package != &unit.name && known.contains(package.as_str()) {
                 siblings.insert(alias.clone(), format!("{LANG_RUST}:{package}"));
@@ -392,6 +518,13 @@ impl UnitMap {
 /// repo-relative. The extractor strips it so a module path states only what
 /// the identity prefix does not already say.
 fn target_of(unit: &Unit, file_rel: &str) -> (String, String) {
+    // Python has no compilation targets. Its distribution is the whole
+    // namespace, a test module is an ordinary module, and imports are rooted
+    // at the layout's import root. Giving it a `#test:` suffix by analogy
+    // would split one namespace into several that can never join.
+    if unit.lang == LANG_PYTHON {
+        return (unit.id(), unit.import_root.clone());
+    }
     let rel = if unit.root.is_empty() {
         file_rel
     } else {
@@ -434,6 +567,43 @@ fn target_of(unit: &Unit, file_rel: &str) -> (String, String) {
         return (format!("{base}#build"), at("build"));
     }
     (base, at("src/lib"))
+}
+
+/// Import packages a Python distribution provides, read from its import
+/// root: a directory holding `__init__.py`, or a bare top-level module.
+///
+/// Read from disk rather than declared, because neither layout states it in
+/// the manifest and the distribution name is frequently not the package name.
+fn top_level_packages(import_root: &Path) -> Vec<String> {
+    let Ok(entries) = std::fs::read_dir(import_root) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if path.is_dir() && path.join("__init__.py").is_file() {
+            out.push(name.to_string());
+        } else if let Some(stem) = name.strip_suffix(".py")
+            && stem != "__init__"
+        {
+            out.push(stem.to_string());
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Join a repo-relative directory to a child name, keeping the repo root
+/// spelled as the empty string rather than a leading slash.
+fn join_rel(dir: &str, child: &str) -> String {
+    if dir.is_empty() {
+        child.to_string()
+    } else {
+        format!("{dir}/{child}")
+    }
 }
 
 /// The first path component of `rel`, without any `.rs` suffix — the target
@@ -557,6 +727,9 @@ mod tests {
                 .iter()
                 .map(|(a, p)| ((*a).to_string(), (*p).to_string()))
                 .collect(),
+            // Rust targets compute their own root; these fields are Python's.
+            import_root: String::new(),
+            packages: Vec::new(),
         }
     }
 
@@ -780,5 +953,171 @@ mod tests {
             "[workspace]\nmembers = [\"crates/*\"]\n",
         );
         assert!(UnitMap::discover(d.path()).resolve("src/a.rs").is_none());
+    }
+}
+
+#[cfg(test)]
+mod python_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write(root: &Path, rel: &str, body: &str) {
+        let p = root.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(p, body).expect("write");
+    }
+
+    #[test]
+    fn a_pyproject_declares_its_distribution_name() {
+        let m = parse_pyproject_manifest("[project]\nname = \"py-side\"\nversion = \"0.1.0\"\n");
+        assert_eq!(m.package.as_deref(), Some("py-side"));
+    }
+
+    #[test]
+    fn a_poetry_pyproject_declares_its_distribution_name() {
+        // Poetry predates PEP 621 and is still widespread.
+        let m = parse_pyproject_manifest("[tool.poetry]\nname = \"legacy\"\n");
+        assert_eq!(m.package.as_deref(), Some("legacy"));
+    }
+
+    #[test]
+    fn a_pyproject_without_a_name_declares_no_distribution() {
+        // A build-backend-only pyproject.toml is common and names nothing.
+        let m = parse_pyproject_manifest("[build-system]\nrequires = [\"setuptools\"]\n");
+        assert_eq!(m.package, None);
+    }
+
+    #[test]
+    fn an_unclaimed_python_file_falls_back_to_a_python_namespace() {
+        // The fallback must follow the file's language. Naming a stray .py
+        // file `rust:crate::…` would merge it with Rust modules and make the
+        // language tag a lie exactly where there is least evidence.
+        let m = UnitMap::default();
+        assert_eq!(m.context_for("scripts/tool.py").id, "python:project");
+    }
+
+    #[test]
+    fn discovery_finds_a_python_distribution() {
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "pyproject.toml", "[project]\nname = \"pyside\"\n");
+        let m = UnitMap::discover(d.path());
+        assert_eq!(
+            m.resolve("src/pyside/utils.py").map(Unit::id).as_deref(),
+            Some("python:pyside")
+        );
+    }
+
+    #[test]
+    fn a_sibling_distributions_packages_are_reachable_namespaces() {
+        // Python has no distribution-level import aliasing: source writes the
+        // *package* name, which need not match the distribution name, so the
+        // sibling map has to be keyed by what is actually on disk.
+        let d = TempDir::new().expect("tempdir");
+        write(
+            d.path(),
+            "libs/core/pyproject.toml",
+            "[project]\nname = \"core-lib\"\n",
+        );
+        write(d.path(), "libs/core/src/core/__init__.py", "");
+        write(
+            d.path(),
+            "libs/app/pyproject.toml",
+            "[project]\nname = \"app\"\n",
+        );
+        write(d.path(), "libs/app/src/app/__init__.py", "");
+
+        let ctx = UnitMap::discover(d.path()).context_for("libs/app/src/app/__init__.py");
+        assert_eq!(
+            ctx.siblings.get("core").map(String::as_str),
+            Some("python:core-lib"),
+            "keyed by package name on disk, valued by distribution unit id"
+        );
+    }
+
+    #[test]
+    fn a_distribution_is_never_its_own_sibling() {
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "pyproject.toml", "[project]\nname = \"solo\"\n");
+        write(d.path(), "src/solo/__init__.py", "");
+        let ctx = UnitMap::discover(d.path()).context_for("src/solo/mod.py");
+        assert!(ctx.siblings.is_empty(), "{:?}", ctx.siblings);
+    }
+
+    #[test]
+    fn a_python_file_never_resolves_to_a_cargo_package() {
+        // Both manifests can sit in one repository, and the innermost-root
+        // rule alone would hand a .py file whichever package is nearer.
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "pyproject.toml", "[project]\nname = \"pyside\"\n");
+        write(
+            d.path(),
+            "crates/inner/Cargo.toml",
+            "[package]\nname = \"inner\"\n",
+        );
+        let m = UnitMap::discover(d.path());
+        assert_eq!(
+            m.resolve("crates/inner/helper.py").map(Unit::id).as_deref(),
+            Some("python:pyside"),
+            "a .py file under a Cargo package still belongs to the Python distribution"
+        );
+        assert_eq!(
+            m.resolve("crates/inner/src/lib.rs")
+                .map(Unit::id)
+                .as_deref(),
+            Some("rust:inner")
+        );
+    }
+}
+
+#[cfg(test)]
+mod python_layout_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn write(root: &Path, rel: &str, body: &str) {
+        let p = root.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(p, body).expect("write");
+    }
+
+    fn py_project(layout: &[&str]) -> TempDir {
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "pyproject.toml", "[project]\nname = \"pyside\"\n");
+        for rel in layout {
+            write(d.path(), rel, "");
+        }
+        d
+    }
+
+    #[test]
+    fn a_src_layout_roots_modules_at_the_src_directory() {
+        // src/pyside/utils.py is the module `pyside.utils`, so `src` must be
+        // stripped but `pyside` must not.
+        let d = py_project(&["src/pyside/__init__.py"]);
+        let m = UnitMap::discover(d.path());
+        assert_eq!(m.context_for("src/pyside/utils.py").module_base, "src");
+    }
+
+    #[test]
+    fn a_flat_layout_roots_modules_at_the_project_directory() {
+        // Without a src/ directory the import root is the project root
+        // itself: pyside/utils.py is `pyside.utils`.
+        let d = py_project(&["pyside/__init__.py"]);
+        let m = UnitMap::discover(d.path());
+        assert!(m.context_for("pyside/utils.py").module_base.is_empty());
+    }
+
+    #[test]
+    fn a_python_unit_has_no_compilation_target_suffix() {
+        // Cargo's #bin:/#test: split exists because those compile as separate
+        // crates. Python has no equivalent — a test module is just a module.
+        let d = py_project(&["src/pyside/__init__.py"]);
+        let m = UnitMap::discover(d.path());
+        assert_eq!(m.context_for("src/pyside/utils.py").id, "python:pyside");
+        assert_eq!(m.context_for("tests/test_utils.py").id, "python:pyside");
     }
 }

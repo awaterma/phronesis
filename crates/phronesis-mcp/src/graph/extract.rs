@@ -26,6 +26,29 @@ pub struct Extracted {
     /// Items skipped because their qualified name could not be determined
     /// (macro-generated items, `#[path]` indirection). Counted, never guessed.
     pub skipped: usize,
+    /// The file could not be parsed at all, so this result carries no
+    /// evidence about it — as distinct from a file that genuinely defines
+    /// nothing.
+    ///
+    /// The two look identical as an edge set and must not be treated alike.
+    /// Compacting an empty extraction erases every function, call and import
+    /// the file had, and recording its hash reports the graph fresh — so the
+    /// harness keeps enforcing against evidence it just destroyed. The caller
+    /// must instead leave both the graph and the index untouched, which makes
+    /// freshness report the file as drifted (spec §4.6).
+    pub parse_failed: bool,
+}
+
+impl Extracted {
+    /// Result for a file that could not be parsed: no evidence, and an
+    /// explicit signal that the caller must preserve what it already had.
+    pub fn unparseable() -> Self {
+        Extracted {
+            edges: Vec::new(),
+            skipped: 1,
+            parse_failed: true,
+        }
+    }
 }
 
 /// Classification of a source file, as the `file_type` relation.
@@ -127,18 +150,74 @@ fn is_test_attribute(attr_text: &str) -> bool {
     if path == "test" || path.ends_with("::test") {
         return true;
     }
-    // `#[cfg(test)]`, `#[cfg(all(test, ...))]` — the gate names `test` as a
-    // bare token, never as part of a longer identifier or a string.
+    // `#[cfg(test)]`, `#[cfg(all(test, ...))]`.
     if path == "cfg" {
         let args = inner
             .split_once('(')
-            .map(|(_, rest)| rest.trim_end_matches(')'))
+            .map(|(_, rest)| rest.strip_suffix(')').unwrap_or(rest))
             .unwrap_or("");
-        return args
-            .split(|c: char| !c.is_alphanumeric() && c != '_')
-            .any(|tok| tok == "test");
+        return cfg_asserts_test(args);
     }
     false
+}
+
+/// True when a `cfg` predicate list *positively* asserts the bare `test` flag.
+///
+/// Parsed rather than scanned for a token. A flat scan cannot see the two
+/// things that matter: `not(test)` marks production-only code, and
+/// `feature = "test-utils"` names a feature whose value merely contains the
+/// word. Both were read as test markers, which dropped the function from
+/// `defines_fn` and turned every call in its body into a `tested_by` edge —
+/// inflating coverage across the whole graph and hiding the untested-risky
+/// calls this pack exists to surface.
+fn cfg_asserts_test(args: &str) -> bool {
+    for predicate in split_top_level(args) {
+        let predicate = predicate.trim();
+        if predicate == "test" {
+            return true;
+        }
+        // `not(...)`: whatever it names, this is not test-gated code.
+        if predicate
+            .strip_prefix("not")
+            .is_some_and(|rest| rest.trim_start().starts_with('('))
+        {
+            continue;
+        }
+        // `all(...)` / `any(...)`: a nested list, any branch of which may
+        // assert `test`.
+        for combinator in ["all", "any"] {
+            if let Some(rest) = predicate.strip_prefix(combinator)
+                && let Some(rest) = rest.trim_start().strip_prefix('(')
+                && cfg_asserts_test(rest.strip_suffix(')').unwrap_or(rest))
+            {
+                return true;
+            }
+        }
+        // Anything else (`feature = "..."`, `target_os = "..."`) names a
+        // different flag, whatever its value happens to spell.
+    }
+    false
+}
+
+/// Split a `cfg` predicate list on top-level commas, ignoring commas nested
+/// in parentheses or inside string literals.
+fn split_top_level(args: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut in_quotes, mut start) = (0i32, false, 0usize);
+    for (i, c) in args.char_indices() {
+        match c {
+            '"' => in_quotes = !in_quotes,
+            '(' if !in_quotes => depth += 1,
+            ')' if !in_quotes => depth -= 1,
+            ',' if !in_quotes && depth == 0 => {
+                out.push(&args[start..i]);
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    out.push(&args[start..]);
+    out
 }
 
 /// True when a test-marker attribute is attached to `node`.
@@ -400,14 +479,17 @@ pub fn extract_rust(
     // is indistinguishable from a shrinking one, and would read downstream as
     // "this function lost its test" (spec §4.6).
     let Some(parsed) = ParsedFile::parse_rust(content) else {
-        return Extracted {
-            edges: Vec::new(),
-            skipped: 1,
-        };
+        return Extracted::unparseable();
     };
     let ParsedFile::Rust { tree, source } = &parsed else {
-        return Extracted::default();
+        return Extracted::unparseable();
     };
+    // A tree with error nodes is a half-edited file. Publishing its partial
+    // edges would silently drop whatever the parser could not reach, which
+    // reads downstream as "these functions lost their tests".
+    if tree.root_node().has_error() {
+        return Extracted::unparseable();
+    }
 
     let self_module = module_path(file_path, unit);
     let mut sensor = Sensor {
@@ -443,6 +525,7 @@ pub fn extract_rust(
     Extracted {
         edges,
         skipped: sensor.skipped,
+        parse_failed: false,
     }
 }
 
@@ -802,6 +885,66 @@ mod tests {
                 "rust:core-lib::network".to_string()
             ]]
         );
+    }
+
+    // ─── cfg gating ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_cfg_test_gate_marks_a_test_function() {
+        let out = run("src/a.rs", "#[cfg(test)]\nfn t() { fire(); }");
+        assert!(edges_of(&out, "defines_fn").is_empty());
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "fire");
+    }
+
+    #[test]
+    fn a_cfg_all_gate_naming_test_marks_a_test_function() {
+        let out = run("src/a.rs", "#[cfg(all(test, unix))]\nfn t() { fire(); }");
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "fire");
+    }
+
+    #[test]
+    fn a_negated_test_gate_is_production_code() {
+        // `#[cfg(not(test))]` is the idiomatic way to mark production-only
+        // code. Reading it as a test marker removed the function from
+        // `defines_fn` and turned its calls into coverage edges.
+        let out = run(
+            "src/a.rs",
+            "#[cfg(not(test))]\nfn prod() { g().expect(\"m\"); }",
+        );
+        assert_eq!(edges_of(&out, "defines_fn")[0][1], "rust:crate::a::prod");
+        assert!(
+            edges_of(&out, "tested_by").is_empty(),
+            "production-only code provides no coverage"
+        );
+    }
+
+    #[test]
+    fn a_negated_test_gate_nested_in_all_is_still_production_code() {
+        let out = run(
+            "src/a.rs",
+            "#[cfg(all(not(test), unix))]\nfn prod() { g().expect(\"m\"); }",
+        );
+        assert_eq!(edges_of(&out, "defines_fn").len(), 1);
+        assert!(edges_of(&out, "tested_by").is_empty());
+    }
+
+    #[test]
+    fn a_feature_whose_name_contains_test_is_not_a_test_gate() {
+        let out = run(
+            "src/a.rs",
+            "#[cfg(feature = \"test-utils\")]\nfn helper() { g().expect(\"m\"); }",
+        );
+        assert_eq!(edges_of(&out, "defines_fn").len(), 1);
+        assert!(edges_of(&out, "tested_by").is_empty());
+    }
+
+    #[test]
+    fn a_feature_gate_beside_a_real_test_gate_still_marks_a_test() {
+        let out = run(
+            "src/a.rs",
+            "#[cfg(all(feature = \"x\", test))]\nfn t() { fire(); }",
+        );
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "fire");
     }
 
     // ─── tested_by ──────────────────────────────────────────────────

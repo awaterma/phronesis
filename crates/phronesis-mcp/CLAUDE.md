@@ -246,9 +246,12 @@ The packs are composable and **independent**:
   `init` builds `.phronesis/graph.jsonl` for you; the `PostToolUse` sensor
   keeps it current thereafter. Edits that bypass the hook (`git checkout`,
   rebase, shell edits) mark the graph stale, which downgrades these rules to
-  warnings until `phr-mcp graph rebuild`. Rust only. Both rules `warn` —
-  measured precision is in the spec's first-corpus section, and promotion to
-  `block` awaits a second corpus.
+  warnings until `phr-mcp graph rebuild`. Rust and Python both produce graph
+  facts, but `warn-untested-risky-call` needs a language-specific watchlist
+  of panic-introducing APIs, and only Rust has a defensible one today; Python
+  can fire `warn-import-cycle` but not that risky-call rule. Both rules
+  `warn` — measured precision is in the spec's first-corpus section, and
+  promotion to `block` awaits a second corpus.
 - `none` — empty rules array (hooks still wired)
 
 `init` writes/merges seven files:

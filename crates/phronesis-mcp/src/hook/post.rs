@@ -51,6 +51,17 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     // Resolve project root once; used in journey paths below.
     let file_path = super::extract_file_path(&payload);
 
+    // Structural sensor: re-extract the edited file and re-derive whole-graph
+    // facts. Runs *before* rules are loaded, because the graph is machinery
+    // rather than a rule — the structural pack ships `phase: "pre"` rules
+    // exclusively, so gating this on the presence of post rules meant the
+    // graph went stale on the first edit and the pack demoted itself to
+    // warnings permanently. Best-effort: the edit already happened, so a
+    // graph write failure must not interrupt the user (see `graph::sync`).
+    if !file_path.is_empty() {
+        crate::graph::sync::record_from_disk(&security::project_root(), &file_path);
+    }
+
     let (rules, content_patterns, bash_command_patterns, missing_patterns) = {
         let rules = match super::load_rules("post") {
             Ok(Some(r)) => r,
@@ -107,13 +118,6 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         super::assert_pack_marker_facts(&net, &security::project_root()).await;
         net
     };
-
-    // Structural sensor: re-extract the edited file and re-derive whole-graph
-    // facts. Best-effort — the edit has already happened, so a graph write
-    // failure must not interrupt the user (see `graph::sync`).
-    if !file_path.is_empty() {
-        crate::graph::sync::record_from_disk(&security::project_root(), &file_path);
-    }
 
     // Command tools carry no file_path, so the disk-read below yields no
     // content for them — their "content" is the command itself, taken from

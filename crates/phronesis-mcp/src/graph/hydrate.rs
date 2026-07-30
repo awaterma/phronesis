@@ -10,7 +10,7 @@ use super::store;
 use super::sync::{Freshness, check_freshness, index_path, load_index};
 use phr::{Fact, Rule, RuleId};
 use std::collections::BTreeSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Relations this feature can supply. A rule naming none of them needs no
 /// graph load at all.
@@ -69,14 +69,40 @@ pub fn graph_rule_ids(rules: &[Rule]) -> BTreeSet<RuleId> {
 /// Express `path` the way the graph keys files: relative to the project root,
 /// forward-slashed. Hosts send absolute paths; the graph stores relative ones,
 /// and a path outside the project has no graph identity at all.
-fn repo_relative(root: &Path, path: &str) -> Option<String> {
+pub(crate) fn repo_relative(root: &Path, path: &str) -> Option<String> {
     let candidate = Path::new(path);
     let rel = if candidate.is_absolute() {
-        candidate.strip_prefix(root).ok()?
+        strip_root(candidate, root)?
     } else {
-        candidate
+        candidate.to_path_buf()
     };
     Some(rel.to_str()?.replace('\\', "/"))
+}
+
+/// Strip `root` from an absolute path, tolerating a symlinked root.
+///
+/// A lexical strip is not enough: `project_root` comes from `current_dir`,
+/// which the OS returns already resolved (`/private/var/…` on macOS), while
+/// hosts send the unresolved form (`/var/…`). The two name the same file and
+/// compare unequal, which silently yields "outside the project" for a file
+/// that is squarely inside it.
+fn strip_root(candidate: &Path, root: &Path) -> Option<PathBuf> {
+    if let Ok(rel) = candidate.strip_prefix(root) {
+        return Some(rel.to_path_buf());
+    }
+    let root = root.canonicalize().ok()?;
+    let real = resolve_existing_ancestor(candidate)?;
+    real.strip_prefix(&root).ok().map(Path::to_path_buf)
+}
+
+/// Canonical form of `path`, resolving through its parent so that a file
+/// which does not exist yet — a `Write` creating one — still resolves.
+fn resolve_existing_ancestor(path: &Path) -> Option<PathBuf> {
+    if let Ok(real) = path.canonicalize() {
+        return Some(real);
+    }
+    let parent = path.parent()?.canonicalize().ok()?;
+    Some(parent.join(path.file_name()?))
 }
 
 /// Edges to assert, plus whether the graph still matches the working tree.
@@ -293,5 +319,69 @@ mod tests {
     fn a_rule_that_ignores_the_graph_is_never_downgraded() {
         let ids = graph_rule_ids(&[rule_using("file_path")]);
         assert!(ids.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod path_tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn a_relative_path_is_returned_unchanged() {
+        assert_eq!(
+            repo_relative(Path::new("/proj"), "src/a.rs").as_deref(),
+            Some("src/a.rs")
+        );
+    }
+
+    #[test]
+    fn an_absolute_path_inside_the_project_is_relativized() {
+        assert_eq!(
+            repo_relative(Path::new("/proj"), "/proj/src/a.rs").as_deref(),
+            Some("src/a.rs")
+        );
+    }
+
+    #[test]
+    fn a_path_outside_the_project_has_no_relative_form() {
+        assert_eq!(repo_relative(Path::new("/proj"), "/elsewhere/a.rs"), None);
+    }
+
+    #[test]
+    fn a_symlinked_root_still_relativizes() {
+        // `project_root` comes from `current_dir`, which the OS returns
+        // already resolved, while hosts send the unresolved path. On macOS
+        // that is `/private/var/…` against `/var/…` for the same file. A
+        // lexical strip alone reports "outside the project" and the fact is
+        // silently dropped.
+        let real = TempDir::new().expect("tempdir");
+        let link_parent = TempDir::new().expect("tempdir");
+        let link = link_parent.path().join("link");
+        std::os::unix::fs::symlink(real.path(), &link).expect("symlink");
+        std::fs::create_dir_all(real.path().join("src")).expect("mkdir");
+        std::fs::write(real.path().join("src/a.rs"), "fn f() {}").expect("write");
+
+        let via_link = link.join("src/a.rs");
+        assert_eq!(
+            repo_relative(real.path(), via_link.to_str().expect("utf8")).as_deref(),
+            Some("src/a.rs")
+        );
+    }
+
+    #[test]
+    fn a_file_that_does_not_exist_yet_still_relativizes() {
+        // A `Write` creating a new file: the parent exists, the file does not.
+        let real = TempDir::new().expect("tempdir");
+        let link_parent = TempDir::new().expect("tempdir");
+        let link = link_parent.path().join("link");
+        std::os::unix::fs::symlink(real.path(), &link).expect("symlink");
+        std::fs::create_dir_all(real.path().join("src")).expect("mkdir");
+
+        let via_link = link.join("src/brand_new.rs");
+        assert_eq!(
+            repo_relative(real.path(), via_link.to_str().expect("utf8")).as_deref(),
+            Some("src/brand_new.rs")
+        );
     }
 }

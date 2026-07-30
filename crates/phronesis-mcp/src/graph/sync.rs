@@ -26,7 +26,8 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// Without it, an upgrade silently yields a graph half in the old naming and
 /// half in the new, whose `imports` never join to its `declares_module`.
 ///
-/// 4 — `<lang>:<package>[#<target>]::<module path>` (spec rev 4).
+/// 4 — `<lang>:<package>[#<target>]::<module path>` (introduced in spec
+/// rev 4; unchanged by rev 5, which added Python under the same scheme).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
 pub const GRAPH_FORMAT: u32 = 4;
 
@@ -139,7 +140,10 @@ fn tracked_files(root: &Path) -> Vec<String> {
             continue;
         }
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+        if !matches!(
+            path.extension().and_then(|e| e.to_str()),
+            Some("rs") | Some("py")
+        ) {
             continue;
         }
         if let Ok(rel) = path.strip_prefix(root)
@@ -192,6 +196,24 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     }
 }
 
+/// Every file extension the graph has an extractor for. A file outside this
+/// set is not tracked, not indexed, and not counted as drift.
+pub const TRACKED_EXTENSIONS: &[&str] = &[".rs", ".py"];
+
+fn is_tracked(file_path: &str) -> bool {
+    TRACKED_EXTENSIONS.iter().any(|e| file_path.ends_with(e))
+}
+
+/// Route one file to the extractor for its language.
+fn extract_one(rel: &str, content: &str, units: &UnitMap) -> super::extract::Extracted {
+    let unit = units.context_for(rel);
+    if rel.ends_with(".py") {
+        super::python::extract_python(rel, content, &unit)
+    } else {
+        extract_rust(rel, content, DEFAULT_WATCHLIST, &unit)
+    }
+}
+
 /// Recompute derived edges over `base` and persist both sets.
 fn persist(root: &Path, base: Vec<Edge>) -> std::io::Result<(usize, usize)> {
     let derived = derive_all(&base);
@@ -208,7 +230,7 @@ fn persist(root: &Path, base: Vec<Edge>) -> std::io::Result<(usize, usize)> {
 /// Only the edited file is parsed; derivation runs over the full edge set
 /// already on disk. That is what makes whole-repo facts affordable per save.
 pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<SaveOutcome> {
-    if !file_path.ends_with(".rs") {
+    if !is_tracked(file_path) {
         return Ok(SaveOutcome {
             base: 0,
             derived: 0,
@@ -227,9 +249,22 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     }
 
     let units = UnitMap::discover(root);
-    let unit = units.context_for(file_path);
-    let extracted = extract_rust(file_path, content, DEFAULT_WATCHLIST, &unit);
+    let extracted = extract_one(file_path, content, &units);
     let existing = store::load(&store::graph_path(root))?;
+    if extracted.parse_failed {
+        // Leave the graph and the index exactly as they were. Compacting the
+        // empty edge set would erase the file's evidence, and recording the
+        // unparseable content's hash would report the result fresh — the
+        // harness would then keep enforcing on facts it had just deleted.
+        // Leaving the hash stale makes freshness report the file as drifted,
+        // which demotes structural rules to warnings: the honest state.
+        let base = existing.iter().filter(|e| !e.d).count();
+        return Ok(SaveOutcome {
+            base,
+            derived: existing.len() - base,
+            skipped: extracted.skipped,
+        });
+    }
     let base = store::compact(existing, file_path, extracted.edges);
     let (n_base, n_derived) = persist(root, base)?;
 
@@ -252,17 +287,58 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
 /// turn into a hook error that interrupts the user's work. Failures leave the
 /// file's hash stale, which the freshness check will catch and report.
 pub fn record_from_disk(root: &Path, file_path: &str) {
+    // Hosts send absolute paths while the graph is keyed repo-relative, so
+    // relativize first. Rejecting an absolute path outright — as this guard
+    // once did — turned the sensor off for every real host, and because the
+    // sensor is best-effort it failed silently: the graph simply never
+    // updated and the structural pack demoted itself to warnings forever.
+    let Some(rel) = super::hydrate::repo_relative(root, file_path) else {
+        // Outside the project: `repo_relative` is the containment check.
+        return;
+    };
     // Never follow a path out of the project — the sensor reads whatever it
     // is handed, and a traversal would pull unrelated files into the graph.
-    if file_path.contains("..") || Path::new(file_path).is_absolute() {
+    if rel.contains("..") || Path::new(&rel).is_absolute() {
         return;
     }
-    let Ok(content) = std::fs::read_to_string(root.join(file_path)) else {
-        return;
+    let file_path = rel.as_str();
+    let content = match std::fs::read_to_string(root.join(file_path)) {
+        Ok(content) => content,
+        // The file is gone — a `Delete File` patch block, or a delete routed
+        // through the hook. Leaving its edges and its index entry behind
+        // makes the very next freshness check report drift, which demotes
+        // every structural rule to a warning until someone rebuilds by hand.
+        // An empty extraction lets provenance-keyed compaction drop them.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(e) = on_delete(root, file_path) {
+                tracing::debug!("graph sensor could not record deletion of {file_path}: {e}");
+            }
+            return;
+        }
+        Err(_) => return,
     };
     if let Err(e) = on_save(root, file_path, &content) {
         tracing::debug!("graph sensor skipped {file_path}: {e}");
     }
+}
+
+/// Drop a vanished file from both the graph and the staleness index.
+///
+/// Compaction is keyed on provenance, so replacing the file's edge set with
+/// nothing removes exactly its contribution. The index entry must go too: a
+/// hash recorded against a path that no longer exists is stale evidence that
+/// `check_freshness` reports as drift forever.
+fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
+    let existing = store::load(&store::graph_path(root))?;
+    let base = store::compact(existing, file_path, Vec::new());
+    persist(root, base)?;
+
+    let ipath = index_path(root);
+    let mut index = load_index(&ipath)?;
+    if index.entries.remove(file_path).is_some() {
+        save_index(&ipath, &index)?;
+    }
+    Ok(())
 }
 
 /// Full rescan of every tracked Rust file. The recovery path after the graph
@@ -277,9 +353,14 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
         let Ok(content) = std::fs::read_to_string(root.join(&rel)) else {
             continue;
         };
-        let unit = units.context_for(&rel);
-        let extracted = extract_rust(&rel, &content, DEFAULT_WATCHLIST, &unit);
+        let extracted = extract_one(&rel, &content, &units);
         skipped += extracted.skipped;
+        if extracted.parse_failed {
+            // Not indexed: a rebuild cannot invent evidence for a file it
+            // cannot read, and claiming to have indexed it would report the
+            // graph fresh while the file contributes nothing.
+            continue;
+        }
         base.extend(extracted.edges);
         index.entries.insert(rel, hash_content(&content));
     }
@@ -550,6 +631,117 @@ mod tests {
     }
 
     // ─── the hook entry point ───────────────────────────────────────
+
+    #[test]
+    fn recording_from_disk_accepts_the_absolute_path_a_host_sends() {
+        // Every real host sends an absolute path. A guard that rejected them
+        // silently disabled the sensor everywhere, and because the sensor is
+        // best-effort by design nothing reported it.
+        let d = project();
+        write(d.path(), "src/a.rs", "fn f() {}");
+        let absolute = d.path().join("src/a.rs");
+        record_from_disk(d.path(), absolute.to_str().expect("utf8"));
+        assert!(has(d.path(), "defines_fn"), "sensor must record the edit");
+    }
+
+    #[test]
+    fn a_parse_failure_preserves_the_files_existing_edges() {
+        // A malformed mid-edit save must not be read as "this file now
+        // defines nothing". Compacting an empty extraction erases every
+        // function, risky call and import the file had, and recording the
+        // malformed content's hash makes the graph report itself fresh — so
+        // the harness keeps enforcing on evidence it silently destroyed.
+        let d = project();
+        write(d.path(), "src/a.rs", "fn important() {}");
+        on_save(d.path(), "src/a.rs", "fn important() {}").expect("save");
+        assert!(has(d.path(), "defines_fn"), "precondition");
+
+        let broken = "fn important( { ((( ";
+        write(d.path(), "src/a.rs", broken);
+        on_save(d.path(), "src/a.rs", broken).expect("save");
+
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(
+            names.iter().any(|n| n.ends_with("::important")),
+            "existing evidence must survive a parse failure: {names:?}"
+        );
+    }
+
+    #[test]
+    fn a_parse_failure_leaves_the_file_reported_as_stale() {
+        // Staleness is the honest state: the graph no longer reflects what is
+        // on disk, and structural rules must demote to warnings until it does.
+        let d = project();
+        write(d.path(), "src/a.rs", "fn important() {}");
+        on_save(d.path(), "src/a.rs", "fn important() {}").expect("save");
+
+        let broken = "fn important( { ((( ";
+        write(d.path(), "src/a.rs", broken);
+        on_save(d.path(), "src/a.rs", broken).expect("save");
+
+        let index = load_index(&index_path(d.path())).expect("load index");
+        assert_eq!(
+            check_freshness(d.path(), &index),
+            Freshness::Stale(vec!["src/a.rs".to_string()]),
+            "an unparseable file must not be recorded as successfully indexed"
+        );
+    }
+
+    #[test]
+    fn deleting_a_file_removes_its_edges_and_its_index_entry() {
+        // A `Delete File` patch block routes through the sensor. Leaving the
+        // edges and hash behind makes every later freshness check report
+        // drift, demoting structural rules to warnings until a manual
+        // rebuild — the exact failure the sensor exists to prevent.
+        let d = project();
+        write(d.path(), "src/a.rs", "fn alpha() {}");
+        write(d.path(), "src/b.rs", "fn beta() {}");
+        on_save(d.path(), "src/a.rs", "fn alpha() {}").expect("save a");
+        on_save(d.path(), "src/b.rs", "fn beta() {}").expect("save b");
+
+        std::fs::remove_file(d.path().join("src/a.rs")).expect("delete");
+        record_from_disk(d.path(), "src/a.rs");
+
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(
+            names.iter().all(|n| !n.ends_with("::alpha")),
+            "the deleted file's edges must go: {names:?}"
+        );
+        assert!(names.iter().any(|n| n.ends_with("::beta")), "{names:?}");
+        assert!(
+            !load_index(&index_path(d.path()))
+                .expect("load index")
+                .entries
+                .contains_key("src/a.rs"),
+            "a hash for a path that no longer exists is permanent drift"
+        );
+        assert_eq!(
+            check_freshness(d.path(), &load_index(&index_path(d.path())).expect("index")),
+            Freshness::Fresh,
+            "a recorded deletion must leave the graph fresh"
+        );
+    }
+
+    #[test]
+    fn recording_from_disk_ignores_a_path_outside_the_project() {
+        let d = project();
+        let outside = TempDir::new().expect("tempdir");
+        write(outside.path(), "evil.rs", "fn f() {}");
+        let absolute = outside.path().join("evil.rs");
+        record_from_disk(d.path(), absolute.to_str().expect("utf8"));
+        assert!(
+            edges(d.path()).is_empty(),
+            "a file outside the project has no graph identity"
+        );
+    }
 
     #[test]
     fn recording_from_disk_reads_the_current_file_content() {

@@ -388,3 +388,265 @@ fn workspace_members_with_the_same_modules_keep_distinct_graph_identities() {
         "each package must retain its own strongly connected component: {cycles:?}"
     );
 }
+
+#[test]
+fn a_mixed_language_repository_yields_one_graph_per_language() {
+    // The `<lang>:` prefix exists so two extractors can share one graph. This
+    // is the first test that actually exercises it: a Rust crate and a Python
+    // distribution, each with a module named `utils` defining a function
+    // named `load`. Under a language-blind identity the two collapse into one
+    // node, and every relation hanging off them merges.
+    let d = TempDir::new().expect("tempdir");
+
+    std::fs::create_dir_all(d.path().join("rust-side/src")).expect("mkdir rust");
+    std::fs::write(
+        d.path().join("rust-side/Cargo.toml"),
+        "[package]\nname = \"rust-side\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("cargo manifest");
+    std::fs::write(d.path().join("rust-side/src/lib.rs"), "pub mod utils;\n").expect("lib");
+    std::fs::write(
+        d.path().join("rust-side/src/utils.rs"),
+        "pub fn load() -> u32 { 1 }\n",
+    )
+    .expect("rust utils");
+
+    std::fs::create_dir_all(d.path().join("py-side/src/pyside")).expect("mkdir python");
+    std::fs::write(
+        d.path().join("py-side/pyproject.toml"),
+        "[project]\nname = \"py-side\"\nversion = \"0.1.0\"\n",
+    )
+    .expect("pyproject");
+    std::fs::write(
+        d.path().join("py-side/src/pyside/__init__.py"),
+        "from . import utils\n",
+    )
+    .expect("python init");
+    std::fs::write(
+        d.path().join("py-side/src/pyside/utils.py"),
+        "def load():\n    return 1\n",
+    )
+    .expect("python utils");
+
+    rebuild_graph(d.path());
+    let edges = store::load(&store::graph_path(d.path())).expect("load graph");
+
+    let functions: Vec<String> = edges
+        .iter()
+        .filter(|e| e.p == "defines_fn")
+        .filter_map(|e| e.a.get(1).cloned())
+        .collect();
+
+    assert!(
+        functions.contains(&"rust:rust-side::utils::load".to_string()),
+        "the Rust extractor must still name its own entities: {functions:?}"
+    );
+    // `::` separates segments in every language, not just Rust: derivation
+    // bridges `tested_by`'s bare callee names to `defines_fn`'s qualified
+    // ones by splitting on it, so a dotted Python identity would report every
+    // tested Python function as untested.
+    assert!(
+        functions.contains(&"python:py-side::pyside::utils::load".to_string()),
+        "the Python extractor must name entities under its own language tag: {functions:?}"
+    );
+    assert_eq!(
+        functions
+            .iter()
+            .filter(|f| f.ends_with("utils::load"))
+            .count(),
+        2,
+        "same-named functions in different languages must stay distinct: {functions:?}"
+    );
+}
+
+/// Run the real post-check hook over an Edit of `rel`.
+fn post_check(dir: &Path, rel: &str) -> i32 {
+    let payload = format!(
+        r#"{{"session_id":"s","cwd":"{root}","hook_event_name":"PostToolUse","tool_name":"Edit",
+            "tool_input":{{"file_path":"{root}/{rel}","old_string":"a","new_string":"b"}}}}"#,
+        root = dir.display()
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(dir)
+        .arg("post-check")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn post-check");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    child.wait().expect("wait").code().unwrap_or(-1)
+}
+
+fn graph_is_fresh(dir: &Path) -> bool {
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(dir)
+        .args(["graph", "status", "--path", "."])
+        .output()
+        .expect("run graph status");
+    String::from_utf8_lossy(&out.stdout).contains("fresh")
+}
+
+fn graph_defines_function(dir: &Path, function_name: &str) -> bool {
+    store::load(&store::graph_path(dir))
+        .expect("load graph")
+        .iter()
+        .any(|edge| {
+            edge.p == "defines_fn"
+                && edge
+                    .a
+                    .get(1)
+                    .is_some_and(|function| function.ends_with(function_name))
+        })
+}
+
+#[test]
+fn claude_post_check_updates_graph_from_an_absolute_path_with_only_pre_rules() {
+    // The structural pack ships `phase: "pre"` rules exclusively, so a
+    // project on `--packs structural` has no post rules at all. The graph
+    // sensor is machinery, not a rule — gating it on rule phase means the
+    // graph goes stale on the very first edit and the pack demotes itself to
+    // warnings forever. Rejecting absolute host paths in `record_from_disk`
+    // would also make this fail.
+    let d = packaged_project();
+    assert!(graph_is_fresh(d.path()), "precondition: freshly built");
+
+    std::fs::write(
+        d.path().join("src/risky.rs"),
+        format!("{RISKY_SOURCE}\npub fn added_later() -> u32 {{ 7 }}\n"),
+    )
+    .expect("edit");
+    assert_eq!(post_check(d.path(), "src/risky.rs"), 0, "post-check clean");
+
+    assert!(
+        graph_is_fresh(d.path()),
+        "the post sensor must have recorded the edit"
+    );
+    assert!(
+        graph_defines_function(d.path(), "::added_later"),
+        "the sensor must extract the newly added function"
+    );
+}
+
+/// Drive the real Codex adapter with an `apply_patch` PreToolUse payload.
+fn codex_pre_patch(dir: &Path, rel: &str, body: &str) -> String {
+    let patch = format!("*** Begin Patch\n*** Update File: {rel}\n+{body}\n*** End Patch");
+    let payload = serde_json::json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "apply_patch",
+        "tool_input": {"command": patch},
+    })
+    .to_string();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(dir)
+        .args(["codex-hook", "PreToolUse"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn codex-hook");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    let out = child.wait_with_output().expect("wait");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+/// Drive the real Codex adapter with an `apply_patch` PostToolUse payload.
+fn codex_post_patch(dir: &Path, file_path: &Path, body: &str) -> String {
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {}\n+{body}\n*** End Patch",
+        file_path.display()
+    );
+    let payload = serde_json::json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "apply_patch",
+        "tool_input": {"command": patch},
+    })
+    .to_string();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(dir)
+        .args(["codex-hook", "PostToolUse"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn codex-hook");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    let out = child.wait_with_output().expect("wait");
+    assert!(
+        out.status.success(),
+        "codex-hook must return structured output"
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+#[test]
+fn the_structural_pack_fires_under_codex_too() {
+    // The Codex pre-hook never hydrated the graph, so both shipped rules —
+    // which open on `edited_file`, a fact asserted only inside `hydrate` —
+    // joined against nothing. The pack looked installed and produced zero
+    // warnings, while the post sensor dutifully maintained a graph that
+    // nothing read.
+    let d = packaged_project();
+    let output = codex_pre_patch(d.path(), "src/risky.rs", "// touched");
+    assert!(
+        output.contains("rust:crate::risky::danger"),
+        "structural rules must fire under Codex: {output}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_post_hook_updates_graph_from_a_symlinked_absolute_path() {
+    // `project_root()` resolves the process cwd, while hosts can preserve a
+    // symlink in the absolute path they send. Removing canonicalization from
+    // `repo_relative`, rejecting absolute paths in `record_from_disk`, or
+    // skipping the Codex post sensor would make this fail.
+    let d = packaged_project();
+    let links = TempDir::new().expect("symlink parent");
+    let linked_root = links.path().join("linked-project");
+    std::os::unix::fs::symlink(d.path(), &linked_root).expect("symlink project");
+    let linked_file = linked_root.join("src/risky.rs");
+
+    std::fs::write(
+        d.path().join("src/risky.rs"),
+        format!("{RISKY_SOURCE}\npub fn added_by_codex() -> u32 {{ 9 }}\n"),
+    )
+    .expect("edit");
+    let output = codex_post_patch(
+        d.path(),
+        &linked_file,
+        "pub fn added_by_codex() -> u32 { 9 }",
+    );
+
+    assert!(
+        graph_is_fresh(d.path()),
+        "the Codex post sensor must record the symlinked path: {output}"
+    );
+    assert!(
+        graph_defines_function(d.path(), "::added_by_codex"),
+        "the Codex post sensor must extract the newly added function: {output}"
+    );
+}
