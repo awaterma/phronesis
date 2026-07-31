@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.23.1] - 2026-07-30
+
+### Fixed
+- **`query_code_graph` advertised "Rust only" and a stale identity form.**
+  The MCP tool description is what a model reads to decide whether a tool
+  applies, so both claims changed behavior rather than merely being out of
+  date. Python graphs build and query correctly — `init --packs structural`
+  in a Python project produces a graph and `graph query defines_fn` returns
+  `python:<dist>::<pkg>::<mod>::<fn>` — but the description reported the
+  language unsupported. Its worked example also still used the pre-0.23
+  `crate::wme` identity form, so a caller following it queried a key nothing
+  holds, received zero results, and could reasonably read that as an empty
+  graph rather than a malformed query. The description now names both
+  languages, gives the current identity form with an example per language,
+  and marks `calls_api` as the Rust-only relation it is.
+
 ## [0.23.0] - 2026-07-30
 
 ### Added
@@ -60,6 +76,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 - **The MCP `audit_codebase` tool omitted the graph merge** the CLI performs,
   reporting zero structural debt regardless of the graph's contents and
   writing that zero into the debt trend.
+- **The sensor built a graph in every project, opted in or not.** Moving it
+  ahead of rule loading (necessary, since the structural pack ships `phase:
+  "pre"` rules exclusively) removed an accidental gate without adding a
+  deliberate one, so a project on `--packs llm` gained an unasked-for
+  `.phronesis/graph.jsonl` and a per-save extraction pass. The graph's own
+  presence is now the opt-in signal.
 
 ### Known limits
 - `calls_api` is deliberately empty for Python: there is no defensible
