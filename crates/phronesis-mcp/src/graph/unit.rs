@@ -834,9 +834,16 @@ fn top_level_packages(import_root: &Path) -> Vec<String> {
 
 /// Join a repo-relative directory to a child name, keeping the repo root
 /// spelled as the empty string rather than a leading slash.
+///
+/// An empty `child` (a unit with no `baseUrl`) must yield `dir` itself, not
+/// `dir/` — a trailing slash silently breaks every consumer that joins onto
+/// or strips this value (`with_base`, `strip_module_base`), since neither
+/// expects a path already ending in `/`.
 fn join_rel(dir: &str, child: &str) -> String {
     if dir.is_empty() {
         child.to_string()
+    } else if child.is_empty() {
+        dir.to_string()
     } else {
         format!("{dir}/{child}")
     }

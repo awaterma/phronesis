@@ -37,13 +37,21 @@ pub enum Resolution {
 /// A pure function of the path, because resolution computes an identity from
 /// two directions — the importer's specifier and the target's own path — and
 /// an edge forms only when they agree.
+///
+/// Deliberately *not* collapsing `billing/index.ts` onto `billing`, nor
+/// `x.d.ts` onto the same stem as `x.ts`: both files can be indexed in the
+/// same unit at once (a directory can hold both `billing.ts` and
+/// `billing/index.ts`; a `.d.ts` commonly sits beside its `.ts`), and
+/// collapsing either pair onto one identity would merge two distinct files'
+/// definitions and edges into a single node — the exact failure this
+/// identity scheme exists to prevent (see the module doc on `unit.rs`).
+/// `strip_known_extension` only ever strips one of `.ts`/`.tsx`/`.mts`/
+/// `.cts`/`.jsx`/`.js` (never `.d.ts` as a unit), so `x.d.ts` becomes the
+/// segment `x.d` — distinct from `x.ts`'s `x`.
 pub fn module_path(file_rel: &str, unit: &UnitContext) -> String {
     let rel = strip_module_base(file_rel, &unit.module_base);
     let trimmed = strip_known_extension(rel);
-    let mut segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
-    if segments.last() == Some(&"index") {
-        segments.pop();
-    }
+    let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
     std::iter::once(unit.id.as_str())
         .chain(segments)
         .collect::<Vec<_>>()
@@ -51,6 +59,10 @@ pub fn module_path(file_rel: &str, unit: &UnitContext) -> String {
 }
 
 fn strip_module_base<'a>(file_rel: &'a str, module_base: &str) -> &'a str {
+    // Defensive against a trailing `/` in `module_base` regardless of what
+    // the caller hands in — `join_rel` no longer produces one, but this
+    // function has no business trusting that formatting invariant either.
+    let module_base = module_base.trim_end_matches('/');
     if module_base.is_empty() {
         return file_rel;
     }
@@ -61,7 +73,10 @@ fn strip_module_base<'a>(file_rel: &'a str, module_base: &str) -> &'a str {
 }
 
 fn strip_known_extension(path: &str) -> &str {
-    for ext in [".d.ts", ".tsx", ".ts", ".mts", ".cts", ".jsx", ".js"] {
+    // `.d.ts` is deliberately not in this list: stripping it as a unit would
+    // collapse `x.d.ts` onto the same stem as `x.ts`. Stripping only `.ts`
+    // leaves `x.d.ts` as `x.d`, distinct from `x.ts`'s `x`.
+    for ext in [".tsx", ".ts", ".mts", ".cts", ".jsx", ".js"] {
         if let Some(stem) = path.strip_suffix(ext) {
             return stem;
         }
@@ -95,6 +110,12 @@ pub fn resolve_specifier(specifier: &str, importing_file: &str, unit: &UnitConte
                         return Resolution::File(found);
                     }
                 }
+                // `alias == specifier` names this project's own tsconfig.json
+                // path mapping by construction, exactly as a `.`-prefixed
+                // specifier does. A miss here is our bug, not a third-party
+                // import, and must stay Unresolved rather than fall through
+                // to External and go uncounted.
+                return Resolution::Unresolved;
             }
             continue;
         };
@@ -110,6 +131,10 @@ pub fn resolve_specifier(specifier: &str, importing_file: &str, unit: &UnitConte
                 return Resolution::File(found);
             }
         }
+        // The specifier matched a declared alias pattern; every target
+        // missing is a broken alias in this project, not a third-party
+        // import, so it must be counted rather than silently ignored.
+        return Resolution::Unresolved;
     }
 
     if (!unit.ts.base_url.is_empty() || !unit.module_base.is_empty())
@@ -123,10 +148,14 @@ pub fn resolve_specifier(specifier: &str, importing_file: &str, unit: &UnitConte
 
 /// Join a unit-relative path onto the module base (`baseUrl`).
 fn with_base(path: &str, unit: &UnitContext) -> String {
-    if unit.module_base.is_empty() {
+    // Defensive against a trailing `/` on `module_base` for the same reason
+    // as `strip_module_base`: a doubled slash matches no indexed file and
+    // silently drops every alias in the unit.
+    let base = unit.module_base.trim_end_matches('/');
+    if base.is_empty() {
         path.to_string()
     } else {
-        format!("{}/{path}", unit.module_base)
+        format!("{base}/{path}")
     }
 }
 
@@ -226,11 +255,16 @@ mod tests {
     }
 
     #[test]
-    fn an_index_file_names_its_directory() {
+    fn an_index_file_keeps_its_own_segment() {
+        // Not collapsed onto its directory's identity: a unit can index both
+        // `billing.ts` and `billing/index.ts` at once (see
+        // `a_file_wins_over_a_directory_of_the_same_name` below), and
+        // collapsing the latter onto `billing` would merge two distinct
+        // files' definitions and edges into one node.
         let c = ctx(&["src/billing/index.ts"], "src", &[]);
         assert_eq!(
             module_path("src/billing/index.ts", &c),
-            "typescript:myapp::billing"
+            "typescript:myapp::billing::index"
         );
     }
 
@@ -402,6 +436,107 @@ mod tests {
         assert_eq!(
             resolve_specifier("../util", "a.ts", &c),
             Resolution::Unresolved
+        );
+    }
+
+    // ─── alias miss is our bug, not a third party (fix round 1, finding 2) ──
+
+    #[test]
+    fn a_wildcard_alias_that_matches_but_misses_every_target_is_unresolved() {
+        // `@app/gone` matches the declared `@app/*` pattern — it names
+        // something in this project by construction — so a miss is our bug,
+        // not a third-party import, and must stay counted.
+        let c = ctx(
+            &["src/a.ts", "src/app/billing.ts"],
+            "src",
+            &[("@app/*", &["app/*"])],
+        );
+        assert_eq!(
+            resolve_specifier("@app/gone", "src/a.ts", &c),
+            Resolution::Unresolved
+        );
+    }
+
+    #[test]
+    fn an_exact_alias_that_matches_but_misses_every_target_is_unresolved() {
+        let c = ctx(&["src/a.ts"], "src", &[("@shim", &["shims/shim"])]);
+        assert_eq!(
+            resolve_specifier("@shim", "src/a.ts", &c),
+            Resolution::Unresolved
+        );
+    }
+
+    // ─── module_path is injective over the file set (fix round 1, finding 3) ──
+
+    #[test]
+    fn distinct_files_never_share_a_module_identity() {
+        let files = [
+            "src/x.ts",
+            "src/x.d.ts",
+            "src/billing.ts",
+            "src/billing/index.ts",
+        ];
+        let c = ctx(&files, "src", &[]);
+        let mut seen = std::collections::BTreeSet::new();
+        for file in files {
+            let id = module_path(file, &c);
+            assert!(
+                seen.insert(id.clone()),
+                "{file} collided with an earlier file onto {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_d_ts_file_is_distinct_from_its_ts_counterpart() {
+        let c = ctx(&["src/x.ts", "src/x.d.ts"], "src", &[]);
+        assert_ne!(module_path("src/x.ts", &c), module_path("src/x.d.ts", &c));
+    }
+
+    #[test]
+    fn a_directory_index_is_distinct_from_a_same_named_file() {
+        let c = ctx(&["src/billing.ts", "src/billing/index.ts"], "src", &[]);
+        assert_ne!(
+            module_path("src/billing.ts", &c),
+            module_path("src/billing/index.ts", &c)
+        );
+    }
+
+    // ─── trailing slash from an empty baseUrl (fix round 1, finding 1) ──────
+
+    #[test]
+    fn a_nested_unit_with_declared_paths_and_no_base_url_resolves_aliases() {
+        use crate::graph::unit::UnitMap;
+        use tempfile::TempDir;
+
+        let d = TempDir::new().expect("tempdir");
+        let write = |rel: &str, body: &str| {
+            let p = d.path().join(rel);
+            std::fs::create_dir_all(p.parent().expect("parent")).expect("mkdir");
+            std::fs::write(p, body).expect("write");
+        };
+        write("packages/web/package.json", r#"{"name": "web"}"#);
+        write(
+            "packages/web/tsconfig.json",
+            r#"{"compilerOptions": {"paths": {"@app/*": ["app/*"]}}}"#,
+        );
+        write("packages/web/a.ts", "");
+        write("packages/web/app/billing.ts", "");
+
+        let map = UnitMap::discover(d.path());
+        let ctx = map.context_for("packages/web/a.ts");
+
+        // No leaked root: an empty baseUrl must not leave a trailing slash
+        // in module_base for with_base/strip_module_base to trip over.
+        assert_eq!(ctx.module_base, "packages/web");
+
+        assert_eq!(
+            resolve_specifier("@app/billing", "packages/web/a.ts", &ctx),
+            Resolution::File("packages/web/app/billing.ts".to_string())
+        );
+        assert_eq!(
+            module_path("packages/web/app/billing.ts", &ctx),
+            "typescript:web::app::billing"
         );
     }
 }
