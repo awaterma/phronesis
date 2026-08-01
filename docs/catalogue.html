@@ -1290,8 +1290,8 @@
   <div class="rule-content">
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">structural</span></div>
     <h3 class="rule-id">warn-untested-risky-call</h3>
-    <p class="rule-summary">`?func` (in ?file) calls `?api`, which can panic, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged.</p>
-    <div class="rule-body"><code>edited_file + file_type + defines_fn + calls_api + untested</code></div>
+    <p class="rule-summary">`?func` (in ?file) calls a panicking API from the unwrap/expect/panic/todo/unimplemented family, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged.</p>
+    <div class="rule-body"><code>edited_file + file_type + defines_fn + (calls_api | calls_api | calls_api | calls_api | calls_api) + untested</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="warn-import-cycle">
@@ -1310,15 +1310,6 @@
     <h3 class="rule-id">warn-ts-untested-risky-call</h3>
     <p class="rule-summary">`?func` uses a non-null assertion (`!`) and has no direct test. `!` tells the compiler a value cannot be null and produces no runtime check, so when the assumption is wrong the failure surfaces later and elsewhere, usually as a TypeError. Add a test that exercises the null case, or narrow the type so the assertion is unnecessary.</p>
     <div class="rule-body"><code>edited_file + file_type + defines_fn + calls_api + untested</code></div>
-  </div>
-</article>
-<article class="rule" data-level="warn" id="warn-ts-import-cycle">
-  <div class="rule-mark" aria-hidden="true">!</div>
-  <div class="rule-content">
-    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">structural</span></div>
-    <h3 class="rule-id">warn-ts-import-cycle</h3>
-    <p class="rule-summary">Module `?module` is part of import cycle `?cycle`. Mutually importing modules can't be understood, tested, or bundled independently, and the cycle tends to attract more coupling over time. Move the shared items into a third module both can depend on.</p>
-    <div class="rule-body"><code>edited_file + declares_module + in_cycle</code></div>
   </div>
 </article>
 </section>

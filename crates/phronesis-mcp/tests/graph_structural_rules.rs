@@ -459,6 +459,77 @@ fn a_mixed_language_repository_yields_one_graph_per_language() {
     );
 }
 
+// ─── risky-call rules stay scoped to their own language ──────────────
+//
+// `calls_api` is not language-scoped by itself — both extractors write to
+// it, Rust with `unwrap`/`expect`/`panic`/`todo`/`unimplemented`, TypeScript
+// with `non_null_assertion`. Before this fix `warn-untested-risky-call` left
+// its `?api` argument unconstrained, so it matched TypeScript's
+// `non_null_assertion` too and fired its Rust-flavoured "can panic" message
+// on TypeScript files, alongside the correct `warn-ts-untested-risky-call`
+// warning. These tests pin one warning per language, so a third language
+// reusing `calls_api` without its own watchlist constraint cannot silently
+// reintroduce the collision.
+
+/// A project with an untested, non-null-asserting TypeScript function and an
+/// untested, unwrapping Rust function side by side.
+fn mixed_language_risky_project() -> TempDir {
+    let d = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(d.path().join("src")).expect("mkdir src");
+    std::fs::write(d.path().join("package.json"), r#"{"name": "myapp"}"#).expect("package.json");
+    std::fs::write(
+        d.path().join("src/billing.ts"),
+        "export function charge(o?: { total: number }) { return o!.total }\n",
+    )
+    .expect("ts");
+    std::fs::write(d.path().join("src/risky.rs"), RISKY_SOURCE).expect("rust");
+
+    let status = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(d.path())
+        .args(["init", "--packs", "structural", "."])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("run init");
+    assert!(status.success(), "init failed");
+    rebuild_graph(d.path());
+    d
+}
+
+#[test]
+fn a_typescript_file_fires_only_the_typescript_risky_call_rule() {
+    let d = mixed_language_risky_project();
+    let (code, stderr) = pre_check_file(d.path(), "src/billing.ts");
+    assert_eq!(code, 1, "{stderr}");
+    assert_eq!(
+        stderr.matches("WARNING").count(),
+        1,
+        "exactly one warning expected, not the Rust rule firing too: {stderr}"
+    );
+    assert!(stderr.contains("non-null assertion"), "{stderr}");
+    assert!(
+        !stderr.contains("panicking API"),
+        "the Rust risky-call rule must not fire on a TypeScript file: {stderr}"
+    );
+}
+
+#[test]
+fn a_rust_file_fires_only_the_rust_risky_call_rule() {
+    let d = mixed_language_risky_project();
+    let (code, stderr) = pre_check_file(d.path(), "src/risky.rs");
+    assert_eq!(code, 1, "{stderr}");
+    assert_eq!(
+        stderr.matches("WARNING").count(),
+        1,
+        "exactly one warning expected, not the TypeScript rule firing too: {stderr}"
+    );
+    assert!(stderr.contains("panicking API"), "{stderr}");
+    assert!(
+        !stderr.contains("non-null assertion"),
+        "the TypeScript risky-call rule must not fire on a Rust file: {stderr}"
+    );
+}
+
 /// Run the real post-check hook over an Edit of `rel`.
 fn post_check(dir: &Path, rel: &str) -> i32 {
     let payload = format!(
