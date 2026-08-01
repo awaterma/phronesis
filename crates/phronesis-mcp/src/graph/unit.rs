@@ -28,6 +28,9 @@ pub const LANG_RUST: &str = "rust";
 /// Language tag for the Python extractor.
 pub const LANG_PYTHON: &str = "python";
 
+/// Language tag for the TypeScript extractor.
+pub const LANG_TYPESCRIPT: &str = "typescript";
+
 /// The language that owns a source file, by extension. A file in no known
 /// language belongs to no unit — better to name nothing than to name it under
 /// whichever manifest happens to sit nearest.
@@ -35,6 +38,7 @@ pub fn lang_of_path(file_rel: &str) -> Option<&'static str> {
     match file_rel.rsplit_once('.') {
         Some((_, "rs")) => Some(LANG_RUST),
         Some((_, "py")) => Some(LANG_PYTHON),
+        Some((_, "ts" | "tsx" | "mts" | "cts")) => Some(LANG_TYPESCRIPT),
         _ => None,
     }
 }
@@ -49,7 +53,7 @@ pub const UNNAMED: &str = "crate";
 /// inheriting Rust's.
 fn unnamed_name(lang: &str) -> &'static str {
     match lang {
-        LANG_PYTHON => "project",
+        LANG_PYTHON | LANG_TYPESCRIPT => "project",
         _ => UNNAMED,
     }
 }
@@ -1119,5 +1123,24 @@ mod python_layout_tests {
         let m = UnitMap::discover(d.path());
         assert_eq!(m.context_for("src/pyside/utils.py").id, "python:pyside");
         assert_eq!(m.context_for("tests/test_utils.py").id, "python:pyside");
+    }
+}
+
+#[cfg(test)]
+mod typescript_tests {
+    use super::*;
+
+    #[test]
+    fn typescript_extensions_map_to_the_typescript_language() {
+        for path in ["a.ts", "a.tsx", "a.mts", "a.cts"] {
+            assert_eq!(lang_of_path(path), Some(LANG_TYPESCRIPT), "{path}");
+        }
+    }
+
+    #[test]
+    fn an_unclaimed_typescript_file_falls_back_to_a_typescript_namespace() {
+        // The fallback follows the file's own language, as Python's does.
+        let m = UnitMap::default();
+        assert_eq!(m.context_for("scripts/tool.ts").id, "typescript:project");
     }
 }
