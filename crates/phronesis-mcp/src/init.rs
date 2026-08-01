@@ -1891,6 +1891,32 @@ fn structural_rules() -> Value {
                     {"in_cycle": ["?module", "?cycle"]}
                 ],
                 "then": {"warn": "Module `?module` is part of import cycle `?cycle`. Mutually importing modules can't be understood, tested, or extracted independently, and the cycle tends to attract more coupling over time. Move the shared items into a third module both can depend on."}
+            },
+            {
+                "id": "warn-ts-untested-risky-call",
+                "phase": "pre",
+                "priority": 20,
+                "audit": true,
+                "when": [
+                    {"edited_file": "?file"},
+                    {"file_type": ["?file", "production"]},
+                    {"defines_fn": ["?file", "?func"]},
+                    {"calls_api": ["?func", "non_null_assertion"]},
+                    {"untested": ["?func"]}
+                ],
+                "then": {"warn": "`?func` uses a non-null assertion (`!`) and has no direct test. `!` tells the compiler a value cannot be null and produces no runtime check, so when the assumption is wrong the failure surfaces later and elsewhere, usually as a TypeError. Add a test that exercises the null case, or narrow the type so the assertion is unnecessary."}
+            },
+            {
+                "id": "warn-ts-import-cycle",
+                "phase": "pre",
+                "priority": 20,
+                "audit": true,
+                "when": [
+                    {"edited_file": "?file"},
+                    {"declares_module": ["?file", "?module"]},
+                    {"in_cycle": ["?module", "?cycle"]}
+                ],
+                "then": {"warn": "Module `?module` is part of import cycle `?cycle`. Mutually importing modules can't be understood, tested, or bundled independently, and the cycle tends to attract more coupling over time. Move the shared items into a third module both can depend on."}
             }
         ]
     })
@@ -2265,6 +2291,19 @@ mod tests {
             .collect();
         assert!(ids.contains(&"warn-untested-risky-call".to_string()));
         assert!(ids.contains(&"warn-import-cycle".to_string()));
+    }
+
+    #[test]
+    fn structural_rules_cover_typescript() {
+        let ids: Vec<String> = structural_rules_vec()
+            .iter()
+            .filter_map(|r| r["id"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            ids.contains(&"warn-ts-untested-risky-call".to_string()),
+            "{ids:?}"
+        );
+        assert!(ids.contains(&"warn-ts-import-cycle".to_string()), "{ids:?}");
     }
 
     #[test]
