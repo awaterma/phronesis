@@ -383,6 +383,8 @@ mod tests {
             id: "python:pyside".to_string(),
             module_base: "src".to_string(),
             siblings: BTreeMap::new(),
+            ts: crate::graph::unit::TsConfig::default(),
+            files: Vec::new(),
         }
     }
 
@@ -595,6 +597,8 @@ mod tests {
             id: "python:app".to_string(),
             module_base: "libs/app/src".to_string(),
             siblings: BTreeMap::from([("core".to_string(), "python:core".to_string())]),
+            ts: crate::graph::unit::TsConfig::default(),
+            files: Vec::new(),
         };
         let out = extract_python(
             "libs/app/src/app/__init__.py",
@@ -610,6 +614,8 @@ mod tests {
             id: "python:app".to_string(),
             module_base: "libs/app/src".to_string(),
             siblings: BTreeMap::from([("core".to_string(), "python:core".to_string())]),
+            ts: crate::graph::unit::TsConfig::default(),
+            files: Vec::new(),
         };
         let out = extract_python(
             "libs/app/src/app/__init__.py",

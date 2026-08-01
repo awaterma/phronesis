@@ -533,6 +533,7 @@ pub fn extract_rust(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::graph::unit::TsConfig;
     use std::collections::BTreeMap;
 
     fn edges_of(x: &Extracted, p: &str) -> Vec<Vec<String>> {
@@ -591,6 +592,8 @@ mod tests {
             id: "rust:app#bench:sync".to_string(),
             module_base: "crates/app/benches/sync".to_string(),
             siblings: BTreeMap::new(),
+            ts: TsConfig::default(),
+            files: Vec::new(),
         };
         assert_eq!(
             module_path("crates/app/benches/sync.rs", &unit),
@@ -606,6 +609,8 @@ mod tests {
             id: "rust:app#test:hooks".to_string(),
             module_base: "crates/app/tests/hooks".to_string(),
             siblings: BTreeMap::new(),
+            ts: TsConfig::default(),
+            files: Vec::new(),
         };
         assert_eq!(
             module_path("crates/app/tests/helper.rs", &unit),
@@ -619,6 +624,8 @@ mod tests {
             id: "rust:app".to_string(),
             module_base: "crates/app/src/lib".to_string(),
             siblings: BTreeMap::new(),
+            ts: TsConfig::default(),
+            files: Vec::new(),
         };
         assert_eq!(module_path("crates/app/src/lib.rs", &unit), "rust:app");
         assert_eq!(
@@ -872,6 +879,8 @@ mod tests {
             id: "rust:app".to_string(),
             module_base: "crates/app/src/lib".to_string(),
             siblings: BTreeMap::from([("core".to_string(), "rust:core-lib".to_string())]),
+            ts: TsConfig::default(),
+            files: Vec::new(),
         };
         let out = extract_rust(
             "crates/app/src/a.rs",

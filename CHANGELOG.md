@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.24.0] - 2026-07-31
+
+### Added
+
+- **TypeScript structural code graphs.** The graph now discovers npm package
+  units and extracts `.ts`, `.tsx`, `.mts`, and `.cts` modules, functions,
+  imports, direct test-call coverage, and non-null assertions. Resolution
+  supports relative specifiers, `index` modules, `tsconfig.json` `baseUrl`,
+  and `paths` aliases while excluding `node_modules` unconditionally.
+- **TypeScript structural warnings.** `warn-import-cycle` applies to resolved
+  TypeScript module cycles, and `warn-untested-risky-call` uses the narrow `!`
+  watchlist to report untested unchecked type assumptions. Both remain
+  advisory.
+
+### Limitations
+
+- TypeScript project references, JavaScript extraction, and monorepo
+  cross-unit resolution are not included. Unresolved relative and cross-unit
+  imports are counted as skipped evidence rather than silently treated as a
+  clean graph.
+- Real-corpus validation against tough-cookie measured 1,221 base edges, 54
+  derived edges, 105 resolved imports, and zero skipped items across 47 files.
+
 ## [0.23.1] - 2026-07-30
 
 ### Fixed

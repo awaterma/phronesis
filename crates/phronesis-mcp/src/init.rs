@@ -1875,10 +1875,16 @@ fn structural_rules() -> Value {
                     {"edited_file": "?file"},
                     {"file_type": ["?file", "production"]},
                     {"defines_fn": ["?file", "?func"]},
-                    {"calls_api": ["?func", "?api"]},
+                    {"or": [
+                        {"calls_api": ["?func", "unwrap"]},
+                        {"calls_api": ["?func", "expect"]},
+                        {"calls_api": ["?func", "panic"]},
+                        {"calls_api": ["?func", "todo"]},
+                        {"calls_api": ["?func", "unimplemented"]}
+                    ]},
                     {"untested": ["?func"]}
                 ],
-                "then": {"warn": "`?func` (in ?file) calls `?api`, which can panic, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged."}
+                "then": {"warn": "`?func` (in ?file) calls a panicking API from the unwrap/expect/panic/todo/unimplemented family, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged."}
             },
             {
                 "id": "warn-import-cycle",
@@ -1891,6 +1897,20 @@ fn structural_rules() -> Value {
                     {"in_cycle": ["?module", "?cycle"]}
                 ],
                 "then": {"warn": "Module `?module` is part of import cycle `?cycle`. Mutually importing modules can't be understood, tested, or extracted independently, and the cycle tends to attract more coupling over time. Move the shared items into a third module both can depend on."}
+            },
+            {
+                "id": "warn-ts-untested-risky-call",
+                "phase": "pre",
+                "priority": 20,
+                "audit": true,
+                "when": [
+                    {"edited_file": "?file"},
+                    {"file_type": ["?file", "production"]},
+                    {"defines_fn": ["?file", "?func"]},
+                    {"calls_api": ["?func", "non_null_assertion"]},
+                    {"untested": ["?func"]}
+                ],
+                "then": {"warn": "`?func` uses a non-null assertion (`!`) and has no direct test. `!` tells the compiler a value cannot be null and produces no runtime check, so when the assumption is wrong the failure surfaces later and elsewhere, usually as a TypeError. Add a test that exercises the null case, or narrow the type so the assertion is unnecessary."}
             }
         ]
     })
@@ -2268,6 +2288,27 @@ mod tests {
     }
 
     #[test]
+    fn structural_rules_cover_typescript() {
+        // Only the risky-call rule is TypeScript-specific: `!` and its advice
+        // differ from Rust's watchlist. Import cycles are language-neutral,
+        // so `warn-import-cycle` alone covers TypeScript modules too — a
+        // `warn-ts-import-cycle` twin would just double-report every cycle.
+        let ids: Vec<String> = structural_rules_vec()
+            .iter()
+            .filter_map(|r| r["id"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            ids.contains(&"warn-ts-untested-risky-call".to_string()),
+            "{ids:?}"
+        );
+        assert!(ids.contains(&"warn-import-cycle".to_string()), "{ids:?}");
+        assert!(
+            !ids.contains(&"warn-ts-import-cycle".to_string()),
+            "the cycle rule is language-neutral and must not be duplicated per language: {ids:?}"
+        );
+    }
+
+    #[test]
     fn structural_rules_only_warn() {
         // Spec §5.3: nothing blocks until a second corpus is measured. A
         // heuristic that has never been measured must not be able to stop work.
@@ -2301,19 +2342,30 @@ mod tests {
     #[test]
     fn structural_rules_reference_only_graph_relations() {
         // Every condition must name a relation hydration can supply, or the
-        // rule is dead weight that never matches.
+        // rule is dead weight that never matches. `or` is a DNF wrapper, not
+        // a relation itself — recurse into its branches instead of checking
+        // the literal key "or" against the relation list.
+        fn check(cond: &serde_json::Value, relations: &[&str], rule_id: &str) {
+            let key = cond
+                .as_object()
+                .and_then(|o| o.keys().next().cloned())
+                .expect("condition key");
+            if key == "or" {
+                for branch in cond["or"].as_array().expect("or array") {
+                    check(branch, relations, rule_id);
+                }
+                return;
+            }
+            assert!(
+                relations.contains(&key.as_str()),
+                "rule {rule_id} uses unknown relation {key}"
+            );
+        }
         let relations = crate::graph::hydrate::GRAPH_RELATIONS;
         for rule in structural_rules_vec() {
+            let id = rule["id"].as_str().unwrap_or("?").to_string();
             for cond in rule["when"].as_array().expect("when array") {
-                let key = cond
-                    .as_object()
-                    .and_then(|o| o.keys().next().cloned())
-                    .expect("condition key");
-                assert!(
-                    relations.contains(&key.as_str()),
-                    "rule {} uses unknown relation {key}",
-                    rule["id"]
-                );
+                check(cond, relations, &id);
             }
         }
     }

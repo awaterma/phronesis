@@ -126,13 +126,17 @@ pub fn save_index(path: &Path, index: &Index) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Every Rust file under `root` that the graph should track, as paths
-/// relative to `root`. Honours `.gitignore` so build output and vendored
-/// trees never enter the graph.
+/// Every file under `root`, in a tracked language (Rust, Python,
+/// TypeScript), that the graph should track, as paths relative to `root`.
+/// Honours `.gitignore` so build output and vendored trees never enter the
+/// graph, and prunes `node_modules` unconditionally — `.gitignore` alone
+/// cannot be relied on to exclude it, and `is_tracked` must agree with this
+/// walk or a sensor-recorded file becomes permanent drift.
 fn tracked_files(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for entry in ignore::WalkBuilder::new(root)
         .hidden(true)
+        .filter_entry(|e| e.file_name() != "node_modules")
         .build()
         .flatten()
     {
@@ -142,7 +146,7 @@ fn tracked_files(root: &Path) -> Vec<String> {
         let path = entry.path();
         if !matches!(
             path.extension().and_then(|e| e.to_str()),
-            Some("rs") | Some("py")
+            Some("rs") | Some("py") | Some("ts") | Some("tsx") | Some("mts") | Some("cts")
         ) {
             continue;
         }
@@ -198,19 +202,35 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
 
 /// Every file extension the graph has an extractor for. A file outside this
 /// set is not tracked, not indexed, and not counted as drift.
-pub const TRACKED_EXTENSIONS: &[&str] = &[".rs", ".py"];
+pub const TRACKED_EXTENSIONS: &[&str] = &[".rs", ".py", ".ts", ".tsx", ".mts", ".cts"];
 
+/// Whether `on_save`/`record_from_disk` should index this file.
+///
+/// Must agree with `tracked_files`'s walk, which prunes `node_modules`.
+/// Without the same exclusion here, the sensor can record an index entry for
+/// a path `tracked_files` will never enumerate — a hash `check_freshness`
+/// can then never match, so the file reports as permanent drift until a
+/// manual `rebuild`. Matched by path *component*, not substring, so a
+/// legitimate directory like `my_node_modules_helper` is not excluded.
 fn is_tracked(file_path: &str) -> bool {
+    if Path::new(file_path)
+        .components()
+        .any(|c| c.as_os_str() == "node_modules")
+    {
+        return false;
+    }
     TRACKED_EXTENSIONS.iter().any(|e| file_path.ends_with(e))
 }
 
 /// Route one file to the extractor for its language.
 fn extract_one(rel: &str, content: &str, units: &UnitMap) -> super::extract::Extracted {
     let unit = units.context_for(rel);
-    if rel.ends_with(".py") {
-        super::python::extract_python(rel, content, &unit)
-    } else {
-        extract_rust(rel, content, DEFAULT_WATCHLIST, &unit)
+    match super::unit::lang_of_path(rel) {
+        Some(super::unit::LANG_PYTHON) => super::python::extract_python(rel, content, &unit),
+        Some(super::unit::LANG_TYPESCRIPT) => {
+            super::typescript::extract_typescript(rel, content, &unit)
+        }
+        _ => extract_rust(rel, content, DEFAULT_WATCHLIST, &unit),
     }
 }
 
@@ -351,8 +371,9 @@ fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Full rescan of every tracked Rust file. The recovery path after the graph
-/// has drifted, and the only way edges for deleted files are cleared.
+/// Full rescan of every tracked file (Rust, Python, TypeScript), pruning
+/// `node_modules`. The recovery path after the graph has drifted, and the
+/// only way edges for deleted files are cleared.
 pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     let mut base = Vec::new();
     let mut index = Index::default();
@@ -640,6 +661,31 @@ mod tests {
         assert!(edges(d.path()).is_empty());
     }
 
+    #[test]
+    fn saving_a_typescript_file_writes_its_base_edges() {
+        let d = project();
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "src/billing.ts",
+            "export function charge() { return 1 }\n",
+        );
+        rebuild(d.path()).expect("opt the project into the graph");
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        // No tsconfig.json exists, so there is no baseUrl: `src/` stays part
+        // of the module path (see graph/resolve.rs's `strip_module_base` and
+        // `graph/unit.rs`'s `context_for`, which only strips a unit's
+        // `baseUrl` from the front of a file's path).
+        assert!(
+            names.contains(&"typescript:myapp::src::billing::charge".to_string()),
+            "{names:?}"
+        );
+    }
+
     // ─── the hook entry point ───────────────────────────────────────
 
     #[test]
@@ -826,6 +872,54 @@ mod tests {
         assert!(edges(d.path()).is_empty());
     }
 
+    #[test]
+    fn recording_a_node_modules_file_is_a_no_op() {
+        // `tracked_files` (and thus `rebuild`/`check_freshness`) prunes
+        // `node_modules`. If the sensor recorded an index entry for a path
+        // under it anyway, that hash could never be matched by the walk and
+        // the file would report as drift forever — the exact permanent-
+        // demotion failure the sensor exists to prevent, entering through
+        // `on_save` instead of `rebuild`. `patch-package`, `prisma
+        // generate`, or an agent edit under `node_modules` can all arrive
+        // here through `PostToolUse`.
+        let d = project();
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "src/billing.ts",
+            "export function charge() { return 1 }\n",
+        );
+        rebuild(d.path()).expect("opt the project into the graph");
+
+        write(
+            d.path(),
+            "node_modules/dep/index.ts",
+            "export function vendored() { return 1 }\n",
+        );
+        record_from_disk(d.path(), "node_modules/dep/index.ts");
+
+        let idx = load_index(&index_path(d.path())).expect("load index");
+        assert!(
+            !idx.entries.contains_key("node_modules/dep/index.ts"),
+            "node_modules must never gain an index entry: {:?}",
+            idx.entries.keys().collect::<Vec<_>>()
+        );
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(
+            names.iter().all(|n| !n.contains("vendored")),
+            "node_modules must not be extracted: {names:?}"
+        );
+        assert_eq!(
+            check_freshness(d.path(), &idx),
+            Freshness::Fresh,
+            "a node_modules edit must not be reported as drift"
+        );
+    }
+
     // ─── staleness ──────────────────────────────────────────────────
 
     #[test]
@@ -901,6 +995,68 @@ mod tests {
         write(d.path(), "src/a.rs", "fn f() {}\nfn sneaky() {}");
         rebuild(d.path()).expect("rebuild");
         let idx = load_index(&index_path(d.path())).expect("load");
+        assert_eq!(check_freshness(d.path(), &idx), Freshness::Fresh);
+    }
+
+    #[test]
+    fn rebuild_excludes_node_modules_from_typescript_tracking() {
+        // `tracked_files` drives both `rebuild` and the freshness check. If
+        // `node_modules` is not pruned there too — discovery already prunes
+        // it, but that is a separate walk — `rebuild` would extract from
+        // every dependency's TypeScript, and every one of those files would
+        // then show as drift on every subsequent freshness check.
+        let d = project();
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "src/billing.ts",
+            "export function charge() { return 1 }\n",
+        );
+        write(
+            d.path(),
+            "node_modules/dep/index.ts",
+            "export function vendored() { return 1 }\n",
+        );
+        rebuild(d.path()).expect("rebuild");
+
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(
+            names.iter().all(|n| !n.contains("vendored")),
+            "node_modules must not be extracted: {names:?}"
+        );
+
+        let idx = load_index(&index_path(d.path())).expect("load index");
+        assert!(
+            !idx.entries.keys().any(|k| k.contains("node_modules")),
+            "node_modules must not be indexed: {:?}",
+            idx.entries.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            check_freshness(d.path(), &idx),
+            Freshness::Fresh,
+            "an untracked node_modules file must not be reported as drift"
+        );
+    }
+
+    #[test]
+    fn a_typescript_project_is_fresh_immediately_after_rebuild() {
+        // Adding four new tracked extensions means files that were
+        // previously invisible to `tracked_files` are now tracked. A
+        // TypeScript project must report Fresh right after `rebuild`, not
+        // immediately show drift.
+        let d = project();
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "src/billing.ts",
+            "export function charge() { return 1 }\n",
+        );
+        rebuild(d.path()).expect("rebuild");
+        let idx = load_index(&index_path(d.path())).expect("load index");
         assert_eq!(check_freshness(d.path(), &idx), Freshness::Fresh);
     }
 

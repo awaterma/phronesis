@@ -15,8 +15,10 @@ pub mod hydrate;
 pub mod model;
 pub mod python;
 pub mod query;
+pub mod resolve;
 pub mod store;
 pub mod sync;
+pub mod typescript;
 pub mod unit;
 
 pub use model::Edge;
