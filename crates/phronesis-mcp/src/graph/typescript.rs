@@ -75,8 +75,21 @@ impl Sensor<'_> {
                 }
                 return;
             }
-            "class_declaration" => {
+            // `class_declaration` is `class Foo {}`; `class` is a class
+            // *expression* (`const C = class {}`, `class Named {}` used as a
+            // value). Both carry the same `name`/`body` fields, and both
+            // must push a scope before descending — otherwise their methods
+            // land in whatever scope the walk was already in, colliding with
+            // an unrelated same-named method elsewhere in the file (the
+            // object-literal/class-expression collision below).
+            "class_declaration" | "class" => {
                 let Some(name) = node.child_by_field_name("name") else {
+                    // An anonymous class expression reached here (not via
+                    // the `variable_declarator` or `export_statement`
+                    // special cases below, which supply a name from their
+                    // own binding) has no identity to qualify its methods
+                    // with. Counted rather than silently flattened into the
+                    // caller's scope.
                     self.skipped += 1;
                     return;
                 };
@@ -103,18 +116,80 @@ impl Sensor<'_> {
                 // looking as though they define nothing.
                 let name = node.child_by_field_name("name");
                 let value = node.child_by_field_name("value");
-                if let (Some(name), Some(value)) = (name, value)
-                    && is_function_node(value.kind())
-                {
-                    let qualified = self.qualify(scope, text(name, self.source));
-                    let file = self.file_path.to_string();
-                    self.emit("defines_fn", &[&file, &qualified]);
-                    return;
+                if let (Some(name), Some(value)) = (name, value) {
+                    if is_function_node(value.kind()) {
+                        let qualified = self.qualify(scope, text(name, self.source));
+                        let file = self.file_path.to_string();
+                        self.emit("defines_fn", &[&file, &qualified]);
+                        return;
+                    }
+                    // `const obj = { m() {} }` and `const C = class { m() {} }`:
+                    // neither an object literal nor an anonymous class
+                    // expression has an identity of its own, so without this
+                    // the `method_definition` arm below would qualify `m` by
+                    // whatever scope happened to be active at this point in
+                    // the walk — silently merging it with an unrelated `m`
+                    // defined elsewhere in the file. The binding name is the
+                    // only identity available, so borrow it.
+                    if matches!(value.kind(), "class" | "object") {
+                        let mut inner = scope.to_vec();
+                        inner.push(text(name, self.source).to_string());
+                        // `class` has its methods under a `class_body` field;
+                        // an object literal's `method_definition`s are direct
+                        // children of the object node itself.
+                        let target = value.child_by_field_name("body").unwrap_or(value);
+                        self.walk_children(target, &inner);
+                        return;
+                    }
                 }
             }
             "import_statement" => {
                 self.import(node);
                 return;
+            }
+            "export_statement" => {
+                // A re-export (`export … from "…"`) carries a `source`
+                // field exactly like `import_statement` — this covers
+                // `export * from`, `export { a } from`, `export type { T }
+                // from`, and `export * as ns from`. A barrel `index.ts`
+                // built entirely from these would otherwise emit no
+                // `imports` edges at all and look like a leaf instead of a
+                // hub, silently hiding any cycle routed through it.
+                if node.child_by_field_name("source").is_some() {
+                    self.import(node);
+                    return;
+                }
+                // `export default function foo() {}` / `export default class
+                // Foo {}` carry their declaration under a `declaration`
+                // field and already have their own name, so the fallthrough
+                // walk below reaches the ordinary `function_declaration` /
+                // `class_declaration` arms and needs nothing extra here.
+                //
+                // `export default function () {}` / `export default class {}`
+                // / `export default () => …` are anonymous — they carry
+                // their value under a `value` field instead, with no name of
+                // their own anywhere, unlike every other case this
+                // extractor handles. A module's default export is one
+                // addressable thing per file, so `default` is a defensible
+                // identity for it; dropping it silently (the alternative)
+                // would undercount the single most common export shape in
+                // React components and route handlers.
+                if let Some(value) = node.child_by_field_name("value") {
+                    if is_function_node(value.kind()) {
+                        let qualified = self.qualify(scope, "default");
+                        let file = self.file_path.to_string();
+                        self.emit("defines_fn", &[&file, &qualified]);
+                        return;
+                    }
+                    if value.kind() == "class" {
+                        let mut inner = scope.to_vec();
+                        inner.push("default".to_string());
+                        if let Some(body) = value.child_by_field_name("body") {
+                            self.walk_children(body, &inner);
+                        }
+                        return;
+                    }
+                }
             }
             _ => {}
         }
@@ -128,7 +203,16 @@ impl Sensor<'_> {
         }
     }
 
-    /// Resolve an `import … from "…"` to a module edge.
+    /// Resolve an `import … from "…"` or re-export `export … from "…"` to a
+    /// module edge.
+    ///
+    /// Dynamic `import('./y')` and `import x = require('./y')` are not
+    /// tracked: the first is a call expression (no `import_statement` /
+    /// `export_statement` node to hang the edge off), and the second is
+    /// CommonJS interop rare enough in fresh TypeScript that the walker
+    /// complexity to special-case it isn't justified yet. Both are omitted
+    /// by choice, not by oversight — a future pass can add them if they
+    /// turn out to matter.
     fn import(&mut self, node: Node) {
         let Some(source_node) = node.child_by_field_name("source") else {
             return;
@@ -316,6 +400,121 @@ mod tests {
             &ctx(&["src/billing.ts"]),
         );
         assert!(edges_of(&out, "defines_fn").is_empty());
+    }
+
+    // ─── imports (including re-exports) ──────────────────────────────
+
+    #[test]
+    fn a_star_re_export_is_an_import() {
+        let out = extract_typescript(
+            "src/index.ts",
+            "export * from './a'\n",
+            &ctx(&["src/index.ts", "src/a.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "typescript:myapp::index".to_string(),
+                "typescript:myapp::a".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_named_re_export_is_an_import() {
+        let out = extract_typescript(
+            "src/index.ts",
+            "export { b } from './b'\n",
+            &ctx(&["src/index.ts", "src/b.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "typescript:myapp::index".to_string(),
+                "typescript:myapp::b".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_type_only_re_export_is_an_import() {
+        let out = extract_typescript(
+            "src/index.ts",
+            "export type { T } from './c'\n",
+            &ctx(&["src/index.ts", "src/c.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "typescript:myapp::index".to_string(),
+                "typescript:myapp::c".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_barrel_file_of_only_re_exports_is_not_a_clean_leaf() {
+        // The regression this whole finding is about: without re-export
+        // support, the single most common index.ts shape reported zero
+        // dependencies and skipped=0 — a clean leaf rather than a hub.
+        let out = extract_typescript(
+            "src/index.ts",
+            "export * from './a'\nexport { b } from './b'\n",
+            &ctx(&["src/index.ts", "src/a.ts", "src/b.ts"]),
+        );
+        assert_eq!(edges_of(&out, "imports").len(), 2);
+    }
+
+    // ─── default exports ───────────────────────────────────────────────
+
+    #[test]
+    fn an_anonymous_default_exported_function_is_a_defined_function() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "export default function () { return 1 }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "defines_fn")[0][1],
+            "typescript:myapp::billing::default"
+        );
+    }
+
+    #[test]
+    fn an_anonymous_default_exported_class_method_is_qualified_by_default() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "export default class { charge() { return 1 } }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "defines_fn")[0][1],
+            "typescript:myapp::billing::default::charge"
+        );
+    }
+
+    // ─── object-literal / class-expression method identity ────────────
+
+    #[test]
+    fn object_and_class_expression_methods_do_not_collide_with_a_free_function() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "function m() {}\nconst obj = { m() {} };\nconst C = class { m() {} };\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        let mut identities: Vec<String> = edges_of(&out, "defines_fn")
+            .into_iter()
+            .map(|a| a[1].clone())
+            .collect();
+        identities.sort();
+        assert_eq!(
+            identities,
+            vec![
+                "typescript:myapp::billing::C::m".to_string(),
+                "typescript:myapp::billing::m".to_string(),
+                "typescript:myapp::billing::obj::m".to_string(),
+            ]
+        );
     }
 
     // ─── guards ─────────────────────────────────────────────────────
