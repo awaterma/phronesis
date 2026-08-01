@@ -264,8 +264,24 @@ impl Sensor<'_> {
                         for callee in self.called_names(callback) {
                             self.emit("tested_by", &[&callee, &qualified]);
                         }
+                    } else if self.has_reference_callback(node) {
+                        // `it('t', handler)` — a named-reference callback.
+                        // We cannot follow a reference to know what it
+                        // calls, so this is a real analysis gap, not a
+                        // clean "no coverage" — counted rather than
+                        // silently dropped. `it.todo('t')`, which has no
+                        // second argument at all, is not a gap — it is
+                        // never expected to have a callback — so it does
+                        // not land here.
+                        self.skipped += 1;
                     }
-                    return;
+                    // Fall through to the ordinary descent below: a helper
+                    // defined inside a test callback (`const h = () => ...`,
+                    // `class C { m() {} }`) still gets its own `defines_fn`
+                    // edge, exactly as it would anywhere else in the file —
+                    // preserving Task 6's contract. This is harmless for
+                    // `warn-untested-risky-call`, which gates on
+                    // `file_type(?file, "production")`.
                 }
             }
             _ => {}
@@ -322,10 +338,25 @@ impl Sensor<'_> {
     /// - `it.each([...])(...)` / `test.each([...])(...)` — the outer call's
     ///   `function` field is itself a call expression (`it.each([...])`),
     ///   one level removed from the plain and `.only` shapes; still counts.
+    /// - `it.concurrent(...)` / `test.concurrent(...)` — runs in parallel
+    ///   with other concurrent tests, but still runs; counts.
+    /// - `it.failing(...)` — jest's "expected to fail" marker; the
+    ///   callback still executes (the test passes iff it throws), so it is
+    ///   still coverage.
+    /// - `test.sequential(...)` — vitest's opt-out of `--sequence.concurrent`;
+    ///   still runs; counts.
+    /// - `it.todo(...)` / `test.todo(...)` — a placeholder with (by
+    ///   convention) no callback at all. Recognized as a test invocation
+    ///   for consistency, but since there is nothing to call,
+    ///   `test_callback` finds nothing and no `tested_by` edge results
+    ///   either way.
     ///
     /// `it.skip(...)` / `test.skip(...)` deliberately return `false`: a
     /// skipped test never runs, so a call inside it is not evidence
-    /// anything was verified.
+    /// anything was verified. This is the one case among the member-call
+    /// forms above where under-counting (treating it as "no coverage") is
+    /// the *safe* direction — the opposite of every other form here, where
+    /// under-counting would produce a false "untested" accusation.
     fn is_test_invocation(&self, function: Node) -> bool {
         match function.kind() {
             "identifier" => matches!(text(function, self.source), "it" | "test"),
@@ -337,7 +368,10 @@ impl Sensor<'_> {
                     return false;
                 };
                 matches!(text(object, self.source), "it" | "test")
-                    && matches!(text(property, self.source), "only" | "each")
+                    && matches!(
+                        text(property, self.source),
+                        "only" | "each" | "concurrent" | "failing" | "sequential" | "todo"
+                    )
             }
             "call_expression" => function
                 .child_by_field_name("function")
@@ -361,11 +395,19 @@ impl Sensor<'_> {
         let first = args
             .children(&mut cursor)
             .find(|c| matches!(c.kind(), "string" | "template_string"))?;
-        Some(
-            text(first, self.source)
-                .trim_matches(['"', '\'', '`'])
-                .to_string(),
-        )
+        // Trim only the specific delimiter this literal actually opened
+        // with — `trim_matches` against the whole quote set would eat a
+        // trailing `"` that's part of the title itself (`'has "quotes"'`
+        // would lose its own closing `"`).
+        let raw = text(first, self.source);
+        let title = match raw.chars().next() {
+            Some(delim @ ('"' | '\'' | '`')) => raw
+                .strip_prefix(delim)
+                .and_then(|s| s.strip_suffix(delim))
+                .unwrap_or(raw),
+            _ => raw,
+        };
+        Some(title.to_string())
     }
 
     /// The callback function passed to a test invocation — the arrow
@@ -376,6 +418,21 @@ impl Sensor<'_> {
         let mut cursor = args.walk();
         args.children(&mut cursor)
             .find(|c| is_function_node(c.kind()))
+    }
+
+    /// True when a test invocation's arguments contain a real (named)
+    /// second argument that is not an inline function — i.e. a callback
+    /// passed by reference (`it('t', handler)`) rather than inline. Used
+    /// only after `test_callback` has already failed to find an inline
+    /// callback, to tell that gap apart from `it.todo('t')`, which has no
+    /// second argument at all and is not a gap.
+    fn has_reference_callback(&self, node: Node) -> bool {
+        let Some(args) = node.child_by_field_name("arguments") else {
+            return false;
+        };
+        let mut cursor = args.walk();
+        args.children(&mut cursor)
+            .any(|c| c.is_named() && !matches!(c.kind(), "string" | "template_string"))
     }
 
     /// Bare names of functions invoked in a body. Resolved by short name in
@@ -1002,6 +1059,122 @@ mod tests {
                 "typescript:myapp::billing::outer".to_string(),
                 "non_null_assertion".to_string()
             ]]
+        );
+    }
+
+    // ─── fix round 1: wider tested_by recognition ──────────────────────
+
+    #[test]
+    fn a_concurrent_test_counts() {
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "test.concurrent('t', () => { f() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "f");
+    }
+
+    #[test]
+    fn a_failing_test_counts() {
+        // `it.failing` still executes its callback (the test passes iff it
+        // throws) — the callback running is what matters for coverage.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it.failing('t', () => { f() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "f");
+    }
+
+    #[test]
+    fn a_sequential_test_counts() {
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "test.sequential('t', () => { f() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "f");
+    }
+
+    #[test]
+    fn a_todo_test_has_no_callback_and_records_no_coverage_or_skip() {
+        // `it.todo('t')` is a placeholder by convention — no callback is
+        // ever expected, so this is not an analysis gap and must not
+        // inflate `skipped`.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it.todo('not written yet')\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert!(edges_of(&out, "tested_by").is_empty());
+        assert_eq!(out.skipped, 0);
+    }
+
+    #[test]
+    fn a_reference_callback_records_no_coverage_but_is_counted_as_skipped() {
+        // `it('t', handler)` — a named-reference callback. We cannot
+        // follow the reference to know what it calls, so this must not
+        // silently look like a clean "no coverage" the way `it.todo` does.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it('t', handler)\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert!(edges_of(&out, "tested_by").is_empty());
+        assert_eq!(out.skipped, 1);
+    }
+
+    #[test]
+    fn a_quoted_title_containing_the_opposite_quote_char_keeps_its_closing_char() {
+        // Regression: `trim_matches` against the whole quote set ate the
+        // title's own trailing `"` in `'has "quotes"'`. Only the specific
+        // delimiter the literal opened with should be stripped.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it('has \"quotes\"', () => { charge() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "tested_by"),
+            vec![vec![
+                "charge".to_string(),
+                "typescript:myapp::billing.test::has \"quotes\"".to_string()
+            ]]
+        );
+    }
+
+    // ─── fix round 1: defines_fn survives inside a test callback ───────
+
+    #[test]
+    fn a_helper_defined_inside_a_test_callback_still_gets_a_defines_fn_edge() {
+        // Regression: the `call_expression` arm used to `return` after
+        // emitting `tested_by`, skipping the ordinary descent into the
+        // callback's own body — silently losing `defines_fn` for anything
+        // defined inside a test (Task 6's contract, which this task must
+        // not change). Harmless once restored: `file_type` for this file
+        // is "test", and `warn-untested-risky-call` gates on
+        // `file_type(?file, "production")`.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it('t', () => { const h = () => g(); h() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "defines_fn")[0][1],
+            "typescript:myapp::billing.test::h"
+        );
+    }
+
+    #[test]
+    fn a_class_defined_inside_a_test_callback_still_gets_defines_fn_edges() {
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it('t', () => { class C { m() {} } })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "defines_fn")[0][1],
+            "typescript:myapp::billing.test::C::m"
         );
     }
 }
