@@ -375,20 +375,86 @@ pub struct TsConfig {
     pub paths: BTreeMap<String, Vec<String>>,
 }
 
-/// Strip `//` line comments and trailing commas so `serde_json` can read a
-/// `tsconfig.json`.
+/// Strip `//` line comments, `/* … */` block comments, and trailing commas
+/// so `serde_json` can read a `tsconfig.json`.
 ///
-/// TypeScript accepts JSONC here and real projects use it, so refusing
-/// comments would silently lose resolution rules on the most ordinary files.
-/// `//` inside a string is left alone.
+/// TypeScript accepts JSONC here and real projects use it — `tsc --init`'s
+/// own generated file opens with a `/* … */` banner — so refusing comments
+/// would silently lose resolution rules on the most ordinary files.
+/// Both comment forms, and the trailing-comma pass, track string state
+/// (with backslash escapes) so nothing inside a string literal is mistaken
+/// for comment or container syntax.
 fn strip_jsonc(text: &str) -> String {
+    #[derive(PartialEq)]
+    enum State {
+        Normal,
+        InString,
+        InLineComment,
+        InBlockComment,
+    }
+
     let mut out = String::with_capacity(text.len());
-    let mut in_string = false;
+    let mut state = State::Normal;
     let mut escaped = false;
     let mut chars = text.chars().peekable();
     while let Some(c) = chars.next() {
+        match state {
+            State::InString => {
+                out.push(c);
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' {
+                    escaped = true;
+                } else if c == '"' {
+                    state = State::Normal;
+                }
+            }
+            State::InLineComment => {
+                if c == '\n' {
+                    out.push('\n');
+                    state = State::Normal;
+                }
+                // Everything else inside a line comment, including `/*` or
+                // `"`, is just text — it does not open a nested state.
+            }
+            State::InBlockComment => {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    state = State::Normal;
+                }
+                // A `//` or `"` inside a block comment is likewise inert;
+                // only `*/` ends the comment.
+            }
+            State::Normal => match c {
+                '"' => {
+                    state = State::InString;
+                    out.push(c);
+                }
+                '/' if chars.peek() == Some(&'/') => {
+                    chars.next();
+                    state = State::InLineComment;
+                }
+                '/' if chars.peek() == Some(&'*') => {
+                    chars.next();
+                    state = State::InBlockComment;
+                }
+                _ => out.push(c),
+            },
+        }
+    }
+
+    // Trailing commas: a comma whose next non-whitespace character closes a
+    // container. String-aware (with escapes) so a `,}` inside a string
+    // value is never mistaken for one.
+    let chars: Vec<char> = out.chars().collect();
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut cleaned = String::with_capacity(out.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
         if in_string {
-            out.push(c);
+            cleaned.push(c);
             if escaped {
                 escaped = false;
             } else if c == '\\' {
@@ -396,36 +462,24 @@ fn strip_jsonc(text: &str) -> String {
             } else if c == '"' {
                 in_string = false;
             }
+            i += 1;
             continue;
         }
-        match c {
-            '"' => {
-                in_string = true;
-                out.push(c);
-            }
-            '/' if chars.peek() == Some(&'/') => {
-                for skipped in chars.by_ref() {
-                    if skipped == '\n' {
-                        out.push('\n');
-                        break;
-                    }
-                }
-            }
-            _ => out.push(c),
+        if c == '"' {
+            in_string = true;
+            cleaned.push(c);
+            i += 1;
+            continue;
         }
-    }
-    // Trailing commas: a comma whose next non-whitespace character closes a
-    // container.
-    let bytes: Vec<char> = out.chars().collect();
-    let mut cleaned = String::with_capacity(out.len());
-    for (i, c) in bytes.iter().enumerate() {
-        if *c == ',' {
-            let next = bytes[i + 1..].iter().find(|n| !n.is_whitespace());
+        if c == ',' {
+            let next = chars[i + 1..].iter().find(|n| !n.is_whitespace());
             if matches!(next, Some('}') | Some(']')) {
+                i += 1;
                 continue;
             }
         }
-        cleaned.push(*c);
+        cleaned.push(c);
+        i += 1;
     }
     cleaned
 }
@@ -1354,5 +1408,40 @@ mod typescript_tests {
             r#"{"compilerOptions": {"baseUrl": "src"}, "//comment": "https://example.com"}"#,
         );
         assert_eq!(c.base_url, "src");
+    }
+
+    #[test]
+    fn the_tsc_init_banner_with_a_url_in_a_block_comment_still_parses() {
+        // The literal header `tsc --init` writes. A `//` inside the block
+        // comment must not be read as a line-comment start — that would eat
+        // the closing `*/` and corrupt everything after it.
+        let c = parse_tsconfig(
+            "{\n  /* Visit https://aka.ms/tsconfig to read more about this file */\n  \"compilerOptions\": { \"baseUrl\": \"src\" }\n}",
+        );
+        assert_eq!(c.base_url, "src");
+    }
+
+    #[test]
+    fn a_block_comment_on_its_own_line_is_stripped() {
+        let c = parse_tsconfig(
+            "{\n  /* explanatory */\n  \"compilerOptions\": {\"baseUrl\": \"src\"}\n}",
+        );
+        assert_eq!(c.base_url, "src");
+    }
+
+    #[test]
+    fn a_slash_star_inside_a_string_is_not_treated_as_a_comment_start() {
+        let c = parse_tsconfig(
+            r#"{"compilerOptions": {"baseUrl": "src"}, "note": "see /* not a comment */ here"}"#,
+        );
+        assert_eq!(c.base_url, "src");
+    }
+
+    #[test]
+    fn a_comma_and_brace_inside_a_string_path_target_survive_intact() {
+        // The trailing-comma pass must be string-aware too: `,}` inside a
+        // string value is data, not a container closer.
+        let c = parse_tsconfig(r#"{"compilerOptions": {"paths": {"@x/*": ["a,}b/*"]}}}"#);
+        assert_eq!(c.paths.get("@x/*"), Some(&vec!["a,}b/*".to_string()]));
     }
 }
