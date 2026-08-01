@@ -63,6 +63,26 @@ impl Sensor<'_> {
         parts.join("::")
     }
 
+    /// Shared handling for `class_declaration`, `abstract_class_declaration`,
+    /// and named `class` (class-expression) nodes: push the class's own
+    /// name onto scope and descend into its body.
+    fn class_like(&mut self, node: Node, scope: &[String]) {
+        let Some(name) = node.child_by_field_name("name") else {
+            // An anonymous class expression reached here (not via the
+            // `variable_declarator` or `export_statement` special cases,
+            // which supply a name from their own binding) has no identity
+            // to qualify its methods with. Counted rather than silently
+            // flattened into the caller's scope.
+            self.skipped += 1;
+            return;
+        };
+        let mut inner = scope.to_vec();
+        inner.push(text(name, self.source).to_string());
+        if let Some(body) = node.child_by_field_name("body") {
+            self.walk_children(body, &inner);
+        }
+    }
+
     fn walk(&mut self, node: Node, scope: &[String]) {
         match node.kind() {
             "function_declaration" | "generator_function_declaration" => {
@@ -75,29 +95,37 @@ impl Sensor<'_> {
                 }
                 return;
             }
-            // `class_declaration` is `class Foo {}`; `class` is a class
-            // *expression* (`const C = class {}`, `class Named {}` used as a
-            // value). Both carry the same `name`/`body` fields, and both
-            // must push a scope before descending — otherwise their methods
-            // land in whatever scope the walk was already in, colliding with
-            // an unrelated same-named method elsewhere in the file (the
-            // object-literal/class-expression collision below).
-            "class_declaration" | "class" => {
-                let Some(name) = node.child_by_field_name("name") else {
-                    // An anonymous class expression reached here (not via
-                    // the `variable_declarator` or `export_statement`
-                    // special cases below, which supply a name from their
-                    // own binding) has no identity to qualify its methods
-                    // with. Counted rather than silently flattened into the
-                    // caller's scope.
-                    self.skipped += 1;
-                    return;
-                };
-                let mut inner = scope.to_vec();
-                inner.push(text(name, self.source).to_string());
-                if let Some(body) = node.child_by_field_name("body") {
-                    self.walk_children(body, &inner);
-                }
+            // `class_declaration` is `class Foo {}`; `abstract_class_declaration`
+            // is `abstract class Foo {}` (same `name`/`body` fields, so it
+            // needs no separate handling — this also fixes an `Ledger`-style
+            // collision the abstract form had on its own: without this arm
+            // it fell through to `walk_children` and its methods landed
+            // unqualified in the caller's scope). `class` (guarded by
+            // `node.is_named()`) is a class *expression* (`const C = class
+            // {}`, `class Named {}` used as a value).
+            //
+            // The `is_named()` guard on `"class"` matters because that kind
+            // string does double duty in this grammar: the class-expression
+            // node is named, but the literal `class` keyword *token* — an
+            // unnamed child of `abstract_class_declaration` (and any other
+            // construct not otherwise matched here) — shares the same kind
+            // string. Before `abstract_class_declaration` got its own arm,
+            // that construct fell through to `walk_children`, which walked
+            // straight into its unnamed `class` keyword child; without this
+            // guard that token hit this arm, found no `name` field of its
+            // own, and inflated `skipped` on every abstract class.
+            //
+            // All three matched forms carry the same `name`/`body` fields,
+            // and all three must push a scope before descending — otherwise
+            // their methods land in whatever scope the walk was already in,
+            // colliding with an unrelated same-named method elsewhere in the
+            // file (the object-literal/class-expression collision below).
+            "class_declaration" | "abstract_class_declaration" => {
+                self.class_like(node, scope);
+                return;
+            }
+            "class" if node.is_named() => {
+                self.class_like(node, scope);
                 return;
             }
             "method_definition" => {
@@ -400,6 +428,33 @@ mod tests {
             &ctx(&["src/billing.ts"]),
         );
         assert!(edges_of(&out, "defines_fn").is_empty());
+    }
+
+    #[test]
+    fn an_abstract_class_method_is_qualified_by_its_class() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "abstract class A { m() { return 1 } }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "defines_fn")[0][1],
+            "typescript:myapp::billing::A::m"
+        );
+        assert_eq!(out.skipped, 0, "an abstract class must not inflate skipped");
+    }
+
+    #[test]
+    fn an_abstract_class_does_not_inflate_skipped() {
+        // Regression for the `"class"` keyword token — an unnamed child of
+        // `abstract_class_declaration` — matching the class-expression arm
+        // and being counted as an anonymous class with no name of its own.
+        let out = extract_typescript(
+            "src/billing.ts",
+            "abstract class A { m() {} }\nabstract class B { n() {} }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(out.skipped, 0);
     }
 
     // ─── imports (including re-exports) ──────────────────────────────
