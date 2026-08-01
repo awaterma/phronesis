@@ -126,9 +126,12 @@ pub fn save_index(path: &Path, index: &Index) -> std::io::Result<()> {
     std::fs::rename(&tmp, path)
 }
 
-/// Every Rust file under `root` that the graph should track, as paths
-/// relative to `root`. Honours `.gitignore` so build output and vendored
-/// trees never enter the graph.
+/// Every file under `root`, in a tracked language (Rust, Python,
+/// TypeScript), that the graph should track, as paths relative to `root`.
+/// Honours `.gitignore` so build output and vendored trees never enter the
+/// graph, and prunes `node_modules` unconditionally — `.gitignore` alone
+/// cannot be relied on to exclude it, and `is_tracked` must agree with this
+/// walk or a sensor-recorded file becomes permanent drift.
 fn tracked_files(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for entry in ignore::WalkBuilder::new(root)
@@ -201,7 +204,21 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
 /// set is not tracked, not indexed, and not counted as drift.
 pub const TRACKED_EXTENSIONS: &[&str] = &[".rs", ".py", ".ts", ".tsx", ".mts", ".cts"];
 
+/// Whether `on_save`/`record_from_disk` should index this file.
+///
+/// Must agree with `tracked_files`'s walk, which prunes `node_modules`.
+/// Without the same exclusion here, the sensor can record an index entry for
+/// a path `tracked_files` will never enumerate — a hash `check_freshness`
+/// can then never match, so the file reports as permanent drift until a
+/// manual `rebuild`. Matched by path *component*, not substring, so a
+/// legitimate directory like `my_node_modules_helper` is not excluded.
 fn is_tracked(file_path: &str) -> bool {
+    if Path::new(file_path)
+        .components()
+        .any(|c| c.as_os_str() == "node_modules")
+    {
+        return false;
+    }
     TRACKED_EXTENSIONS.iter().any(|e| file_path.ends_with(e))
 }
 
@@ -354,8 +371,9 @@ fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Full rescan of every tracked Rust file. The recovery path after the graph
-/// has drifted, and the only way edges for deleted files are cleared.
+/// Full rescan of every tracked file (Rust, Python, TypeScript), pruning
+/// `node_modules`. The recovery path after the graph has drifted, and the
+/// only way edges for deleted files are cleared.
 pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     let mut base = Vec::new();
     let mut index = Index::default();
@@ -852,6 +870,54 @@ mod tests {
         let d = project();
         record_from_disk(d.path(), "src/gone.rs");
         assert!(edges(d.path()).is_empty());
+    }
+
+    #[test]
+    fn recording_a_node_modules_file_is_a_no_op() {
+        // `tracked_files` (and thus `rebuild`/`check_freshness`) prunes
+        // `node_modules`. If the sensor recorded an index entry for a path
+        // under it anyway, that hash could never be matched by the walk and
+        // the file would report as drift forever — the exact permanent-
+        // demotion failure the sensor exists to prevent, entering through
+        // `on_save` instead of `rebuild`. `patch-package`, `prisma
+        // generate`, or an agent edit under `node_modules` can all arrive
+        // here through `PostToolUse`.
+        let d = project();
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "src/billing.ts",
+            "export function charge() { return 1 }\n",
+        );
+        rebuild(d.path()).expect("opt the project into the graph");
+
+        write(
+            d.path(),
+            "node_modules/dep/index.ts",
+            "export function vendored() { return 1 }\n",
+        );
+        record_from_disk(d.path(), "node_modules/dep/index.ts");
+
+        let idx = load_index(&index_path(d.path())).expect("load index");
+        assert!(
+            !idx.entries.contains_key("node_modules/dep/index.ts"),
+            "node_modules must never gain an index entry: {:?}",
+            idx.entries.keys().collect::<Vec<_>>()
+        );
+        let names: Vec<String> = edges(d.path())
+            .into_iter()
+            .filter(|e| e.p == "defines_fn")
+            .filter_map(|e| e.a.get(1).cloned())
+            .collect();
+        assert!(
+            names.iter().all(|n| !n.contains("vendored")),
+            "node_modules must not be extracted: {names:?}"
+        );
+        assert_eq!(
+            check_freshness(d.path(), &idx),
+            Freshness::Fresh,
+            "a node_modules edit must not be reported as drift"
+        );
     }
 
     // ─── staleness ──────────────────────────────────────────────────
