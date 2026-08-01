@@ -41,6 +41,29 @@ fn is_function_node(kind: &str) -> bool {
     )
 }
 
+/// True when a node is a *named* function-shaped construct — one that has
+/// (or, per `defines_fn`'s existing scope, could have) an identity of its
+/// own separate from whatever encloses it: a declared function, a method, or
+/// a named function expression (`const f = function foo() {}`).
+///
+/// Deliberately excludes `arrow_function` and anonymous `function_expression`
+/// — inline callbacks (`.map(x => x!.y)`, an immediately-invoked
+/// `const f = () => …`) have no identity of their own and run as part of
+/// the enclosing function's own control flow, so a non-null assertion
+/// inside one still belongs to the enclosing function. A *named* nested
+/// function does not: `defines_fn` never descends into a
+/// `function_declaration` nested inside another (see `walk`'s early
+/// `return` on that arm), so attributing its body's assertions to the
+/// outer function would blame code that only runs if the outer function
+/// explicitly calls it — a claim this extractor cannot verify.
+fn is_named_function_boundary(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "function_declaration" | "generator_function_declaration" | "method_definition"
+    ) || (matches!(node.kind(), "function_expression" | "generator_function")
+        && node.child_by_field_name("name").is_some())
+}
+
 struct Sensor<'a> {
     file_path: &'a str,
     source: &'a [u8],
@@ -90,6 +113,11 @@ impl Sensor<'_> {
                     let qualified = self.qualify(scope, text(name, self.source));
                     let file = self.file_path.to_string();
                     self.emit("defines_fn", &[&file, &qualified]);
+                    if let Some(body) = node.child_by_field_name("body")
+                        && self.asserts_non_null(body)
+                    {
+                        self.emit("calls_api", &[&qualified, "non_null_assertion"]);
+                    }
                 } else {
                     self.skipped += 1;
                 }
@@ -133,6 +161,11 @@ impl Sensor<'_> {
                     let qualified = self.qualify(scope, text(name, self.source));
                     let file = self.file_path.to_string();
                     self.emit("defines_fn", &[&file, &qualified]);
+                    if let Some(body) = node.child_by_field_name("body")
+                        && self.asserts_non_null(body)
+                    {
+                        self.emit("calls_api", &[&qualified, "non_null_assertion"]);
+                    }
                 } else {
                     self.skipped += 1;
                 }
@@ -149,6 +182,11 @@ impl Sensor<'_> {
                         let qualified = self.qualify(scope, text(name, self.source));
                         let file = self.file_path.to_string();
                         self.emit("defines_fn", &[&file, &qualified]);
+                        if let Some(body) = value.child_by_field_name("body")
+                            && self.asserts_non_null(body)
+                        {
+                            self.emit("calls_api", &[&qualified, "non_null_assertion"]);
+                        }
                         return;
                     }
                     // `const obj = { m() {} }` and `const C = class { m() {} }`:
@@ -219,6 +257,17 @@ impl Sensor<'_> {
                     }
                 }
             }
+            "call_expression" => {
+                if let Some(title) = self.test_title(node) {
+                    let qualified = format!("{}::{title}", self.self_module);
+                    if let Some(callback) = self.test_callback(node) {
+                        for callee in self.called_names(callback) {
+                            self.emit("tested_by", &[&callee, &qualified]);
+                        }
+                    }
+                    return;
+                }
+            }
             _ => {}
         }
         self.walk_children(node, scope);
@@ -261,6 +310,122 @@ impl Sensor<'_> {
             // so a broken resolver cannot look like a clean codebase.
             Resolution::Unresolved => self.skipped += 1,
         }
+    }
+
+    /// True when `function` (the `function` field of a `call_expression`)
+    /// names an *active* — i.e. it will actually run — `it`/`test`
+    /// invocation, in any of its common spellings:
+    ///
+    /// - `it(...)` / `test(...)` — bare identifier.
+    /// - `it.only(...)` / `test.only(...)` — still runs (exclusively), so
+    ///   still counts.
+    /// - `it.each([...])(...)` / `test.each([...])(...)` — the outer call's
+    ///   `function` field is itself a call expression (`it.each([...])`),
+    ///   one level removed from the plain and `.only` shapes; still counts.
+    ///
+    /// `it.skip(...)` / `test.skip(...)` deliberately return `false`: a
+    /// skipped test never runs, so a call inside it is not evidence
+    /// anything was verified.
+    fn is_test_invocation(&self, function: Node) -> bool {
+        match function.kind() {
+            "identifier" => matches!(text(function, self.source), "it" | "test"),
+            "member_expression" => {
+                let Some(object) = function.child_by_field_name("object") else {
+                    return false;
+                };
+                let Some(property) = function.child_by_field_name("property") else {
+                    return false;
+                };
+                matches!(text(object, self.source), "it" | "test")
+                    && matches!(text(property, self.source), "only" | "each")
+            }
+            "call_expression" => function
+                .child_by_field_name("function")
+                .is_some_and(|f| self.is_test_invocation(f)),
+            _ => false,
+        }
+    }
+
+    /// The title of an active `it("…", …)` / `test("…", …)` call, if this
+    /// node is one.
+    fn test_title(&self, node: Node) -> Option<String> {
+        if node.kind() != "call_expression" {
+            return None;
+        }
+        let function = node.child_by_field_name("function")?;
+        if !self.is_test_invocation(function) {
+            return None;
+        }
+        let args = node.child_by_field_name("arguments")?;
+        let mut cursor = args.walk();
+        let first = args
+            .children(&mut cursor)
+            .find(|c| matches!(c.kind(), "string" | "template_string"))?;
+        Some(
+            text(first, self.source)
+                .trim_matches(['"', '\'', '`'])
+                .to_string(),
+        )
+    }
+
+    /// The callback function passed to a test invocation — the arrow
+    /// function or (less commonly) `function` expression among its
+    /// arguments — if this node is one.
+    fn test_callback<'a>(&self, node: Node<'a>) -> Option<Node<'a>> {
+        let args = node.child_by_field_name("arguments")?;
+        let mut cursor = args.walk();
+        args.children(&mut cursor)
+            .find(|c| is_function_node(c.kind()))
+    }
+
+    /// Bare names of functions invoked in a body. Resolved by short name in
+    /// `super::derive::untested`, exactly as Rust and Python do.
+    fn called_names(&self, body: Node) -> BTreeSet<String> {
+        let mut found = BTreeSet::new();
+        let mut stack = vec![body];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "call_expression"
+                && let Some(f) = n.child_by_field_name("function")
+            {
+                let name = match f.kind() {
+                    "identifier" => text(f, self.source).to_string(),
+                    "member_expression" => f
+                        .child_by_field_name("property")
+                        .map(|p| text(p, self.source).to_string())
+                        .unwrap_or_default(),
+                    _ => String::new(),
+                };
+                if !name.is_empty() && !matches!(name.as_str(), "it" | "test" | "describe") {
+                    found.insert(name);
+                }
+            }
+            let mut cursor = n.walk();
+            stack.extend(n.children(&mut cursor));
+        }
+        found
+    }
+
+    /// True when this subtree contains a non-null assertion, not counting
+    /// one that lives inside a nested *named* function (see
+    /// `is_named_function_boundary`). `node` should be the executable body
+    /// of the function being checked (a `statement_block`, or an arrow
+    /// function's concise expression body) — not the definition node
+    /// itself, which for the `variable_declarator` case *is* an
+    /// `arrow_function` and would immediately be (mis)treated as a nested
+    /// boundary of itself.
+    fn asserts_non_null(&self, node: Node) -> bool {
+        let mut stack = vec![node];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "non_null_expression" {
+                return true;
+            }
+            if is_named_function_boundary(n) {
+                continue;
+            }
+            let mut cursor = n.walk();
+            stack.extend(n.children(&mut cursor));
+        }
+        false
     }
 }
 
@@ -593,5 +758,250 @@ mod tests {
         );
         assert!(out.parse_failed, "must signal parse failure");
         assert!(out.edges.is_empty());
+    }
+
+    // ─── tested_by ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_test_callback_records_what_it_calls() {
+        // TS tests are callbacks, not named functions, so the coverage source is
+        // identified by its title string — the only stable identity available.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it('charges the order', () => { charge(cart) })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "tested_by"),
+            vec![vec![
+                "charge".to_string(),
+                "typescript:myapp::billing.test::charges the order".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_test_spelled_with_test_rather_than_it_also_counts() {
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "test('charges', () => { charge() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "charge");
+    }
+
+    #[test]
+    fn a_helper_outside_a_test_callback_is_not_coverage() {
+        // A helper's calls are not evidence that anything was verified — the
+        // same rule Python applies to non-`test_*` functions.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "function buildFixture() { charge() }\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert!(edges_of(&out, "tested_by").is_empty());
+    }
+
+    #[test]
+    fn a_method_call_inside_a_test_records_the_method_name() {
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it('works', () => { ledger.charge() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "charge");
+    }
+
+    #[test]
+    fn a_test_wrapped_in_describe_still_counts() {
+        // `describe` is not itself a test invocation, but does not block the
+        // ordinary descent into its callback — the `it` inside is walked
+        // exactly as if `describe` were not there.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "describe('group', () => { it('inner', () => { charge() }) })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "tested_by"),
+            vec![vec![
+                "charge".to_string(),
+                "typescript:myapp::billing.test::inner".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_test_nested_two_describes_deep_still_counts() {
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "describe('outer', () => { describe('inner', () => { it('deep', () => { charge() }) }) })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "charge");
+    }
+
+    #[test]
+    fn an_async_test_callback_still_counts() {
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it('async works', async () => { await charge() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(edges_of(&out, "tested_by")[0][0], "charge");
+    }
+
+    #[test]
+    fn a_skipped_test_is_not_coverage() {
+        // `it.skip` never runs, so a call inside it is not evidence anything
+        // was verified — same principle as the bare-helper case.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it.skip('nope', () => { charge() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert!(edges_of(&out, "tested_by").is_empty());
+    }
+
+    #[test]
+    fn an_only_test_still_counts() {
+        // `test.only` / `it.only` do run (exclusively), so they are coverage.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "test.only('yes', () => { charge() })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "tested_by"),
+            vec![vec![
+                "charge".to_string(),
+                "typescript:myapp::billing.test::yes".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_parameterized_each_test_counts() {
+        // `it.each([...])(title, cb)` is a real, executed test — its outer
+        // call's `function` field is itself a call expression (`it.each(...)`),
+        // one level removed from the plain-identifier and `it.only` shapes.
+        let out = extract_typescript(
+            "src/billing.test.ts",
+            "it.each([1, 2])('works %s', (n) => { charge(n) })\n",
+            &ctx(&["src/billing.test.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "tested_by"),
+            vec![vec![
+                "charge".to_string(),
+                "typescript:myapp::billing.test::works %s".to_string()
+            ]]
+        );
+    }
+
+    // ─── calls_api ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_non_null_assertion_is_a_watched_api_call() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "export function charge(o?: Order) { return o!.total }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "calls_api"),
+            vec![vec![
+                "typescript:myapp::billing::charge".to_string(),
+                "non_null_assertion".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_function_without_assertions_calls_no_watched_api() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "export function charge(o: Order) { return o.total }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert!(edges_of(&out, "calls_api").is_empty());
+    }
+
+    #[test]
+    fn several_assertions_in_one_function_yield_one_edge() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "export function charge(o?: Order) { return o!.total + o!.tax }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(edges_of(&out, "calls_api").len(), 1);
+    }
+
+    #[test]
+    fn a_method_assertion_is_a_watched_api_call() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "class Ledger { charge(o?: Order) { return o!.total } }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "calls_api"),
+            vec![vec![
+                "typescript:myapp::billing::Ledger::charge".to_string(),
+                "non_null_assertion".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn an_arrow_const_assertion_is_a_watched_api_call() {
+        let out = extract_typescript(
+            "src/billing.ts",
+            "const charge = (o?: Order) => o!.total\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "calls_api"),
+            vec![vec![
+                "typescript:myapp::billing::charge".to_string(),
+                "non_null_assertion".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn an_assertion_in_a_nested_named_function_does_not_count_toward_the_outer_function() {
+        // Task 6 does not descend into a nested `function_declaration` for
+        // `defines_fn` — `inner` gets no identity of its own inside `outer`.
+        // Attributing `inner`'s assertion to `outer` would blame code that
+        // never runs unless `outer` explicitly invokes `inner`, so the same
+        // boundary applies to `calls_api`: deliberately not counted.
+        let out = extract_typescript(
+            "src/billing.ts",
+            "export function outer() { function inner(o?: Order) { return o!.total } }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert!(edges_of(&out, "calls_api").is_empty());
+    }
+
+    #[test]
+    fn an_assertion_inside_an_inline_callback_does_count_toward_the_enclosing_function() {
+        // Unlike a nested *named* function, an anonymous arrow callback
+        // (`.map(x => x!.y)`, an inline `const f = () => …` immediately
+        // invoked, etc.) has no identity of its own and runs as part of the
+        // enclosing function's own control flow — so its assertions belong
+        // to the enclosing function.
+        let out = extract_typescript(
+            "src/billing.ts",
+            "export function outer(o?: Order) { const f = () => o!.total; return f() }\n",
+            &ctx(&["src/billing.ts"]),
+        );
+        assert_eq!(
+            edges_of(&out, "calls_api"),
+            vec![vec![
+                "typescript:myapp::billing::outer".to_string(),
+                "non_null_assertion".to_string()
+            ]]
+        );
     }
 }
