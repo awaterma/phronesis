@@ -38,16 +38,19 @@ pub enum Resolution {
 /// two directions — the importer's specifier and the target's own path — and
 /// an edge forms only when they agree.
 ///
-/// Deliberately *not* collapsing `billing/index.ts` onto `billing`, nor
-/// `x.d.ts` onto the same stem as `x.ts`: both files can be indexed in the
-/// same unit at once (a directory can hold both `billing.ts` and
-/// `billing/index.ts`; a `.d.ts` commonly sits beside its `.ts`), and
-/// collapsing either pair onto one identity would merge two distinct files'
-/// definitions and edges into a single node — the exact failure this
-/// identity scheme exists to prevent (see the module doc on `unit.rs`).
-/// `strip_known_extension` only ever strips one of `.ts`/`.tsx`/`.mts`/
-/// `.cts`/`.jsx`/`.js` (never `.d.ts` as a unit), so `x.d.ts` becomes the
-/// segment `x.d` — distinct from `x.ts`'s `x`.
+/// Deliberately *not* collapsing `billing/index.ts` onto `billing`, nor any
+/// two of `.ts`/`.tsx`/`.mts`/`.cts`/`.d.ts` onto the same stem: every one of
+/// these can be indexed in the same unit at once (a directory can hold both
+/// `billing.ts` and `billing/index.ts`; a component can sit beside its
+/// non-JSX helper as `Button.tsx` and `Button.ts`; a dual ESM/CJS build ships
+/// `legacy.mts` next to `legacy.cts`; a `.d.ts` commonly sits beside its
+/// `.ts`), and collapsing any such pair onto one identity would merge two
+/// distinct files' definitions and edges into a single node — the exact
+/// failure this identity scheme exists to prevent (see the module doc on
+/// `unit.rs`). `strip_known_extension` therefore strips only a literal
+/// trailing `.ts` and leaves every other extension as part of the final
+/// segment: `x.ts` -> `x`, but `x.tsx`, `x.mts`, `x.cts` are untouched, and
+/// `x.d.ts` -> `x.d` (only its trailing `.ts` disappears).
 pub fn module_path(file_rel: &str, unit: &UnitContext) -> String {
     let rel = strip_module_base(file_rel, &unit.module_base);
     let trimmed = strip_known_extension(rel);
@@ -73,15 +76,13 @@ fn strip_module_base<'a>(file_rel: &'a str, module_base: &str) -> &'a str {
 }
 
 fn strip_known_extension(path: &str) -> &str {
-    // `.d.ts` is deliberately not in this list: stripping it as a unit would
-    // collapse `x.d.ts` onto the same stem as `x.ts`. Stripping only `.ts`
-    // leaves `x.d.ts` as `x.d`, distinct from `x.ts`'s `x`.
-    for ext in [".tsx", ".ts", ".mts", ".cts", ".jsx", ".js"] {
-        if let Some(stem) = path.strip_suffix(ext) {
-            return stem;
-        }
-    }
-    path
+    // Only a literal trailing `.ts` is stripped. Stripping `.tsx`/`.mts`/
+    // `.cts` as well would collide two files that are commonly indexed side
+    // by side (see the doc comment on `module_path`) onto one identity;
+    // leaving them as part of the final segment keeps every extension
+    // distinguishable. `.d.ts` still reduces to `x.d`, since only its
+    // trailing `.ts` matches.
+    path.strip_suffix(".ts").unwrap_or(path)
 }
 
 /// Resolve one import specifier from `importing_file`.
@@ -101,40 +102,58 @@ pub fn resolve_specifier(specifier: &str, importing_file: &str, unit: &UnitConte
         };
     }
 
-    let mut best: Option<(&String, &Vec<String>, usize)> = None;
+    // Whether some alias that unambiguously names project-local code — a
+    // non-wildcard exact alias, or a wildcard alias with a non-empty prefix
+    // — matched `specifier` against at least one target that is not itself
+    // an explicit detour through `node_modules`. A bare `"*"` alias is
+    // excluded even though it "matches" everything: it also matches every
+    // third-party specifier by construction (a common tsconfig shape routes
+    // untyped third-party imports through a `types/*` fallback), so a miss
+    // under it carries no more signal than an ordinary unmatched bare
+    // specifier and must not drown real misses in noise. Checked only after
+    // every resolution path — including the `baseUrl` fallback below — has
+    // had its turn: a miss on one alias must not pre-empt a later, looser
+    // alias or the plain `baseUrl` resolution that TypeScript itself falls
+    // back to.
+    let mut alias_matched_inside_project = false;
+
     for (alias, targets) in &unit.ts.paths {
-        let Some(prefix) = alias.strip_suffix('*') else {
-            if alias == specifier {
-                for target in targets {
-                    if let Some(found) = probe(&with_base(target, unit), unit) {
-                        return Resolution::File(found);
-                    }
+        if alias.strip_suffix('*').is_none() && alias == specifier {
+            for target in targets {
+                if points_into_node_modules(target) {
+                    continue;
                 }
-                // `alias == specifier` names this project's own tsconfig.json
-                // path mapping by construction, exactly as a `.`-prefixed
-                // specifier does. A miss here is our bug, not a third-party
-                // import, and must stay Unresolved rather than fall through
-                // to External and go uncounted.
-                return Resolution::Unresolved;
+                alias_matched_inside_project = true;
+                if let Some(found) = probe(&with_base(target, unit), unit) {
+                    return Resolution::File(found);
+                }
             }
-            continue;
-        };
-        if specifier.starts_with(prefix) && best.is_none_or(|(_, _, len)| prefix.len() > len) {
-            best = Some((alias, targets, prefix.len()));
         }
     }
-    if let Some((_, targets, prefix_len)) = best {
+
+    let mut best: Option<(&Vec<String>, usize)> = None;
+    for (alias, targets) in &unit.ts.paths {
+        let Some(prefix) = alias.strip_suffix('*') else {
+            continue;
+        };
+        if specifier.starts_with(prefix) && best.is_none_or(|(_, len)| prefix.len() > len) {
+            best = Some((targets, prefix.len()));
+        }
+    }
+    if let Some((targets, prefix_len)) = best {
         let rest = &specifier[prefix_len..];
         for target in targets {
-            let candidate = with_base(&target.replace('*', rest), unit);
-            if let Some(found) = probe(&candidate, unit) {
+            let substituted = target.replace('*', rest);
+            if points_into_node_modules(&substituted) {
+                continue;
+            }
+            if prefix_len > 0 {
+                alias_matched_inside_project = true;
+            }
+            if let Some(found) = probe(&with_base(&substituted, unit), unit) {
                 return Resolution::File(found);
             }
         }
-        // The specifier matched a declared alias pattern; every target
-        // missing is a broken alias in this project, not a third-party
-        // import, so it must be counted rather than silently ignored.
-        return Resolution::Unresolved;
     }
 
     if (!unit.ts.base_url.is_empty() || !unit.module_base.is_empty())
@@ -143,7 +162,20 @@ pub fn resolve_specifier(specifier: &str, importing_file: &str, unit: &UnitConte
         return Resolution::File(found);
     }
 
+    if alias_matched_inside_project {
+        // A specific project alias matched but every target missed, and
+        // baseUrl resolution also missed. This is our bug, not a
+        // third-party import, and must stay counted.
+        return Resolution::Unresolved;
+    }
+
     Resolution::External
+}
+
+/// Whether `path` routes through `node_modules` — an explicit detour to
+/// third-party code rather than a mapping onto this project's own files.
+fn points_into_node_modules(path: &str) -> bool {
+    path.split('/').any(|segment| segment == "node_modules")
 }
 
 /// Join a unit-relative path onto the module base (`baseUrl`).
@@ -278,11 +310,14 @@ mod tests {
     }
 
     #[test]
-    fn a_tsx_extension_is_stripped_like_any_other() {
+    fn a_tsx_extension_is_kept_intact_in_the_identity() {
+        // Not stripped like `.ts`: a component's `Button.tsx` can sit beside
+        // a non-JSX `Button.ts` in the same unit, and stripping both down to
+        // `Button` would merge two distinct files onto one identity.
         let c = ctx(&["src/Button.tsx"], "src", &[]);
         assert_eq!(
             module_path("src/Button.tsx", &c),
-            "typescript:myapp::Button"
+            "typescript:myapp::Button.tsx"
         );
     }
 
@@ -466,24 +501,107 @@ mod tests {
         );
     }
 
+    // ─── an alias miss must not short-circuit later resolution (fix round 2, finding 1) ──
+
+    #[test]
+    fn an_exact_alias_miss_falls_back_to_base_url() {
+        // TypeScript falls back to baseUrl-relative resolution when a
+        // `paths` mapping misses; a miss on `util` must not prevent
+        // `src/util.ts` (found via baseUrl) from resolving.
+        let c = ctx(
+            &["src/a.ts", "src/util.ts"],
+            "src",
+            &[("util", &["shims/util"])],
+        );
+        assert_eq!(
+            resolve_specifier("util", "src/a.ts", &c),
+            Resolution::File("src/util.ts".to_string())
+        );
+    }
+
+    #[test]
+    fn a_wildcard_alias_miss_falls_back_to_base_url() {
+        let c = ctx(
+            &["src/a.ts", "src/lib/util.ts"],
+            "src",
+            &[("lib/*", &["shims/*"])],
+        );
+        assert_eq!(
+            resolve_specifier("lib/util", "src/a.ts", &c),
+            Resolution::File("src/lib/util.ts".to_string())
+        );
+    }
+
+    #[test]
+    fn a_missed_exact_alias_does_not_prevent_a_looser_wildcard_alias() {
+        let c = ctx(
+            &["src/a.ts", "src/real/thing.ts"],
+            "src",
+            &[("thing", &["nope/thing"]), ("thin*", &["real/thin*"])],
+        );
+        assert_eq!(
+            resolve_specifier("thing", "src/a.ts", &c),
+            Resolution::File("src/real/thing.ts".to_string())
+        );
+    }
+
+    // ─── a declared alias pointing at third-party code is not our bug (fix round 2, finding 2) ──
+
+    #[test]
+    fn a_catch_all_wildcard_alias_still_reports_a_third_party_miss_as_external() {
+        // `"*"` matches every bare specifier, including third-party ones —
+        // it carries no more signal than an ordinary unmatched specifier, so
+        // a miss under it must not manufacture Unresolved noise for every
+        // third-party import in the project.
+        let c = ctx(&["src/a.ts"], "src", &[("*", &["types/*", "*"])]);
+        assert_eq!(
+            resolve_specifier("react", "src/a.ts", &c),
+            Resolution::External
+        );
+        assert_eq!(
+            resolve_specifier("@yourorg/shared", "src/a.ts", &c),
+            Resolution::External
+        );
+    }
+
+    #[test]
+    fn an_alias_explicitly_routed_through_node_modules_is_external_on_a_miss() {
+        let c = ctx(
+            &["src/a.ts"],
+            "src",
+            &[("react", &["../node_modules/react"])],
+        );
+        assert_eq!(
+            resolve_specifier("react", "src/a.ts", &c),
+            Resolution::External
+        );
+    }
+
     // ─── module_path is injective over the file set (fix round 1, finding 3) ──
 
     #[test]
     fn distinct_files_never_share_a_module_identity() {
+        // Enumerates every extension `lang_of_path` accepts as TypeScript
+        // (`.ts`, `.tsx`, `.mts`, `.cts`; `.d.ts` is a `.ts` file sharing a
+        // stem with `x.ts`) plus the index/directory collision, so this test
+        // actually verifies the injectivity it claims rather than a subset
+        // of it.
         let files = [
             "src/x.ts",
+            "src/x.tsx",
+            "src/x.mts",
+            "src/x.cts",
             "src/x.d.ts",
             "src/billing.ts",
             "src/billing/index.ts",
         ];
         let c = ctx(&files, "src", &[]);
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = std::collections::BTreeMap::new();
         for file in files {
             let id = module_path(file, &c);
-            assert!(
-                seen.insert(id.clone()),
-                "{file} collided with an earlier file onto {id}"
-            );
+            if let Some(prev) = seen.insert(id.clone(), file) {
+                panic!("{file} collided with {prev} onto {id}");
+            }
         }
     }
 
