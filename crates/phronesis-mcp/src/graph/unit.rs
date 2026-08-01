@@ -364,6 +364,109 @@ pub fn parse_package_json(text: &str) -> Manifest {
     out
 }
 
+/// The subset of `tsconfig.json` that decides import resolution.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TsConfig {
+    /// `compilerOptions.baseUrl`, relative to the unit root, with no leading
+    /// `./` and no trailing `/`. Empty means the unit root itself.
+    pub base_url: String,
+    /// `compilerOptions.paths`: alias pattern -> replacement patterns, each
+    /// keeping its `*` wildcard verbatim so resolution can substitute.
+    pub paths: BTreeMap<String, Vec<String>>,
+}
+
+/// Strip `//` line comments and trailing commas so `serde_json` can read a
+/// `tsconfig.json`.
+///
+/// TypeScript accepts JSONC here and real projects use it, so refusing
+/// comments would silently lose resolution rules on the most ordinary files.
+/// `//` inside a string is left alone.
+fn strip_jsonc(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_string {
+            out.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_string = true;
+                out.push(c);
+            }
+            '/' if chars.peek() == Some(&'/') => {
+                for skipped in chars.by_ref() {
+                    if skipped == '\n' {
+                        out.push('\n');
+                        break;
+                    }
+                }
+            }
+            _ => out.push(c),
+        }
+    }
+    // Trailing commas: a comma whose next non-whitespace character closes a
+    // container.
+    let bytes: Vec<char> = out.chars().collect();
+    let mut cleaned = String::with_capacity(out.len());
+    for (i, c) in bytes.iter().enumerate() {
+        if *c == ',' {
+            let next = bytes[i + 1..].iter().find(|n| !n.is_whitespace());
+            if matches!(next, Some('}') | Some(']')) {
+                continue;
+            }
+        }
+        cleaned.push(*c);
+    }
+    cleaned
+}
+
+/// Parse the resolution-relevant subset of a `tsconfig.json`.
+///
+/// `extends` is deliberately not followed here — see Task 4, which resolves
+/// the chain on disk where the referenced files are readable.
+pub fn parse_tsconfig(text: &str) -> TsConfig {
+    let mut out = TsConfig::default();
+    let Ok(serde_json::Value::Object(root)) = serde_json::from_str(&strip_jsonc(text)) else {
+        return out;
+    };
+    let Some(serde_json::Value::Object(options)) = root.get("compilerOptions") else {
+        return out;
+    };
+    if let Some(serde_json::Value::String(base)) = options.get("baseUrl") {
+        out.base_url = base
+            .trim_start_matches("./")
+            .trim_end_matches('/')
+            .trim_matches('.')
+            .trim_matches('/')
+            .to_string();
+    }
+    if let Some(serde_json::Value::Object(paths)) = options.get("paths") {
+        for (alias, targets) in paths {
+            let Some(serde_json::Value::Array(list)) = Some(targets) else {
+                continue;
+            };
+            let targets: Vec<String> = list
+                .iter()
+                .filter_map(|t| t.as_str().map(|s| s.trim_start_matches("./").to_string()))
+                .collect();
+            if !targets.is_empty() {
+                out.paths.insert(alias.clone(), targets);
+            }
+        }
+    }
+    out
+}
+
 /// Every unit in a project, resolvable by file path.
 #[derive(Debug, Default, Clone)]
 pub struct UnitMap {
@@ -1185,5 +1288,71 @@ mod typescript_tests {
     fn malformed_package_json_declares_no_package() {
         // Degrades to "no unit" rather than guessing a name.
         assert_eq!(parse_package_json("{not json").package, None);
+    }
+
+    #[test]
+    fn a_tsconfig_without_compiler_options_yields_defaults() {
+        assert_eq!(parse_tsconfig("{}"), TsConfig::default());
+    }
+
+    #[test]
+    fn base_url_is_normalized_without_dot_slash_or_trailing_slash() {
+        let c = parse_tsconfig(r#"{"compilerOptions": {"baseUrl": "./src/"}}"#);
+        assert_eq!(c.base_url, "src");
+    }
+
+    #[test]
+    fn base_url_of_dot_means_the_unit_root() {
+        let c = parse_tsconfig(r#"{"compilerOptions": {"baseUrl": "."}}"#);
+        assert_eq!(c.base_url, "");
+    }
+
+    #[test]
+    fn paths_keep_their_wildcards_verbatim() {
+        let c = parse_tsconfig(
+            r#"{"compilerOptions": {"baseUrl": "src", "paths": {"@app/*": ["app/*"]}}}"#,
+        );
+        assert_eq!(c.paths.get("@app/*"), Some(&vec!["app/*".to_string()]));
+    }
+
+    #[test]
+    fn a_path_alias_may_have_several_targets() {
+        // TypeScript tries each in order; resolution must keep them all.
+        let c = parse_tsconfig(r#"{"compilerOptions": {"paths": {"~/*": ["lib/*", "vendor/*"]}}}"#);
+        assert_eq!(
+            c.paths.get("~/*"),
+            Some(&vec!["lib/*".to_string(), "vendor/*".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_tsconfig_with_comments_still_parses() {
+        // tsconfig.json is JSONC in practice; TypeScript itself allows comments.
+        let c = parse_tsconfig(
+            "{\n  // the source root\n  \"compilerOptions\": {\"baseUrl\": \"src\"}\n}",
+        );
+        assert_eq!(c.base_url, "src");
+    }
+
+    #[test]
+    fn a_tsconfig_with_trailing_commas_still_parses() {
+        let c = parse_tsconfig(r#"{"compilerOptions": {"baseUrl": "src",},}"#);
+        assert_eq!(c.base_url, "src");
+    }
+
+    #[test]
+    fn malformed_tsconfig_yields_defaults_rather_than_guesses() {
+        assert_eq!(parse_tsconfig("{not json"), TsConfig::default());
+    }
+
+    #[test]
+    fn a_double_slash_inside_a_string_is_not_treated_as_a_comment() {
+        // A url like "https://example.com" must survive strip_jsonc intact;
+        // treating the `//` as a comment would truncate the value mid-string
+        // and break JSON parsing entirely (or worse, silently corrupt it).
+        let c = parse_tsconfig(
+            r#"{"compilerOptions": {"baseUrl": "src"}, "//comment": "https://example.com"}"#,
+        );
+        assert_eq!(c.base_url, "src");
     }
 }
