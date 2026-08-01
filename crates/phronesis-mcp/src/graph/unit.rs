@@ -81,6 +81,12 @@ pub struct Unit {
     /// it ships (`core-lib` providing `core`), and `import core` names the
     /// package, so the distribution name cannot serve as the key.
     pub packages: Vec<String>,
+    /// Resolution rules for this unit. TypeScript only; empty elsewhere.
+    pub ts: TsConfig,
+    /// Repo-relative TypeScript sources belonging to this unit, sorted.
+    /// Resolution is a lookup against this rather than disk I/O, which keeps
+    /// the extractor a pure function of its inputs.
+    pub files: Vec<String>,
 }
 
 impl Unit {
@@ -106,6 +112,10 @@ pub struct UnitContext {
     /// project*. Only siblings appear: an edge to a third-party crate we never
     /// scan would be a node with no definitions hanging off it.
     pub siblings: BTreeMap<String, String>,
+    /// Resolution rules for this unit. TypeScript only; empty elsewhere.
+    pub ts: TsConfig,
+    /// Repo-relative TypeScript sources belonging to this unit, sorted.
+    pub files: Vec<String>,
 }
 
 impl UnitContext {
@@ -125,6 +135,8 @@ impl UnitContext {
             id: format!("{lang}:{}", unnamed_name(lang)),
             module_base: String::new(),
             siblings: BTreeMap::new(),
+            ts: TsConfig::default(),
+            files: Vec::new(),
         }
     }
 }
@@ -540,21 +552,23 @@ impl UnitMap {
 
         for entry in ignore::WalkBuilder::new(root)
             .hidden(true)
+            .filter_entry(|e| e.file_name() != "node_modules")
             .build()
             .flatten()
         {
             let lang = match entry.file_name().to_str() {
                 Some("Cargo.toml") => LANG_RUST,
                 Some("pyproject.toml") => LANG_PYTHON,
+                Some("package.json") => LANG_TYPESCRIPT,
                 _ => continue,
             };
             let Ok(text) = std::fs::read_to_string(entry.path()) else {
                 continue;
             };
-            let manifest = if lang == LANG_RUST {
-                parse_cargo_manifest(&text)
-            } else {
-                parse_pyproject_manifest(&text)
+            let manifest = match lang {
+                LANG_RUST => parse_cargo_manifest(&text),
+                LANG_PYTHON => parse_pyproject_manifest(&text),
+                _ => parse_package_json(&text),
             };
             workspace_deps.extend(manifest.workspace_deps.clone());
 
@@ -581,6 +595,15 @@ impl UnitMap {
                 } else {
                     Vec::new()
                 };
+                let (ts, files) = if lang == LANG_TYPESCRIPT {
+                    let dir_abs = root.join(&dir);
+                    (
+                        read_tsconfig_chain(&dir_abs.join("tsconfig.json"), 0),
+                        index_typescript_files(root, &dir_abs, &dir),
+                    )
+                } else {
+                    (TsConfig::default(), Vec::new())
+                };
                 manifests.push(Unit {
                     lang,
                     name,
@@ -588,6 +611,8 @@ impl UnitMap {
                     deps: manifest.deps,
                     import_root,
                     packages,
+                    ts,
+                    files,
                 });
             }
         }
@@ -625,11 +650,21 @@ impl UnitMap {
     pub fn resolve(&self, file_rel: &str) -> Option<&Unit> {
         let lang = lang_of_path(file_rel)?;
         self.units.iter().find(|u| {
-            u.lang == lang
-                && (u.root.is_empty()
-                    || file_rel
-                        .strip_prefix(&u.root)
-                        .is_some_and(|rest| rest.starts_with('/')))
+            if u.lang != lang {
+                return false;
+            }
+            if lang == LANG_TYPESCRIPT {
+                // A root-prefix test alone would hand every stray file under
+                // the tree — including anything under `node_modules`, which
+                // discovery deliberately excludes from both the unit set and
+                // the file index — to whichever unit happens to sit at the
+                // root. The file index is the authority on membership.
+                return u.files.iter().any(|f| f == file_rel);
+            }
+            u.root.is_empty()
+                || file_rel
+                    .strip_prefix(&u.root)
+                    .is_some_and(|rest| rest.starts_with('/'))
         })
     }
 
@@ -641,6 +676,16 @@ impl UnitMap {
         };
         let (id, module_base) = target_of(unit, file_rel);
         let known: BTreeSet<&str> = self.units.iter().map(|u| u.name.as_str()).collect();
+
+        if unit.lang == LANG_TYPESCRIPT {
+            return UnitContext {
+                id,
+                module_base: join_rel(&unit.root, &unit.ts.base_url),
+                siblings: BTreeMap::new(),
+                ts: unit.ts.clone(),
+                files: unit.files.clone(),
+            };
+        }
 
         let mut siblings = BTreeMap::new();
         if unit.lang == LANG_PYTHON {
@@ -659,6 +704,8 @@ impl UnitMap {
                 id,
                 module_base,
                 siblings,
+                ts: TsConfig::default(),
+                files: Vec::new(),
             };
         }
 
@@ -680,6 +727,8 @@ impl UnitMap {
             id,
             module_base,
             siblings,
+            ts: TsConfig::default(),
+            files: Vec::new(),
         }
     }
 }
@@ -789,6 +838,72 @@ fn join_rel(dir: &str, child: &str) -> String {
 fn first_segment(rel: &str) -> &str {
     let head = rel.split('/').next().unwrap_or(rel);
     head.strip_suffix(".rs").unwrap_or(head)
+}
+
+/// Depth cap for `extends`. A chain longer than this is a configuration
+/// mistake or a cycle; stopping is better than recursing forever.
+const MAX_EXTENDS_DEPTH: usize = 8;
+
+/// Read a `tsconfig.json` and everything it extends, child winning.
+///
+/// Only `extends` targets that are relative paths are followed. A bare
+/// specifier resolves inside `node_modules`, which this graph never reads.
+fn read_tsconfig_chain(path: &Path, depth: usize) -> TsConfig {
+    if depth >= MAX_EXTENDS_DEPTH {
+        return TsConfig::default();
+    }
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return TsConfig::default();
+    };
+    let own = parse_tsconfig(&text);
+
+    let parent = serde_json::from_str::<serde_json::Value>(&strip_jsonc(&text))
+        .ok()
+        .and_then(|v| v.get("extends")?.as_str().map(str::to_string))
+        .filter(|e| e.starts_with('.'))
+        .and_then(|e| {
+            let mut candidate = path.parent()?.join(&e);
+            if candidate.extension().is_none() {
+                candidate.set_extension("json");
+            }
+            Some(read_tsconfig_chain(&candidate, depth + 1))
+        });
+
+    let Some(mut merged) = parent else {
+        return own;
+    };
+    if !own.base_url.is_empty() {
+        merged.base_url = own.base_url;
+    }
+    merged.paths.extend(own.paths);
+    merged
+}
+
+/// Repo-relative TypeScript sources under `unit_abs`, honouring `.gitignore`
+/// and excluding `node_modules` unconditionally.
+fn index_typescript_files(root: &Path, unit_abs: &Path, unit_rel: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in ignore::WalkBuilder::new(unit_abs)
+        .hidden(true)
+        .filter_entry(|e| e.file_name() != "node_modules")
+        .build()
+        .flatten()
+    {
+        if !entry.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        if lang_of_path(entry.path().to_str().unwrap_or("")) != Some(LANG_TYPESCRIPT) {
+            continue;
+        }
+        if let Ok(rel) = entry.path().strip_prefix(root)
+            && let Some(rel) = rel.to_str()
+        {
+            out.push(rel.replace('\\', "/"));
+        }
+    }
+    let _ = unit_rel;
+    out.sort();
+    out
 }
 
 #[cfg(test)]
@@ -908,6 +1023,8 @@ mod tests {
             // Rust targets compute their own root; these fields are Python's.
             import_root: String::new(),
             packages: Vec::new(),
+            ts: TsConfig::default(),
+            files: Vec::new(),
         }
     }
 
@@ -1443,5 +1560,161 @@ mod typescript_tests {
         // string value is data, not a container closer.
         let c = parse_tsconfig(r#"{"compilerOptions": {"paths": {"@x/*": ["a,}b/*"]}}}"#);
         assert_eq!(c.paths.get("@x/*"), Some(&vec!["a,}b/*".to_string()]));
+    }
+
+    // ─── discovery from disk ────────────────────────────────────────
+
+    use tempfile::TempDir;
+
+    fn write(root: &Path, rel: &str, body: &str) {
+        let p = root.join(rel);
+        if let Some(parent) = p.parent() {
+            std::fs::create_dir_all(parent).expect("mkdir");
+        }
+        std::fs::write(p, body).expect("write");
+    }
+
+    #[test]
+    fn discovery_finds_a_typescript_package() {
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(d.path(), "src/index.ts", "");
+        let m = UnitMap::discover(d.path());
+        assert_eq!(
+            m.resolve("src/index.ts").map(Unit::id).as_deref(),
+            Some("typescript:myapp")
+        );
+    }
+
+    #[test]
+    fn two_independent_packages_in_one_tree_are_two_units() {
+        // Not a monorepo — just two projects. The common case.
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "frontend/package.json", r#"{"name": "web"}"#);
+        write(d.path(), "frontend/src/a.ts", "");
+        write(d.path(), "server/package.json", r#"{"name": "api"}"#);
+        write(d.path(), "server/src/a.ts", "");
+        let m = UnitMap::discover(d.path());
+        assert_eq!(
+            m.resolve("frontend/src/a.ts").map(Unit::id).as_deref(),
+            Some("typescript:web")
+        );
+        assert_eq!(
+            m.resolve("server/src/a.ts").map(Unit::id).as_deref(),
+            Some("typescript:api")
+        );
+    }
+
+    #[test]
+    fn node_modules_never_defines_a_unit() {
+        // Every dependency ships a package.json. Walking them would mint
+        // hundreds of units and index tens of thousands of files.
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "node_modules/left-pad/package.json",
+            r#"{"name": "left-pad"}"#,
+        );
+        write(d.path(), "node_modules/left-pad/index.ts", "");
+        let m = UnitMap::discover(d.path());
+        assert_eq!(
+            m.resolve("node_modules/left-pad/index.ts").map(Unit::id),
+            None,
+            "a dependency's file belongs to no unit of ours"
+        );
+    }
+
+    #[test]
+    fn a_units_file_index_excludes_node_modules() {
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(d.path(), "src/a.ts", "");
+        write(d.path(), "node_modules/dep/b.ts", "");
+        let ctx = UnitMap::discover(d.path()).context_for("src/a.ts");
+        assert!(
+            ctx.files.contains(&"src/a.ts".to_string()),
+            "{:?}",
+            ctx.files
+        );
+        assert!(
+            !ctx.files.iter().any(|f| f.contains("node_modules")),
+            "{:?}",
+            ctx.files
+        );
+    }
+
+    #[test]
+    fn a_units_tsconfig_is_read_into_its_context() {
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "tsconfig.json",
+            r#"{"compilerOptions": {"baseUrl": "src", "paths": {"@app/*": ["app/*"]}}}"#,
+        );
+        write(d.path(), "src/a.ts", "");
+        let ctx = UnitMap::discover(d.path()).context_for("src/a.ts");
+        assert_eq!(ctx.ts.base_url, "src");
+        assert_eq!(ctx.ts.paths.get("@app/*"), Some(&vec!["app/*".to_string()]));
+    }
+
+    #[test]
+    fn an_extends_chain_is_followed() {
+        // Shared base configs are standard; not following `extends` loses the
+        // aliases that most projects define exactly once, in the base.
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "tsconfig.base.json",
+            r#"{"compilerOptions": {"baseUrl": "src", "paths": {"@app/*": ["app/*"]}}}"#,
+        );
+        write(
+            d.path(),
+            "tsconfig.json",
+            r#"{"extends": "./tsconfig.base.json"}"#,
+        );
+        write(d.path(), "src/a.ts", "");
+        let ctx = UnitMap::discover(d.path()).context_for("src/a.ts");
+        assert_eq!(ctx.ts.base_url, "src");
+        assert_eq!(ctx.ts.paths.get("@app/*"), Some(&vec!["app/*".to_string()]));
+    }
+
+    #[test]
+    fn a_child_tsconfig_overrides_what_it_extends() {
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "base.json",
+            r#"{"compilerOptions": {"baseUrl": "old"}}"#,
+        );
+        write(
+            d.path(),
+            "tsconfig.json",
+            r#"{"extends": "./base.json", "compilerOptions": {"baseUrl": "src"}}"#,
+        );
+        write(d.path(), "src/a.ts", "");
+        let ctx = UnitMap::discover(d.path()).context_for("src/a.ts");
+        assert_eq!(ctx.ts.base_url, "src");
+    }
+
+    #[test]
+    fn a_self_referential_extends_chain_terminates() {
+        // A cycle here should not hang or overflow the stack — the depth cap
+        // must actually stop recursion.
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "myapp"}"#);
+        write(
+            d.path(),
+            "tsconfig.json",
+            r#"{"extends": "./tsconfig.json", "compilerOptions": {"baseUrl": "src"}}"#,
+        );
+        write(d.path(), "src/a.ts", "");
+        let ctx = UnitMap::discover(d.path()).context_for("src/a.ts");
+        // The file's own baseUrl still applies; the cycle just stops feeding
+        // more "parent" data back in.
+        assert_eq!(ctx.ts.base_url, "src");
     }
 }
