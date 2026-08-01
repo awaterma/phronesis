@@ -144,9 +144,16 @@ This is the hard part of the spec and the main Phase-One risk. A structural enfo
 
 ### 4.1 Language scope
 
-**Extraction is AST-based, per language.** Rust uses `tree-sitter-rust`; Python uses `tree-sitter-python`. Regex extraction is explicitly rejected — it cannot distinguish a call inside a string literal, a comment, or a `cfg`-disabled block, and each of those is a false-block generator.
+**Extraction is AST-based, per language.** Rust uses `tree-sitter-rust`, Python
+uses `tree-sitter-python`, and TypeScript uses `tree-sitter-typescript`. Regex
+extraction is explicitly rejected — it cannot distinguish a call inside a
+string literal, a comment, or a disabled block, and each of those is a
+false-block generator.
 
-The two extractors share the edge vocabulary of §1.2, `::` as the segment separator, and nothing else. Rust's module tree is declared (`mod x;`) while Python's is the directory layout; Rust qualifies by compilation target while Python has none; Rust's imports name modules while Python's name modules *or* the objects inside them. A shared "generic extractor" would be an abstraction over two genuinely different languages, so each is written out.
+The three extractors share the edge vocabulary of §1.2, `::` as the segment
+separator, and nothing else. Their module systems and test shapes differ, so
+a shared "generic extractor" would hide the semantics that determine whether
+an edge is trustworthy. Each extractor is written explicitly.
 
 ### 4.2 Entity naming
 
@@ -268,6 +275,33 @@ is Rust-only.
 Adding Python needed no `GRAPH_FORMAT` bump. Rust identities are unchanged,
 and `.py` files were previously untracked, so they are absent from the index
 and the ordinary drift path reports them — warn, then rebuild.
+
+#### 4.2.4 TypeScript identity and measured corpus
+
+A TypeScript entity is `typescript:<package>::<module path>`, with no target
+suffix. The nearest `package.json` supplies the package name; unclaimed files
+fall back to `typescript:project`. Module paths are relative to
+`compilerOptions.baseUrl` when configured, otherwise to the package root.
+Relative imports probe TypeScript extensions and `index` modules; non-relative
+imports try `paths` aliases and then `baseUrl`. Third-party imports produce no
+edge. An unresolved relative or cross-unit import increments `skipped` rather
+than disappearing silently.
+
+The real-project merge gate used tough-cookie at commit `e8c27e3`: 47 tracked
+TypeScript files and 11,296 lines. A rebuild completed in 3.3 seconds wall time
+and produced 1,221 base edges, 54 derived edges, and **0 skipped items**. The
+base graph included 120 function definitions, 899 direct test-call edges, 105
+resolved imports, and 3 non-null-assertion watchlist edges. Derivation found
+50 untested functions and four `in_cycle` members in one genuine cycle:
+`cookie::cookieJar`, `cookie::index`, `memstore`, and `store`. Inspection of
+their import edges confirmed the cycle rather than merely trusting the SCC
+output.
+
+TypeScript's `calls_api` watchlist contains only the non-null assertion `!`.
+Unlike Rust's panic-at-call-site APIs, it means "this function makes an
+unchecked type assumption"; it does not claim the failure occurs at that
+source location. Both structural warning rules can therefore fire for
+TypeScript, while Python remains import-cycle-only.
 
 ### 4.3 Watched-API list
 
@@ -499,9 +533,9 @@ Structural rules therefore set `audit: true`. Findings carry no line number (the
 
 ## 7. Explicitly Out of Scope for Phase One
 
-* Languages beyond Rust and Python. (Revision 5 added the Python extractor;
-  `calls_api` remains Rust-only, so only `warn-import-cycle` fires on a
-  Python project — see §4.2.3.)
+* Languages beyond Rust, Python, and TypeScript. Python remains
+  import-cycle-only; TypeScript supports both warnings through its narrow `!`
+  watchlist (§4.2.4).
 * Blocking (as opposed to warning) on any structural rule.
 * Transitive/recursive rule evaluation in the engine; cycles are precomputed (§4.5).
 * Any change to `crates/phronesis` engine internals — including `TripleWme`, which is **cut**.
@@ -570,8 +604,9 @@ emits the corresponding generic containment facts from the same AST node; the
 two representations must agree in contract tests.
 
 The identities are exactly those of §4.2. Files remain normalized,
-repo-relative paths. Modules, functions, and tests carry the Rust/Python unit
-prefix. No display name, line number, or short test name is an identity.
+repo-relative paths. Modules, functions, and tests carry their
+language-specific unit prefix. No display name, line number, or short test
+name is an identity.
 Renaming an element is deletion plus addition; Phase Two does not attempt
 heuristic rename detection.
 
@@ -904,6 +939,15 @@ Omitting the relation returns the relation inventory with edge counts, so the vo
 ---
 
 ## 11. Revision History
+
+**Revision 7** — added the TypeScript extractor:
+
+* Defined package-qualified TypeScript identities and filesystem-backed
+  resolution for relative imports, `baseUrl`, and `paths` aliases (§4.2.4).
+* Added the narrow non-null-assertion watchlist and kept its claim distinct
+  from Rust's panic-at-call-site watchlist.
+* Recorded the required tough-cookie real-corpus validation: 1,221 base, 54
+  derived, 0 skipped, with 105 resolved imports and one confirmed cycle.
 
 **Revision 6** — specified first-class elements and grounded evidence:
 

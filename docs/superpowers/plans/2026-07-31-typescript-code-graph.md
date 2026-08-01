@@ -47,7 +47,7 @@ Resolution lives in its own file rather than inside `typescript.rs` because it i
 **Interfaces:**
 - Produces: `pub const LANG_TYPESCRIPT: &str = "typescript";` — `lang_of_path` returns it for `.ts`, `.tsx`, `.mts`, `.cts`; `unnamed_name` returns `"project"` for it.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to the `python_tests` module's sibling — create a new `mod typescript_tests` at the end of `unit.rs`:
 
@@ -72,12 +72,12 @@ mod typescript_tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p phronesis-mcp --lib graph::unit::typescript_tests`
 Expected: FAIL — `cannot find value LANG_TYPESCRIPT in this scope`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `crates/phronesis-mcp/src/graph/unit.rs`, after the `LANG_PYTHON` const:
 
@@ -110,12 +110,12 @@ fn unnamed_name(lang: &str) -> &'static str {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib graph::unit::typescript_tests`
 Expected: PASS, 2 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/src/graph/unit.rs
@@ -132,7 +132,7 @@ git commit -m "feat(graph): recognize TypeScript source extensions"
 **Interfaces:**
 - Produces: `pub fn parse_package_json(text: &str) -> Manifest` — sets `Manifest::package` from the `name` field, leaves `deps` and `workspace_deps` empty.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `mod typescript_tests`:
 
@@ -164,12 +164,12 @@ fn malformed_package_json_declares_no_package() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p phronesis-mcp --lib graph::unit::typescript_tests`
 Expected: FAIL — `cannot find function parse_package_json`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add to `unit.rs`, beside `parse_pyproject_manifest`:
 
@@ -192,12 +192,12 @@ pub fn parse_package_json(text: &str) -> Manifest {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib graph::unit::typescript_tests`
 Expected: PASS, 6 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/src/graph/unit.rs
@@ -227,7 +227,7 @@ pub struct TsConfig {
 pub fn parse_tsconfig(text: &str) -> TsConfig;
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `mod typescript_tests`:
 
@@ -290,12 +290,12 @@ fn malformed_tsconfig_yields_defaults_rather_than_guesses() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p phronesis-mcp --lib graph::unit::typescript_tests`
 Expected: FAIL — `cannot find type TsConfig`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add to `unit.rs`:
 
@@ -404,12 +404,12 @@ pub fn parse_tsconfig(text: &str) -> TsConfig {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib graph::unit::typescript_tests`
 Expected: PASS, 14 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/src/graph/unit.rs
@@ -427,7 +427,7 @@ git commit -m "feat(graph): parse tsconfig baseUrl and path aliases"
 - Consumes: `parse_package_json` (Task 2), `parse_tsconfig` (Task 3).
 - Produces: `Unit` gains `pub ts: TsConfig` and `pub files: Vec<String>` (repo-relative paths of this unit's TypeScript sources, sorted). `UnitContext` gains the same two fields. Every existing `Unit { .. }` literal in tests must add `ts: TsConfig::default(), files: Vec::new()`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `mod typescript_tests`:
 
@@ -551,12 +551,12 @@ fn a_child_tsconfig_overrides_what_it_extends() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p phronesis-mcp --lib graph::unit`
 Expected: FAIL — `no field ts on type UnitContext`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add the two fields to `Unit`:
 
@@ -710,12 +710,12 @@ In `context_for`, carry both fields through for TypeScript units — insert befo
 
 Finally, add `ts: TsConfig::default(), files: Vec::new()` to the `unit()` test helper in `mod tests`.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib graph::unit`
 Expected: PASS — all existing unit tests plus 21 in `typescript_tests`
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/src/graph/unit.rs
@@ -755,7 +755,7 @@ pub fn resolve_specifier(
 pub fn module_path(file_rel: &str, unit: &UnitContext) -> String;
 ```
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `crates/phronesis-mcp/src/graph/resolve.rs` containing only the test module for now:
 
@@ -938,14 +938,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Add `pub mod resolve;` to `crates/phronesis-mcp/src/graph/mod.rs` (alphabetically, after `pub mod query;`).
 
 Run: `cargo test -p phronesis-mcp --lib graph::resolve`
 Expected: FAIL — `cannot find type Resolution in this scope`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Prepend to `resolve.rs`:
 
@@ -1124,12 +1124,12 @@ fn normalize(path: &str) -> String {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib graph::resolve`
 Expected: PASS, 15 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/src/graph/resolve.rs crates/phronesis-mcp/src/graph/mod.rs
@@ -1148,7 +1148,7 @@ git commit -m "feat(graph): resolve TypeScript import specifiers to module ident
 - Consumes: `resolve::module_path` (Task 5), `Extracted` / `Extracted::unparseable()` from `super::extract`.
 - Produces: `pub fn extract_typescript(file_path: &str, content: &str, unit: &UnitContext) -> Extracted`.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `crates/phronesis-mcp/src/graph/typescript.rs` with the module doc, a `file_type` fn, and this test module:
 
@@ -1286,14 +1286,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Add `pub mod typescript;` to `crates/phronesis-mcp/src/graph/mod.rs`.
 
 Run: `cargo test -p phronesis-mcp --lib graph::typescript`
 Expected: FAIL — `cannot find function extract_typescript`
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Prepend to `typescript.rs`:
 
@@ -1507,12 +1507,12 @@ pub fn extract_typescript(
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib graph::typescript`
 Expected: PASS, 10 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/src/graph/typescript.rs crates/phronesis-mcp/src/graph/mod.rs
@@ -1530,7 +1530,7 @@ git commit -m "feat(graph): extract TypeScript modules, functions and imports"
 - Consumes: the `Sensor` from Task 6.
 - Produces: `tested_by` edges keyed on test title strings, `calls_api(fn, "non_null_assertion")` edges.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Add to `typescript.rs`'s `mod tests`:
 
@@ -1626,12 +1626,12 @@ fn several_assertions_in_one_function_yield_one_edge() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p phronesis-mcp --lib graph::typescript`
 Expected: FAIL — `tested_by` and `calls_api` edge lists are empty
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Add to `Sensor`, and call `self.test_call(node)` from `walk`'s `_ => {}` arm before `walk_children` when `node.kind() == "call_expression"`:
 
@@ -1722,12 +1722,12 @@ And in `walk`'s default arm, before recursing:
             }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib graph::typescript`
 Expected: PASS, 17 tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/src/graph/typescript.rs
@@ -1745,7 +1745,7 @@ git commit -m "feat(graph): record TypeScript test coverage and non-null asserti
 - Consumes: `extract_typescript` (Task 6).
 - Produces: `TRACKED_EXTENSIONS` includes `.ts`, `.tsx`, `.mts`, `.cts`; `extract_one` dispatches to the TypeScript extractor.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `sync.rs`'s `mod tests`:
 
@@ -1769,12 +1769,12 @@ fn saving_a_typescript_file_writes_its_base_edges() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p phronesis-mcp --lib graph::sync::tests::saving_a_typescript_file`
 Expected: FAIL — no `defines_fn` edge, because `.ts` is not tracked
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `sync.rs`, extend the constant:
 
@@ -1818,12 +1818,12 @@ Also exclude `node_modules` from `tracked_files`'s walk, mirroring discovery:
         .flatten()
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib graph::`
 Expected: PASS — all graph tests
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/src/graph/sync.rs
@@ -1842,7 +1842,7 @@ git commit -m "feat(graph): track and extract TypeScript files on save"
 - Consumes: the `calls_api` / `in_cycle` edges from Tasks 6–8.
 - Produces: rules `warn-ts-untested-risky-call` and `warn-ts-import-cycle` in `structural_rules()`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Add to `init.rs`'s test module, beside the existing structural-rule tests:
 
@@ -1864,12 +1864,12 @@ fn structural_rules_cover_typescript() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p phronesis-mcp --lib init::tests::structural_rules_cover_typescript`
 Expected: FAIL — ids do not contain the TypeScript rules
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 In `structural_rules()`, append two rules to the array. Both `warn`, both
 `audit: true`, both opening on `edited_file`, mirroring the Rust pair:
@@ -1903,12 +1903,12 @@ In `structural_rules()`, append two rules to the array. Both `warn`, both
             }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp --lib init`
 Expected: PASS — including the existing `structural_rules_opt_into_audit` test, which now covers four rules
 
-- [ ] **Step 5: Regenerate the catalogue and commit**
+- [x] **Step 5: Regenerate the catalogue and commit**
 
 The catalogue is a generated artifact and drifts otherwise.
 
@@ -1929,7 +1929,7 @@ git commit -m "feat(init): ship TypeScript structural rules"
 **Interfaces:**
 - Consumes: everything above, exercised through the `phr-mcp` binary rather than library calls.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `tests/graph_structural_rules.rs`:
 
@@ -2067,16 +2067,16 @@ fn three_languages_coexist_in_one_graph() {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
+- [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p phronesis-mcp --test graph_structural_rules typescript`
 Expected: FAIL on `a_typescript_project_produces_a_graph` before Tasks 6–8 land; after them, run to confirm all four pass.
 
-- [ ] **Step 3: No new implementation**
+- [x] **Step 3: No new implementation**
 
 These tests exercise code written in Tasks 1–9. If any fails, the defect is in those tasks — fix it there rather than weakening the test.
 
-- [ ] **Step 4: Run the full gate**
+- [x] **Step 4: Run the full gate**
 
 ```bash
 cargo fmt --all --check
@@ -2086,7 +2086,7 @@ cargo test --workspace
 
 Run `cargo test --workspace` unpiped. Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/phronesis-mcp/tests/graph_structural_rules.rs
@@ -2107,7 +2107,7 @@ git commit -m "test(graph): end-to-end TypeScript extraction through the real bi
 
 **This task is a merge gate, not a formality.** phronesis contains no TypeScript, so every test above runs on fixtures this plan also wrote. Synthetic fixtures pass while resolution quietly drops edges on real code — that is the failure mode this design exists to prevent, and it has already shipped twice in this codebase.
 
-- [ ] **Step 1: Build and run against a real project**
+- [x] **Step 1: Build and run against a real project**
 
 ```bash
 cargo build -p phronesis-mcp
@@ -2117,7 +2117,7 @@ cd /path/to/a/real/typescript/project
 
 Record the reported counts: base edges, derived edges, **and `skipped`**.
 
-- [ ] **Step 2: Check resolution actually resolved**
+- [x] **Step 2: Check resolution actually resolved**
 
 ```bash
 /path/to/phr-mcp graph query imports --path . | head -30
@@ -2129,7 +2129,7 @@ Confirm by inspection:
 - The `defines_fn` count is plausible for the codebase's size.
 - `skipped` is small. **A large `skipped` means resolution is failing** — investigate before proceeding rather than shipping it.
 
-- [ ] **Step 3: Check a known cycle, or confirm none**
+- [x] **Step 3: Check a known cycle, or confirm none**
 
 ```bash
 /path/to/phr-mcp graph query in_cycle --path .
@@ -2137,13 +2137,13 @@ Confirm by inspection:
 
 Compare against what the team knows. Zero cycles in a large codebase is a plausible answer *and* the signature of broken resolution — distinguishing the two is the point of Step 2.
 
-- [ ] **Step 4: Record the measurement in the spec**
+- [x] **Step 4: Record the measurement in the spec**
 
 Add a subsection to `docs/specs/SPEC-triple-store-rete.md` §4.2 giving the
 project's size, the edge counts, the `skipped` count, and the rebuild time.
 Write what was measured, not what was hoped for.
 
-- [ ] **Step 5: Update the pack description and changelog**
+- [x] **Step 5: Update the pack description and changelog**
 
 In `crates/phronesis-mcp/CLAUDE.md`, extend the `structural` pack bullet to
 state TypeScript's coverage accurately — that it carries both rules, using
@@ -2153,7 +2153,7 @@ Add a `## [0.24.0]` entry to `CHANGELOG.md` covering the extractor, the two
 rules, and the stated limits (no monorepo support, cross-unit imports
 counted rather than resolved).
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/specs/SPEC-triple-store-rete.md crates/phronesis-mcp/CLAUDE.md CHANGELOG.md
