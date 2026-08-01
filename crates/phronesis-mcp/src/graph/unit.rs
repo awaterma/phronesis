@@ -347,6 +347,23 @@ pub fn parse_pyproject_manifest(text: &str) -> Manifest {
     out
 }
 
+/// Parse the one field of `package.json` that bears on identity: `name`.
+///
+/// Real JSON, not the hand-rolled scanner used for TOML: `package.json` is
+/// JSON by definition and `serde_json` is already a dependency, so there is
+/// no reason to approximate it. A file that does not parse declares no
+/// package, which loses a unit rather than inventing one.
+pub fn parse_package_json(text: &str) -> Manifest {
+    let mut out = Manifest::default();
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(text)
+        && let Some(serde_json::Value::String(name)) = map.get("name")
+        && !name.is_empty()
+    {
+        out.package = Some(name.clone());
+    }
+    out
+}
+
 /// Every unit in a project, resolvable by file path.
 #[derive(Debug, Default, Clone)]
 pub struct UnitMap {
@@ -1142,5 +1159,31 @@ mod typescript_tests {
         // The fallback follows the file's own language, as Python's does.
         let m = UnitMap::default();
         assert_eq!(m.context_for("scripts/tool.ts").id, "typescript:project");
+    }
+
+    #[test]
+    fn a_package_json_declares_its_package_name() {
+        let m = parse_package_json(r#"{"name": "myapp", "version": "1.0.0"}"#);
+        assert_eq!(m.package.as_deref(), Some("myapp"));
+    }
+
+    #[test]
+    fn a_scoped_package_name_is_kept_whole() {
+        // `@org/pkg` is one name, not a path. Splitting it would invent a unit.
+        let m = parse_package_json(r#"{"name": "@yourorg/billing"}"#);
+        assert_eq!(m.package.as_deref(), Some("@yourorg/billing"));
+    }
+
+    #[test]
+    fn a_package_json_without_a_name_declares_no_package() {
+        // Common in app roots that are not published.
+        let m = parse_package_json(r#"{"private": true, "scripts": {}}"#);
+        assert_eq!(m.package, None);
+    }
+
+    #[test]
+    fn malformed_package_json_declares_no_package() {
+        // Degrades to "no unit" rather than guessing a name.
+        assert_eq!(parse_package_json("{not json").package, None);
     }
 }
