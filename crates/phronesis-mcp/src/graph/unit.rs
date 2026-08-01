@@ -647,6 +647,15 @@ impl UnitMap {
     /// `crates/`, and innermost-root alone would hand a `.py` file beside the
     /// Rust code a Cargo package — naming it `rust:inner::…` and merging it
     /// with whatever Rust module shares its path.
+    ///
+    /// TypeScript resolution is membership-based rather than prefix-based: a
+    /// file resolves only if it appears in some unit's indexed `files` (see
+    /// `Unit::files`), which `discover` populates once from disk. A
+    /// `UnitMap` therefore reflects the tree as it stood at `discover` time —
+    /// a file created afterward is invisible to this method and to
+    /// `context_for` until the map is rediscovered; it falls back to the
+    /// unnamed context in the meantime rather than joining the wrong unit or
+    /// the right one by accident.
     pub fn resolve(&self, file_rel: &str) -> Option<&Unit> {
         let lang = lang_of_path(file_rel)?;
         self.units.iter().find(|u| {
@@ -879,13 +888,35 @@ fn read_tsconfig_chain(path: &Path, depth: usize) -> TsConfig {
     merged
 }
 
-/// Repo-relative TypeScript sources under `unit_abs`, honouring `.gitignore`
-/// and excluding `node_modules` unconditionally.
+/// Repo-relative TypeScript sources under `unit_abs`, honouring `.gitignore`,
+/// excluding `node_modules` unconditionally, and stopping at the boundary of
+/// any nested unit.
+///
+/// A nested `package.json` starts a unit of its own; descending past it
+/// would let the outer unit's file index claim files that actually belong to
+/// the inner one. `resolve` is membership-based against this index (see its
+/// doc comment), so a polluted index does not just misname a file — it can
+/// resolve an import in the outer unit to a file that identifies itself
+/// under the inner unit's `id`/`module_base`, producing an edge that never
+/// joins the file's own `declares_module`. Better to under-index (parent
+/// misses a file it never owned) than to over-index (parent claims a file it
+/// doesn't own).
 fn index_typescript_files(root: &Path, unit_abs: &Path, unit_rel: &str) -> Vec<String> {
     let mut out = Vec::new();
+    let unit_abs_owned = unit_abs.to_path_buf();
     for entry in ignore::WalkBuilder::new(unit_abs)
         .hidden(true)
-        .filter_entry(|e| e.file_name() != "node_modules")
+        .filter_entry(move |e| {
+            if e.file_name() == "node_modules" {
+                return false;
+            }
+            // The unit's own root always carries a package.json; only a
+            // *nested* directory carrying one marks a boundary to stop at.
+            e.path() == unit_abs_owned
+                || !e
+                    .file_type()
+                    .is_some_and(|t| t.is_dir() && e.path().join("package.json").is_file())
+        })
         .build()
         .flatten()
     {
@@ -1716,5 +1747,68 @@ mod typescript_tests {
         // The file's own baseUrl still applies; the cycle just stops feeding
         // more "parent" data back in.
         assert_eq!(ctx.ts.base_url, "src");
+    }
+
+    #[test]
+    fn a_nested_units_files_do_not_leak_into_the_outer_units_index() {
+        // A unit's `files` must contain only files that resolve to that
+        // unit. Without a boundary at the nested package.json, the outer
+        // unit's index would claim the inner unit's sources too, and a later
+        // import resolution against that index could name a file under the
+        // wrong unit's id/module_base entirely.
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "root"}"#);
+        write(d.path(), "src/root.ts", "");
+        write(
+            d.path(),
+            "packages/inner/package.json",
+            r#"{"name": "inner"}"#,
+        );
+        write(d.path(), "packages/inner/src/a.ts", "");
+        let m = UnitMap::discover(d.path());
+
+        let outer = m.context_for("src/root.ts");
+        assert_eq!(outer.id, "typescript:root");
+        assert!(
+            outer.files.contains(&"src/root.ts".to_string()),
+            "{:?}",
+            outer.files
+        );
+        assert!(
+            !outer.files.contains(&"packages/inner/src/a.ts".to_string()),
+            "outer unit's files leaked the inner unit's source: {:?}",
+            outer.files
+        );
+
+        let inner = m.context_for("packages/inner/src/a.ts");
+        assert_eq!(inner.id, "typescript:inner");
+        assert!(
+            inner.files.contains(&"packages/inner/src/a.ts".to_string()),
+            "{:?}",
+            inner.files
+        );
+    }
+
+    #[test]
+    fn a_file_created_after_discovery_is_invisible_until_rediscovered() {
+        // `resolve` and `context_for` are membership-based against the
+        // `files` index captured at `discover` time. Nothing in this crate
+        // caches a `UnitMap` across saves today (sync always rediscovers
+        // fresh before resolving), but the invariant is public API and must
+        // be pinned: a stale map does not silently join the wrong unit, it
+        // falls back to the unnamed context.
+        let d = TempDir::new().expect("tempdir");
+        write(d.path(), "package.json", r#"{"name": "root"}"#);
+        write(d.path(), "src/a.ts", "");
+        let m = UnitMap::discover(d.path());
+
+        write(d.path(), "src/late.ts", "");
+
+        assert_eq!(
+            m.context_for("src/late.ts").id,
+            "typescript:project",
+            "a file created after discovery must not resolve into the unit \
+             it would belong to on a fresh discovery"
+        );
     }
 }
