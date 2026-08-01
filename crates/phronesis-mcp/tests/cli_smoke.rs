@@ -44,8 +44,13 @@ fn make_project(dir: &Path) {
     .unwrap();
 }
 
+/// Every pack `--packs` accepts must be discoverable from `--help`.
+///
+/// Asserted name by name rather than as one contiguous string: clap rewraps
+/// the paragraph at the terminal width, so a substring spanning the wrap point
+/// fails for reasons that have nothing to do with the pack list.
 #[test]
-fn init_help_lists_journey_as_an_installable_pack() {
+fn init_help_lists_every_installable_pack() {
     let out = Command::new(bin())
         .args(["init", "--help"])
         .output()
@@ -56,10 +61,24 @@ fn init_help_lists_journey_as_an_installable_pack() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("swift, confidence, journey, none"),
-        "installable journey pack missing from help: {stdout}"
-    );
+    for pack in [
+        "llm",
+        "rust",
+        "rhai",
+        "python",
+        "typescript",
+        "swift",
+        "confidence",
+        "journey",
+        "context",
+        "structural",
+        "none",
+    ] {
+        assert!(
+            stdout.contains(pack),
+            "installable pack `{pack}` missing from help: {stdout}"
+        );
+    }
 }
 
 #[test]

@@ -39,6 +39,7 @@ pub enum Pack {
     Swift,
     Confidence,
     Journey,
+    Context,
     Structural,
     None,
 }
@@ -59,6 +60,7 @@ impl Pack {
         Self::Swift,
         Self::Confidence,
         Self::Journey,
+        Self::Context,
         Self::Structural,
         Self::None,
     ];
@@ -74,6 +76,7 @@ impl Pack {
             "swift" => Ok(Self::Swift),
             "confidence" => Ok(Self::Confidence),
             "journey" => Ok(Self::Journey),
+            "context" => Ok(Self::Context),
             "structural" | "graph" => Ok(Self::Structural),
             "none" => Ok(Self::None),
             other => Err(InitError::UnknownPack(other.to_string())),
@@ -91,6 +94,7 @@ impl Pack {
             Self::Swift => swift_rules(),
             Self::Confidence => confidence_rules(),
             Self::Structural => structural_rules(),
+            Self::Context => json!({"rules": []}),
             // Journey ships no starter rules in v1 — the project defines its
             // own risk surface via `journey.json` and adds journey_* rules to
             // rules.json. The pack's contribution is the journey.json starter
@@ -109,25 +113,60 @@ impl Pack {
             Self::Swift => "swift",
             Self::Confidence => "confidence",
             Self::Journey => "journey",
+            Self::Context => "context",
             Self::Structural => "structural",
             Self::None => "none",
         }
     }
 }
 
-/// Parse a comma-separated pack list (e.g. `"llm,rust"`). Whitespace tolerated.
-/// Empty input → just `[Llm]` (the default). Duplicates are deduped.
+/// What `base` expands to: every language-agnostic pack.
+///
+/// `context` is included on measured evidence, not on principle. On a
+/// `base,rust` fixture carrying a 3,292-byte durable file and five blocked
+/// edits, opting in cut the per-interaction payload from 4,038 to 1,556 bytes
+/// (61.5%, against the specification's 60% target), kept every blocking item,
+/// stopped the session charter truncating mid-rule-list, and recorded zero
+/// raw truncations at a p95 construction latency of 3.4 ms.
+///
+/// Language packs are excluded on purpose. Several of their rules match raw
+/// substrings gated only by path — the TypeScript `: any` rule fires on Rust's
+/// `: anyhow::Error`, for instance — so composing every language at once is a
+/// false-positive source rather than a convenience. Name the one you want:
+/// `base,rust`.
+pub const BASE_PACKS: &[Pack] = &[
+    Pack::Llm,
+    Pack::Confidence,
+    Pack::Journey,
+    Pack::Structural,
+    Pack::Context,
+];
+
+/// Parse a comma-separated pack list (e.g. `"base,rust"`). Whitespace
+/// tolerated. Empty input → just `[Llm]` (the default). Duplicates are deduped,
+/// so `base,llm` is the same as `base`.
 pub fn parse_packs(s: &str) -> Result<Vec<Pack>, InitError> {
     if s.trim().is_empty() {
         return Ok(vec![Pack::Llm]);
     }
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
-    for part in s.split(',') {
-        let pack = Pack::parse(part)?;
+    let mut push = |pack: Pack, out: &mut Vec<Pack>| {
         if seen.insert(pack) {
             out.push(pack);
         }
+    };
+    for part in s.split(',') {
+        // `base` is an expansion, not a pack: every downstream step
+        // (scaffolding, gitignore carveouts, the catalogue) keys off the
+        // concrete packs, so it must never see a composite variant.
+        if part.trim().eq_ignore_ascii_case("base") {
+            for &pack in BASE_PACKS {
+                push(pack, &mut out);
+            }
+            continue;
+        }
+        push(Pack::parse(part)?, &mut out);
     }
     Ok(out)
 }
@@ -161,7 +200,7 @@ pub fn compose_packs(packs: &[Pack]) -> Value {
 #[derive(Debug, Error)]
 pub enum InitError {
     #[error(
-        "unknown pack `{0}`; valid: llm, rust, rhai, python, typescript, swift, confidence, journey, none"
+        "unknown pack `{0}`; valid: base, llm, rust, rhai, python, typescript, swift, confidence, journey, context, structural, none"
     )]
     UnknownPack(String),
     #[error("project root does not exist: {0}")]
@@ -439,6 +478,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
     if !opts.hooks_only {
         write_rules_file(&root, &opts, &mut report)?;
         write_durable_md(&root, &opts, &mut report)?;
+        write_context_scaffold(&root, &opts, &mut report)?;
         write_wiki_scaffold(&root, &opts, &mut report)?;
         write_confidence_scaffold(&root, &opts, &mut report)?;
         write_journey_scaffold(&root, &opts, &mut report)?;
@@ -846,6 +886,14 @@ re-read by the model every turn and so is safe from context-window
 fade.)
 "#;
 
+const DEFAULT_CONTEXT_KERNEL: &str = r#"# Durable project kernel
+
+- Treat Phronesis findings as evidence with stated limits, not proof.
+- Obtain current build, test, manual, or traced evidence before claiming completion.
+- Surface conflicts between guidance, rules, decisions, and implementation.
+- Retrieve detailed rules, decisions, graph facts, and history over MCP when relevant.
+"#;
+
 fn write_durable_md(
     root: &Path,
     opts: &InitOpts,
@@ -861,6 +909,10 @@ fn write_durable_md(
         return Ok(());
     }
 
+    // `durable.md` keeps its meaning whatever packs are selected: it is the
+    // session-level project document. The context pack adds `kernel.md`
+    // alongside it rather than replacing it, so opting in never changes what
+    // this file is for.
     if opts.dry_run {
         report.steps.push(
             "+ would write .phronesis/durable.md (default drift-discipline notes)".to_string(),
@@ -876,6 +928,183 @@ fn write_durable_md(
     report
         .steps
         .push("+ wrote .phronesis/durable.md (default drift-discipline notes)".to_string());
+    Ok(())
+}
+
+const CONTEXT_NUDGES_README: &str = r#"# Situational context nudges
+
+Each `*.md` file in this directory is a **capsule**: a short piece of trusted
+project guidance that is injected into the model's context only when current
+facts make it relevant. Files load in bytewise filename order.
+
+A capsule is strict JSON frontmatter delimited by `---json` and a line of
+exactly `---`, followed by a static Markdown body:
+
+```markdown
+---json
+{
+  "id": "low-grounded-confidence",
+  "priority": 95,
+  "max_bytes": 240,
+  "when": {
+    "predicate": "context_confidence_band",
+    "args": ["low"]
+  }
+}
+---
+
+Grounded confidence for the open work unit is low. Obtain current build, test,
+or known-bug evidence before making an irreversible claim or operation.
+```
+
+## Frontmatter
+
+| Field | Type | Contract |
+|---|---|---|
+| `id` | string | `[a-z0-9][a-z0-9-]{0,63}`, unique across the project |
+| `priority` | integer | 0–100 inclusive; higher packs first |
+| `max_bytes` | integer | 64–1024 inclusive; an assertion about *this* body |
+| `when` | condition | positive condition tree, see below |
+
+Parsing is deliberately unforgiving, because this is a prompt surface:
+duplicate keys at any nesting level, unknown fields, wrong scalar types,
+trailing JSON after the object, and non-object roots are all errors. A
+duplicate `id` skips **every** file sharing it — no copy wins. A body larger
+than its declared `max_bytes` is rejected at load time rather than silently
+competing under a false assertion.
+
+`max_bytes` bounds one capsule. Competition *among* capsules is governed by
+`interaction.nudges_max_bytes` in `.phronesis/context.json`.
+
+## Conditions
+
+`when` is either a single leaf or a positive `all` / `any` group:
+
+```json
+{"when": {"predicate": "context_confidence_band", "args": ["low"]}}
+
+{"when": {"all": [
+  {"predicate": "journey_seen", "args": ["rule-blocked", "session"]},
+  {"predicate": "context_confidence_band", "args": ["low"]}
+]}}
+```
+
+- `args` are exact constant matches. Variables (`?name`) are rejected —
+  the body cannot use bindings, so a binding would buy nothing.
+- `all` and `any` nest, up to 16 levels and 256 expanded alternatives.
+- `not`, `unless`, empty groups, scripts, and actions are rejected. There is
+  no absence-based trigger: a capsule fires on facts that are true, never on
+  facts that are missing.
+
+Only allowlisted predicates may trigger a capsule. Run
+`phr-mcp context predicates` for the current list — adding to it is a
+reviewed code change, not a configuration option.
+
+## Bodies are static
+
+A capsule body is literal text. Runtime facts select a capsule but are never
+interpolated into it, which is what stops a filename, tool output, or rule
+parameter from becoming a second-order prompt-injection channel. `?variable`,
+`{{ ... }}`, and `${ ... }` are rejected so no author is misled into thinking
+substitution happens.
+
+The renderer appends only the capsule's own trusted id:
+
+```text
+[phronesis nudge: low-grounded-confidence]
+```
+
+Keep detailed procedures in ADRs or project docs — a capsule may name a stable
+MCP tool or decision id in prose, but it is a short situational reminder, not
+documentation.
+
+## Checking your work
+
+```sh
+phr-mcp context predicates                    # what may trigger a capsule
+phr-mcp context inspect --event interaction   # dry run: what would be selected, and why not
+phr-mcp context stats --since 7d              # observed cost and selection counts
+```
+
+`inspect` is read-only: it writes no observation, so inspecting never
+contaminates the data it reports on. It names every capsule that failed to
+load and every demanded fact that could not be hydrated — which is how you
+tell "the facts were false" apart from "the selector has a typo."
+"#;
+
+fn write_context_scaffold(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    if !opts.packs.contains(&Pack::Context) {
+        return Ok(());
+    }
+    let config_path = root.join(".phronesis").join("context.json");
+    let kernel_path = root.join(".phronesis").join("kernel.md");
+    let readme_path = root.join(".phronesis").join("nudges").join("README.md");
+    if opts.dry_run {
+        if !config_path.exists() {
+            report
+                .steps
+                .push("+ would write .phronesis/context.json".to_string());
+        }
+        if !kernel_path.exists() {
+            report
+                .steps
+                .push("+ would write .phronesis/kernel.md".to_string());
+        }
+        if !readme_path.exists() {
+            report
+                .steps
+                .push("+ would write .phronesis/nudges/README.md".to_string());
+        }
+        return Ok(());
+    }
+    if !kernel_path.exists() {
+        ensure_parent(&kernel_path)?;
+        std::fs::write(&kernel_path, DEFAULT_CONTEXT_KERNEL).map_err(|source| InitError::Io {
+            path: kernel_path.display().to_string(),
+            source,
+        })?;
+        report
+            .steps
+            .push("+ wrote .phronesis/kernel.md (always-on kernel)".to_string());
+    } else {
+        report
+            .steps
+            .push("= .phronesis/kernel.md already exists — leaving unchanged".to_string());
+    }
+    if !config_path.exists() {
+        ensure_parent(&config_path)?;
+        let body = serde_json::to_string_pretty(&crate::context::config::ContextConfig::default())
+            .map_err(InitError::Json)?;
+        std::fs::write(&config_path, format!("{body}\n")).map_err(|source| InitError::Io {
+            path: config_path.display().to_string(),
+            source,
+        })?;
+        report
+            .steps
+            .push("+ wrote .phronesis/context.json".to_string());
+    } else {
+        report
+            .steps
+            .push("= .phronesis/context.json already exists — leaving unchanged".to_string());
+    }
+    if !readme_path.exists() {
+        ensure_parent(&readme_path)?;
+        std::fs::write(&readme_path, CONTEXT_NUDGES_README).map_err(|source| InitError::Io {
+            path: readme_path.display().to_string(),
+            source,
+        })?;
+        report
+            .steps
+            .push("+ wrote .phronesis/nudges/README.md".to_string());
+    } else {
+        report
+            .steps
+            .push("= .phronesis/nudges/README.md already exists — leaving unchanged".to_string());
+    }
     Ok(())
 }
 
@@ -1128,6 +1357,15 @@ fn update_gitignore(
     // `.phronesis/*` — local state only.
     if opts.packs.contains(&Pack::Journey) {
         entries.push("!.phronesis/journey.json");
+    }
+    // Context configuration and nudge capsules are project-owned policy that
+    // must travel with the repository. Without these carveouts the broad
+    // `.phronesis/*` ignore would hide the very files the pack just wrote.
+    if opts.packs.contains(&Pack::Context) {
+        entries.push("!.phronesis/context.json");
+        entries.push("!.phronesis/kernel.md");
+        entries.push("!.phronesis/nudges/");
+        entries.push("!.phronesis/nudges/**");
     }
     let original = if path.exists() {
         std::fs::read_to_string(&path).map_err(|e| InitError::Io {
@@ -2912,6 +3150,305 @@ mod tests {
             bak_path.exists(),
             "force should back up the prior rules file"
         );
+    }
+
+    // ── base expansion ──────────────────────────────────────────────────
+
+    #[test]
+    fn base_expands_to_every_language_agnostic_pack() {
+        assert_eq!(parse_packs("base").expect("parse"), BASE_PACKS.to_vec());
+    }
+
+    #[test]
+    fn base_contains_no_language_pack() {
+        // Language packs match raw substrings gated only by path, so bundling
+        // them produces cross-language false positives (the TypeScript `: any`
+        // rule fires on Rust's `: anyhow::Error`).
+        for language in [
+            Pack::Rust,
+            Pack::Rhai,
+            Pack::Python,
+            Pack::TypeScript,
+            Pack::Swift,
+        ] {
+            assert!(
+                !BASE_PACKS.contains(&language),
+                "{} must be opted into by name",
+                language.label()
+            );
+        }
+    }
+
+    #[test]
+    fn base_composes_with_a_language_pack() {
+        let packs = parse_packs("base,rust").expect("parse");
+        assert!(packs.contains(&Pack::Rust));
+        for pack in BASE_PACKS {
+            assert!(packs.contains(pack), "{} missing", pack.label());
+        }
+    }
+
+    #[test]
+    fn base_is_order_preserving_and_deduped() {
+        // Naming a pack `base` already covers must not duplicate it, and the
+        // explicit tail must keep its position.
+        let packs = parse_packs("base,llm,structural,rust").expect("parse");
+        let mut unique = packs.clone();
+        unique.sort_by_key(|p| p.label());
+        unique.dedup();
+        assert_eq!(unique.len(), packs.len(), "duplicate pack in {packs:?}");
+        assert_eq!(packs.last(), Some(&Pack::Rust));
+    }
+
+    #[test]
+    fn base_is_case_insensitive_and_whitespace_tolerant() {
+        assert_eq!(
+            parse_packs("  BASE , rust ").expect("parse"),
+            parse_packs("base,rust").expect("parse")
+        );
+    }
+
+    #[test]
+    fn an_unknown_pack_still_errors_and_names_base() {
+        let err = parse_packs("base,nonsense").expect_err("unknown pack must error");
+        let message = err.to_string();
+        assert!(message.contains("nonsense"));
+        assert!(message.contains("base"), "help must list base: {message}");
+    }
+
+    #[test]
+    fn init_with_base_scaffolds_every_subsystem() {
+        let d = tempfile::TempDir::new().expect("tempdir");
+        run(InitOpts {
+            project_root: d.path().to_path_buf(),
+            packs: parse_packs("base").expect("parse"),
+            force: false,
+            dry_run: false,
+            rules_only: false,
+            hooks_only: false,
+        })
+        .expect("init");
+        let ep = d.path().join(".phronesis");
+        for file in [
+            "rules.json",
+            "durable.md",
+            "confidence.json",
+            "bugs.json",
+            "toolchains.json",
+            "journey.json",
+            "context.json",
+            "nudges/README.md",
+        ] {
+            assert!(ep.join(file).exists(), "base must scaffold {file}");
+        }
+    }
+
+    #[test]
+    fn base_ships_the_compact_kernel_within_its_own_ceiling() {
+        // `base` includes the context pack, so a fresh project gets a
+        // `kernel.md` alongside its `durable.md` — and the kernel has to fit
+        // the ceiling the same pack configures.
+        let d = tempfile::TempDir::new().expect("tempdir");
+        run(InitOpts {
+            project_root: d.path().to_path_buf(),
+            packs: parse_packs("base").expect("parse"),
+            force: false,
+            dry_run: false,
+            rules_only: false,
+            hooks_only: false,
+        })
+        .expect("init");
+        let kernel =
+            std::fs::read_to_string(d.path().join(".phronesis/kernel.md")).expect("read kernel.md");
+        let config = crate::context::config::ContextConfig::default();
+        assert!(
+            kernel.len() <= config.interaction.kernel_max_bytes,
+            "kernel is {} bytes, over the {} byte ceiling",
+            kernel.len(),
+            config.interaction.kernel_max_bytes
+        );
+    }
+
+    // ── context pack ────────────────────────────────────────────────────
+
+    fn context_opts(root: &Path, dry_run: bool) -> InitOpts {
+        InitOpts {
+            project_root: root.to_path_buf(),
+            packs: vec![Pack::Context],
+            force: false,
+            dry_run,
+            rules_only: false,
+            hooks_only: false,
+        }
+    }
+
+    #[test]
+    fn context_pack_scaffolds_config_kernel_and_readme() {
+        let d = tempfile::TempDir::new().expect("tempdir");
+        run(context_opts(d.path(), false)).expect("init");
+
+        let config = d.path().join(".phronesis/context.json");
+        let parsed: crate::context::config::ContextConfig =
+            serde_json::from_str(&std::fs::read_to_string(&config).expect("read context.json"))
+                .expect("scaffolded config must be valid");
+        assert_eq!(parsed, crate::context::config::ContextConfig::default());
+
+        let kernel =
+            std::fs::read_to_string(d.path().join(".phronesis/kernel.md")).expect("read kernel.md");
+        assert!(
+            kernel.len() <= parsed.session.kernel_max_bytes,
+            "the scaffolded kernel must fit its own ceiling: {} bytes",
+            kernel.len()
+        );
+
+        let readme = std::fs::read_to_string(d.path().join(".phronesis/nudges/README.md"))
+            .expect("read nudges README");
+        assert!(readme.contains("---json"));
+        assert!(readme.contains("context predicates"));
+        assert!(readme.contains("max_bytes"));
+    }
+
+    #[test]
+    fn context_pack_leaves_an_existing_durable_file_as_the_session_document() {
+        // Opting in must not repurpose, rewrite, or shrink a durable file the
+        // project already wrote. It stays the session-level document; the
+        // always-on core arrives as a new, separate file.
+        let d = tempfile::TempDir::new().expect("tempdir");
+        let ep = d.path().join(".phronesis");
+        std::fs::create_dir_all(&ep).expect("mkdir");
+        let existing = "# House rules\n\n## Review\n\nAlways review before merging.\n";
+        std::fs::write(ep.join("durable.md"), existing).expect("write durable");
+
+        run(context_opts(d.path(), false)).expect("init");
+
+        assert_eq!(
+            std::fs::read_to_string(ep.join("durable.md")).expect("read"),
+            existing,
+            "the project's own document must survive byte-for-byte"
+        );
+        assert!(
+            ep.join("kernel.md").exists(),
+            "and the always-on core arrives separately"
+        );
+    }
+
+    #[test]
+    fn context_pack_dry_run_writes_nothing() {
+        let d = tempfile::TempDir::new().expect("tempdir");
+        let report = run(context_opts(d.path(), true)).expect("init");
+        assert!(!d.path().join(".phronesis/context.json").exists());
+        assert!(!d.path().join(".phronesis/nudges").exists());
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|s| s.contains("would write .phronesis/context.json")),
+            "the dry run must still say what it would do: {:?}",
+            report.steps
+        );
+    }
+
+    #[test]
+    fn context_pack_preserves_existing_files() {
+        let d = tempfile::TempDir::new().expect("tempdir");
+        let ep = d.path().join(".phronesis");
+        std::fs::create_dir_all(ep.join("nudges")).expect("mkdir");
+        std::fs::write(ep.join("context.json"), "{\"mine\":true}").expect("write config");
+        std::fs::write(ep.join("durable.md"), "My own kernel.").expect("write durable");
+        std::fs::write(ep.join("nudges/README.md"), "my notes").expect("write readme");
+
+        run(context_opts(d.path(), false)).expect("init");
+
+        assert_eq!(
+            std::fs::read_to_string(ep.join("context.json")).expect("read"),
+            "{\"mine\":true}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(ep.join("durable.md")).expect("read"),
+            "My own kernel."
+        );
+        assert_eq!(
+            std::fs::read_to_string(ep.join("nudges/README.md")).expect("read"),
+            "my notes"
+        );
+    }
+
+    #[test]
+    fn context_pack_is_idempotent() {
+        let d = tempfile::TempDir::new().expect("tempdir");
+        run(context_opts(d.path(), false)).expect("first init");
+        let config =
+            std::fs::read_to_string(d.path().join(".phronesis/context.json")).expect("read config");
+        let gitignore =
+            std::fs::read_to_string(d.path().join(".gitignore")).expect("read gitignore");
+
+        let report = run(context_opts(d.path(), false)).expect("second init");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join(".phronesis/context.json")).expect("read"),
+            config
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.path().join(".gitignore")).expect("read"),
+            gitignore,
+            "a second run must not append duplicate ignore lines"
+        );
+        assert!(
+            report
+                .steps
+                .iter()
+                .any(|s| s.contains("context.json already exists")),
+            "and must say it left the file alone: {:?}",
+            report.steps
+        );
+    }
+
+    #[test]
+    fn context_pack_carves_its_files_out_of_the_broad_gitignore() {
+        // `.phronesis/*` would otherwise hide the config and capsules that
+        // the pack just wrote and that are meant to be versioned.
+        let d = tempfile::TempDir::new().expect("tempdir");
+        run(context_opts(d.path(), false)).expect("init");
+        let gitignore =
+            std::fs::read_to_string(d.path().join(".gitignore")).expect("read gitignore");
+        let lines: Vec<&str> = gitignore.lines().collect();
+        for carveout in [
+            "!.phronesis/context.json",
+            "!.phronesis/nudges/",
+            "!.phronesis/nudges/**",
+        ] {
+            assert!(lines.contains(&carveout), "missing carveout {carveout}");
+        }
+        let broad = lines
+            .iter()
+            .position(|l| *l == ".phronesis/*")
+            .expect("broad ignore present");
+        let carved = lines
+            .iter()
+            .position(|l| *l == "!.phronesis/context.json")
+            .expect("carveout present");
+        assert!(
+            broad < carved,
+            "an un-ignore before the broad ignore is inert"
+        );
+    }
+
+    #[test]
+    fn without_the_context_pack_no_context_files_or_carveouts_appear() {
+        let d = tempfile::TempDir::new().expect("tempdir");
+        run(InitOpts {
+            project_root: d.path().to_path_buf(),
+            packs: vec![Pack::Llm],
+            force: false,
+            dry_run: false,
+            rules_only: false,
+            hooks_only: false,
+        })
+        .expect("init");
+        assert!(!d.path().join(".phronesis/context.json").exists());
+        assert!(!d.path().join(".phronesis/nudges").exists());
+        let gitignore =
+            std::fs::read_to_string(d.path().join(".gitignore")).expect("read gitignore");
+        assert!(!gitignore.contains("!.phronesis/context.json"));
     }
 
     #[test]

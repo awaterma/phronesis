@@ -13,6 +13,9 @@ cargo run -- codex-hook PreToolUse  # Codex protocol adapter (event varies by ho
 cargo run -- init             # One-command setup for a project
 cargo run -- session-context  # SessionStart hook (injects active rules + durable directives)
 cargo run -- interaction-context # UserPromptSubmit / BeforeAgent hook (injects recent activity + durable directives)
+cargo run -- context inspect   # dry-run the configured context payload (writes nothing)
+cargo run -- context predicates # allowlisted predicates for nudge capsules
+cargo run -- context stats     # observed context cost, omissions, latency
 cargo run -- stats             # Read-only per-rule summary of .phronesis/log.jsonl
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
@@ -76,6 +79,57 @@ Use it for the small subset of project guidance that absolutely must
 survive context compression — typically a few hundred words. CLAUDE.md
 remains the human-facing onmaping doc; `durable.md` is the "this must
 not fade" subset that the model re-reads every turn.
+
+### Token-aware durable context (`--packs context`, opt-in)
+
+Reinjecting the whole `durable.md` on every turn costs a fixed slice of
+the payload whether it is relevant or not, and it spends that budget
+*before* the active rules and recent decisions. On a project with a
+3.3 KB durable file that left roughly 780 bytes of the 4 KiB cap for
+everything else, and the session charter truncated mid-rule-list.
+
+A project opts in by creating `.phronesis/context.json` (written by
+`phr-mcp init --packs context`). That splits the one file into two roles:
+
+- **`.phronesis/kernel.md`** — the always-on core, injected every turn.
+  Keep it small; it is paid for on every single interaction.
+- **`.phronesis/durable.md`** — the session-level project document,
+  rendered once at SessionStart (and PostCompact where the host has one).
+  Opting in never rewrites, repurposes, or shrinks it.
+
+Packing is deterministic and stateless: every unit is measured with its
+headings and separators, and admitted only if it fits its kind ceiling,
+the shared byte capacity, and the optional soft token budget. Markdown
+splits on `##` sections, so an over-budget section drops whole rather
+than leaving an orphaned lead-in. Current enforcement activity gets first
+claim, then the kernel, then nudges, then overflow activity.
+
+Without `context.json` nothing changes: payloads stay byte-identical,
+capsules are not scanned, and no observations are written.
+
+```
+phr-mcp context inspect --event interaction   # dry run: what is selected, and why not
+phr-mcp context inspect --event session --json
+phr-mcp context predicates                    # what may trigger a nudge capsule
+phr-mcp context stats --since 7d              # observed cost, omissions, latency
+```
+
+`inspect` writes nothing, so reading the diagnostic cannot contaminate
+the data it reports on. It names every candidate with its cost, the
+reason each omitted item was dropped (`kind_ceiling`, `byte_capacity`,
+`token_capacity`, `displaced_by_nudge`), every capsule that failed to
+load, and every demanded fact that could not be hydrated — which is how
+you tell "the facts were false" apart from "the selector has a typo".
+
+Situational nudge capsules live in `.phronesis/nudges/*.md` (see the
+scaffolded README there for the schema). Bodies are static: runtime facts
+select a capsule but are never interpolated into it, which is what stops
+a filename or tool payload becoming a second-order prompt-injection
+channel. Only the compiled predicate allowlist may trigger one.
+
+Context source files are capped at 64 KiB — they are read on every hook,
+so an oversized one is ignored with a diagnostic rather than re-read and
+discarded each turn.
 
 ### Drift detection — CLAUDE.md and auto-memory ↔ rules
 
@@ -254,7 +308,27 @@ The packs are composable and **independent**:
   only its import-cycle rule can fire. Both rules remain `warn`; measured
   precision is recorded in the spec and promotion to `block` requires broader
   corpus evidence.
+- `context` — opt-in token-aware durable context (see above). Writes
+  `.phronesis/context.json`, `.phronesis/kernel.md`, and a
+  `.phronesis/nudges/README.md` documenting the capsule schema. Ships no
+  rules. Not yet in the default pack set: the specification's measurement
+  gate wants a second external corpus first.
 - `none` — empty rules array (hooks still wired)
+
+`base` is shorthand for every language-agnostic pack —
+`llm,confidence,journey,structural,context` — so the usual shape is
+`base,<your language>`:
+
+```
+phr-mcp init --packs base,rust
+phr-mcp init --packs base,typescript
+```
+
+Language packs are deliberately **not** in `base`. Several of their rules
+match raw substrings gated only by path, so composing every language at
+once produces cross-language false positives — the TypeScript `: any`
+rule fires on Rust's `: anyhow::Error`, for instance. Name the language
+you actually want.
 
 `init` writes/merges seven files:
 - `.claude/settings.local.json` — hook config (preserves existing permissions/hooks)
@@ -503,7 +577,16 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/memory_drift.rs` — Walks the Claude Code auto-memory directory, classifies entries by `metadata.type`, and scores them against rules.json + durable.md.
 - `src/hook/{mod,pre,post,journey_record,seq}.rs` — Pre/post hook subcommands; reads `.phronesis/rules.json`, fires rules, exits 0/1/2. Split: `pre`/`post` are the hook runners, `journey_record` stamps the journey journal, `seq` sequences the pre-check pipeline.
 - `src/init.rs` — `phr-mcp init` one-command project setup
-- `src/context.rs` — Formatters for SessionStart / UserPromptSubmit hook payloads (active-rules summary, recent-activity summary)
+- `src/context.rs` — Formatters for SessionStart / UserPromptSubmit hook payloads (active-rules summary, recent-activity summary) plus the legacy renderers, kept byte-for-byte for projects that have not opted in
+- `src/context/` — Token-aware context (SPEC-token-aware-durable-context).
+  `render.rs` builds one side-effect-free `RenderResult` that the live hook
+  path, `context inspect`, and the metrics all project from — which is why
+  inspect reports exactly what the hook would emit and writes nothing.
+  `packing.rs` is the deterministic packer (kind ceilings, shared byte and
+  soft token budgets, omission reasons); `config.rs` parses
+  `.phronesis/context.json`; `capsule.rs` loads and compiles nudge capsules
+  into ordinary RETE rules; `metrics.rs` writes the bounded
+  `kind:"context"` observations and aggregates them for `context stats`.
 - `src/stats.rs` — Aggregates `.phronesis/log.jsonl` per rule and renders as table or JSON
 - `src/audit.rs` — Whole-tree rule audit + debt-over-time aggregation. Provides `run` (file scan), `render_table/json`, `compute_trend` (reads `audit_codebase` snapshots), `render_trend_table/json`, `resolve_scan_root` (shared by MCP and CLI), `audit_snapshot_entry` (shared log-snapshot builder).
 - `src/action_log.rs` — Append-only `.jsonl` log of hook decisions and MCP events
