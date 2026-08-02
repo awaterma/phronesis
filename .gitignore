@@ -39,3 +39,12 @@ docs/specs/PLAN-v0.11-hardening.md
 !.phronesis/toolchains.json
 !.phronesis/predicates/
 !.phronesis/predicates/**
+!.phronesis/context.json
+!.phronesis/kernel.md
+!.phronesis/nudges/
+!.phronesis/nudges/**
+
+# Point-in-time project evaluations. Generated from local audit/graph/stats
+# state, so they go stale the moment the tree moves — keep them local rather
+# than versioning a snapshot that will disagree with the repo it describes.
+docs/phronesis-evaluation-*.html

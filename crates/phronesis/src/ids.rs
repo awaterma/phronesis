@@ -133,6 +133,19 @@ inputs. The newtype keeps fact IDs distinct from rule IDs and state IDs
 at the type level."
 );
 
+id_newtype!(
+    StableId,
+    "Identifier for one packable unit of host-assembled context — `kernel:0`,
+`activity:<ts>:<rule>:<n>`, `nudge:<capsule>`, `state:subject`, and so on.
+
+Minted by a host that packs context for a model under a byte and token
+budget, and used to say which units were selected and which were omitted.
+A [`RuleId`] is a *component* of some stable ids and never a whole one, so
+the newtype keeps the two from being interchanged where a packer expects a
+whole stable id. Serialization is transparent, so the wire shape is the
+bare string."
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;

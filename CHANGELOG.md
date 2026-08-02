@@ -4,6 +4,133 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.25.0] - 2026-08-01
+
+### Added
+
+- **Token-aware durable context (opt-in).** A project that creates
+  `.phronesis/context.json` gets deterministic, budgeted context packing
+  instead of unconditional full-file reinjection. Every renderable unit is an
+  indivisible item measured with its headings and separators, admitted only
+  if it fits its kind ceiling, the shared byte capacity, and — when
+  configured — a soft estimated-token budget (`ceil(bytes / 3)`). Current
+  enforcement activity gets first claim on the payload, then the kernel, then
+  situational nudges, then activity that overflowed its reserve.
+- **`.phronesis/kernel.md`, the always-on core.** Written by
+  `init --packs context`. `durable.md` keeps its meaning as the session-level
+  project document and is never rewritten, repurposed, or shrunk.
+- **Situational nudge capsules.** `.phronesis/nudges/*.md` carry strict JSON
+  frontmatter and a static Markdown body, selected by positive facts through
+  the ordinary RETE engine. Bodies never interpolate fact arguments, so a
+  filename or tool payload cannot become a second-order prompt-injection
+  channel. Only four allowlisted predicates may trigger a capsule; adding one
+  is a reviewed code change, not configuration.
+- **`phr-mcp context inspect | predicates | stats`.** `inspect` is a true dry
+  run: it writes no observation, so reading the diagnostic cannot contaminate
+  the data it reports. It lists candidates, costs, ceilings, per-item omission
+  reasons (`kind_ceiling`, `byte_capacity`, `token_capacity`,
+  `displaced_by_nudge`), capsule load failures, and fact-hydration failures.
+  Human and `--json` output are projections of one value.
+- **`--packs base`.** Expands to every language-agnostic pack —
+  `llm,confidence,journey,structural,context` — so the usual shape is
+  `base,<your language>`. Language packs are deliberately excluded: several
+  match raw substrings gated only by path, so composing them produces
+  cross-language false positives (the TypeScript `: any` rule fires on Rust's
+  `: anyhow::Error`).
+- **Context observations.** Bounded `kind: "context"` records in the existing
+  rotated log carry bytes, estimated tokens, per-kind omission counts, capsule
+  ids, latency, and a raw-truncation flag — no bodies, fact arguments, or user
+  content, and no claim about whether the model read or followed anything.
+
+### Changed
+
+- **Context packing splits Markdown on `##` sections, not blank lines.** The
+  section — heading, lead-in, and the list under it — is the indivisible unit.
+  Blank-line paragraphs let an over-budget list be dropped while its lead-in
+  survived, producing text that promised content it did not deliver ("Three
+  heuristic tools ...:" followed by nothing). A section is now delivered whole
+  or not at all.
+- **Context source files are capped at 64 KiB.** These are read on every hook
+  invocation, so an accidentally huge file is ignored with a diagnostic rather
+  than read and discarded each turn. This is the one place opt-out behavior
+  differs from before: a `durable.md` over 64 KiB now yields no context where
+  it previously yielded a 4 KiB truncation.
+
+### Fixed
+
+- **cargo-nextest runs grounded no test signal.** The cargo toolchain def
+  accepted `cargo nextest`, but its only `test_summary` pattern was libtest's
+  `test result:` line, which nextest never emits. The def claimed the command,
+  parsed nothing, and recorded no tests signal — so a project gated on
+  `cargo nextest run` stayed in the low confidence band and had every commit
+  blocked regardless of how green the suite was. `test_summary` now accepts
+  one pattern or several (bare string or array, so existing
+  `toolchains.json` defs are unaffected); the first pattern that matches wins
+  and all of its matches are summed.
+- **`.phronesis/nudges/README.md` was parsed as a capsule.** The file `init`
+  itself writes produced a load diagnostic on every hook invocation.
+- **A limited `read_recent` parsed the entire action log.** Every hook asks for
+  a handful of recent entries, and the read parsed every line in the log plus
+  its rotated predecessor to return the last few — so the cost grew without
+  bound as a project accumulated history. A 3.8 MB log cost 16 ms per hook, and
+  a real project measured 30 ms. The read now scans backward from the newest
+  record and stops once it has enough *matching* entries (counting matches, not
+  lines, so a filter excluding the newest records still reaches back far
+  enough), and only consults the rotated file when the current one cannot
+  satisfy the limit. This affects every caller, including the legacy context
+  path, `stats`, and `trend`.
+- **Activity bullets rendered a dangling `in` with no path.** Rules that fire
+  on a shell command rather than a file edit log an empty `file`, which
+  formatted as `- WARNED 36m ago: some-rule in ` — malformed text in the prompt
+  the model reads. The location clause is now omitted when there is no path.
+  This changes the legacy renderer's output for command-rule entries.
+
+### Compatibility
+
+- Without `.phronesis/context.json` the session and interaction payloads are
+  byte-identical to previous behavior, capsules are not scanned, and no
+  context observations are written. Pinned by test. Two deliberate exceptions,
+  both listed above: a `durable.md` over 64 KiB is now ignored rather than
+  truncated, and command-rule activity bullets no longer carry a dangling
+  `in` clause.
+- Re-running `init` never overwrites an existing `context.json`, `kernel.md`,
+  `durable.md`, or nudges `README.md`.
+- `session.charter_max_bytes` is defaulted, so configuration written before
+  the charter existed keeps loading.
+
+### Measurements
+
+Measured on a `base,rust` fixture carrying this repository's own 3,292-byte
+durable file and five blocked edits, comparing legacy against opted-in:
+
+- interaction payload 3,602 → 680 bytes (81.1% reduction), 1,201 → 227
+  estimated tokens;
+- session charter 4,062 bytes and truncated mid-rule-list → 2,664 bytes and
+  intact;
+- all five current blocking items retained in both;
+- zero raw truncations across 22 payloads;
+- p95 context construction 3.0 ms with no journey/outcomes hydration, on a
+  fixture whose action log held a handful of records.
+
+That latency figure describes a fresh project and is not representative on its
+own. Context construction reads recent hook decisions, and before the
+`read_recent` fix below that read parsed the entire log: a real project with a
+3.8 MB log measured 16 ms, and one in the field measured 30 ms. Both are over
+the specification's 5 ms target. The fix removes the dependence on log size;
+the figures above should be read together with it.
+
+### Limitations
+
+- The specification's measurement gate also asks for a second external corpus
+  and a false-relevance review of capsule matches. The corpus measurement has
+  not been run; the capsule review is vacuous because no capsules ship by
+  default. `context` is therefore opt-in via `--packs`, and is not yet part of
+  the default pack set.
+- Graph hydration is excluded from capsule selection. The session charter
+  reports graph freshness as a state line only.
+- `per_test` extraction remains libtest-only, so the known-bug registry does
+  not see cargo-nextest per-test results.
+
 ## [0.24.0] - 2026-07-31
 
 ### Added

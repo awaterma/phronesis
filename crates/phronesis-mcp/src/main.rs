@@ -237,6 +237,11 @@ enum Command {
         #[command(subcommand)]
         cmd: DecisionCmd,
     },
+    /// Inspect and measure token-aware durable context.
+    Context {
+        #[command(subcommand)]
+        cmd: ContextCmd,
+    },
     /// Structural code-graph helpers. The graph at `.phronesis/graph.jsonl`
     /// is derived, gitignored state; rebuild it after `git checkout`, `git
     /// mv`, or a rebase, which bypass the PostToolUse sensor.
@@ -252,16 +257,23 @@ enum Command {
         /// Project root (defaults to current directory).
         #[arg(default_value = ".")]
         path: PathBuf,
-        /// Comma-separated starter packs. Available: llm, rust, rhai, python,
-        /// typescript, swift, confidence, journey, none. The `llm` pack carries
-        /// deflection rules that catch LLM-bad-behavior phrases ("pre-existing
-        /// issue", etc.) and is independent of language. Language packs carry
-        /// only language-specific enforcement. The `confidence` pack adds the
-        /// commit-gating rules plus a .phronesis/confidence.json opt-in marker
-        /// and a .phronesis/bugs.json registry. The `journey` pack scaffolds
-        /// .phronesis/journey.json for project-defined cross-call taggers;
-        /// projects add the journey_* rules they need. Compose freely (e.g.
-        /// "llm,rust,confidence,journey").
+        /// Comma-separated starter packs. Available: base, llm, rust, rhai,
+        /// python, typescript, swift, confidence, journey, context, structural,
+        /// none. `base` expands to every language-agnostic pack, so the usual
+        /// shape is "base,<your language>" (e.g. "base,rust" or
+        /// "base,typescript"). The `llm` pack carries deflection rules that
+        /// catch LLM-bad-behavior disclaimers and unverified completion claims;
+        /// it is independent of language. Language packs carry only
+        /// language-specific enforcement and are deliberately NOT in `base`:
+        /// several match raw substrings gated only by path, so composing every
+        /// language at once produces cross-language false positives. The
+        /// `confidence` pack adds the commit-gating rules plus a
+        /// .phronesis/confidence.json opt-in marker and a .phronesis/bugs.json
+        /// registry. The `journey` pack scaffolds .phronesis/journey.json for
+        /// project-defined cross-call taggers; projects add the journey_* rules
+        /// they need. The `context` pack opts in to bounded durable context and
+        /// static situational capsules, and replaces the generated durable.md
+        /// with a compact kernel when no durable file exists yet.
         #[arg(long, default_value = "llm")]
         packs: String,
         /// Deprecated alias for --packs. Single value; auto-composed with
@@ -390,6 +402,33 @@ enum GraphCmd {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum ContextCmd {
+    /// Render and explain the configured context payload for one event.
+    Inspect {
+        #[arg(long, value_parser = ["interaction", "session"], default_value = "interaction")]
+        event: String,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the compiled predicate allowlist for nudge capsules.
+    Predicates {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Summarize observed context payload cost and latency.
+    Stats {
+        #[arg(long)]
+        since: Option<String>,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum DecisionCmd {
     /// Scaffold a new decision page at
     /// `.phronesis/wiki/decisions/<today>-<slug>.md`.
@@ -410,8 +449,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Serve => handle_serve().await,
         Command::PreCheck => hook::run_pre_check().await,
         Command::PostCheck => hook::run_post_check().await,
-        Command::SessionContext => handle_session_context(),
-        Command::InteractionContext { last } => handle_interaction_context(last),
+        Command::SessionContext => handle_session_context().await,
+        Command::InteractionContext { last } => handle_interaction_context(last).await,
         Command::Stats { since, rule, json } => handle_stats(since, rule, json),
         Command::Confidence { subject, json } => handle_confidence(subject, json),
         Command::Toolchains { json } => handle_toolchains(json),
@@ -451,6 +490,7 @@ async fn main() -> anyhow::Result<()> {
             suggest,
         } => handle_wiki_drift(path, wiki_dir, json, suggest),
         Command::Decision { cmd } => handle_decision(cmd),
+        Command::Context { cmd } => handle_context(cmd).await,
         Command::Graph { cmd } => handle_graph(cmd),
         Command::Init {
             path,
@@ -501,25 +541,27 @@ async fn handle_serve() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn handle_session_context() -> anyhow::Result<()> {
+async fn handle_session_context() -> anyhow::Result<()> {
     let root = phronesis_mcp::security::project_root();
-    let out = phronesis_mcp::context::run_session_context(
+    let out = phronesis_mcp::context::run_session_context_configured(
         &root,
         phronesis_mcp::context::DEFAULT_MAX_BYTES,
-    );
+    )
+    .await;
     if !out.is_empty() {
         println!("{}", out);
     }
     Ok(())
 }
 
-fn handle_interaction_context(last: usize) -> anyhow::Result<()> {
+async fn handle_interaction_context(last: usize) -> anyhow::Result<()> {
     let root = phronesis_mcp::security::project_root();
-    let out = phronesis_mcp::context::run_interaction_context(
+    let out = phronesis_mcp::context::run_interaction_context_configured(
         &root,
         last,
         phronesis_mcp::context::DEFAULT_MAX_BYTES,
-    );
+    )
+    .await;
     if !out.is_empty() {
         println!("{}", out);
     }
@@ -1212,6 +1254,126 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {
+    use phronesis_mcp::context;
+
+    match cmd {
+        ContextCmd::Predicates { json } => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({"predicates": context::capsule::ALLOWED_PREDICATES})
+                );
+            } else {
+                for predicate in context::capsule::ALLOWED_PREDICATES {
+                    println!("{predicate}");
+                }
+            }
+        }
+        // A dry run: `render` writes nothing, and `inspect` deliberately does
+        // not call `context::emit`, so inspecting cannot contaminate the
+        // observations it exists to explain.
+        ContextCmd::Inspect { event, path, json } => {
+            let root = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()?.join(path)
+            };
+            let kind = if event == "session" {
+                context::ContextEvent::Session
+            } else {
+                context::ContextEvent::Interaction
+            };
+            match context::render::render(&root, kind, 5).await {
+                None => {
+                    // Not opted in. Report that plainly rather than showing a
+                    // packed body the project would never actually receive.
+                    let reason = format!(
+                        "no {} — this project has not opted in; the legacy renderer is in use",
+                        context::config::CONTEXT_CONFIG_FILENAME
+                    );
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "event": event,
+                                "config_status": {"state": "missing"},
+                                "reason": reason,
+                            })
+                        );
+                    } else {
+                        println!("event:  {event}");
+                        println!("config: {reason}");
+                    }
+                }
+                Some(result) => {
+                    let report = result.report();
+                    if json {
+                        println!("{}", serde_json::to_string(&report)?);
+                    } else {
+                        print!("{}", report.to_text());
+                    }
+                }
+            }
+        }
+        ContextCmd::Stats { since, path, json } => {
+            let root = if path.is_absolute() {
+                path
+            } else {
+                std::env::current_dir()?.join(path)
+            };
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            // An unparseable window must not silently widen to all-time —
+            // that would report more data than the operator asked for and
+            // look like a real answer.
+            let cutoff = match since.as_deref() {
+                None => None,
+                Some(raw) => match phronesis_mcp::stats::parse_since(raw) {
+                    Some(window) => Some(now.saturating_sub(window)),
+                    None => anyhow::bail!(
+                        "invalid --since `{raw}`; expected a duration like 30m, 7d, or 2w"
+                    ),
+                },
+            };
+            let stats = context::metrics::stats(&root, cutoff);
+            if json {
+                println!("{}", serde_json::to_string(&stats)?);
+            } else {
+                println!("Payloads:                 {}", stats.payloads);
+                println!("Median bytes:             {}", stats.median_bytes);
+                println!("Average bytes:            {}", stats.average_bytes);
+                println!("p95 bytes:                {}", stats.p95_bytes);
+                println!(
+                    "Median estimated tokens:  {}",
+                    stats.median_estimated_tokens
+                );
+                println!(
+                    "Average estimated tokens: {}",
+                    stats.average_estimated_tokens
+                );
+                println!("p95 estimated tokens:     {}", stats.p95_estimated_tokens);
+                println!("Omissions:                {}", stats.omissions);
+                for (kind, count) in &stats.omissions_by_kind {
+                    println!("  {kind:<22}  {count}");
+                }
+                println!("Raw truncations:          {}", stats.raw_truncations);
+                println!("Average latency (µs):     {}", stats.average_latency_micros);
+                println!("p95 latency (µs):         {}", stats.p95_latency_micros);
+                if !stats.capsule_selections.is_empty() {
+                    println!("Capsule selections:");
+                    for (id, count) in &stats.capsule_selections {
+                        println!("  {id:<22}  {count}");
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn handle_decision(cmd: DecisionCmd) -> anyhow::Result<()> {

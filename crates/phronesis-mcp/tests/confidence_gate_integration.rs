@@ -188,6 +188,69 @@ fn post_check_captures_cargo_test_then_commit_warns() {
     assert!(stderr.contains("Medium confidence"));
 }
 
+/// The same gate, driven by `cargo nextest run`.
+///
+/// The cargo def's `matches` pattern has always accepted `cargo nextest`, but
+/// its only summary pattern was libtest's `test result:` line, which nextest
+/// never emits. So the def claimed the command, parsed nothing, and grounded
+/// no test signal — meaning a project whose gate is `cargo nextest run` could
+/// never lift a commit out of the low band no matter how green the suite was.
+#[test]
+fn post_check_captures_cargo_nextest_then_commit_warns() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+
+    let test_payload = r#"{
+        "tool_name":"Bash",
+        "tool_input":{"command":"cargo nextest run"},
+        "tool_output":{"stdout":"    Starting 234 tests across 21 binaries\nSummary [  61.425s] 234 tests run: 234 passed, 9 skipped\n"}
+    }"#;
+    let (code, _) = run_hook("post-check", test_payload, dir.path());
+    assert_eq!(code, 0);
+
+    let journal =
+        std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    assert!(journal.contains("outcome:compile_ok"), "journal: {journal}");
+    assert!(
+        journal.contains("outcome:test_pass"),
+        "a green nextest run must ground a test signal; journal: {journal}"
+    );
+
+    let (code, stderr) = run_hook("pre-check", COMMIT_PAYLOAD, dir.path());
+    assert_eq!(
+        code, 1,
+        "a green nextest run should lift the commit out of block; stderr: {stderr}"
+    );
+    assert!(stderr.contains("Medium confidence"));
+}
+
+/// A failing nextest run must ground a *failure*, not silence.
+#[test]
+fn failing_cargo_nextest_keeps_commit_blocked() {
+    let dir = tempfile::tempdir().unwrap();
+    enable_confidence(dir.path());
+    write_rules(dir.path());
+
+    let test_payload = r#"{
+        "tool_name":"Bash",
+        "tool_input":{"command":"cargo nextest run"},
+        "tool_output":{"stdout":"Summary [   2.439s]   2 tests run: 0 passed, 2 failed, 241 skipped\n"}
+    }"#;
+    let (code, _) = run_hook("post-check", test_payload, dir.path());
+    assert_eq!(code, 0);
+
+    let journal =
+        std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    assert!(
+        journal.contains("outcome:test_fail"),
+        "failing nextest must ground a test failure; journal: {journal}"
+    );
+
+    let (code, _) = run_hook("pre-check", COMMIT_PAYLOAD, dir.path());
+    assert_eq!(code, 2, "failing tests must keep the commit blocked");
+}
+
 #[test]
 fn failing_cargo_test_keeps_commit_blocked() {
     let dir = tempfile::tempdir().unwrap();

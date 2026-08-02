@@ -395,9 +395,12 @@ fn codex_hook_cli_malformed_payload_fails_closed_pre_and_advises_post() {
 fn codex_hook_cli_context_uses_pascal_event_and_is_bounded() {
     let project = tempfile::tempdir().expect("temp project");
     write_rules(project.path(), warning_rule());
+    // Large enough to force bounding at every event, but under the 64 KiB
+    // source-file cap — past that the file is ignored outright rather than
+    // read and discarded on every hook.
     fs::write(
         project.path().join(".phronesis/durable.md"),
-        "important durable guidance\n".repeat(20_000),
+        "important durable guidance\n".repeat(2_000),
     )
     .expect("write durable context");
     for event in [

@@ -46,10 +46,20 @@ pub struct ToolchainDef {
     /// compatible: defs written before 0.19.0 deserialize with an empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compile_success: Vec<String>,
-    /// Regex with named groups `(?P<passed>\d+)` (required) and optional
-    /// `(?P<failed>\d+)`. All matches in the output are summed.
+    /// Regex(es) with named groups `(?P<passed>\d+)` (required) and optional
+    /// `(?P<failed>\d+)`.
+    ///
+    /// A single tool can emit more than one summary format — `cargo test` and
+    /// `cargo nextest run` are the same toolchain but share no summary line —
+    /// so this accepts a list. The first pattern that matches anything wins,
+    /// and all of *its* matches are summed (a multi-binary `cargo test` run
+    /// emits one summary per binary). Patterns are never mixed, so output
+    /// carrying two shapes cannot double-count.
+    ///
+    /// Deserializes from either a bare string or an array, so defs written
+    /// against the single-pattern shape keep working unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub test_summary: Option<String>,
+    pub test_summary: Option<Patterns>,
     /// Regex with named groups `(?P<name>)` and `(?P<status>)`; feeds the
     /// known-bug registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -57,6 +67,33 @@ pub struct ToolchainDef {
     /// Which `status` tokens mean "pass".
     #[serde(default = "default_pass_tokens")]
     pub pass_tokens: Vec<String>,
+}
+
+/// One regex or several, in a field that historically held exactly one.
+///
+/// Untagged so a bare JSON string still deserializes, and so a def that was
+/// written with one pattern serializes back out as a string rather than
+/// silently becoming an array.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum Patterns {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Patterns {
+    pub fn as_slice(&self) -> &[String] {
+        match self {
+            Self::One(pattern) => std::slice::from_ref(pattern),
+            Self::Many(patterns) => patterns,
+        }
+    }
+}
+
+impl From<&str> for Patterns {
+    fn from(pattern: &str) -> Self {
+        Self::One(pattern.to_string())
+    }
 }
 
 /// Where a compiled def came from — surfaced by `phr-mcp toolchains`.
@@ -103,7 +140,9 @@ pub struct CompiledDef {
     matches: Regex,
     compile_fail: Vec<Regex>,
     compile_success: Vec<Regex>,
-    test_summary: Option<Regex>,
+    /// Alternative summary formats, in declaration order. Empty when the def
+    /// declares none.
+    test_summary: Vec<Regex>,
     per_test: Option<Regex>,
 }
 
@@ -151,7 +190,8 @@ impl CompiledDef {
             .collect::<Result<Vec<_>, _>>()?;
         let test_summary = def
             .test_summary
-            .as_deref()
+            .iter()
+            .flat_map(Patterns::as_slice)
             .map(|p| {
                 let re = compile_field(&def.id, "test_summary", p)?;
                 require_groups(RequiredGroups {
@@ -163,7 +203,7 @@ impl CompiledDef {
                 })?;
                 Ok::<_, ToolchainError>(re)
             })
-            .transpose()?;
+            .collect::<Result<Vec<_>, _>>()?;
         let per_test = def
             .per_test
             .as_deref()
@@ -232,27 +272,36 @@ impl CompiledDef {
         self.compile_success.iter().any(|re| re.is_match(output))
     }
 
-    /// Sum every `test_summary` match (multi-binary runs). `None` when the
-    /// def has no summary regex or nothing matched.
+    /// Test counts from the first `test_summary` pattern that matches.
+    ///
+    /// Within that pattern every match is summed, which is what makes a
+    /// multi-binary `cargo test` run add up. Across patterns the first winner
+    /// stops the search: two patterns describe two output formats of the same
+    /// tool, so matching both would double-count rather than accumulate.
+    ///
+    /// `None` when the def has no summary regex or none of them matched.
     fn test_counts(&self, output: &str) -> Option<TestCounts> {
-        let re = self.test_summary.as_ref()?;
-        let mut found = false;
-        let mut counts = TestCounts {
-            passed: 0,
-            failed: 0,
-        };
-        for caps in re.captures_iter(output) {
-            found = true;
-            counts.passed += caps
-                .name("passed")
-                .and_then(|m| m.as_str().parse::<usize>().ok())
-                .unwrap_or(0);
-            counts.failed += caps
-                .name("failed")
-                .and_then(|m| m.as_str().parse::<usize>().ok())
-                .unwrap_or(0);
-        }
-        found.then_some(counts)
+        self.test_summary.iter().find_map(|re| {
+            let mut found = false;
+            let mut counts = TestCounts {
+                passed: 0,
+                failed: 0,
+            };
+            for caps in re.captures_iter(output) {
+                found = true;
+                counts.passed += caps
+                    .name("passed")
+                    .and_then(|m| m.as_str().parse::<usize>().ok())
+                    .unwrap_or(0);
+                // A clean nextest run omits the `failed` token entirely, so an
+                // absent group means zero, not a parse failure.
+                counts.failed += caps
+                    .name("failed")
+                    .and_then(|m| m.as_str().parse::<usize>().ok())
+                    .unwrap_or(0);
+            }
+            found.then_some(counts)
+        })
     }
 
     /// Per-test results `(name, passed)` for the known-bug registry. Empty
@@ -332,9 +381,18 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             "could not compile".to_string(),
         ],
         compile_success: vec![r"Finished .* profile".to_string()],
-        test_summary: Some(
+        // `matches` accepts `cargo nextest`, and nextest never emits libtest's
+        // `test result:` line — it emits `Summary [...] N tests run: ...`.
+        // With only the libtest pattern the def claimed the command, parsed
+        // nothing, and grounded no test signal, so a project gated on
+        // `cargo nextest run` could never reach one.
+        test_summary: Some(Patterns::Many(vec![
             r"test result: \w+\. (?P<passed>\d+) passed; (?P<failed>\d+) failed".to_string(),
-        ),
+            // `failed` is optional: a clean run reports only passed/skipped,
+            // and `[^,\n]*` steps over annotations like ` (1 flaky)`.
+            r"Summary \[[^\]]*\]\s+\d+ tests run: (?P<passed>\d+) passed[^,\n]*(?:, (?P<failed>\d+) failed)?"
+                .to_string(),
+        ])),
         per_test: Some(r"(?m)^test (?P<name>\S+) \.\.\. (?P<status>ok|FAILED)".to_string()),
         pass_tokens: default_pass_tokens(),
     }]
@@ -764,6 +822,62 @@ mod tests {
         assert_eq!(t.args, vec!["u", "8", "1", "9"]);
     }
 
+    // ── cargo-nextest ───────────────────────────────────────────────────
+    //
+    // The `matches` pattern accepts `cargo nextest`, so the def claims these
+    // commands. nextest never emits libtest's `test result:` line, so a
+    // libtest-only summary pattern silently yields no test signal at all —
+    // and a project whose gate is `cargo nextest run` can never ground one.
+
+    #[test]
+    fn nextest_all_pass_grounds_a_test_signal() {
+        let out = "    Starting 234 tests across 21 binaries\n\
+                   Summary [  61.425s] 234 tests run: 234 passed, 9 skipped\n";
+        let facts = cargo_def().parse("u", "cargo nextest run", out, None);
+        let t = test_fact(&facts).expect("nextest output must ground a test_outcome");
+        assert_eq!(t.args, vec!["u", "234", "0", "234"]);
+    }
+
+    #[test]
+    fn nextest_with_failures_counts_them() {
+        // On a failing run nextest emits a `failed` token; on a clean run it
+        // does not. The pattern has to treat it as optional without letting a
+        // clean run report a bogus count.
+        let out = "Summary [   2.439s]   2 tests run: 0 passed, 2 failed, 241 skipped\n";
+        let facts = cargo_def().parse("u", "cargo nextest run", out, None);
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "0", "2", "2"]);
+    }
+
+    #[test]
+    fn nextest_slow_and_flaky_annotations_do_not_confuse_the_summary() {
+        let out = "        SLOW [> 60.000s] phronesis-mcp::journey slow_case\n\
+                   Summary [  61.425s] 234 tests run: 233 passed (1 flaky), 9 skipped\n";
+        let facts = cargo_def().parse("u", "cargo nextest run", out, None);
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "233", "0", "233"]);
+    }
+
+    #[test]
+    fn nextest_compile_failure_still_has_no_test_fact() {
+        let out = "error[E0599]: no method named `frobnicate` found\n\
+                   error: could not compile `foo` (test \"it\") due to 1 previous error\n";
+        let facts = cargo_def().parse("u", "cargo nextest run", out, None);
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn libtest_and_nextest_shapes_do_not_double_count() {
+        // Defensive: if output somehow carries both shapes, the counts must
+        // come from one format, not the sum of both.
+        let out = "test result: ok. 3 passed; 0 failed; 0 ignored\n\
+                   Summary [  1.000s] 3 tests run: 3 passed, 0 skipped\n";
+        let facts = cargo_def().parse("u", "cargo nextest run", out, None);
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args, vec!["u", "3", "0", "3"]);
+    }
+
     #[test]
     fn cargo_per_test_results_parses_names_and_status() {
         let out = "running 3 tests\ntest mod_a::ok_one ... ok\ntest mod_b::fails ... FAILED\ntest mod_c::ignored_one ... ignored\ntest result: FAILED. 1 passed; 1 failed; 1 ignored; 0 measured; 0 filtered out\n";
@@ -894,9 +1008,14 @@ mod tests {
         let def = builtin_defs().into_iter().next().unwrap();
         assert_eq!(def.compile_fail[0], "error\\[E\\d+\\]");
         assert_eq!(def.compile_success, vec!["Finished .* profile"]);
+        let summaries = def.test_summary.as_ref().expect("cargo declares summaries");
         assert_eq!(
-            def.test_summary.as_deref(),
-            Some("test result: \\w+\\. (?P<passed>\\d+) passed; (?P<failed>\\d+) failed"),
+            summaries.as_slice()[0],
+            "test result: \\w+\\. (?P<passed>\\d+) passed; (?P<failed>\\d+) failed",
+        );
+        assert_eq!(
+            summaries.as_slice()[1],
+            "Summary \\[[^\\]]*\\]\\s+\\d+ tests run: (?P<passed>\\d+) passed[^,\\n]*(?:, (?P<failed>\\d+) failed)?",
         );
     }
 

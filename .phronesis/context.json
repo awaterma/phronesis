@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "hard_max_bytes": 4096,
+  "estimated_max_tokens": 900,
+  "interaction": {
+    "kernel_max_bytes": 768,
+    "activity_reserve_bytes": 1024,
+    "nudges_max_bytes": 1536
+  },
+  "session": {
+    "kernel_max_bytes": 768,
+    "state_reserve_bytes": 384,
+    "charter_max_bytes": 2048,
+    "rules_max_bytes": 2304
+  }
+}

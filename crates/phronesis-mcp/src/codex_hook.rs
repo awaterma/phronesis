@@ -128,13 +128,17 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
     match event {
         "PreToolUse" | "pre-tool-use" => handle_pre(payload, root).await,
         "PostToolUse" | "post-tool-use" => handle_post(payload, root).await,
-        "SessionStart" | "session-start" => make_ctx_decision(root, ContextKind::SessionStart),
+        "SessionStart" | "session-start" => {
+            make_ctx_decision(root, ContextKind::SessionStart).await
+        }
         "UserPromptSubmit" | "user-prompt-submit" => {
-            make_ctx_decision(root, ContextKind::InteractionContext)
+            make_ctx_decision(root, ContextKind::InteractionContext).await
         }
         "PreCompact" | "pre-compact" => make_compact_decision(root, true),
-        "PostCompact" | "post-compact" => make_ctx_decision(root, ContextKind::SessionStart),
-        "SubagentStart" | "subagent-start" => make_ctx_decision(root, ContextKind::SessionStart),
+        "PostCompact" | "post-compact" => make_ctx_decision(root, ContextKind::PostCompact).await,
+        "SubagentStart" | "subagent-start" => {
+            make_ctx_decision(root, ContextKind::SubagentStart).await
+        }
         "SubagentStop" | "subagent-stop" | "Stop" | "stop" => make_completion_decision(root),
         _ => empty_decision(),
     }
@@ -696,18 +700,43 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
 // Context helpers
 // ---------------------------------------------------------------------------
 
+/// Which Codex hook is asking for context.
+///
+/// `SessionStart`, `PostCompact`, and `SubagentStart` all render the charter,
+/// but they are recorded under distinct observation labels: only the first two
+/// are part of the durability contract, and lumping subagent starts in with
+/// them would inflate the session-restoration numbers.
 #[derive(Clone, Copy)]
 enum ContextKind {
     SessionStart,
+    PostCompact,
+    SubagentStart,
     InteractionContext,
 }
 
-fn make_ctx_decision(root: &Path, kind: ContextKind) -> CodexDecision {
+impl ContextKind {
+    fn event(self) -> context::ContextEvent {
+        match self {
+            Self::InteractionContext => context::ContextEvent::Interaction,
+            Self::PostCompact => context::ContextEvent::PostCompact,
+            Self::SessionStart | Self::SubagentStart => context::ContextEvent::Session,
+        }
+    }
+
+    fn metric_event(self) -> &'static str {
+        match self {
+            Self::SubagentStart => "subagent_context",
+            other => other.event().metric_event(),
+        }
+    }
+}
+
+async fn make_ctx_decision(root: &Path, kind: ContextKind) -> CodexDecision {
     CodexDecision {
         exit: 0,
         block_messages: Vec::new(),
         warn_messages: Vec::new(),
-        additional_context: build_context_body(root, kind),
+        additional_context: build_context_body(root, kind).await,
         files: Vec::new(),
     }
 }
@@ -723,45 +752,8 @@ fn make_compact_decision(root: &Path, _pre: bool) -> CodexDecision {
     }
 }
 
-fn build_context_body(root: &Path, kind: ContextKind) -> String {
-    match kind {
-        ContextKind::SessionStart => {
-            let path = crate::rules_file::default_path(root);
-            let rules = crate::rules_file::read(&path).ok();
-            let rules_body = rules
-                .as_ref()
-                .map(context::build_session_body)
-                .unwrap_or_default();
-            let durable = context::build_durable_section(&context::read_durable_directives(root));
-            match (durable.is_empty(), rules_body.is_empty()) {
-                (true, true) => String::new(),
-                (true, false) => rules_body,
-                (false, true) => durable,
-                (false, false) => format!("{}\n{}", durable, rules_body),
-            }
-        }
-        ContextKind::InteractionContext => {
-            let path = action_log::default_path(root);
-            let opts = action_log::ReadOpts {
-                limit: Some(5),
-                kind: Some("hook".to_string()),
-                ..action_log::ReadOpts::default()
-            };
-            let entries = action_log::read_recent(&path, &opts).unwrap_or_default();
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
-            let activity = context::build_interaction_body(&entries, now);
-            let durable = context::build_durable_section(&context::read_durable_directives(root));
-            match (durable.is_empty(), activity.is_empty()) {
-                (true, true) => String::new(),
-                (true, false) => activity,
-                (false, true) => durable,
-                (false, false) => format!("{}\n{}", durable, activity),
-            }
-        }
-    }
+async fn build_context_body(root: &Path, kind: ContextKind) -> String {
+    context::run_body_configured(root, kind.event(), 5, kind.metric_event()).await
 }
 
 // ---------------------------------------------------------------------------

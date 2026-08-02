@@ -6,6 +6,14 @@
 
 use serde_json::json;
 
+pub mod capsule;
+pub mod config;
+pub mod metrics;
+pub mod packing;
+pub mod render;
+
+pub use render::{ContextEvent, RenderResult};
+
 use crate::action_log::{self, LogEntry, ReadOpts};
 use crate::rules_file::{DiskRule, RulesFile};
 
@@ -64,7 +72,7 @@ pub fn build_session_body(rules: &RulesFile) -> String {
     out
 }
 
-fn rule_intent(r: &DiskRule) -> String {
+pub(crate) fn rule_intent(r: &DiskRule) -> String {
     r.actions
         .iter()
         .find(|a| {
@@ -102,13 +110,52 @@ use std::path::Path;
 /// CLAUDE.md so the user can choose a small subset that *must* survive.
 pub const DURABLE_DIRECTIVES_FILENAME: &str = ".phronesis/durable.md";
 
+/// The always-on interaction kernel, written by `init --packs context`.
+///
+/// Separate from `durable.md` on purpose. The kernel is re-injected on every
+/// single turn, so it has to stay small; `durable.md` is a session-level
+/// document that may be arbitrarily long. One file cannot serve both budgets
+/// without the longer role starving the shorter one.
+pub const DURABLE_KERNEL_FILENAME: &str = ".phronesis/kernel.md";
+
+/// Upper bound on a context source file, in bytes.
+///
+/// These files are read on every hook invocation, so an accidentally huge one
+/// — a paste, a generated dump, a file that grew unnoticed — must not cost a
+/// multi-megabyte read per turn. Anything over the bound is ignored outright
+/// rather than read and then discarded by the packer.
+const SOURCE_FILE_MAX_BYTES: u64 = 64 * 1024;
+
+/// Read a context source file, trimmed. Missing, unreadable, or oversized
+/// files produce an empty string. Never panics.
+fn read_source_file(path: &Path) -> String {
+    match std::fs::metadata(path) {
+        Ok(meta) if meta.len() > SOURCE_FILE_MAX_BYTES => {
+            eprintln!(
+                "phronesis context: {} is {} bytes, over the {SOURCE_FILE_MAX_BYTES} byte cap; ignoring it",
+                path.display(),
+                meta.len()
+            );
+            String::new()
+        }
+        Ok(_) => std::fs::read_to_string(path)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default(),
+        Err(_) => String::new(),
+    }
+}
+
 /// Read `.phronesis/durable.md` if present. Returns the file contents trimmed,
-/// or an empty string for missing/empty/malformed files. Never panics.
+/// or an empty string for missing/empty/oversized files. Never panics.
 pub fn read_durable_directives(project_root: &Path) -> String {
-    let path = project_root.join(DURABLE_DIRECTIVES_FILENAME);
-    std::fs::read_to_string(&path)
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
+    read_source_file(&project_root.join(DURABLE_DIRECTIVES_FILENAME))
+}
+
+/// Read `.phronesis/kernel.md` if present. Absent means the project has no
+/// always-on core — no substitute is invented from `durable.md`, because that
+/// is exactly the conflation this split exists to undo.
+pub fn read_durable_kernel(project_root: &Path) -> String {
+    read_source_file(&project_root.join(DURABLE_KERNEL_FILENAME))
 }
 
 /// Compose a body section for durable directives. Empty input → empty
@@ -165,6 +212,31 @@ pub fn run_turn_context(project_root: &Path, last_n: usize, max_bytes: usize) ->
     run_interaction_context(project_root, last_n, max_bytes)
 }
 
+/// Opt-in token-aware interaction path. Missing configuration preserves the
+/// legacy byte-for-byte renderer; malformed configuration fails open through
+/// bounded defaults and emits a diagnostic on stderr.
+pub async fn run_interaction_context_configured(
+    project_root: &Path,
+    last_n: usize,
+    legacy_max_bytes: usize,
+) -> String {
+    match render::render(project_root, ContextEvent::Interaction, last_n).await {
+        None => run_interaction_context(project_root, last_n, legacy_max_bytes),
+        Some(result) => emit(project_root, &result),
+    }
+}
+
+/// Turn a render result into the payload a hook prints, recording the
+/// observation as a side effect. This is the only path that writes a context
+/// metric — `context inspect` deliberately does not call it.
+pub fn emit(project_root: &Path, result: &RenderResult) -> String {
+    for diagnostic in result.diagnostics() {
+        eprintln!("phronesis context: {diagnostic}");
+    }
+    metrics::record(project_root, result);
+    result.envelope()
+}
+
 /// Top-level entry point for the `session-context` subcommand.
 ///
 /// Reads `<project_root>/.phronesis/rules.json`. Returns the JSON envelope
@@ -200,39 +272,141 @@ pub fn run_session_context(project_root: &Path, max_bytes: usize) -> String {
     wrap_additional_context("SessionStart", &body, max_bytes)
 }
 
-/// Render all user-visible decision bullets for a single log entry.
+/// Opt-in token-aware session charter. Missing configuration is the exact
+/// legacy path; malformed configuration uses bounded defaults.
+pub async fn run_session_context_configured(
+    project_root: &Path,
+    legacy_max_bytes: usize,
+) -> String {
+    run_charter_context_configured(project_root, ContextEvent::Session, legacy_max_bytes).await
+}
+
+/// Render a charter event (`Session` or `PostCompact`).
 ///
-/// Returns a `Vec` of formatted bullet strings, one per `constraint_violation`
-/// or `constraint_warning` consequence. Returns an empty `Vec` when the entry
-/// has no consequences or none that surface to the user (e.g. log-only actions).
-fn render_entry_bullets(entry: &LogEntry, now_secs: u64) -> Vec<String> {
+/// Stamping the journey session id is a host-lifecycle side effect of actually
+/// starting a session, so it lives here rather than in `render`, which must
+/// stay free of side effects for `context inspect`.
+pub async fn run_charter_context_configured(
+    project_root: &Path,
+    event: ContextEvent,
+    legacy_max_bytes: usize,
+) -> String {
+    let _ = crate::journey::current_sid(project_root);
+    match render::render(project_root, event, 0).await {
+        None => run_session_context(project_root, legacy_max_bytes),
+        Some(result) => emit(project_root, &result),
+    }
+}
+
+/// Host-neutral context body for one event, with the observation labelled
+/// `metric_event`.
+///
+/// Codex carries the body directly rather than inside the Claude envelope, so
+/// it uses this instead of the envelope entry points. `metric_event` lets an
+/// adapter distinguish an event that renders the charter but sits outside the
+/// durability contract — `SubagentStart` — from a real session start, which
+/// would otherwise be indistinguishable in the observations.
+pub async fn run_body_configured(
+    project_root: &Path,
+    event: ContextEvent,
+    last_n: usize,
+    metric_event: &str,
+) -> String {
+    if event != ContextEvent::Interaction {
+        let _ = crate::journey::current_sid(project_root);
+    }
+    match render::render(project_root, event, last_n).await {
+        Some(mut result) => {
+            result.metric_event = metric_event.to_string();
+            for diagnostic in result.diagnostics() {
+                eprintln!("phronesis context: {diagnostic}");
+            }
+            metrics::record(project_root, &result);
+            result.packed.body.clone()
+        }
+        None => {
+            let envelope = match event {
+                ContextEvent::Interaction => {
+                    run_interaction_context(project_root, last_n, DEFAULT_MAX_BYTES)
+                }
+                _ => run_session_context(project_root, DEFAULT_MAX_BYTES),
+            };
+            unwrap_envelope(&envelope)
+        }
+    }
+}
+
+/// Pull the body back out of a hook envelope. Empty for an empty envelope.
+pub fn unwrap_envelope(envelope: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(envelope)
+        .ok()
+        .and_then(|v| {
+            v.pointer("/hookSpecificOutput/additionalContext")
+                .and_then(|c| c.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+/// One user-visible decision recorded by a hook.
+pub(crate) struct Decision {
+    pub rule_id: phr::RuleId,
+    pub file: String,
+    pub severity: packing::Severity,
+    pub bullet: String,
+}
+
+/// Extract every user-visible decision from a single log entry.
+///
+/// Returns an empty `Vec` when the entry has no consequences or none that
+/// surface to the user (e.g. log-only actions). The `bullet` field is the
+/// exact legacy rendering, so the packed and legacy paths cannot drift.
+pub(crate) fn entry_decisions(entry: &LogEntry, now_secs: u64) -> Vec<Decision> {
     let Some(consequences) = entry.data.get("consequences").and_then(|v| v.as_array()) else {
         return Vec::new();
     };
     if consequences.is_empty() {
         return Vec::new();
     }
+    // Rules that fire on a shell command rather than a file edit log an empty
+    // `file`. There is no path to name, so the whole ` in <path>` clause is
+    // dropped rather than rendered as a dangling `in ` — this text goes into
+    // the prompt the model reads.
     let file = entry
         .data
         .get("file")
         .and_then(|v| v.as_str())
-        .unwrap_or("<unknown>");
+        .unwrap_or_default();
+    let location = if file.is_empty() {
+        String::new()
+    } else {
+        format!(" in {file}")
+    };
     let ago = humanize_ago(now_secs.saturating_sub(entry.ts));
     consequences
         .iter()
         .filter_map(|c| {
             let rule_id = c.get("rule_id").and_then(|v| v.as_str()).unwrap_or("?");
             let action_type = c.get("action_type").and_then(|v| v.as_str()).unwrap_or("");
-            let decision = match action_type {
-                "constraint_violation" => "BLOCKED",
-                "constraint_warning" => "WARNED",
+            let (decision, severity) = match action_type {
+                "constraint_violation" => ("BLOCKED", packing::Severity::Block),
+                "constraint_warning" => ("WARNED", packing::Severity::Warning),
                 _ => return None, // log/other actions aren't user-visible decisions
             };
-            Some(format!(
-                "- {} {} ago: {} in {}",
-                decision, ago, rule_id, file
-            ))
+            Some(Decision {
+                rule_id: phr::RuleId::new(rule_id),
+                file: file.to_string(),
+                severity,
+                bullet: format!("- {decision} {ago} ago: {rule_id}{location}"),
+            })
         })
+        .collect()
+}
+
+fn render_entry_bullets(entry: &LogEntry, now_secs: u64) -> Vec<String> {
+    entry_decisions(entry, now_secs)
+        .into_iter()
+        .map(|d| d.bullet)
         .collect()
 }
 
@@ -455,6 +629,59 @@ mod tests {
     }
 
     #[test]
+    fn a_command_rule_bullet_has_no_dangling_in_clause() {
+        // Rules that fire on a shell command rather than a file edit log
+        // `"file": ""`. Formatting that unconditionally produced a trailing
+        // ` in ` with nothing after it — text the model reads.
+        let mut e = hook_entry(
+            "pre_check",
+            "",
+            2,
+            json!([{"rule_id": "nudge-fmt-check", "action_type": "constraint_warning",
+                    "message": "m", "bindings": {}}]),
+        );
+        e.ts = 1_700_000_000;
+        let body = build_interaction_body(&[e], 1_700_000_060);
+        assert!(
+            body.contains("- WARNED 1m ago: nudge-fmt-check"),
+            "the decision itself must survive: {body}"
+        );
+        assert!(
+            !body.contains(" in \n") && !body.trim_end().ends_with(" in"),
+            "no dangling `in` clause when there is no file: {body:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_field_also_omits_the_in_clause() {
+        let mut e = LogEntry::new("hook", "pre_check").with(
+            "consequences",
+            json!([{"rule_id": "r", "action_type": "constraint_violation",
+                    "message": "m", "bindings": {}}]),
+        );
+        e.ts = 1_700_000_000;
+        let body = build_interaction_body(&[e], 1_700_000_000);
+        assert!(body.contains("- BLOCKED 0s ago: r"));
+        assert!(!body.contains("<unknown>"), "got: {body:?}");
+    }
+
+    #[test]
+    fn a_file_backed_bullet_keeps_its_in_clause() {
+        let e = hook_entry(
+            "pre_check",
+            "src/x.rs",
+            2,
+            json!([{"rule_id": "r", "action_type": "constraint_violation",
+                    "message": "m", "bindings": {}}]),
+        );
+        let body = build_interaction_body(&[e], 1_700_000_000);
+        assert!(
+            body.contains("- BLOCKED 0s ago: r in src/x.rs"),
+            "got: {body:?}"
+        );
+    }
+
+    #[test]
     fn turn_body_empty_when_no_consequences() {
         let entries = vec![hook_entry("pre_check", "src/ok.rs", 0, json!([]))];
         let body = build_interaction_body(&entries, 1_700_000_010);
@@ -608,6 +835,112 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let out = run_interaction_context(dir.path(), 5, DEFAULT_MAX_BYTES);
         assert_eq!(out, "");
+    }
+
+    // ── opt-in boundary ─────────────────────────────────────────────────
+
+    /// A project with durable directives, a rule, and a logged decision —
+    /// enough that every section of both payloads is non-empty.
+    fn populated_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ep = dir.path().join(".phronesis");
+        std::fs::create_dir_all(&ep).expect("mkdir .phronesis");
+        std::fs::write(
+            ep.join("durable.md"),
+            "First paragraph of guidance.\n\nSecond paragraph of guidance.\n",
+        )
+        .expect("write durable");
+        std::fs::write(ep.join("kernel.md"), "Always-on kernel line.\n").expect("write kernel");
+        std::fs::write(
+            ep.join("rules.json"),
+            r#"{"rules":[{"id":"r1","phase":"pre","priority":10,"conditions":[],"actions":[{"action_type":"constraint_violation","params":["Don't do X"]}]}]}"#,
+        )
+        .expect("write rules");
+        let entry = LogEntry::new("hook", "pre_check")
+            .with("file", "src/x.rs")
+            .with("exit", 2)
+            .with(
+                "consequences",
+                json!([{"rule_id": "r1", "action_type": "constraint_violation", "message": "m", "bindings": {}}]),
+            );
+        crate::action_log::append(&crate::action_log::default_path(dir.path()), &entry)
+            .expect("append log");
+        dir
+    }
+
+    #[tokio::test]
+    async fn without_config_the_interaction_payload_is_byte_identical_to_legacy() {
+        let dir = populated_project();
+        let legacy = run_interaction_context(dir.path(), 5, DEFAULT_MAX_BYTES);
+        let configured = run_interaction_context_configured(dir.path(), 5, DEFAULT_MAX_BYTES).await;
+        assert_eq!(configured, legacy);
+        assert!(
+            !legacy.is_empty(),
+            "the fixture must exercise both sections"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_config_the_session_payload_is_byte_identical_to_legacy() {
+        let dir = populated_project();
+        let legacy = run_session_context(dir.path(), DEFAULT_MAX_BYTES);
+        let configured = run_session_context_configured(dir.path(), DEFAULT_MAX_BYTES).await;
+        assert_eq!(configured, legacy);
+        assert!(!legacy.is_empty());
+    }
+
+    #[tokio::test]
+    async fn without_config_no_context_metric_is_written() {
+        let dir = populated_project();
+        let before = std::fs::read_to_string(crate::action_log::default_path(dir.path()))
+            .unwrap_or_default();
+        let _ = run_interaction_context_configured(dir.path(), 5, DEFAULT_MAX_BYTES).await;
+        let _ = run_session_context_configured(dir.path(), DEFAULT_MAX_BYTES).await;
+        let after = std::fs::read_to_string(crate::action_log::default_path(dir.path()))
+            .unwrap_or_default();
+        assert_eq!(
+            before, after,
+            "a project that has not opted in must produce no context observations"
+        );
+    }
+
+    #[tokio::test]
+    async fn without_config_capsules_are_not_scanned() {
+        let dir = populated_project();
+        // A capsule that would be rejected loudly if it were ever parsed.
+        std::fs::create_dir_all(dir.path().join(".phronesis/nudges")).expect("mkdir");
+        std::fs::write(dir.path().join(".phronesis/nudges/bad.md"), "not a capsule")
+            .expect("write");
+        let configured = run_interaction_context_configured(dir.path(), 5, DEFAULT_MAX_BYTES).await;
+        assert_eq!(
+            configured,
+            run_interaction_context(dir.path(), 5, DEFAULT_MAX_BYTES)
+        );
+    }
+
+    #[tokio::test]
+    async fn opting_in_bounds_the_kernel_and_records_one_observation() {
+        let dir = populated_project();
+        std::fs::write(
+            dir.path().join(".phronesis/context.json"),
+            serde_json::to_string(&config::ContextConfig::default()).expect("serialize"),
+        )
+        .expect("write config");
+        let out = run_interaction_context_configured(dir.path(), 5, DEFAULT_MAX_BYTES).await;
+        let body = unwrap_envelope(&out);
+        assert!(body.contains("Always-on kernel line."));
+        assert!(body.contains("BLOCKED"));
+        assert!(
+            !body.contains("First paragraph of guidance."),
+            "the session-level document must not ride along on every turn"
+        );
+
+        let observations = std::fs::read_to_string(crate::action_log::default_path(dir.path()))
+            .expect("log exists")
+            .lines()
+            .filter(|l| l.contains("\"kind\":\"context\""))
+            .count();
+        assert_eq!(observations, 1);
     }
 
     #[test]
