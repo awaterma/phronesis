@@ -69,12 +69,30 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   and all of its matches are summed.
 - **`.phronesis/nudges/README.md` was parsed as a capsule.** The file `init`
   itself writes produced a load diagnostic on every hook invocation.
+- **A limited `read_recent` parsed the entire action log.** Every hook asks for
+  a handful of recent entries, and the read parsed every line in the log plus
+  its rotated predecessor to return the last few — so the cost grew without
+  bound as a project accumulated history. A 3.8 MB log cost 16 ms per hook, and
+  a real project measured 30 ms. The read now scans backward from the newest
+  record and stops once it has enough *matching* entries (counting matches, not
+  lines, so a filter excluding the newest records still reaches back far
+  enough), and only consults the rotated file when the current one cannot
+  satisfy the limit. This affects every caller, including the legacy context
+  path, `stats`, and `trend`.
+- **Activity bullets rendered a dangling `in` with no path.** Rules that fire
+  on a shell command rather than a file edit log an empty `file`, which
+  formatted as `- WARNED 36m ago: some-rule in ` — malformed text in the prompt
+  the model reads. The location clause is now omitted when there is no path.
+  This changes the legacy renderer's output for command-rule entries.
 
 ### Compatibility
 
 - Without `.phronesis/context.json` the session and interaction payloads are
   byte-identical to previous behavior, capsules are not scanned, and no
-  context observations are written. Pinned by test.
+  context observations are written. Pinned by test. Two deliberate exceptions,
+  both listed above: a `durable.md` over 64 KiB is now ignored rather than
+  truncated, and command-rule activity bullets no longer carry a dangling
+  `in` clause.
 - Re-running `init` never overwrites an existing `context.json`, `kernel.md`,
   `durable.md`, or nudges `README.md`.
 - `session.charter_max_bytes` is defaulted, so configuration written before
@@ -91,7 +109,15 @@ durable file and five blocked edits, comparing legacy against opted-in:
   intact;
 - all five current blocking items retained in both;
 - zero raw truncations across 22 payloads;
-- p95 context construction 3.0 ms with no journey/outcomes hydration.
+- p95 context construction 3.0 ms with no journey/outcomes hydration, on a
+  fixture whose action log held a handful of records.
+
+That latency figure describes a fresh project and is not representative on its
+own. Context construction reads recent hook decisions, and before the
+`read_recent` fix below that read parsed the entire log: a real project with a
+3.8 MB log measured 16 ms, and one in the field measured 30 ms. Both are over
+the specification's 5 ms target. The fix removes the dependence on log size;
+the figures above should be read together with it.
 
 ### Limitations
 

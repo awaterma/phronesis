@@ -186,52 +186,107 @@ pub struct ReadOpts {
     pub only_nonzero_exit: bool,
 }
 
+/// Does this entry satisfy every filter in `opts`?
+fn matches(entry: &LogEntry, opts: &ReadOpts) -> bool {
+    opts.since.map(|s| entry.ts >= s).unwrap_or(true)
+        && opts
+            .kind
+            .as_deref()
+            .map(|k| entry.kind == k)
+            .unwrap_or(true)
+        && opts
+            .event
+            .as_deref()
+            .map(|ev| entry.event == ev)
+            .unwrap_or(true)
+        && (!opts.only_nonzero_exit
+            || entry
+                .data
+                .get("exit")
+                .and_then(|v| v.as_i64())
+                .is_some_and(|n| n != 0))
+}
+
+/// Collect up to `remaining` matching entries from `content`, scanning
+/// backward. Returns them newest-first; the caller reverses.
+fn take_newest_matching(content: &str, opts: &ReadOpts, remaining: usize) -> Vec<LogEntry> {
+    let mut out = Vec::new();
+    if remaining == 0 {
+        return out;
+    }
+    for line in content.lines().rev() {
+        // Malformed lines are skipped silently so a torn trailing write
+        // doesn't prevent reading the rest.
+        if let Ok(entry) = serde_json::from_str::<LogEntry>(line)
+            && matches(&entry, opts)
+        {
+            out.push(entry);
+            if out.len() == remaining {
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// Read recent entries from `path` and its rotated predecessor (`<path>.1`).
 /// Entries from the rotated file come first (older), then the current file
 /// (newer), preserving overall time order. Malformed lines are skipped
 /// silently so a corrupted trailing write doesn't prevent reading the rest.
+///
+/// A `limit` is satisfied by scanning backward from the newest record and
+/// stopping once enough *matching* entries are found — counting matches, not
+/// lines, so a filter that excludes the newest records still reaches back far
+/// enough. The rotated predecessor is only read when the current file cannot
+/// satisfy the limit on its own.
+///
+/// This matters because every hook invocation asks for a handful of recent
+/// entries. Parsing the whole log to return the last five cost tens of
+/// milliseconds per hook on a project with an accumulated log, and grew
+/// without bound.
 pub fn read_recent(path: &Path, opts: &ReadOpts) -> Result<Vec<LogEntry>, LogError> {
-    let mut all_lines = Vec::new();
-
     let rotated = rotated_path(path);
+    let current = if path.exists() {
+        std::fs::read_to_string(path).map_err(|e| LogError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?
+    } else {
+        String::new()
+    };
+
+    if let Some(limit) = opts.limit {
+        let mut newest_first = take_newest_matching(&current, opts, limit);
+        if newest_first.len() < limit
+            && rotated.exists()
+            && let Ok(content) = std::fs::read_to_string(&rotated)
+        {
+            let still_needed = limit - newest_first.len();
+            newest_first.extend(take_newest_matching(&content, opts, still_needed));
+        }
+        newest_first.reverse();
+        return Ok(newest_first);
+    }
+
+    // No limit: every matching entry, oldest first, rotated file ahead of the
+    // current one.
+    let mut entries = Vec::new();
     if rotated.exists()
         && let Ok(content) = std::fs::read_to_string(&rotated)
     {
-        all_lines.extend(content.lines().map(String::from));
+        entries.extend(
+            content
+                .lines()
+                .filter_map(|line| serde_json::from_str::<LogEntry>(line).ok())
+                .filter(|e| matches(e, opts)),
+        );
     }
-    if path.exists() {
-        let content = std::fs::read_to_string(path).map_err(|e| LogError::Io {
-            path: path.display().to_string(),
-            source: e,
-        })?;
-        all_lines.extend(content.lines().map(String::from));
-    }
-
-    let mut entries: Vec<LogEntry> = all_lines
-        .iter()
-        .filter_map(|line| serde_json::from_str::<LogEntry>(line).ok())
-        .filter(|e| {
-            opts.since.map(|s| e.ts >= s).unwrap_or(true)
-                && opts.kind.as_deref().map(|k| e.kind == k).unwrap_or(true)
-                && opts
-                    .event
-                    .as_deref()
-                    .map(|ev| e.event == ev)
-                    .unwrap_or(true)
-                && (!opts.only_nonzero_exit
-                    || e.data
-                        .get("exit")
-                        .and_then(|v| v.as_i64())
-                        .is_some_and(|n| n != 0))
-        })
-        .collect();
-
-    if let Some(limit) = opts.limit
-        && entries.len() > limit
-    {
-        let skip = entries.len() - limit;
-        entries.drain(0..skip);
-    }
+    entries.extend(
+        current
+            .lines()
+            .filter_map(|line| serde_json::from_str::<LogEntry>(line).ok())
+            .filter(|e| matches(e, opts)),
+    );
     Ok(entries)
 }
 
@@ -351,6 +406,135 @@ mod tests {
         let entries = read_recent(&path, &opts).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].data.get("exit").unwrap().as_i64().unwrap(), 2);
+    }
+
+    #[test]
+    fn read_limit_keeps_the_most_recent_matching_entries_not_the_last_lines() {
+        // A backward scan must count *matches*, not lines. Here the newest
+        // records are all the wrong kind, so taking the last N lines would
+        // return nothing.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        for i in 0..5 {
+            let mut e = entry("hook", "pre_check");
+            e.ts = 100 + i;
+            append(&path, &e).unwrap();
+        }
+        for i in 0..20 {
+            let mut e = entry("mcp", "noise");
+            e.ts = 200 + i;
+            append(&path, &e).unwrap();
+        }
+        let opts = ReadOpts {
+            kind: Some("hook".into()),
+            limit: Some(3),
+            ..ReadOpts::default()
+        };
+        let entries = read_recent(&path, &opts).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(entries.iter().all(|e| e.kind == "hook"));
+        assert_eq!(entries[0].ts, 102, "oldest of the newest three");
+        assert_eq!(entries[2].ts, 104, "and file order is preserved");
+    }
+
+    #[test]
+    fn read_limit_reaches_back_into_the_rotated_predecessor() {
+        // The limit is not satisfied by the current file alone, so the
+        // rotated file must still be consulted — and the combined result
+        // must stay in oldest-first order across the boundary.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let rotated = rotated_path(&path);
+        for i in 0..4 {
+            let mut e = entry("mcp", "old");
+            e.ts = 100 + i;
+            append(&rotated, &e).unwrap();
+        }
+        for i in 0..2 {
+            let mut e = entry("mcp", "new");
+            e.ts = 200 + i;
+            append(&path, &e).unwrap();
+        }
+        let opts = ReadOpts {
+            limit: Some(4),
+            ..ReadOpts::default()
+        };
+        let entries = read_recent(&path, &opts).unwrap();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(
+            entries.iter().map(|e| e.ts).collect::<Vec<_>>(),
+            vec![102, 103, 200, 201],
+            "oldest-first across the rotation boundary"
+        );
+    }
+
+    #[test]
+    fn read_limit_larger_than_the_log_returns_everything_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        for i in 0..3 {
+            let mut e = entry("mcp", "noop");
+            e.ts = 100 + i;
+            append(&path, &e).unwrap();
+        }
+        let opts = ReadOpts {
+            limit: Some(50),
+            ..ReadOpts::default()
+        };
+        let entries = read_recent(&path, &opts).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.ts).collect::<Vec<_>>(),
+            vec![100, 101, 102]
+        );
+    }
+
+    #[test]
+    fn read_limit_zero_returns_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        append(&path, &entry("mcp", "noop")).unwrap();
+        let opts = ReadOpts {
+            limit: Some(0),
+            ..ReadOpts::default()
+        };
+        assert!(read_recent(&path, &opts).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_limited_read_does_not_scale_with_log_size() {
+        // Regression guard for hook latency. A limited read used to parse
+        // every line in the log to return the last few, so a project with an
+        // accumulated log paid tens of milliseconds on every single hook.
+        //
+        // The threshold is deliberately loose — this asserts "not linear in
+        // the whole file", not a specific speed. Parsing all 60k records
+        // takes ~50ms; a backward scan for 5 is bounded by the file read.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.jsonl");
+        let mut bulk = String::new();
+        for i in 0..60_000u64 {
+            bulk.push_str(&format!(
+                "{{\"ts\":{},\"kind\":\"hook\",\"event\":\"pre_check\",\"x\":1}}\n",
+                100 + i
+            ));
+        }
+        std::fs::write(&path, bulk).unwrap();
+
+        let opts = ReadOpts {
+            kind: Some("hook".into()),
+            limit: Some(5),
+            ..ReadOpts::default()
+        };
+        let started = std::time::Instant::now();
+        let entries = read_recent(&path, &opts).unwrap();
+        let elapsed = started.elapsed();
+
+        assert_eq!(entries.len(), 5);
+        assert_eq!(entries[4].ts, 60_099, "still the newest record");
+        assert!(
+            elapsed < std::time::Duration::from_millis(25),
+            "a limited read took {elapsed:?}; it should not parse the whole log"
+        );
     }
 
     #[test]

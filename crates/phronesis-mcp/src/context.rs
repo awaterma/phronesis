@@ -368,11 +368,20 @@ pub(crate) fn entry_decisions(entry: &LogEntry, now_secs: u64) -> Vec<Decision> 
     if consequences.is_empty() {
         return Vec::new();
     }
+    // Rules that fire on a shell command rather than a file edit log an empty
+    // `file`. There is no path to name, so the whole ` in <path>` clause is
+    // dropped rather than rendered as a dangling `in ` — this text goes into
+    // the prompt the model reads.
     let file = entry
         .data
         .get("file")
         .and_then(|v| v.as_str())
-        .unwrap_or("<unknown>");
+        .unwrap_or_default();
+    let location = if file.is_empty() {
+        String::new()
+    } else {
+        format!(" in {file}")
+    };
     let ago = humanize_ago(now_secs.saturating_sub(entry.ts));
     consequences
         .iter()
@@ -388,7 +397,7 @@ pub(crate) fn entry_decisions(entry: &LogEntry, now_secs: u64) -> Vec<Decision> 
                 rule_id: rule_id.to_string(),
                 file: file.to_string(),
                 severity,
-                bullet: format!("- {} {} ago: {} in {}", decision, ago, rule_id, file),
+                bullet: format!("- {decision} {ago} ago: {rule_id}{location}"),
             })
         })
         .collect()
@@ -617,6 +626,59 @@ mod tests {
         let body = build_interaction_body(&entries, 1_700_000_005);
         assert!(body.contains("WARNED"));
         assert!(body.contains("warn-clone"));
+    }
+
+    #[test]
+    fn a_command_rule_bullet_has_no_dangling_in_clause() {
+        // Rules that fire on a shell command rather than a file edit log
+        // `"file": ""`. Formatting that unconditionally produced a trailing
+        // ` in ` with nothing after it — text the model reads.
+        let mut e = hook_entry(
+            "pre_check",
+            "",
+            2,
+            json!([{"rule_id": "nudge-fmt-check", "action_type": "constraint_warning",
+                    "message": "m", "bindings": {}}]),
+        );
+        e.ts = 1_700_000_000;
+        let body = build_interaction_body(&[e], 1_700_000_060);
+        assert!(
+            body.contains("- WARNED 1m ago: nudge-fmt-check"),
+            "the decision itself must survive: {body}"
+        );
+        assert!(
+            !body.contains(" in \n") && !body.trim_end().ends_with(" in"),
+            "no dangling `in` clause when there is no file: {body:?}"
+        );
+    }
+
+    #[test]
+    fn a_missing_file_field_also_omits_the_in_clause() {
+        let mut e = LogEntry::new("hook", "pre_check").with(
+            "consequences",
+            json!([{"rule_id": "r", "action_type": "constraint_violation",
+                    "message": "m", "bindings": {}}]),
+        );
+        e.ts = 1_700_000_000;
+        let body = build_interaction_body(&[e], 1_700_000_000);
+        assert!(body.contains("- BLOCKED 0s ago: r"));
+        assert!(!body.contains("<unknown>"), "got: {body:?}");
+    }
+
+    #[test]
+    fn a_file_backed_bullet_keeps_its_in_clause() {
+        let e = hook_entry(
+            "pre_check",
+            "src/x.rs",
+            2,
+            json!([{"rule_id": "r", "action_type": "constraint_violation",
+                    "message": "m", "bindings": {}}]),
+        );
+        let body = build_interaction_body(&[e], 1_700_000_000);
+        assert!(
+            body.contains("- BLOCKED 0s ago: r in src/x.rs"),
+            "got: {body:?}"
+        );
     }
 
     #[test]
