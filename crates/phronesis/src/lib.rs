@@ -64,7 +64,7 @@ pub use compose::{
 pub use consequence::{Consequence, ConsequenceKind, Provenance};
 pub use engine_types::{Action, Condition, Fact, PerformanceStats, Rule};
 pub use error::ReteError;
-pub use ids::{FactId, RuleId, StateId};
+pub use ids::{FactId, RuleId, StableId, StateId};
 pub use network::*;
 pub use production::*;
 pub use pull::{

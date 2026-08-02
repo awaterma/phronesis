@@ -34,7 +34,7 @@ pub fn metric(result: &RenderResult) -> ContextMetric {
             .packed
             .selected
             .iter()
-            .filter(|id| id.starts_with(prefix))
+            .filter(|id| id.as_str().starts_with(prefix))
             .count()
     };
     ContextMetric {
@@ -46,7 +46,7 @@ pub fn metric(result: &RenderResult) -> ContextMetric {
             .packed
             .selected
             .iter()
-            .filter_map(|id| id.strip_prefix("nudge:").map(str::to_string))
+            .filter_map(|id| id.as_str().strip_prefix("nudge:").map(str::to_string))
             .collect(),
         activity_items: selected_count("activity:"),
         state_items: selected_count("state:"),

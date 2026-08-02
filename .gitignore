@@ -39,3 +39,7 @@ docs/specs/PLAN-v0.11-hardening.md
 !.phronesis/toolchains.json
 !.phronesis/predicates/
 !.phronesis/predicates/**
+!.phronesis/context.json
+!.phronesis/kernel.md
+!.phronesis/nudges/
+!.phronesis/nudges/**

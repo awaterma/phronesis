@@ -6,73 +6,14 @@ use super::config::ContextConfig;
 
 pub const OMISSION_FOOTER: &str = "Context items omitted; run `phr-mcp context inspect`.";
 
-/// Identifier for one packable context unit — `kernel:0`, `activity:<ts>:<rule>:<n>`,
-/// `nudge:<capsule>`, `state:subject`, and so on.
+/// Identifier for one packable context unit — `kernel:0`,
+/// `activity:<ts>:<rule>:<n>`, `nudge:<capsule>`, `state:subject`, and so on.
 ///
-/// A newtype rather than a bare `String` so a rule id (which is a component of
-/// some stable ids, never a whole one) cannot be handed to the packer where a
-/// stable id is expected. Serialization is `transparent`, so `context inspect
-/// --json` and the `kind:"context"` observations keep their existing string
-/// shape on the wire.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
-#[serde(transparent)]
-pub struct StableId(pub String);
-
-impl StableId {
-    /// Construct from anything convertible to `String`.
-    pub fn new(s: impl Into<String>) -> Self {
-        Self(s.into())
-    }
-
-    /// Borrow the inner string.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for StableId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // `pad`, not `write_str`, so width/alignment specs in the inspect
-        // table (`{:<40}`) are honored.
-        f.pad(&self.0)
-    }
-}
-
-impl From<String> for StableId {
-    fn from(s: String) -> Self {
-        Self(s)
-    }
-}
-
-impl From<&str> for StableId {
-    fn from(s: &str) -> Self {
-        Self(s.to_string())
-    }
-}
-
-impl AsRef<str> for StableId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl PartialEq<str> for StableId {
-    fn eq(&self, other: &str) -> bool {
-        self.0 == other
-    }
-}
-
-impl PartialEq<&str> for StableId {
-    fn eq(&self, other: &&str) -> bool {
-        self.0 == *other
-    }
-}
-
-impl PartialEq<String> for StableId {
-    fn eq(&self, other: &String) -> bool {
-        self.0 == *other
-    }
-}
+/// Defined in the engine crate alongside [`phr::RuleId`] so the two share one
+/// generated shape; see `phronesis::ids`. Serialization is transparent, so
+/// `context inspect --json` and the `kind:"context"` observations keep their
+/// bare-string shape on the wire.
+pub use phr::StableId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -110,10 +51,10 @@ pub struct ContextItem {
 }
 
 impl ContextItem {
-    pub fn new(kind: ItemKind, id: impl Into<String>, body: impl Into<String>) -> Self {
+    pub fn new(kind: ItemKind, id: impl Into<StableId>, body: impl Into<String>) -> Self {
         Self {
             kind,
-            stable_id: StableId::new(id),
+            stable_id: id.into(),
             priority: 0,
             severity: Severity::None,
             body: body.into(),
@@ -147,11 +88,11 @@ pub struct OmittedItem {
 #[derive(Debug, Clone, Default)]
 pub struct PackedContext {
     pub body: String,
-    /// Stable ids of the admitted items, in admission order, flattened to
-    /// plain strings: downstream consumers only ever prefix-match them
-    /// (`kernel:`, `nudge:`, ...) and serialize them, never pass them back to
-    /// the packer, so they need no type tag.
-    pub selected: Vec<String>,
+    /// Stable ids of the admitted items, in admission order. Keeping the type
+    /// tag here is what lets [`super::render`] decide a candidate's verdict by
+    /// comparing two `StableId`s directly, rather than comparing a tagged id
+    /// against a bare string.
+    pub selected: Vec<StableId>,
     pub omitted: Vec<OmittedItem>,
 }
 
@@ -263,7 +204,7 @@ impl<'a> Packer<'a> {
         *self.kind_bytes.entry(item.kind).or_default() += increment.len();
         self.kinds.insert(item.kind);
         self.out.body.push_str(increment);
-        self.out.selected.push(item.stable_id.as_str().to_owned());
+        self.out.selected.push(item.stable_id.clone());
     }
 
     fn try_pack(&mut self, item: &ContextItem, kind_ceiling: Option<usize>) -> bool {
@@ -531,8 +472,8 @@ mod tests {
             item(ItemKind::Kernel, "kernel:1", "also short"),
         ];
         let out = pack_interaction(&config, &[], &kernel, &[]);
-        assert!(out.selected.contains(&"kernel:0".to_string()));
-        assert!(!out.selected.contains(&"kernel:1".to_string()));
+        assert!(out.selected.contains(&StableId::new("kernel:0")));
+        assert!(!out.selected.contains(&StableId::new("kernel:1")));
         assert_eq!(
             reason_for(&out, "kernel:1"),
             Some(&OmissionReason::KindCeiling)
@@ -557,7 +498,7 @@ mod tests {
         let kernel = vec![item(ItemKind::Kernel, "kernel:0", &"k".repeat(300))];
         let nudges = vec![item(ItemKind::Nudge, "n", &"n".repeat(300))];
         let out = pack_interaction(&config, &activity, &kernel, &nudges);
-        assert!(out.selected.contains(&"a".to_string()));
+        assert!(out.selected.contains(&StableId::new("a")));
         assert!(out.bytes() <= 120);
     }
 
@@ -579,7 +520,7 @@ mod tests {
         let kernel = vec![item(ItemKind::Kernel, "kernel:0", &"k".repeat(200))];
         let out = pack_interaction(&config, &activity, &kernel, &[]);
         assert!(
-            out.selected.contains(&"kernel:0".to_string()),
+            out.selected.contains(&StableId::new("kernel:0")),
             "kernel should reach into the unspent reserve; selected={:?}",
             out.selected
         );
@@ -632,7 +573,7 @@ mod tests {
         ];
         let nudges = vec![item(ItemKind::Nudge, "n", &"n".repeat(30))];
         let out = pack_interaction(&config, &activity, &[], &nudges);
-        assert!(out.selected.contains(&"n".to_string()), "nudge admitted");
+        assert!(out.selected.contains(&StableId::new("n")), "nudge admitted");
         assert_eq!(
             reason_for(&out, "a2"),
             Some(&OmissionReason::DisplacedByNudge)
@@ -711,7 +652,7 @@ mod tests {
         let increment = format!("## Recent phronesis activity\n{body}");
         let config = byte_only(increment.len() - 1);
         let out = pack_interaction(&config, &[item(ItemKind::Activity, "a", body)], &[], &[]);
-        assert!(!out.selected.contains(&"a".to_string()));
+        assert!(!out.selected.contains(&StableId::new("a")));
         assert_eq!(reason_for(&out, "a"), Some(&OmissionReason::ByteCapacity));
     }
 
@@ -723,7 +664,7 @@ mod tests {
         let body = "- é".repeat(20);
         let config = byte_only(body.len() - 1);
         let out = pack_interaction(&config, &[item(ItemKind::Activity, "a", &body)], &[], &[]);
-        assert!(!out.selected.contains(&"a".to_string()));
+        assert!(!out.selected.contains(&StableId::new("a")));
         assert!(!out.body.contains('é'), "no fragment of the item leaked");
         assert!(std::str::from_utf8(out.body.as_bytes()).is_ok());
     }

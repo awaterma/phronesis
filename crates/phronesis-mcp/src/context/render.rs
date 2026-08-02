@@ -182,7 +182,7 @@ pub struct InspectReport {
     /// false unless the packer has a bug.
     pub raw_truncation: bool,
     pub candidates: Vec<Candidate>,
-    pub selected: Vec<String>,
+    pub selected: Vec<StableId>,
     pub omitted: Vec<packing::OmittedItem>,
     pub capsules_loaded: Vec<String>,
     pub matched_capsules: Vec<String>,
@@ -289,7 +289,7 @@ impl InspectReport {
     /// Why one candidate ended up where it did: selected, dropped for a named
     /// reason, or never offered to the packer for this event at all.
     fn verdict_for(&self, candidate: &Candidate) -> String {
-        if self.selected.iter().any(|id| candidate.stable_id == *id) {
+        if self.selected.contains(&candidate.stable_id) {
             return "selected".to_string();
         }
         self.omitted
