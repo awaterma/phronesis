@@ -9,6 +9,7 @@
 //! Rendering writes nothing. Metric recording is the caller's step, which is
 //! what keeps `inspect` from contaminating the log it exists to explain.
 
+use std::fmt::Write;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -19,7 +20,7 @@ use crate::rules_file::{self, RulesFile};
 
 use super::capsule;
 use super::config::{self, ConfigError, ContextConfig};
-use super::packing::{self, ContextItem, ItemKind, PackedContext, Severity};
+use super::packing::{self, ContextItem, ItemKind, PackedContext, Severity, StableId};
 
 /// The host lifecycle events Phronesis renders for. Unsupported events are
 /// never synthesized — an adapter that lacks a capability simply never
@@ -74,7 +75,7 @@ pub enum ConfigStatus {
 #[derive(Debug, Clone, Serialize)]
 pub struct Candidate {
     pub kind: ItemKind,
-    pub stable_id: String,
+    pub stable_id: StableId,
     pub body_bytes: usize,
     pub estimated_tokens: usize,
     pub priority: i32,
@@ -213,17 +214,36 @@ impl RenderResult {
     }
 }
 
+/// The `snake_case` label a `#[serde(rename_all)]` enum serializes to, or the
+/// empty string for anything that is not a plain string in JSON. Only the
+/// human table depends on this; the JSON projection serializes the value
+/// itself.
+fn enum_label<T: Serialize>(value: T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 impl InspectReport {
     /// Human projection. Written to a `String` rather than printed so the
     /// caller owns the output stream.
     pub fn to_text(&self) -> String {
-        use std::fmt::Write;
         let mut out = String::new();
-        let event = serde_json::to_value(self.event)
-            .ok()
-            .and_then(|v| v.as_str().map(str::to_string))
-            .unwrap_or_default();
-        let _ = writeln!(out, "event:  {event}");
+        self.write_summary(&mut out);
+        self.write_candidates(&mut out);
+        self.write_ceilings(&mut out);
+        self.write_capsules(&mut out);
+        if !self.body.is_empty() {
+            let _ = writeln!(out, "\n--- rendered body ---\n{}", self.body);
+        }
+        out
+    }
+
+    /// Event, config provenance, budget, latency, and the truncation warning
+    /// that should never appear.
+    fn write_summary(&self, out: &mut String) {
+        let _ = writeln!(out, "event:  {}", enum_label(self.event));
         match &self.config_status {
             ConfigStatus::Loaded => {
                 let _ = writeln!(out, "config: .phronesis/context.json (loaded)");
@@ -250,34 +270,36 @@ impl InspectReport {
                 "WARNING: body exceeds the hard limit; the envelope guard would truncate"
             );
         }
+    }
 
+    /// Every item that was offered, with its cost and its fate.
+    fn write_candidates(&self, out: &mut String) {
         let _ = writeln!(out, "\ncandidates ({}):", self.candidates.len());
         for candidate in &self.candidates {
-            let kind = serde_json::to_value(candidate.kind)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            let verdict = if self.selected.contains(&candidate.stable_id) {
-                "selected".to_string()
-            } else {
-                self.omitted
-                    .iter()
-                    .find(|o| o.stable_id == candidate.stable_id)
-                    .map(|o| {
-                        serde_json::to_value(o.reason)
-                            .ok()
-                            .and_then(|v| v.as_str().map(str::to_string))
-                            .unwrap_or_default()
-                    })
-                    .unwrap_or_else(|| "not offered".to_string())
-            };
+            let kind = enum_label(candidate.kind);
+            let verdict = self.verdict_for(candidate);
             let _ = writeln!(
                 out,
                 "  [{kind:<11}] {:<40} {:>5}B {:>5}t  {verdict}",
                 candidate.stable_id, candidate.body_bytes, candidate.estimated_tokens,
             );
         }
+    }
 
+    /// Why one candidate ended up where it did: selected, dropped for a named
+    /// reason, or never offered to the packer for this event at all.
+    fn verdict_for(&self, candidate: &Candidate) -> String {
+        if self.selected.iter().any(|id| candidate.stable_id == *id) {
+            return "selected".to_string();
+        }
+        self.omitted
+            .iter()
+            .find(|o| o.stable_id == candidate.stable_id)
+            .map(|o| enum_label(o.reason))
+            .unwrap_or_else(|| "not offered".to_string())
+    }
+
+    fn write_ceilings(&self, out: &mut String) {
         let _ = writeln!(
             out,
             "\nkind ceilings: kernel={} activity_reserve={} nudges={} \
@@ -289,7 +311,10 @@ impl InspectReport {
             self.config.session.charter_max_bytes,
             self.config.session.rules_max_bytes,
         );
+    }
 
+    /// Capsule load and match results, then every diagnostic in report order.
+    fn write_capsules(&self, out: &mut String) {
         let _ = writeln!(
             out,
             "\ncapsules: {} loaded, {} matched",
@@ -311,11 +336,6 @@ impl InspectReport {
         {
             let _ = writeln!(out, "  ! {diagnostic}");
         }
-
-        if !self.body.is_empty() {
-            let _ = writeln!(out, "\n--- rendered body ---\n{}", self.body);
-        }
-        out
     }
 }
 
@@ -340,58 +360,19 @@ pub async fn render(root: &Path, event: ContextEvent, last_n: usize) -> Option<R
     // The kernel comes from `kernel.md` only. An existing `durable.md` is a
     // session-level document and is never squeezed into the per-turn budget.
     let kernel = kernel_items(&super::read_durable_kernel(root));
+    // Candidates accumulate in offer order: kernel first, then whatever the
+    // event's branch offered on top of it.
     let mut candidates: Vec<Candidate> = kernel.iter().map(Candidate::from).collect();
-    let mut capsules_loaded = Vec::new();
-    let mut capsule_diagnostics = Vec::new();
-    let mut matched_capsules = Vec::new();
-    let mut hydration_diagnostics = Vec::new();
 
-    let packed = if event.renders_charter() {
-        let state = state_items(root);
-        let charter = charter_items(&super::read_durable_directives(root));
-        let rules = rules_file::read(&rules_file::default_path(root))
-            .map(|rules| rule_items(&rules))
-            .unwrap_or_default();
-        let orientation = orientation_item();
-        candidates.extend(state.iter().map(Candidate::from));
-        candidates.extend(charter.iter().map(Candidate::from));
-        candidates.extend(rules.iter().map(Candidate::from));
-        candidates.push(Candidate::from(&orientation));
-        packing::pack_session(
-            &config,
-            &state,
-            &kernel,
-            &charter,
-            &rules,
-            Some(&orientation),
-        )
+    // No capsule evaluation at a charter event: capsules are selected by
+    // current-interaction facts, and session construction must not invent an
+    // event merely to trigger them.
+    let branch = if event.renders_charter() {
+        pack_charter(root, &config, &kernel)
     } else {
-        let now = unix_now();
-        let activity = activity_items(&recent_hook_entries(root, last_n), now);
-        // No capsule evaluation at a charter event: capsules are selected by
-        // current-interaction facts, and session construction must not invent
-        // an event merely to trigger them.
-        let loaded = capsule::load(root);
-        capsules_loaded = loaded.capsules.iter().map(|c| c.id.clone()).collect();
-        capsule_diagnostics = loaded.diagnostics.clone();
-        // An undeclared journey selector surfaces through the derivation
-        // error below (`validate_selectors` names the rule and the selector),
-        // so there is no separate pre-check to duplicate it here.
-        let outcome = capsule::matched(root, &loaded.capsules, now).await;
-        matched_capsules = outcome.matched_ids.clone();
-        hydration_diagnostics.extend(outcome.diagnostics);
-        let nudges = outcome
-            .items
-            .into_iter()
-            .map(|mut item| {
-                item.stable_id = format!("nudge:{}", item.stable_id);
-                item
-            })
-            .collect::<Vec<_>>();
-        candidates.extend(activity.iter().map(Candidate::from));
-        candidates.extend(nudges.iter().map(Candidate::from));
-        packing::pack_interaction(&config, &activity, &kernel, &nudges)
+        pack_turn(root, &config, &kernel, last_n).await
     };
+    candidates.extend(branch.offered);
 
     Some(RenderResult {
         event,
@@ -399,13 +380,102 @@ pub async fn render(root: &Path, event: ContextEvent, last_n: usize) -> Option<R
         config,
         config_status,
         candidates,
-        packed,
-        capsules_loaded,
-        capsule_diagnostics,
-        matched_capsules,
-        hydration_diagnostics,
+        packed: branch.packed,
+        capsules_loaded: branch.capsules.loaded,
+        capsule_diagnostics: branch.capsules.load_diagnostics,
+        matched_capsules: branch.capsules.matched,
+        hydration_diagnostics: branch.capsules.hydration_diagnostics,
         latency: started.elapsed(),
     })
+}
+
+/// What one event branch produced: the packed body, the items that branch
+/// offered to the packer beyond the kernel (in offer order), and whatever
+/// capsule evaluation reported.
+struct BranchRender {
+    packed: PackedContext,
+    offered: Vec<Candidate>,
+    capsules: CapsuleReport,
+}
+
+/// What capsule evaluation produced. Empty at a charter event, which never
+/// evaluates capsules at all.
+#[derive(Default)]
+struct CapsuleReport {
+    loaded: Vec<String>,
+    load_diagnostics: Vec<String>,
+    matched: Vec<String>,
+    hydration_diagnostics: Vec<String>,
+}
+
+/// Session / post-compact packing: state, kernel, charter, rules, orientation.
+fn pack_charter(root: &Path, config: &ContextConfig, kernel: &[ContextItem]) -> BranchRender {
+    let state = state_items(root);
+    let charter = charter_items(&super::read_durable_directives(root));
+    let rules = rules_file::read(&rules_file::default_path(root))
+        .map(|rules| rule_items(&rules))
+        .unwrap_or_default();
+    let orientation = orientation_item();
+    let offered = {
+        let mut offered: Vec<Candidate> = state.iter().map(Candidate::from).collect();
+        offered.extend(charter.iter().map(Candidate::from));
+        offered.extend(rules.iter().map(Candidate::from));
+        offered.push(Candidate::from(&orientation));
+        offered
+    };
+    BranchRender {
+        packed: packing::pack_session(
+            config,
+            packing::SessionSections {
+                state: &state,
+                kernel,
+                charter: &charter,
+                rules: &rules,
+                orientation: Some(&orientation),
+            },
+        ),
+        offered,
+        capsules: CapsuleReport::default(),
+    }
+}
+
+/// Per-interaction packing: recent activity, kernel, and any nudge capsule the
+/// current facts select.
+async fn pack_turn(
+    root: &Path,
+    config: &ContextConfig,
+    kernel: &[ContextItem],
+    last_n: usize,
+) -> BranchRender {
+    let now = unix_now();
+    let activity = activity_items(&recent_hook_entries(root, last_n), now);
+    let loaded = capsule::load(root);
+    // An undeclared journey selector surfaces through the derivation error
+    // below (`validate_selectors` names the rule and the selector), so there
+    // is no separate pre-check to duplicate it here.
+    let outcome = capsule::matched(root, &loaded.capsules, now).await;
+    let nudges = {
+        let mut items = outcome.items;
+        for item in &mut items {
+            item.stable_id = StableId::new(format!("nudge:{}", item.stable_id));
+        }
+        items
+    };
+    let offered = {
+        let mut offered: Vec<Candidate> = activity.iter().map(Candidate::from).collect();
+        offered.extend(nudges.iter().map(Candidate::from));
+        offered
+    };
+    BranchRender {
+        packed: packing::pack_interaction(config, &activity, kernel, &nudges),
+        offered,
+        capsules: CapsuleReport {
+            loaded: loaded.capsules.iter().map(|c| c.id.clone()).collect(),
+            load_diagnostics: loaded.diagnostics,
+            matched: outcome.matched_ids,
+            hydration_diagnostics: outcome.diagnostics,
+        },
+    }
 }
 
 fn unix_now() -> u64 {
@@ -533,7 +603,7 @@ struct ActivityKey {
     group: u8,
     severity: Severity,
     ts: u64,
-    rule_id: String,
+    rule_id: phr::RuleId,
     file: String,
 }
 
@@ -831,7 +901,13 @@ mod tests {
             },
             ..ContextConfig::default()
         };
-        let packed = packing::pack_session(&config, &[], &[], &items, &[], None);
+        let packed = packing::pack_session(
+            &config,
+            packing::SessionSections {
+                charter: &items,
+                ..packing::SessionSections::default()
+            },
+        );
         assert!(packed.body.contains("## Small"));
         assert!(
             !packed.body.contains("Lead-in promising a list:"),

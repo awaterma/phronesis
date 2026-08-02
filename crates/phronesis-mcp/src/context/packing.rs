@@ -6,6 +6,74 @@ use super::config::ContextConfig;
 
 pub const OMISSION_FOOTER: &str = "Context items omitted; run `phr-mcp context inspect`.";
 
+/// Identifier for one packable context unit — `kernel:0`, `activity:<ts>:<rule>:<n>`,
+/// `nudge:<capsule>`, `state:subject`, and so on.
+///
+/// A newtype rather than a bare `String` so a rule id (which is a component of
+/// some stable ids, never a whole one) cannot be handed to the packer where a
+/// stable id is expected. Serialization is `transparent`, so `context inspect
+/// --json` and the `kind:"context"` observations keep their existing string
+/// shape on the wire.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
+#[serde(transparent)]
+pub struct StableId(pub String);
+
+impl StableId {
+    /// Construct from anything convertible to `String`.
+    pub fn new(s: impl Into<String>) -> Self {
+        Self(s.into())
+    }
+
+    /// Borrow the inner string.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for StableId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `pad`, not `write_str`, so width/alignment specs in the inspect
+        // table (`{:<40}`) are honored.
+        f.pad(&self.0)
+    }
+}
+
+impl From<String> for StableId {
+    fn from(s: String) -> Self {
+        Self(s)
+    }
+}
+
+impl From<&str> for StableId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
+impl AsRef<str> for StableId {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl PartialEq<str> for StableId {
+    fn eq(&self, other: &str) -> bool {
+        self.0 == other
+    }
+}
+
+impl PartialEq<&str> for StableId {
+    fn eq(&self, other: &&str) -> bool {
+        self.0 == *other
+    }
+}
+
+impl PartialEq<String> for StableId {
+    fn eq(&self, other: &String) -> bool {
+        self.0 == *other
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ItemKind {
@@ -34,7 +102,7 @@ pub enum Severity {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextItem {
     pub kind: ItemKind,
-    pub stable_id: String,
+    pub stable_id: StableId,
     pub priority: i32,
     pub severity: Severity,
     pub body: String,
@@ -45,7 +113,7 @@ impl ContextItem {
     pub fn new(kind: ItemKind, id: impl Into<String>, body: impl Into<String>) -> Self {
         Self {
             kind,
-            stable_id: id.into(),
+            stable_id: StableId::new(id),
             priority: 0,
             severity: Severity::None,
             body: body.into(),
@@ -66,7 +134,7 @@ pub enum OmissionReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OmittedItem {
     pub kind: ItemKind,
-    pub stable_id: String,
+    pub stable_id: StableId,
     pub reason: OmissionReason,
 }
 
@@ -79,6 +147,10 @@ pub struct OmittedItem {
 #[derive(Debug, Clone, Default)]
 pub struct PackedContext {
     pub body: String,
+    /// Stable ids of the admitted items, in admission order, flattened to
+    /// plain strings: downstream consumers only ever prefix-match them
+    /// (`kernel:`, `nudge:`, ...) and serialize them, never pass them back to
+    /// the packer, so they need no type tag.
     pub selected: Vec<String>,
     pub omitted: Vec<OmittedItem>,
 }
@@ -191,7 +263,7 @@ impl<'a> Packer<'a> {
         *self.kind_bytes.entry(item.kind).or_default() += increment.len();
         self.kinds.insert(item.kind);
         self.out.body.push_str(increment);
-        self.out.selected.push(item.stable_id.clone());
+        self.out.selected.push(item.stable_id.as_str().to_owned());
     }
 
     fn try_pack(&mut self, item: &ContextItem, kind_ceiling: Option<usize>) -> bool {
@@ -221,6 +293,40 @@ impl<'a> Packer<'a> {
                 .config
                 .estimated_max_tokens
                 .is_none_or(|max| estimate_tokens(bytes) <= max)
+    }
+
+    /// Reconsider one activity item that overflowed its reserve, against what
+    /// is left of the shared capacity. An item that would have fit had the
+    /// admitted nudges not consumed shared capacity is attributed to them —
+    /// proven by re-checking the budgets with the nudge bytes given back, not
+    /// inferred from the mere presence of a nudge.
+    fn reconsider_overflow(&mut self, item: &ContextItem) {
+        let increment = self.rendered_increment(item);
+        match self.reason(item, None) {
+            None => self.commit(item, &increment),
+            Some(reason) => {
+                let displaced = {
+                    let nudge_bytes = self.bytes_for(ItemKind::Nudge);
+                    nudge_bytes > 0
+                        && matches!(
+                            reason,
+                            OmissionReason::ByteCapacity | OmissionReason::TokenCapacity
+                        )
+                        && self.fits_shared(
+                            (self.out.body.len() + increment.len()).saturating_sub(nudge_bytes),
+                        )
+                };
+                self.out.omitted.push(OmittedItem {
+                    kind: item.kind,
+                    stable_id: item.stable_id.clone(),
+                    reason: if displaced {
+                        OmissionReason::DisplacedByNudge
+                    } else {
+                        reason
+                    },
+                });
+            }
+        }
     }
 
     fn finish(mut self) -> PackedContext {
@@ -257,48 +363,38 @@ pub fn pack_interaction(
     for item in kernel {
         p.try_pack(item, Some(config.interaction.kernel_max_bytes));
     }
-    let mut sorted_nudges: Vec<&ContextItem> = nudges.iter().collect();
-    sorted_nudges.sort_by(|a, b| {
+    for item in nudge_order(nudges) {
+        p.try_pack(item, Some(config.interaction.nudges_max_bytes));
+    }
+    // Step 6: reconsider activity that overflowed its reserve.
+    for item in overflow {
+        p.reconsider_overflow(item);
+    }
+    p.finish()
+}
+
+/// The order nudges compete in: highest priority first, then smallest body,
+/// then stable id — a total order, so identical inputs pack identically.
+fn nudge_order(nudges: &[ContextItem]) -> Vec<&ContextItem> {
+    let mut sorted: Vec<&ContextItem> = nudges.iter().collect();
+    sorted.sort_by(|a, b| {
         b.priority
             .cmp(&a.priority)
             .then_with(|| a.body.len().cmp(&b.body.len()))
             .then_with(|| a.stable_id.cmp(&b.stable_id))
     });
-    for item in sorted_nudges {
-        p.try_pack(item, Some(config.interaction.nudges_max_bytes));
-    }
-    // Step 6: reconsider activity that overflowed its reserve, against what
-    // is left of the shared capacity. An item that would have fit had the
-    // admitted nudges not consumed shared capacity is attributed to them —
-    // proven by re-checking the budgets with the nudge bytes given back,
-    // not inferred from the mere presence of a nudge.
-    for item in overflow {
-        let increment = p.rendered_increment(item);
-        match p.reason(item, None) {
-            None => p.commit(item, &increment),
-            Some(reason) => {
-                let nudge_bytes = p.bytes_for(ItemKind::Nudge);
-                let displaced = nudge_bytes > 0
-                    && matches!(
-                        reason,
-                        OmissionReason::ByteCapacity | OmissionReason::TokenCapacity
-                    )
-                    && p.fits_shared(
-                        (p.out.body.len() + increment.len()).saturating_sub(nudge_bytes),
-                    );
-                p.out.omitted.push(OmittedItem {
-                    kind: item.kind,
-                    stable_id: item.stable_id.clone(),
-                    reason: if displaced {
-                        OmissionReason::DisplacedByNudge
-                    } else {
-                        reason
-                    },
-                });
-            }
-        }
-    }
-    p.finish()
+    sorted
+}
+
+/// The item groups a session pack draws from, named so the packing order is
+/// not carried by argument position alone.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SessionSections<'a> {
+    pub state: &'a [ContextItem],
+    pub kernel: &'a [ContextItem],
+    pub charter: &'a [ContextItem],
+    pub rules: &'a [ContextItem],
+    pub orientation: Option<&'a ContextItem>,
 }
 
 /// Stateless session packing.
@@ -307,32 +403,25 @@ pub fn pack_interaction(
 /// state overflow. The charter sits ahead of the rule listing because it is
 /// the project's own guidance; the rule summary is recoverable over MCP, the
 /// charter prose is not.
-pub fn pack_session(
-    config: &ContextConfig,
-    state: &[ContextItem],
-    kernel: &[ContextItem],
-    charter: &[ContextItem],
-    rules: &[ContextItem],
-    orientation: Option<&ContextItem>,
-) -> PackedContext {
+pub fn pack_session(config: &ContextConfig, sections: SessionSections<'_>) -> PackedContext {
     let mut p = Packer::new(config);
     let mut overflow = Vec::new();
-    for item in state {
+    for item in sections.state {
         if !p.try_pack(item, Some(config.session.state_reserve_bytes)) {
             p.out.omitted.pop();
             overflow.push(item);
         }
     }
-    for item in kernel {
+    for item in sections.kernel {
         p.try_pack(item, Some(config.session.kernel_max_bytes));
     }
-    for item in charter {
+    for item in sections.charter {
         p.try_pack(item, Some(config.session.charter_max_bytes));
     }
-    for item in rules {
+    for item in sections.rules {
         p.try_pack(item, Some(config.session.rules_max_bytes));
     }
-    if let Some(item) = orientation {
+    if let Some(item) = sections.orientation {
         p.try_pack(item, None);
     }
     for item in overflow {
@@ -752,7 +841,15 @@ mod tests {
                 if let Some(max) = token_cap {
                     assert!(estimate_tokens(interaction.bytes()) <= max);
                 }
-                let session = pack_session(&config, &activity, &kernel, &[], &nudges, None);
+                let session = pack_session(
+                    &config,
+                    SessionSections {
+                        state: &activity,
+                        kernel: &kernel,
+                        rules: &nudges,
+                        ..SessionSections::default()
+                    },
+                );
                 assert!(
                     session.bytes() <= hard,
                     "session hard={hard} tokens={token_cap:?} -> {}",
@@ -772,7 +869,16 @@ mod tests {
         let kernel = vec![item(ItemKind::Kernel, "kernel:0", "Kernel text.")];
         let rules = vec![item(ItemKind::Rule, "rule:r", "- r — do the thing")];
         let orientation = item(ItemKind::Orientation, "orientation:mcp", "MCP line.");
-        let out = pack_session(&config, &state, &kernel, &[], &rules, Some(&orientation));
+        let out = pack_session(
+            &config,
+            SessionSections {
+                state: &state,
+                kernel: &kernel,
+                rules: &rules,
+                orientation: Some(&orientation),
+                ..SessionSections::default()
+            },
+        );
         assert_eq!(
             out.selected,
             ["state:subject", "kernel:0", "rule:r", "orientation:mcp"]
@@ -803,7 +909,14 @@ mod tests {
             ),
         ];
         let kernel = vec![item(ItemKind::Kernel, "kernel:0", "Kernel text.")];
-        let out = pack_session(&config, &state, &kernel, &[], &[], None);
+        let out = pack_session(
+            &config,
+            SessionSections {
+                state: &state,
+                kernel: &kernel,
+                ..SessionSections::default()
+            },
+        );
         assert_eq!(out.selected, ["state:subject", "kernel:0", "state:graph"]);
         assert!(out.omitted.is_empty(), "a re-admitted item is not omitted");
     }

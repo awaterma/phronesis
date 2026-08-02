@@ -122,38 +122,45 @@ fn percentile(values: &mut [u64], p: usize) -> u64 {
     values.get(rank - 1).copied().unwrap_or(0)
 }
 
-pub fn stats(root: &Path, since: Option<u64>) -> ContextStats {
-    let entries = action_log::read_recent(
-        &action_log::default_path(root),
-        &ReadOpts {
-            since,
-            kind: Some("context".to_string()),
-            ..ReadOpts::default()
-        },
-    )
-    .unwrap_or_default();
-    let field =
-        |entry: &LogEntry, name: &str| entry.data.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
-    let mut bytes = entries
-        .iter()
-        .map(|e| field(e, "bytes"))
-        .collect::<Vec<_>>();
-    let mut tokens = entries
-        .iter()
-        .map(|e| field(e, "estimated_tokens"))
-        .collect::<Vec<_>>();
-    let mut latency = entries
-        .iter()
-        .map(|e| field(e, "latency_micros"))
-        .collect::<Vec<_>>();
-    let count = entries.len() as u64;
+/// One numeric field of a logged observation, defaulting to 0 when the field
+/// is absent or is not an integer (an object under `omitted`, for instance).
+fn field(entry: &LogEntry, name: &str) -> u64 {
+    entry.data.get(name).and_then(|v| v.as_u64()).unwrap_or(0)
+}
 
-    let mut omissions_by_kind: BTreeMap<String, u64> = BTreeMap::new();
-    let mut capsule_selections: BTreeMap<String, u64> = BTreeMap::new();
-    for entry in &entries {
+/// Summary of one numeric column across every observation in the window.
+struct Distribution {
+    average: u64,
+    median: u64,
+    p95: u64,
+}
+
+/// Average, median, and 95th percentile of `name` across `entries`.
+fn distribution(entries: &[LogEntry], name: &str) -> Distribution {
+    let mut values = entries.iter().map(|e| field(e, name)).collect::<Vec<u64>>();
+    let count = values.len() as u64;
+    Distribution {
+        average: values.iter().sum::<u64>().checked_div(count).unwrap_or(0),
+        median: percentile(&mut values, 50),
+        p95: percentile(&mut values, 95),
+    }
+}
+
+/// The two per-key tallies that need a pass over every observation.
+#[derive(Default)]
+struct Tallies {
+    omissions_by_kind: BTreeMap<String, u64>,
+    capsule_selections: BTreeMap<String, u64>,
+}
+
+/// Omissions per item kind, and how many payloads selected each capsule.
+fn tallies(entries: &[LogEntry]) -> Tallies {
+    let mut tallies = Tallies::default();
+    for entry in entries {
         if let Some(map) = entry.data.get("omitted").and_then(|v| v.as_object()) {
             for (kind, value) in map {
-                *omissions_by_kind.entry(kind.clone()).or_default() += value.as_u64().unwrap_or(0);
+                *tallies.omissions_by_kind.entry(kind.clone()).or_default() +=
+                    value.as_u64().unwrap_or(0);
             }
         }
         for id in entry
@@ -164,18 +171,44 @@ pub fn stats(root: &Path, since: Option<u64>) -> ContextStats {
             .flatten()
             .filter_map(|v| v.as_str())
         {
-            *capsule_selections.entry(id.to_string()).or_default() += 1;
+            *tallies
+                .capsule_selections
+                .entry(id.to_string())
+                .or_default() += 1;
         }
     }
+    tallies
+}
+
+/// The `kind:"context"` observations at or after `since`, or none if the log
+/// cannot be read.
+fn observations(root: &Path, since: Option<u64>) -> Vec<LogEntry> {
+    action_log::read_recent(
+        &action_log::default_path(root),
+        &ReadOpts {
+            since,
+            kind: Some("context".to_string()),
+            ..ReadOpts::default()
+        },
+    )
+    .unwrap_or_default()
+}
+
+pub fn stats(root: &Path, since: Option<u64>) -> ContextStats {
+    let entries = observations(root, since);
+    let bytes = distribution(&entries, "bytes");
+    let tokens = distribution(&entries, "estimated_tokens");
+    let latency = distribution(&entries, "latency_micros");
+    let tallies = tallies(&entries);
 
     ContextStats {
         payloads: entries.len(),
-        average_bytes: bytes.iter().sum::<u64>().checked_div(count).unwrap_or(0),
-        p95_bytes: percentile(&mut bytes, 95),
-        median_bytes: percentile(&mut bytes, 50),
-        average_estimated_tokens: tokens.iter().sum::<u64>().checked_div(count).unwrap_or(0),
-        p95_estimated_tokens: percentile(&mut tokens, 95),
-        median_estimated_tokens: percentile(&mut tokens, 50),
+        average_bytes: bytes.average,
+        p95_bytes: bytes.p95,
+        median_bytes: bytes.median,
+        average_estimated_tokens: tokens.average,
+        p95_estimated_tokens: tokens.p95,
+        median_estimated_tokens: tokens.median,
         // `omitted_total` is written alongside the per-kind object; older
         // records carried a bare integer under `omitted`, which `field`
         // still reads correctly because an object yields 0 there.
@@ -183,14 +216,14 @@ pub fn stats(root: &Path, since: Option<u64>) -> ContextStats {
             .iter()
             .map(|e| field(e, "omitted_total") + field(e, "omitted"))
             .sum(),
-        omissions_by_kind,
-        capsule_selections,
+        omissions_by_kind: tallies.omissions_by_kind,
+        capsule_selections: tallies.capsule_selections,
         raw_truncations: entries
             .iter()
             .filter(|e| e.data.get("raw_truncation").and_then(|v| v.as_bool()) == Some(true))
             .count() as u64,
-        average_latency_micros: latency.iter().sum::<u64>().checked_div(count).unwrap_or(0),
-        p95_latency_micros: percentile(&mut latency, 95),
+        average_latency_micros: latency.average,
+        p95_latency_micros: latency.p95,
     }
 }
 

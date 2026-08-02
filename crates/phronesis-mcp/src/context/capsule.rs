@@ -76,6 +76,25 @@ impl ConditionError {
     }
 }
 
+/// Validation failure for one capsule file's frontmatter or body. Like
+/// [`ConditionError`] it carries only the message; the enclosing file path is
+/// attached by [`CapsuleError::Invalid`] at the call site that knows it.
+#[derive(Debug, Error)]
+#[error("{0}")]
+struct FieldError(String);
+
+impl FieldError {
+    fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+
+    /// Flatten a foreign error (serde's, in practice) to its rendered message,
+    /// which is what [`CapsuleError::Invalid`] carries anyway.
+    fn from_display(error: impl std::fmt::Display) -> Self {
+        Self(error.to_string())
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct CapsuleLoad {
     pub capsules: Vec<Capsule>,
@@ -306,47 +325,63 @@ fn validate_arity(predicate: &str, args: &[String]) -> Result<(), ConditionError
     Ok(())
 }
 
-fn parse_file(path: &Path) -> Result<Capsule, CapsuleError> {
-    let invalid = |message: String| CapsuleError::Invalid {
-        path: path.display().to_string(),
-        message,
-    };
-    let metadata = std::fs::metadata(path).map_err(|source| CapsuleError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
-    if metadata.len() > FILE_MAX_BYTES {
-        return Err(invalid("capsule exceeds 8 KiB".to_string()));
-    }
-    let text = std::fs::read_to_string(path).map_err(|source| CapsuleError::Io {
-        path: path.display().to_string(),
-        source,
-    })?;
+/// Split a capsule file into its `---json` frontmatter and its body.
+///
+/// Both delimiters must be whole lines: the opening `---json` and a closing
+/// line of exactly `---`. An indented or extended rule (`  ---`, `----`) does
+/// not close the block, and only the first closing line does — later `---`
+/// lines are ordinary Markdown and stay in the body.
+///
+/// Either line ending is accepted, and they are not required to agree; a file
+/// mixing the two parses. Tightening that would be a behavior change, so it is
+/// documented rather than assumed.
+fn split_frontmatter(text: &str) -> Result<(&str, &str), FieldError> {
     let rest = text
         .strip_prefix("---json\n")
         .or_else(|| text.strip_prefix("---json\r\n"))
-        .ok_or_else(|| invalid("first line must be ---json".to_string()))?;
-    let (front, body) = rest
-        .split_once("\n---\n")
+        .ok_or_else(|| FieldError::new("first line must be ---json"))?;
+    rest.split_once("\n---\n")
         .or_else(|| rest.split_once("\r\n---\r\n"))
-        .ok_or_else(|| invalid("missing exact closing --- line".to_string()))?;
-    let mut de = serde_json::Deserializer::from_str(front);
-    let strict = StrictValue::deserialize(&mut de).map_err(|e| invalid(e.to_string()))?;
-    de.end().map_err(|e| invalid(e.to_string()))?;
-    let fm: CapsuleFrontmatter =
-        serde_json::from_value(strict.into_json()).map_err(|e| invalid(e.to_string()))?;
+        .ok_or_else(|| FieldError::new("missing exact closing --- line"))
+}
+
+/// Deserialize the frontmatter block through [`StrictValue`], which rejects
+/// duplicate keys at every depth, and require it to be exactly one JSON value
+/// with no trailing input.
+fn parse_frontmatter(front: &str) -> Result<CapsuleFrontmatter, FieldError> {
+    let strict = {
+        let mut de = serde_json::Deserializer::from_str(front);
+        let strict = StrictValue::deserialize(&mut de).map_err(FieldError::from_display)?;
+        de.end().map_err(FieldError::from_display)?;
+        strict
+    };
+    serde_json::from_value(strict.into_json()).map_err(FieldError::from_display)
+}
+
+/// Range checks on the declared frontmatter fields.
+fn validate_frontmatter(fm: &CapsuleFrontmatter) -> Result<(), FieldError> {
     if !valid_id(&fm.id) {
-        return Err(invalid("id must match [a-z0-9][a-z0-9-]{0,63}".to_string()));
+        return Err(FieldError::new("id must match [a-z0-9][a-z0-9-]{0,63}"));
     }
     if !(0..=100).contains(&fm.priority) {
-        return Err(invalid("priority must be between 0 and 100".to_string()));
+        return Err(FieldError::new("priority must be between 0 and 100"));
     }
     if !(64..=1024).contains(&fm.max_bytes) {
-        return Err(invalid("max_bytes must be between 64 and 1024".to_string()));
+        return Err(FieldError::new("max_bytes must be between 64 and 1024"));
     }
-    let body = body.trim_end_matches(char::is_whitespace).to_string();
+    Ok(())
+}
+
+/// Trim and vet a capsule body, returning the exact text that will be shown.
+///
+/// Capsule bodies are static: no fact argument is ever interpolated into one.
+/// Rejecting variable and template syntax outright stops an author believing
+/// otherwise, which is what keeps a filename or tool payload from becoming a
+/// second-order prompt-injection channel.
+fn validate_body(raw: &str, max_bytes: usize) -> Result<String, FieldError> {
+    let body = raw.trim_end_matches(char::is_whitespace).to_string();
     if body.is_empty() {
-        return Err(invalid("body must be non-empty".to_string()));
+        return Err(FieldError::new("body must be non-empty"));
     }
     let variable = body.split_whitespace().any(|word| {
         word.strip_prefix('?')
@@ -354,16 +389,41 @@ fn parse_file(path: &Path) -> Result<Capsule, CapsuleError> {
             .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
     });
     if variable || body.contains("{{") || body.contains("}}") || body.contains("${") {
-        return Err(invalid(
-            "templates and interpolation directives are not supported".to_string(),
+        return Err(FieldError::new(
+            "templates and interpolation directives are not supported",
         ));
     }
-    if body.len() > fm.max_bytes {
-        return Err(invalid(format!(
-            "body exceeds declared max_bytes ({})",
-            fm.max_bytes
+    if body.len() > max_bytes {
+        return Err(FieldError::new(format!(
+            "body exceeds declared max_bytes ({max_bytes})"
         )));
     }
+    Ok(body)
+}
+
+fn parse_file(path: &Path) -> Result<Capsule, CapsuleError> {
+    let invalid = |message: String| CapsuleError::Invalid {
+        path: path.display().to_string(),
+        message,
+    };
+    let text = {
+        let io = |source| CapsuleError::Io {
+            path: path.display().to_string(),
+            source,
+        };
+        let metadata = std::fs::metadata(path).map_err(io)?;
+        if metadata.len() > FILE_MAX_BYTES {
+            return Err(invalid("capsule exceeds 8 KiB".to_string()));
+        }
+        std::fs::read_to_string(path).map_err(io)?
+    };
+    let (front, body) = split_frontmatter(&text).map_err(|e| invalid(e.to_string()))?;
+    let fm = {
+        let fm = parse_frontmatter(front).map_err(|e| invalid(e.to_string()))?;
+        validate_frontmatter(&fm).map_err(|e| invalid(e.to_string()))?;
+        fm
+    };
+    let body = validate_body(body, fm.max_bytes).map_err(|e| invalid(e.to_string()))?;
     Ok(Capsule {
         id: fm.id,
         priority: fm.priority,
@@ -389,21 +449,27 @@ fn valid_id(id: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
-pub fn load(root: &Path) -> CapsuleLoad {
-    let mut out = CapsuleLoad::default();
+/// Candidate capsule files in `<root>/.phronesis/nudges`, in bytewise
+/// filename order.
+///
+/// A missing directory and an unreadable one both yield no candidates; a
+/// directory that resolves outside the project root also records why. The
+/// empty vec is not an error condition — [`load`] has nothing to parse either
+/// way, so the caller's behavior is identical.
+fn capsule_paths(root: &Path, diagnostics: &mut Vec<String>) -> Vec<PathBuf> {
     let dir = root.join(CAPSULE_DIR);
     if !dir.exists() {
-        return out;
+        return Vec::new();
     }
     let dir = match crate::security::resolve_safe_path(&dir.display().to_string(), root) {
         Ok(dir) => dir,
         Err(error) => {
-            out.diagnostics.push(error.to_string());
-            return out;
+            diagnostics.push(error.to_string());
+            return Vec::new();
         }
     };
     let Ok(read_dir) = std::fs::read_dir(&dir) else {
-        return out;
+        return Vec::new();
     };
     let mut paths = read_dir
         .flatten()
@@ -418,27 +484,47 @@ pub fn load(root: &Path) -> CapsuleLoad {
         })
         .collect::<Vec<_>>();
     paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    paths
+}
+
+/// Parse each candidate under the aggregate byte cap, grouped by declared id.
+///
+/// Grouping (rather than inserting) is what lets [`load`] drop *every* copy of
+/// a duplicated id instead of letting file order pick a winner.
+fn parse_grouped(
+    root: &Path,
+    paths: Vec<PathBuf>,
+    diagnostics: &mut Vec<String>,
+) -> BTreeMap<String, Vec<Capsule>> {
     let mut total = 0u64;
     let mut by_id: BTreeMap<String, Vec<Capsule>> = BTreeMap::new();
     for path in paths {
         let path = match crate::security::resolve_safe_path(&path.display().to_string(), root) {
             Ok(path) => path,
             Err(error) => {
-                out.diagnostics.push(error.to_string());
+                diagnostics.push(error.to_string());
                 continue;
             }
         };
         total = total.saturating_add(std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0));
         if total > AGGREGATE_MAX_BYTES {
-            out.diagnostics
-                .push("capsule input exceeds aggregate 256 KiB cap".to_string());
+            diagnostics.push("capsule input exceeds aggregate 256 KiB cap".to_string());
             break;
         }
         match parse_file(&path) {
             Ok(c) => by_id.entry(c.id.clone()).or_default().push(c),
-            Err(e) => out.diagnostics.push(e.to_string()),
+            Err(e) => diagnostics.push(e.to_string()),
         }
     }
+    by_id
+}
+
+pub fn load(root: &Path) -> CapsuleLoad {
+    let mut out = CapsuleLoad::default();
+    let by_id = {
+        let paths = capsule_paths(root, &mut out.diagnostics);
+        parse_grouped(root, paths, &mut out.diagnostics)
+    };
     for (id, capsules) in by_id {
         if capsules.len() == 1 {
             out.capsules.extend(capsules);
@@ -534,6 +620,71 @@ pub struct MatchOutcome {
     pub diagnostics: Vec<String>,
 }
 
+/// Derive the `journey_*` aggregator facts the compiled rules demand.
+///
+/// Returns the diagnostic to record, if derivation was unavailable. A failure
+/// is not fatal to the pass: non-journey capsules can still match.
+async fn hydrate_journey(
+    root: &Path,
+    rules: &[Rule],
+    now_ts: u64,
+    network: &mut ReteNetwork,
+) -> Option<String> {
+    let config = crate::journey::load_config(root).unwrap_or_default();
+    let sid = crate::journey::current_sid(root);
+    let input = crate::journey::derive::DeriveInput {
+        project_root: root,
+        rules,
+        config: &config,
+        scope: crate::journey::derive::WindowScope {
+            current_sid: &sid,
+            now_ts,
+        },
+    };
+    crate::journey::derive::assert_facts(network, input)
+        .await
+        .err()
+        .map(|error| {
+            format!(
+                "journey derivation unavailable: {error}; journey-triggered capsules cannot match"
+            )
+        })
+}
+
+/// Assert the `context_confidence_band` projection, if it exists.
+///
+/// The band fact is a context-only projection that exists only when confidence
+/// is configured AND a subject is open. Absence produces no substitute fact —
+/// the dependent capsule simply cannot match — so each absent case returns the
+/// diagnostic that explains why rather than a falsified band.
+async fn hydrate_confidence_band(
+    root: &Path,
+    now_ts: u64,
+    network: &mut ReteNetwork,
+) -> Option<String> {
+    if !crate::outcomes::enabled(root) {
+        return Some(
+            "confidence is not configured; `context_confidence_band` capsules cannot match"
+                .to_string(),
+        );
+    }
+    let Some(report) = crate::outcomes::report(root, None) else {
+        return Some(
+            "no open subject; `context_confidence_band` capsules cannot match".to_string(),
+        );
+    };
+    network
+        .assert_fact(Fact {
+            id: "context:confidence-band".to_string(),
+            predicate: "context_confidence_band".to_string(),
+            args: vec![report.band.as_str().to_string()],
+            timestamp: now_ts,
+        })
+        .await
+        .err()
+        .map(|error| format!("confidence band fact rejected: {error}"))
+}
+
 pub async fn matched(root: &Path, capsules: &[Capsule], now_ts: u64) -> MatchOutcome {
     let mut out = MatchOutcome::default();
     if capsules.is_empty() {
@@ -560,50 +711,12 @@ pub async fn matched(root: &Path, capsules: &[Capsule], now_ts: u64) -> MatchOut
             .any(|r| r.conditions.iter().any(|c| c.predicate.starts_with(prefix)))
     };
     if demands("journey_") {
-        let config = crate::journey::load_config(root).unwrap_or_default();
-        let sid = crate::journey::current_sid(root);
-        let input = crate::journey::derive::DeriveInput {
-            project_root: root,
-            rules: &rules,
-            config: &config,
-            scope: crate::journey::derive::WindowScope {
-                current_sid: &sid,
-                now_ts,
-            },
-        };
-        if let Err(error) = crate::journey::derive::assert_facts(&mut network, input).await {
-            out.diagnostics.push(format!(
-                "journey derivation unavailable: {error}; journey-triggered capsules cannot match"
-            ));
-        }
+        out.diagnostics
+            .extend(hydrate_journey(root, &rules, now_ts, &mut network).await);
     }
     if demands("context_confidence_band") {
-        // The band fact is a context-only projection that exists only when
-        // confidence is configured AND a subject is open. Absence produces no
-        // substitute fact — the dependent capsule simply cannot match.
-        if !crate::outcomes::enabled(root) {
-            out.diagnostics.push(
-                "confidence is not configured; `context_confidence_band` capsules cannot match"
-                    .to_string(),
-            );
-        } else if let Some(report) = crate::outcomes::report(root, None) {
-            if let Err(error) = network
-                .assert_fact(Fact {
-                    id: "context:confidence-band".to_string(),
-                    predicate: "context_confidence_band".to_string(),
-                    args: vec![report.band.as_str().to_string()],
-                    timestamp: now_ts,
-                })
-                .await
-            {
-                out.diagnostics
-                    .push(format!("confidence band fact rejected: {error}"));
-            }
-        } else {
-            out.diagnostics.push(
-                "no open subject; `context_confidence_band` capsules cannot match".to_string(),
-            );
-        }
+        out.diagnostics
+            .extend(hydrate_confidence_band(root, now_ts, &mut network).await);
     }
     let consequences = match network.fire_all_consequences() {
         Ok(consequences) => consequences,
@@ -776,6 +889,58 @@ mod tests {
                 "id `{id}` should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn a_crlf_capsule_loads() {
+        let d = tempfile::tempdir().expect("tempdir");
+        write_capsule(
+            d.path(),
+            "x.md",
+            &format!(
+                "---json\r\n{{\"id\":\"x\",\"priority\":50,\"max_bytes\":512,\"when\":{LOW_BAND}}}\r\n---\r\nbody\r\n"
+            ),
+        );
+        assert_eq!(load(d.path()).capsules.len(), 1);
+    }
+
+    #[test]
+    fn a_decorated_or_indented_rule_does_not_close_the_frontmatter() {
+        // The closing delimiter must be a bare `---` on its own line. A
+        // horizontal rule inside the JSON block, indented or extended, must
+        // not end it early and hand the rest to the body.
+        for fake in ["  ---", "----"] {
+            let d = tempfile::tempdir().expect("tempdir");
+            write_capsule(
+                d.path(),
+                "x.md",
+                &format!(
+                    "---json\n{{\"id\":\"x\",\"priority\":50,\n{fake}\n\"max_bytes\":512,\"when\":{LOW_BAND}}}\n---\nbody\n"
+                ),
+            );
+            let loaded = load(d.path());
+            assert!(
+                loaded.capsules.is_empty(),
+                "`{fake}` must not terminate the frontmatter; the JSON is then malformed"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bare_rule_inside_the_body_is_kept_verbatim() {
+        // Only the *first* `---` line closes the frontmatter; later ones are
+        // ordinary Markdown and must survive into the body.
+        let d = tempfile::tempdir().expect("tempdir");
+        write_capsule(
+            d.path(),
+            "x.md",
+            &format!(
+                "---json\n{{\"id\":\"x\",\"priority\":50,\"max_bytes\":512,\"when\":{LOW_BAND}}}\n---\nabove\n---\nbelow\n"
+            ),
+        );
+        let loaded = load(d.path());
+        let capsule = loaded.capsules.first().expect("one capsule");
+        assert_eq!(capsule.body, "above\n---\nbelow");
     }
 
     #[test]
