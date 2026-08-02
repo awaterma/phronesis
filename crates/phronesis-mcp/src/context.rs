@@ -350,7 +350,7 @@ pub fn unwrap_envelope(envelope: &str) -> String {
 
 /// One user-visible decision recorded by a hook.
 pub(crate) struct Decision {
-    pub rule_id: String,
+    pub rule_id: phr::RuleId,
     pub file: String,
     pub severity: packing::Severity,
     pub bullet: String,
@@ -394,7 +394,7 @@ pub(crate) fn entry_decisions(entry: &LogEntry, now_secs: u64) -> Vec<Decision> 
                 _ => return None, // log/other actions aren't user-visible decisions
             };
             Some(Decision {
-                rule_id: rule_id.to_string(),
+                rule_id: phr::RuleId::new(rule_id),
                 file: file.to_string(),
                 severity,
                 bullet: format!("- {decision} {ago} ago: {rule_id}{location}"),
