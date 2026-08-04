@@ -6,6 +6,20 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [0.25.0] - 2026-08-01
 
+### Changed
+
+- **`init::Pack` is `#[non_exhaustive]`.** Adding a pack is this crate's most
+  routine extension point — four landed in recent releases (`Confidence`,
+  `Journey`, `Structural`, `Context`) and more languages are expected — but
+  each one was a semver break twice over: a variant added to an exhaustive
+  enum, plus a discriminant shift for every variant after the insertion point.
+  `cargo-semver-checks` flagged both on the `Context` addition. Marking the
+  enum non-exhaustive makes future packs a non-event.
+
+  **Migration:** only affects code outside this workspace that matches on
+  `Pack`. Add a `_ => ...` arm. Nothing inside the workspace changes, since
+  `#[non_exhaustive]` does not constrain the defining crate.
+
 ### Added
 
 - **Token-aware durable context (opt-in).** A project that creates
