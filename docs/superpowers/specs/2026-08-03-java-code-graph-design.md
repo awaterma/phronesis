@@ -1,6 +1,6 @@
 # SPEC: Java code-graph extractor
 
-**Status:** design, revision 4, 2026-08-03
+**Status:** design, revision 6, 2026-08-03
 **Target release:** 0.26.0 (MINOR — new extractor, new pack rule)
 **Parent spec:** `docs/specs/SPEC-triple-store-rete.md` (rev 6)
 **Affects:** `crates/phronesis-mcp/src/graph/{unit,java,java_bazel,java_maven,sync,mod}.rs`,
@@ -34,6 +34,31 @@
 > cycle); and manifest edits route to `rebuild()` rather than `on_save`, since
 > `store::compact` replaces edges only by provenance file and cannot drop a
 > file that discovery no longer owns.
+>
+> **Revision 5** applies a fresh-eyes review: a wildcard import may name a
+> *type*, not only a package (JLS §7.5.2), which a `packages`-only lookup
+> dropped silently; Bazel visibility is direct `deps` plus `exports`, not a
+> transitive closure, because `strict_deps` defaults to true; indexing and
+> build evaluation are given an explicit phase order, since `test_class`
+> resolution needs a repository-complete index; `module-info.java` is skipped
+> explicitly; and the central granularity claim is qualified to "within a
+> unit," since a package split across units is two nodes.
+>
+> **Revision 6** applies two further independent reviews. Visibility now
+> models the *compile* classpath only — Maven `runtime` scope and Bazel
+> `runtime_deps` are excluded, Maven's closure follows `compile` → `compile`
+> edges alone (a flat closure reached targets `javac` rejects), and Bazel
+> visibility is per **file**, derived from the targets claiming it, because
+> `deps` are per-target while units are per-package. Also: `import module`
+> (Java 25) is recognised, with a stated source level; `Owner` carries a
+> production/test compilation context, without which the same FQN in
+> `src/main` and `src/test` made every such import ambiguous; the declaration
+> cache is keyed on a content hash rather than `(length, mtime)`, matching
+> `sync.rs:75`; `test_class` reclassifies nothing, since it names a launch
+> entry point rather than a claim; `groupId` inheritance is specified; and
+> `file_type` precedence is **reversed to production-wins** — an earlier draft
+> argued test was safer, which was backwards, since rules exempt tests and
+> mislabelling production code therefore suppresses findings.
 
 ## Summary
 
@@ -83,6 +108,16 @@ exactly where coupling is highest.
 mitigate the hole; it removes it. Two classes in one package are one node, so
 there is nothing left to miss.
 
+**Precisely: within a unit.** Module identity is `java:<unit>::<package>`, so
+one Java package split across two units is two nodes, and same-package access
+between them — which needs no import statement — draws no edge. This is the
+class-level gap surviving at unit granularity. It is narrow (it needs a split
+package *and* implicit cross-unit access, which JPMS forbids outright and
+Maven and Bazel both discourage), and split packages already surface through
+owner selection and `skipped`. But the claim is "removes the hole within a
+unit," not "removes the hole," and the corpus run should report split-package
+counts so the residue is measured rather than assumed small.
+
 ## Identity
 
 One namespace serves both identity and resolution. **Nothing but a `package`
@@ -118,9 +153,26 @@ merges two units' packages into one node:
 | Bazel | repo-relative package label, `//foo/bar` | the rejected per-target scheme is not a definition |
 | Neither | `project` | — |
 
-An inherited `groupId` is resolved through the parent POM chain. Two units
-that still produce the same id after this are a discovery bug: the second is
-rejected and counted as `unit_id_collision` rather than merged.
+`groupId` resolution is specified, not left to the reader, because every Maven
+unit id depends on it and it must also be available before
+`${project.groupId}` can be interpolated anywhere:
+
+1. If the POM declares its own `<groupId>`, that wins outright.
+2. Otherwise take `<parent><groupId>`.
+3. If the parent element itself omits it, walk the parent chain by
+   `<relativePath>` (default `../pom.xml`) until a `groupId` is found.
+4. A chain that leaves the repository, or ends without one, yields no
+   `groupId`; the unit id falls back to `artifactId` alone and is counted as
+   `group_id_unresolved`.
+
+Resolve `groupId` **before** interpolation, since `${project.groupId}` may
+appear in a source-root path. Two units that still produce the same id are a
+discovery bug: the second is rejected and counted as `unit_id_collision`
+rather than merged.
+
+**One Bazel package normally contains several Java packages.** `//foo` may
+hold `com.example.a` and `com.example.b`; unit and module are independent
+axes, and nothing assumes a one-to-one mapping.
 
 Functions keep full precision, because `defines_fn` names the function:
 `java:myapp::com::example::billing::Charge::charge`. Choosing package-level
@@ -151,7 +203,15 @@ Built during discovery, keyed on dotted names:
 - `types: BTreeMap<String, Vec<Owner>>` — `com.example.billing.Helpers.Parser`
   → owners
 
-An `Owner` carries `unit_id`, `module_id`, and — in `types` only — `file`.
+**The two maps are independent namespaces**, and one dotted string may legally
+key both — a package `com.example.Order` and a class `Order` in package
+`com.example` produce the same text. Nothing disambiguates them by inspection,
+which is why every resolution step names the map it queries rather than
+searching for a match. The one step that consults both, the wildcard, does so
+in a stated order.
+
+An `Owner` carries `unit_id`, `module_id`, a compilation context
+(`production` or `test`), and — in `types` only — `file`.
 **Values are vectors, not single owners**, because split packages (the same
 package declared in two Maven modules or two Bazel packages) are legal in
 source trees. Discovery preserves the ambiguity rather than resolving it by
@@ -162,6 +222,42 @@ file.** A package normally spans many files, so a per-file owner vector would
 make *every* wildcard import ambiguous under owner selection — a package of
 three files would present three candidates and be skipped. The file belongs in
 `types`, where it is genuinely per-declaration, and is diagnostic only.
+
+### Phase order
+
+Indexing and build evaluation are mutually dependent — the index needs unit
+ids from build metadata, and Bazel's `test_class` needs the index — so the
+order is fixed and must not be interleaved per directory:
+
+1. **Ownership.** Walk manifests; assign every `.java` file a `unit_id` and a
+   provisional classification. A `java_test` carrying `test_class` and no
+   `srcs` records a *deferred* reference; it classifies nothing yet.
+2. **Indexing.** Index all declarations across the whole repository, using the
+   unit ids from phase 1.
+3. **Deferred classification.** Resolve each recorded `test_class` against the
+   completed index and reclassify its file as test.
+
+Phase 2 must complete repository-wide before phase 3 begins. Evaluating one
+Bazel package at a time would leave a `test_class` naming a class in a
+not-yet-indexed package unresolvable, and the result would depend on
+directory traversal order.
+
+**A deferred `test_class` reclassifies nothing.** `test_class` names the class
+Bazel *launches*, not a source the test target claims — it is routinely
+satisfied through `runtime_deps`, a library target, or generated code. Using
+it to reclassify would mark a file as test whose own claiming target is a
+`java_library`, contradicting the rule that classification follows claims:
+
+```python
+java_library(name = "runner", srcs = ["Runner.java"])
+java_test(name = "suite", test_class = "p.Runner", runtime_deps = [":runner"])
+```
+
+`Runner.java` is claimed by a `java_library` and stays production. The
+reference is recorded as a test entry point and counted as
+`test_class_entry_point`; unresolvable names count as
+`test_class_unresolved`. A `java_test` with no `srcs` therefore classifies no
+files, which is the honest reading of the build graph.
 
 Indexing, per file:
 
@@ -197,7 +293,14 @@ this extractor could quietly under-report.
 
 `UnitMap::discover` runs on every save, and reparsing every Java file each
 time is not acceptable. Discovery keeps a process-local cache per repository
-root, fingerprinted on `(path, length, mtime)`:
+root, fingerprinted on a **content hash**, matching the existing index
+(`sync.rs:75`) rather than inventing a weaker scheme beside it. `(length,
+mtime)` is not sound: a rebase, checkout, or file restore can produce
+equal-length content under a preserved or same-granularity timestamp, and
+`package a; class X {}` → `package b; class Y {}` is exactly that shape. The
+cache would then keep resolving imports to a type that no longer exists —
+violating the guarantee stated below. `mtime` may gate *whether to hash*, but
+never whether to reuse.
 
 - Cold: read and parse every Java file once. Unavoidable — package
   declarations and nested types cannot be obtained soundly from paths.
@@ -225,8 +328,16 @@ per import:
    Look up the entire dotted name in `types`. Do not remove segments.
 2. **Nested-class import** — `import com.example.order.Outer.Inner;`
    Identical operation: nested types are indexed explicitly.
-3. **Package wildcard** — `import com.example.order.*;`
-   Strip the terminal `*`, look up the remainder in `packages`.
+3. **Wildcard (type-import-on-demand)** — `import com.example.order.*;`
+   Strip the terminal `*`, look up the remainder in `packages`; **if absent,
+   fall through to `types`.**
+
+   JLS §7.5.2 permits a wildcard on a *package or a type*, so
+   `import com.example.dto.Response.*;` — importing the nested types of
+   `Response` — is legal Java. A `packages`-only lookup finds nothing and
+   emits no edge and no `skipped`, which is a silent drop of exactly the kind
+   this design exists to prevent. Sealed hierarchies with nested permitted
+   subtypes make this shape common in modern Java.
 4. **Static member import** — `import static com.example.order.Order.of;`
    Test type prefixes longest-first (`com.example.order.Order`,
    `com.example.order`, …) against `types`, stopping at the first exact key.
@@ -234,11 +345,34 @@ per import:
    classifies declaring-type versus member; it never falls back to a package.
 5. **Static wildcard** — `import static com.example.order.Order.*;`
    Strip `.*`, look up the remainder in `types`.
+6. **Module import** — `import module java.sql;`
+   Recognised and resolved to nothing, counted as `module_import_ignored`.
+   Java 25 added this form; it names a JPMS module, and modules are not in the
+   declaration index (see JPMS, below). It must be *recognised* rather than
+   left to fall through, or a legal import would inflate
+   `skipped` — which is reserved for evidence this extractor failed to
+   produce, not for a form it deliberately does not model.
+
+**Supported source level: Java 25.** "Java" without a version boundary is not
+a specification — `import module` did not exist two releases ago, and records,
+sealed types, and pattern matching all changed what a declaration looks like.
+The grammar targets 25 and a newer construct that fails to parse is counted,
+not silently ignored.
 
 Then, for any resolution that produced owners:
 
 6. **Owner selection, constrained by build visibility.**
-   a. If exactly one candidate is in the source file's own unit, take it.
+   a. If exactly one candidate is in the source file's own unit **and
+      compilation context**, take it. Context is production or test: a
+      production file sees production owners only; a test file sees test
+      owners first, then production. `Owner` therefore carries the
+      classification, not just the unit.
+
+      Without this, `src/main/java/p/Environment.java` and
+      `src/test/java/p/Environment.java` are two same-unit owners, step (a)
+      finds no unique candidate, and every import of `p.Environment` is
+      dropped as ambiguous — though Maven's test compilation resolves it
+      unambiguously, with the test declaration shadowing the main one.
    b. Otherwise, restrict candidates to units **visible** to the source unit.
       If exactly one survives, take it.
    c. Otherwise emit nothing and increment `skipped` once.
@@ -255,8 +389,9 @@ Then, for any resolution that produced owners:
 
 7. **Self-edge suppression.** If `target_module == source_module`, emit
    nothing. This is mandatory: a redundant same-package import is legal Java,
-   and `derive::in_cycle` treats `imports(a, a)` as a cycle
-   (`derive.rs:337`), so an unsuppressed self-edge is a phantom cycle report.
+   and `derive::in_cycle` treats `imports(a, a)` as a cycle — a lone SCC node
+   counts when it is its own successor (`derive.rs:84`, asserted at
+   `derive.rs:336`) — so an unsuppressed self-edge is a phantom cycle report.
 8. Otherwise emit `imports(source_module, target_module)`. Deduplicate per
    file.
 
@@ -271,18 +406,59 @@ is the whole point of package granularity.
 the Maven compile classpath, so state the approximation rather than imply
 exactness:
 
-- **Maven.** Build a reactor graph from each POM's `<dependencies>` entries
-  whose `groupId:artifactId` matches another discovered unit. Visibility is
-  the **transitive closure over `compile`- and `runtime`-scope edges**;
-  `test`-scope edges add visibility **only for files under test roots**;
-  `provided` is treated as `compile`. `<optional>` and `<exclusions>` are
-  ignored, counted once per occurrence as `dependency_modifier_ignored`.
+**Visibility models the *compile* classpath.** Runtime-only dependencies are
+excluded from both backends: Maven `runtime` scope and Bazel `runtime_deps`
+are by definition absent at compile time, so admitting them would resolve
+imports javac rejects.
+
+- **Maven.** Build a reactor graph from `<dependencies>` entries whose
+  `groupId:artifactId` matches another discovered unit. For a production file,
+  visibility is the **direct `compile` and `provided` dependencies, plus the
+  closure that follows `compile` → `compile` edges only.** That is Maven's own
+  propagation table: a compile dependency of a compile dependency stays
+  compile, while a `runtime` or `test` edge downgrades the rest of the path
+  and `provided` does not propagate at all. Following a flat closure over
+  mixed scopes would reach `impl` in `app --compile--> api --runtime--> impl`,
+  which `app` cannot compile against.
+
+  For a file under a test root, `test`-scope direct dependencies are added on
+  top. `<optional>`, `<exclusions>`, and **`<dependencyManagement>`** —
+  including `<scope>import</scope>` BOM imports — are ignored, counted once
+  per occurrence as `dependency_modifier_ignored`. Dependency management is
+  named explicitly because it is a far more common source of classpath
+  divergence than exclusions, and omitting it from this list would imply the
+  approximation is tighter than it is.
+
   Dependencies on artifacts outside the reactor are irrelevant — they can
-  never be a candidate, since candidates come from the declaration index.
-- **Bazel.** Visibility is the **transitive closure over `deps` and
-  `runtime_deps` labels** that resolve to discovered Bazel packages.
-  Unresolvable labels are already counted as `unresolved_label`.
+  never be candidates, since candidates come only from the declaration index.
+
+- **Bazel.** `java_library` defaults to `strict_deps = True`, so only **direct
+  `deps`, extended through `exports`**, are on the compile classpath. A
+  transitive closure would admit most of the build graph.
+
+  **Visibility here is per *file*, not per unit.** This is the one place the
+  package-level unit is not enough: `deps` are declared per target, and two
+  targets in one `BUILD` file routinely have different ones.
+
+  ```python
+  java_library(name = "a", srcs = ["A.java"], deps = ["//x"])
+  java_library(name = "b", srcs = ["B.java"], deps = ["//y"])
+  ```
+
+  Unioning these would let `A.java` resolve a type from `//y` that Bazel
+  rejects; intersecting them would drop `A.java`'s legitimate `//x` imports.
+  Neither is acceptable, so the evaluator retains, for every claimed file, the
+  union of `deps`+`exports` of **the targets that claim that file** — normally
+  one. Unit identity stays package-level for module naming; only visibility is
+  target-derived. Unresolvable labels are counted as `unresolved_label`;
   `visibility` attributes are not evaluated.
+
+**JPMS is not modelled, and that is a visibility gap, not just a parsing
+one.** A `module-info.java` that omits `requires` makes types unreadable even
+when they are on the classpath, so a modular project can have edges this
+design invents. Any unit containing a `module-info.java` is counted as
+`jpms_unit_unmodelled`, and a corpus with a non-zero count cannot be used to
+argue precision without saying so.
 
 **This approximates the real classpath in both directions**, and it is worth
 naming which is which rather than claiming a single safe side:
@@ -290,16 +466,15 @@ naming which is which rather than claiming a single safe side:
 - **Under** — requiring a declared dependency path drops any edge the build
   resolves by some route this spec does not model. Dropped edges land in
   `skipped` and are reconciled at the corpus gate.
-- **Over** — ignoring `<exclusions>`, `<optional>`, and Bazel `visibility`
-  admits a unit the build would actually reject. This is narrow (it needs a
-  declared dependency that is then revoked) but it is real, and it is the
-  direction that can invent a cycle.
+- **Over** — ignoring `<exclusions>`, `<optional>`, Bazel `visibility`, and
+  JPMS `requires` admits a unit the build would reject. This is the direction
+  that can invent a cycle.
 
-The over-approximating cases are exactly the ones counted as
-`dependency_modifier_ignored`, so a corpus where they are common is a signal
-to evaluate exclusions before shipping rather than to trust the result. Given
-the one rule shipped is cycle detection, an invented edge is the more damaging
-error, and it is the one being measured.
+Each over-approximating case has a counter — `dependency_modifier_ignored`,
+`jpms_unit_unmodelled` — so a corpus where they are common is a signal to
+model them before shipping rather than to trust the result. Given the one rule
+shipped is cycle detection, an invented edge is the more damaging error, and
+it is the one being measured.
 
 
 ### The third-party ancestor case
@@ -429,7 +604,7 @@ IdentRef   ::= IDENT
 List       ::= "[" [Expr ("," Expr)* [","]] "]"
 Dict       ::= "{" [Entry ("," Entry)* [","]] "}"
 Entry      ::= String ":" Expr
-Glob       ::= "glob(" List ["," "exclude" "=" List] ")"
+Glob       ::= "glob(" (List | "include" "=" List) ["," "exclude" "=" List] ")"
 Select     ::= "select(" Dict ")"
 String     ::= '"' char* '"' | "'" char* "'"
 IDENT      ::= letter (letter | digit | "_")*
@@ -457,6 +632,15 @@ formatting, `depset`, or `struct`.
 then evaluate each rule call's arguments against it, recording
 `(rule_kind, attrs)`.
 
+**An identifier not yet in scope evaluates to the empty list**, and that
+attribute is counted as `unbound_identifier`. A forward reference or a name
+introduced by `load()` is *inside* the grammar but semantically unresolved, so
+"unsupported syntax" does not cover it. Without a stated rule an implementer
+could equally skip the statement, fail the file, or drop the concatenation —
+three different edge sets from one input. Empty-list is chosen because it
+degrades to "claims fewer files", which surfaces as `unclaimed` rather than as
+a silently wrong claim.
+
 **Pass 2 — claim and classify.**
 
 1. `glob(include, exclude)` is evaluated against **all `.java` files in the
@@ -482,10 +666,17 @@ then evaluate each rule call's arguments against it, recording
    not resolved, counted as `unresolved_label`.
 5. **Test classification.** Because globbing from the full package lets two
    targets claim one file, classification needs a precedence rule:
-   **`file_type` is single-valued, and test wins.** A file claimed by both a
-   `java_library` and a `java_test` is `test`, counted as
-   `dual_claimed_file`. Test is the safer direction — misreading production
-   code as test suppresses findings about it, while the reverse invents them.
+   **`file_type` is single-valued, and production wins.** A file claimed by
+   both a `java_library` and a `java_test` is `production`, counted as
+   `dual_claimed_file`.
+
+   Production is the safer direction, and the reverse of what an earlier draft
+   claimed. Rules exempt test files, so labelling production code as test
+   *suppresses* findings about it — a silent false negative, the failure mode
+   this whole subsystem is organised against. Labelling test code as
+   production merely produces noise a human can see and dismiss. It is also
+   more accurate: a file compiled into a `java_library` is production code by
+   the build's own account, whatever else also consumes it.
 
    `java_test` with `srcs` marks those files as test.
    `java_test` with `test_class` and no `srcs` resolves the class name through
@@ -527,7 +718,7 @@ Therefore:
 
   A per-file path is not merely slower here, it is **wrong**.
   `store::compact(existing, file_path, edges)` replaces edges by their
-  provenance file (`sync.rs:287`), so it can only touch files it is handed.
+  provenance file (`sync.rs:288`), so it can only touch files it is handed.
   A manifest edit that stops a file being discovered, or moves it to another
   unit, leaves the old edges in place under a provenance nothing will revisit
   — the identical reasoning the format-change comment already gives for
@@ -545,13 +736,28 @@ with no `.java` file touched — and assert the graph reclassifies.
 `tested_by` — the existing closed set, no additions.
 
 - **`declares_module(file, module)`** is many-to-one for Java: every file in a
-  package emits the same module. The model supports this — edges are
-  `(predicate, args)` with provenance keyed on the source file — and the cycle
-  rule joins through `edited_file`, so it still reports the file in front of
-  the user.
+  package emits the same module. The model supports this: edges are stored as
+  `(predicate, args)` with provenance keyed on the source file, so compaction
+  stays per-file, and the cycle rule joins through `edited_file` to report the
+  file in front of the user.
+
+  **Provenance is storage-only.** `Edge::fact_id` is built from predicate and
+  args alone (`model.rs:55`), so `imports(p, q)` emitted from two different
+  Java files hydrates to **one** fact. That is harmless for `in_cycle`, which
+  derives before hydration, but no rule can attribute an `imports` fact to a
+  particular file — the attribution available to rules comes from
+  `declares_module`, not from the import edge.
 - **`tested_by(callee, test_fn)`** — only calls inside methods annotated
   `@Test`, `@ParameterizedTest`, `@RepeatedTest`, or `@TestFactory`, in a file
   the build system classified as test. A helper's calls are not evidence.
+- **`file_type`** carries `production`, `test`, or — Bazel only —
+  `unclaimed`. A Maven file under a production source root is `production`,
+  one under a test root is `test`; Maven never yields `unclaimed`, because a
+  `pom.xml` claims its roots wholesale. The existing `build` and `example`
+  values are Rust-specific and are never emitted for Java.
+- **`package-info.java`** emits `declares_module`, `file_type`, and any
+  `imports` carried by its package annotations, but no `defines_fn`. It
+  participates in the path cross-check like any other file.
 - **`calls_api`** is emitted for `Optional.get()`-shaped calls (zero-argument
   `.get()`, `.orElseThrow()`, and the `OptionalInt`/`Long`/`Double`
   accessors), but **no v1 rule consumes it** — see below.
@@ -611,14 +817,22 @@ corpus surprises.
   dependencies" needs class→class edges. The relation set is closed on purpose
   (the TypeScript spec rejected an intermediate relation for the same reason),
   so adding one is a deliberate event.
-- **`package-info.java`** emits `declares_module`, `file_type`, and any
-  `imports` from its package annotations, but no `defines_fn`.
-- **JPMS `module-info.java`**, Gradle, Kotlin/Scala, and promotion to `block`.
+- **JPMS `module-info.java`.** Skipped entirely: not indexed, no edges,
+  counted once per file as `module_info_skipped`. It is a `.java` file with no
+  `package` declaration, so indexing it would file it under the default
+  package, and its `requires` directives are not imports. Silently defaulting
+  it would put a fictitious member in the default-package node.
+- **Gradle**, Kotlin/Scala, and promotion to `block`.
 
 ## Testing
 
 Unit tests per concern, following the Python and TypeScript extractors:
-identity from the `package` declaration; nested-type indexing three levels
+identity from the `package` declaration; a wildcard naming a *type* rather
+than a package; `import module`; production and test source sets declaring the
+same FQN in one unit; the declaration cache invalidating on equal-length,
+same-mtime content; two Bazel targets in one file with different `deps`
+resolving independently; a `java_test` with `test_class` and no `srcs`
+reclassifying nothing; nested-type indexing three levels
 deep; the path cross-check incrementing `skipped` without creating the
 path-derived package; each of the five import forms; the third-party-ancestor
 case emitting **no** edge; self-edge suppression; owner selection across a
