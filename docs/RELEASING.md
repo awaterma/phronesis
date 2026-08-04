@@ -28,15 +28,20 @@ operator guide.
    NOTE (2026-07-19): a merge commit does NOT reliably prevent this —
    v0.21.0 was merge-committed and still failed mid-release the same
    way (release-plz tried to tag a sha that exists nowhere on GitHub).
-   Expect to need the "Partial publish" recovery after every group
-   release until the upstream cause is fixed.
+   UPDATE (2026-08-03): the mid-release failure itself is not fixed, but
+   it should no longer *conceal* a partial publish — `git_tag_name` is
+   now per-package, so a later crate is no longer skipped on the
+   strength of an earlier crate's tag. Verify against crates.io anyway
+   (step 6); that is the check that does not depend on this reasoning
+   being right.
 5. **Merging the Release PR** triggers the release job
    (`release_always = false`, so ordinary pushes to `main` never
    publish). CI then:
    - publishes `phronesis`, `phronesis-rhai`, `phronesis-mcp` to
      crates.io in dependency order via trusted publishing (OIDC — no
      `CARGO_REGISTRY_TOKEN`),
-   - tags `vX.Y.Z`,
+   - tags `<package>-vX.Y.Z` (one tag per crate; `vX.Y.Z` up to and
+     including v0.24.0),
    - creates the GitHub release.
 6. **Verify against crates.io**, not the job status: check all three
    crates show the new version. A green release job does NOT guarantee
@@ -98,13 +103,34 @@ Done by a human, once:
   tag, the re-run logs `Already published — Tag vX.Y.Z already exists`
   for every crate and exits green, because with
   `version_group = "workspace"` the shared tag is taken as proof the
-  whole group is published — the registry is never consulted. Recovery:
+  whole group is published — the registry is never consulted.
 
-  1. Delete the version tag: `git push origin :refs/tags/vX.Y.Z`
-  2. Re-run the release job. Without the tag, release-plz checks
+  As of 2026-08-03 `git_tag_name` is per-package, which should stop the
+  masking at its source: each crate's tag now speaks only for that
+  crate. Treat the recovery below as the fallback if a partial publish
+  recurs, not as the expected routine it used to be.
+
+  Recovery (v0.24.0 and earlier, or any future recurrence):
+
+  1. Delete the tag for the crate that did not publish —
+     `git push origin :refs/tags/<package>-vX.Y.Z`, or
+     `:refs/tags/vX.Y.Z` for v0.24.0 and earlier.
+  2. Re-run the release job **on the run whose commit is the release
+     commit**, not the newest run — the tag is recreated at whatever
+     sha that run checked out. Without the tag, release-plz checks
      crates.io per crate, skips the ones already published, publishes
-     the remainder via OIDC, and recreates the tag on main.
-  3. Confirm all three crates show the new version on crates.io.
+     the remainder via OIDC, and recreates the tag.
+  3. Confirm all three crates show the new version on crates.io. The
+     log wording distinguishes the two paths: `already published` is a
+     registry check; `Already published - Tag vX.Y.Z already exists` is
+     the tag shortcut that hides the bug.
+
+  Worked example — v0.24.0, recovered 2026-08-03. `phronesis-mcp` was
+  the missing crate; deleting `v0.24.0` and re-running the original
+  release job (not the newest) published it and recreated the tag at
+  the correct commit. A local `cargo publish` is NOT a substitute:
+  crates.io rejects it with `403 ... can only be published using
+  Trusted Publishing`, so recovery must go through CI.
 
   Full post-mortem:
   `.phronesis/wiki/decisions/2026-07-18-release-tag-masks-partial-publish.md`.
