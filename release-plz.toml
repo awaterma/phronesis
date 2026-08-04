@@ -18,8 +18,27 @@ release_always = true
 # release-plz manages versions/tags/publishing only.
 changelog_update = false
 
-# One tag for the unified workspace version (v0.8.1 .. v0.18.0 precedent).
-git_tag_name = "v{{ version }}"
+# One tag PER PACKAGE, not one for the version group.
+#
+# This was `v{{ version }}`, a single shared tag. That is what made a partial
+# publish self-concealing: release-plz treats "the tag for this release
+# exists" as "this package is released", so once any one crate's publish
+# created `vX.Y.Z`, every later crate in the group reported
+# `Already published - Tag vX.Y.Z already exists` and was skipped without the
+# registry ever being consulted. `phronesis-mcp` publishes last and so was the
+# casualty every time: v0.20.1, v0.21.0, v0.22.1, v0.24.0.
+#
+# Per-package tags make that check mean what it says. This does NOT split the
+# version: all three crates still share one version through `version_group`
+# below, because `phronesis-mcp` depends on the other two and skew would be
+# pure bookkeeping. It splits only the *tag*, which was never a version
+# statement — it was a per-package "did this ship" marker wearing a
+# version-shaped name.
+#
+# The GitHub releases were already per-package (`phronesis-mcp-v0.24.0`,
+# `phronesis-v0.24.0`), so this aligns the tag with naming release-plz was
+# already using one layer up.
+git_tag_name = "{{ package }}-v{{ version }}"
 
 # Pre-1.0 house rule: any user-visible feature bumps MINOR.
 features_always_increment_minor = true

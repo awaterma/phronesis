@@ -107,6 +107,12 @@ which decouples publishing from PR authorship.
   fails the build.
 - Merge-method choice remains a process step no rule can express.
   Documented in `docs/RELEASING.md` (flow step and Troubleshooting).
+- Tag masking is enforced structurally rather than by a rule, as of
+  2026-08-03: `git_tag_name` in `release-plz.toml` is per-package, so a
+  shared tag can no longer stand in for a per-crate publish check. No
+  phronesis predicate can assert a property of a CI tool's config file,
+  which is why this decision stays rule-uncovered in `get_wiki_drift`
+  by design rather than by neglect. See Resolution below.
 
 ## Consequences
 
@@ -123,3 +129,35 @@ which decouples publishing from PR authorship.
   causing friction. *2026-07-19: friction has now recurred on both
   automated releases (v0.20.1 and v0.21.0); revisiting this, or filing
   the unreachable-sha bug upstream against release-plz, is warranted.*
+
+## Resolution (2026-08-03)
+
+Masking recurred a fourth time on v0.24.0 — `phronesis-mcp` again, the
+crate that publishes last. Recovered by the documented tag-delete +
+re-run.
+
+The fix taken is narrower than the option deferred above. That option
+proposed dropping `version_group` and accepting per-crate versions; the
+observation that makes it unnecessary is that **the version and the tag
+were doing different jobs**. The shared version is a real statement —
+`phronesis-mcp` depends on the other two, so skew would be pure
+bookkeeping. The shared *tag* was never a version statement at all: it
+is release-plz's per-package "has this shipped" marker, which happened
+to be named after the version. One marker for three packages is
+necessarily wrong for two of them.
+
+So `git_tag_name` is now `{{ package }}-v{{ version }}` while
+`version_group = "workspace"` stays. The GitHub releases were already
+per-package (`phronesis-mcp-v0.24.0`), so this aligns the tag with
+naming release-plz was already using one layer up.
+
+Not fixed by this: the underlying mid-release failure (release-plz
+tagging a sha GitHub does not have). This change stops that failure
+from *hiding*, not from happening. `verify-crates-io.py` remains the
+only check that does not depend on any of this reasoning being correct,
+and it is what caught v0.24.0.
+
+Unverifiable until the next group release: no local test exercises
+release-plz's tag-existence check, so the first real evidence will be
+the v0.25.0 release. If `phronesis-mcp` publishes without manual
+recovery, the fix holds.
