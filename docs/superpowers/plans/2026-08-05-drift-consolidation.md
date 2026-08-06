@@ -1795,6 +1795,446 @@ git commit -m "docs(specs): split coverage from category in the drift envelope"
 
 ---
 
+### Task 9: Migrate existing projects' `durable.md`
+
+**Files:**
+- Create: `crates/phronesis-mcp/src/durable_migrate.rs`
+- Modify: `crates/phronesis-mcp/src/lib.rs` (add `pub mod durable_migrate;`)
+- Modify: `crates/phronesis-mcp/src/main.rs` (add `MigrateDurable` command)
+- Modify: `crates/phronesis-mcp/src/init.rs` (detect and report, do not rewrite)
+
+**Interfaces:**
+- Consumes: `init::DEFAULT_DURABLE_MD` (must be made `pub(crate)`)
+- Produces: `durable_migrate::{Status, inspect, migrate}`
+
+**Why a command and not an automatic rewrite.** `init` deliberately leaves
+an existing `durable.md` alone — operators are told to edit it in place.
+Silently rewriting a file someone owns would break that contract, and
+`--rules-only` / `--hooks-only` promise to touch nothing else. The project
+already ships `migrate-rules` and `migrate-extracted-rules` as explicit
+subcommands; this follows that idiom. `init` only *reports* that a
+migration is available.
+
+**Scope constraint.** The migration writes exactly the current
+`DEFAULT_DURABLE_MD` and nothing else. It introduces no new defaults, no
+new config keys, and does not touch `context.json`, `kernel.md`, or any
+budget value.
+
+**Recognising an unedited file.** A file is safe to replace only if its
+content matches a known shipped template *verbatim*. Prior versions are
+embedded as consts so that "unedited" is auditable and greppable rather
+than inferred. Two prior versions exist:
+
+- **V1** — the 3332-byte template with the participatory-governance
+  section, shipped before commit `b9389fe`.
+- **V2** — the shrunk template from `b9389fe`, before this plan's Task 7.
+
+Extract their exact bytes (do not retype them):
+
+```bash
+git show b9389fe~1:crates/phronesis-mcp/src/init.rs \
+  | awk '/const DEFAULT_DURABLE_MD/{f=1;next} /^"#;/{exit} f' > /tmp/durable_v1.txt
+git show b9389fe:crates/phronesis-mcp/src/init.rs \
+  | awk '/const DEFAULT_DURABLE_MD/{f=1;next} /^"#;/{exit} f' > /tmp/durable_v2.txt
+```
+
+Note both files will be missing the leading `# Durable Directives` line,
+which sits on the `const` declaration line itself. Prepend it when
+embedding.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `crates/phronesis-mcp/src/durable_migrate.rs` with this test module
+(implementation in Step 3):
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unedited_v1_file_is_migratable() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let path = write_durable(d.path(), DURABLE_V1);
+        assert!(matches!(inspect(&path), Ok(Status::Stale { .. })));
+    }
+
+    #[test]
+    fn an_unedited_v2_file_is_migratable() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let path = write_durable(d.path(), DURABLE_V2);
+        assert!(matches!(inspect(&path), Ok(Status::Stale { .. })));
+    }
+
+    #[test]
+    fn a_current_file_is_already_up_to_date() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let path = write_durable(d.path(), crate::init::DEFAULT_DURABLE_MD);
+        assert!(matches!(inspect(&path), Ok(Status::Current)));
+    }
+
+    #[test]
+    fn an_edited_file_is_never_touched() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let edited = format!("{DURABLE_V1}\n- our team rule: always foo\n");
+        let path = write_durable(d.path(), &edited);
+
+        assert!(matches!(inspect(&path), Ok(Status::Customized)));
+
+        let outcome = migrate(&path, false).expect("migrate");
+        assert!(matches!(outcome, Outcome::SkippedCustomized));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            edited,
+            "a customized file must survive byte-for-byte"
+        );
+    }
+
+    #[test]
+    fn migrating_writes_the_current_template_and_backs_up() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let path = write_durable(d.path(), DURABLE_V1);
+
+        let outcome = migrate(&path, false).expect("migrate");
+        assert!(matches!(outcome, Outcome::Migrated));
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            crate::init::DEFAULT_DURABLE_MD
+        );
+
+        let backup = path.with_extension("md.bak");
+        assert_eq!(
+            std::fs::read_to_string(&backup).expect("read backup"),
+            DURABLE_V1,
+            "the prior content must be recoverable"
+        );
+    }
+
+    #[test]
+    fn migration_is_idempotent() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let path = write_durable(d.path(), DURABLE_V1);
+        migrate(&path, false).expect("first");
+        let second = migrate(&path, false).expect("second");
+        assert!(matches!(second, Outcome::AlreadyCurrent));
+    }
+
+    #[test]
+    fn dry_run_writes_nothing() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let path = write_durable(d.path(), DURABLE_V1);
+        let outcome = migrate(&path, true).expect("dry run");
+        assert!(matches!(outcome, Outcome::WouldMigrate));
+        assert_eq!(std::fs::read_to_string(&path).expect("read"), DURABLE_V1);
+        assert!(!path.with_extension("md.bak").exists());
+    }
+
+    #[test]
+    fn a_missing_file_is_not_an_error() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let path = d.path().join(".phronesis").join("durable.md");
+        assert!(matches!(inspect(&path), Ok(Status::Absent)));
+    }
+
+    #[test]
+    fn no_known_template_names_a_removed_drift_tool_in_the_current_one() {
+        // V1 and V2 legitimately name the old tools — that is why they need
+        // migrating. The *current* template must not.
+        for gone in ["get_claude_md_drift", "get_memory_drift", "get_wiki_drift"] {
+            assert!(
+                !crate::init::DEFAULT_DURABLE_MD.contains(gone),
+                "current template still names {gone}"
+            );
+        }
+    }
+
+    fn write_durable(root: &std::path::Path, body: &str) -> std::path::PathBuf {
+        let dir = root.join(".phronesis");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.join("durable.md");
+        std::fs::write(&path, body).expect("write");
+        path
+    }
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cargo test -p phronesis-mcp durable_migrate 2>&1 | tail -20`
+Expected: FAIL — `inspect` not found.
+
+- [ ] **Step 3: Write the implementation**
+
+Prepend to `crates/phronesis-mcp/src/durable_migrate.rs`:
+
+```rust
+//! Bring an existing `.phronesis/durable.md` up to the current shipped
+//! template.
+//!
+//! `init` leaves an existing `durable.md` alone by design — operators edit
+//! it in place. That means a template change does not reach projects that
+//! already exist, and a `durable.md` naming tools that no longer exist is
+//! re-injected into the model's context every session. This module is the
+//! explicit, opt-in fix-up, following the same subcommand idiom as
+//! `migrate-rules` and `migrate-extracted-rules`.
+//!
+//! A file is rewritten only if it matches a known shipped template
+//! verbatim. Anything else is treated as customized and left untouched.
+
+use std::path::{Path, PathBuf};
+
+use thiserror::Error;
+
+/// The template shipped before commit `b9389fe`, including the
+/// participatory-governance section that exceeded `charter_max_bytes` and
+/// was dropped from every session render.
+pub(crate) const DURABLE_V1: &str = r#"# Durable Directives
+<!-- PASTE THE EXACT CONTENTS OF /tmp/durable_v1.txt HERE, PREFIXED BY THE LINE ABOVE -->
+"#;
+
+/// The template shipped by `b9389fe`, before drift consolidation.
+pub(crate) const DURABLE_V2: &str = r#"# Durable Directives
+<!-- PASTE THE EXACT CONTENTS OF /tmp/durable_v2.txt HERE, PREFIXED BY THE LINE ABOVE -->
+"#;
+
+fn known_prior_templates() -> [&'static str; 2] {
+    [DURABLE_V1, DURABLE_V2]
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Status {
+    /// No file at all — nothing to migrate.
+    Absent,
+    /// Matches the current shipped template.
+    Current,
+    /// Matches a known prior shipped template verbatim.
+    Stale { version: u8 },
+    /// Does not match any shipped template — the operator has edited it.
+    Customized,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Outcome {
+    Migrated,
+    WouldMigrate,
+    AlreadyCurrent,
+    SkippedCustomized,
+    SkippedAbsent,
+}
+
+#[derive(Debug, Error)]
+pub enum MigrateError {
+    #[error("failed to read {path}: {source}")]
+    Read {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to write {path}: {source}")]
+    Write {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+pub fn durable_path(project_root: &Path) -> PathBuf {
+    project_root.join(".phronesis").join("durable.md")
+}
+
+/// Classify a `durable.md` without writing anything.
+pub fn inspect(path: &Path) -> Result<Status, MigrateError> {
+    let body = match std::fs::read_to_string(path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Status::Absent),
+        Err(e) => {
+            return Err(MigrateError::Read {
+                path: path.display().to_string(),
+                source: e,
+            });
+        }
+    };
+
+    if body == crate::init::DEFAULT_DURABLE_MD {
+        return Ok(Status::Current);
+    }
+    for (i, prior) in known_prior_templates().iter().enumerate() {
+        if body == *prior {
+            let version = u8::try_from(i + 1).unwrap_or(1);
+            return Ok(Status::Stale { version });
+        }
+    }
+    Ok(Status::Customized)
+}
+
+/// Rewrite an unedited stale `durable.md` to the current template,
+/// preserving the prior content at `durable.md.bak`.
+pub fn migrate(path: &Path, dry_run: bool) -> Result<Outcome, MigrateError> {
+    match inspect(path)? {
+        Status::Absent => Ok(Outcome::SkippedAbsent),
+        Status::Current => Ok(Outcome::AlreadyCurrent),
+        Status::Customized => Ok(Outcome::SkippedCustomized),
+        Status::Stale { .. } => {
+            if dry_run {
+                return Ok(Outcome::WouldMigrate);
+            }
+            let existing = std::fs::read_to_string(path).map_err(|e| MigrateError::Read {
+                path: path.display().to_string(),
+                source: e,
+            })?;
+            let backup = path.with_extension("md.bak");
+            std::fs::write(&backup, &existing).map_err(|e| MigrateError::Write {
+                path: backup.display().to_string(),
+                source: e,
+            })?;
+            std::fs::write(path, crate::init::DEFAULT_DURABLE_MD).map_err(|e| {
+                MigrateError::Write {
+                    path: path.display().to_string(),
+                    source: e,
+                }
+            })?;
+            Ok(Outcome::Migrated)
+        }
+    }
+}
+```
+
+Replace both `<!-- PASTE ... -->` placeholders with the real bytes from
+`/tmp/durable_v1.txt` and `/tmp/durable_v2.txt`. If either file's content
+contains a `"#` sequence, use a longer raw-string delimiter (`r##"…"##`).
+After pasting, verify with:
+
+```bash
+cargo test -p phronesis-mcp durable_migrate::tests::an_unedited_v1_file_is_migratable
+```
+
+If it fails, the embedded text does not match the historical bytes —
+re-extract rather than hand-editing.
+
+In `crates/phronesis-mcp/src/init.rs`, change the visibility of the
+template so the migrator can compare against it:
+
+```rust
+pub(crate) const DEFAULT_DURABLE_MD: &str = r#"# Durable Directives
+```
+
+Add to `crates/phronesis-mcp/src/lib.rs`:
+
+```rust
+pub mod durable_migrate;
+```
+
+In `crates/phronesis-mcp/src/init.rs`, inside `write_durable_md`, replace
+the early-return branch so an existing file is *classified* rather than
+just skipped:
+
+```rust
+    if path.exists() {
+        let note = match crate::durable_migrate::inspect(&path) {
+            Ok(crate::durable_migrate::Status::Stale { version }) => format!(
+                "= .phronesis/durable.md is the v{version} template and is out of date — run `phr-mcp migrate-durable` to update it"
+            ),
+            Ok(crate::durable_migrate::Status::Customized) => {
+                "= .phronesis/durable.md already exists and has been customized — leaving unchanged"
+                    .to_string()
+            }
+            _ => "= .phronesis/durable.md already exists — leaving unchanged (edit in place to customize)"
+                .to_string(),
+        };
+        report.steps.push(note);
+        return Ok(());
+    }
+```
+
+`init` still never rewrites the file. It only tells the operator that a
+migration exists.
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run: `cargo test -p phronesis-mcp durable_migrate 2>&1 | tail -20`
+Expected: PASS, 9 tests.
+
+Run: `cargo test --workspace 2>&1 | grep -E "^test result"`
+Expected: 0 failed.
+
+- [ ] **Step 5: Add the CLI command**
+
+In `crates/phronesis-mcp/src/main.rs`, add to the `Command` enum next to
+`MigrateRules`:
+
+```rust
+    /// Update an unedited `.phronesis/durable.md` to the current shipped
+    /// template, backing the prior content up to `durable.md.bak`. A file
+    /// you have customized is never touched.
+    MigrateDurable {
+        /// Print what would change and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+```
+
+Dispatch arm:
+
+```rust
+        Command::MigrateDurable { dry_run } => handle_migrate_durable(dry_run),
+```
+
+Handler, next to `handle_migrate_rules`:
+
+```rust
+fn handle_migrate_durable(dry_run: bool) -> anyhow::Result<()> {
+    use phronesis_mcp::durable_migrate::{Outcome, durable_path, migrate};
+
+    let root = phronesis_mcp::security::project_root();
+    let path = durable_path(&root);
+    match migrate(&path, dry_run)? {
+        Outcome::Migrated => println!(
+            "migrated {} to the current template (prior content at durable.md.bak)",
+            path.display()
+        ),
+        Outcome::WouldMigrate => println!(
+            "would migrate {} to the current template (dry run; nothing written)",
+            path.display()
+        ),
+        Outcome::AlreadyCurrent => println!("{} is already current", path.display()),
+        Outcome::SkippedCustomized => println!(
+            "{} has been customized — left unchanged.\nCompare against the shipped template and port any changes by hand.",
+            path.display()
+        ),
+        Outcome::SkippedAbsent => println!(
+            "{} does not exist — run `phr-mcp init` to create it",
+            path.display()
+        ),
+    }
+    Ok(())
+}
+```
+
+Match the import style the neighbouring handlers use.
+
+- [ ] **Step 6: Verify end to end**
+
+```bash
+cargo build --workspace
+cargo run -- migrate-durable --dry-run
+```
+
+Expected on this repo: reports the local `durable.md` as customized (it was
+hand-edited during the durable.md investigation) and writes nothing.
+
+Run: `cargo test --workspace 2>&1 | grep -E "^test result"`
+Expected: 0 failed.
+
+- [ ] **Step 7: Commit**
+
+```bash
+cargo fmt --all && cargo clippy --workspace -- -D warnings
+git add crates/phronesis-mcp
+git commit -m "feat(init): add migrate-durable for existing projects"
+```
+
+---
+
 ## Self-Review
 
 **Spec coverage:**
@@ -1809,23 +2249,33 @@ git commit -m "docs(specs): split coverage from category in the drift envelope"
 | §4 renderers | 4 |
 | §5.1 `all` is a bounded summary | 3 (`apply_limit`), 4 (truncation notice) |
 | §5.2 one source failing does not fail the call | 3 |
-| §6.1 durable.md migration | **not covered — see below** |
+| §6.1 durable.md migration | 9 |
 | §6.2 surface sweep | 7 |
 | §6.3 `drift` alias removal | 6 |
 | §7 module boundaries | 1, 3, 4 |
 | §8 testing | every task |
 
-**Gap found and accepted:** §6.1's schema-marker migration for *existing*
-projects' `durable.md` is not implemented by this plan. Task 7 updates the
-shipped template, which covers new projects only. Existing projects keep a
-`durable.md` naming three dead tools, re-injected every session.
+**§6.1 implemented differently from the spec, deliberately.** The spec
+proposed a `<!-- phronesis:durable-schema=2 -->` marker plus a
+section-matcher that rewrites only the drift block. Task 9 instead
+compares the whole file against embedded copies of the known shipped
+templates and replaces it wholesale, or leaves it alone.
 
-This is deliberate: the migration needs a `durable.md` schema marker, a
-section-matcher that refuses to touch edited files, and a backup path —
-enough surface to deserve its own plan, and it is safe to ship after the
-tool change rather than with it. **It must not be forgotten**, so it is
-recorded here as the required follow-up, and the spec's §6.1 stays
-authoritative for it.
+Verbatim whole-file comparison is stricter and simpler: there is no
+partial-match heuristic that could mangle a file someone edited in a way
+the matcher did not anticipate, and "unedited" becomes auditable — the
+exact bytes that qualify are `const`s you can read. A schema marker would
+also have to be written into files that predate it, which is the very
+rewrite the marker exists to authorize.
+
+The cost is that a file with even a one-character edit is classified
+`Customized` and must be ported by hand. That is the right default for a
+file whose contract is "edit in place to customize."
+
+**Two prior template versions must be recognised, not one.** Commit
+`b9389fe` changed the shipped template without a migration, so projects in
+the wild are already stale before drift consolidation lands. Task 9
+handles V1 (pre-`b9389fe`) and V2 (post-`b9389fe`, pre-Task-7).
 
 **Placeholder scan:** no TBD/TODO. Three steps direct the implementer to
 read neighbouring code before writing (`server_params.rs` derives,
@@ -1837,4 +2287,11 @@ verify, not placeholders.
 adapters. `SourceInputs` fields match between Tasks 3, 5, and 6.
 `apply_limit`/`clamp_limit` are defined in Task 3 and used only there.
 `Family` derives `Ord` in Task 1 because Task 3 uses it as a `BTreeMap`
-key and Task 3 sorts on it. Scores are `f32` throughout.
+key and Task 3 sorts on it. Scores are `f32` throughout. Task 9's
+`inspect`/`migrate`/`Status`/`Outcome` are used only by Task 9 and
+`main.rs`.
+
+**Ordering constraint:** Task 9 must run after Task 7, because it embeds
+the *current* template as its migration target and Task 7 is what makes
+that template current. Running it earlier would migrate projects to a
+template that still names the removed tools.
