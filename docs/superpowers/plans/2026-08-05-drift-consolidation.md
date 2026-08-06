@@ -145,6 +145,44 @@ mod tests {
     }
 
     #[test]
+    fn a_personal_entry_is_never_counted_as_drift() {
+        // Personal guidance belongs in MEMORY.md. It is legitimately
+        // Uncovered — no rule covers it — but it is not work to do.
+        let personal = DriftItem {
+            subject: "prefers terse replies".to_string(),
+            verdict: Verdict::Uncovered,
+            category: Some(Category::Personal),
+            suggestion: None,
+            evidence: Evidence::Heuristic {
+                score: 0.0,
+                threshold: 0.15,
+                matched_rules: vec![],
+            },
+        };
+        let actionable = DriftItem {
+            category: Some(Category::Actionable),
+            ..personal.clone()
+        };
+        assert_eq!(uncovered_count(std::slice::from_ref(&personal)), 0);
+        assert_eq!(uncovered_count(std::slice::from_ref(&actionable)), 1);
+    }
+
+    #[test]
+    fn a_superseded_decision_is_never_counted_as_drift() {
+        let item = DriftItem {
+            subject: "ADR-003".to_string(),
+            verdict: Verdict::Superseded,
+            category: None,
+            suggestion: None,
+            evidence: Evidence::Declared {
+                rules: vec![],
+                superseded_by: Some("ADR-007".to_string()),
+            },
+        };
+        assert_eq!(uncovered_count(&[item]), 0);
+    }
+
+    #[test]
     fn source_all_lists_every_variant() {
         assert_eq!(Source::ALL.len(), 4);
         assert!(Source::ALL.contains(&Source::ClaudeMd));
@@ -332,12 +370,23 @@ impl DriftReport {
     }
 }
 
-/// Counts `Uncovered` and `Broken` only. `Personal` entries and
-/// `Superseded` decisions are not drift — nothing is missing — and
-/// counting them would inflate the one number that drives a decision.
+/// Counts `Uncovered` and `Broken`, excluding anything classified
+/// `Personal`.
+///
+/// Two exclusions, for the same reason: neither is drift, because nothing
+/// is missing. A `Superseded` decision was deliberately replaced, and a
+/// `Personal` memory entry belongs in `MEMORY.md` rather than in a rule.
+///
+/// The `Personal` exclusion has to be checked on `category`, not
+/// `verdict`. Splitting the two axes means a personal entry scoring below
+/// the threshold is `Verdict::Uncovered` — correctly, since no rule covers
+/// it — but it must still not be counted, or the one number an operator
+/// uses to decide whether there is work to do is inflated by entries that
+/// should never become rules.
 pub fn uncovered_count(items: &[DriftItem]) -> usize {
     items
         .iter()
+        .filter(|i| i.category != Some(Category::Personal))
         .filter(|i| matches!(i.verdict.family(), Family::Uncovered | Family::Broken))
         .count()
 }
@@ -606,7 +655,7 @@ pub fn into_items(report: &DriftReport) -> Vec<crate::drift::DriftItem> {
                     matched_rules: item
                         .best_match
                         .iter()
-                        .map(|m| m.rule_id.to_string())
+                        .map(|m| m.rule_id.as_str().to_string())
                         .collect(),
                 },
             }
@@ -635,24 +684,25 @@ pub fn into_items(report: &DriftReport) -> Vec<crate::drift::DriftItem> {
                 Bucket::Uncovered => crate::drift::Verdict::Uncovered,
                 Bucket::Superseded => crate::drift::Verdict::Superseded,
             };
-            let evidence = if item.decision.enforces.is_empty() {
+            let fm = &item.decision.frontmatter;
+            let evidence = if fm.enforces.is_empty() {
                 crate::drift::Evidence::Heuristic {
                     score: item.similarity,
                     threshold: report.coverage_threshold,
                     matched_rules: item
                         .best_match
                         .iter()
-                        .map(|m| m.rule_id.to_string())
+                        .map(|m| m.rule_id.as_str().to_string())
                         .collect(),
                 }
             } else {
                 crate::drift::Evidence::Declared {
-                    rules: item.decision.enforces.clone(),
-                    superseded_by: item.decision.superseded_by.clone(),
+                    rules: fm.enforces.clone(),
+                    superseded_by: fm.superseded_by.clone(),
                 }
             };
             crate::drift::DriftItem {
-                subject: format!("{} {}", item.decision.id, item.decision.title),
+                subject: fm.id.clone(),
                 verdict,
                 category: None,
                 suggestion: suggest_rule(item),
@@ -663,10 +713,16 @@ pub fn into_items(report: &DriftReport) -> Vec<crate::drift::DriftItem> {
 }
 ```
 
-Before writing this, open `src/wiki.rs` and confirm the exact field names on
-`Decision` for the id, title, `enforces`, and superseded-by fields. If they
-differ from `id`, `title`, `enforces`, `superseded_by`, use the real names.
-If `superseded_by` does not exist, pass `None`.
+**Field paths verified against `src/wiki.rs:37-55`.** `wiki::Decision` is
+`{ frontmatter: DecisionFrontmatter, body: String, path: PathBuf }` — the id
+and `enforces` live on `frontmatter`, not on `Decision`, and **there is no
+`title` field anywhere**. `DecisionFrontmatter` is
+`{ id, date, status, enforces, superseded_by, tags }`. The subject is
+therefore `frontmatter.id` alone, which matches how `wiki_drift::render_table`
+already identifies a decision (`wiki_drift.rs:240`).
+
+`RuleId` exposes `as_str()` (`claude_md_drift.rs:290`); use
+`.as_str().to_string()` rather than assuming a `Display` impl.
 
 Append to `crates/phronesis-mcp/src/memory_drift.rs` (outside `mod tests`):
 
@@ -692,7 +748,7 @@ pub fn into_items(report: &DriftReport) -> Vec<crate::drift::DriftItem> {
                 Bucket::Personal => crate::drift::Category::Personal,
             });
             let matched_rules = match &item.best_match {
-                Some(MatchedTarget::Rule { rule_id, .. }) => vec![rule_id.to_string()],
+                Some(MatchedTarget::Rule { rule_id, .. }) => vec![rule_id.as_str().to_string()],
                 Some(MatchedTarget::DurableParagraph { excerpt, .. }) => {
                     vec![format!("durable.md: {excerpt}")]
                 }
@@ -753,19 +809,41 @@ mod tests {
     use super::*;
     use crate::drift::{Availability, MissingReason, Source};
 
-    fn empty_inputs(root: &std::path::Path) -> SourceInputs<'_> {
+    /// Every corpus path is pinned to a nonexistent location *inside* the
+    /// temp dir.
+    ///
+    /// Leaving `memory_dir: None` would make `run_memory` fall back to
+    /// `memory_drift::default_memory_dir`, which reads the real
+    /// `dirs::home_dir()` (`memory_drift.rs:164-175`). On a machine that
+    /// happens to have a matching `~/.claude/projects/<encoded>/memory`,
+    /// the source would be `Present` and the "all absent" assertions would
+    /// fail for reasons unrelated to the code under test.
+    struct Paths {
+        memory: std::path::PathBuf,
+        wiki: std::path::PathBuf,
+    }
+
+    fn absent_paths(root: &std::path::Path) -> Paths {
+        Paths {
+            memory: root.join("no-such-memory-dir"),
+            wiki: root.join("no-such-wiki-dir"),
+        }
+    }
+
+    fn empty_inputs<'a>(root: &'a std::path::Path, p: &'a Paths) -> SourceInputs<'a> {
         SourceInputs {
             project_root: root,
             claude_md: None,
-            memory_dir: None,
-            wiki_dir: None,
+            memory_dir: Some(&p.memory),
+            wiki_dir: Some(&p.wiki),
         }
     }
 
     #[test]
     fn a_missing_corpus_is_reported_not_raised() {
         let d = tempfile::tempdir().expect("tempdir");
-        let report = run_source(Source::Wiki, &empty_inputs(d.path()));
+        let paths = absent_paths(d.path());
+        let report = run_source(Source::Wiki, &empty_inputs(d.path(), &paths));
         assert!(matches!(
             report.availability,
             Availability::Missing { reason: MissingReason::NoDir }
@@ -777,7 +855,8 @@ mod tests {
     #[test]
     fn code_source_is_missing_until_rule_staleness_lands() {
         let d = tempfile::tempdir().expect("tempdir");
-        let report = run_source(Source::Code, &empty_inputs(d.path()));
+        let paths = absent_paths(d.path());
+        let report = run_source(Source::Code, &empty_inputs(d.path(), &paths));
         assert!(matches!(
             report.availability,
             Availability::Missing { reason: MissingReason::NoGraph }
@@ -787,7 +866,8 @@ mod tests {
     #[test]
     fn run_all_succeeds_when_every_corpus_is_absent() {
         let d = tempfile::tempdir().expect("tempdir");
-        let agg = run_all(Source::ALL, &empty_inputs(d.path()), 5);
+        let paths = absent_paths(d.path());
+        let agg = run_all(Source::ALL, &empty_inputs(d.path(), &paths), 5);
         assert_eq!(agg.sources.len(), 4);
         assert_eq!(agg.totals.sources_missing, 4);
         assert_eq!(agg.totals.sources_present, 0);
@@ -798,9 +878,56 @@ mod tests {
     #[test]
     fn sources_are_returned_in_stable_order() {
         let d = tempfile::tempdir().expect("tempdir");
-        let agg = run_all(Source::ALL, &empty_inputs(d.path()), 5);
+        let paths = absent_paths(d.path());
+        let agg = run_all(Source::ALL, &empty_inputs(d.path(), &paths), 5);
         let order: Vec<Source> = agg.sources.iter().map(|r| r.source).collect();
         assert_eq!(order, Source::ALL.to_vec());
+    }
+
+    #[test]
+    fn a_malformed_source_does_not_suppress_a_healthy_one() {
+        // Spec §5.2. An operator asking "what drift exists" must not get a
+        // hard failure because one of four corpora is malformed —
+        // particularly when the malformed corpus is what they are trying
+        // to diagnose.
+        let d = tempfile::tempdir().expect("tempdir");
+        let root = d.path();
+        std::fs::create_dir_all(root.join(".phronesis")).expect("mkdir");
+        std::fs::write(
+            root.join(".phronesis").join("rules.json"),
+            r#"{"rules":[{"id":"r","phase":"pre","when":[{"new_content_contains":"x"}],"then":{"log":"y"}}]}"#,
+        )
+        .expect("rules");
+        std::fs::write(root.join("CLAUDE.md"), "- Always prefer iterators\n").expect("claude");
+
+        // A decisions dir that exists but holds an unparseable page.
+        let wiki = root.join(".phronesis").join("wiki").join("decisions");
+        std::fs::create_dir_all(&wiki).expect("mkdir wiki");
+        std::fs::write(wiki.join("broken.md"), "no frontmatter here\n").expect("broken adr");
+
+        let memory = root.join("no-such-memory-dir");
+        let inputs = SourceInputs {
+            project_root: root,
+            claude_md: None,
+            memory_dir: Some(&memory),
+            wiki_dir: Some(&wiki),
+        };
+
+        let agg = run_all(Source::ALL, &inputs, 5);
+        let claude = agg
+            .sources
+            .iter()
+            .find(|r| r.source == Source::ClaudeMd)
+            .expect("claude_md report");
+        assert!(
+            matches!(claude.availability, Availability::Present { .. }),
+            "a healthy source must survive a malformed sibling: {:?}",
+            claude.availability
+        );
+        assert!(
+            !claude.items.is_empty(),
+            "the healthy source must still return items"
+        );
     }
 
     #[test]
@@ -913,18 +1040,13 @@ pub fn run_source(source: Source, inputs: &SourceInputs<'_>) -> DriftReport {
 }
 
 fn run_claude_md(inputs: &SourceInputs<'_>) -> DriftReport {
-    let path = match inputs.claude_md {
-        Some(p) if p.exists() => p.to_path_buf(),
-        Some(_) => return DriftReport::missing(Source::ClaudeMd, MissingReason::NoFile),
-        None => {
-            let default = inputs.project_root.join("CLAUDE.md");
-            if !default.exists() {
-                return DriftReport::missing(Source::ClaudeMd, MissingReason::NoFile);
-            }
-            default
-        }
-    };
-    let _ = path;
+    // `claude_md_drift::run` resolves CLAUDE.md from the project root
+    // itself, so the only job here is the availability pre-check: report a
+    // missing file rather than letting the source raise
+    // `DriftError::ClaudeMdMissing`.
+    if !inputs.project_root.join("CLAUDE.md").exists() {
+        return DriftReport::missing(Source::ClaudeMd, MissingReason::NoFile);
+    }
     match crate::claude_md_drift::run(inputs.project_root) {
         Ok(report) => {
             let items = crate::claude_md_drift::into_items(&report);
@@ -1364,7 +1486,7 @@ In `crates/phronesis-mcp/src/server_params.rs`, delete `GetClaudeMdDriftParams`,
 `GetMemoryDriftParams`, and `GetWikiDriftParams`, and add:
 
 ```rust
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct GetDriftParams {
     /// Which corpus to scan: "claude_md", "memory", "wiki", "code", or
     /// "all" (default).
@@ -1385,8 +1507,9 @@ pub struct GetDriftParams {
 }
 ```
 
-Match the derive list and attribute style used by the neighbouring param
-structs in that file — read one before writing this.
+This derive list is exact, matching `server_params.rs:243`. `JsonSchema` is
+required for rmcp's generated tool schema; `Serialize` is the local
+convention. Do not drop either.
 
 In `crates/phronesis-mcp/src/server.rs`, delete the three
 `async fn get_claude_md_drift`, `get_memory_drift`, and `get_wiki_drift`
@@ -1481,8 +1604,24 @@ git commit -m "feat(mcp): replace three drift tools with get_drift(source)"
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `crates/phronesis-mcp/tests/cli_smoke.rs`, matching the existing
-helper style in that file for locating and invoking the binary:
+Append to `crates/phronesis-mcp/tests/cli_smoke.rs`. That file has a `bin()`
+helper but **no** `run_bin`, and its existing invocations set both
+`PHRONESIS_PROJECT_ROOT` and `current_dir` (see `cli_smoke.rs:85-95`).
+Omitting either makes a "bare project" test scan this repository instead of
+the temp directory, so add the helper first:
+
+```rust
+fn run_bin(args: &[&str], root: &Path) -> std::process::Output {
+    Command::new(bin())
+        .args(args)
+        .env("PHRONESIS_PROJECT_ROOT", root)
+        .current_dir(root)
+        .output()
+        .expect("run phr-mcp")
+}
+```
+
+Then the tests:
 
 ```rust
 #[test]
@@ -1619,7 +1758,21 @@ Confirm the crate is imported in `main.rs` under the name the existing
 handlers use (`phronesis_mcp::` or a local `use`), and match it.
 
 Leave `claude-md-drift`, `memory-drift`, and `wiki-drift` subcommands and
-their handlers exactly as they are.
+their handlers exactly as they are — they keep calling their existing
+per-source renderers (`main.rs:1032`, `main.rs:1083`).
+
+**This contradicts the spec, deliberately; Task 8 amends the spec.** §6.2
+describes the aliases as "thin aliases forwarding to `drift --source X`",
+and §8 requires a test that each alias emits JSON identical to the
+canonical command. Both are wrong, for the same reason the aliases exist:
+the legacy handlers have per-source output and a `--suggest` flag that
+emits draft rule JSON. Making them forward to `handle_drift` would change
+their output, which breaks exactly the scripts and muscle memory that
+keeping them was supposed to protect. An alias that produces different
+output is not a compatibility measure.
+
+So the aliases are frozen, not forwarded, and the identical-JSON test is
+removed from the spec rather than written.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1643,10 +1796,37 @@ git commit -m "feat(cli): add drift --source and free the drift alias"
 
 **Files:**
 - Modify: `crates/phronesis-mcp/src/init.rs` (durable template drift section)
+- Modify: `crates/phronesis-mcp/tests/init_integration.rs:56-58` (**blocker — see below**)
 - Modify: `crates/phronesis-mcp/CLAUDE.md`
 - Modify: `crates/phronesis-mcp/README.md`
 - Modify: `docs/loop-programming-guide.md`
 - Test: `crates/phronesis-mcp/tests/cli_smoke.rs`
+
+**Blocker to handle first.** `tests/init_integration.rs:56-58` currently
+asserts the opposite of this task's goal:
+
+```rust
+    let durable = std::fs::read_to_string(dir.path().join(".phronesis/durable.md")).unwrap();
+    assert!(durable.contains("get_claude_md_drift"));
+    assert!(durable.contains("get_memory_drift"));
+```
+
+Editing the template without editing this test fails the `cargo test
+--workspace` gate at Step 4. Replace those two assertions with:
+
+```rust
+    let durable = std::fs::read_to_string(dir.path().join(".phronesis/durable.md")).unwrap();
+    assert!(
+        durable.contains("get_drift"),
+        "durable.md must nudge the model toward the consolidated drift tool"
+    );
+    for gone in ["get_claude_md_drift", "get_memory_drift", "get_wiki_drift"] {
+        assert!(
+            !durable.contains(gone),
+            "durable.md still names the removed tool {gone} — it is re-injected every session"
+        );
+    }
+```
 
 **Interfaces:**
 - Consumes: everything above
@@ -1777,9 +1957,26 @@ Update §3 to state scores are `f32`, matching
 `claude_md_drift::DriftItem::similarity` and the other two sources. The
 spec currently says `f64`.
 
-Update §2.1's `uncovered_count` paragraph: it excludes `Family::Covered`
-and `Family::Superseded`; `Personal` is now a `Category`, not a verdict,
-so the exclusion is expressed as "counts `Uncovered` and `Broken`".
+Update §2.1's `uncovered_count` paragraph: it counts `Uncovered` and
+`Broken` **and additionally excludes any item whose `category` is
+`Personal`**. Splitting the axes means a personal entry below threshold is
+genuinely `Uncovered` — no rule covers it — so the exclusion has to be
+checked on `category`, or personal preferences inflate the number an
+operator uses to decide whether there is work to do.
+
+Remove `MissingReason::NotInitialized` from §1.1. Three reasons are
+sufficient and each has a call site: `NoFile` (CLAUDE.md), `NoDir` (memory,
+wiki), `NoGraph` (code). `NotInitialized` has none, and an unused variant
+in a serialized enum is a promise to consumers that nothing keeps.
+
+Amend §6.2 and §8 on the CLI aliases. §6.2 currently calls them "thin
+aliases forwarding to `drift --source X`" and §8 requires each to emit JSON
+identical to the canonical command. Both are struck: the legacy handlers
+keep their existing per-source output and their `--suggest` flag, because
+an alias whose output changed would break the scripts that keeping it was
+meant to protect. State instead that the aliases are frozen at their
+current behavior, and delete the identical-JSON and `--suggest`-survival
+tests from §8.
 
 - [ ] **Step 2: Verify no other section contradicts the change**
 
@@ -1825,8 +2022,10 @@ content matches a known shipped template *verbatim*. Prior versions are
 embedded as consts so that "unedited" is auditable and greppable rather
 than inferred. Two prior versions exist:
 
-- **V1** — the 3332-byte template with the participatory-governance
-  section, shipped before commit `b9389fe`.
+- **V1** — the 3292-byte template with the participatory-governance
+  section, shipped before commit `b9389fe`. (The extraction below yields
+  3271 bytes; the missing 21 are the `# Durable Directives\n` line that
+  sits on the `const` declaration itself.)
 - **V2** — the shrunk template from `b9389fe`, before this plan's Task 7.
 
 Extract their exact bytes (do not retype them):
@@ -1927,6 +2126,37 @@ mod tests {
         assert!(matches!(outcome, Outcome::WouldMigrate));
         assert_eq!(std::fs::read_to_string(&path).expect("read"), DURABLE_V1);
         assert!(!path.with_extension("md.bak").exists());
+    }
+
+    #[test]
+    fn embedded_history_matches_the_real_shipped_bytes() {
+        // Without this, every other test in this module compares the
+        // constants only against themselves: a mis-pasted historical
+        // template still "migrates" fine in tests while failing to
+        // recognise any real file in the wild.
+        //
+        // Regenerate the expected values with:
+        //   git show b9389fe~1:crates/phronesis-mcp/src/init.rs \
+        //     | awk '/const DEFAULT_DURABLE_MD/{f=1;next} /^"#;/{exit} f'
+        // then prepend "# Durable Directives\n".
+        assert_eq!(DURABLE_V1.len(), 3292, "V1 byte length drifted");
+        assert!(
+            DURABLE_V1.contains("### Cross-session knowledge transfer"),
+            "V1 must contain the participatory-governance section"
+        );
+        assert!(
+            DURABLE_V1.contains("get_claude_md_drift"),
+            "V1 predates consolidation and must still name the old tools"
+        );
+        assert!(
+            DURABLE_V2.contains("docs/participatory-governance.md"),
+            "V2 is the shrunk template that points at the extracted doc"
+        );
+        assert!(
+            !DURABLE_V2.contains("### Cross-session knowledge transfer"),
+            "V2 must not still carry the extracted section"
+        );
+        assert_ne!(DURABLE_V1, DURABLE_V2);
     }
 
     #[test]
@@ -2212,7 +2442,55 @@ fn handle_migrate_durable(dry_run: bool) -> anyhow::Result<()> {
 
 Match the import style the neighbouring handlers use.
 
-- [ ] **Step 6: Verify end to end**
+- [ ] **Step 6: Add CLI coverage for the new subcommand**
+
+The unit tests exercise `migrate`, but nothing yet proves the clap variant
+and dispatch arm are wired — a missing arm would not be caught by the
+`durable_migrate` test filter. Append to
+`crates/phronesis-mcp/tests/cli_smoke.rs`, using the `run_bin` helper added
+in Task 6:
+
+```rust
+#[test]
+fn migrate_durable_dry_run_writes_nothing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ph = dir.path().join(".phronesis");
+    std::fs::create_dir_all(&ph).expect("mkdir");
+    let path = ph.join("durable.md");
+    std::fs::write(&path, "# Durable Directives\n\nhand written\n").expect("write");
+
+    let out = run_bin(&["migrate-durable", "--dry-run"], dir.path());
+    assert!(out.status.success());
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("read"),
+        "# Durable Directives\n\nhand written\n",
+        "dry run must not modify the file"
+    );
+    assert!(!ph.join("durable.md.bak").exists());
+}
+
+#[test]
+fn migrate_durable_leaves_a_customized_file_alone() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ph = dir.path().join(".phronesis");
+    std::fs::create_dir_all(&ph).expect("mkdir");
+    std::fs::write(ph.join("durable.md"), "totally custom\n").expect("write");
+
+    let out = run_bin(&["migrate-durable"], dir.path());
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("customized"),
+        "must say why it did nothing: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(ph.join("durable.md")).expect("read"),
+        "totally custom\n"
+    );
+}
+```
+
+- [ ] **Step 7: Verify end to end**
 
 ```bash
 cargo build --workspace
@@ -2225,7 +2503,7 @@ hand-edited during the durable.md investigation) and writes nothing.
 Run: `cargo test --workspace 2>&1 | grep -E "^test result"`
 Expected: 0 failed.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 cargo fmt --all && cargo clippy --workspace -- -D warnings
@@ -2290,6 +2568,31 @@ adapters. `SourceInputs` fields match between Tasks 3, 5, and 6.
 key and Task 3 sorts on it. Scores are `f32` throughout. Task 9's
 `inspect`/`migrate`/`Status`/`Outcome` are used only by Task 9 and
 `main.rs`.
+
+**Adversarial review (codex + glm-5.2, 2026-08-06).** Twelve findings, all
+verified against the repo before acting. Fixed in this revision:
+
+| Finding | Fix |
+|---|---|
+| `init_integration.rs:56-58` asserts the removed tool names — Task 7 would fail the workspace gate | Task 7 now updates it first, as a named blocker |
+| `wiki::Decision` has no `id`/`title`/`enforces`/`superseded_by` — they are on `.frontmatter`, and no `title` exists at all | Task 2 uses `frontmatter.id` as the subject; verified against `wiki_drift.rs:240` |
+| `run_bin` does not exist in `cli_smoke.rs`, and real invocations set `PHRONESIS_PROJECT_ROOT` **and** `current_dir` | Task 6 defines the helper explicitly |
+| `default_memory_dir` reads the real `$HOME`, so "all absent" could fail on a developer machine | Task 3 pins every corpus path inside the temp dir |
+| Personal entries counted as drift after the axis split | `uncovered_count` excludes `Category::Personal`; two tests added |
+| Param derive list inconsistent with `server_params.rs:243` | made exact |
+| `MissingReason::NotInitialized` specced but unimplemented | removed from the spec in Task 8 |
+| Spec requires alias JSON identical to canonical, which would break `--suggest` and per-source output | aliases frozen; requirement struck in Task 8 |
+| V1 "3332 bytes" wrong, and the embedded history was only ever compared to itself | corrected to 3292; added a test asserting length and distinguishing content |
+| No CLI test for `migrate-durable` | added in Task 9 Step 6 |
+| Malformed-corpus isolation (spec §5.2) untested | added in Task 3 |
+| `let _ = path` dead code in `run_claude_md` | rewritten as a plain existence pre-check |
+
+**One finding not adopted:** codex wanted the no-stale-names guard to be
+repo-wide, noting `SPEC-wiki-drift.md` and `SPEC-memory-to-rules.md` still
+name the old tools. Those are historical specs describing work as it was
+done; rewriting them would falsify the record. The guard stays scoped to
+artifacts that ship or are re-injected into context, which is where a dead
+tool name does damage.
 
 **Ordering constraint:** Task 9 must run after Task 7, because it embeds
 the *current* template as its migration target and Task 7 is what makes
