@@ -4,7 +4,7 @@
 
 **Goal:** Replace the three MCP tools `get_claude_md_drift`, `get_memory_drift`, and `get_wiki_drift` with one `get_drift(source)` tool backed by a source registry, without changing any scoring logic.
 
-**Architecture:** A new `src/drift/` module holds a common envelope (`types.rs`), enum-dispatch registry (`registry.rs`), and unified renderers (`render.rs`). The three existing modules keep their extraction and scoring verbatim and gain a small `into_items()` adapter that maps their native types into the envelope. The MCP layer registers one tool; the CLI keeps three aliases forwarding to `drift --source X`.
+**Architecture:** A new `src/drift/` module holds a common envelope (`types.rs`), enum-dispatch registry (`registry.rs`), and unified renderers (`render.rs`). The three existing modules keep their extraction and scoring verbatim and gain a small `into_items()` adapter that maps their native types into the envelope. The MCP layer registers one tool; the CLI gains `drift --source X` and freezes the three existing subcommands at their current single-source behavior (they keep their own handlers and `--suggest`, so scripts depending on them do not break).
 
 **Tech Stack:** Rust 2024 edition, serde, thiserror, rmcp macros, clap.
 
@@ -18,6 +18,17 @@
 - Run `cargo fmt --all` and `cargo clippy --workspace -- -D warnings` before each commit.
 - No `.unwrap()` in `src/` (enforced by the `rust` pack). Use `?` or `expect` with a message in tests only.
 - Do not `git push`.
+- **A "verify it fails" step must show a real failure.** `cargo test` exits 0
+  when its filter matches nothing, so `0 passed; 0 failed` and a genuine
+  red are indistinguishable by exit code. Read the count. If you created a
+  new module file, add its `pub mod` line to the parent `mod.rs`/`lib.rs`
+  *before* the verification step — an undeclared file is never compiled, so
+  its tests silently do not exist. (Cost this plan a real miss on Task 3.)
+- **The code in this plan is not exempt from the clippy gate.** If a supplied
+  block trips a lint at `-D warnings`, apply clippy's own suggestion and note
+  the change in your report — do not weaken the gate or `#[allow]` past it.
+  Rust 1.96 rejected this plan's original `apply_limit` under
+  `clippy::unnecessary_sort_by`.
 
 ## Spec correction adopted by this plan
 
@@ -433,7 +444,7 @@ pub mod drift;
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p phronesis-mcp drift::types 2>&1 | tail -20`
-Expected: PASS, 7 tests.
+Expected: PASS, 9 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1020,7 +1031,7 @@ pub fn clamp_limit(requested: usize) -> usize {
 /// truncated response keeps the items that matter, rather than whichever
 /// happened to be scanned first.
 pub fn apply_limit(mut items: Vec<DriftItem>, limit: usize) -> (Vec<DriftItem>, bool) {
-    items.sort_by(|a, b| b.verdict.family().cmp(&a.verdict.family()));
+    items.sort_by_key(|item| std::cmp::Reverse(item.verdict.family()));
     let truncated = items.len() > limit;
     items.truncate(limit);
     (items, truncated)
@@ -1157,7 +1168,7 @@ by `context/config.rs` tests). If not, add it under `[dev-dependencies]`.
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p phronesis-mcp drift::registry 2>&1 | tail -20`
-Expected: PASS, 7 tests.
+Expected: PASS, 8 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1282,8 +1293,25 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
+**Declare the module first**, or this step passes vacuously. A file that
+`mod.rs` does not name is never compiled, so the command below reports
+`0 passed; 0 failed` and exits 0 — which looks identical to a real failure
+if you only check the exit code. Add to
+`crates/phronesis-mcp/src/drift/mod.rs` now:
+
+```rust
+pub mod render;
+```
+
+Leave the `pub use` line for Step 3; the `pub mod` alone is what gets the
+tests compiled.
+
 Run: `cargo test -p phronesis-mcp drift::render 2>&1 | tail -20`
 Expected: FAIL — `render_table` not found.
+
+**Read the count, not the exit code.** If the output says `0 passed;
+0 failed`, the tests did not run and you have proved nothing. You must see a
+non-zero number of failures or a compile error naming `render_table`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -1408,15 +1436,15 @@ pub fn render_json(agg: &AggregateReport) -> String {
 }
 ```
 
-Add to `crates/phronesis-mcp/src/drift/mod.rs`:
+Add to `crates/phronesis-mcp/src/drift/mod.rs` (the `pub mod render;` line is
+already there from Step 2 — add only the re-export):
 
 ```rust
-pub mod render;
-
 pub use render::{render_json, render_table};
 ```
 
-Also add `pub use types::AggregateReport;` to `mod.rs` if not already re-exported.
+`AggregateReport` is already re-exported from `types` by Task 1; do not add a
+second `pub use` for it.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1570,8 +1598,14 @@ methods together with their `#[tool(...)]` attributes, and add:
 
 Match the exact shape of `Self::log_event` and `Self::err` used by the
 neighbouring tools — read `get_stats` in the same file before writing this,
-and mirror its call style. Update the `use crate::server_params::{...}`
-import list to drop the three removed structs and add `GetDriftParams`.
+and mirror its call style.
+
+There is **no** `use crate::server_params::{...}` list in `server.rs` to
+update — param types reach it through the wildcard re-export
+`pub use crate::server_params::*;` (`server.rs:136`). Replacing the three
+structs in `server_params.rs` is sufficient; `GetDriftParams` becomes
+visible automatically. Do not go looking for a named import list, and do
+not add one.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -1625,7 +1659,7 @@ Then the tests:
 
 ```rust
 #[test]
-fn drift_defaults_to_all_sources_and_succeeds_on_a_bare_project() {
+fn drift_cmd_defaults_to_all_sources_and_succeeds_on_a_bare_project() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = run_bin(&["drift", "--json"], dir.path());
     assert!(
@@ -1643,7 +1677,7 @@ fn drift_defaults_to_all_sources_and_succeeds_on_a_bare_project() {
 }
 
 #[test]
-fn drift_rejects_an_unknown_source() {
+fn drift_cmd_rejects_an_unknown_source() {
     let dir = tempfile::tempdir().expect("tempdir");
     let out = run_bin(&["drift", "--source", "nope"], dir.path());
     assert!(!out.status.success(), "unknown source must fail");
@@ -1654,20 +1688,34 @@ Read `cli_smoke.rs` first and reuse its existing binary-invocation helper.
 If it is named something other than `run_bin`, use the real name and
 signature.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Remove the stale alias, then run the test to verify it fails**
 
-Run: `cargo test -p phronesis-mcp --test cli_smoke drift_ 2>&1 | tail -20`
-Expected: FAIL — unknown subcommand `drift`.
+`drift` is NOT currently an unknown subcommand — `main.rs:147` already has it
+as an alias for `claude-md-drift`. Left in place, the red run would invoke the
+old single-source command and fail for an unrelated reason (missing
+`CLAUDE.md`), proving nothing about the new command. Remove the alias first,
+in `crates/phronesis-mcp/src/main.rs`:
+
+```rust
+    #[command(name = "claude-md-drift")]
+```
+
+Note the test filter is `drift_cmd`, not `drift_`: `drift_` also matches the
+pre-existing `claude_md_drift_exits_nonzero_and_names_missing_file`
+(`cli_smoke.rs:162`) and `memory_drift_exits_nonzero_when_memory_dir_missing`
+(`cli_smoke.rs:184`), so a `drift_` run reports 4 tests and its count tells
+you nothing about the two you just wrote.
+
+Run: `cargo test -p phronesis-mcp --test cli_smoke drift_cmd 2>&1 | tail -20`
+Expected: FAIL, 2 tests — clap reports `unrecognized subcommand 'drift'`.
+
+**Read the count, not the exit code.** `0 passed; 0 failed` means the filter
+matched nothing and you have proved nothing.
 
 - [ ] **Step 3: Write the implementation**
 
-In `crates/phronesis-mcp/src/main.rs`, change line 147 from:
-
-```rust
-    #[command(name = "claude-md-drift", alias = "drift")]
-```
-
-to:
+The alias was already removed in Step 2. Add the explanatory comment above
+the attribute now, so the reason survives in the source:
 
 ```rust
     // `drift` is no longer an alias here: it is now the canonical
@@ -1776,8 +1824,8 @@ removed from the spec rather than written.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `cargo test -p phronesis-mcp --test cli_smoke drift_ 2>&1 | tail -20`
-Expected: PASS, 2 tests.
+Run: `cargo test -p phronesis-mcp --test cli_smoke drift_cmd 2>&1 | tail -20`
+Expected: PASS, 2 tests (the two `drift_cmd` tests only).
 
 Run: `cargo test --workspace 2>&1 | grep -E "^test result"`
 Expected: 0 failed.
@@ -1887,9 +1935,9 @@ section of `DEFAULT_DURABLE_MD` with:
 ## Drift discipline
 
 `get_drift(source)` surfaces guidance that no rule enforces — `source` is
-`claude_md`, `memory`, `wiki`, or `all`. Run it when the user asks about
-rules, memory, or project conventions, or says "remember X" / "make a
-rule for X".
+`claude_md`, `memory`, `wiki`, `code`, or `all`. Run it when the user asks
+about rules, memory, or project conventions, or says "remember X" / "make
+a rule for X". `code` reports no-graph until rule-staleness lands.
 
 Scoring is token-overlap Jaccard with no semantic match, so output is
 a triage list, not ground truth.
@@ -1899,9 +1947,13 @@ In `crates/phronesis-mcp/CLAUDE.md`, replace the three-tool block under
 "Drift detection" with a single `get_drift` section documenting the
 `source`, `limit`, `format`, `memory_dir`, and `wiki_dir` parameters, the
 `all`-is-a-summary behavior, and that a missing corpus is reported rather
-than raised. Keep the CLI alias lines, updating them to note they forward
-to `drift --source X`. Add `cargo run -- drift` to the command list near
-the existing drift entries.
+than raised. Keep the three CLI subcommand lines and describe them as
+**frozen compatibility commands** that retain their existing single-source
+output and `--suggest` behavior — do NOT describe them as forwarding to
+`drift --source X`. They keep their own handlers (Task 6), and Task 8
+strikes the forwarding claim from the spec; calling them forwarders here
+would reintroduce the contradiction those two tasks exist to remove. Add
+`cargo run -- drift` to the command list near the existing drift entries.
 
 In `crates/phronesis-mcp/README.md` and `docs/loop-programming-guide.md`,
 replace every mention of the three MCP tool names with `get_drift`. Leave
@@ -1980,7 +2032,15 @@ tests from §8.
 
 - [ ] **Step 2: Verify no other section contradicts the change**
 
-Run: `grep -n "ActionableUncovered\|AmbientUncovered\|f64" docs/specs/SPEC-drift-consolidation.md`
+Run: `grep -n "ActionableUncovered\|AmbientUncovered\|f64\|NotInitialized" docs/specs/SPEC-drift-consolidation.md`
+Expected: no matches.
+
+That grep only covers the type corrections. The alias amendment above needs
+its own check, or Step 1's last paragraph can be skipped without the
+verification noticing — the forwarding language currently lives at
+`SPEC-drift-consolidation.md:418` and `:493-494`:
+
+Run: `grep -n "forwarding to\|thin alias\|JSON identical\|identical to its canonical\|--suggest survives" docs/specs/SPEC-drift-consolidation.md`
 Expected: no matches.
 
 - [ ] **Step 3: Commit**
@@ -2110,6 +2170,30 @@ mod tests {
     }
 
     #[test]
+    fn an_existing_backup_is_never_clobbered() {
+        // The command's whole promise is that the old content survives.
+        // Overwriting a backup that is already there breaks that promise
+        // for the file the operator most likely wanted to keep.
+        let d = tempfile::tempdir().expect("tempdir");
+        let path = write_durable(d.path(), DURABLE_V1);
+        let backup = path.with_extension("md.bak");
+        std::fs::write(&backup, "a precious earlier backup").expect("seed backup");
+
+        let result = migrate(&path, false);
+        assert!(result.is_err(), "must refuse rather than overwrite: {result:?}");
+        assert_eq!(
+            std::fs::read_to_string(&backup).expect("read backup"),
+            "a precious earlier backup",
+            "the earlier backup must be untouched"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read"),
+            DURABLE_V1,
+            "a refused migration must leave durable.md alone"
+        );
+    }
+
+    #[test]
     fn migration_is_idempotent() {
         let d = tempfile::tempdir().expect("tempdir");
         let path = write_durable(d.path(), DURABLE_V1);
@@ -2156,6 +2240,17 @@ mod tests {
             !DURABLE_V2.contains("### Cross-session knowledge transfer"),
             "V2 must not still carry the extracted section"
         );
+        // V2 needs a length assertion for the same reason V1 has one.
+        // Substring checks alone cannot catch a truncated or mis-pasted
+        // paste, and every other test in this module compares DURABLE_V2
+        // against itself — so nothing else would notice.
+        //
+        // 1067 is the raw body from
+        //   git show b9389fe:crates/phronesis-mcp/src/init.rs
+        // (the r#"..."# contents, which already begin with the
+        // "# Durable Directives" heading — do NOT prepend it again as the
+        // V1 recipe above instructs).
+        assert_eq!(DURABLE_V2.len(), 1067, "V2 byte length drifted");
         assert_ne!(DURABLE_V1, DURABLE_V2);
     }
 
@@ -2190,8 +2285,22 @@ mod tests {
 
 - [ ] **Step 2: Run test to verify it fails**
 
+**Declare the module first**, or this step passes vacuously. A file that
+`lib.rs` does not name is never compiled, so the command below reports
+`0 passed; 0 failed` and exits 0 — indistinguishable from a real failure if
+you only check the exit code. Add to `crates/phronesis-mcp/src/lib.rs` now,
+in alphabetical position (between `diff_extract` and `drift`):
+
+```rust
+pub mod durable_migrate;
+```
+
 Run: `cargo test -p phronesis-mcp durable_migrate 2>&1 | tail -20`
 Expected: FAIL — `inspect` not found.
+
+**Read the count, not the exit code.** If the output says `0 passed;
+0 failed`, the tests did not run and you have proved nothing. You must see a
+non-zero number of failures or a compile error naming `inspect`.
 
 - [ ] **Step 3: Write the implementation**
 
@@ -2312,10 +2421,24 @@ pub fn migrate(path: &Path, dry_run: bool) -> Result<Outcome, MigrateError> {
                 path: path.display().to_string(),
                 source: e,
             })?;
+            // `create_new` rather than `write`: a plain write would
+            // silently destroy an existing durable.md.bak while this
+            // command reports that the old content was preserved. If a
+            // backup is already there, refuse and let the operator decide.
             let backup = path.with_extension("md.bak");
-            std::fs::write(&backup, &existing).map_err(|e| MigrateError::Write {
-                path: backup.display().to_string(),
-                source: e,
+            let mut f = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&backup)
+                .map_err(|e| MigrateError::Write {
+                    path: backup.display().to_string(),
+                    source: e,
+                })?;
+            std::io::Write::write_all(&mut f, existing.as_bytes()).map_err(|e| {
+                MigrateError::Write {
+                    path: backup.display().to_string(),
+                    source: e,
+                }
             })?;
             std::fs::write(path, crate::init::DEFAULT_DURABLE_MD).map_err(|e| {
                 MigrateError::Write {
@@ -2348,7 +2471,8 @@ template so the migrator can compare against it:
 pub(crate) const DEFAULT_DURABLE_MD: &str = r#"# Durable Directives
 ```
 
-Add to `crates/phronesis-mcp/src/lib.rs`:
+`crates/phronesis-mcp/src/lib.rs` already declares the module from Step 2 —
+confirm the line is present and do not add a second one:
 
 ```rust
 pub mod durable_migrate;
@@ -2382,7 +2506,7 @@ migration exists.
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p phronesis-mcp durable_migrate 2>&1 | tail -20`
-Expected: PASS, 9 tests.
+Expected: PASS, 11 tests.
 
 Run: `cargo test --workspace 2>&1 | grep -E "^test result"`
 Expected: 0 failed.
