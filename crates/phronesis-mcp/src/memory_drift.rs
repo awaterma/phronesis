@@ -647,6 +647,50 @@ pub fn suggest_rule(item: &DriftItem) -> Option<String> {
     Some(serde_json::to_string_pretty(&suggestion).unwrap_or_default())
 }
 
+/// Map this source's native report into the common drift envelope.
+///
+/// `Bucket` becomes [`crate::drift::Category`], NOT part of the verdict:
+/// what kind of guidance an entry is and whether a rule covers it are
+/// independent questions.
+pub fn into_items(report: &DriftReport) -> Vec<crate::drift::DriftItem> {
+    report
+        .items
+        .iter()
+        .map(|item| {
+            let verdict = if item.similarity >= report.coverage_threshold {
+                crate::drift::Verdict::Covered
+            } else {
+                crate::drift::Verdict::Uncovered
+            };
+            let category = Some(match item.bucket {
+                Bucket::Actionable => crate::drift::Category::Actionable,
+                Bucket::Ambient => crate::drift::Category::Ambient,
+                Bucket::Personal => crate::drift::Category::Personal,
+            });
+            let matched_rules = match &item.best_match {
+                Some(MatchedTarget::Rule { rule_id, .. }) => {
+                    vec![rule_id.as_str().to_string()]
+                }
+                Some(MatchedTarget::DurableParagraph { excerpt, .. }) => {
+                    vec![format!("durable.md: {excerpt}")]
+                }
+                None => Vec::new(),
+            };
+            crate::drift::DriftItem {
+                subject: item.entry.name.clone(),
+                verdict,
+                category,
+                suggestion: suggest_rule(item),
+                evidence: crate::drift::Evidence::Heuristic {
+                    score: item.similarity,
+                    threshold: report.coverage_threshold,
+                    matched_rules,
+                },
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1004,6 +1048,65 @@ initiative order, encumbrance tables, and the moon phase calendar.\n\n"
         let table = render_table(&report);
         assert!(table.contains("personal"));
         assert!(table.contains("actionable"));
+    }
+
+    fn sample_entry(name: &str) -> MemoryEntry {
+        MemoryEntry {
+            file_path: PathBuf::from(format!("/tmp/memory/{name}.md")),
+            name: name.into(),
+            description: "".into(),
+            memory_type: "feedback".into(),
+            body: "".into(),
+        }
+    }
+
+    #[test]
+    fn adapter_keeps_category_orthogonal_to_verdict() {
+        // Actionable + covered is a real, representable state.
+        let report = DriftReport {
+            memory_dir: "/tmp/memory".to_string(),
+            rules_path: ".phronesis/rules.json".to_string(),
+            durable_md_path: ".phronesis/durable.md".to_string(),
+            coverage_threshold: 0.15,
+            items: vec![DriftItem {
+                entry: sample_entry("always-use-tracing"),
+                bucket: Bucket::Actionable,
+                best_match: Some(MatchedTarget::Rule {
+                    rule_id: "rule-a".into(),
+                    shared_terms: vec!["tracing".to_string()],
+                }),
+                similarity: 0.9,
+            }],
+        };
+        let mapped = into_items(&report);
+        assert_eq!(mapped[0].verdict, crate::drift::Verdict::Covered);
+        assert_eq!(mapped[0].category, Some(crate::drift::Category::Actionable));
+    }
+
+    #[test]
+    fn adapter_maps_durable_paragraph_match_into_matched_rules() {
+        let report = DriftReport {
+            memory_dir: "/tmp/memory".to_string(),
+            rules_path: ".phronesis/rules.json".to_string(),
+            durable_md_path: ".phronesis/durable.md".to_string(),
+            coverage_threshold: 0.15,
+            items: vec![DriftItem {
+                entry: sample_entry("ambient-thing"),
+                bucket: Bucket::Ambient,
+                best_match: Some(MatchedTarget::DurableParagraph {
+                    excerpt: "we prefer X".to_string(),
+                    shared_terms: vec!["prefer".to_string()],
+                }),
+                similarity: 0.5,
+            }],
+        };
+        let mapped = into_items(&report);
+        match &mapped[0].evidence {
+            crate::drift::Evidence::Heuristic { matched_rules, .. } => {
+                assert_eq!(matched_rules, &["durable.md: we prefer X".to_string()]);
+            }
+            other => panic!("expected Heuristic, got {other:?}"),
+        }
     }
 
     #[test]

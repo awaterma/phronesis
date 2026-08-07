@@ -350,6 +350,51 @@ pub fn suggest_rule(item: &DriftItem) -> Option<String> {
     Some(serde_json::to_string_pretty(&suggestion).unwrap_or_default())
 }
 
+/// Map this source's native report into the common drift envelope.
+///
+/// A decision carrying `enforces:` frontmatter produces
+/// [`crate::drift::Evidence::Declared`] — an author's declaration is not a
+/// measurement, and rendering it as a 1.0 similarity would invite
+/// comparison against a Jaccard score that means something else entirely.
+pub fn into_items(report: &DriftReport) -> Vec<crate::drift::DriftItem> {
+    report
+        .items
+        .iter()
+        .map(|item| {
+            let verdict = match item.bucket {
+                Bucket::Covered => crate::drift::Verdict::Covered,
+                Bucket::LikelyCovered => crate::drift::Verdict::LikelyCovered,
+                Bucket::Uncovered => crate::drift::Verdict::Uncovered,
+                Bucket::Superseded => crate::drift::Verdict::Superseded,
+            };
+            let fm = &item.decision.frontmatter;
+            let evidence = if fm.enforces.is_empty() {
+                crate::drift::Evidence::Heuristic {
+                    score: item.similarity,
+                    threshold: report.coverage_threshold,
+                    matched_rules: item
+                        .best_match
+                        .iter()
+                        .map(|m| m.rule_id.as_str().to_string())
+                        .collect(),
+                }
+            } else {
+                crate::drift::Evidence::Declared {
+                    rules: fm.enforces.clone(),
+                    superseded_by: fm.superseded_by.clone(),
+                }
+            };
+            crate::drift::DriftItem {
+                subject: fm.id.clone(),
+                verdict,
+                category: None,
+                suggestion: suggest_rule(item),
+                evidence,
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,6 +431,36 @@ mod tests {
 
     fn write_decision(dir: &Path, name: &str, content: &str) {
         fs::write(dir.join(name), content).unwrap();
+    }
+
+    fn sample_decision_with_enforces() -> Decision {
+        Decision {
+            frontmatter: wiki::DecisionFrontmatter {
+                id: "decision-a".to_string(),
+                date: "2026-08-06".to_string(),
+                status: DecisionStatus::Accepted,
+                enforces: vec!["rule-a".to_string()],
+                superseded_by: None,
+                tags: Vec::new(),
+            },
+            body: "## Decision\nUse rule A.".to_string(),
+            path: PathBuf::from("decision-a.md"),
+        }
+    }
+
+    fn sample_decision_without_enforces() -> Decision {
+        Decision {
+            frontmatter: wiki::DecisionFrontmatter {
+                id: "decision-a".to_string(),
+                date: "2026-08-06".to_string(),
+                status: DecisionStatus::Accepted,
+                enforces: Vec::new(),
+                superseded_by: None,
+                tags: Vec::new(),
+            },
+            body: "## Decision\nUse rule A.".to_string(),
+            path: PathBuf::from("decision-a.md"),
+        }
     }
 
     #[test]
@@ -648,5 +723,52 @@ mod tests {
         let report2 = run_with_dir(tmp2.path(), &dec2).unwrap();
         assert_eq!(report2.items[0].bucket, Bucket::Superseded);
         assert!(suggest_rule(&report2.items[0]).is_none());
+    }
+
+    #[test]
+    fn adapter_maps_declared_frontmatter_to_declared_evidence() {
+        // A decision with `enforces:` frontmatter is a declaration, not a
+        // measurement — it must not become a 1.0 Heuristic score.
+        let report = DriftReport {
+            wiki_dir: ".phronesis/wiki/decisions".to_string(),
+            rules_path: ".phronesis/rules.json".to_string(),
+            coverage_threshold: 0.15,
+            items: vec![DriftItem {
+                decision: sample_decision_with_enforces(),
+                bucket: Bucket::Covered,
+                best_match: Some(MatchedRule {
+                    rule_id: "rule-a".into(),
+                    shared_terms: vec![],
+                }),
+                similarity: 1.0,
+            }],
+        };
+        let mapped = into_items(&report);
+        assert!(
+            matches!(mapped[0].evidence, crate::drift::Evidence::Declared { .. }),
+            "expected Declared, got {:?}",
+            mapped[0].evidence
+        );
+    }
+
+    #[test]
+    fn adapter_maps_jaccard_fallback_to_heuristic_evidence() {
+        let report = DriftReport {
+            wiki_dir: ".phronesis/wiki/decisions".to_string(),
+            rules_path: ".phronesis/rules.json".to_string(),
+            coverage_threshold: 0.15,
+            items: vec![DriftItem {
+                decision: sample_decision_without_enforces(),
+                bucket: Bucket::Uncovered,
+                best_match: None,
+                similarity: 0.0,
+            }],
+        };
+        let mapped = into_items(&report);
+        assert!(matches!(
+            mapped[0].evidence,
+            crate::drift::Evidence::Heuristic { .. }
+        ));
+        assert_eq!(mapped[0].verdict, crate::drift::Verdict::Uncovered);
     }
 }

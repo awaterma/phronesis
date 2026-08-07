@@ -344,6 +344,40 @@ fn truncate(s: &str, n: usize) -> String {
     }
 }
 
+/// Map this source's native report into the common drift envelope.
+///
+/// A pure projection: scoring is not re-run, and the report's existing
+/// similarity and coverage threshold are carried through unchanged.
+pub fn into_items(report: &DriftReport) -> Vec<crate::drift::DriftItem> {
+    report
+        .items
+        .iter()
+        .map(|item| {
+            let verdict = if item.similarity >= report.coverage_threshold {
+                crate::drift::Verdict::Covered
+            } else {
+                crate::drift::Verdict::Uncovered
+            };
+            let matched_rules = item
+                .best_match
+                .as_ref()
+                .map(|m| vec![m.rule_id.as_str().to_string()])
+                .unwrap_or_default();
+            crate::drift::DriftItem {
+                subject: item.imperative.clone(),
+                verdict,
+                category: None,
+                suggestion: None,
+                evidence: crate::drift::Evidence::Heuristic {
+                    score: item.similarity,
+                    threshold: report.coverage_threshold,
+                    matched_rules,
+                },
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -502,5 +536,50 @@ Some intro.
         assert!(out.contains("enforce-no-unwrap-in-src"));
         assert!(out.contains("## Uncovered"));
         assert!(out.contains("playtest"));
+    }
+
+    #[test]
+    fn adapter_maps_below_threshold_to_uncovered() {
+        let report = DriftReport {
+            claude_md_path: String::from("CLAUDE.md"),
+            rules_path: String::from(".phronesis/rules.json"),
+            coverage_threshold: 0.15,
+            items: vec![DriftItem {
+                imperative: String::from("avoid panics in hot paths"),
+                best_match: None,
+                similarity: 0.0,
+            }],
+        };
+
+        let items = into_items(&report);
+        assert_eq!(items.len(), 1);
+        let item = &items[0];
+        assert_eq!(item.verdict, crate::drift::Verdict::Uncovered);
+        assert_eq!(item.category, None, "claude_md does not classify");
+        assert!(matches!(
+            item.evidence,
+            crate::drift::Evidence::Heuristic { .. }
+        ));
+    }
+
+    #[test]
+    fn adapter_maps_at_or_above_threshold_to_covered() {
+        let report = DriftReport {
+            claude_md_path: String::from("CLAUDE.md"),
+            rules_path: String::from(".phronesis/rules.json"),
+            coverage_threshold: 0.15,
+            items: vec![DriftItem {
+                imperative: String::from("forbid unwrap in src"),
+                best_match: Some(MatchedRule {
+                    rule_id: "enforce-no-unwrap-in-src".into(),
+                    shared_terms: vec![String::from("unwrap")],
+                }),
+                similarity: 0.9,
+            }],
+        };
+
+        let items = into_items(&report);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].verdict, crate::drift::Verdict::Covered);
     }
 }
