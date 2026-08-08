@@ -2091,7 +2091,7 @@ content matches a known shipped template *verbatim*. Prior versions are
 embedded as consts so that "unedited" is auditable and greppable rather
 than inferred. Two prior versions exist:
 
-- **V1** — the 3292-byte template with the participatory-governance
+- **V1** — the 3270-byte template with the participatory-governance
   section, shipped before commit `b9389fe`. (The extraction below yields
   3271 bytes; the missing 21 are the `# Durable Directives\n` line that
   sits on the `const` declaration itself.)
@@ -2232,7 +2232,7 @@ mod tests {
         //   git show b9389fe~1:crates/phronesis-mcp/src/init.rs \
         //     | awk '/const DEFAULT_DURABLE_MD/{f=1;next} /^"#;/{exit} f'
         // then prepend "# Durable Directives\n".
-        assert_eq!(DURABLE_V1.len(), 3292, "V1 byte length drifted");
+        assert_eq!(DURABLE_V1.len(), 3270, "V1 byte length drifted");
         assert!(
             DURABLE_V1.contains("### Cross-session knowledge transfer"),
             "V1 must contain the participatory-governance section"
@@ -2715,7 +2715,7 @@ verified against the repo before acting. Fixed in this revision:
 | Param derive list inconsistent with `server_params.rs:243` | made exact |
 | `MissingReason::NotInitialized` specced but unimplemented | removed from the spec in Task 8 |
 | Spec requires alias JSON identical to canonical, which would break `--suggest` and per-source output | aliases frozen; requirement struck in Task 8 |
-| V1 "3332 bytes" wrong, and the embedded history was only ever compared to itself | corrected to 3292; added a test asserting length and distinguishing content |
+| V1 "3332 bytes" wrong, and the embedded history was only ever compared to itself | corrected to 3270 (measured by running the recipe; 3332 and a later 3292 were both wrong); added a test asserting length and distinguishing content |
 | No CLI test for `migrate-durable` | added in Task 9 Step 6 |
 | Malformed-corpus isolation (spec §5.2) untested | added in Task 3 |
 | `let _ = path` dead code in `run_claude_md` | rewritten as a plain existence pre-check |
