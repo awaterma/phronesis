@@ -827,7 +827,7 @@ fn write_rules_file(
 /// `docs/participatory-governance.md`; only what the model must act on
 /// belongs here. Measure with `phr-mcp context inspect --event session`
 /// before adding to it.
-const DEFAULT_DURABLE_MD: &str = r#"# Durable Directives
+pub(crate) const DEFAULT_DURABLE_MD: &str = r#"# Durable Directives
 
 Rendered at SessionStart (and PostCompact). If `.phronesis/context.json`
 is present, `.phronesis/kernel.md` carries the per-turn directives —
@@ -873,10 +873,22 @@ fn write_durable_md(
     let path = root.join(".phronesis").join("durable.md");
 
     if path.exists() {
-        report.steps.push(
-            "= .phronesis/durable.md already exists — leaving unchanged (edit in place to customize)"
+        // Report a stale template, never rewrite it. `init` promises to leave
+        // an existing durable.md alone — operators are told to edit it in
+        // place, and `--rules-only` / `--hooks-only` promise to touch nothing
+        // else. Silently replacing a file someone owns would break that, so
+        // the fix-up is the explicit `migrate-durable` subcommand, following
+        // the `migrate-rules` idiom.
+        let note = match crate::durable_migrate::inspect(&path) {
+            Ok(crate::durable_migrate::Status::Stale { version }) => format!(
+                "= .phronesis/durable.md matches shipped template v{version} \
+                 — run `phr-mcp migrate-durable` to update it"
+            ),
+            _ => "= .phronesis/durable.md already exists — leaving unchanged \
+                  (edit in place to customize)"
                 .to_string(),
-        );
+        };
+        report.steps.push(note);
         return Ok(());
     }
 

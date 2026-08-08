@@ -160,6 +160,17 @@ enum Command {
     /// every corpus. Read-only; always exits 0 unless `--source` is
     /// invalid.
     Drift(DriftArgs),
+    /// Bring an existing `.phronesis/durable.md` up to the current shipped
+    /// template. Rewrites only a file that matches a known prior template
+    /// verbatim; a customized file is reported and left alone. The prior
+    /// content is preserved at `durable.md.bak`.
+    MigrateDurable {
+        /// Path to durable.md (defaults to <project root>/.phronesis/durable.md).
+        path: Option<PathBuf>,
+        /// Report what would change; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Convert a rules.json file from the v1 (predicate/args/action_type)
     /// shape to the v2 (when/then/predicate-as-key) shape. Preserves `or`
     /// clauses on disk (does not expand them). Idempotent.
@@ -476,6 +487,7 @@ async fn main() -> anyhow::Result<()> {
         } => handle_trend(last, since, rule, json),
         Command::ClaudeMdDrift { path, json } => handle_claude_md_drift(path, json),
         Command::Drift(args) => handle_drift(args),
+        Command::MigrateDurable { path, dry_run } => handle_migrate_durable(path, dry_run),
         Command::MigrateRules {
             path,
             dry_run,
@@ -931,6 +943,31 @@ struct DriftArgs {
     /// Include a draft rule per item (large; off by default).
     #[arg(long)]
     suggest: bool,
+}
+
+fn handle_migrate_durable(path: Option<PathBuf>, dry_run: bool) -> anyhow::Result<()> {
+    use phronesis_mcp::durable_migrate::{self, Outcome};
+
+    let path = match path {
+        Some(p) => p,
+        None => durable_migrate::durable_path(&phronesis_mcp::security::project_root()),
+    };
+    let shown = path.display();
+    match durable_migrate::migrate(&path, dry_run)? {
+        Outcome::Migrated => {
+            println!("migrated {shown} to the current template (prior content at durable.md.bak)")
+        }
+        Outcome::WouldMigrate => println!(
+            "{shown} matches a prior shipped template and would be migrated (dry run: nothing written)"
+        ),
+        Outcome::AlreadyCurrent => println!("{shown} already matches the current template"),
+        Outcome::SkippedCustomized => println!(
+            "{shown} has been edited — left unchanged. Compare it against the current \
+             template and port anything you want by hand."
+        ),
+        Outcome::SkippedAbsent => println!("{shown} does not exist — nothing to migrate"),
+    }
+    Ok(())
 }
 
 fn handle_drift(args: DriftArgs) -> anyhow::Result<()> {
