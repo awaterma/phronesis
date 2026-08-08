@@ -241,33 +241,23 @@ pub struct GetDebtTrendParams {
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct GetClaudeMdDriftParams {
-    /// `"json"` (default) or `"table"`.
+pub struct GetDriftParams {
+    /// Which corpus to scan: "claude_md", "memory", "wiki", "code", or
+    /// "all" (default).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// Max items per source. Default 5, clamped to 50.
+    #[serde(default)]
+    pub limit: Option<usize>,
+    /// "json" (default) or "table".
     #[serde(default)]
     pub format: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct GetMemoryDriftParams {
-    /// Override the memory-directory location. Defaults to
-    /// `~/.claude/projects/<encoded-cwd>/memory/` — the per-project
-    /// auto-memory directory the Claude Code harness maintains.
+    /// Override the auto-memory directory.
     #[serde(default)]
     pub memory_dir: Option<String>,
-    /// `"json"` (default) or `"table"`.
-    #[serde(default)]
-    pub format: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
-pub struct GetWikiDriftParams {
-    /// Override the decisions directory. Defaults to
-    /// `<project_root>/.phronesis/wiki/decisions/`.
+    /// Override the wiki decisions directory.
     #[serde(default)]
     pub wiki_dir: Option<String>,
-    /// `"json"` (default) or `"table"`.
-    #[serde(default)]
-    pub format: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
