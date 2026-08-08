@@ -18,12 +18,21 @@
 - Run `cargo fmt --all` and `cargo clippy --workspace -- -D warnings` before each commit.
 - No `.unwrap()` in `src/` (enforced by the `rust` pack). Use `?` or `expect` with a message in tests only.
 - Do not `git push`.
-- **A "verify it fails" step must show a real failure.** `cargo test` exits 0
-  when its filter matches nothing, so `0 passed; 0 failed` and a genuine
-  red are indistinguishable by exit code. Read the count. If you created a
-  new module file, add its `pub mod` line to the parent `mod.rs`/`lib.rs`
-  *before* the verification step — an undeclared file is never compiled, so
-  its tests silently do not exist. (Cost this plan a real miss on Task 3.)
+- **A "verify it fails" step must show a real failure.** Two separate things
+  make the exit code useless here, so **always read the test count and the
+  error text, never the exit status**:
+  1. `cargo test` exits 0 when its filter matches nothing — `0 passed;
+     0 failed` is indistinguishable from a genuine red. If you created a new
+     module file, add its `pub mod` line to the parent `mod.rs`/`lib.rs`
+     *before* the verification step; an undeclared file is never compiled,
+     so its tests silently do not exist. (Cost this plan a real miss on
+     Task 3.)
+  2. Every verification command in this plan ends in `| tail -20`, and a
+     shell pipeline reports the *last* command's status — so the pipeline
+     exits 0 even when cargo failed. (Observed on Task 4: cargo printed five
+     `E0425` errors and the pipeline still exited 0.) If you want a
+     trustworthy status, drop the pipe or set `pipefail`; otherwise judge
+     the step only by what cargo printed.
 - **The code in this plan is not exempt from the clippy gate.** If a supplied
   block trips a lint at `-D warnings`, apply clippy's own suggestion and note
   the change in your report — do not weaken the gate or `#[allow]` past it.
