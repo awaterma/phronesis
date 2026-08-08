@@ -159,26 +159,7 @@ enum Command {
     /// Detect drift between written guidance and enforced rules across
     /// every corpus. Read-only; always exits 0 unless `--source` is
     /// invalid.
-    Drift {
-        /// claude_md | memory | wiki | code | all (default)
-        #[arg(long, default_value = "all")]
-        source: String,
-        /// Max items per source (default 5, max 50).
-        #[arg(long, default_value_t = 5)]
-        limit: usize,
-        /// Emit JSON instead of a table.
-        #[arg(long)]
-        json: bool,
-        /// Override the auto-memory directory.
-        #[arg(long)]
-        memory_dir: Option<PathBuf>,
-        /// Override the wiki decisions directory.
-        #[arg(long)]
-        wiki_dir: Option<PathBuf>,
-        /// Include a draft rule per item (large; off by default).
-        #[arg(long)]
-        suggest: bool,
-    },
+    Drift(DriftArgs),
     /// Convert a rules.json file from the v1 (predicate/args/action_type)
     /// shape to the v2 (when/then/predicate-as-key) shape. Preserves `or`
     /// clauses on disk (does not expand them). Idempotent.
@@ -494,14 +475,7 @@ async fn main() -> anyhow::Result<()> {
             json,
         } => handle_trend(last, since, rule, json),
         Command::ClaudeMdDrift { path, json } => handle_claude_md_drift(path, json),
-        Command::Drift {
-            source,
-            limit,
-            json,
-            memory_dir,
-            wiki_dir,
-            suggest,
-        } => handle_drift(source, limit, json, memory_dir, wiki_dir, suggest),
+        Command::Drift(args) => handle_drift(args),
         Command::MigrateRules {
             path,
             dry_run,
@@ -931,15 +905,45 @@ fn handle_claude_md_drift(path: PathBuf, json: bool) -> anyhow::Result<()> {
     }
 }
 
-fn handle_drift(
+/// Options for `phr-mcp drift`, grouped into one `clap::Args` struct.
+///
+/// Six loose parameters tripped the project's own
+/// `warn-rust-function-param-count-high` rule (threshold 5). Flattening
+/// them here keeps the CLI surface identical — every flag is still
+/// `--source`, `--limit`, and so on — while the handler takes one argument.
+#[derive(clap::Args)]
+struct DriftArgs {
+    /// claude_md | memory | wiki | code | all (default)
+    #[arg(long, default_value = "all")]
     source: String,
+    /// Max items per source (default 5, max 50).
+    #[arg(long, default_value_t = 5)]
     limit: usize,
+    /// Emit JSON instead of a table.
+    #[arg(long)]
     json: bool,
+    /// Override the auto-memory directory.
+    #[arg(long)]
     memory_dir: Option<PathBuf>,
+    /// Override the wiki decisions directory.
+    #[arg(long)]
     wiki_dir: Option<PathBuf>,
+    /// Include a draft rule per item (large; off by default).
+    #[arg(long)]
     suggest: bool,
-) -> anyhow::Result<()> {
+}
+
+fn handle_drift(args: DriftArgs) -> anyhow::Result<()> {
     use phronesis_mcp::drift::{self, Source, SourceInputs};
+
+    let DriftArgs {
+        source,
+        limit,
+        json,
+        memory_dir,
+        wiki_dir,
+        suggest,
+    } = args;
 
     let root = phronesis_mcp::security::project_root();
     let sources: Vec<Source> = match source.as_str() {
