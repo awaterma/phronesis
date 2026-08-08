@@ -957,7 +957,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Detect drift between written guidance and enforced rules across every corpus: CLAUDE.md imperatives, Claude Code auto-memory entries, ADR decisions under .phronesis/wiki/decisions/, and (once SPEC-rule-staleness lands) rules naming code the graph no longer defines. Read-only, heuristic, no LLM call — output is a triage list, not ground truth. `source` selects one of \"claude_md\", \"memory\", \"wiki\", \"code\", or \"all\" (default). With \"all\" the response is a bounded summary: use a single source plus a higher `limit` for detail. A corpus that does not exist is reported as unavailable rather than failing the call. Optional: `limit` (default 5, max 50), `format` (\"json\" default or \"table\"), `memory_dir`, `wiki_dir`."
+        description = "Detect drift between written guidance and enforced rules across every corpus: CLAUDE.md imperatives, Claude Code auto-memory entries, ADR decisions under .phronesis/wiki/decisions/, and (once SPEC-rule-staleness lands) rules naming code the graph no longer defines. Read-only, heuristic, no LLM call — output is a triage list, not ground truth. `source` selects one of \"claude_md\", \"memory\", \"wiki\", \"code\", or \"all\" (default). With \"all\" the response is a bounded summary: use a single source plus a higher `limit` for detail. A corpus that does not exist is reported as unavailable rather than failing the call. Optional: `limit` (default 5, max 50), `format` (\"json\" default or \"table\"), `suggest` (default false — set true to get a draft rule per item, which is large), `memory_dir`, `wiki_dir`."
     )]
     async fn get_drift(
         &self,
@@ -987,6 +987,7 @@ impl EpistemeMcp {
             claude_md: None,
             memory_dir: memory_dir.as_deref(),
             wiki_dir: wiki_dir.as_deref(),
+            suggest: params.suggest.unwrap_or(false),
         };
 
         let limit = params.limit.unwrap_or(drift::DEFAULT_LIMIT);

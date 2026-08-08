@@ -18,6 +18,26 @@ pub struct SourceInputs<'a> {
     pub claude_md: Option<&'a Path>,
     pub memory_dir: Option<&'a Path>,
     pub wiki_dir: Option<&'a Path>,
+    /// Include the draft-rule `suggestion` on each item. Off by default:
+    /// a draft is several hundred bytes of escaped JSON, and measured
+    /// against this repository it was 64% of the whole response (6,014 of
+    /// 9,374 bytes across 10 items). Spending most of a bounded summary on
+    /// payload the caller did not ask for defeats the point of bounding it.
+    pub suggest: bool,
+}
+
+/// Drop `suggestion` unless the caller asked for it.
+///
+/// Applied here rather than in each source adapter so the adapters stay
+/// pure projections of their native reports, and so a source added later
+/// cannot forget the gate.
+fn apply_suggest(mut items: Vec<DriftItem>, suggest: bool) -> Vec<DriftItem> {
+    if !suggest {
+        for item in &mut items {
+            item.suggestion = None;
+        }
+    }
+    items
 }
 
 pub fn clamp_limit(requested: usize) -> usize {
@@ -57,7 +77,7 @@ fn run_claude_md(inputs: &SourceInputs<'_>) -> DriftReport {
     }
     match crate::claude_md_drift::run(inputs.project_root) {
         Ok(report) => {
-            let items = crate::claude_md_drift::into_items(&report);
+            let items = apply_suggest(crate::claude_md_drift::into_items(&report), inputs.suggest);
             DriftReport {
                 source: Source::ClaudeMd,
                 availability: Availability::Present {
@@ -81,7 +101,7 @@ fn run_memory(inputs: &SourceInputs<'_>) -> DriftReport {
     }
     match crate::memory_drift::run_with_dir(inputs.project_root, &dir) {
         Ok(report) => {
-            let items = crate::memory_drift::into_items(&report);
+            let items = apply_suggest(crate::memory_drift::into_items(&report), inputs.suggest);
             DriftReport {
                 source: Source::Memory,
                 availability: Availability::Present {
@@ -105,7 +125,7 @@ fn run_wiki(inputs: &SourceInputs<'_>) -> DriftReport {
     }
     match crate::wiki_drift::run_with_dir(inputs.project_root, &dir) {
         Ok(report) => {
-            let items = crate::wiki_drift::into_items(&report);
+            let items = apply_suggest(crate::wiki_drift::into_items(&report), inputs.suggest);
             DriftReport {
                 source: Source::Wiki,
                 availability: Availability::Present {
@@ -182,7 +202,78 @@ mod tests {
             claude_md: None,
             memory_dir: Some(&p.memory),
             wiki_dir: Some(&p.wiki),
+            suggest: false,
         }
+    }
+
+    /// A project whose memory dir holds one uncovered entry that
+    /// `memory_drift::suggest_rule` will actually draft a rule for.
+    ///
+    /// Two conditions have to hold, and both are easy to miss: the entry must
+    /// land in `Bucket::Actionable`, which `classify` grants only when the
+    /// text carries a predicate-shaped trigger (`memory_drift.rs:264-283`) —
+    /// hence the `gh pr` invocation, which matches the command-shaped family
+    /// — and it must score below the coverage threshold, hence a rules file
+    /// whose only rule shares no vocabulary with it.
+    fn project_with_one_memory_entry(root: &std::path::Path) -> std::path::PathBuf {
+        std::fs::create_dir_all(root.join(".phronesis")).expect("mkdir");
+        std::fs::write(
+            root.join(".phronesis").join("rules.json"),
+            r#"{"rules":[{"id":"r","phase":"pre","when":[{"new_content_contains":"zzz"}],"then":{"log":"y"}}]}"#,
+        )
+        .expect("rules");
+        let mem = root.join("memory");
+        std::fs::create_dir_all(&mem).expect("mkdir memory");
+        std::fs::write(
+            mem.join("thing.md"),
+            "---\nname: always-review-before-merge\ndescription: run `gh pr checks` before merging\nmetadata:\n  type: feedback\n---\n\nAlways run `gh pr checks` and wait for green before merging.\n",
+        )
+        .expect("entry");
+        mem
+    }
+
+    #[test]
+    fn suggestions_are_omitted_unless_requested() {
+        // A draft rule is ~800 bytes of escaped JSON per item. Emitting it
+        // unconditionally spent most of the response on payload the caller
+        // did not ask for, which defeats the bounded-summary promise the
+        // `all` source makes.
+        let d = tempfile::tempdir().expect("tempdir");
+        let mem = project_with_one_memory_entry(d.path());
+        let inputs = SourceInputs {
+            project_root: d.path(),
+            claude_md: None,
+            memory_dir: Some(&mem),
+            wiki_dir: None,
+            suggest: false,
+        };
+        let report = run_source(Source::Memory, &inputs);
+        assert!(
+            !report.items.is_empty(),
+            "fixture must produce at least one item"
+        );
+        assert!(
+            report.items.iter().all(|i| i.suggestion.is_none()),
+            "suggestions must be withheld by default"
+        );
+    }
+
+    #[test]
+    fn suggestions_are_present_when_requested() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let mem = project_with_one_memory_entry(d.path());
+        let inputs = SourceInputs {
+            project_root: d.path(),
+            claude_md: None,
+            memory_dir: Some(&mem),
+            wiki_dir: None,
+            suggest: true,
+        };
+        let report = run_source(Source::Memory, &inputs);
+        assert!(
+            report.items.iter().any(|i| i.suggestion.is_some()),
+            "suggest: true must produce at least one draft rule"
+        );
     }
 
     #[test]
@@ -261,6 +352,7 @@ mod tests {
             claude_md: None,
             memory_dir: Some(&memory),
             wiki_dir: Some(&wiki),
+            suggest: false,
         };
 
         let agg = run_all(Source::ALL, &inputs, 5);

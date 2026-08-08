@@ -258,6 +258,10 @@ pub struct GetDriftParams {
     /// Override the wiki decisions directory.
     #[serde(default)]
     pub wiki_dir: Option<String>,
+    /// Include a draft rule per item. Off by default — a draft is several
+    /// hundred bytes of escaped JSON and would dominate the response.
+    #[serde(default)]
+    pub suggest: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

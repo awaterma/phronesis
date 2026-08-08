@@ -175,6 +175,9 @@ enum Command {
         /// Override the wiki decisions directory.
         #[arg(long)]
         wiki_dir: Option<PathBuf>,
+        /// Include a draft rule per item (large; off by default).
+        #[arg(long)]
+        suggest: bool,
     },
     /// Convert a rules.json file from the v1 (predicate/args/action_type)
     /// shape to the v2 (when/then/predicate-as-key) shape. Preserves `or`
@@ -497,7 +500,8 @@ async fn main() -> anyhow::Result<()> {
             json,
             memory_dir,
             wiki_dir,
-        } => handle_drift(source, limit, json, memory_dir, wiki_dir),
+            suggest,
+        } => handle_drift(source, limit, json, memory_dir, wiki_dir, suggest),
         Command::MigrateRules {
             path,
             dry_run,
@@ -933,6 +937,7 @@ fn handle_drift(
     json: bool,
     memory_dir: Option<PathBuf>,
     wiki_dir: Option<PathBuf>,
+    suggest: bool,
 ) -> anyhow::Result<()> {
     use phronesis_mcp::drift::{self, Source, SourceInputs};
 
@@ -953,6 +958,7 @@ fn handle_drift(
         claude_md: None,
         memory_dir: memory_dir.as_deref(),
         wiki_dir: wiki_dir.as_deref(),
+        suggest,
     };
     let agg = drift::run_all(&sources, &inputs, limit);
     if json {

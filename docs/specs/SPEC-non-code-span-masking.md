@@ -46,6 +46,24 @@ zero violations.
 
 That mechanism is correct and is the seam this spec extends.
 
+**But it only holds for whole-file payloads.** The probe above was a `Write`,
+which carries the entire file, so `strip_test_blocks` can see the
+`#[cfg(test)]` marker above the match. An `Edit` carries only the changed
+fragment. If the marker is outside the fragment — which it almost always is
+when editing an existing test — the stripper has nothing to key on and treats
+the fragment as production code.
+
+Reproduced while writing this specification's own implementation: an `Edit`
+adding a test fixture whose *string literal* contained `.unwrap()`, inside a
+`#[cfg(test)]` module, was blocked. The same content delivered as a `Write`
+passes.
+
+This matters for scoping. §1.2's "test blocks are already handled" is true of
+`Write` and false of `Edit`, and `Edit` is the more common tool. So the
+false-positive surface is larger than the five probes suggest, and masking —
+which works on whatever content it is handed, marker or no marker — addresses
+the fragment case that test-block stripping structurally cannot.
+
 ### 1.3 Writing this file was blocked twice by the bug it describes
 
 The first draft quoted a deflection-family pattern in §3.3 to explain why
@@ -230,6 +248,10 @@ coexist in one pass over one file.
 8. Every supported language has one comment-masking and one string-masking
    test. Swift's node kinds are unverified in this spec and must be confirmed
    against the grammar during implementation, not assumed.
+9. A fixture delivered as an `Edit` fragment — a string literal containing
+   `.unwrap()`, with no `#[cfg(test)]` marker inside the fragment — passes.
+   This is the §1.2 gap that test-block stripping cannot close, and it is the
+   case most likely to recur in normal work.
 
 ## 8. Open question deferred to implementation
 

@@ -60,7 +60,13 @@ pub fn render_table(agg: &AggregateReport) -> String {
                 continue;
             }
             Availability::Errored { detail } => {
-                let _ = writeln!(out, "{:<10} error: {detail}", report.source.as_str());
+                // A parse error's message can be multi-line too.
+                let _ = writeln!(
+                    out,
+                    "{:<10} error: {}",
+                    report.source.as_str(),
+                    one_line(detail)
+                );
                 continue;
             }
             Availability::Present { scanned } => {
@@ -82,8 +88,8 @@ pub fn render_table(agg: &AggregateReport) -> String {
                 out,
                 "  {:<16} {:<48} {}",
                 verdict,
-                truncate(&item.subject, 48),
-                evidence_compact(&item.evidence)
+                truncate(&one_line(&item.subject), 48),
+                one_line(&evidence_compact(&item.evidence))
             );
         }
     }
@@ -109,6 +115,31 @@ fn truncate(s: &str, max: usize) -> String {
     }
     let kept: String = s.chars().take(max.saturating_sub(1)).collect();
     format!("{kept}…")
+}
+
+/// Collapse every run of whitespace to a single space.
+///
+/// Any value interpolated into a table row must be single-line. A
+/// `durable.md` paragraph excerpt reaches `matched_rules` with its original
+/// line breaks, and a `CLAUDE.md` bullet can wrap; either one split the row
+/// mid-value and broke column alignment for the rest of the table. Applied
+/// to every interpolated value rather than only the two known carriers, so a
+/// source added later cannot reintroduce it.
+fn one_line(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut pending_space = false;
+    for ch in s.chars() {
+        if ch.is_whitespace() {
+            pending_space = !out.is_empty();
+        } else {
+            if pending_space {
+                out.push(' ');
+                pending_space = false;
+            }
+            out.push(ch);
+        }
+    }
+    out
 }
 
 pub fn render_json(agg: &AggregateReport) -> String {
@@ -198,6 +229,75 @@ mod tests {
         assert!(
             out.contains("truncated"),
             "a silent cap reads as 'nothing more to see': {out}"
+        );
+    }
+
+    #[test]
+    fn a_multiline_matched_rule_stays_on_one_row() {
+        // The memory adapter builds `durable.md: {excerpt}`, and a durable.md
+        // paragraph can wrap across lines. An embedded newline broke the
+        // table into a ragged second row mid-value. Observed live against
+        // this repo, where a `graph-phase-plan` row split after
+        // "…enforces — `CLAUDE.md`".
+        let report = DriftReport {
+            source: Source::Memory,
+            availability: Availability::Present { scanned: 1 },
+            uncovered_count: 1,
+            items: vec![DriftItem {
+                subject: "graph-phase-plan".to_string(),
+                verdict: Verdict::Uncovered,
+                category: None,
+                suggestion: None,
+                evidence: Evidence::Heuristic {
+                    score: 0.07,
+                    threshold: 0.15,
+                    matched_rules: vec![
+                        "durable.md: Drift tools surface guidance\nthat no rule enforces"
+                            .to_string(),
+                    ],
+                },
+            }],
+        };
+        let out = render_table(&agg(vec![report]));
+        let item_rows: Vec<&str> = out
+            .lines()
+            .filter(|l| l.starts_with("  ") && l.contains("uncovered"))
+            .collect();
+        assert_eq!(
+            item_rows.len(),
+            1,
+            "one item must render as one row: {out:?}"
+        );
+        for line in out.lines() {
+            assert!(
+                !line.starts_with("that no rule"),
+                "an embedded newline leaked a continuation row: {out:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_multiline_subject_stays_on_one_row() {
+        let report = DriftReport {
+            source: Source::ClaudeMd,
+            availability: Availability::Present { scanned: 1 },
+            uncovered_count: 1,
+            items: vec![DriftItem {
+                subject: "Always prefer\niterators over loops".to_string(),
+                verdict: Verdict::Uncovered,
+                category: None,
+                suggestion: None,
+                evidence: Evidence::Heuristic {
+                    score: 0.0,
+                    threshold: 0.15,
+                    matched_rules: vec![],
+                },
+            }],
+        };
+        let out = render_table(&agg(vec![report]));
+        assert!(
+            !out.lines().any(|l| l.starts_with("iterators over")),
+            "a newline in the subject must not start a new row: {out:?}"
         );
     }
 
