@@ -2124,8 +2124,10 @@ than inferred. Two prior versions exist:
 
 - **V1** — the 3270-byte template with the participatory-governance
   section, shipped before commit `b9389fe`. (The extraction below yields
-  3271 bytes; the missing 21 are the `# Durable Directives\n` line that
-  sits on the `const` declaration itself.)
+  **3249** bytes; the missing 21 are the `# Durable Directives\n` line,
+  which sits on the `const` declaration line and so is skipped by the awk
+  range. 3249 + 21 = 3270. Measured, not inferred — two earlier figures in
+  this plan, 3332 and 3292, were both wrong.)
 - **V2** — the shrunk template from `b9389fe`, before this plan's Task 7.
 
 Extract their exact bytes (do not retype them):
@@ -2285,11 +2287,12 @@ mod tests {
         // paste, and every other test in this module compares DURABLE_V2
         // against itself — so nothing else would notice.
         //
-        // 1067 is the raw body from
-        //   git show b9389fe:crates/phronesis-mcp/src/init.rs
-        // (the r#"..."# contents, which already begin with the
-        // "# Durable Directives" heading — do NOT prepend it again as the
-        // V1 recipe above instructs).
+        // Both constants are built the same way: awk the r#"..."# body out
+        // of the historical init.rs, then prepend "# Durable Directives\n"
+        // (21 bytes), which sits on the const declaration line and so falls
+        // outside the awk range. Measured:
+        //   V1  awk 3249 + 21 = 3270
+        //   V2  awk 1046 + 21 = 1067
         assert_eq!(DURABLE_V2.len(), 1067, "V2 byte length drifted");
         assert_ne!(DURABLE_V1, DURABLE_V2);
     }
