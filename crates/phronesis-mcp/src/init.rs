@@ -29,7 +29,16 @@ use thiserror::Error;
 ///
 /// `None` exists for users who want hooks wired up but will author their own
 /// rules from scratch.
+///
+/// `#[non_exhaustive]` because adding a pack is this crate's most routine
+/// extension point — four have landed already (`Confidence`, `Journey`,
+/// `Structural`, `Context`) and more languages are expected. Without it every
+/// new pack is a semver break twice over: a variant added to an exhaustive
+/// enum, and a discriminant shift for every variant after the insertion point.
+/// Downstream matches need a `_` arm; in exchange, adding a pack stops being
+/// an API event. Taken pre-1.0, when the one-time cost is lowest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Pack {
     Llm,
     Rust,
