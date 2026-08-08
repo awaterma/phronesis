@@ -836,11 +836,10 @@ keep anything needed every turn there, not here. Budget is measured:
 
 ## Drift discipline
 
-Drift tools surface guidance that no rule enforces — `CLAUDE.md`
-bullets (`get_claude_md_drift`), auto-memory entries
-(`get_memory_drift`), and ADR decisions (`get_wiki_drift`). Run one
-when the user asks about rules, memory, or project conventions, or
-says "remember X" / "make a rule for X".
+`get_drift(source)` surfaces guidance that no rule enforces — `source` is
+`claude_md`, `memory`, `wiki`, `code`, or `all`. Run it when the user asks
+about rules, memory, or project conventions, or says "remember X" / "make
+a rule for X". `code` reports no-graph until rule-staleness lands.
 
 Scoring is token-overlap Jaccard with no semantic match, so output is
 a triage list, not ground truth.

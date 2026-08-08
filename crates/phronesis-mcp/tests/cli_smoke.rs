@@ -273,3 +273,37 @@ fn interaction_context_is_canonical_and_turn_context_remains_an_alias() {
     assert_eq!(canonical.stdout, legacy.stdout);
     assert!(String::from_utf8_lossy(&canonical.stdout).contains("interaction guidance"));
 }
+
+/// The three removed MCP tool names must not survive in any artifact that
+/// ships to a project or reaches the model. A dead tool name in
+/// `durable.md` is re-injected into context every session, so that one
+/// matters most.
+///
+/// Deliberately NOT checked: `CHANGELOG.md` and `.phronesis/wiki/decisions/`
+/// are historical records — a release note or an ADR describing what was
+/// true then must keep saying so. `docs/specs/` and `docs/superpowers/`
+/// describe this very migration.
+#[test]
+fn no_shipped_artifact_names_the_removed_drift_tools() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root");
+
+    let checked = [
+        repo.join("crates/phronesis-mcp/src/init.rs"),
+        repo.join("crates/phronesis-mcp/CLAUDE.md"),
+    ];
+
+    for path in checked {
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        for gone in ["get_claude_md_drift", "get_memory_drift", "get_wiki_drift"] {
+            assert!(
+                !body.contains(gone),
+                "{} still names the removed MCP tool {gone}",
+                path.display()
+            );
+        }
+    }
+}

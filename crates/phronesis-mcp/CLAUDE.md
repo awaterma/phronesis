@@ -22,6 +22,7 @@ cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- confidence       # Confidence band + grounded signals for the open work unit
 cargo run -- toolchains        # List active toolchain defs (built-in + project); --json for machine output
 cargo run -- journey   # what journey_* facts assert right now
+cargo run -- drift            # Multi-source drift across CLAUDE.md, memory, wiki decisions, and code
 cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
 cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
 cargo run -- wiki-drift      # Heuristic: which .phronesis/wiki/decisions/ ADRs lack rule coverage?
@@ -131,42 +132,47 @@ Context source files are capped at 64 KiB — they are read on every hook,
 so an oversized one is ignored with a diagnostic rather than re-read and
 discarded each turn.
 
-### Drift detection — CLAUDE.md and auto-memory ↔ rules
+### Drift detection — guidance and code ↔ rules
 
-Two CLI tools (also exposed as MCP tools, so the model can invoke
-them in conversation) surface the gap between prose guidance and
-enforced rules:
+Three frozen compatibility CLI commands and one consolidated MCP tool surface
+the gap between guidance or code and enforced rules. The MCP surface is
+`get_drift(source)`, where `source` is `claude_md`, `memory`, `wiki`, `code`,
+or `all` (the default). It also accepts `limit` (default 5, maximum 50),
+`format` (`json` by default or `table`), `suggest` (default false),
+`memory_dir`, and `wiki_dir`. The equivalent multi-source CLI is `phr-mcp
+drift [--source S] [--limit N] [--json] [--suggest] [--memory-dir P]
+[--wiki-dir P]`.
 
-`phr-mcp claude-md-drift` (MCP: `get_claude_md_drift`) extracts
-imperative bullets from CLAUDE.md ("Don't X", "Always Y", "Prefer Z")
-and matches each one against the current rule pack by token overlap.
-Output flags bullets with no confident match — candidates that
-either should become rules or should be marked as "non-lintable by
-design" so future audits don't re-flag them.
+`phr-mcp claude-md-drift` is a frozen compatibility command retaining its
+existing single-source output and `--suggest` behavior. It extracts imperative
+bullets from CLAUDE.md ("Don't X", "Always Y", "Prefer Z") and matches each
+one against the current rule pack by token overlap. Output flags bullets with
+no confident match — candidates that either should become rules or should be
+marked as "non-lintable by design" so future audits don't re-flag them.
 
-`phr-mcp memory-drift` (MCP: `get_memory_drift`) walks Claude Code's
+`phr-mcp memory-drift` is a frozen compatibility command retaining its
+existing single-source output and `--suggest` behavior. It walks Claude Code's
 per-project auto-memory directory (default
-`~/.claude/projects/<encoded-cwd>/memory/`), parses the YAML
-frontmatter on each entry, and classifies it into one of three
-buckets per `docs/specs/SPEC-memory-to-rules.md`: `actionable`
-(should become a rule), `ambient` (should be in durable.md), or
-`personal` (stays in MEMORY.md). Non-personal entries are scored
-against rules.json and durable.md by token overlap; uncovered ones
-are surfaced for porting. `--suggest` emits draft rule JSON on
-stderr.
+`~/.claude/projects/<encoded-cwd>/memory/`), parses the YAML frontmatter on
+each entry, and classifies it into one of three buckets per
+`docs/specs/SPEC-memory-to-rules.md`: `actionable` (should become a rule),
+`ambient` (should be in durable.md), or `personal` (stays in MEMORY.md).
+Non-personal entries are scored against rules.json and durable.md by token
+overlap; uncovered ones are surfaced for porting. `--suggest` emits draft rule
+JSON on stderr.
 
-`phr-mcp wiki-drift` (MCP: `get_wiki_drift`) walks
-`.phronesis/wiki/decisions/`, parses ADR-style frontmatter on each
-page, and classifies decisions into `covered` / `likely-covered` /
-`uncovered` / `superseded` against the current rule pack. Explicit
-`enforces: [rule-id]` frontmatter beats the Jaccard fallback —
-authors who list which rules enforce a decision get a deterministic
-match. `--suggest` emits draft v2 rule JSON on stderr for uncovered
-decisions. Pair with `phr-mcp decision new <slug>` to scaffold new
-ADR pages from a template.
+`phr-mcp wiki-drift` is a frozen compatibility command retaining its existing
+single-source output and `--suggest` behavior. It walks
+`.phronesis/wiki/decisions/`, parses ADR-style frontmatter on each page, and
+classifies decisions into `covered` / `likely-covered` / `uncovered` /
+`superseded` against the current rule pack. Explicit `enforces: [rule-id]`
+frontmatter beats the Jaccard fallback — authors who list which rules enforce
+a decision get a deterministic match. `--suggest` emits draft v2 rule JSON on
+stderr for uncovered decisions. Pair with `phr-mcp decision new <slug>` to
+scaffold new ADR pages from a template.
 
-Both tools are heuristic (no LLM call) — output is a triage list,
-not ground truth.
+All drift surfaces are heuristic (no LLM call) — output is a triage list, not
+ground truth.
 
 ## One-time global install (recommended)
 
@@ -334,7 +340,7 @@ you actually want.
 - `.claude/settings.local.json` — hook config (preserves existing permissions/hooks)
 - `.mcp.json` — MCP server registration
 - `.phronesis/rules.json` — starter rule pack (left alone on re-run unless --force)
-- `.phronesis/durable.md` — default re-injected directives, including drift-discipline nudges that point the model at `get_claude_md_drift` / `get_memory_drift` / `get_wiki_drift`. Left alone on re-run; edit in place to customize.
+- `.phronesis/durable.md` — default re-injected directives, including drift-discipline nudges that point the model at `get_drift`. Left alone on re-run; edit in place to customize.
 - `.phronesis/wiki/decisions/README.md` — wiki scaffold; the directory is un-ignored from the broad `.phronesis/` gitignore. Left alone on re-run.
 - `.gemini/settings.json` — MCP server registration + BeforeTool/AfterTool hooks for Gemini CLI
 - `.gitignore` — log/backup paths + `!.phronesis/wiki/**` exception so the decisions tree is versioned
@@ -569,8 +575,8 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `claude-md-drift` (alias: `drift`), `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`.
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, predicate-provider create/read/test/list/remove, get_stats, audit_codebase, get_debt_trend, get_claude_md_drift, get_memory_drift, get_wiki_drift, get_confidence, submit_suggestion, get_journey)
+- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `drift`, `claude-md-drift`, `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`.
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, predicate-provider create/read/test/list/remove, get_stats, audit_codebase, get_debt_trend, get_drift, get_confidence, submit_suggestion, get_journey)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.
