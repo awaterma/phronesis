@@ -116,14 +116,20 @@ workspace state, never by the drift core, which stays pure over them:
 
 ```rust
 pub struct SourceInputs<'a> {
-    pub rules: &'a [SourceRule],
-    pub durable: Option<&'a str>,       // memory scores against rules + durable
+    pub project_root: &'a Path,
     pub claude_md: Option<&'a Path>,
     pub memory_dir: Option<&'a Path>,
     pub wiki_dir: Option<&'a Path>,
-    pub graph: Option<&'a GraphView>,   // supplied by SPEC-rule-staleness
+    pub suggest: bool,                  // §4.1
 }
 ```
+
+An earlier draft also threaded `rules`, `durable`, and a `GraphView` through
+this struct. It does not need them: each existing source already resolves its
+own rule pack and durable text from `project_root`, and duplicating that here
+would mean two ways to answer "which rules are in play" — a second one that
+could disagree. SPEC-rule-staleness adds whatever the `code` source needs
+when it lands, rather than a field reserved for it now.
 
 ### 1.1 An absent corpus is data, not an error
 
@@ -152,11 +158,16 @@ pub enum Availability {
 
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum MissingReason { NoFile, NoDir, NoGraph, NotInitialized }
+pub enum MissingReason { NoFile, NoDir, NoGraph }
 ```
 
 `Missing` is reported, never raised. `Errored` is reported per source
 and does not abort the other sources (§5.2).
+
+Three reasons, each with a real call site: `NoFile` (CLAUDE.md), `NoDir`
+(memory, wiki), `NoGraph` (code). An earlier draft also had
+`NotInitialized`, which nothing ever constructed — and an unused variant in
+a serialized enum is a promise to consumers that nothing keeps.
 
 ## 2. Envelope types
 
@@ -197,15 +208,22 @@ are not forced into an exhaustive match:
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Verdict {
-    Covered,             // claude_md, wiki
-    LikelyCovered,       // wiki
-    Uncovered,           // claude_md
-    ActionableUncovered, // memory — should become a rule
-    AmbientUncovered,    // memory — should go in durable.md
-    Personal,            // memory — stays in MEMORY.md, not drift
-    Superseded,          // wiki
-    Moved,               // code (SPEC-rule-staleness §3.2)
-    Stale,               // code (SPEC-rule-staleness §3.2)
+    Covered,       // claude_md, memory, wiki
+    LikelyCovered, // wiki
+    Uncovered,     // claude_md, memory, wiki
+    Superseded,    // wiki
+    Moved,         // code (SPEC-rule-staleness §3.2)
+    Stale,         // code (SPEC-rule-staleness §3.2)
+}
+
+/// What kind of guidance this is — orthogonal to [`Verdict`]. Only the
+/// memory source classifies; the others emit `None`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Category {
+    Actionable, // names a tool, command, or code shape — should become a rule
+    Ambient,    // project-shareable ambient guidance — belongs in durable.md
+    Personal,   // personal preference — stays in MEMORY.md
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -221,13 +239,34 @@ impl Verdict {
 Covered`) and is what the renderer sorts on. Each source emits only
 the variants its existing code already produces.
 
-`uncovered_count` counts `Family::Uncovered` and `Family::Broken`
-only. It deliberately excludes `Personal` (a memory entry that belongs
-in `MEMORY.md` is not drift — nothing is missing) and `Superseded` (a
-decision explicitly replaced by a later one needs no rule). Counting
-either would inflate the number an operator uses to decide whether
-there is work to do, which is the only number in the summary response
-that drives a decision.
+### 2.1.1 Coverage and category are independent axes
+
+An earlier draft fused them into one enum, with `ActionableUncovered`,
+`AmbientUncovered`, and `Personal` sitting alongside `Covered`. Reading the
+real sources showed that cannot be right: `memory_drift::Bucket` answers
+*what kind of guidance is this*, decided by `classify` from the entry's
+`metadata.type` plus whether the text carries a predicate-shaped trigger,
+while coverage is decided separately by `similarity` vs
+`coverage_threshold`. The two are computed from different inputs and neither
+determines the other, so an `Actionable` entry can be perfectly well
+covered — a state the fused enum had no way to represent.
+
+Hence `verdict: Verdict` for coverage and `category: Option<Category>` for
+guidance kind, `None` for sources that do not classify.
+
+`uncovered_count` counts `Family::Uncovered` and `Family::Broken`, and
+excludes two things for the same underlying reason — nothing is missing:
+
+- **`Superseded`** — a decision explicitly replaced by a later one needs no
+  rule. Checked on `verdict`.
+- **`category == Personal`** — a memory entry that belongs in `MEMORY.md`
+  should never become a rule. **Checked on `category`, not `verdict`.**
+
+That second exclusion is where splitting the axes changes the
+implementation. A personal entry scoring below the threshold is genuinely
+`Verdict::Uncovered` — correctly, since no rule covers it — so an exclusion
+written against `verdict` would miss it and inflate the one number an
+operator uses to decide whether there is work to do.
 
 ## 3. Evidence: heuristic and structural do not share a shape
 
@@ -246,8 +285,8 @@ pub enum Evidence {
     },
     /// Token-overlap heuristic. A triage hint, not ground truth.
     Heuristic {
-        score: f64,
-        threshold: f64,
+        score: f32,
+        threshold: f32,
         matched_rules: Vec<String>,
     },
     /// Resolved against the code graph. Either it resolves or it does not.
@@ -320,6 +359,21 @@ So the default response is bounded:
 - `limit` defaults to **5** per source and is capped at 50.
 - Naming a single source (`source: "wiki"`) returns that source's full
   report, still subject to `limit`.
+
+### 4.1 Draft rules are withheld by default
+
+Capping items is not sufficient on its own. Each source's `suggest_rule`
+produces a whole draft rule, and serialized into the response as an escaped
+JSON string that is several hundred bytes per item. Measured on this
+repository before the gate existed, drafts were **6,014 of 9,374 bytes —
+64% of the response** across 10 items, so most of a deliberately bounded
+summary was spent on payload the caller had not asked for.
+
+`suggest` therefore defaults to `false`, matching the legacy CLI commands
+where drafts were always behind an explicit `--suggest` and written to
+stderr rather than inline. The gate is applied once in the registry rather
+than in each adapter, so the adapters stay pure projections and a source
+added later cannot forget it.
 
 This is progressive disclosure applied to the response rather than the
 tool list: the cheap call says *where* drift is, and a second call says
@@ -410,15 +464,25 @@ one, keeps the existing "edit in place to customize" contract intact.
 | `main.rs` | add `drift --source`; keep three subcommands as aliases |
 | `main.rs:147` | **remove `alias = "drift"` from `claude-md-drift`** (§6.3) |
 | `init.rs:820-834` | rewrite the durable template's drift section |
-| `CLAUDE.md`, `README.md`, `AGENTS.md` | one `get_drift` section replacing three; fix any stated tool count |
-| `docs/loop-programming-guide.md` | update tool references |
+| `CLAUDE.md` | one `get_drift` section replacing three; fix the stated tool count and the stale `drift` alias claim |
+| ~~`README.md`, `AGENTS.md`, `docs/loop-programming-guide.md`~~ | **no change needed** — a full-tree grep shows none of them ever named the three tools |
+| `CHANGELOG.md`, `.phronesis/wiki/decisions/` | **exempt** — historical records; see §8 |
 | action log | one `get_drift` event replacing three, with `selection`, `sources_present`, `sources_missing`, `sources_errored`, `items_total`, `uncovered_total` |
 
-CLI subcommands `claude-md-drift`, `memory-drift`, and `wiki-drift`
-are **kept** as thin aliases forwarding to `drift --source X`. CLI
-surface costs nothing on the model's attention budget — only the MCP
-tool registry does — and removing them would break scripts and muscle
-memory for no benefit.
+CLI subcommands `claude-md-drift`, `memory-drift`, and `wiki-drift` are
+**kept, frozen at their current behavior** — they retain their own handlers,
+their per-source output, and their `--suggest` flag. CLI surface costs
+nothing on the model's attention budget — only the MCP tool registry does —
+and removing them would break scripts and muscle memory for no benefit.
+
+An earlier draft called them "thin aliases forwarding to `drift --source X`"
+and required each to emit JSON identical to the canonical command. That is
+struck. The legacy handlers render per-source shapes that the unified
+envelope does not reproduce, and `--suggest` writes draft rules to stderr
+rather than inline. Forwarding them would therefore change their output,
+breaking precisely the scripts that keeping them was meant to protect. An
+alias that produces different output is not a compatibility measure, so
+these are frozen commands, not aliases.
 
 There is deliberately **no MCP deprecation shim.** Keeping the three
 tools registered as forwarding stubs would preserve exactly the
@@ -490,9 +554,17 @@ New tests cover the consolidation itself:
 - `Evidence::Structural` serializes with no `score`, `Declared` with no
   `score`, and `Heuristic` with no `resolves` (pinning §3's
   no-shared-shape property against a well-meaning future merge)
-- each retained CLI alias produces JSON identical to its canonical
-  `drift --source X` invocation, and `--suggest` survives the alias
-  translation
+- the three frozen CLI commands still pass their existing smoke tests
+  unchanged — they are not re-plumbed through `drift`, so an
+  identical-JSON assertion would be wrong to write (§6.2)
+- `suggestion` is absent by default and present under `suggest: true`; the
+  measured default response on this repository is 4,136 bytes against
+  11,006 with drafts included, so the bounded-summary claim in §1 rests on
+  a mechanism rather than on the item cap alone
+- no shipped artifact names a removed MCP tool. `CHANGELOG.md` and
+  `.phronesis/wiki/decisions/` are exempt: a release note and an ADR record
+  what was true when written, and editing them to say `get_drift` would make
+  them false
 - `drift` with no `--source` defaults to `all`
 
 Migration tests:

@@ -2041,16 +2041,47 @@ tests from §8.
 
 - [ ] **Step 2: Verify no other section contradicts the change**
 
-Run: `grep -n "ActionableUncovered\|AmbientUncovered\|f64\|NotInitialized" docs/specs/SPEC-drift-consolidation.md`
-Expected: no matches.
+**"No matches" is the wrong bar.** A good correction explains what it
+replaced — "an earlier draft fused these, that is struck because …" — so the
+struck term legitimately survives in prose. A bare `grep -c` cannot tell that
+retraction apart from a live claim still sitting in a type definition, and
+demanding zero matches pressures the implementer to delete the very
+explanation that stops the mistake being re-added later.
 
-That grep only covers the type corrections. The alias amendment above needs
-its own check, or Step 1's last paragraph can be skipped without the
-verification noticing — the forwarding language currently lives at
-`SPEC-drift-consolidation.md:418` and `:493-494`:
+Verify instead that struck terms appear **only** as retractions: never inside
+a fenced code block, and never on a prose line without a retraction marker
+nearby. Run:
 
-Run: `grep -n "forwarding to\|thin alias\|JSON identical\|identical to its canonical\|--suggest survives" docs/specs/SPEC-drift-consolidation.md`
-Expected: no matches.
+```bash
+python3 - <<'EOF'
+import re, sys
+p = "docs/specs/SPEC-drift-consolidation.md"
+lines = open(p).read().split("\n")
+struck = ["ActionableUncovered", "AmbientUncovered", "NotInitialized", "f64",
+          "thin alias", "forwarding to", "JSON identical"]
+RETRACT = re.compile(r"earlier draft|struck|was wrong|no change needed"
+                     r"|nothing ever constructed|~~", re.I)
+in_fence, bad = False, []
+for i, l in enumerate(lines):
+    if l.strip().startswith("```"):
+        in_fence = not in_fence
+        continue
+    hits = [t for t in struck if t in l]
+    if not hits:
+        continue
+    if in_fence:
+        bad.append((i + 1, "IN CODE BLOCK", hits))
+    elif not RETRACT.search(" ".join(lines[max(0, i - 3):i + 4])):
+        bad.append((i + 1, "prose, no retraction", hits))
+for b in bad:
+    print("DEFECT", b)
+sys.exit(1 if bad else 0)
+EOF
+```
+
+Expected: `clean` and exit 0. A hit inside a code block means the type
+definition was never corrected; a hit in unmarked prose means a section still
+asserts the old design.
 
 - [ ] **Step 3: Commit**
 
