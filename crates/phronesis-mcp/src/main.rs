@@ -144,7 +144,10 @@ enum Command {
     /// "Prefer Z" and matches them against rule contents by token
     /// overlap. Output flags candidates with no confident rule match.
     /// Read-only; always exits 0.
-    #[command(name = "claude-md-drift", alias = "drift")]
+    // `drift` is no longer an alias here: it is now the canonical
+    // multi-source command below. Leaving the alias would silently widen
+    // `phr-mcp drift` from one corpus to four.
+    #[command(name = "claude-md-drift")]
     ClaudeMdDrift {
         /// Project root (defaults to current directory).
         #[arg(default_value = ".")]
@@ -152,6 +155,26 @@ enum Command {
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
+    },
+    /// Detect drift between written guidance and enforced rules across
+    /// every corpus. Read-only; always exits 0 unless `--source` is
+    /// invalid.
+    Drift {
+        /// claude_md | memory | wiki | code | all (default)
+        #[arg(long, default_value = "all")]
+        source: String,
+        /// Max items per source (default 5, max 50).
+        #[arg(long, default_value_t = 5)]
+        limit: usize,
+        /// Emit JSON instead of a table.
+        #[arg(long)]
+        json: bool,
+        /// Override the auto-memory directory.
+        #[arg(long)]
+        memory_dir: Option<PathBuf>,
+        /// Override the wiki decisions directory.
+        #[arg(long)]
+        wiki_dir: Option<PathBuf>,
     },
     /// Convert a rules.json file from the v1 (predicate/args/action_type)
     /// shape to the v2 (when/then/predicate-as-key) shape. Preserves `or`
@@ -468,6 +491,13 @@ async fn main() -> anyhow::Result<()> {
             json,
         } => handle_trend(last, since, rule, json),
         Command::ClaudeMdDrift { path, json } => handle_claude_md_drift(path, json),
+        Command::Drift {
+            source,
+            limit,
+            json,
+            memory_dir,
+            wiki_dir,
+        } => handle_drift(source, limit, json, memory_dir, wiki_dir),
         Command::MigrateRules {
             path,
             dry_run,
@@ -895,6 +925,42 @@ fn handle_claude_md_drift(path: PathBuf, json: bool) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+fn handle_drift(
+    source: String,
+    limit: usize,
+    json: bool,
+    memory_dir: Option<PathBuf>,
+    wiki_dir: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    use phronesis_mcp::drift::{self, Source, SourceInputs};
+
+    let root = phronesis_mcp::security::project_root();
+    let sources: Vec<Source> = match source.as_str() {
+        "all" => Source::ALL.to_vec(),
+        "claude_md" => vec![Source::ClaudeMd],
+        "memory" => vec![Source::Memory],
+        "wiki" => vec![Source::Wiki],
+        "code" => vec![Source::Code],
+        other => anyhow::bail!(
+            "unknown source {other:?} — expected one of: claude_md, memory, wiki, code, all"
+        ),
+    };
+
+    let inputs = SourceInputs {
+        project_root: &root,
+        claude_md: None,
+        memory_dir: memory_dir.as_deref(),
+        wiki_dir: wiki_dir.as_deref(),
+    };
+    let agg = drift::run_all(&sources, &inputs, limit);
+    if json {
+        println!("{}", drift::render_json(&agg));
+    } else {
+        print!("{}", drift::render_table(&agg));
+    }
+    Ok(())
 }
 
 fn handle_migrate_rules(path: PathBuf, dry_run: bool, check: bool) -> anyhow::Result<()> {

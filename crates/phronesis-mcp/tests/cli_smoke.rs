@@ -10,6 +10,15 @@ fn bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_phr-mcp"))
 }
 
+fn run_bin(args: &[&str], root: &Path) -> std::process::Output {
+    Command::new(bin())
+        .args(args)
+        .env("PHRONESIS_PROJECT_ROOT", root)
+        .current_dir(root)
+        .output()
+        .expect("run phr-mcp")
+}
+
 /// Write a minimal `.phronesis/rules.json` with one audit-tagged rule so
 /// the audit arm can run without warnings about missing or untagged rules.
 fn make_project_with_audit_rule(dir: &Path) {
@@ -203,6 +212,40 @@ fn memory_drift_exits_nonzero_when_memory_dir_missing() {
     assert!(
         stderr.contains("memory directory"),
         "expected 'memory directory' in stderr, got: {stderr}"
+    );
+}
+
+#[test]
+fn drift_cmd_defaults_to_all_sources_and_succeeds_on_a_bare_project() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = run_bin(&["drift", "--json"], dir.path());
+    assert!(
+        out.status.success(),
+        "drift must not fail when corpora are absent: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let body = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&body).expect("valid json");
+    assert_eq!(
+        v["sources"].as_array().map(|a| a.len()),
+        Some(4),
+        "all four sources must be reported: {body}"
+    );
+}
+
+#[test]
+fn drift_cmd_rejects_an_unknown_source() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = run_bin(&["drift", "--source", "nope"], dir.path());
+    assert!(!out.status.success(), "unknown source must fail");
+    // `!success` alone is too weak: it also holds when the `drift`
+    // subcommand does not exist at all, which is exactly the state this
+    // test was written in. Pin the reason, so a future removal of the
+    // command cannot make this test keep passing for the wrong cause.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown source") && stderr.contains("nope"),
+        "must fail because the source is unknown, not because the command is: {stderr}"
     );
 }
 
