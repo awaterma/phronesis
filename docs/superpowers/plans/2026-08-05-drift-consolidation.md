@@ -2122,12 +2122,15 @@ content matches a known shipped template *verbatim*. Prior versions are
 embedded as consts so that "unedited" is auditable and greppable rather
 than inferred. Two prior versions exist:
 
-- **V1** — the 3270-byte template with the participatory-governance
-  section, shipped before commit `b9389fe`. (The extraction below yields
-  **3249** bytes; the missing 21 are the `# Durable Directives\n` line,
-  which sits on the `const` declaration line and so is skipped by the awk
-  range. 3249 + 21 = 3270. Measured, not inferred — two earlier figures in
-  this plan, 3332 and 3292, were both wrong.)
+- **V1** — the 3292-**byte** template with the participatory-governance
+  section, shipped before commit `b9389fe`.
+
+  **Count bytes, not characters.** `str::len()` in Rust returns bytes, and
+  both templates contain multi-byte UTF-8 (`—`, `→`). V1 is 3270 characters
+  but **3292 bytes**; V2 is 1067 characters but **1075 bytes**. A Python
+  `len()` on the extracted text gives the character count and is the wrong
+  unit for these assertions — measure with
+  `len(text.encode("utf-8"))` or `wc -c`.
 - **V2** — the shrunk template from `b9389fe`, before this plan's Task 7.
 
 Extract their exact bytes (do not retype them):
@@ -2265,7 +2268,7 @@ mod tests {
         //   git show b9389fe~1:crates/phronesis-mcp/src/init.rs \
         //     | awk '/const DEFAULT_DURABLE_MD/{f=1;next} /^"#;/{exit} f'
         // then prepend "# Durable Directives\n".
-        assert_eq!(DURABLE_V1.len(), 3270, "V1 byte length drifted");
+        assert_eq!(DURABLE_V1.len(), 3292, "V1 byte length drifted");
         assert!(
             DURABLE_V1.contains("### Cross-session knowledge transfer"),
             "V1 must contain the participatory-governance section"
@@ -2290,10 +2293,15 @@ mod tests {
         // Both constants are built the same way: awk the r#"..."# body out
         // of the historical init.rs, then prepend "# Durable Directives\n"
         // (21 bytes), which sits on the const declaration line and so falls
-        // outside the awk range. Measured:
-        //   V1  awk 3249 + 21 = 3270
-        //   V2  awk 1046 + 21 = 1067
-        assert_eq!(DURABLE_V2.len(), 1067, "V2 byte length drifted");
+        // outside the awk range.
+        //
+        // These are BYTES. str::len() returns bytes and both templates carry
+        // multi-byte UTF-8 (em dash, arrow), so the character counts are
+        // smaller and are the wrong unit:
+        //   V1  3270 chars = 3292 bytes
+        //   V2  1067 chars = 1075 bytes
+        // Verify with `wc -c`, or Python len(text.encode("utf-8")).
+        assert_eq!(DURABLE_V2.len(), 1075, "V2 byte length drifted");
         assert_ne!(DURABLE_V1, DURABLE_V2);
     }
 
@@ -2749,7 +2757,7 @@ verified against the repo before acting. Fixed in this revision:
 | Param derive list inconsistent with `server_params.rs:243` | made exact |
 | `MissingReason::NotInitialized` specced but unimplemented | removed from the spec in Task 8 |
 | Spec requires alias JSON identical to canonical, which would break `--suggest` and per-source output | aliases frozen; requirement struck in Task 8 |
-| V1 "3332 bytes" wrong, and the embedded history was only ever compared to itself | corrected to 3270 (measured by running the recipe; 3332 and a later 3292 were both wrong); added a test asserting length and distinguishing content |
+| V1 "3332 bytes" wrong, and the embedded history was only ever compared to itself | corrected to **3292 bytes**, and V2 pinned at **1075 bytes**; added a test asserting length and distinguishing content. History worth keeping: 3332 was wrong, 3292 was right, an intermediate "correction" to 3270 was wrong again because it counted characters instead of bytes. Any future re-measurement must use bytes |
 | No CLI test for `migrate-durable` | added in Task 9 Step 6 |
 | Malformed-corpus isolation (spec §5.2) untested | added in Task 3 |
 | `let _ = path` dead code in `run_claude_md` | rewritten as a plain existence pre-check |
