@@ -33,6 +33,7 @@ pub const GRAPH_FORMAT: u32 = 4;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
+const GENERATION_KEY: &str = "# generation";
 
 /// Content hashes of every file the graph was built from.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -41,6 +42,8 @@ pub struct Index {
     /// absent index. Only meaningful on load — writes always stamp the
     /// current format, because what we write is by definition current.
     pub format: u32,
+    /// Monotonic graph-write generation shared with `bindings.json`.
+    pub generation: u64,
     pub entries: BTreeMap<String, u64>,
 }
 
@@ -99,9 +102,14 @@ pub fn load_index(path: &Path) -> std::io::Result<Index> {
     };
     let mut entries = BTreeMap::new();
     let mut format = 0;
+    let mut generation = 0;
     for line in body.lines() {
         if let Some(rest) = line.strip_prefix(FORMAT_KEY) {
             format = rest.trim().parse::<u32>().unwrap_or(0);
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix(GENERATION_KEY) {
+            generation = rest.trim().parse::<u64>().unwrap_or(0);
             continue;
         }
         if let Some((hash, rel)) = line.split_once(' ')
@@ -110,14 +118,21 @@ pub fn load_index(path: &Path) -> std::io::Result<Index> {
             entries.insert(rel.to_string(), h);
         }
     }
-    Ok(Index { format, entries })
+    Ok(Index {
+        format,
+        generation,
+        entries,
+    })
 }
 
 pub fn save_index(path: &Path, index: &Index) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut body = format!("{FORMAT_KEY} {GRAPH_FORMAT}\n");
+    let mut body = format!(
+        "{FORMAT_KEY} {GRAPH_FORMAT}\n{GENERATION_KEY} {}\n",
+        index.generation
+    );
     for (rel, hash) in &index.entries {
         body.push_str(&format!("{hash} {rel}\n"));
     }
@@ -244,6 +259,45 @@ fn persist(root: &Path, base: Vec<Edge>) -> std::io::Result<(usize, usize)> {
     Ok((n_base, n_derived))
 }
 
+fn now_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Reconcile bindings after the graph and index generation are durable.
+/// Failure deliberately leaves the older generation in place, which causes
+/// pre-check to ignore it and retain full enforcement.
+fn reconcile_bindings(root: &Path, generation: u64) -> std::io::Result<()> {
+    let rules = crate::rules_file::read_source(&crate::rules_file::default_path(root))
+        .map_err(std::io::Error::other)?;
+    let path = super::bindings::bindings_path(root);
+    let persisted = super::bindings::load_recovering(&path)?.unwrap_or_default();
+    let edges = store::load(&store::graph_path(root))?;
+    let next =
+        super::bindings::reconcile(&persisted, &rules, &edges, generation, now_unix_seconds());
+    super::bindings::store_atomic(&path, &next)
+}
+
+/// Reconcile durable bindings after a rules-file mutation without changing
+/// the graph generation. Missing graph state is a safe no-op; once a graph is
+/// present, failure leaves the prior binding generation in place so hook-time
+/// demotion remains disabled rather than trusting partial evidence.
+pub fn reconcile_rules(root: &Path) -> std::io::Result<()> {
+    if !store::graph_path(root).is_file() {
+        return Ok(());
+    }
+    let index = load_index(&index_path(root))?;
+    reconcile_bindings(root, index.generation)
+}
+
+fn reconcile_bindings_best_effort(root: &Path, generation: u64) {
+    if let Err(error) = reconcile_bindings(root, generation) {
+        tracing::debug!("binding reconciliation skipped: {error}");
+    }
+}
+
 /// Apply one save: parse the edited file, compact by provenance, re-derive
 /// over the whole graph, and write atomically.
 ///
@@ -288,10 +342,12 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     let base = store::compact(existing, file_path, extracted.edges);
     let (n_base, n_derived) = persist(root, base)?;
 
+    index.generation = index.generation.saturating_add(1);
     index
         .entries
         .insert(file_path.to_string(), hash_content(content));
     save_index(&ipath, &index)?;
+    reconcile_bindings_best_effort(root, index.generation);
 
     Ok(SaveOutcome {
         base: n_base,
@@ -332,6 +388,12 @@ pub fn record_from_disk(root: &Path, file_path: &str) {
         return;
     }
     let file_path = rel.as_str();
+    if file_path == ".phronesis/rules.json" {
+        if let Err(error) = reconcile_rules(root) {
+            tracing::debug!("graph sensor could not reconcile changed rules: {error}");
+        }
+        return;
+    }
     let content = match std::fs::read_to_string(root.join(file_path)) {
         Ok(content) => content,
         // The file is gone — a `Delete File` patch block, or a delete routed
@@ -366,7 +428,9 @@ fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
     let ipath = index_path(root);
     let mut index = load_index(&ipath)?;
     if index.entries.remove(file_path).is_some() {
+        index.generation = index.generation.saturating_add(1);
         save_index(&ipath, &index)?;
+        reconcile_bindings_best_effort(root, index.generation);
     }
     Ok(())
 }
@@ -376,7 +440,13 @@ fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
 /// only way edges for deleted files are cleared.
 pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     let mut base = Vec::new();
-    let mut index = Index::default();
+    let previous_generation = load_index(&index_path(root))
+        .map(|index| index.generation)
+        .unwrap_or(0);
+    let mut index = Index {
+        generation: previous_generation.saturating_add(1),
+        ..Index::default()
+    };
     let mut skipped = 0;
     let units = UnitMap::discover(root);
 
@@ -398,6 +468,7 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
 
     let (n_base, n_derived) = persist(root, base)?;
     save_index(&index_path(root), &index)?;
+    reconcile_bindings_best_effort(root, index.generation);
     Ok(SaveOutcome {
         base: n_base,
         derived: n_derived,
@@ -432,6 +503,14 @@ mod tests {
         edges(root).iter().any(|e| e.p == p)
     }
 
+    fn write_binding_rule(root: &Path) {
+        write(
+            root,
+            ".phronesis/rules.json",
+            r#"{"rules":[{"id":"tracks-foo","phase":"pre","when":[{"new_content_contains":"foo("}],"then":{"block":"foo contract"}}]}"#,
+        );
+    }
+
     // ─── hashing ────────────────────────────────────────────────────
 
     #[test]
@@ -442,6 +521,82 @@ mod tests {
     #[test]
     fn different_content_hashes_differently() {
         assert_ne!(hash_content("fn f() {}"), hash_content("fn g() {}"));
+    }
+
+    #[test]
+    fn graph_sync_reconciles_rule_bindings_in_the_same_generation() {
+        let d = project();
+        write_binding_rule(d.path());
+        write(d.path(), "src/lib.rs", "pub fn foo() {}\n");
+        rebuild(d.path()).expect("rebuild");
+
+        let first = super::super::bindings::load(&super::super::bindings::bindings_path(d.path()))
+            .expect("load")
+            .expect("binding set");
+        let index = load_index(&index_path(d.path())).expect("index");
+        assert_eq!(first.generation, index.generation);
+        assert_eq!(first.bindings.len(), 1);
+        assert_eq!(
+            first.bindings[0].state,
+            super::super::bindings::BindingState::Bound
+        );
+
+        let changed = "pub fn replacement() {}\n";
+        write(d.path(), "src/lib.rs", changed);
+        on_save(d.path(), "src/lib.rs", changed).expect("save");
+        let second = super::super::bindings::load(&super::super::bindings::bindings_path(d.path()))
+            .expect("load")
+            .expect("binding set");
+        assert_eq!(
+            second.bindings[0].state,
+            super::super::bindings::BindingState::Stale
+        );
+        assert!(second.bindings[0].stale_at.is_some());
+    }
+
+    #[test]
+    fn writing_rules_reconciles_without_advancing_the_graph() {
+        let d = project();
+        write(d.path(), "src/lib.rs", "pub fn late_rule_target() {}\n");
+        rebuild(d.path()).expect("rebuild");
+        let generation = load_index(&index_path(d.path())).expect("index").generation;
+
+        let source: crate::rules_file::SourceRule = serde_json::from_value(serde_json::json!({
+            "id": "late-rule",
+            "phase": "pre",
+            "when": [{"new_content_contains": "late_rule_target("}],
+            "then": {"block": "target contract"}
+        }))
+        .expect("rule");
+        crate::rules_file::write_source(&crate::rules_file::default_path(d.path()), &[source])
+            .expect("rules write");
+
+        let set = super::super::bindings::load(&super::super::bindings::bindings_path(d.path()))
+            .expect("load")
+            .expect("bindings");
+        assert_eq!(set.generation, generation);
+        assert_eq!(set.bindings.len(), 1);
+        assert_eq!(set.bindings[0].symbol, "late_rule_target");
+    }
+
+    #[test]
+    fn graph_sensor_reconciles_a_direct_rules_file_edit() {
+        let d = project();
+        write(d.path(), "src/lib.rs", "pub fn direct_edit_target() {}\n");
+        rebuild(d.path()).expect("rebuild");
+        write(
+            d.path(),
+            ".phronesis/rules.json",
+            r#"{"rules":[{"id":"direct-rule","phase":"pre","when":[{"new_content_contains":"direct_edit_target("}],"then":{"block":"target contract"}}]}"#,
+        );
+
+        record_from_disk(d.path(), ".phronesis/rules.json");
+
+        let set = super::super::bindings::load(&super::super::bindings::bindings_path(d.path()))
+            .expect("load")
+            .expect("bindings");
+        assert_eq!(set.bindings.len(), 1);
+        assert_eq!(set.bindings[0].symbol, "direct_edit_target");
     }
 
     // ─── index round trip ───────────────────────────────────────────
@@ -494,6 +649,7 @@ mod tests {
         write(d.path(), "src/a.rs", "fn f() {}");
         let index = Index {
             format: 0,
+            generation: 0,
             entries: BTreeMap::from([("src/a.rs".to_string(), hash_content("fn f() {}"))]),
         };
         assert_eq!(
@@ -538,6 +694,7 @@ mod tests {
             &index_path(d.path()),
             &Index {
                 format: 0,
+                generation: 0,
                 entries: BTreeMap::from([
                     ("src/a.rs".to_string(), hash_content("fn alpha() {}")),
                     ("src/b.rs".to_string(), hash_content("fn beta() {}")),

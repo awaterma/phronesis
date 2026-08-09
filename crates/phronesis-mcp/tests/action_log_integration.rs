@@ -324,7 +324,9 @@ fn get_action_log_returns_recent_entries() {
     c.tool("add_rule", simple_rule("c"));
 
     let result = c.tool("get_action_log", serde_json::json!({}));
-    let entries = result.as_array().expect("log result should be array");
+    let entries = result["entries"]
+        .as_array()
+        .expect("log result should contain an entries array");
     let add_rule_events: Vec<&serde_json::Value> = entries
         .iter()
         .filter(|e| e["event"] == "add_rule")
@@ -347,11 +349,11 @@ fn get_action_log_filters_by_kind() {
     c.tool("add_rule", simple_rule("r"));
 
     let mcp_only = c.tool("get_action_log", serde_json::json!({"kind":"mcp"}));
-    for e in mcp_only.as_array().unwrap() {
+    for e in mcp_only["entries"].as_array().unwrap() {
         assert_eq!(e["kind"], "mcp");
     }
     let hook_only = c.tool("get_action_log", serde_json::json!({"kind":"hook"}));
-    for e in hook_only.as_array().unwrap() {
+    for e in hook_only["entries"].as_array().unwrap() {
         assert_eq!(e["kind"], "hook");
     }
 }
@@ -390,7 +392,7 @@ fn get_action_log_filters_only_nonzero_exit() {
         "get_action_log",
         serde_json::json!({"only_nonzero_exit": true}),
     );
-    let arr = blocks.as_array().unwrap();
+    let arr = blocks["entries"].as_array().unwrap();
     assert_eq!(arr.len(), 1);
     assert_eq!(arr[0]["exit"], 2);
 }
@@ -400,7 +402,7 @@ fn get_action_log_returns_empty_when_no_log_file() {
     let dir = tempfile::tempdir().unwrap();
     let mut c = McpClient::spawn(dir.path());
     let result = c.tool("get_action_log", serde_json::json!({}));
-    let arr = result.as_array().unwrap();
+    let arr = result["entries"].as_array().unwrap();
     assert!(arr.is_empty());
 }
 
@@ -456,7 +458,7 @@ fn get_action_log_reads_across_rotation_boundary() {
 
     // get_action_log should still see entries from both files
     let entries = c.tool("get_action_log", serde_json::json!({"limit": 100}));
-    let add_rule_events: Vec<&serde_json::Value> = entries
+    let add_rule_events: Vec<&serde_json::Value> = entries["entries"]
         .as_array()
         .unwrap()
         .iter()

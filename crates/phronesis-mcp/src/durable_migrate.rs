@@ -1,12 +1,9 @@
 //! Bring an existing `.phronesis/durable.md` up to the current shipped
 //! template.
 //!
-//! `init` leaves an existing `durable.md` alone by design — operators edit it
-//! in place. That means a template change never reaches projects that already
-//! exist, and a `durable.md` naming tools that no longer exist is re-injected
-//! into the model's context every session. This module is the explicit,
-//! opt-in fix-up, following the same subcommand idiom as `migrate-rules` and
-//! `migrate-extracted-rules`.
+//! `init` migrates byte-identical prior templates automatically and leaves
+//! customized files alone. The explicit command remains available for dry-run
+//! inspection and targeted migration.
 //!
 //! A file is rewritten only if it matches a known shipped template verbatim.
 //! Anything else is treated as customized and left untouched.
@@ -135,8 +132,40 @@ Add team directives below. Keep them short: this file competes with
 the active-rule list for the session budget.
 "#;
 
-fn known_prior_templates() -> [&'static str; 2] {
-    [DURABLE_V1, DURABLE_V2]
+/// The compact template shipped by v0.25.1, while code drift was still a
+/// registered placeholder. 1071 bytes.
+pub(crate) const DURABLE_V3: &str = r#"# Durable Directives
+
+Rendered at SessionStart (and PostCompact). If `.phronesis/context.json`
+is present, `.phronesis/kernel.md` carries the per-turn directives —
+keep anything needed every turn there, not here. Budget is measured:
+`phr-mcp context inspect --event session`.
+
+## Drift discipline
+
+`get_drift(source)` surfaces guidance that no rule enforces — `source` is
+`claude_md`, `memory`, `wiki`, `code`, or `all`. Run it when the user asks
+about rules, memory, or project conventions, or says "remember X" / "make
+a rule for X". `code` reports no-graph until rule-staleness lands.
+
+Scoring is token-overlap Jaccard with no semantic match, so output is
+a triage list, not ground truth.
+
+## Participatory governance
+
+Rule-evolution workflows — decision scaffolding, friction-driven
+proposals, cross-session knowledge transfer — are in
+`docs/participatory-governance.md`. Read it when proposing or
+refining a rule.
+
+## Project-specific guidance
+
+Add team directives below. Keep them short: this file competes with
+the active-rule list for the session budget.
+"#;
+
+fn known_prior_templates() -> [&'static str; 3] {
+    [DURABLE_V1, DURABLE_V2, DURABLE_V3]
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -464,7 +493,8 @@ mod tests {
         // current slot, or vice versa.
         for prior in known_prior_templates() {
             assert_ne!(
-                crate::init::DEFAULT_DURABLE_MD, prior,
+                crate::init::DEFAULT_DURABLE_MD,
+                prior,
                 "current template must not duplicate a prior template"
             );
         }
@@ -480,8 +510,8 @@ mod tests {
         // `Customized`, closing the migration path.
         let current_bytes = crate::init::DEFAULT_DURABLE_MD.len();
         assert_eq!(
-            current_bytes, 1071,
-            "DEFAULT_DURABLE_MD byte length changed from 766 to {current_bytes} — \
+            current_bytes, 1019,
+            "DEFAULT_DURABLE_MD byte length changed to {current_bytes} — \
              archive the outgoing template as DURABLE_V{{n}} in known_prior_templates \
              before updating this pin"
         );

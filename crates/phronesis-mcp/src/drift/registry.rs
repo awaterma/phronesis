@@ -75,9 +75,83 @@ pub fn run_source(source: Source, inputs: &SourceInputs<'_>) -> DriftReport {
         Source::ClaudeMd => run_claude_md(inputs),
         Source::Memory => run_memory(inputs),
         Source::Wiki => run_wiki(inputs),
-        // Registered by SPEC-rule-staleness; until then there is no graph
-        // binding source to consult.
-        Source::Code => DriftReport::missing(Source::Code, MissingReason::NoGraph),
+        Source::Code => run_code(inputs),
+    }
+}
+
+fn run_code(inputs: &SourceInputs<'_>) -> DriftReport {
+    use crate::drift::{Evidence, Verdict};
+    use crate::graph::bindings::{BindingState, bindings_path};
+
+    if !crate::graph::store::graph_path(inputs.project_root).is_file() {
+        return DriftReport::missing(Source::Code, MissingReason::NoGraph);
+    }
+    let index = match crate::graph::sync::load_index(&crate::graph::sync::index_path(
+        inputs.project_root,
+    )) {
+        Ok(index) => index,
+        Err(error) => return DriftReport::errored(Source::Code, error.to_string()),
+    };
+    if crate::graph::sync::check_freshness(inputs.project_root, &index)
+        != crate::graph::sync::Freshness::Fresh
+    {
+        return DriftReport::errored(
+            Source::Code,
+            "code drift skipped because the structural graph is stale; run `phr-mcp graph rebuild`"
+                .to_string(),
+        );
+    }
+    let set = match crate::graph::bindings::load(&bindings_path(inputs.project_root)) {
+        Ok(Some(set)) => set,
+        Ok(None) => {
+            return DriftReport {
+                source: Source::Code,
+                availability: Availability::Present { scanned: 0 },
+                uncovered_count: 0,
+                items: Vec::new(),
+            };
+        }
+        Err(error) => return DriftReport::errored(Source::Code, error.to_string()),
+    };
+    if set.generation != index.generation {
+        return DriftReport::errored(
+            Source::Code,
+            "code drift skipped because rule bindings do not match the current graph generation; run `phr-mcp graph rebuild`"
+                .to_string(),
+        );
+    }
+    let items: Vec<DriftItem> = set
+        .bindings
+        .iter()
+        .filter_map(|binding| {
+            let verdict = match binding.state {
+                BindingState::Bound => return None,
+                BindingState::Moved => Verdict::Moved,
+                BindingState::Stale => Verdict::Stale,
+            };
+            Some(DriftItem {
+                subject: binding.rule.clone(),
+                verdict,
+                category: None,
+                suggestion: None,
+                evidence: Evidence::Structural {
+                    symbol: binding.symbol.clone(),
+                    bound_to: binding.bound_to.clone(),
+                    resolves: binding.state == BindingState::Moved,
+                    relocated: binding.relocated.clone(),
+                    bound_at: Some(binding.bound_at),
+                    stale_at: binding.stale_at,
+                },
+            })
+        })
+        .collect();
+    DriftReport {
+        source: Source::Code,
+        availability: Availability::Present {
+            scanned: set.bindings.len(),
+        },
+        uncovered_count: uncovered_count(&items),
+        items,
     }
 }
 
@@ -309,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn code_source_is_missing_until_rule_staleness_lands() {
+    fn code_source_is_missing_when_the_graph_has_not_been_built() {
         let d = tempfile::tempdir().expect("tempdir");
         let paths = absent_paths(d.path());
         let report = run_source(Source::Code, &empty_inputs(d.path(), &paths));
@@ -319,6 +393,39 @@ mod tests {
                 reason: MissingReason::NoGraph
             }
         ));
+    }
+
+    #[test]
+    fn code_source_reports_stale_bindings() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let paths = absent_paths(d.path());
+        crate::graph::sync::rebuild(d.path()).expect("graph");
+        crate::graph::bindings::store_atomic(
+            &crate::graph::bindings::bindings_path(d.path()),
+            &crate::graph::bindings::BindingSet {
+                version: crate::graph::bindings::BINDINGS_VERSION,
+                generation: 1,
+                bindings: vec![crate::graph::bindings::Binding {
+                    rule: "stale-rule".to_string(),
+                    rule_hash: "hash".to_string(),
+                    symbol: "old_fn".to_string(),
+                    bound_to: vec!["crate::old_fn".to_string()],
+                    surviving: Vec::new(),
+                    relocated: Vec::new(),
+                    bound_at: 10,
+                    stale_at: Some(20),
+                    state: crate::graph::bindings::BindingState::Stale,
+                }],
+            },
+        )
+        .expect("bindings");
+        let report = run_source(Source::Code, &empty_inputs(d.path(), &paths));
+        assert!(matches!(
+            report.availability,
+            Availability::Present { scanned: 1 }
+        ));
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].verdict, crate::drift::Verdict::Stale);
     }
 
     #[test]
@@ -469,11 +576,7 @@ mod tests {
                 Some(crate::drift::Category::Personal),
                 "bbb-personal",
             ),
-            mk(
-                crate::drift::Verdict::Uncovered,
-                None,
-                "actionable-drift",
-            ),
+            mk(crate::drift::Verdict::Uncovered, None, "actionable-drift"),
         ];
         let (kept, _) = apply_limit(items, 1);
         assert_eq!(

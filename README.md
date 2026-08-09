@@ -12,13 +12,54 @@ Anthropic's Claude Code, OpenAI Codex, Google's Gemini CLI, and other LLM enviro
 
 **Phronesis moves enforcement out of the conversation entirely.** Rules live in `.phronesis/rules.json`, are re-read by hooks at every tool call, and fire from outside the context window. They cannot be compressed away because they were never loaded into context to begin with.
 
+## How It Works
+
+![A Phronesis tool call flows through a host hook and RETE matching to an allow, warn, or block decision.](docs/assets/governance-loop.svg)
+
+At the top level, Phronesis is a boundary around agent actions: the host
+normalizes a proposed tool call, the engine evaluates durable rules, and the
+host receives an allow, warning, or blocking decision.
+
+**Next:** [open the visual explainer](https://awaterma.github.io/phronesis/explainer.html)
+for the end-to-end hook lifecycle and the Alpha-memory, Beta-join, and
+production-state internals. From there, the
+[rule catalogue](https://awaterma.github.io/phronesis/catalogue.html) shows
+exactly how those mechanics become concrete governance.
+
 ## Subsystems
 
-Beyond the syntactic rule packs, three grounded subsystems extend enforcement past pattern-matching on edits.
+Beyond the syntactic language packs, the default platform includes grounded
+subsystems that extend enforcement past pattern-matching on edits.
 
-**Confidence scoring** ([SPEC-confidence-scoring](docs/specs/SPEC-confidence-scoring.md)) reads build, test, and known-bug signals through declarative toolchain definitions: Cargo ships as a built-in, while `.phronesis/toolchains.json` can extend or override the registry for other toolchains. A generic parser turns matched command outcomes into neutral signals and gates `git commit` by confidence band — three grounded signals say "this is real," not three syntactic checks. Opt in by writing `.phronesis/confidence.json`; the `confidence` pack ships the commit-gate rules and `phr-mcp confidence` reports the current band.
+![Five durable Phronesis subsystems feed one governance core: context, journey, confidence, structural graph, and drift.](docs/assets/subsystem-map.svg)
+
+**Durable context** keeps compact project guidance in
+`.phronesis/durable.md` and re-injects it at session and interaction
+boundaries. It preserves the smallest high-value instructions; enforcement
+still belongs in rules.
+
+**Confidence scoring** ([SPEC-confidence-scoring](docs/specs/SPEC-confidence-scoring.md)) reads build, test, and known-bug signals through declarative toolchain definitions: Cargo ships as a built-in, while `.phronesis/toolchains.json` can extend or override the registry for other toolchains. A generic parser turns matched command outcomes into neutral signals and gates `git commit` by confidence band — three grounded signals say "this is real," not three syntactic checks. The default platform writes `.phronesis/confidence.json`; `phr-mcp confidence` reports the current band.
 
 **Journey facts** ([SPEC-journey-facts](docs/specs/SPEC-journey-facts.md)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
+
+**Structural code graph** parses Rust, Python, and TypeScript into queryable
+relations such as `defines_fn`, `calls_api`, `tested_by`, and `untested`.
+Rules can bind to concrete code referents, structural packs can reason over
+relationships, and clients can inspect freshness or rebuild derived state over
+MCP.
+
+![Source code becomes typed structural relations, rule bindings, freshness evidence, and recoverable MCP graph state.](docs/assets/code-graph.svg)
+
+`get_code_graph_status` reports freshness, generation, and binding state;
+`query_code_graph` retrieves relationships; `rebuild_code_graph` rebuilds the
+server-rooted graph and reconciles bindings. If graph or binding state is
+corrupt or mismatched, Phronesis preserves blocking authority rather than
+silently treating missing evidence as safe.
+
+**Drift detection** compares rules with durable guidance, agent memory, ADR
+decisions, and bound code. `phr-mcp drift` consolidates those sources into
+review leads. Its similarity and staleness findings are evidence for triage,
+not proof that documentation or enforcement is wrong.
 
 **Extensible predicates** ([SPEC-extensible-predicates](docs/specs/SPEC-extensible-predicates.md)) let project Rhai providers under `.phronesis/predicates/` derive new, validated LHS facts from normalized hook events. Multi-file operations expose a once-per-operation `event.files` change-set view before per-file `event.file_path` evaluation. MCP tools can test and manage providers, allowing an agent to add new predicate vocabulary before adding the rules that consume it.
 
@@ -48,7 +89,7 @@ cargo install --path crates/phronesis-mcp
 phr-mcp install
 
 # 3. Initialize Phronesis in your project
-cd /your/project && phr-mcp init --packs llm,rust,confidence,journey
+cd /your/project && phr-mcp init --packs rust
 ```
 
 Codex uses the generated project-local `.codex/hooks.json` and

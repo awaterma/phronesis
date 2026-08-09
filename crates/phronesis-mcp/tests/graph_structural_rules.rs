@@ -66,10 +66,15 @@ fn rebuild_graph(dir: &Path) {
 
 /// Run the real pre-check hook over an Edit of `src/risky.rs`.
 fn pre_check(dir: &Path) -> (i32, String) {
+    pre_check_content(dir, "b")
+}
+
+fn pre_check_content(dir: &Path, new_string: &str) -> (i32, String) {
     let payload = format!(
         r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PreToolUse","tool_name":"Edit",
-            "tool_input":{{"file_path":"src/risky.rs","old_string":"a","new_string":"b"}}}}"#,
-        dir.display()
+            "tool_input":{{"file_path":"src/risky.rs","old_string":"a","new_string":{}}}}}"#,
+        dir.display(),
+        serde_json::to_string(new_string).expect("json string")
     );
     let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .current_dir(dir)
@@ -156,6 +161,79 @@ fn a_warn_severity_rule_warns_on_a_fresh_graph() {
     let (code, stderr) = pre_check(d.path());
     assert_eq!(code, 1, "{stderr}");
     assert!(stderr.contains("WARNING"), "{stderr}");
+}
+
+#[test]
+fn a_rule_warns_after_its_previously_bound_referent_is_deleted() {
+    let d = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(d.path().join("src")).expect("src");
+    std::fs::create_dir_all(d.path().join(".phronesis")).expect("state");
+    std::fs::write(d.path().join("src/risky.rs"), "pub fn legacy_call() {}\n").expect("source");
+    std::fs::write(
+        d.path().join(".phronesis/rules.json"),
+        r#"{"rules":[{"id":"legacy-contract","phase":"pre","priority":10,"when":[{"new_content_contains":"legacy_call("}],"then":{"block":"legacy contract"}}]}"#,
+    )
+    .expect("rules");
+    rebuild_graph(d.path());
+
+    let (code, stderr) = pre_check_content(d.path(), "legacy_call(");
+    assert_eq!(code, 2, "bound rule must initially block: {stderr}");
+
+    std::fs::write(d.path().join("src/risky.rs"), "pub fn replacement() {}\n")
+        .expect("replace referent");
+    rebuild_graph(d.path());
+    let (code, stderr) = pre_check_content(d.path(), "legacy_call(");
+    assert_eq!(code, 1, "stale rule must warn: {stderr}");
+    assert!(stderr.contains("legacy_call"), "{stderr}");
+    assert!(stderr.contains("will warn, not block"), "{stderr}");
+}
+
+fn stale_bound_rule_project() -> TempDir {
+    let d = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(d.path().join("src")).expect("src");
+    std::fs::create_dir_all(d.path().join(".phronesis")).expect("state");
+    std::fs::write(d.path().join("src/risky.rs"), "pub fn legacy_call() {}\n").expect("source");
+    std::fs::write(
+        d.path().join(".phronesis/rules.json"),
+        r#"{"rules":[{"id":"legacy-contract","phase":"pre","priority":10,"when":[{"new_content_contains":"legacy_call("}],"then":{"block":"legacy contract"}}]}"#,
+    )
+    .expect("rules");
+    rebuild_graph(d.path());
+    std::fs::write(d.path().join("src/risky.rs"), "pub fn replacement() {}\n")
+        .expect("replace referent");
+    rebuild_graph(d.path());
+    assert_eq!(pre_check_content(d.path(), "legacy_call(").0, 1);
+    d
+}
+
+#[test]
+fn malformed_binding_evidence_preserves_block_authority() {
+    let d = stale_bound_rule_project();
+    std::fs::write(d.path().join(".phronesis/bindings.json"), "not json\n")
+        .expect("corrupt bindings");
+
+    let (code, stderr) = pre_check_content(d.path(), "legacy_call(");
+    assert_eq!(code, 2, "malformed evidence must fail closed: {stderr}");
+    assert!(stderr.contains("BLOCKED"), "{stderr}");
+}
+
+#[test]
+fn generation_mismatched_binding_evidence_preserves_block_authority() {
+    let d = stale_bound_rule_project();
+    let path = d.path().join(".phronesis/bindings.json");
+    let mut bindings: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("read bindings"))
+            .expect("parse bindings");
+    bindings["generation"] = serde_json::json!(bindings["generation"].as_u64().unwrap() + 1);
+    std::fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&bindings).unwrap()),
+    )
+    .expect("write mismatched bindings");
+
+    let (code, stderr) = pre_check_content(d.path(), "legacy_call(");
+    assert_eq!(code, 2, "mismatched evidence must fail closed: {stderr}");
+    assert!(stderr.contains("BLOCKED"), "{stderr}");
 }
 
 #[test]

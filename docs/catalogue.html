@@ -6,23 +6,23 @@
 <title>A Catalogue of Rules · Phronesis Default Packs</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,30..100;1,9..144,300..700,30..100&family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,400..600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght;500;600;700;800&family=JetBrains+Mono:ital,wght,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
 <style>
   :root {
-    --paper:        #F2EDDD;
-    --paper-deep:   #E8DFC6;
-    --paper-card:   #EDE6D2;
-    --ink:          #1A1510;
-    --ink-soft:     #3A2F22;
-    --mute:         #6E5F4A;
-    --rule:         #C8BC9F;
-    --accent:       #B23A1B;
-    --accent-deep:  #7E2710;
-    --slate:        #324B4D;
-    --slate-soft:   #6C8485;
+    --paper:        #F4F8F7;
+    --paper-deep:   #E4EFED;
+    --paper-card:   #EDF5F3;
+    --ink:          #102A2E;
+    --ink-soft:     #29484B;
+    --mute:         #536F70;
+    --rule:         #B5CECA;
+    --accent:       #0F766E;
+    --accent-deep:  #0B514C;
+    --slate:        #4657A6;
+    --slate-soft:   #7A86BC;
     --amber:        #B07419;
     --amber-soft:   #E0B65A;
-    --highlight:    #E8D785;
+    --highlight:    #BFE9DF;
     --measure: 70ch;
     --pad-x: clamp(1.25rem, 5vw, 4rem);
   }
@@ -32,7 +32,7 @@
     margin: 0;
     background: var(--paper);
     color: var(--ink);
-    font-family: "Newsreader", Georgia, serif;
+    font-family: "Manrope", Georgia, serif;
     font-size: 17.5px;
     line-height: 1.6;
     font-feature-settings: "kern", "liga", "onum";
@@ -52,26 +52,26 @@
 
   /* ─── Type ─── */
   h1, h2, h3, h4 {
-    font-family: "Fraunces", serif;
+    font-family: "Manrope", serif;
     color: var(--ink);
     margin: 0;
     font-feature-settings: "ss01", "ss02", "lnum";
   }
   h1 {
-    font-variation-settings: "opsz" 144, "SOFT" 30;
+
     font-weight: 350;
     letter-spacing: -0.025em;
     line-height: 0.92;
   }
   h2 {
-    font-variation-settings: "opsz" 96, "SOFT" 40;
+
     font-size: clamp(1.9rem, 4.5vw, 3rem);
     font-weight: 400;
     letter-spacing: -0.018em;
     line-height: 1.04;
   }
   h3 {
-    font-variation-settings: "opsz" 24, "SOFT" 60;
+
     font-weight: 600;
     line-height: 1.15;
   }
@@ -80,8 +80,8 @@
   a:hover { color: var(--accent-deep); border-bottom: 1px solid currentColor; }
 
   .label, .smallcaps {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12, "SOFT" 100;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 0.72rem;
     letter-spacing: 0.16em;
@@ -133,8 +133,8 @@
     border-bottom: 1px solid var(--ink);
   }
   .colophon .left, .colophon .right {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 500;
     font-size: 0.72rem;
     letter-spacing: 0.18em;
@@ -143,8 +143,8 @@
   }
   .colophon .right { text-align: right; color: var(--mute); }
   .colophon .center {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 0.7rem;
     letter-spacing: 0.34em;
@@ -164,8 +164,8 @@
     align-items: end;
   }
   .cover .meta {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 0.7rem;
     letter-spacing: 0.34em;
@@ -179,15 +179,15 @@
   .cover .meta .bar { width: 3rem; height: 1px; background: var(--accent); }
   .cover h1 {
     font-size: clamp(2.6rem, 8vw, 6.5rem);
-    font-variation-settings: "opsz" 144, "SOFT" 30, "wght" 300;
+
   }
   .cover h1 .it {
     font-style: italic;
-    font-variation-settings: "opsz" 144, "SOFT" 80, "wght" 350;
+
     color: var(--accent);
   }
   .cover .lede {
-    font-family: "Newsreader", serif;
+    font-family: "Manrope", serif;
     font-style: italic;
     font-weight: 400;
     font-size: clamp(1rem, 1.45vw, 1.25rem);
@@ -197,8 +197,8 @@
     line-height: 1.5;
   }
   .cover .values {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -217,8 +217,8 @@
   .cover .values dt { color: var(--mute); font-weight: 600; }
   .cover .values dd { margin: 0; text-align: right; color: var(--accent); font-weight: 700; }
   .cover .values dd .num {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 96, "SOFT" 30;
+    font-family: "Manrope", serif;
+
     font-size: 1.6rem;
     color: var(--accent);
     line-height: 1;
@@ -267,8 +267,8 @@
   .toc a:hover { color: var(--accent); border-bottom: 1px dashed currentColor; }
   .toc .pack-head {
     margin-top: 1rem;
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 700;
     font-size: 0.72rem;
     letter-spacing: 0.2em;
@@ -294,8 +294,8 @@
     border-bottom: 1px dashed var(--rule);
   }
   .pack-num {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 96, "SOFT" 40;
+    font-family: "Manrope", serif;
+
     font-size: 3.2rem;
     color: var(--accent);
     letter-spacing: -0.02em;
@@ -303,10 +303,10 @@
     font-weight: 500;
   }
   .pack-num small { font-size: 0.32em; letter-spacing: 0.34em; vertical-align: super; color: var(--mute); font-weight: 600; }
-  .pack-head-block h2 .it { font-style: italic; color: var(--accent-deep); font-variation-settings: "opsz" 96, "SOFT" 80; }
+  .pack-head-block h2 .it { font-style: italic; color: var(--accent-deep); }
   .pack-head-block .pack-count {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 0.75rem;
     letter-spacing: 0.2em;
@@ -345,7 +345,7 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    font-family: "Fraunces", serif;
+    font-family: "Manrope", serif;
     font-size: 1.6rem;
     font-weight: 600;
     line-height: 1;
@@ -354,9 +354,9 @@
     flex-shrink: 0;
     margin-top: 0.2rem;
   }
-  .rule[data-level="block"] .rule-mark { color: var(--accent); background: #FCE9E0; border-color: var(--accent); }
-  .rule[data-level="warn"]  .rule-mark { color: var(--amber); background: #F3E5BC; border-color: var(--amber); }
-  .rule[data-level="audit"] .rule-mark { color: var(--slate); background: #DDE5E2; border-color: var(--slate); }
+  .rule[data-level="block"] .rule-mark { color: var(--accent); background: #FCEBEC; border-color: var(--accent); }
+  .rule[data-level="warn"]  .rule-mark { color: var(--amber); background: #FFF2CF; border-color: var(--amber); }
+  .rule[data-level="audit"] .rule-mark { color: var(--slate); background: #E8ECFA; border-color: var(--slate); }
 
   .rule-tags {
     display: flex;
@@ -376,26 +376,26 @@
     line-height: 1.4;
   }
   .tag-level { font-weight: 700; }
-  .rule[data-level="block"] .tag-level { color: var(--accent); border-color: var(--accent); background: #FCE9E0; }
-  .rule[data-level="warn"]  .tag-level { color: var(--amber); border-color: var(--amber); background: #F3E5BC; }
-  .rule[data-level="audit"] .tag-level { color: var(--slate); border-color: var(--slate); background: #DDE5E2; }
+  .rule[data-level="block"] .tag-level { color: var(--accent); border-color: var(--accent); background: #FCEBEC; }
+  .rule[data-level="warn"]  .tag-level { color: var(--amber); border-color: var(--amber); background: #FFF2CF; }
+  .rule[data-level="audit"] .tag-level { color: var(--slate); border-color: var(--slate); background: #E8ECFA; }
   .tag-source {
     font-style: italic;
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 500;
     text-transform: none;
     letter-spacing: 0.02em;
     color: var(--accent-deep);
     border-color: var(--accent-deep);
-    background: #F8EDE5;
+    background: #F1F6F5;
   }
   a.tag-source {
     text-decoration: none;
     transition: background 0.15s, border-color 0.15s;
   }
   a.tag-source:hover {
-    background: #EFD8C2;
+    background: #D9EAE7;
     border-color: var(--accent);
   }
   a.tag-source::after {
@@ -416,7 +416,7 @@
     word-break: break-word;
   }
   .rule-summary {
-    font-family: "Newsreader", serif;
+    font-family: "Manrope", serif;
     font-style: italic;
     color: var(--ink-soft);
     margin: 0 0 1.4rem;
@@ -447,8 +447,8 @@
     min-width: 0;
   }
   .ex .ex-label {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 0.7rem;
     letter-spacing: 0.16em;
@@ -469,7 +469,7 @@
   .arrow {
     align-self: center;
     color: var(--accent);
-    font-family: "Fraunces", serif;
+    font-family: "Manrope", serif;
     font-size: 1.5rem;
     line-height: 1;
     padding: 0 0.4em;
@@ -486,8 +486,8 @@
   }
   .rule-why strong {
     color: var(--accent);
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-size: 0.7rem;
     letter-spacing: 0.18em;
     text-transform: uppercase;
@@ -507,8 +507,8 @@
     padding-top: 1rem;
   }
   .brief h4 {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 24, "SOFT" 50;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 1.05rem;
     margin-bottom: 0.4rem;
@@ -541,8 +541,8 @@
   }
   footer a { color: var(--accent); }
   .folio {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 96;
+    font-family: "Manrope", serif;
+
     font-size: 3rem;
     color: var(--accent);
     line-height: 1;
@@ -569,7 +569,7 @@
   <header class="colophon" role="banner">
     <div class="left"><a href="./explainer.html">← The Explainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
-    <div class="right">Vol. 0.22.0 — Edition IV</div>
+    <div class="right">Vol. 0.26.0 — Edition IV</div>
   </header>
 
   <!-- ─── COVER ─── -->
@@ -587,7 +587,9 @@
       </h1>
       <p class="lede">
         A reader's guide to the rules that ship by default in
-        <code>phr-mcp init --packs llm,rust,confidence,journey,structural</code>.
+        <code>phr-mcp init --packs rust</code> — the language-agnostic
+        platform packs are included automatically, and the
+        <em>context</em> pack installs scaffolding rather than rules.
         Each entry carries its predicate, its severity, a one-line
         distillation, and a worked example drawn from real-world
         Rust code. The <em>confidence</em> pack adds two gate rules
@@ -648,71 +650,45 @@
 
       <div class="pack-head">Pack · LLM</div>
       <ol>
-        <li><a href="#deflection">Issue-attribution disclaimers</a></li>
-        <li><a href="#unverified-claims">Unverified completion claims</a></li>
-        <li><a href="#nudge-commit">Verify before commit</a></li>
+        <li><a href="#pack-llm">Behavior and verification rules</a></li>
       </ol>
 
       <div class="pack-head">Pack · Rust</div>
       <ol>
-        <li><a href="#panic-family">The no-panic family</a></li>
-        <li><a href="#result-string">Result&lt;_, String&gt; errors</a></li>
-        <li><a href="#dbg">dbg!() left in code</a></li>
-        <li><a href="#string-ref">Public fn takes &amp;String</a></li>
-        <li><a href="#vec-ref">Public fn takes &amp;Vec&lt;T&gt;</a></li>
-        <li><a href="#param-count">God-signature parameter count</a></li>
-        <li><a href="#deref">Deref polymorphism</a></li>
-        <li><a href="#cargo">Cargo without --workspace</a></li>
-        <li><a href="#clone">Clone-heavy functions</a></li>
-        <li><a href="#empty-test">Empty tests</a></li>
-        <li><a href="#sync-await">.await on now-sync methods</a></li>
-        <li><a href="#manual-err">Manual <code>=&gt; return Err(…)</code></a></li>
-        <li><a href="#newtype-id">Newtype opportunities</a></li>
-        <li><a href="#if-let">If-let opportunities</a></li>
-        <li><a href="#file-loc">God-file line count</a></li>
-        <li><a href="#deny-warnings">#![deny(warnings)] attribute</a></li>
-        <li><a href="#box-ref">Public fn takes &amp;Box&lt;T&gt;</a></li>
-        <li><a href="#expect-empty">Empty .expect() message</a></li>
-        <li><a href="#rc-refcell">Rc&lt;RefCell&lt;T&gt;&gt; in src/</a></li>
-        <li><a href="#string-concat">String concat with <code>+ &amp;</code></a></li>
-        <li><a href="#allow-dead-code">#[allow(dead_code)] in src/</a></li>
-        <li><a href="#env-set-var">env::set_var() in src/</a></li>
+        <li><a href="#pack-rust">Rust code-shape rules</a></li>
       </ol>
 
       <div class="pack-head">Pack · Rhai</div>
       <ol>
-        <li><a href="#rhai-eval">Inline engine.eval(literal)</a></li>
-        <li><a href="#rhai-print">print() in .rhai scripts</a></li>
+        <li><a href="#pack-rhai">Rhai script hygiene</a></li>
       </ol>
 
       <div class="pack-head">Pack · Confidence</div>
       <ol>
-        <li><a href="#confidence-low">Low confidence blocks commit</a></li>
-        <li><a href="#confidence-medium">Medium confidence warns commit</a></li>
+        <li><a href="#pack-confidence">Grounded closure gates</a></li>
       </ol>
 
       <div class="pack-head">Pack · Journey</div>
       <ol>
-        <li><a href="#journey-predicates">Aggregator predicates</a></li>
-        <li><a href="#journey-taggers">Project-defined taggers</a></li>
-        <li><a href="#journey-examples">Example rules (project-defined)</a></li>
+        <li><a href="./explainer.html#journey">Trajectory facts and project taggers</a></li>
       </ol>
 
       <div class="pack-head">Pack · Structural</div>
       <ol>
-        <li><a href="#warn-untested-risky-call">Untested call to a panicking API</a></li>
-        <li><a href="#warn-import-cycle">Module in an import cycle</a></li>
+        <li><a href="#pack-structural">Graph-derived risk rules</a></li>
       </ol>
 
       <div class="pack-head">Other packs</div>
       <ol>
-        <li><a href="#other">Python · TypeScript · Swift</a></li>
+        <li><a href="#pack-python">Python</a></li>
+        <li><a href="#pack-typescript">TypeScript</a></li>
+        <li><a href="#pack-swift">Swift</a></li>
       </ol>
     </nav>
   </section>
 
 <!-- BEGIN GENERATED RULES -->
-<p class="catalogue-stamp">documents the default packs as of v0.23.1</p>
+<p class="catalogue-stamp">documents the default packs as of v0.26.0</p>
 <section class="pack-section" id="pack-llm">
 <h2 class="pack-name">llm pack</h2>
 <article class="rule" data-level="block" id="enforce-no-pre-existing-issue">
@@ -1315,18 +1291,18 @@
 </section>
 <!-- END GENERATED RULES -->
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
-    <a href="./index.html">Home</a> &middot; <a href="./explainer.html">Explainer</a> &middot; <span class="doc-web-here">Catalogue</span> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/docs/loop-programming-guide.md">Guide</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/CHANGELOG.md">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.22.0</span>
+    <a href="./index.html">Home</a> &middot; <a href="./explainer.html">Explainer</a> &middot; <span class="doc-web-here">Catalogue</span> &middot; <a href="./guide.html">Guide</a> &middot; <a href="./changelog.html">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.26.0</span>
   </nav>
   <footer>
     <div>
       <div class="label" style="margin-bottom: 0.4rem;">Colophon</div>
-      Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
+      Set in <em>Manrope</em>, with
       <em>JetBrains Mono</em> for code.<br>
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
-      with Claude and Codex.<br>
+      with the open-source agent community.<br>
       Pairs with <a href="./explainer.html">the explainer</a> &middot;
-      v 0.22.0 &middot; 2026 &middot;
+      v 0.26.0 &middot; 2026 &middot;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">

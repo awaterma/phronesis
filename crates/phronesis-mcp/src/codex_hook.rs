@@ -4,7 +4,7 @@
 //! pre/post rule-evaluation pipeline, and writes a Codex-specific JSON
 //! response to stdout. Context events (SessionStart, UserPromptSubmit,
 //! PreCompact, PostCompact, SubagentStart) reuse the context builders.
-//! Stop events enforce the opt-in confidence gate when a work unit is open.
+//! Stop events enforce the configured confidence gate when a work unit is open.
 //!
 //! **Supported events**:
 //! `PreToolUse`, `PostToolUse`, `SessionStart`, `UserPromptSubmit`,
@@ -797,6 +797,13 @@ async fn build_pre_network(
             "phronesis: NOTE — structural graph {cause}; structural rules will warn, not block. Run `phr-mcp graph rebuild`."
         );
         stale_graph_rules = hydration.graph_rules;
+    }
+    for (rule_id, symbols) in crate::graph::bindings::stale_rules(root, hydration.verified_fresh) {
+        eprintln!(
+            "phronesis: NOTE — rule `{rule_id}` names `{}`, which the code graph no longer defines; this rule will warn, not block. Review or retire it.",
+            symbols.join("`, `")
+        );
+        stale_graph_rules.insert(rule_id);
     }
     for fact in hydration.facts {
         if net.assert_fact(fact).await.is_err() {

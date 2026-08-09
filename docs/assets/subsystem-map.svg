@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 570" role="img" aria-labelledby="title desc">
+  <title id="title">Phronesis default subsystem map</title>
+  <desc id="desc">Five durable subsystems supply context, facts, evidence, and structural relationships to rules and human review.</desc>
+  <style>
+    :root { color-scheme: light dark; }
+    .bg{fill:#f4f8f7}.card{fill:#fff;stroke:#b5ceca;stroke-width:2}.core{fill:#0f766e;stroke:#0b514c;stroke-width:3}.ink{fill:#102a2e}.muted{fill:#536f70}.inverse{fill:#fff}.wire{fill:none;stroke:#29484b;stroke-width:3}.accent{fill:#e4efed;stroke:#0f766e;stroke-width:2}.arrow{fill:#29484b}
+    text{font-family:Manrope,Inter,system-ui,sans-serif}.eyebrow{font-size:17px;font-weight:800;letter-spacing:2.4px}.heading{font-size:25px;font-weight:800}.small{font-size:16px;font-weight:600}.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:14px}
+    @media(prefers-color-scheme:dark){.bg{fill:#0d2023}.card{fill:#142c30;stroke:#426462}.accent{fill:#173f3d;stroke:#55b9ae}.ink{fill:#eef8f6}.muted{fill:#b4ceca}.wire{stroke:#9fc2bd}.arrow{fill:#9fc2bd}}
+  </style>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="arrow" d="M0 0 10 5 0 10z"/></marker></defs>
+  <rect class="bg" width="1200" height="570" rx="24"/>
+  <text class="eyebrow muted" x="54" y="50">DEFAULT PLATFORM · DURABLE SIGNALS</text>
+
+  <g class="card">
+    <rect x="54" y="88" width="286" height="116" rx="14"/>
+    <rect x="54" y="226" width="286" height="116" rx="14"/>
+    <rect x="54" y="364" width="286" height="116" rx="14"/>
+    <rect x="860" y="88" width="286" height="116" rx="14"/>
+    <rect x="860" y="364" width="286" height="116" rx="14"/>
+  </g>
+  <text class="eyebrow muted" x="78" y="121">DURABLE CONTEXT</text><text class="heading ink" x="78" y="157">Guidance that returns</text><text class="mono muted" x="78" y="183">durable.md → every turn</text>
+  <text class="eyebrow muted" x="78" y="259">JOURNEY</text><text class="heading ink" x="78" y="295">Trajectory facts</text><text class="mono muted" x="78" y="321">journal → bounded windows</text>
+  <text class="eyebrow muted" x="78" y="397">CONFIDENCE</text><text class="heading ink" x="78" y="433">Grounded outcomes</text><text class="mono muted" x="78" y="459">build · test · known bug</text>
+  <text class="eyebrow muted" x="884" y="121">STRUCTURAL GRAPH</text><text class="heading ink" x="884" y="157">Code relationships</text><text class="mono muted" x="884" y="183">AST → triples → bindings</text>
+  <text class="eyebrow muted" x="884" y="397">DRIFT</text><text class="heading ink" x="884" y="433">Gaps for review</text><text class="mono muted" x="884" y="459">guidance ↔ rules ↔ code</text>
+
+  <rect class="core" x="438" y="184" width="324" height="200" rx="24"/>
+  <text class="eyebrow inverse" x="600" y="231" text-anchor="middle">ONE GOVERNANCE CORE</text>
+  <text class="heading inverse" x="600" y="274" text-anchor="middle">Facts · rules</text>
+  <text class="heading inverse" x="600" y="307" text-anchor="middle">consequences</text>
+  <text class="small inverse" x="600" y="340" text-anchor="middle">hook decisions · MCP queries · audits</text>
+  <text class="mono inverse" x="600" y="368" text-anchor="middle">evidence with provenance</text>
+
+  <g class="wire" marker-end="url(#a)">
+    <path d="M340 146 C390 146 397 220 438 238"/>
+    <path d="M340 284 H438"/>
+    <path d="M340 422 C390 422 397 348 438 330"/>
+    <path d="M860 146 C810 146 803 220 762 238"/>
+    <path d="M762 330 C803 348 810 422 860 422"/>
+  </g>
+  <line x1="54" y1="520" x2="1146" y2="520" stroke="#b5ceca" stroke-width="2"/>
+  <text class="small muted" x="600" y="550" text-anchor="middle">Each subsystem persists outside model context and is recomputed or reloaded at an explicit boundary.</text>
+</svg>

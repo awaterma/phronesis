@@ -159,7 +159,7 @@ fn opting_in_splits_the_kernel_from_the_session_document() {
 // ── inspect ─────────────────────────────────────────────────────────────
 
 #[test]
-fn inspect_reports_that_a_project_has_not_opted_in() {
+fn inspect_reports_that_a_project_predates_default_context_support() {
     let dir = project();
     let out = run(
         dir.path(),
@@ -167,7 +167,8 @@ fn inspect_reports_that_a_project_has_not_opted_in() {
     );
     assert_eq!(out.code, 0);
     assert!(
-        out.stdout.contains("has not opted in"),
+        out.stdout
+            .contains("has not been initialized with context support"),
         "inspect must say why there is nothing to pack: {}",
         out.stdout
     );

@@ -35,14 +35,19 @@ operator guide.
    (step 6); that is the check that does not depend on this reasoning
    being right.
 5. **Merging the Release PR** triggers the release job
-   (`release_always = false`, so ordinary pushes to `main` never
-   publish). CI then:
+   (`release_always = true`; ordinary pushes to `main` are harmless because
+   an unchanged workspace version is already present in the registry). CI then:
    - publishes `phronesis`, `phronesis-rhai`, `phronesis-mcp` to
      crates.io in dependency order via trusted publishing (OIDC — no
      `CARGO_REGISTRY_TOKEN`),
    - tags `<package>-vX.Y.Z` (one tag per crate; `vX.Y.Z` up to and
      including v0.24.0),
-   - creates the GitHub release.
+   - creates the GitHub release,
+   - builds and attaches `phr-mcp` archives for Linux x86-64, macOS Apple
+     Silicon, and Windows x86-64 after release-plz completes. The
+     reusable binary workflow verifies that the expected `phronesis-mcp` tag
+     points at the release commit, then waits for its GitHub release before
+     uploading, so ordinary pushes are no-ops and versions cannot diverge.
 6. **Verify against crates.io**, not the job status: check all three
    crates show the new version. A green release job does NOT guarantee
    a complete publish (see "Partial publish" below).

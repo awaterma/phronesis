@@ -253,6 +253,15 @@ fn init_none_language_writes_empty_rules() {
 }
 
 #[test]
+fn init_rejects_none_combined_with_another_pack() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "none,rust"], dir.path());
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("cannot be combined"), "stderr: {stderr}");
+}
+
+#[test]
 fn init_writes_correct_mcp_server_registration() {
     let dir = tempfile::tempdir().unwrap();
     run_init(&[], dir.path());
@@ -305,9 +314,7 @@ fn init_packs_llm_only_omits_language_rules() {
 }
 
 #[test]
-fn init_packs_rust_only_omits_llm_rules() {
-    // The whole point of the split: --packs rust gives ONLY rust rules,
-    // not deflection rules. User who wants both says "llm,rust".
+fn init_packs_rust_adds_language_rules_to_the_base() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--packs", "rust"], dir.path());
     assert!(out.status.success());
@@ -322,10 +329,7 @@ fn init_packs_rust_only_omits_llm_rules() {
         .map(|r| r["id"].as_str().unwrap())
         .collect();
     assert!(ids.contains(&"enforce-no-unwrap-in-src"));
-    assert!(
-        !ids.contains(&"enforce-no-pre-existing-issue"),
-        "rust-only must not bundle the llm deflection pack"
-    );
+    assert!(ids.contains(&"enforce-no-pre-existing-issue"));
 }
 
 #[test]
@@ -390,14 +394,14 @@ fn init_packs_confidence_writes_gate_rules_and_scaffold() {
 }
 
 #[test]
-fn init_without_confidence_pack_writes_no_scaffold() {
+fn explicit_llm_selection_still_writes_default_confidence_scaffold() {
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&["--packs", "llm"], dir.path());
     assert!(out.status.success());
-    assert!(!dir.path().join(".phronesis/confidence.json").exists());
-    assert!(!dir.path().join(".phronesis/bugs.json").exists());
+    assert!(dir.path().join(".phronesis/confidence.json").exists());
+    assert!(dir.path().join(".phronesis/bugs.json").exists());
     let gitignore = std::fs::read_to_string(dir.path().join(".gitignore")).unwrap();
-    assert!(!gitignore.contains("confidence.json"));
+    assert!(gitignore.contains("!.phronesis/confidence.json"));
 }
 
 #[test]
@@ -470,8 +474,8 @@ fn init_confidence_is_idempotent() {
 }
 
 #[test]
-fn init_default_is_llm_only() {
-    // No --packs flag → default is llm only.
+fn init_default_is_the_complete_language_agnostic_platform() {
+    // No --packs flag → every language-agnostic subsystem is ready.
     let dir = tempfile::tempdir().unwrap();
     let out = run_init(&[], dir.path());
     assert!(out.status.success());
@@ -486,8 +490,21 @@ fn init_default_is_llm_only() {
         .map(|r| r["id"].as_str().unwrap())
         .collect();
     assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+    assert!(ids.contains(&"confidence-low-blocks-commit"));
     // No language-specific rules in the default
     assert!(!ids.contains(&"enforce-no-unwrap-in-src"));
+    for path in [
+        ".phronesis/graph.jsonl",
+        ".phronesis/context.json",
+        ".phronesis/kernel.md",
+        ".phronesis/confidence.json",
+        ".phronesis/journey.json",
+    ] {
+        assert!(
+            dir.path().join(path).exists(),
+            "default init omitted {path}"
+        );
+    }
 }
 
 #[test]
