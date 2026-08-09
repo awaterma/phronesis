@@ -798,7 +798,7 @@ async fn build_pre_network(
         );
         stale_graph_rules = hydration.graph_rules;
     }
-    for (rule_id, symbols) in crate::graph::bindings::stale_rules(root) {
+    for (rule_id, symbols) in crate::graph::bindings::stale_rules(root, hydration.verified_fresh) {
         eprintln!(
             "phronesis: NOTE — rule `{rule_id}` names `{}`, which the code graph no longer defines; this rule will warn, not block. Review or retire it.",
             symbols.join("`, `")

@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
       released: ${{ steps.tag.outputs.released }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -21,14 +22,27 @@ jobs:
       - id: tag
         name: Read phronesis-mcp version
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           version=$(cargo metadata --format-version 1 --no-deps | jq -r '.packages[] | select(.name == "phronesis-mcp") | .version')
           test -n "$version"
           test "$version" != "null"
           tag="phronesis-mcp-v$version"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Build when this push minted the release (tag on HEAD), and
+          # self-heal when release-plz tagged a different commit — the
+          # GitHub release exists but carries no binaries yet. Ordinary
+          # pushes see a release that already has its binaries and skip.
           if git tag --points-at HEAD --list "$tag" | grep -Fxq "$tag"; then
             echo "released=true" >> "$GITHUB_OUTPUT"
+          elif assets=$(gh release view "$tag" --json assets --jq '.assets[].name'); then
+            if printf '%s\n' "$assets" | grep -q '^phr-mcp-'; then
+              echo "released=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "released=true" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "released=false" >> "$GITHUB_OUTPUT"
           fi
@@ -65,13 +79,13 @@ jobs:
         if: matrix.archive == 'tar.gz'
         shell: bash
         run: |
-          archive="phr-mcp-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.tar.gz"
+          archive="phr-mcp-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}.tar.gz"
           tar -C "target/${{ matrix.target }}/release" -czf "$archive" phr-mcp
       - name: Package Windows binary
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
-          $archive = "phr-mcp-${{ needs.prepare.outputs.tag }}-${{ matrix.target }}.zip"
+          $archive = "phr-mcp-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}.zip"
           Compress-Archive -Path "target/${{ matrix.target }}/release/phr-mcp.exe" -DestinationPath $archive
       - name: Wait for release-plz GitHub release
         shell: bash

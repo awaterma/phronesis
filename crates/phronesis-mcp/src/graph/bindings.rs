@@ -269,19 +269,31 @@ pub fn store_atomic(path: &Path, set: &BindingSet) -> std::io::Result<()> {
 /// Stale rule IDs safe to demote for this exact graph generation.
 ///
 /// Guards are intentionally ordered: a stale/outdated graph or a generation
-/// mismatch returns no demotions, preserving full enforcement.
-pub fn stale_rules(root: &Path) -> BTreeMap<phr::RuleId, Vec<String>> {
+/// mismatch returns no demotions, preserving full enforcement. The bindings
+/// file is consulted first because it is one cheap read that almost every
+/// project fails — freshness re-hashes the whole indexed tree, a cost the
+/// binding-less majority must not pay on every hook.
+///
+/// `graph_verified_fresh` lets a caller that already hashed the tree this
+/// invocation (hydration) vouch for freshness instead of paying the pass
+/// twice. Pass `false` when no such verification happened.
+pub fn stale_rules(root: &Path, graph_verified_fresh: bool) -> BTreeMap<phr::RuleId, Vec<String>> {
+    let set = match load(&bindings_path(root)) {
+        Ok(Some(set)) if !set.bindings.is_empty() => set,
+        _ => return BTreeMap::new(),
+    };
     let index = match super::sync::load_index(&super::sync::index_path(root)) {
         Ok(index) => index,
         Err(_) => return BTreeMap::new(),
     };
-    if super::sync::check_freshness(root, &index) != super::sync::Freshness::Fresh {
+    if set.generation != index.generation {
         return BTreeMap::new();
     }
-    let set = match load(&bindings_path(root)) {
-        Ok(Some(set)) if set.generation == index.generation => set,
-        _ => return BTreeMap::new(),
-    };
+    if !graph_verified_fresh
+        && super::sync::check_freshness(root, &index) != super::sync::Freshness::Fresh
+    {
+        return BTreeMap::new();
+    }
     let mut grouped: BTreeMap<&str, Vec<&Binding>> = BTreeMap::new();
     for binding in &set.bindings {
         grouped.entry(&binding.rule).or_default().push(binding);
@@ -490,7 +502,7 @@ mod tests {
             ],
         };
         let dir = fresh_project(4, &set);
-        let ids = stale_rules(dir.path());
+        let ids = stale_rules(dir.path(), false);
         assert!(ids.contains_key(&phr::RuleId::from("all-stale")));
         assert!(!ids.contains_key(&phr::RuleId::from("mixed")));
     }
@@ -503,7 +515,7 @@ mod tests {
             bindings: vec![binding("r", "foo", BindingState::Stale)],
         };
         let dir = fresh_project(4, &set);
-        assert!(stale_rules(dir.path()).is_empty());
+        assert!(stale_rules(dir.path(), false).is_empty());
     }
 
     #[test]
@@ -515,6 +527,6 @@ mod tests {
         };
         let dir = fresh_project(4, &set);
         std::fs::write(dir.path().join("src/lib.rs"), "fn changed() {}").expect("drift");
-        assert!(stale_rules(dir.path()).is_empty());
+        assert!(stale_rules(dir.path(), false).is_empty());
     }
 }

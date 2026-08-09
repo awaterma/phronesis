@@ -114,7 +114,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                 // vouch for, so the harness declines to act on their verdicts.
                 stale_graph_rules = h.graph_rules;
             }
-            for (rule_id, symbols) in crate::graph::bindings::stale_rules(&root) {
+            for (rule_id, symbols) in crate::graph::bindings::stale_rules(&root, h.verified_fresh) {
                 eprintln!(
                     "phronesis: NOTE — rule `{rule_id}` names `{}`, which the code graph no longer defines; this rule will warn, not block. Review or retire it.",
                     symbols.join("`, `")

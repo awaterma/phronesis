@@ -117,6 +117,11 @@ pub struct Hydration {
     /// Rules reasoning over the graph. When `fresh` is false, the harness
     /// downgrades these rules' violations to warnings.
     pub graph_rules: BTreeSet<RuleId>,
+    /// Freshness was actually computed against the tree this invocation and
+    /// came back `Fresh`. Distinct from `fresh`, which is also true when no
+    /// rule needed the graph and nothing was checked at all. Lets later
+    /// stages (binding demotion) reuse the tree hash instead of re-paying it.
+    pub verified_fresh: bool,
 }
 
 /// Select the facts to assert for `rules`.
@@ -135,6 +140,7 @@ pub fn hydrate(root: &Path, rules: &[Rule], edited_file: Option<&str>) -> Hydrat
             drifted: Vec::new(),
             outdated: false,
             graph_rules: BTreeSet::new(),
+            verified_fresh: false,
         };
     }
 
@@ -168,6 +174,7 @@ pub fn hydrate(root: &Path, rules: &[Rule], edited_file: Option<&str>) -> Hydrat
         drifted,
         outdated,
         graph_rules: graph_rule_ids(rules),
+        verified_fresh: fresh,
     }
 }
 
