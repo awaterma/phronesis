@@ -144,7 +144,10 @@ enum Command {
     /// "Prefer Z" and matches them against rule contents by token
     /// overlap. Output flags candidates with no confident rule match.
     /// Read-only; always exits 0.
-    #[command(name = "claude-md-drift", alias = "drift")]
+    // `drift` is no longer an alias here: it is now the canonical
+    // multi-source command below. Leaving the alias would silently widen
+    // `phr-mcp drift` from one corpus to four.
+    #[command(name = "claude-md-drift")]
     ClaudeMdDrift {
         /// Project root (defaults to current directory).
         #[arg(default_value = ".")]
@@ -152,6 +155,21 @@ enum Command {
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
+    },
+    /// Detect drift between written guidance and enforced rules across
+    /// every corpus. Read-only; always exits 0 unless `--source` is
+    /// invalid.
+    Drift(DriftArgs),
+    /// Bring an existing `.phronesis/durable.md` up to the current shipped
+    /// template. Rewrites only a file that matches a known prior template
+    /// verbatim; a customized file is reported and left alone. The prior
+    /// content is preserved at `durable.md.bak`.
+    MigrateDurable {
+        /// Path to durable.md (defaults to <project root>/.phronesis/durable.md).
+        path: Option<PathBuf>,
+        /// Report what would change; write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Convert a rules.json file from the v1 (predicate/args/action_type)
     /// shape to the v2 (when/then/predicate-as-key) shape. Preserves `or`
@@ -468,6 +486,8 @@ async fn main() -> anyhow::Result<()> {
             json,
         } => handle_trend(last, since, rule, json),
         Command::ClaudeMdDrift { path, json } => handle_claude_md_drift(path, json),
+        Command::Drift(args) => handle_drift(args),
+        Command::MigrateDurable { path, dry_run } => handle_migrate_durable(path, dry_run),
         Command::MigrateRules {
             path,
             dry_run,
@@ -895,6 +915,99 @@ fn handle_claude_md_drift(path: PathBuf, json: bool) -> anyhow::Result<()> {
             std::process::exit(1);
         }
     }
+}
+
+/// Options for `phr-mcp drift`, grouped into one `clap::Args` struct.
+///
+/// Six loose parameters tripped the project's own
+/// `warn-rust-function-param-count-high` rule (threshold 5). Flattening
+/// them here keeps the CLI surface identical — every flag is still
+/// `--source`, `--limit`, and so on — while the handler takes one argument.
+#[derive(clap::Args)]
+struct DriftArgs {
+    /// claude_md | memory | wiki | code | all (default)
+    #[arg(long, default_value = "all")]
+    source: String,
+    /// Max items per source (default 5, max 50).
+    #[arg(long, default_value_t = 5)]
+    limit: usize,
+    /// Emit JSON instead of a table.
+    #[arg(long)]
+    json: bool,
+    /// Override the auto-memory directory.
+    #[arg(long)]
+    memory_dir: Option<PathBuf>,
+    /// Override the wiki decisions directory.
+    #[arg(long)]
+    wiki_dir: Option<PathBuf>,
+    /// Include a draft rule per item (large; off by default).
+    #[arg(long)]
+    suggest: bool,
+}
+
+fn handle_migrate_durable(path: Option<PathBuf>, dry_run: bool) -> anyhow::Result<()> {
+    use phronesis_mcp::durable_migrate::{self, Outcome};
+
+    let path = match path {
+        Some(p) => p,
+        None => durable_migrate::durable_path(&phronesis_mcp::security::project_root()),
+    };
+    let shown = path.display();
+    match durable_migrate::migrate(&path, dry_run)? {
+        Outcome::Migrated => {
+            println!("migrated {shown} to the current template (prior content at durable.md.bak)")
+        }
+        Outcome::WouldMigrate => println!(
+            "{shown} matches a prior shipped template and would be migrated (dry run: nothing written)"
+        ),
+        Outcome::AlreadyCurrent => println!("{shown} already matches the current template"),
+        Outcome::SkippedCustomized => println!(
+            "{shown} has been edited — left unchanged. Compare it against the current \
+             template and port anything you want by hand."
+        ),
+        Outcome::SkippedAbsent => println!("{shown} does not exist — nothing to migrate"),
+    }
+    Ok(())
+}
+
+fn handle_drift(args: DriftArgs) -> anyhow::Result<()> {
+    use phronesis_mcp::drift::{self, Source, SourceInputs};
+
+    let DriftArgs {
+        source,
+        limit,
+        json,
+        memory_dir,
+        wiki_dir,
+        suggest,
+    } = args;
+
+    let root = phronesis_mcp::security::project_root();
+    let sources: Vec<Source> = match source.as_str() {
+        "all" => Source::ALL.to_vec(),
+        "claude_md" => vec![Source::ClaudeMd],
+        "memory" => vec![Source::Memory],
+        "wiki" => vec![Source::Wiki],
+        "code" => vec![Source::Code],
+        other => anyhow::bail!(
+            "unknown source {other:?} — expected one of: claude_md, memory, wiki, code, all"
+        ),
+    };
+
+    let inputs = SourceInputs {
+        project_root: &root,
+        claude_md: None,
+        memory_dir: memory_dir.as_deref(),
+        wiki_dir: wiki_dir.as_deref(),
+        suggest,
+    };
+    let agg = drift::run_all(&sources, &inputs, limit);
+    if json {
+        println!("{}", drift::render_json(&agg));
+    } else {
+        print!("{}", drift::render_table(&agg));
+    }
+    Ok(())
 }
 
 fn handle_migrate_rules(path: PathBuf, dry_run: bool, check: bool) -> anyhow::Result<()> {

@@ -6,6 +6,8 @@ pub mod clock_facts;
 pub mod codex_hook;
 pub mod context;
 pub mod diff_extract;
+pub mod drift;
+pub mod durable_migrate;
 pub mod graph;
 pub mod hook;
 pub(crate) mod hook_facts;

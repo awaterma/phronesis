@@ -10,6 +10,15 @@ fn bin() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_BIN_EXE_phr-mcp"))
 }
 
+fn run_bin(args: &[&str], root: &Path) -> std::process::Output {
+    Command::new(bin())
+        .args(args)
+        .env("PHRONESIS_PROJECT_ROOT", root)
+        .current_dir(root)
+        .output()
+        .expect("run phr-mcp")
+}
+
 /// Write a minimal `.phronesis/rules.json` with one audit-tagged rule so
 /// the audit arm can run without warnings about missing or untagged rules.
 fn make_project_with_audit_rule(dir: &Path) {
@@ -207,6 +216,40 @@ fn memory_drift_exits_nonzero_when_memory_dir_missing() {
 }
 
 #[test]
+fn drift_cmd_defaults_to_all_sources_and_succeeds_on_a_bare_project() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = run_bin(&["drift", "--json"], dir.path());
+    assert!(
+        out.status.success(),
+        "drift must not fail when corpora are absent: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let body = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&body).expect("valid json");
+    assert_eq!(
+        v["sources"].as_array().map(|a| a.len()),
+        Some(4),
+        "all four sources must be reported: {body}"
+    );
+}
+
+#[test]
+fn drift_cmd_rejects_an_unknown_source() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let out = run_bin(&["drift", "--source", "nope"], dir.path());
+    assert!(!out.status.success(), "unknown source must fail");
+    // `!success` alone is too weak: it also holds when the `drift`
+    // subcommand does not exist at all, which is exactly the state this
+    // test was written in. Pin the reason, so a future removal of the
+    // command cannot make this test keep passing for the wrong cause.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("unknown source") && stderr.contains("nope"),
+        "must fail because the source is unknown, not because the command is: {stderr}"
+    );
+}
+
+#[test]
 fn interaction_context_is_canonical_and_turn_context_remains_an_alias() {
     let dir = tempfile::tempdir().unwrap();
     make_project(dir.path());
@@ -229,4 +272,38 @@ fn interaction_context_is_canonical_and_turn_context_remains_an_alias() {
     assert!(legacy.status.success());
     assert_eq!(canonical.stdout, legacy.stdout);
     assert!(String::from_utf8_lossy(&canonical.stdout).contains("interaction guidance"));
+}
+
+/// The three removed MCP tool names must not survive in any artifact that
+/// ships to a project or reaches the model. A dead tool name in
+/// `durable.md` is re-injected into context every session, so that one
+/// matters most.
+///
+/// Deliberately NOT checked: `CHANGELOG.md` and `.phronesis/wiki/decisions/`
+/// are historical records — a release note or an ADR describing what was
+/// true then must keep saying so. `docs/specs/` and `docs/superpowers/`
+/// describe this very migration.
+#[test]
+fn no_shipped_artifact_names_the_removed_drift_tools() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root");
+
+    let checked = [
+        repo.join("crates/phronesis-mcp/src/init.rs"),
+        repo.join("crates/phronesis-mcp/CLAUDE.md"),
+    ];
+
+    for path in checked {
+        let body = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        for gone in ["get_claude_md_drift", "get_memory_drift", "get_wiki_drift"] {
+            assert!(
+                !body.contains(gone),
+                "{} still names the removed MCP tool {gone}",
+                path.display()
+            );
+        }
+    }
 }

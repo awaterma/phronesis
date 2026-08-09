@@ -810,89 +810,51 @@ fn write_rules_file(
     Ok(())
 }
 
-/// Default `.phronesis/durable.md` template. Re-injected into the
-/// model's context at every SessionStart and UserPromptSubmit, so the
-/// nudges below survive context-window decay. Tuned to be terse — the
-/// whole file ships in every turn, so spend tokens carefully.
-const DEFAULT_DURABLE_MD: &str = r#"# Durable Directives
+/// Default `.phronesis/durable.md` template.
+///
+/// Without `.phronesis/context.json` this file is injected at every
+/// SessionStart *and* every UserPromptSubmit — the whole thing, every
+/// turn. With the context pack it becomes the session charter, rendered
+/// at SessionStart only, and `kernel.md` carries the per-turn load.
+///
+/// Terse in both modes, for different reasons: in legacy mode every byte
+/// is paid per turn, and in context-pack mode the charter competes with
+/// the active-rule list for a shared budget. An earlier version of this
+/// template ran to 3.3 KB, of which the participatory-governance section
+/// (1825 B) exceeded `charter_max_bytes` and was dropped by
+/// `kind_ceiling` on every session — never reaching the model at all,
+/// while its bulk displaced rules. Reference material now lives in
+/// `docs/participatory-governance.md`; only what the model must act on
+/// belongs here. Measure with `phr-mcp context inspect --event session`
+/// before adding to it.
+pub(crate) const DEFAULT_DURABLE_MD: &str = r#"# Durable Directives
 
-Re-injected at every SessionStart and UserPromptSubmit by phronesis.
-Contents do not fade with context-window compression.
+Rendered at SessionStart (and PostCompact). If `.phronesis/context.json`
+is present, `.phronesis/kernel.md` carries the per-turn directives —
+keep anything needed every turn there, not here. Budget is measured:
+`phr-mcp context inspect --event session`.
 
 ## Drift discipline
 
-Three heuristic tools surface the gap between prose guidance and
-enforced rules. They are cheap, deterministic, and worth running
-whenever the user asks about rules, memory, durable guidance, or
-project conventions:
+`get_drift(source)` surfaces guidance that no rule enforces — `source` is
+`claude_md`, `memory`, `wiki`, `code`, or `all`. Run it when the user asks
+about rules, memory, or project conventions, or says "remember X" / "make
+a rule for X". `code` reports no-graph until rule-staleness lands.
 
-- `mcp__phronesis__get_claude_md_drift` — bullets in `CLAUDE.md`
-  that no current rule covers. Candidates for rule porting or for
-  marking "non-lintable by design."
-- `mcp__phronesis__get_memory_drift` — entries in the auto-memory
-  store that have no matching rule or `durable.md` paragraph.
-  Actionable entries (named tool calls / commands) should become
-  rules; ambient ones (project-shared prose) should be added here.
-- `mcp__phronesis__get_wiki_drift` — ADR-style decisions under
-  `.phronesis/wiki/decisions/` that no rule enforces. Decisions
-  with explicit `enforces: [rule-id]` frontmatter resolve
-  deterministically; others fall through to Jaccard matching.
-
-Treat the output as a triage list, not authoritative ground truth —
-the scoring is token-overlap Jaccard, no semantic match. When the
-user says "remember X" or "make a rule for X", check drift first to
-see whether the gap is real.
+Scoring is token-overlap Jaccard with no semantic match, so output is
+a triage list, not ground truth.
 
 ## Participatory governance
 
-The model is both governed by rules and a participant in rule
-evolution. Three workflows close the loop:
-
-### Remember → decide → enforce
-
-When the user says "remember X" or "make a rule for X":
-
-1. Check drift tools — is the gap real?
-2. Scaffold a decision: `phr-mcp decision new <slug>`
-3. Fill in Context, Decision, Enforcement, Consequences
-4. If enforceable (code-shape, command pattern):
-   - Propose a rule using available predicates
-     (`new_content_contains`, `file_path_matches`,
-     `file_extension_is`, etc.)
-   - Write it to `.phronesis/rules.json`
-   - Wire `enforces: [rule-id]` in the decision frontmatter
-5. If not enforceable (process, naming, social):
-   - Note in Enforcement that no automated rule is possible
-   - Offer to add prose guidance to this file instead
-6. Ask the human to approve before committing
-
-### Friction-driven proposals
-
-When a rule blocks you 3+ times in the same session for the same
-pattern, pause and assess:
-
-- Use `get_action_log` with `only_nonzero_exit: true` to review
-- If the rule scope is too broad (legitimate code keeps tripping
-  it): propose a decision page that refines the scope — narrower
-  `file_path_matches`, an exclusion, a predicate change. Present
-  the proposal to the human.
-- If you keep hitting it legitimately: the rule is working. Adjust
-  your approach, don't propose weakening enforcement.
-
-### Cross-session knowledge transfer
-
-When you discover something significant — a bug pattern, a design
-insight, a rollout lesson — consider writing a decision page. ADR
-pages in `.phronesis/wiki/decisions/` travel with the repo and are
-available to future sessions. This turns a session-local discovery
-into durable project knowledge. Ask the human before writing —
-not every insight warrants a formal decision.
+Rule-evolution workflows — decision scaffolding, friction-driven
+proposals, cross-session knowledge transfer — are in
+`docs/participatory-governance.md`. Read it when proposing or
+refining a rule.
 
 ## Project-specific guidance
 
-(Add team-specific directives below. Anything written here is
-re-read by the model every turn and so is safe from context-window
-fade.)
+Add team directives below. Keep them short: this file competes with
+the active-rule list for the session budget.
 "#;
 
 const DEFAULT_CONTEXT_KERNEL: &str = r#"# Durable project kernel
@@ -911,10 +873,26 @@ fn write_durable_md(
     let path = root.join(".phronesis").join("durable.md");
 
     if path.exists() {
-        report.steps.push(
-            "= .phronesis/durable.md already exists — leaving unchanged (edit in place to customize)"
+        // Report a stale template, never rewrite it. `init` promises to leave
+        // an existing durable.md alone — operators are told to edit it in
+        // place, and `--rules-only` / `--hooks-only` promise to touch nothing
+        // else. Silently replacing a file someone owns would break that, so
+        // the fix-up is the explicit `migrate-durable` subcommand, following
+        // the `migrate-rules` idiom.
+        let note = match crate::durable_migrate::inspect(&path) {
+            Ok(crate::durable_migrate::Status::Stale { version }) => format!(
+                "= .phronesis/durable.md matches shipped template v{version} \
+                 — run `phr-mcp migrate-durable` to update it"
+            ),
+            Ok(_) => "= .phronesis/durable.md already exists — leaving unchanged \
+                      (edit in place to customize)"
                 .to_string(),
-        );
+            Err(e) => format!(
+                "! .phronesis/durable.md exists but could not be read: {e} \
+                 — check file permissions and retry"
+            ),
+        };
+        report.steps.push(note);
         return Ok(());
     }
 

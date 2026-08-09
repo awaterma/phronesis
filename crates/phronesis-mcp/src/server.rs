@@ -957,117 +957,55 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Detect drift between CLAUDE.md imperatives and the current rule pack. Heuristic: extracts bullets like \"Don't X\" / \"Always Y\" / \"Prefer Z\" from CLAUDE.md and matches each against rule contents by token overlap. Returns each bullet with its best-match rule (if any) and a Jaccard similarity score; bullets below the coverage threshold are candidates that should become enforced rules. Read-only. Use this when the user mentions CLAUDE.md, project conventions, or asks whether guidance is enforced. Optional `format` param: \"json\" (default) or \"table\"."
+        description = "Detect drift between written guidance and enforced rules across every corpus: CLAUDE.md imperatives, Claude Code auto-memory entries, ADR decisions under .phronesis/wiki/decisions/, and (once SPEC-rule-staleness lands) rules naming code the graph no longer defines. Read-only, heuristic, no LLM call — output is a triage list, not ground truth. `source` selects one of \"claude_md\", \"memory\", \"wiki\", \"code\", or \"all\" (default). With \"all\" the response is a bounded summary: use a single source plus a higher `limit` for detail. A corpus that does not exist is reported as unavailable rather than failing the call. Optional: `limit` (default 5, max 50), `format` (\"json\" default or \"table\"), `suggest` (default false — set true to get a draft rule per item, which is large), `memory_dir`, `wiki_dir`."
     )]
-    async fn get_claude_md_drift(
+    async fn get_drift(
         &self,
-        Parameters(params): Parameters<GetClaudeMdDriftParams>,
+        Parameters(params): Parameters<GetDriftParams>,
     ) -> Result<CallToolResult, McpError> {
-        use crate::claude_md_drift::{DriftError, render_json, render_table, run};
+        use crate::drift::{self, Source, SourceInputs};
 
         let root = security::project_root();
-        let report = run(&root).map_err(|e| match e {
-            DriftError::ClaudeMdMissing(p) => Self::err(format!("CLAUDE.md not found at {}", p)),
-            other => Self::err(other.to_string()),
-        })?;
 
-        let uncovered = report
-            .items
-            .iter()
-            .filter(|i| i.similarity < report.coverage_threshold)
-            .count();
-        Self::log_event("get_claude_md_drift", |e| {
-            e.with("items_total", report.items.len() as u64)
-                .with("items_uncovered", uncovered as u64)
-        });
-
-        match params.format.as_deref() {
-            Some("table") => Self::ok_text(render_table(&report)),
-            _ => Self::ok_text(render_json(&report)),
-        }
-    }
-
-    #[tool(
-        description = "Detect drift between Claude Code's auto-memory store and the phronesis rule pack / durable directives. Walks `~/.claude/projects/<encoded-cwd>/memory/`, parses frontmatter on each `.md` file, and classifies each entry into one of three buckets: `actionable` (port to a rule), `ambient` (port to durable.md), or `personal` (stays in MEMORY.md). Non-personal entries are scored by token overlap against rules.json and durable.md; uncovered entries are candidates for porting. Read-only, heuristic, no LLM call. Use this when the user mentions memory, durable guidance, or asks whether a saved preference is enforced. Optional `memory_dir` overrides the default location. Optional `format` param: \"json\" (default) or \"table\"."
-    )]
-    async fn get_memory_drift(
-        &self,
-        Parameters(params): Parameters<GetMemoryDriftParams>,
-    ) -> Result<CallToolResult, McpError> {
-        use crate::memory_drift::{
-            DriftError, default_memory_dir, render_json, render_table, run_with_dir,
+        let sources: Vec<Source> = match params.source.as_deref().unwrap_or("all") {
+            "all" => Source::ALL.to_vec(),
+            "claude_md" => vec![Source::ClaudeMd],
+            "memory" => vec![Source::Memory],
+            "wiki" => vec![Source::Wiki],
+            "code" => vec![Source::Code],
+            other => {
+                return Err(Self::err(format!(
+                    "unknown source {other:?} — expected one of: claude_md, memory, wiki, code, all"
+                )));
+            }
         };
 
-        let root = security::project_root();
-        let memory_dir = match params.memory_dir.as_deref() {
-            Some(p) => std::path::PathBuf::from(p),
-            None => default_memory_dir(&root),
+        let memory_dir = params.memory_dir.as_deref().map(std::path::PathBuf::from);
+        let wiki_dir = params.wiki_dir.as_deref().map(std::path::PathBuf::from);
+        let inputs = SourceInputs {
+            project_root: &root,
+            claude_md: None,
+            memory_dir: memory_dir.as_deref(),
+            wiki_dir: wiki_dir.as_deref(),
+            suggest: params.suggest.unwrap_or(false),
         };
 
-        let report = run_with_dir(&root, &memory_dir).map_err(|e| match e {
-            DriftError::MemoryDirMissing(p) => Self::err(format!(
-                "memory directory not found at {} — Claude Code creates this directory on first save; pass `memory_dir` to point elsewhere",
-                p
-            )),
-            other => Self::err(other.to_string()),
-        })?;
+        let limit = params.limit.unwrap_or(drift::DEFAULT_LIMIT);
+        let agg = drift::run_all(&sources, &inputs, limit);
 
-        let actionable_uncovered = report
-            .items
-            .iter()
-            .filter(|i| {
-                matches!(i.bucket, crate::memory_drift::Bucket::Actionable)
-                    && i.similarity < report.coverage_threshold
-            })
-            .count();
-        Self::log_event("get_memory_drift", |e| {
-            e.with("items_total", report.items.len() as u64)
-                .with("actionable_uncovered", actionable_uncovered as u64)
+        Self::log_event("get_drift", |e| {
+            e.with("sources_present", agg.totals.sources_present as u64)
+                .with("sources_missing", agg.totals.sources_missing as u64)
+                .with("sources_errored", agg.totals.sources_errored as u64)
+                .with("uncovered_total", agg.totals.uncovered_total as u64)
         });
 
-        match params.format.as_deref() {
-            Some("table") => Self::ok_text(render_table(&report)),
-            _ => Self::ok_text(render_json(&report)),
-        }
-    }
-
-    #[tool(
-        description = "Detect drift between ADR-style decision documents in `.phronesis/wiki/decisions/` and the current rule pack. Each decision is classified as `covered` (an explicit `enforces:` frontmatter entry matches an existing rule), `likely-covered` (Jaccard fuzzy match above 0.15), `uncovered` (drift candidate — should become a rule or be marked superseded), or `superseded` (history, excluded from active drift). Heuristic by design, no LLM call. Use when the user mentions decisions, ADRs, or asks whether a recorded choice is being enforced. Optional `wiki_dir` overrides the default. Optional `format`: \"json\" (default) or \"table\"."
-    )]
-    async fn get_wiki_drift(
-        &self,
-        Parameters(params): Parameters<GetWikiDriftParams>,
-    ) -> Result<CallToolResult, McpError> {
-        use crate::wiki;
-        use crate::wiki_drift::{DriftError, render_json, render_table, run_with_dir};
-
-        let root = security::project_root();
-        let dir = match params.wiki_dir.as_deref() {
-            Some(p) => std::path::PathBuf::from(p),
-            None => wiki::default_wiki_dir(&root).join("decisions"),
+        let body = if params.format.as_deref() == Some("table") {
+            drift::render_table(&agg)
+        } else {
+            drift::render_json(&agg)
         };
-        let report = run_with_dir(&root, &dir).map_err(|e| match e {
-            DriftError::Wiki(wiki::WikiError::DirMissing(p)) => Self::err(format!(
-                "wiki decisions directory not found at {} — run `phr-mcp init` to create it, or pass `wiki_dir` to point elsewhere",
-                p
-            )),
-            other => Self::err(other.to_string()),
-        })?;
-
-        let uncovered = report
-            .items
-            .iter()
-            .filter(|i| matches!(i.bucket, crate::wiki_drift::Bucket::Uncovered))
-            .count();
-        Self::log_event("get_wiki_drift", |e| {
-            e.with("items_total", report.items.len() as u64)
-                .with("items_uncovered", uncovered as u64)
-        });
-
-        match params.format.as_deref() {
-            Some("table") => Self::ok_text(render_table(&report)),
-            _ => Self::ok_text(render_json(&report)),
-        }
+        Ok(CallToolResult::success(vec![Content::text(body)]))
     }
 
     #[tool(
@@ -1636,20 +1574,23 @@ mod tool_registration_tests {
         );
     }
 
-    /// Positive coverage: the drift-detection MCP tools shipped in 0.7.0
-    /// remain registered. Guards against the SPEC-vs-code gap reappearing
-    /// (where `memory_drift` shipped only as CLI without the MCP wrapper).
+    /// One drift tool, not three. The three removed names must NOT be
+    /// registered — an incomplete removal is the failure this catches, and
+    /// it is the same class of SPEC-vs-code gap the previous versions of
+    /// these assertions were written to guard against.
     #[test]
-    fn drift_detection_tools_are_registered() {
+    fn drift_is_one_tool_and_the_three_old_names_are_gone() {
         let mcp = EpistemeMcp::new();
         assert!(
-            mcp.tool_router.has_route("get_claude_md_drift"),
-            "get_claude_md_drift tool must be registered"
+            mcp.tool_router.has_route("get_drift"),
+            "get_drift tool must be registered (matches `phr-mcp drift` CLI)"
         );
-        assert!(
-            mcp.tool_router.has_route("get_memory_drift"),
-            "get_memory_drift tool must be registered"
-        );
+        for gone in ["get_claude_md_drift", "get_memory_drift", "get_wiki_drift"] {
+            assert!(
+                !mcp.tool_router.has_route(gone),
+                "{gone} must be removed — superseded by get_drift(source)"
+            );
+        }
     }
 
     /// The confidence-scoring MCP tools are registered.
@@ -1696,22 +1637,13 @@ mod tool_registration_tests {
         );
     }
 
-    /// Regression: `get_wiki_drift` (0.9.0) is registered.
+    /// Regression: `query_code_graph` (0.9.0) is registered.
     #[test]
     fn code_graph_query_tool_is_registered() {
         let mcp = EpistemeMcp::new();
         assert!(
             mcp.tool_router.has_route("query_code_graph"),
             "query_code_graph tool must be registered (matches `phr-mcp graph query` CLI)"
-        );
-    }
-
-    #[test]
-    fn wiki_drift_tool_is_registered() {
-        let mcp = EpistemeMcp::new();
-        assert!(
-            mcp.tool_router.has_route("get_wiki_drift"),
-            "get_wiki_drift tool must be registered (matches `phr-mcp wiki-drift` CLI)"
         );
     }
 }

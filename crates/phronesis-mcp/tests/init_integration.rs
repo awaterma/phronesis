@@ -54,8 +54,16 @@ fn init_creates_all_five_files_in_fresh_project() {
 
     // Verify the durable.md template nudges the model toward the drift tools.
     let durable = std::fs::read_to_string(dir.path().join(".phronesis/durable.md")).unwrap();
-    assert!(durable.contains("get_claude_md_drift"));
-    assert!(durable.contains("get_memory_drift"));
+    assert!(
+        durable.contains("get_drift"),
+        "durable.md must nudge the model toward the consolidated drift tool"
+    );
+    for gone in ["get_claude_md_drift", "get_memory_drift", "get_wiki_drift"] {
+        assert!(
+            !durable.contains(gone),
+            "durable.md still names the removed tool {gone} — it is re-injected every session"
+        );
+    }
 }
 
 #[test]
