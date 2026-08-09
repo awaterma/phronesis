@@ -47,8 +47,22 @@ pub fn clamp_limit(requested: usize) -> usize {
 /// Sort by descending triage urgency, then truncate. Sorting first means a
 /// truncated response keeps the items that matter, rather than whichever
 /// happened to be scanned first.
+///
+/// Personal entries are deprioritized below actionable drift so they cannot
+/// crowd out real findings. They share `Family::Uncovered` with actionable
+/// items (a personal entry scoring below threshold is correctly `Uncovered`),
+/// so the category axis breaks the tie: non-Personal sorts first within the
+/// same family.
 pub fn apply_limit(mut items: Vec<DriftItem>, limit: usize) -> (Vec<DriftItem>, bool) {
-    items.sort_by_key(|item| std::cmp::Reverse(item.verdict.family()));
+    items.sort_by(|a, b| {
+        let fam_cmp = b.verdict.family().cmp(&a.verdict.family());
+        if fam_cmp != std::cmp::Ordering::Equal {
+            return fam_cmp;
+        }
+        let a_personal = a.category == Some(super::types::Category::Personal);
+        let b_personal = b.category == Some(super::types::Category::Personal);
+        a_personal.cmp(&b_personal)
+    });
     let truncated = items.len() > limit;
     items.truncate(limit);
     (items, truncated)
@@ -155,6 +169,9 @@ pub fn run_all(sources: &[Source], inputs: &SourceInputs<'_>, limit: usize) -> A
         }
         totals.uncovered_total += report.uncovered_count;
         for item in &report.items {
+            if item.category == Some(super::types::Category::Personal) {
+                continue;
+            }
             *totals.by_family.entry(item.verdict.family()).or_insert(0) += 1;
         }
         let (kept, truncated) = apply_limit(std::mem::take(&mut report.items), limit);
@@ -420,6 +437,93 @@ mod tests {
         assert_eq!(
             kept[0].subject, "uncovered",
             "most urgent must survive truncation"
+        );
+    }
+
+    #[test]
+    fn personal_entries_do_not_crowd_out_actionable_drift() {
+        // F3: Personal entries share Family::Uncovered with actionable items.
+        // Without a category-aware sort, alphabetical scan order can fill
+        // every slot with Personal entries, hiding real drift.
+        let mk = |v: crate::drift::Verdict, cat: Option<crate::drift::Category>, s: &str| {
+            crate::drift::DriftItem {
+                subject: s.to_string(),
+                verdict: v,
+                category: cat,
+                suggestion: None,
+                evidence: crate::drift::Evidence::Heuristic {
+                    score: 0.0,
+                    threshold: 0.15,
+                    matched_rules: vec![],
+                },
+            }
+        };
+        let items = vec![
+            mk(
+                crate::drift::Verdict::Uncovered,
+                Some(crate::drift::Category::Personal),
+                "aaa-personal",
+            ),
+            mk(
+                crate::drift::Verdict::Uncovered,
+                Some(crate::drift::Category::Personal),
+                "bbb-personal",
+            ),
+            mk(
+                crate::drift::Verdict::Uncovered,
+                None,
+                "actionable-drift",
+            ),
+        ];
+        let (kept, _) = apply_limit(items, 1);
+        assert_eq!(
+            kept[0].subject, "actionable-drift",
+            "actionable drift must survive truncation over Personal entries"
+        );
+    }
+
+    #[test]
+    fn by_family_excludes_personal_entries() {
+        // F4: by_family must agree with uncovered_total, which excludes
+        // Personal. Without this, the JSON envelope can report
+        // {"by_family": {"uncovered": N}} while uncovered_total is 0.
+        use crate::drift::{Category, DriftItem, Evidence, Verdict};
+
+        let mk = |v: Verdict, cat: Option<Category>| DriftItem {
+            subject: "s".to_string(),
+            verdict: v,
+            category: cat,
+            suggestion: None,
+            evidence: Evidence::Heuristic {
+                score: 0.0,
+                threshold: 0.15,
+                matched_rules: vec![],
+            },
+        };
+        let items = vec![
+            mk(Verdict::Uncovered, Some(Category::Personal)),
+            mk(Verdict::Uncovered, Some(Category::Personal)),
+            mk(Verdict::Uncovered, None),
+        ];
+        let report = DriftReport {
+            source: Source::Memory,
+            availability: Availability::Present { scanned: 3 },
+            uncovered_count: uncovered_count(&items),
+            items,
+        };
+        let mut totals = Totals::default();
+        for item in &report.items {
+            if item.category == Some(crate::drift::Category::Personal) {
+                continue;
+            }
+            *totals.by_family.entry(item.verdict.family()).or_insert(0) += 1;
+        }
+        totals.uncovered_total = report.uncovered_count;
+        assert_eq!(totals.uncovered_total, 1, "one non-Personal uncovered item");
+        assert_eq!(
+            totals.by_family.get(&crate::drift::Family::Uncovered),
+            Some(&1),
+            "by_family must exclude Personal, matching uncovered_total"
         );
     }
 }

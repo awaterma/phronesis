@@ -456,4 +456,34 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn current_template_is_not_in_the_prior_archive() {
+        // If the current template is also in the prior list, the prior list
+        // is stale — a template was archived without removing it from the
+        // current slot, or vice versa.
+        for prior in known_prior_templates() {
+            assert_ne!(
+                crate::init::DEFAULT_DURABLE_MD, prior,
+                "current template must not duplicate a prior template"
+            );
+        }
+    }
+
+    #[test]
+    fn the_current_template_byte_length_is_pinned() {
+        // If DEFAULT_DURABLE_MD changes, this test fails — the author must
+        // archive the outgoing bytes as a new DURABLE_V{n} constant and add
+        // it to known_prior_templates before updating this pin. This is the
+        // enforcement that F1 identified as missing: without it, a template
+        // change silently strands every unedited installation as
+        // `Customized`, closing the migration path.
+        let current_bytes = crate::init::DEFAULT_DURABLE_MD.len();
+        assert_eq!(
+            current_bytes, 1071,
+            "DEFAULT_DURABLE_MD byte length changed from 766 to {current_bytes} — \
+             archive the outgoing template as DURABLE_V{{n}} in known_prior_templates \
+             before updating this pin"
+        );
+    }
 }

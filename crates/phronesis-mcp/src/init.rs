@@ -884,9 +884,13 @@ fn write_durable_md(
                 "= .phronesis/durable.md matches shipped template v{version} \
                  — run `phr-mcp migrate-durable` to update it"
             ),
-            _ => "= .phronesis/durable.md already exists — leaving unchanged \
-                  (edit in place to customize)"
+            Ok(_) => "= .phronesis/durable.md already exists — leaving unchanged \
+                      (edit in place to customize)"
                 .to_string(),
+            Err(e) => format!(
+                "! .phronesis/durable.md exists but could not be read: {e} \
+                 — check file permissions and retry"
+            ),
         };
         report.steps.push(note);
         return Ok(());
