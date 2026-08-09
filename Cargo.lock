@@ -1129,7 +1129,7 @@ checksum = "9555b1514d2d99d78150d3c799d4c357a3e2c2a8062cd108e93a06d9057629c5"
 
 [[package]]
 name = "phronesis"
-version = "0.26.0"
+version = "0.25.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1144,7 +1144,7 @@ dependencies = [
 
 [[package]]
 name = "phronesis-mcp"
-version = "0.26.0"
+version = "0.25.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "phronesis-rhai"
-version = "0.26.0"
+version = "0.25.1"
 dependencies = [
  "phronesis",
  "rhai",

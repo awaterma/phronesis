@@ -1364,7 +1364,8 @@
         <span class="role">gap · triage · suggest</span>
         <p>
           One consolidated drift tool compares what the project says (in
-          CLAUDE.md, in auto-memory, in ADR-style decision pages)
+          CLAUDE.md, in auto-memory, in ADR-style decision pages) and
+          what the code still defines (via rule-to-code bindings)
           against what the rule pack actually enforces. Uncovered
           items surface as triage candidates — gaps that should
           either become rules or be explicitly marked as
@@ -1375,6 +1376,7 @@
           <li><span class="mono">drift --source claude_md</span> — CLAUDE.md bullets</li>
           <li><span class="mono">drift --source memory</span> — auto-memory entries</li>
           <li><span class="mono">drift --source wiki</span> — ADR decision pages</li>
+          <li><span class="mono">drift --source code</span> — stale rule-to-code bindings</li>
           <li><span class="mono">--suggest</span> emits draft rule JSON</li>
         </ul>
       </article>

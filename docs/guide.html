@@ -647,6 +647,11 @@ ADR-style decisions under <code>.phronesis/wiki/decisions/</code> that
 no rule enforces. Decisions with explicit
 <code>enforces: [rule-id]</code> frontmatter resolve deterministically;
 others fall through to a token-overlap fallback.</li>
+<li><strong><code>phr-mcp drift --source code</code></strong> —
+rules whose bound function referents the structural code graph no
+longer defines. Stale bindings surface here with the original and
+relocated definition paths, so a rule that outlived its code is
+reviewed rather than trusted.</li>
 </ul>
 <p>A snippet of real output from <code>drift --source wiki</code> on
 this repo:</p>
@@ -797,7 +802,7 @@ every option.</p>
 <td>Show the grounded confidence band for the open work unit</td>
 </tr>
 <tr>
-<td><code>phr-mcp journey --explain</code></td>
+<td><code>phr-mcp journey --explain &lt;rule-id&gt;</code></td>
 <td>Show current trajectory facts and their derivation</td>
 </tr>
 <tr>
