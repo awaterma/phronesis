@@ -22,8 +22,8 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   counts. `rebuild_code_graph` performs a server-rooted full rebuild, reconciles
   bindings, and records the generation transition in the action log.
 - **GitHub release binaries.** Release automation builds and attaches
-  `phr-mcp` archives for Linux x86-64, macOS x86-64, macOS Apple Silicon, and
-  Windows x86-64 after release-plz creates the matching package release.
+  `phr-mcp` archives for Linux x86-64, macOS Apple Silicon, and Windows
+  x86-64 after release-plz creates the matching package release.
 
 ### Changed
 

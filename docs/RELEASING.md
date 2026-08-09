@@ -43,8 +43,8 @@ operator guide.
    - tags `<package>-vX.Y.Z` (one tag per crate; `vX.Y.Z` up to and
      including v0.24.0),
    - creates the GitHub release,
-   - builds and attaches `phr-mcp` archives for Linux x86-64, macOS x86-64,
-     macOS Apple Silicon, and Windows x86-64 after release-plz completes. The
+   - builds and attaches `phr-mcp` archives for Linux x86-64, macOS Apple
+     Silicon, and Windows x86-64 after release-plz completes. The
      reusable binary workflow verifies that the expected `phronesis-mcp` tag
      points at the release commit, then waits for its GitHub release before
      uploading, so ordinary pushes are no-ops and versions cannot diverge.
