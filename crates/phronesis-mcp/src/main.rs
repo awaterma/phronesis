@@ -277,22 +277,23 @@ enum Command {
         path: PathBuf,
         /// Comma-separated starter packs. Available: base, llm, rust, rhai,
         /// python, typescript, swift, confidence, journey, context, structural,
-        /// none. `base` expands to every language-agnostic pack, so the usual
-        /// shape is "base,<your language>" (e.g. "base,rust" or
-        /// "base,typescript"). The `llm` pack carries deflection rules that
-        /// catch LLM-bad-behavior disclaimers and unverified completion claims;
+        /// none. Every selection except `none` automatically includes every
+        /// language-agnostic base pack, so select only the additional language
+        /// packs you need (e.g. "rust" or "typescript"). The `llm` pack
+        /// carries deflection rules that catch LLM-bad-behavior disclaimers
+        /// and unverified completion claims;
         /// it is independent of language. Language packs carry only
         /// language-specific enforcement and are deliberately NOT in `base`:
         /// several match raw substrings gated only by path, so composing every
         /// language at once produces cross-language false positives. The
         /// `confidence` pack adds the commit-gating rules plus a
-        /// .phronesis/confidence.json opt-in marker and a .phronesis/bugs.json
+        /// .phronesis/confidence.json configuration and a .phronesis/bugs.json
         /// registry. The `journey` pack scaffolds .phronesis/journey.json for
         /// project-defined cross-call taggers; projects add the journey_* rules
-        /// they need. The `context` pack opts in to bounded durable context and
+        /// they need. The `context` pack provides bounded durable context and
         /// static situational capsules, and replaces the generated durable.md
         /// with a compact kernel when no durable file exists yet.
-        #[arg(long, default_value = "llm")]
+        #[arg(long, default_value = "base")]
         packs: String,
         /// Deprecated alias for --packs. Single value; auto-composed with
         /// `llm` for backward compatibility with the pre-pack-split CLI.
@@ -1401,10 +1402,10 @@ async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {
             };
             match context::render::render(&root, kind, 5).await {
                 None => {
-                    // Not opted in. Report that plainly rather than showing a
+                    // Not configured. Report that plainly rather than showing a
                     // packed body the project would never actually receive.
                     let reason = format!(
-                        "no {} — this project has not opted in; the legacy renderer is in use",
+                        "no {} — this project has not been initialized with context support; the legacy renderer is in use",
                         context::config::CONTEXT_CONFIG_FILENAME
                     );
                     if json {
@@ -1579,10 +1580,10 @@ struct InitCtx {
 
 fn handle_init(ctx: InitCtx) -> anyhow::Result<()> {
     let packs_str = match &ctx.language {
-        Some(lang) if ctx.packs == "llm" => match lang.to_lowercase().as_str() {
+        Some(lang) if ctx.packs == "base" => match lang.to_lowercase().as_str() {
             "none" => "none".to_string(),
-            "minimal" => "llm".to_string(),
-            other => format!("llm,{}", other),
+            "minimal" => "base".to_string(),
+            other => format!("base,{}", other),
         },
         _ => ctx.packs,
     };

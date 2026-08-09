@@ -74,7 +74,7 @@ asserts facts about this one call, fires, and exits. That statelessness is the
 whole point: there is no in-memory state to drift, so iteration 900 is checked
 exactly as rigorously as iteration 1.
 
-This is the layer the starter packs target. `phr-mcp init --packs llm,rust`
+This is the layer the starter packs target. `phr-mcp init --packs rust`
 gives you a working set immediately: the `rust` pack blocks `.unwrap()` /
 `panic!()` / `todo!()` in `src/`, `Result<_, String>` returns, and more; the
 `llm` pack blocks blame-shifting and **unverified completion claims**, and warns
@@ -133,8 +133,8 @@ declarative toolchain definitions (built-in Cargo plus project definitions in
 
 Pair it with the `llm` pack's "unverified completion claim" rule and you have a
 loop that physically cannot declare victory before the work compiles and passes.
-Opt in by writing `.phronesis/confidence.json`; inspect the current band with
-`phr-mcp confidence`. (Full design:
+The default platform writes `.phronesis/confidence.json`; inspect the current
+band with `phr-mcp confidence`. (Full design:
 [SPEC-confidence-scoring](specs/SPEC-confidence-scoring.md).)
 
 ---
@@ -148,13 +148,13 @@ cargo install --path crates/phronesis-mcp
 # 2. Register the MCP server at user scope (once per machine)
 phr-mcp install
 
-# 3. Initialize the project with the loop-relevant packs
+# 3. Initialize the default platform plus the relevant language pack
 cd /your/project
-phr-mcp init --packs llm,rust,confidence,journey
+phr-mcp init --packs rust
 ```
 
-`journey` is the pack that unlocks layer 2, and is the one most specific to
-loop-based work. `init` is idempotent and only adds its own entries — existing
+Journey support and the other language-agnostic subsystems are enabled by
+default. `init` is idempotent and only adds its own entries — existing
 permissions, hooks, and gitignore lines are preserved. After running it,
 restart the agent host so it picks up the hooks and MCP server. Codex users
 must also review changed project hooks with `/hooks`; Phronesis does not bypass
@@ -164,7 +164,7 @@ You can sanity-check the install at any time:
 
 ```sh
 $ phr-mcp --version
-phr-mcp 0.22.0
+phr-mcp 0.26.0
 ```
 
 Everything in the rest of this guide is drawn from the actual state of this
@@ -453,21 +453,21 @@ outside. But the same loop is also the cheapest place to *discover* new rules:
 it has live evidence of where it slips, where existing rules over-fire, and
 where guidance lives as prose that nobody can enforce.
 
-Phronesis exposes three drift surfaces that close this feedback loop:
+Phronesis exposes one consolidated drift surface with source filters:
 
-- **`phr-mcp claude-md-drift`** — bullets in `CLAUDE.md` that no current rule
+- **`phr-mcp drift --source claude_md`** — bullets in `CLAUDE.md` that no current rule
   covers. Candidates for porting to a rule, or for explicitly marking
   "non-lintable by design."
-- **`phr-mcp memory-drift`** — entries in the agent's auto-memory store that
+- **`phr-mcp drift --source memory`** — entries in the agent's auto-memory store that
   have no matching rule or `durable.md` paragraph. Actionable memories
   (named commands, named tool calls) should become rules; ambient ones
   (shared prose) belong in `durable.md`.
-- **`phr-mcp wiki-drift`** — ADR-style decisions under `.phronesis/wiki/decisions/`
+- **`phr-mcp drift --source wiki`** — ADR-style decisions under `.phronesis/wiki/decisions/`
   that no rule enforces. Decisions with explicit `enforces: [rule-id]`
   frontmatter resolve deterministically; others fall through to a token-overlap
   fallback.
 
-A snippet of real output from `wiki-drift` on this repo:
+A snippet of real output from `drift --source wiki` on this repo:
 
 ```
 Decision                      Bucket          Match
@@ -491,7 +491,7 @@ closing the gap:
    `phr-mcp decision new <slug>`. Fill in Context / Decision / Enforcement /
    Consequences. If the decision is mechanically enforceable, propose a rule in
    `.phronesis/rules.json` and wire `enforces: [rule-id]` into the decision's
-   frontmatter so the next `wiki-drift` run picks it up as covered.
+   frontmatter so the next wiki-source drift run picks it up as covered.
 2. **Friction-driven proposals.** When a rule blocks the loop three or more
    times in the same session for what looks like a legitimate pattern, pause:
    either the rule's scope is too broad (propose a narrower `file_path_matches`
@@ -580,6 +580,34 @@ itself.
   block` to gate it, so the recurring loop can't drift past your rules even
   when nobody is watching. The deep integration, though, is the inner loop —
   that is the cycle phronesis exists to keep honest.
+
+---
+
+## Command reference
+
+The commands below cover the operational surface used most often in a long
+agent loop. Run `phr-mcp <command> --help` for every option.
+
+| Command | Purpose |
+|---------|---------|
+| `phr-mcp init` | Install the default platform and host integrations |
+| `phr-mcp init --packs rust` | Add the Rust language rules to the default platform |
+| `phr-mcp stats` | Summarize rule activity from the append-only action log |
+| `phr-mcp audit --fail-on block` | Scan the tree and fail when blocking debt is present |
+| `phr-mcp trend` | Inspect debt over time from audit snapshots |
+| `phr-mcp confidence` | Show the grounded confidence band for the open work unit |
+| `phr-mcp journey --explain` | Show current trajectory facts and their derivation |
+| `phr-mcp drift` | Compare rules with durable guidance, memory, ADRs, and bound code |
+| `phr-mcp graph status --json` | Inspect structural graph freshness and generation |
+| `phr-mcp graph rebuild --json` | Rebuild the graph and reconcile rule-to-code bindings |
+
+The MCP server exposes the same governance state as structured JSON objects.
+Collection tools such as `list_rules`, `list_facts`, `get_agenda`,
+`get_consequences`, and `get_action_log` always wrap arrays in named object
+envelopes. Structural clients can use `query_code_graph`,
+`get_code_graph_status`, and `rebuild_code_graph` without dropping to a shell.
+Mutating rule and fact tools persist or reconcile their related state at the
+same boundary.
 
 ---
 

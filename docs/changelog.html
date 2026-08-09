@@ -1,0 +1,1307 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Phronesis — Changelog</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="./web.css" />
+</head>
+<body>
+<nav class="web-nav" aria-label="Documentation">
+  <a href="./index.html">Home</a>
+  <a href="./explainer.html">Explainer</a>
+  <a href="./catalogue.html">Catalogue</a>
+  <a href="./guide.html">Guide</a>
+  <a href="./changelog.html">Changelog</a>
+</nav>
+<header>
+  <div class="web-kicker">Phronesis documentation · v0.26.0</div>
+</header>
+<main>
+<header id="title-block-header">
+<h1 class="title">Phronesis — Changelog</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#changelog" id="toc-changelog">Changelog</a>
+<ul>
+<li><a href="#section" id="toc-section">[0.26.0] - 2026-08-09</a></li>
+<li><a href="#section-1" id="toc-section-1">[0.25.0] -
+2026-08-01</a></li>
+<li><a href="#section-2" id="toc-section-2">[0.24.0] -
+2026-07-31</a></li>
+<li><a href="#section-3" id="toc-section-3">[0.23.1] -
+2026-07-30</a></li>
+<li><a href="#section-4" id="toc-section-4">[0.23.0] -
+2026-07-30</a></li>
+<li><a href="#section-5" id="toc-section-5">[0.22.0] -
+2026-07-25</a></li>
+<li><a href="#section-6" id="toc-section-6">[0.20.0] -
+2026-07-13</a></li>
+<li><a href="#section-7" id="toc-section-7">[0.19.0] -
+2026-07-12</a></li>
+<li><a href="#section-8" id="toc-section-8">[0.18.0] -
+2026-07-11</a></li>
+<li><a href="#section-9" id="toc-section-9">[0.17.1] -
+2026-07-06</a></li>
+<li><a href="#section-10" id="toc-section-10">0.17.0 -
+2026-07-04</a></li>
+<li><a href="#section-11" id="toc-section-11">0.16.2 -
+2026-07-03</a></li>
+<li><a href="#section-12" id="toc-section-12">[0.16.1] -
+2026-07-03</a></li>
+<li><a href="#section-13" id="toc-section-13">[0.16.0] -
+2026-07-03</a></li>
+<li><a href="#section-14" id="toc-section-14">[0.15.0] -
+2026-06-24</a></li>
+<li><a href="#section-15" id="toc-section-15">0.14.0 -
+2026-06-21</a></li>
+<li><a href="#section-16" id="toc-section-16">0.13.2 -
+2026-06-20</a></li>
+<li><a href="#section-17" id="toc-section-17">0.13.1 -
+2026-06-20</a></li>
+<li><a href="#section-18" id="toc-section-18">0.13.0 -
+2026-06-20</a></li>
+<li><a href="#section-19" id="toc-section-19">0.12.0 -
+2026-06-19</a></li>
+<li><a href="#section-20" id="toc-section-20">0.11.0 -
+2026-06-13</a></li>
+<li><a href="#known-follow-ups-specs-landed-implementation-deferred"
+id="toc-known-follow-ups-specs-landed-implementation-deferred">Known
+follow-ups (specs landed, implementation deferred)</a></li>
+<li><a href="#earlier-releases" id="toc-earlier-releases">Earlier
+releases</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="changelog">Changelog</h1>
+<p>All notable changes to this project are documented here. The format
+follows <a href="https://keepachangelog.com/en/1.1.0/">Keep a
+Changelog</a>. This project is pre-1.0: while <code>0.x</code>, MINOR
+versions may carry breaking changes.</p>
+<h2 id="section">[0.26.0] - 2026-08-09</h2>
+<h3 id="added">Added</h3>
+<ul>
+<li><strong>Rule-to-code staleness bindings.</strong> Conservative,
+unqualified call-shaped literals in rules bind to locally defined
+functions in the structural graph. When every established referent
+disappears, a formerly blocking rule warns instead of claiming authority
+from stale evidence. Method calls, namespace calls, attributes, prose,
+foreign symbols, and rules with <code>binds: false</code> do not
+bind.</li>
+<li><strong>Code drift in the consolidated drift surface.</strong>
+<code>phr-mcp drift --source code</code> and
+<code>get_drift(source="code")</code> report stale rule bindings
+alongside the existing prose, memory, and decision corpora.</li>
+<li><strong>MCP graph recovery.</strong>
+<code>get_code_graph_status</code> reports missing, fresh, stale, or
+outdated graph state with generation, edge, file, and binding counts.
+<code>rebuild_code_graph</code> performs a server-rooted full rebuild,
+reconciles bindings, and records the generation transition in the action
+log.</li>
+<li><strong>GitHub release binaries.</strong> Release automation builds
+and attaches <code>phr-mcp</code> archives for Linux x86-64, macOS
+x86-64, macOS Apple Silicon, and Windows x86-64 after release-plz
+creates the matching package release.</li>
+</ul>
+<h3 id="changed">Changed</h3>
+<ul>
+<li><strong>The complete language-agnostic platform is now the
+default.</strong> <code>init</code> and every non-<code>none</code> pack
+selection include <code>llm</code>, <code>confidence</code>,
+<code>journey</code>, <code>structural</code>, and <code>context</code>;
+language packs remain additive. <code>none</code> is an explicit,
+mutually exclusive escape hatch.</li>
+<li><strong>Smaller durable context is the default.</strong> Fresh
+projects receive the bounded kernel/context scaffolding and graph state
+without a separate pack opt-in.</li>
+<li><strong>MCP collection results use stable object envelopes.</strong>
+<code>list_rules</code>, <code>list_facts</code>,
+<code>get_agenda</code>, <code>get_consequences</code>, and
+<code>get_action_log</code> now return named JSON objects through both
+<code>structuredContent</code> and compatibility text, avoiding SDK
+failures on top-level arrays.</li>
+<li><strong>Documentation is web-native and current.</strong> The GitHub
+Pages navigation no longer sends readers into Markdown sources; the loop
+guide and changelog now have dedicated HTML pages. The README,
+explainer, and catalogue use a new mineral teal/indigo visual system
+with progressive SVG diagrams for the governance boundary, default
+subsystems, structural code graph, RETE internals, and concrete rule
+behavior. The docs describe the unified <code>drift</code>,
+<code>stats</code>, default-platform, graph lifecycle, and MCP envelope
+surfaces.</li>
+</ul>
+<h3 id="safety">Safety</h3>
+<ul>
+<li>Missing, malformed, stale-graph, or generation-mismatched binding
+evidence never demotes a block. Direct rule-file edits and MCP rule
+mutations reconcile bindings without advancing the graph
+generation.</li>
+</ul>
+<h2 id="section-1">[0.25.0] - 2026-08-01</h2>
+<h3 id="changed-1">Changed</h3>
+<ul>
+<li><p><strong><code>init::Pack</code> is
+<code>#[non_exhaustive]</code>.</strong> Adding a pack is this crate’s
+most routine extension point — four landed in recent releases
+(<code>Confidence</code>, <code>Journey</code>, <code>Structural</code>,
+<code>Context</code>) and more languages are expected — but each one was
+a semver break twice over: a variant added to an exhaustive enum, plus a
+discriminant shift for every variant after the insertion point.
+<code>cargo-semver-checks</code> flagged both on the
+<code>Context</code> addition. Marking the enum non-exhaustive makes
+future packs a non-event.</p>
+<p><strong>Migration:</strong> only affects code outside this workspace
+that matches on <code>Pack</code>. Add a <code>_ =&gt; ...</code> arm.
+Nothing inside the workspace changes, since
+<code>#[non_exhaustive]</code> does not constrain the defining
+crate.</p></li>
+</ul>
+<h3 id="added-1">Added</h3>
+<ul>
+<li><strong>Token-aware durable context (opt-in).</strong> A project
+that creates <code>.phronesis/context.json</code> gets deterministic,
+budgeted context packing instead of unconditional full-file reinjection.
+Every renderable unit is an indivisible item measured with its headings
+and separators, admitted only if it fits its kind ceiling, the shared
+byte capacity, and — when configured — a soft estimated-token budget
+(<code>ceil(bytes / 3)</code>). Current enforcement activity gets first
+claim on the payload, then the kernel, then situational nudges, then
+activity that overflowed its reserve.</li>
+<li><strong><code>.phronesis/kernel.md</code>, the always-on
+core.</strong> Written by <code>init --packs context</code>.
+<code>durable.md</code> keeps its meaning as the session-level project
+document and is never rewritten, repurposed, or shrunk.</li>
+<li><strong>Situational nudge capsules.</strong>
+<code>.phronesis/nudges/*.md</code> carry strict JSON frontmatter and a
+static Markdown body, selected by positive facts through the ordinary
+RETE engine. Bodies never interpolate fact arguments, so a filename or
+tool payload cannot become a second-order prompt-injection channel. Only
+four allowlisted predicates may trigger a capsule; adding one is a
+reviewed code change, not configuration.</li>
+<li><strong><code>phr-mcp context inspect | predicates | stats</code>.</strong>
+<code>inspect</code> is a true dry run: it writes no observation, so
+reading the diagnostic cannot contaminate the data it reports. It lists
+candidates, costs, ceilings, per-item omission reasons
+(<code>kind_ceiling</code>, <code>byte_capacity</code>,
+<code>token_capacity</code>, <code>displaced_by_nudge</code>), capsule
+load failures, and fact-hydration failures. Human and
+<code>--json</code> output are projections of one value.</li>
+<li><strong><code>--packs base</code>.</strong> Expands to every
+language-agnostic pack —
+<code>llm,confidence,journey,structural,context</code> — so the usual
+shape is <code>base,&lt;your language&gt;</code>. Language packs are
+deliberately excluded: several match raw substrings gated only by path,
+so composing them produces cross-language false positives (the
+TypeScript <code>: any</code> rule fires on Rust’s
+<code>: anyhow::Error</code>).</li>
+<li><strong>Context observations.</strong> Bounded
+<code>kind: "context"</code> records in the existing rotated log carry
+bytes, estimated tokens, per-kind omission counts, capsule ids, latency,
+and a raw-truncation flag — no bodies, fact arguments, or user content,
+and no claim about whether the model read or followed anything.</li>
+</ul>
+<h3 id="changed-2">Changed</h3>
+<ul>
+<li><strong>Context packing splits Markdown on <code>##</code> sections,
+not blank lines.</strong> The section — heading, lead-in, and the list
+under it — is the indivisible unit. Blank-line paragraphs let an
+over-budget list be dropped while its lead-in survived, producing text
+that promised content it did not deliver (“Three heuristic tools …:”
+followed by nothing). A section is now delivered whole or not at
+all.</li>
+<li><strong>Context source files are capped at 64 KiB.</strong> These
+are read on every hook invocation, so an accidentally huge file is
+ignored with a diagnostic rather than read and discarded each turn. This
+is the one place opt-out behavior differs from before: a
+<code>durable.md</code> over 64 KiB now yields no context where it
+previously yielded a 4 KiB truncation.</li>
+</ul>
+<h3 id="fixed">Fixed</h3>
+<ul>
+<li><strong>cargo-nextest runs grounded no test signal.</strong> The
+cargo toolchain def accepted <code>cargo nextest</code>, but its only
+<code>test_summary</code> pattern was libtest’s
+<code>test result:</code> line, which nextest never emits. The def
+claimed the command, parsed nothing, and recorded no tests signal — so a
+project gated on <code>cargo nextest run</code> stayed in the low
+confidence band and had every commit blocked regardless of how green the
+suite was. <code>test_summary</code> now accepts one pattern or several
+(bare string or array, so existing <code>toolchains.json</code> defs are
+unaffected); the first pattern that matches wins and all of its matches
+are summed.</li>
+<li><strong><code>.phronesis/nudges/README.md</code> was parsed as a
+capsule.</strong> The file <code>init</code> itself writes produced a
+load diagnostic on every hook invocation.</li>
+<li><strong>A limited <code>read_recent</code> parsed the entire action
+log.</strong> Every hook asks for a handful of recent entries, and the
+read parsed every line in the log plus its rotated predecessor to return
+the last few — so the cost grew without bound as a project accumulated
+history. A 3.8 MB log cost 16 ms per hook, and a real project measured
+30 ms. The read now scans backward from the newest record and stops once
+it has enough <em>matching</em> entries (counting matches, not lines, so
+a filter excluding the newest records still reaches back far enough),
+and only consults the rotated file when the current one cannot satisfy
+the limit. This affects every caller, including the legacy context path,
+<code>stats</code>, and <code>trend</code>.</li>
+<li><strong>Activity bullets rendered a dangling <code>in</code> with no
+path.</strong> Rules that fire on a shell command rather than a file
+edit log an empty <code>file</code>, which formatted as
+<code>- WARNED 36m ago: some-rule in</code> — malformed text in the
+prompt the model reads. The location clause is now omitted when there is
+no path. This changes the legacy renderer’s output for command-rule
+entries.</li>
+</ul>
+<h3 id="compatibility">Compatibility</h3>
+<ul>
+<li>Without <code>.phronesis/context.json</code> the session and
+interaction payloads are byte-identical to previous behavior, capsules
+are not scanned, and no context observations are written. Pinned by
+test. Two deliberate exceptions, both listed above: a
+<code>durable.md</code> over 64 KiB is now ignored rather than
+truncated, and command-rule activity bullets no longer carry a dangling
+<code>in</code> clause.</li>
+<li>Re-running <code>init</code> never overwrites an existing
+<code>context.json</code>, <code>kernel.md</code>,
+<code>durable.md</code>, or nudges <code>README.md</code>.</li>
+<li><code>session.charter_max_bytes</code> is defaulted, so
+configuration written before the charter existed keeps loading.</li>
+</ul>
+<h3 id="measurements">Measurements</h3>
+<p>Measured on a <code>base,rust</code> fixture carrying this
+repository’s own 3,292-byte durable file and five blocked edits,
+comparing legacy against opted-in:</p>
+<ul>
+<li>interaction payload 3,602 → 680 bytes (81.1% reduction), 1,201 → 227
+estimated tokens;</li>
+<li>session charter 4,062 bytes and truncated mid-rule-list → 2,664
+bytes and intact;</li>
+<li>all five current blocking items retained in both;</li>
+<li>zero raw truncations across 22 payloads;</li>
+<li>p95 context construction 3.0 ms with no journey/outcomes hydration,
+on a fixture whose action log held a handful of records.</li>
+</ul>
+<p>That latency figure describes a fresh project and is not
+representative on its own. Context construction reads recent hook
+decisions, and before the <code>read_recent</code> fix below that read
+parsed the entire log: a real project with a 3.8 MB log measured 16 ms,
+and one in the field measured 30 ms. Both are over the specification’s 5
+ms target. The fix removes the dependence on log size; the figures above
+should be read together with it.</p>
+<h3 id="limitations">Limitations</h3>
+<ul>
+<li>The specification’s measurement gate also asks for a second external
+corpus and a false-relevance review of capsule matches. The corpus
+measurement has not been run; the capsule review is vacuous because no
+capsules ship by default. <code>context</code> is therefore opt-in via
+<code>--packs</code>, and is not yet part of the default pack set.</li>
+<li>Graph hydration is excluded from capsule selection. The session
+charter reports graph freshness as a state line only.</li>
+<li><code>per_test</code> extraction remains libtest-only, so the
+known-bug registry does not see cargo-nextest per-test results.</li>
+</ul>
+<h2 id="section-2">[0.24.0] - 2026-07-31</h2>
+<h3 id="added-2">Added</h3>
+<ul>
+<li><strong>TypeScript structural code graphs.</strong> The graph now
+discovers npm package units and extracts <code>.ts</code>,
+<code>.tsx</code>, <code>.mts</code>, and <code>.cts</code> modules,
+functions, imports, direct test-call coverage, and non-null assertions.
+Resolution supports relative specifiers, <code>index</code> modules,
+<code>tsconfig.json</code> <code>baseUrl</code>, and <code>paths</code>
+aliases while excluding <code>node_modules</code> unconditionally.</li>
+<li><strong>TypeScript structural warnings.</strong>
+<code>warn-import-cycle</code> applies to resolved TypeScript module
+cycles, and <code>warn-untested-risky-call</code> uses the narrow
+<code>!</code> watchlist to report untested unchecked type assumptions.
+Both remain advisory.</li>
+</ul>
+<h3 id="limitations-1">Limitations</h3>
+<ul>
+<li>TypeScript project references, JavaScript extraction, and monorepo
+cross-unit resolution are not included. Unresolved relative and
+cross-unit imports are counted as skipped evidence rather than silently
+treated as a clean graph.</li>
+<li>Real-corpus validation against tough-cookie measured 1,221 base
+edges, 54 derived edges, 105 resolved imports, and zero skipped items
+across 47 files.</li>
+</ul>
+<h2 id="section-3">[0.23.1] - 2026-07-30</h2>
+<h3 id="fixed-1">Fixed</h3>
+<ul>
+<li><strong><code>query_code_graph</code> advertised “Rust only” and a
+stale identity form.</strong> The MCP tool description is what a model
+reads to decide whether a tool applies, so both claims changed behavior
+rather than merely being out of date. Python graphs build and query
+correctly — <code>init --packs structural</code> in a Python project
+produces a graph and <code>graph query defines_fn</code> returns
+<code>python:&lt;dist&gt;::&lt;pkg&gt;::&lt;mod&gt;::&lt;fn&gt;</code> —
+but the description reported the language unsupported. Its worked
+example also still used the pre-0.23 <code>crate::wme</code> identity
+form, so a caller following it queried a key nothing holds, received
+zero results, and could reasonably read that as an empty graph rather
+than a malformed query. The description now names both languages, gives
+the current identity form with an example per language, and marks
+<code>calls_api</code> as the Rust-only relation it is.</li>
+</ul>
+<h2 id="section-4">[0.23.0] - 2026-07-30</h2>
+<h3 id="added-3">Added</h3>
+<ul>
+<li><strong>Structural code-graph facts</strong>
+(<code>structural</code> pack, alias <code>graph</code>). A durable,
+gitignored graph of architectural relations at
+<code>.phronesis/graph.jsonl</code>, extracted by the
+<code>PostToolUse</code> sensor and hydrated into the RETE network at
+<code>PreToolUse</code>. Ships two <code>warn</code> rules:
+<code>warn-untested-risky-call</code> (a production function calling a
+panicking API with no direct test) and <code>warn-import-cycle</code> (a
+module in an import cycle). Both join <code>edited_file</code>, so they
+report the file in front of you rather than the whole repository on
+every edit. See <code>docs/specs/SPEC-triple-store-rete.md</code>.</li>
+<li><strong>Rust and Python extractors.</strong> Entity identity is
+<code>&lt;lang&gt;:&lt;package&gt;[#&lt;target&gt;]::&lt;module path&gt;</code>.
+Rust resolves Cargo packages, compilation targets, and dependency
+aliases including <code>[workspace.dependencies]</code> inheritance;
+Python resolves distributions from <code>pyproject.toml</code> (PEP 621
+and Poetry), both <code>src/</code> and flat layouts, and imports across
+sibling distributions in one repository.</li>
+<li><strong>Graph CLI and MCP surface.</strong>
+<code>phr-mcp graph rebuild</code>, <code>graph status</code>, and
+<code>graph query</code>, plus the <code>query_code_graph</code> MCP
+tool.</li>
+<li><strong><code>event.file_rel</code> for Rhai predicate
+providers</strong> — the edited path in the repo-relative form the graph
+keys files by, so provider-emitted facts can join graph facts on a path.
+<code>event.file_path</code> remains the host’s absolute path.</li>
+</ul>
+<h3 id="changed-3">Changed</h3>
+<ul>
+<li><strong>Graph identity carries an explicit format stamp.</strong>
+<code>.phronesis/graph.index</code> records the identity scheme it was
+built under. A graph built by an older version is reported as outdated
+rather than fresh, and the next save rebuilds it — content hashes cannot
+detect an identity change, because the files themselves do not
+change.</li>
+</ul>
+<h3 id="fixed-2">Fixed</h3>
+<ul>
+<li><strong>The <code>PostToolUse</code> graph sensor never ran through
+a real hook.</strong> A traversal guard rejected absolute paths, which
+is the only form hosts send; the sensor was additionally gated behind
+post-phase rules, which a pre-phase-only pack never has. Both are fixed,
+and <code>repo_relative</code> now resolves symlinked project roots
+(<code>/var</code> vs <code>/private/var</code> on macOS).</li>
+<li><strong>A parse failure destroyed the file’s graph evidence and
+reported success.</strong> An empty extraction was indistinguishable
+from “this file defines nothing”, so a malformed mid-edit save erased
+every function, call, and import the file had and recorded its hash as
+successfully indexed. Parse failure now preserves prior evidence and
+leaves the file reported stale.</li>
+<li><strong><code>#[cfg(not(test))]</code> and
+<code>#[cfg(feature = "test-utils")]</code> were classified as test
+attributes</strong>, dropping production functions from
+<code>defines_fn</code> and turning their calls into coverage edges.
+<code>cfg</code> predicates are now parsed rather than
+token-scanned.</li>
+<li><strong>A deleted file kept its edges and its index entry</strong>,
+leaving the graph permanently reporting drift.</li>
+<li><strong>The Codex adapter was not wired for the code graph</strong>
+— no sensor, no hydration, and no agenda update before firing, so every
+purely RETE-derived verdict was computed and discarded.</li>
+<li><strong>The MCP <code>audit_codebase</code> tool omitted the graph
+merge</strong> the CLI performs, reporting zero structural debt
+regardless of the graph’s contents and writing that zero into the debt
+trend.</li>
+<li><strong>The sensor built a graph in every project, opted in or
+not.</strong> Moving it ahead of rule loading (necessary, since the
+structural pack ships <code>phase: "pre"</code> rules exclusively)
+removed an accidental gate without adding a deliberate one, so a project
+on <code>--packs llm</code> gained an unasked-for
+<code>.phronesis/graph.jsonl</code> and a per-save extraction pass. The
+graph’s own presence is now the opt-in signal.</li>
+</ul>
+<h3 id="known-limits">Known limits</h3>
+<ul>
+<li><code>calls_api</code> is deliberately empty for Python: there is no
+defensible equivalent of Rust’s closed panic watchlist. Python projects
+therefore fire <code>warn-import-cycle</code> only.</li>
+<li><code>tested_by</code> matches by bare short name and
+over-approximates coverage, so <code>untested</code> under-approximates.
+That direction is chosen — a missed warning is recoverable, a false
+“untested” verdict is not.</li>
+<li>Both rules <code>warn</code>. Promotion to <code>block</code> awaits
+a second measured corpus.</li>
+</ul>
+<h3 id="migration">Migration</h3>
+<ul>
+<li>The graph and its index are derived, gitignored state; nothing needs
+to be committed or hand-edited. An existing graph is detected as
+outdated and rebuilt automatically on the next save, or on demand with
+<code>phr-mcp graph rebuild</code>.</li>
+</ul>
+<h2 id="section-5">[0.22.0] - 2026-07-25</h2>
+<h3 id="added-4">Added</h3>
+<ul>
+<li><strong>Codex lifecycle integration.</strong>
+<code>phr-mcp codex-hook</code> now implements the current
+<code>PreToolUse</code>, <code>PostToolUse</code>, session, prompt,
+compaction, and subagent contracts for Bash and
+<code>apply_patch</code>; <code>phr-mcp init</code> safely merges
+project hooks and project-scoped stdio MCP registration without
+bypassing Codex’s <code>/hooks</code> trust review.</li>
+<li><strong>Extensible predicates.</strong> Project-owned Rhai providers
+under <code>.phronesis/predicates/*.rhai</code> can derive new RETE
+facts from normalized hook events. MCP tools add, inspect, test, list,
+and remove providers so agents can evolve the rule vocabulary alongside
+rules. Multi-file operations expose a once-per-operation
+<code>event.files</code> batch context before per-file evaluation; the
+repository includes a dogfood <code>change_set.rhai</code>
+classifier.</li>
+</ul>
+<h3 id="changed-4">Changed</h3>
+<ul>
+<li><strong>Interaction context terminology.</strong> The per-prompt
+context command is now <code>interaction-context</code>;
+<code>turn-context</code> remains a compatible CLI alias and the old
+Rust helpers remain deprecated wrappers. The unrelated markdown
+<code>set_section_context</code> MCP workflow is unchanged.</li>
+</ul>
+<h3 id="fixed-3">Fixed</h3>
+<ul>
+<li><strong>Contract-grounded hook behavior.</strong> Current snake-case
+payload fields and PascalCase event names are decoded, pre-action
+violations return a real deny decision, post-action feedback remains
+advisory, patch paths are validated, and executed calls retain
+action-log, journey, and grounded outcome data.</li>
+<li><strong>Honest Codex fixtures.</strong> Schema-authored fixtures are
+labeled <code>authored</code> and use the payload-corpus envelope
+instead of claiming unverified runtime capture provenance.</li>
+</ul>
+<h2 id="section-6">[0.20.0] - 2026-07-13</h2>
+<h3 id="changed-5">Changed</h3>
+<ul>
+<li><strong>Context-struct API migration.</strong> Four call surfaces
+now group related arguments into explicit input types:
+<code>Consequence::from_rule_firing</code> takes
+<code>RuleFiringContext</code>;
+<code>journey::derive::assert_facts</code> takes
+<code>DeriveInput</code>; <code>outcomes::extract</code> takes
+<code>ExtractInput</code>; and
+<code>outcomes::adapter::extract_from</code> takes
+<code>ExtractFromInput</code>. These are breaking Rust API changes;
+construct the corresponding context/input struct and pass it in place of
+the former positional arguments.</li>
+<li><strong>Audit precision and maintainability.</strong> Rust
+parameter-count auditing now evaluates each function independently
+instead of combining same-named methods, and high-complexity paths
+across the engine, hook, journey, and outcome layers use focused helpers
+and input types.</li>
+</ul>
+<h3 id="fixed-4">Fixed</h3>
+<ul>
+<li><strong>Honest payload scrubbing.</strong> Scrubber construction
+rejects empty, relative, and filesystem-root scrub roots. Scrubbing
+recognizes colon-delimited bearer credentials and credential URLs with
+an empty username, detects residual sensitive material, and aborts
+before backup or overwrite when safety cannot be established.</li>
+<li><strong>Evidence integrity.</strong> Residual-risk failures are
+surfaced rather than silently treated as successful anonymization, scrub
+integration tests are top-level tests that are actually discovered, and
+the checked-in toolchain definitions are regression-tested against the
+generated scaffold.</li>
+</ul>
+<h3 id="migration-1">Migration</h3>
+<div class="sourceCode" id="cb1"><pre
+class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> consequence <span class="op">=</span> <span class="pp">Consequence::</span>from_rule_firing(</span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a>    RuleFiringContext <span class="op">{</span></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>        rule_id<span class="op">,</span></span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>        predicate<span class="op">,</span></span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>        bound_facts<span class="op">,</span></span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>        kind<span class="op">,</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>    <span class="op">},</span></span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>    <span class="op">&amp;</span>payload<span class="op">,</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>)<span class="op">?;</span></span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="pp">journey::derive::</span>assert_facts(<span class="op">&amp;</span><span class="kw">mut</span> network<span class="op">,</span> DeriveInput <span class="op">{</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>    project_root<span class="op">,</span></span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a>    rules<span class="op">:</span> <span class="op">&amp;</span>rules<span class="op">,</span></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a>    config<span class="op">:</span> <span class="op">&amp;</span>config<span class="op">,</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>    scope<span class="op">:</span> WindowScope <span class="op">{</span></span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>        current_sid<span class="op">:</span> session_id<span class="op">,</span></span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>        now_ts<span class="op">:</span> now<span class="op">,</span></span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a>    <span class="op">},</span></span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a><span class="op">}</span>)<span class="op">.</span><span class="kw">await</span><span class="op">?;</span></span>
+<span id="cb1-20"><a href="#cb1-20" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-21"><a href="#cb1-21" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> facts <span class="op">=</span> <span class="pp">outcomes::</span>extract(<span class="pp">outcomes::adapter::</span>ExtractInput <span class="op">{</span></span>
+<span id="cb1-22"><a href="#cb1-22" aria-hidden="true" tabindex="-1"></a>    root<span class="op">,</span></span>
+<span id="cb1-23"><a href="#cb1-23" aria-hidden="true" tabindex="-1"></a>    subject<span class="op">,</span></span>
+<span id="cb1-24"><a href="#cb1-24" aria-hidden="true" tabindex="-1"></a>    command<span class="op">,</span></span>
+<span id="cb1-25"><a href="#cb1-25" aria-hidden="true" tabindex="-1"></a>    output<span class="op">,</span></span>
+<span id="cb1-26"><a href="#cb1-26" aria-hidden="true" tabindex="-1"></a>    command_exit<span class="op">,</span></span>
+<span id="cb1-27"><a href="#cb1-27" aria-hidden="true" tabindex="-1"></a><span class="op">}</span>)<span class="op">;</span></span>
+<span id="cb1-28"><a href="#cb1-28" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-29"><a href="#cb1-29" aria-hidden="true" tabindex="-1"></a><span class="kw">let</span> (tags<span class="op">,</span> subject) <span class="op">=</span> <span class="pp">outcomes::adapter::</span>extract_from(ExtractFromInput <span class="op">{</span></span>
+<span id="cb1-30"><a href="#cb1-30" aria-hidden="true" tabindex="-1"></a>    project_root<span class="op">,</span></span>
+<span id="cb1-31"><a href="#cb1-31" aria-hidden="true" tabindex="-1"></a>    tool_name<span class="op">,</span></span>
+<span id="cb1-32"><a href="#cb1-32" aria-hidden="true" tabindex="-1"></a>    command<span class="op">,</span></span>
+<span id="cb1-33"><a href="#cb1-33" aria-hidden="true" tabindex="-1"></a>    output<span class="op">,</span></span>
+<span id="cb1-34"><a href="#cb1-34" aria-hidden="true" tabindex="-1"></a>    command_exit<span class="op">,</span></span>
+<span id="cb1-35"><a href="#cb1-35" aria-hidden="true" tabindex="-1"></a><span class="op">}</span>)<span class="op">;</span></span></code></pre></div>
+<h2 id="section-7">[0.19.0] - 2026-07-12</h2>
+<h3 id="added-5">Added</h3>
+<ul>
+<li><strong><code>PHRONESIS_CAPTURE_DIR</code></strong> — when set,
+pre-check/post-check tee the raw stdin payload to
+<code>&lt;dir&gt;/payloads.jsonl</code> before parsing (flock’d for
+concurrent-hook safety, best-effort and off by default). This is how the
+payload-contract corpus below gets refreshed against a real CLI’s
+current payload shape.</li>
+<li><strong><code>payload_scrub</code> module +
+<code>phr-mcp scrub-payload &lt;path&gt; [--write] [--project-root DIR]</code></strong>
+— anonymizes captured payloads for committing as fixtures. Operates on
+JSONL in/out; <code>--write</code> backs the original up to
+<code>&lt;path&gt;.bak</code> before overwriting;
+<code>--project-root</code> defaults to the current working directory so
+in-project paths survive scrubbing while <code>$HOME</code>, username,
+<code>session_id</code>, <code>transcript_path</code>, and other
+out-of-project paths are rewritten to deterministic, indexed
+placeholders. A residual leak or unrecognized shape aborts the run
+before anything is written.</li>
+<li><strong>Payload-contract corpus.</strong> Fixture payloads for
+Claude Code and Gemini CLI hook events under
+<code>crates/phronesis-mcp/tests/fixtures/payloads/</code>, each tagged
+<code>provenance: "authored"</code> — hand-written approximations of the
+real envelopes pending supersession by live captures via the tee above.
+A contract runner replays every fixture through the real binary and
+asserts rule liveness (a hook or tagger that silently no-ops now fails
+CI) and journey-journal outcome tags. A companion hook-event registry
+test suite pins <code>init</code>’s hook wiring to event names that
+actually exist on each host CLI, including a regression pin on the
+0.17.1 <code>BeforeModelRequest</code> incident.</li>
+</ul>
+<h2 id="section-8">[0.18.0] - 2026-07-11</h2>
+<h3 id="added-6">Added</h3>
+<ul>
+<li><strong>Neutral toolchain outcomes.</strong> Build/test grading is
+no longer cargo-specific: declarative <code>ToolchainDef</code>s
+(built-ins ∪ project <code>.phronesis/toolchains.json</code>, project
+ids overriding built-ins) drive outcome detection via named-capture
+regexes, with the command exit code as the authoritative build signal
+and regex refinement layered on top. <code>phr-mcp init</code> scaffolds
+example pytest/tsc defs; <code>phr-mcp toolchains [--json]</code> lists
+the effective registry.</li>
+<li><strong><code>command_exit</code> capture.</strong> PostToolUse
+payloads from shell tools (<code>Bash</code>,
+<code>run_shell_command</code>) are probed for a numeric exit code
+(<code>exit_code</code>/<code>exitCode</code>/<code>returncode</code>/<code>code</code>/<code>status</code>,
+then a trailing <code>exit code: N</code> text fallback), journaled as
+<code>command_exit</code>, and used to grade outcomes — a non-zero exit
+with a test summary grades build-pass/test-fail (the pytest exit-1
+case).</li>
+<li><strong>Journal compaction.</strong>
+<code>.phronesis/journey/events.jsonl</code> is bounded (16 MiB default,
+<code>PHRONESIS_MAX_JOURNAL_BYTES</code> override, 1 GiB ceiling):
+compaction retains the 10k-record tail plus the latest
+<code>outcome:*</code> record per subject, atomically via temp+rename
+with fd/inode revalidation so concurrent appends never land in a stale
+file.</li>
+</ul>
+<h3 id="removed">Removed</h3>
+<ul>
+<li><code>CargoAdapter</code> — cargo grading now flows through the same
+toolchain-def registry as every other toolchain.</li>
+</ul>
+<h2 id="section-9">[0.17.1] - 2026-07-06</h2>
+<h3 id="fixed-5">Fixed</h3>
+<ul>
+<li><strong>Gemini CLI turn-context hook never fired.</strong>
+<code>init</code> wired the turn-context hook into
+<code>.gemini/settings.json</code> under
+<code>BeforeModelRequest</code>, which is not a Gemini CLI hook event —
+Gemini silently ignored it, so per-turn context injection (recent hook
+decisions + durable directives) never ran in Gemini sessions. Now wired
+under <code>BeforeAgent</code>, the per-prompt analogue of Claude Code’s
+<code>UserPromptSubmit</code>. Re-running <code>init</code> (or
+<code>init --hooks-only</code>) also removes the dead legacy
+<code>BeforeModelRequest</code> key from existing settings. The emitted
+<code>hookEventName</code> stays <code>"UserPromptSubmit"</code> for
+both CLIs: Claude Code validates the field, Gemini reads only
+<code>additionalContext</code> and ignores the echo.</li>
+</ul>
+<h2 id="section-10"><a
+href="https://github.com/awaterma/phronesis/releases/tag/v0.17.0">0.17.0</a>
+- 2026-07-04</h2>
+<p>phr-mcp, phr, and phronesis-rhai all release as
+<strong>0.17.0</strong> — the workspace adopts lockstep versioning
+(<code>[workspace.package] version</code>); from this release one number
+covers all three crates. (Previous: phr-mcp 0.16.2, phr 0.14.0,
+phronesis-rhai 0.1.0; the jumps are version-line unification, not
+breaking changes.)</p>
+<h3 id="changed-6">Changed</h3>
+<ul>
+<li><strong>MCP-crate decomposition.</strong> <code>hook.rs</code> (1764
+LOC) and <code>syntax/rust.rs</code> (1622 LOC) split into focused
+submodules; <code>main</code>,
+<code>audit::run</code>/<code>run_profiled</code> (deduped via a shared
+core), and ~30 further functions decomposed below the let-count audit
+thresholds. Audit debt drops 59 → 8 hits; the remaining 8 are
+core-engine functions deferred to the embedded-consumer-gated engine
+spec. Behavior-preserving; no public API changes. Implements
+<code>docs/superpowers/specs/2026-06-28-mcp-crate-decomposition-design.md</code>.</li>
+</ul>
+<h2 id="section-11"><a
+href="https://github.com/awaterma/phronesis/releases/tag/v0.16.2">0.16.2</a>
+- 2026-07-03</h2>
+<h3 id="added-7">Added</h3>
+<ul>
+<li><strong><code>phr-mcp migrate-extracted-rules &lt;path&gt; [--dry-run]</code></strong>
+— the salvage command deferred from 0.14.0. Rewrites pre-0.14.0
+<code>extract_rules</code> output in place (with a <code>.bak</code>
+backup): strips the bracketed extraction-time prefixes
+(<code>[pattern]</code>, <code>[anti_pattern]</code>,
+<code>[context]</code>, <code>[problem]</code>,
+<code>[directive]</code>) from messages, demotes <code>block</code>
+actions to <code>warn</code>, and demotes to <code>log</code> any
+extracted rule duplicating a structural Rust-pack rule (the SPEC’s
+static keyword table: unwrap, clone, Deref, &amp;String, &amp;Vec,
+thiserror). Extracted rules are detected by their
+<code>markdown_rule</code> condition, so hand-written rules are never
+touched. Idempotent. Implements the salvage path in
+<code>docs/specs/SPEC-extract-rules-defaults.md</code>.</li>
+</ul>
+<h2 id="section-12">[0.16.1] - 2026-07-03</h2>
+<h3 id="added-8">Added</h3>
+<ul>
+<li><strong>Named function detail on AST-predicate audit hits.</strong>
+The audit table/JSON previously rendered whole-function hits
+(let-binding counts, etc.) as <code>lines: 1, 1, 1</code> — the
+placeholder line number. <code>FileAudit</code> gains a
+<code>details</code> field parallel to <code>lines</code>, rendered as
+<code>audit.rs — run (26 let bindings), run_profiled (32 let bindings)</code>
+in both output formats.</li>
+</ul>
+<h3 id="changed-7">Changed</h3>
+<ul>
+<li><strong>Rust pack: audit let-rules scope to
+<code>src/</code>.</strong>
+<code>audit-rust-let-binding-count-high</code> /
+<code>-let-mut-count-high</code> gain a
+<code>file_path_matches: "src"</code> gate so examples, benches, and
+tests are no longer flagged for let-count debt.</li>
+<li><strong>Rust pack: <code>audit-newtype-id-string</code> honors doc
+exceptions.</strong> The rule gains <code>doc_excepted: true</code>, so
+a <code>///</code> field doc marks an intentional string ID as an
+accepted exception.</li>
+</ul>
+<h3 id="security">Security</h3>
+<ul>
+<li><strong>Migrate <code>serde_yml</code> →
+<code>serde_norway</code>.</strong> <code>serde_yml 0.0.12</code> and
+its <code>libyml</code> backend are archived and flagged unsound
+(RUSTSEC-2025-0068 / RUSTSEC-2025-0067) with no fix coming.
+<code>serde_norway</code> is the RustSec-recommended maintained
+<code>serde_yaml</code> fork with the same API; the only call site (wiki
+frontmatter parsing) changes crate path only. Removes
+<code>libyml</code> from the dependency tree entirely.</li>
+</ul>
+<h3 id="fixed-6">Fixed</h3>
+<ul>
+<li><strong>Wiki frontmatter closing fence must be exactly
+<code>---</code> on its own line.</strong> The parser previously
+accepted any line beginning with three dashes (<code>----</code>,
+<code>--- see appendix</code>) as the closing fence, silently truncating
+the YAML and leaking the line’s tail into the body. The fence search now
+skips lookalikes; a page with no true fence reports “missing closing
+<code>---</code> fence” instead of parsing corrupted content. Pinned by
+five new parser tests (lookalike lines, fence at EOF, CRLF
+endings).</li>
+</ul>
+<h2 id="section-13">[0.16.0] - 2026-07-03</h2>
+<p>phr-mcp 0.16.0; phr library bumps to 0.14.0 (engine changes this
+round — new scripting trait, a removed method, and a new feature gate);
+new <code>phronesis-rhai</code> 0.1.0.</p>
+<p>Three changes that tighten the engine/embedding-host boundary ahead
+of a 1.0 line: an expressive scripting layer, removal of the last
+consumer-specific engine API, and a feature gate that makes the default
+public surface equal what the bundled MCP consumes.</p>
+<h3 id="added-9">Added</h3>
+<ul>
+<li><strong><code>phronesis-rhai</code> crate + <code>ScriptEval</code>
+trait.</strong> The core <code>__script__</code> evaluator now lives
+behind a <code>ScriptEval</code> trait
+(<code>ReteNetwork::with_script_evaluator</code>). The new
+<code>phronesis-rhai</code> crate provides
+<code>RhaiScriptEvaluator</code>, a sandboxed Rhai implementation
+(<code>Engine::new_raw</code> + StandardPackage,
+operation/call-depth/string/array/map caps, <code>sync</code>)
+supporting numeric comparisons and boolean combinators over fact
+arguments — the guard expressions the builtin two-primitive DSL can’t
+express. Scripts see <code>facts</code> (array of
+<code>#{predicate, args}</code>) and <code>bindings</code> (map) and
+must return <code>bool</code>; errors/non-bool are treated as a blocked
+guard. <code>CompositeScriptEvaluator</code> routes builtin-DSL forms
+(<code>facts_contain</code>/<code>facts_count</code>) to the builtin
+evaluator and everything else to Rhai, so bundled packs and Rhai guards
+coexist in one rules.json. Wired into <code>phronesis-mcp</code> behind
+an off-by-default <code>rhai</code> feature (server
+<ul>
+<li>pre/post hooks via a <code>net::build_network</code> seam).
+Implements
+<code>docs/superpowers/specs/2026-06-01-rhai-script-evaluator-design.md</code>.</li>
+</ul></li>
+<li><strong><code>embedding-host</code> cargo feature on
+<code>phronesis</code></strong> (off by default). Gates the ~10 public
+<code>ReteNetwork</code> methods only an external embedding host needs
+(<code>restore_persistent_facts*</code>,
+<code>execute_next_agenda_item</code>, <code>fact_ids_matching</code>,
+<code>fact_count</code>, <code>facts_matching_predicate</code>,
+<code>get_rules_count</code>, <code>get_wmes_by_condition</code>, and
+the instrumentation getters). The default surface equals what the
+bundled MCP consumes, so the compiler enforces the symmetry. CI
+exercises the feature config. Implements
+<code>docs/superpowers/specs/2026-06-13-embedding-host-feature-gate-design.md</code>.</li>
+</ul>
+<h3 id="changed-8">Changed</h3>
+<ul>
+<li><strong><code>ScriptEvaluator</code> renamed to
+<code>BuiltinScriptEvaluator</code></strong> (implements
+<code>ScriptEval</code>). <code>ScriptEvaluator</code> remains as a
+backwards-compatible alias and the inherent <code>evaluate</code> still
+returns <code>ReteError</code>, so existing callers are unaffected. The
+misleading “Rhai” docstrings in core (the builtin is a hand-rolled DSL,
+not Rhai) are corrected.</li>
+</ul>
+<h3 id="removed-1">Removed</h3>
+<ul>
+<li><strong><code>ReteNetwork::get_persistent_facts</code> and its
+hardcoded <code>PERSISTENT_PREDICATES</code></strong> — a downstream
+consumer’s game-state vocabulary baked into a “domain-neutral” engine,
+deprecated since 0.11 and now that the consumer has migrated onto
+<code>facts_matching_predicates</code>, deleted. The remaining
+consumer-flavored doc/example vocabulary in the engine and MCP fixtures
+is neutralized. <code>restore_persistent_facts*</code> stay (generic
+bulk-assert; now behind <code>embedding-host</code>). Implements
+<code>docs/superpowers/specs/2026-06-13-domain-neutral-persistent-facts-design.md</code>.</li>
+</ul>
+<h2 id="section-14">[0.15.0] - 2026-06-24</h2>
+<h3 id="added-10">Added</h3>
+<ul>
+<li><strong>Loop-based agent programming guide</strong>
+(<code>docs/loop-programming-guide.md</code>) — writing recurring
+/loop-driven agent workflows against phronesis, with captures from live
+sessions in this repo.</li>
+<li><strong><code>journey_derive</code> scaling bench</strong> plus an
+ADR recording the scaling behavior of journey fact derivation.</li>
+</ul>
+<h3 id="fixed-7">Fixed</h3>
+<ul>
+<li><strong>Journey rules with undefined selectors fail closed.</strong>
+A rule referencing a tag absent from
+<code>.phronesis/journey.json</code> was fail-open: a stderr warning,
+then the rule loaded anyway — and for absence-style rules
+(<code>== 0</code>) the missing tagger looked like zero occurrences, so
+the rule fired on every call. Configuration errors
+(<code>BadWindow</code>, <code>UndefinedSelector</code>) now propagate —
+the hook exits 2 (pre-check) / 1 (post-check) naming the offending rule
+id and missing selector — while transient journal I/O errors stay
+fail-open. See the decision page
+<code>2026-06-23-undefined-selector-rejection.md</code>.</li>
+</ul>
+<h2 id="section-15"><a
+href="https://github.com/awaterma/phronesis/releases/tag/v0.14.0">0.14.0</a>
+- 2026-06-21</h2>
+<p>Dogfooding-driven polish. The 0.13.x patch line was driven by
+playtest bugs visible only after install; 0.14.0 closes the four
+next-deepest friction points the same playtests surfaced. Compiled under
+<code>docs/specs/SPEC-0.14.0-dogfooding-polish.md</code>.</p>
+<h3 id="added-11">Added</h3>
+<ul>
+<li><strong><code>journey_filtered_since_ge(target, counted, k)</code>
+aggregator</strong> — the existing <code>journey_since_ge</code> counts
+distance over every record; a long Bash session could trip “8+ tool
+calls since build” with no writes. The new aggregator emits a k-ladder
+up to the count of <code>counted</code> records appearing after the most
+recent <code>target</code> record. Rules can now express “8 writes since
+last build” directly:
+<code>facts_count('journey_filtered_since_ge', ['build','write','8']) &gt;= 1</code>
+with a <code>write</code> tagger keying on
+<code>change_type=edit|write|multiedit|replace|write_file</code>. The
+existing five aggregators are unchanged. See
+<code>docs/specs/SPEC-journey-filtered-since.md</code>.</li>
+<li><strong><code>confidence_enabled</code> zero-arg marker
+fact</strong> — asserted at every hook fire when
+<code>.phronesis/confidence.json</code> exists, mirroring the
+<code>clock_facts.rs::business_hours_local</code> pattern. Lets rules
+condition on opt-in state via the existing
+<code>facts_count('confidence_enabled', []) == 0</code> absence form.
+Generalizable: future packs can ship <code>journey_enabled</code>,
+<code>wiki_present</code>, etc. using the same shape. See
+<code>docs/specs/SPEC-pack-opt-in-facts.md</code>.</li>
+</ul>
+<h3 id="changed-9">Changed</h3>
+<ul>
+<li><strong>Confidence gate broadens to all commit-producing porcelain
+commands.</strong> <code>confidence-low-blocks-commit</code> and
+<code>confidence-medium-warns-commit</code> now match
+<code>bash_command_matches: "git (commit|merge|rebase|cherry-pick|revert|pull)"</code>
+instead of the literal <code>"git commit"</code>. Closes the
+gate-bypass-by-merge hole surfaced during the journey-facts merge night
+(5 of 6 commit-producing commands silently bypassed the gate). See
+<code>docs/specs/SPEC-gate-merge-commits.md</code>.</li>
+<li><strong><code>nudge-verify-before-commit</code> self-deactivates
+when confidence is on.</strong> The rule gained a second
+<code>when</code> clause:
+<code>{ "__script__": "facts_count('confidence_enabled', []) == 0" }</code>.
+The confidence gate enforces the same call-chain-tracing discipline by
+counting <code>signal_pass</code> facts; the nudge was redundant in that
+mode and was double-warning on every <code>git commit</code>. Projects
+without confidence are unaffected.</li>
+<li><strong><code>extract_rules</code> defaults action
+<code>warn</code>, not <code>block</code>.</strong> A live invocation
+added 27 block-action rules to a project rules.json overnight; with any
+section context set, every pre-check fired 6 simultaneous
+<code>constraint_violation</code>s and exited 2 on every tool call.
+Block is reserved for known-bad code shapes; pattern reminders are
+advisory. See
+<code>docs/specs/SPEC-extract-rules-defaults.md</code>.</li>
+<li><strong><code>extract_rules</code> strips the bracketed metadata
+prefix</strong> (<code>[pattern]</code>, <code>[anti_pattern]</code>,
+<code>[context]</code>, <code>[problem]</code>) from the user-facing
+message. Those were extraction-time discriminators leaking into
+prose.</li>
+</ul>
+<h3 id="migration-2">Migration</h3>
+<ul>
+<li>Projects that ran <code>phr-mcp init --packs confidence</code>
+before 0.14.0 carry the narrow gate pattern in
+<code>.phronesis/rules.json</code>. Either re-run
+<code>phr-mcp init --rules-only --force --packs confidence</code>
+(rewrites the rule pack with the broadened pattern, backs up to
+<code>.bak</code>) or hand-edit the two
+<code>bash_command_matches</code> clauses.</li>
+<li>Projects with the old <code>nudge-verify-before-commit</code> rule
+should add the second <code>when</code> clause to opt into the
+supersession. Same <code>--rules-only --force</code> flow works.</li>
+<li>Projects that already invoked <code>extract_rules</code> and want to
+salvage their extracted rules can apply the in-tree recipe in
+<code>docs/specs/SPEC-extract-rules-defaults.md</code> §“Salvage path.”
+A <code>phr-mcp migrate-extracted-rules</code> command is deferred to a
+follow-up PATCH.</li>
+</ul>
+<h3
+id="deferred-intentional-with-specs-on-disk-for-future-work">Deferred
+(intentional, with specs on disk for future work)</h3>
+<ul>
+<li><strong><code>extract_rules</code></strong>: per-pattern marker
+conditions (Problem 3b), structural-rule skip-list (Problem 4a), and the
+<code>migrate-extracted-rules</code> command. The umbrella spec scopes
+0.14.0 to the action/prefix defaults; the rest rides a follow-up
+PATCH.</li>
+<li><strong>Subject inheritance across merge commits.</strong> Real
+design surface; the <code>SPEC-gate-merge-commits</code> open question
+flags it.</li>
+<li><strong>Repo-lifetime journey windows (<code>r</code>)</strong> —
+still phase 2 of <code>SPEC-journey-facts</code>.</li>
+</ul>
+<h3 id="notes">Notes</h3>
+<ul>
+<li><strong>Coverage.</strong> Workspace lines at 86.20%+ across the
+four implementations, up from the post-0.13.x baseline of 85.94%.</li>
+<li><strong><code>phr</code> library version unchanged at
+0.13.3.</strong> The engine wasn’t touched in 0.14.0; only
+<code>phr-mcp</code> bumps. <code>phr-mcp</code>’s <code>phr</code> dep
+stays pinned at <code>0.13.3</code>.</li>
+</ul>
+<h2 id="section-16"><a
+href="https://github.com/awaterma/phronesis/releases/tag/v0.13.2">0.13.2</a>
+- 2026-06-20</h2>
+<h3 id="fixed-8">Fixed</h3>
+<ul>
+<li><strong><code>bash_command_matches</code> taggers actually
+fire.</strong> <code>journey::tagger::tagger_facts</code> built only
+file/content facts and relied on a “tagger regex pass” implied by a
+misleading comment but never implemented. The default <code>build</code>
+tagger
+(<code>{ "bash_command_matches": "cargo (build|check|test)" }</code>)
+silently no-fired on every <code>cargo</code> invocation.
+<code>tagger_facts</code> now walks <code>taggers[*].when[*]</code>
+(including nested <code>or</code> clauses) collecting
+<code>bash_command_matches</code> patterns, regex-matches each against
+the bash command, and asserts one synthetic
+<code>bash_command_matches:&lt;pattern&gt;</code> Fact per match — the
+same pattern <code>check_bash_command_patterns</code> uses for top-level
+rules (<code>hook_facts.rs:316</code>). Surfaced in a live playtest, not
+in unit tests.</li>
+<li><strong><code>HookPayload.tool_output</code> accepts
+<code>tool_response</code> as a serde alias.</strong> Claude Code’s
+PostToolUse hook delivers Bash output under <code>tool_response</code>,
+not <code>tool_output</code>. Without the alias, the field was
+<code>None</code> / empty string, so <code>compiled("")</code> returned
+true (no error patterns match → spurious
+<code>outcome:compile_ok</code>) and
+<code>TEST_RESULT.captures_iter("")</code> returned nothing
+(<code>outcome:test_pass</code> never fired). Net effect:
+confidence-scoring was wedged at “low / compile” for every real
+<code>cargo</code> run, even when tests were green — the whole
+gate-by-band feature was non-functional in production. Tests and
+fixtures all passed because they synthesized payloads under
+<code>tool_output</code>; only a live hook payload surfaced it. Backward
+compatible with Gemini and existing fixtures.</li>
+</ul>
+<h2 id="section-17"><a
+href="https://github.com/awaterma/phronesis/releases/tag/v0.13.1">0.13.1</a>
+- 2026-06-20</h2>
+<h3 id="fixed-9">Fixed</h3>
+<ul>
+<li><strong>Same-day sid fallback collision.</strong> When
+<code>.phronesis/journey/session</code> was missing, the journey
+fallback was the literal placeholder <code>s-YYYY-MM-DD-fallback</code>,
+collapsing distinct sessions to the same id. Now
+<code>journey::current_sid</code> reads-or-creates atomically in the
+<code>context::ensure_session_id</code> format
+(<code>s-YYYY-MM-DD-&lt;6 hex&gt;</code>); the placeholder is gone.</li>
+<li><strong>Triple-duplicated <code>current_sid</code>
+consolidated.</strong> Three independent implementations (in
+<code>hook</code>, <code>main</code>, and
+<code>server::get_journey</code>) coalesced into a single
+<code>journey::current_sid(project_root)</code> helper. Same semantics,
+one source of truth.</li>
+</ul>
+<h3 id="changed-10">Changed</h3>
+<ul>
+<li><strong>CLAUDE.md packs list now includes
+<code>confidence</code></strong> alongside <code>journey</code>. The
+scaffolded CLAUDE.md previously enumerated <code>journey</code>
+only.</li>
+<li><strong><code>phr-mcp journey</code> nudges on empty
+config.</strong> When <code>.phronesis/journey.json</code> is missing or
+empty, the CLI emits a stderr suggestion (“run
+<code>phr-mcp init --packs journey</code> to scaffold one”) before
+falling back to an empty config. The hook stays silent — fail-open is
+advisory there, not user-facing.</li>
+</ul>
+<h3 id="fixed-engine">Fixed (engine)</h3>
+<ul>
+<li><strong>Pure-script rules now fire.</strong> Rules whose
+<code>when</code> was entirely <code>__script__</code> clauses had no
+alpha state, no terminal id, no p-state — they never reached the agenda,
+because <code>__script__</code> clauses are post-filters on activations
+and with no other clause there were no activations to filter.
+<code>update_agenda</code> now branches on
+<code>real_condition_count == 0</code> (count of
+non-<code>__script__</code> conditions per loaded rule) and, for
+pure-script rules, evaluates the script clauses against the current fact
+base with empty bindings, emitting an activation when every clause
+passes. Dedupe key is <code>&lt;rule_id&gt;</code> — fire-once-ever, the
+right semantics for threshold rules. Alpha/beta network and the
+production network shape are unmodified; mixed-script behaviour is
+unchanged. Surfaced by the journey-facts SPEC’s headline
+<code>auth-churn-without-tests</code> rule, which is naturally two
+<code>__script__</code> clauses (<code>facts_count(...) &gt;= 5</code>
+AND <code>facts_count(...) == 0</code>). The <code>journey_seen</code>
+anchor leaf added as a workaround is no longer required.</li>
+</ul>
+<h2 id="section-18"><a
+href="https://github.com/awaterma/phronesis/releases/tag/v0.13.0">0.13.0</a>
+- 2026-06-20</h2>
+<h3 id="added-12">Added</h3>
+<ul>
+<li><strong>Journey facts (new fact family + new hook stage)</strong> —
+call-window and session-scale predicates that summarise
+<em>trajectory</em>, not the current diff. Five aggregators over
+project-defined tags (<code>journey_occurrence</code>,
+<code>journey_count</code>, <code>journey_seen</code>,
+<code>journey_since_ge</code>, <code>journey_distinct</code>) with
+windowed selectors (<code>5c</code> for last 5 calls,
+<code>30m</code>/<code>2h</code>/<code>7d</code> wall-clock,
+<code>s</code> for session; repo-lifetime <code>r</code> is phase 2).
+Rule-driven derivation; the journal is the substrate, the predicates are
+recomputed each cycle. See
+<code>docs/specs/SPEC-journey-facts.md</code>.
+<ul>
+<li><strong>Append-only journal</strong>
+(<code>.phronesis/journey/events.jsonl</code>) writes a record per
+post-check with subject + tags + monotonic seq. Tail-read for hot
+queries (<code>SUFFIX_HARD_CAP = 10_000</code> lines) and per-subject
+read for outcomes folding.</li>
+<li><strong>Taggers reuse the predicate engine</strong> —
+<code>taggers[*].when</code> clauses are the same DSL as rule
+conditions. <code>bash_command_matches</code>,
+<code>new_content_contains</code>, <code>file_path_matches</code> all
+available. Project-defined via
+<code>.phronesis/journey.json</code>.</li>
+<li><strong>Derivation pass</strong> runs at every pre-check and
+post-check via <code>journey::derive::assert_facts</code>; selector
+validation rejects malformed journey config without exit-2.</li>
+<li><strong>Outcomes ledger folded into the journey journal</strong>
+(the notable storage change of 0.13.0). <code>outcomes/ledger.rs</code>
+is gone; <code>outcomes/cargo.rs</code> now returns
+<code>(tags, subject)</code> and the hook stamps them on a single
+journal record. <code>outcomes/derive::signals</code> reads via
+<code>journey::journal::read_recent_subject</code>. Confidence-scoring
+behaviour is byte-identical; the storage is unified.</li>
+<li><strong><code>SessionStart</code> stamps</strong>
+<code>.phronesis/journey/session</code>; pre/post-check read it.
+<code>PHRONESIS_NO_JOURNEY=1</code> disables both paths. Fail-open
+throughout — corrupt <code>journey.json</code> or missing journal
+degrades to “no journey facts,” never exit 2.</li>
+<li><strong><code>phr-mcp journey [--json] [--explain &lt;rule-id&gt;]</code></strong>
+renders the <code>journey_*</code> facts a derivation pass would assert
+against the current journal, with <code>--explain</code> filtering to a
+single rule’s dependencies.</li>
+<li><strong>MCP tool <code>get_journey</code></strong> mirrors the same
+table/JSON view so the agent can ask “what does my trajectory look like”
+mid-conversation.</li>
+<li><strong><code>phr-mcp init --packs journey</code></strong> writes a
+starter <code>journey.json</code> and ensures it is tracked.</li>
+</ul></li>
+</ul>
+<h3 id="changed-11">Changed</h3>
+<ul>
+<li><strong>Workspace bumps to 0.13.0.</strong> <code>phr</code> and
+<code>phr-mcp</code> move together; <code>phr-mcp</code>’s
+<code>phr</code> dep bumps to match.</li>
+</ul>
+<h3 id="notes-1">Notes</h3>
+<ul>
+<li><strong>Coverage discipline.</strong> The workspace stayed at or
+above the pre-feature baseline of 85.4% lines across the journey-facts
+merges; the journal and tagger modules sit near ~90%.</li>
+</ul>
+<h2 id="section-19"><a
+href="https://github.com/awaterma/phronesis/releases/tag/v0.12.0">0.12.0</a>
+- 2026-06-19</h2>
+<h3 id="added-13">Added</h3>
+<ul>
+<li><strong>Confidence scoring (first milestone)</strong> — gate LLM
+output on three grounded outcomes before a <code>git commit</code>: does
+it compile, do the tests pass, does it catch a known bug (a TDD test red
+on the buggy baseline that goes green). See
+<code>docs/specs/SPEC-confidence-scoring.md</code>.
+<ul>
+<li>Domain-neutral outcome facts (<code>build_outcome</code>,
+<code>test_outcome</code>, <code>bug_check_outcome</code>) behind a
+per-toolchain <strong>adapter</strong> layer (<code>cargo</code> first;
+pytest/tsc/go later emit the same neutral facts).</li>
+<li>A per-subject <strong>ledger</strong>
+(<code>.phronesis/outcomes/&lt;subject&gt;.jsonl</code>) bridges the
+stateless hook invocations; the pre-check re-derives
+<code>signal_pass</code> facts and gate rules count them with the
+existing <code>facts_count(...)</code> DSL (<code>&lt;=1</code> blocks,
+<code>==2</code> warns, 3 passes clean).</li>
+<li>Post-check parses a build/test command’s captured output into the
+ledger; a <code>git commit</code> settles the open work unit.</li>
+<li>Known-bug registry in <code>.phronesis/bugs.json</code>.</li>
+<li><code>phr-mcp confidence [--subject &lt;id&gt;] [--json]</code> —
+read-only band/signals report for the open work unit.</li>
+<li><code>phr-mcp init --packs confidence</code> — writes the
+commit-gate rules plus the <code>.phronesis/confidence.json</code>
+opt-in marker and <code>.phronesis/bugs.json</code> registry, and carves
+both back into <code>.gitignore</code> as tracked config.</li>
+<li>MCP tools <code>get_confidence</code> (band/signals report) and
+<code>submit_suggestion</code> (declare an explicit work unit, e.g. a
+translation, and accrue signals to it).</li>
+<li><strong>Opt-in per project</strong> via
+<code>.phronesis/confidence.json</code>; fail-open throughout, so
+projects that haven’t enabled it are unaffected.</li>
+</ul></li>
+</ul>
+<h2 id="section-20"><a
+href="https://github.com/awaterma/phronesis/releases/tag/v0.11.0">0.11.0</a>
+- 2026-06-13</h2>
+<h3 id="added-14">Added</h3>
+<ul>
+<li><strong>Public fact-query API</strong> on <code>ReteNetwork</code> —
+<code>facts_snapshot</code>, <code>facts_matching_predicate</code>,
+<code>facts_matching_predicates</code> (predicate-set membership),
+<code>facts_matching</code> (positional-arg filters),
+<code>fact_ids_matching</code>, <code>get_fact_by_id</code>,
+<code>fact_count</code>. Sync, owned results sorted by fact id, so
+embedding hosts need not reach into <code>wme_manager</code>.</li>
+<li><strong>Richer <code>list_facts</code> MCP tool</strong> — the
+existing <code>predicate</code> filter plus new <code>predicates</code>
+(set membership) and <code>arg_filters</code> (positional
+<code>arg = value</code>) params, backed by the fact-query API. Lets
+coding agents query working memory by predicate set or argument, not
+just list-all.</li>
+<li><strong><code>bash_command_matches</code> predicate</strong> — regex
+rules over Bash/command-tool text, gated to command tools (file content
+quoting the same text never fires). Ships two LLM-pack guard rules
+(stage-explicitly, don’t-kill-build).</li>
+<li><strong>Tree-sitter AST predicates for Python and
+TypeScript</strong> — Python: <code>python_bare_except</code>,
+<code>python_mutable_default_arg</code>,
+<code>python_function_param_count_high</code>,
+<code>python_function_missing_docstring</code>; TypeScript (TSX grammar
+included): <code>ts_explicit_any</code>,
+<code>ts_non_null_assertion</code>, <code>ts_suppression_comment</code>,
+<code>ts_function_param_count_high</code>.</li>
+<li><strong>Silent zero-result audit diagnostics</strong> —
+<code>phr-mcp audit</code> and the <code>audit_codebase</code> tool now
+explain a no-hits result when the cause is recoverable (no rules carry
+<code>audit: true</code>, or the walker scanned 0 files) instead of
+returning an empty shape indistinguishable from a failure.</li>
+<li><strong>CI</strong> — GitHub Actions workflow (fmt + clippy
+<code>-D warnings</code> + tests, on MSRV 1.90 and stable).</li>
+<li>Typed-error, retraction-semantics, and salience-order test
+suites.</li>
+</ul>
+<h3 id="changed-breaking">Changed (breaking)</h3>
+<ul>
+<li><strong><code>Result&lt;_, ReteError&gt;</code> replaces
+<code>Result&lt;_, String&gt;</code></strong> across the engine crate.
+<code>ReteError</code> is a matchable enum (<code>FactNotFound</code>,
+<code>LockPoisoned</code>, <code>DuplicateFactId</code>,
+<code>BindingConflict</code>, …) implementing
+<code>std::error::Error</code>;
+<code>From&lt;ReteError&gt; for String</code> eases migration for
+string-carrying hosts.</li>
+<li><strong>Duplicate fact ids are rejected.</strong> Asserting an id
+already present with <em>different</em> content errors
+(<code>DuplicateFactId</code>); an identical re-assert is an idempotent
+no-op. Previously a duplicate silently corrupted the predicate index
+(the same fact was returned twice from
+<code>get_by_predicate</code>).</li>
+<li><strong>Same-salience agenda items fire in FIFO (insertion)
+order.</strong> Previously tie order was
+<code>BinaryHeap</code>-arbitrary; firing order is now
+deterministic.</li>
+</ul>
+<h3 id="deprecated">Deprecated</h3>
+<ul>
+<li><strong><code>ReteNetwork::get_persistent_facts</code></strong> — it
+hardcodes consumer-specific predicates, which don’t belong in a
+domain-neutral engine. Define your own predicate set and call
+<code>facts_matching_predicates(&amp;YOUR_SET)</code>. Slated for
+removal in 0.12.</li>
+</ul>
+<h3 id="fixed-10">Fixed</h3>
+<ul>
+<li><strong>Retraction purges stale agenda items</strong> referencing
+the retracted fact, so a pending rule can no longer fire against a fact
+that is no longer true.</li>
+<li><strong>Refraction keys compare exact WME ids</strong> — retracting
+<code>f1</code> no longer clobbers the refraction state of
+<code>f10</code> (was a substring match).</li>
+<li><strong><code>get_memory_drift</code></strong> marks guidance
+<em>actionable</em> only when it maps to an expressible predicate (named
+command, file/path/code shape, or function shape); operational prose is
+bucketed <em>ambient</em>. Actionable entries now also register coverage
+from <code>durable.md</code>, so the drift list converges.</li>
+</ul>
+<h2 id="known-follow-ups-specs-landed-implementation-deferred">Known
+follow-ups (specs landed, implementation deferred)</h2>
+<ul>
+<li><strong><code>SPEC-gate-merge-commits.md</code></strong> — broaden
+the confidence gate’s <code>bash_command_matches</code> pattern from
+<code>"git commit"</code> to
+<code>"git (commit|merge|rebase|cherry-pick|revert|pull)"</code>. Five
+of six commit-producing porcelain commands currently bypass the gate.
+Live-tested during the journey-facts merge night. PATCH-shaped change
+for 0.13.x.</li>
+<li><strong><code>SPEC-pack-opt-in-facts.md</code></strong> — pack-level
+supersession via zero-arg marker facts. When <code>confidence</code> is
+opted in, assert <code>confidence_enabled</code> at hook fire (mirroring
+<code>clock_facts</code>) and condition
+<code>nudge-verify-before-commit</code> on its absence via the existing
+<code>facts_count(...) == 0</code> form. Removes the double-warn on
+every <code>git commit</code> for projects running both <code>llm</code>
+and <code>confidence</code> packs. PATCH for 0.13.x.</li>
+</ul>
+<h2 id="earlier-releases">Earlier releases</h2>
+<p>Pre-0.11 history (0.10.0 and earlier) is recorded in the git log and
+<code>docs/specs/</code>. Notably, 0.10.0 added wiki-drift, the
+block-pattern rules, and the v2 rule schema.</p>
+</main>
+<footer class="web-footer">Phronesis · durable governance for LLM-assisted work · v0.26.0</footer>
+</body>
+</html>

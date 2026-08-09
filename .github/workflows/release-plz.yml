@@ -9,7 +9,8 @@ on:
 
 jobs:
   # Publishes unpublished versions + tags + GitHub release.
-  # Only acts when the release PR merge lands (release_always = false).
+  # Ordinary pushes are harmless because release_always only publishes a
+  # workspace version that is not already present in the registry.
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
@@ -31,6 +32,14 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-binaries:
+    name: Publish GitHub release binaries
+    needs: release-plz-release
+    if: ${{ github.repository_owner == 'awaterma' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release-binaries.yml
 
   # The safeguard the ADR asks a human to remember. Four consecutive releases
   # reported success while publishing nothing, by three different mechanisms;

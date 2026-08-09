@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 620" role="img" aria-labelledby="title desc">
+  <title id="title">Phronesis RETE network</title>
+  <desc id="desc">Facts flow through alpha memories, beta joins, and production states to emit consequences.</desc>
+  <style>
+    :root { color-scheme: light dark; }
+    .bg { fill: #f4f8f7; }
+    .panel { fill: #ffffff; stroke: #b5ceca; }
+    .soft { fill: #e4efed; stroke: #0f766e; }
+    .join { fill: #4657a6; stroke: #344284; }
+    .production { fill: #0f766e; stroke: #0b514c; }
+    .wire { fill: none; stroke: #29484b; stroke-width: 3; }
+    .arrow { fill: #29484b; }
+    .signal { fill: none; stroke: #0f766e; stroke-width: 3; }
+    .ink { fill: #102a2e; }
+    .muted { fill: #536f70; }
+    .inverse { fill: #ffffff; }
+    text { font-family: Manrope, Inter, system-ui, sans-serif; }
+    .eyebrow { font-size: 18px; font-weight: 800; letter-spacing: 3px; }
+    .heading { font-size: 29px; font-weight: 800; }
+    .label { font-size: 20px; font-weight: 700; }
+    .small { font-size: 16px; font-weight: 600; }
+    .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 15px; }
+    @media (prefers-color-scheme: dark) {
+      .bg { fill: #0d2023; }
+      .panel { fill: #142c30; stroke: #426462; }
+      .soft { fill: #173f3d; stroke: #55b9ae; }
+      .wire { stroke: #9fc2bd; }
+      .arrow { fill: #9fc2bd; }
+      .signal { stroke: #55b9ae; }
+      .ink { fill: #eef8f6; }
+      .muted { fill: #b4ceca; }
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path class="arrow" d="M 0 0 L 10 5 L 0 10 z"/>
+    </marker>
+    <marker id="arrow-accent" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#0f766e"/>
+    </marker>
+  </defs>
+
+  <rect class="bg" width="1200" height="620" rx="24"/>
+  <text class="eyebrow muted" x="56" y="54">RETE · INCREMENTAL MATCHING</text>
+  <text class="heading ink" x="56" y="94">Facts become grounded consequences</text>
+
+  <rect class="panel" x="42" y="132" width="204" height="374" rx="16"/>
+  <text class="eyebrow muted" x="68" y="170">WORKING MEMORY</text>
+  <g class="soft">
+    <rect x="68" y="198" width="152" height="66" rx="10"/>
+    <rect x="68" y="286" width="152" height="66" rx="10"/>
+    <rect x="68" y="374" width="152" height="66" rx="10"/>
+  </g>
+  <text class="mono ink" x="144" y="226" text-anchor="middle">edited_file</text>
+  <text class="small muted" x="144" y="247" text-anchor="middle">src/server.rs</text>
+  <text class="mono ink" x="144" y="314" text-anchor="middle">calls_api</text>
+  <text class="small muted" x="144" y="335" text-anchor="middle">unwrap</text>
+  <text class="mono ink" x="144" y="402" text-anchor="middle">untested</text>
+  <text class="small muted" x="144" y="423" text-anchor="middle">handle_request</text>
+
+  <rect class="panel" x="294" y="132" width="218" height="374" rx="16"/>
+  <text class="eyebrow muted" x="320" y="170">ALPHA NETWORK</text>
+  <text class="small muted" x="320" y="194">single-fact discrimination</text>
+  <g class="soft">
+    <rect x="320" y="220" width="166" height="56" rx="28"/>
+    <rect x="320" y="306" width="166" height="56" rx="28"/>
+    <rect x="320" y="392" width="166" height="56" rx="28"/>
+  </g>
+  <text class="label ink" x="403" y="255" text-anchor="middle">α memory</text>
+  <text class="label ink" x="403" y="341" text-anchor="middle">α memory</text>
+  <text class="label ink" x="403" y="427" text-anchor="middle">α memory</text>
+
+  <rect class="panel" x="560" y="132" width="238" height="374" rx="16"/>
+  <text class="eyebrow muted" x="586" y="170">BETA NETWORK</text>
+  <text class="small muted" x="586" y="194">shared partial matches</text>
+  <circle class="join" cx="679" cy="270" r="55"/>
+  <circle class="join" cx="679" cy="404" r="55"/>
+  <text class="label inverse" x="679" y="265" text-anchor="middle">β join</text>
+  <text class="small inverse" x="679" y="290" text-anchor="middle">2 conditions</text>
+  <text class="label inverse" x="679" y="399" text-anchor="middle">β join</text>
+  <text class="small inverse" x="679" y="424" text-anchor="middle">3 conditions</text>
+
+  <rect class="panel" x="846" y="132" width="312" height="374" rx="16"/>
+  <text class="eyebrow muted" x="872" y="170">PRODUCTION NETWORK</text>
+  <text class="small muted" x="872" y="194">complete match → agenda</text>
+  <rect class="production" x="884" y="236" width="236" height="88" rx="14"/>
+  <text class="label inverse" x="1002" y="271" text-anchor="middle">P-state</text>
+  <text class="mono inverse" x="1002" y="298" text-anchor="middle">warn-untested-call</text>
+  <rect class="soft" x="884" y="368" width="236" height="80" rx="14"/>
+  <text class="label ink" x="1002" y="400" text-anchor="middle">Consequence</text>
+  <text class="small muted" x="1002" y="426" text-anchor="middle">warn · provenance attached</text>
+
+  <g class="wire" marker-end="url(#arrow)">
+    <path d="M220 231 H320"/>
+    <path d="M220 319 H320"/>
+    <path d="M220 407 H320"/>
+    <path d="M486 248 C535 248 548 255 624 270"/>
+    <path d="M486 334 C544 334 558 304 628 284"/>
+    <path d="M486 420 C544 420 568 408 624 404"/>
+    <path d="M679 325 V349"/>
+    <path d="M734 404 C798 404 805 280 884 280"/>
+  </g>
+  <path class="signal" d="M1002 324 V368" marker-end="url(#arrow-accent)"/>
+
+  <line x1="56" y1="550" x2="1144" y2="550" stroke="#b5ceca" stroke-width="2"/>
+  <text class="small muted" x="56" y="582">Alpha memories filter once; shared beta joins retain partial matches; P-states activate only when every condition is satisfied.</text>
+</svg>

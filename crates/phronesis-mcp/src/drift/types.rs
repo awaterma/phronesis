@@ -123,6 +123,12 @@ pub enum Evidence {
         symbol: String,
         bound_to: Vec<String>,
         resolves: bool,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        relocated: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        bound_at: Option<i64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stale_at: Option<i64>,
     },
 }
 
@@ -214,6 +220,9 @@ mod tests {
             symbol: "execute_all_agenda_items".to_string(),
             bound_to: vec!["crate::engine::Agenda::execute_all_agenda_items".to_string()],
             resolves: false,
+            relocated: Vec::new(),
+            bound_at: None,
+            stale_at: None,
         };
         let json = serde_json::to_string(&e).expect("serialize");
         assert!(json.contains("\"kind\":\"structural\""), "got {json}");

@@ -23,9 +23,6 @@ cargo run -- confidence       # Confidence band + grounded signals for the open 
 cargo run -- toolchains        # List active toolchain defs (built-in + project); --json for machine output
 cargo run -- journey   # what journey_* facts assert right now
 cargo run -- drift            # Multi-source drift across CLAUDE.md, memory, wiki decisions, and code
-cargo run -- claude-md-drift  # Heuristic: which CLAUDE.md imperatives lack a matching rule?
-cargo run -- memory-drift     # Heuristic: which auto-memory entries lack a matching rule or durable.md paragraph?
-cargo run -- wiki-drift      # Heuristic: which .phronesis/wiki/decisions/ ADRs lack rule coverage?
 cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
 cargo run -- graph rebuild        # Rescan every Rust file into .phronesis/graph.jsonl (resync after git checkout/rebase)
 cargo run -- graph status         # Does the code graph still match the working tree?
@@ -81,7 +78,7 @@ survive context compression — typically a few hundred words. CLAUDE.md
 remains the human-facing onmaping doc; `durable.md` is the "this must
 not fade" subset that the model re-reads every turn.
 
-### Token-aware durable context (`--packs context`, opt-in)
+### Token-aware durable context (enabled by default)
 
 Reinjecting the whole `durable.md` on every turn costs a fixed slice of
 the payload whether it is relevant or not, and it spends that budget
@@ -201,13 +198,12 @@ with Codex `/hooks`; Phronesis never marks its own hooks trusted.
 For hooks and project-specific rules, in any project:
 
 ```
-phr-mcp init                          # just the LLM-behavior pack (deflection rules)
-phr-mcp init --packs llm,rust         # LLM rules + Rust enforcement
-phr-mcp init --packs rust             # Rust enforcement only, no deflection
-phr-mcp init --packs llm,rust,rhai    # Rust + Rhai for embedded-scripting projects
-phr-mcp init --packs llm,python       # LLM rules + Python enforcement
-phr-mcp init --packs llm,typescript   # LLM rules + TS/JS enforcement
-phr-mcp init --packs none             # no starter rules; you add them
+phr-mcp init                          # complete language-agnostic platform
+phr-mcp init --packs rust             # defaults + Rust enforcement
+phr-mcp init --packs rust,rhai        # defaults + Rust and Rhai enforcement
+phr-mcp init --packs python           # defaults + Python enforcement
+phr-mcp init --packs typescript       # defaults + TS/JS enforcement
+phr-mcp init --packs none             # no defaults or starter rules
 phr-mcp init --dry-run                # preview without writing
 phr-mcp init --force                  # overwrite existing rules.json (backs up to .bak)
 phr-mcp init --hooks-only             # refresh hook wiring without touching rules.json
@@ -283,8 +279,8 @@ The packs are composable and **independent**:
   rules (explicit `any`, `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`
   suppressions, non-null `!` assertions)
 - `swift` — Swift-specific advisories: force-unwrap warning, try! warning
-- `confidence` — opt-in confidence-band gate (SPEC-confidence-scoring).
-  Writes `.phronesis/confidence.json` (the opt-in marker) and ships three
+- `confidence` — confidence-band gate (SPEC-confidence-scoring), enabled by default.
+  Writes `.phronesis/confidence.json` and ships three
   commit-gate rules: low confidence blocks `git commit -m`, medium warns,
   high passes clean. Pair with `.phronesis/bugs.json` (known-bug
   registry) and `phr-mcp confidence` for the report surface. Also scaffolds
@@ -314,20 +310,25 @@ The packs are composable and **independent**:
   only its import-cycle rule can fire. Both rules remain `warn`; measured
   precision is recorded in the spec and promotion to `block` requires broader
   corpus evidence.
-- `context` — opt-in token-aware durable context (see above). Writes
+  Rule staleness uses the same graph, but accepts only conservative evidence:
+  an unqualified function-call-shaped `new_content_contains` literal such as
+  `legacy_call(` must first resolve to a local definition. Prose, attributes,
+  method calls, and namespace-qualified calls do not bind. Once bound, losing
+  every definition demotes that rule from block to warn until review. Set
+  `"binds": false` on a disk rule to disable this behavior explicitly.
+- `context` — token-aware durable context (see above), enabled by default. Writes
   `.phronesis/context.json`, `.phronesis/kernel.md`, and a
   `.phronesis/nudges/README.md` documenting the capsule schema. Ships no
-  rules. Not yet in the default pack set: the specification's measurement
-  gate wants a second external corpus first.
+  rules.
 - `none` — empty rules array (hooks still wired)
 
 `base` is shorthand for every language-agnostic pack —
-`llm,confidence,journey,structural,context` — so the usual shape is
-`base,<your language>`:
+`llm,confidence,journey,structural,context`. It is included automatically for
+every selection except `none`, so name only the language additions:
 
 ```
-phr-mcp init --packs base,rust
-phr-mcp init --packs base,typescript
+phr-mcp init --packs rust
+phr-mcp init --packs typescript
 ```
 
 Language packs are deliberately **not** in `base`. Several of their rules
@@ -576,14 +577,14 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 ## Architecture
 
 - `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `drift`, `claude-md-drift`, `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`.
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, predicate-provider create/read/test/list/remove, get_stats, audit_codebase, get_debt_trend, get_drift, get_confidence, submit_suggestion, get_journey)
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, predicate-provider create/read/test/list/remove, graph query/status/rebuild, get_stats, audit_codebase, get_debt_trend, get_drift, get_confidence, submit_suggestion, get_journey)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.
 - `src/memory_drift.rs` — Walks the Claude Code auto-memory directory, classifies entries by `metadata.type`, and scores them against rules.json + durable.md.
 - `src/hook/{mod,pre,post,journey_record,seq}.rs` — Pre/post hook subcommands; reads `.phronesis/rules.json`, fires rules, exits 0/1/2. Split: `pre`/`post` are the hook runners, `journey_record` stamps the journey journal, `seq` sequences the pre-check pipeline.
 - `src/init.rs` — `phr-mcp init` one-command project setup
-- `src/context.rs` — Formatters for SessionStart / UserPromptSubmit hook payloads (active-rules summary, recent-activity summary) plus the legacy renderers, kept byte-for-byte for projects that have not opted in
+- `src/context.rs` — Formatters for SessionStart / UserPromptSubmit hook payloads (active-rules summary, recent-activity summary) plus legacy renderers for projects initialized before context support became the default
 - `src/context/` — Token-aware context (SPEC-token-aware-durable-context).
   `render.rs` builds one side-effect-free `RenderResult` that the live hook
   path, `context inspect`, and the metrics all project from — which is why

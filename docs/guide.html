@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.10" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Phronesis — Loop Programming Guide</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+    /* CSS for syntax highlighting */
+    html { -webkit-text-size-adjust: 100%; }
+    pre > code.sourceCode { white-space: pre; position: relative; }
+    pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+    pre > code.sourceCode > span:empty { height: 1.2em; }
+    .sourceCode { overflow: visible; }
+    code.sourceCode > span { color: inherit; text-decoration: inherit; }
+    div.sourceCode { margin: 1em 0; }
+    pre.sourceCode { margin: 0; }
+    @media screen {
+    div.sourceCode { overflow: auto; }
+    }
+    @media print {
+    pre > code.sourceCode { white-space: pre-wrap; }
+    pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+    }
+    pre.numberSource code
+      { counter-reset: source-line 0; }
+    pre.numberSource code > span
+      { position: relative; left: -4em; counter-increment: source-line; }
+    pre.numberSource code > span > a:first-child::before
+      { content: counter(source-line);
+        position: relative; left: -1em; text-align: right; vertical-align: baseline;
+        border: none; display: inline-block;
+        -webkit-touch-callout: none; -webkit-user-select: none;
+        -khtml-user-select: none; -moz-user-select: none;
+        -ms-user-select: none; user-select: none;
+        padding: 0 4px; width: 4em;
+        color: #aaaaaa;
+      }
+    pre.numberSource { margin-left: 3em; border-left: 1px solid #aaaaaa;  padding-left: 4px; }
+    div.sourceCode
+      {   }
+    @media screen {
+    pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+    }
+    code span.al { color: #ff0000; font-weight: bold; } /* Alert */
+    code span.an { color: #60a0b0; font-weight: bold; font-style: italic; } /* Annotation */
+    code span.at { color: #7d9029; } /* Attribute */
+    code span.bn { color: #40a070; } /* BaseN */
+    code span.bu { color: #008000; } /* BuiltIn */
+    code span.cf { color: #007020; font-weight: bold; } /* ControlFlow */
+    code span.ch { color: #4070a0; } /* Char */
+    code span.cn { color: #880000; } /* Constant */
+    code span.co { color: #60a0b0; font-style: italic; } /* Comment */
+    code span.cv { color: #60a0b0; font-weight: bold; font-style: italic; } /* CommentVar */
+    code span.do { color: #ba2121; font-style: italic; } /* Documentation */
+    code span.dt { color: #902000; } /* DataType */
+    code span.dv { color: #40a070; } /* DecVal */
+    code span.er { color: #ff0000; font-weight: bold; } /* Error */
+    code span.ex { } /* Extension */
+    code span.fl { color: #40a070; } /* Float */
+    code span.fu { color: #06287e; } /* Function */
+    code span.im { color: #008000; font-weight: bold; } /* Import */
+    code span.in { color: #60a0b0; font-weight: bold; font-style: italic; } /* Information */
+    code span.kw { color: #007020; font-weight: bold; } /* Keyword */
+    code span.op { color: #666666; } /* Operator */
+    code span.ot { color: #007020; } /* Other */
+    code span.pp { color: #bc7a00; } /* Preprocessor */
+    code span.sc { color: #4070a0; } /* SpecialChar */
+    code span.ss { color: #bb6688; } /* SpecialString */
+    code span.st { color: #4070a0; } /* String */
+    code span.va { color: #19177c; } /* Variable */
+    code span.vs { color: #4070a0; } /* VerbatimString */
+    code span.wa { color: #60a0b0; font-weight: bold; font-style: italic; } /* Warning */
+  </style>
+  <link rel="stylesheet" href="./web.css" />
+</head>
+<body>
+<nav class="web-nav" aria-label="Documentation">
+  <a href="./index.html">Home</a>
+  <a href="./explainer.html">Explainer</a>
+  <a href="./catalogue.html">Catalogue</a>
+  <a href="./guide.html">Guide</a>
+  <a href="./changelog.html">Changelog</a>
+</nav>
+<header>
+  <div class="web-kicker">Phronesis documentation · v0.26.0</div>
+</header>
+<main>
+<header id="title-block-header">
+<h1 class="title">Phronesis — Loop Programming Guide</h1>
+</header>
+<nav id="TOC" role="doc-toc">
+<ul>
+<li><a href="#phronesis-for-loop-based-agent-programming"
+id="toc-phronesis-for-loop-based-agent-programming">Phronesis for
+Loop-Based Agent Programming</a>
+<ul>
+<li><a href="#the-problem-the-loop-forgets"
+id="toc-the-problem-the-loop-forgets">1. The problem: the loop
+forgets</a></li>
+<li><a href="#three-layers-of-loop-governance"
+id="toc-three-layers-of-loop-governance">2. Three layers of loop
+governance</a></li>
+<li><a href="#setup" id="toc-setup">3. Setup</a></li>
+<li><a href="#defining-your-loops-risk-surface"
+id="toc-defining-your-loops-risk-surface">4. Defining your loop’s risk
+surface</a></li>
+<li><a href="#writing-loop-aware-rules"
+id="toc-writing-loop-aware-rules">5. Writing loop-aware rules</a></li>
+<li><a href="#watching-the-loop" id="toc-watching-the-loop">6. Watching
+the loop</a></li>
+<li><a
+href="#participatory-governance-the-loop-helps-evolve-its-own-rules"
+id="toc-participatory-governance-the-loop-helps-evolve-its-own-rules">7.
+Participatory governance: the loop helps evolve its own rules</a></li>
+<li><a href="#a-worked-example-this-repository-last-week"
+id="toc-a-worked-example-this-repository-last-week">8. A worked example:
+this repository, last week</a></li>
+<li><a href="#inner-loop-vs.-outer-loop"
+id="toc-inner-loop-vs.-outer-loop">9. Inner loop vs. outer loop</a></li>
+<li><a href="#command-reference" id="toc-command-reference">Command
+reference</a></li>
+<li><a href="#further-reading" id="toc-further-reading">Further
+reading</a></li>
+</ul></li>
+</ul>
+</nav>
+<h1 id="phronesis-for-loop-based-agent-programming">Phronesis for
+Loop-Based Agent Programming</h1>
+<p><strong>A guide to governing the iterative agentic loop so it doesn’t
+drift.</strong></p>
+<p>This guide is for people running Claude Code, OpenAI Codex, Gemini
+CLI, or another hook-capable LLM agent in a long, iterative loop — the
+<em>propose → act → observe → propose again</em> cycle that drives real
+coding work — and who want that loop to stay on the rails from the first
+turn to the thousandth. For the conceptual grounding, see the <a
+href="./index.html">documentation site</a> —
+the explainer essay and the rule catalogue live there. It assumes you’ve
+read the <a href="./index.html">README</a> and have <code>phr-mcp</code>
+installed. For the full CLI surface, see the <a
+href="./guide.html#command-reference">Command Reference</a>.</p>
+<hr />
+<h2 id="the-problem-the-loop-forgets">1. The problem: the loop
+forgets</h2>
+<p>The agentic loop is simple to describe and hard to keep honest:</p>
+<pre><code>   ┌── propose ──► tool runs ──► observe ──┐
+   │   (Edit, Bash…)                       │
+   │                                       │
+   └────────── next turn ◄─────────────────┘</code></pre>
+<p>Every turn appends to the context window: the diff you wrote, the
+compiler output, the test log, the conversation. Your project guidance —
+<code>CLAUDE.md</code>, the architectural decisions, the “always run the
+build before claiming done” rule — is read carefully at the
+<em>start</em> of the loop and then steadily buried. By iteration two
+hundred, the directive you most need was last seen clearly hundreds of
+thousands of tokens ago, and auto-compaction may have dropped it
+entirely.</p>
+<p>This is <strong>contextual drift</strong>, and it is structural: the
+longer and more productive the loop, the worse it gets. You cannot fix
+it by writing a better <code>CLAUDE.md</code>, because the problem is
+not <em>what</em> the guidance says — it’s that the guidance lives
+<em>inside the very context window the loop is filling up</em>.</p>
+<p>Phronesis fixes it by moving enforcement <strong>out of the
+conversation entirely</strong>. Rules live on disk in
+<code>.phronesis/rules.json</code>, are re-read by lightweight hooks at
+every single tool call, and fire from <em>outside</em> the context
+window. They cannot be compressed away, because they were never loaded
+into context to begin with. A rule fires the same in token nine hundred
+thousand as it does in token eight hundred.</p>
+<hr />
+<h2 id="three-layers-of-loop-governance">2. Three layers of loop
+governance</h2>
+<p>Phronesis governs the loop at three increasingly powerful layers.
+Most projects start at layer 1 and add the others as the loop gets
+longer.</p>
+<table>
+<colgroup>
+<col style="width: 18%" />
+<col style="width: 36%" />
+<col style="width: 44%" />
+</colgroup>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What it sees</th>
+<th>What it catches</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1. Per-iteration</strong></td>
+<td>This one tool call</td>
+<td>“Don’t write <code>.unwrap()</code> in <code>src/</code>” —
+syntactic violations on the current edit</td>
+</tr>
+<tr>
+<td><strong>2. Trajectory</strong></td>
+<td>The accumulated journey across iterations</td>
+<td>“You’ve edited <code>auth</code> 3× this session and never ran the
+tests” — temporal patterns</td>
+</tr>
+<tr>
+<td><strong>3. Honest closure</strong></td>
+<td>Grounded build/test/bug signals</td>
+<td>“Don’t commit — the build is red and you said it was done” — gated
+completion</td>
+</tr>
+</tbody>
+</table>
+<h3 id="layer-1-per-iteration-enforcement-the-inner-loop">Layer 1 —
+per-iteration enforcement (the inner loop)</h3>
+<p>Two hooks wrap each turn of the loop:</p>
+<ul>
+<li><strong><code>pre-check</code></strong> runs <em>before</em> a tool
+call lands. If a rule with <code>phase: "pre"</code> matches, the
+adapter returns the host’s blocking decision — the agent sees the
+message and adjusts before any damage is done.</li>
+<li><strong><code>post-check</code></strong> runs <em>after</em> the
+action. A <code>phase: "post"</code> rule exits 1 and
+<strong>warns</strong> — advisory, the action already happened.</li>
+</ul>
+<p>Each hook is a <em>fresh, stateless process</em> that reads the rules
+from disk, asserts facts about this one call, fires, and exits. That
+statelessness is the whole point: there is no in-memory state to drift,
+so iteration 900 is checked exactly as rigorously as iteration 1.</p>
+<p>This is the layer the starter packs target.
+<code>phr-mcp init --packs rust</code> gives you a working set
+immediately: the <code>rust</code> pack blocks <code>.unwrap()</code> /
+<code>panic!()</code> / <code>todo!()</code> in <code>src/</code>,
+<code>Result&lt;_, String&gt;</code> returns, and more; the
+<code>llm</code> pack blocks blame-shifting and <strong>unverified
+completion claims</strong>, and warns on bare <code>git commit -m</code>
+to nudge end-to-end verification. (See the <a
+href="./guide.html#command-reference">Command Reference</a> for the
+full pack contents.)</p>
+<p>Layer 1 is extensible without recompiling Phronesis. Sandboxed Rhai
+providers under <code>.phronesis/predicates/*.rhai</code> receive a
+normalized <code>event</code> and call
+<code>emit_fact(predicate, args)</code> to add project vocabulary before
+RETE matching. For a multi-file Codex <code>apply_patch</code>,
+providers first receive the complete <code>event.files</code> change set
+and then one <code>event.file_path</code> view per file. Use the MCP’s
+<code>test_predicate_provider</code> before installing a provider. This
+repository’s <code>change_set.rhai</code> provider demonstrates the
+pattern by classifying production Rust paths, test paths, and
+production-only change sets.</p>
+<h3 id="layer-2-trajectory-awareness-across-iterations">Layer 2 —
+trajectory awareness (across iterations)</h3>
+<p>Layer 1 only sees the <em>current</em> edit. But the patterns that
+actually wreck long loops are <strong>temporal and
+cross-file</strong>:</p>
+<ul>
+<li>You’ve edited the auth module three times this session but never
+touched its tests.</li>
+<li>You ran a destructive migration command in the last five tool
+calls.</li>
+<li>You changed the public API fifteen edits ago and still haven’t
+rebuilt.</li>
+</ul>
+<p>These are invisible to a point-in-time rule. <strong>Journey
+facts</strong> make them first-class. Phronesis keeps an append-only
+journal of every executed tool call under
+<code>.phronesis/journey/</code>, and on every hook invocation it
+<em>recomputes</em> aggregate <code>journey_*</code> facts from a
+bounded suffix of that journal and asserts them into the same network
+your syntactic rules use.</p>
+<p>The crucial property: journey facts are <strong>never accumulated in
+memory</strong>. They are recomputed from the durable journal every
+call, over the window your rules actually ask for. So they survive
+compaction, stay deterministic, and “decay” for free — a
+<code>journey_occurrence</code> count of 3 holds while the window covers
+three auth edits, and quietly drops to 2 once the window slides past one
+of them. (Full design: <a
+href="./explainer.html#journey">SPEC-journey-facts</a>.)</p>
+<p>Because a <code>pre-check</code> runs <em>before</em> the current
+call is journaled, a journey rule can <strong>block the current action
+based on the trajectory that led to it</strong> — “have you done X
+before” (journey) cleanly separated from “are you doing X now” (the
+diff). That is the headline capability for loop programming.</p>
+<h3 id="layer-3-honest-closure-ending-the-loop">Layer 3 — honest closure
+(ending the loop)</h3>
+<p>A loop’s most dangerous moment is when it decides it’s <em>done</em>.
+The model is optimistic; the build may be red. The
+<code>confidence</code> pack gates <code>git commit</code> on
+<strong>grounded signals</strong> — actual build, test, and known-bug
+outcomes read through declarative toolchain definitions (built-in Cargo
+plus project definitions in <code>.phronesis/toolchains.json</code>) and
+one generic parser — not on syntactic proxies:</p>
+<ul>
+<li><strong>low</strong> confidence → blocks the commit</li>
+<li><strong>medium</strong> → warns</li>
+<li><strong>high</strong> → passes clean</li>
+</ul>
+<p>Pair it with the <code>llm</code> pack’s “unverified completion
+claim” rule and you have a loop that physically cannot declare victory
+before the work compiles and passes. The default platform writes
+<code>.phronesis/confidence.json</code>; inspect the current band with
+<code>phr-mcp confidence</code>. (Full design: <a
+href="./explainer.html#confidence">SPEC-confidence-scoring</a>.)</p>
+<hr />
+<h2 id="setup">3. Setup</h2>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb2-1"><a href="#cb2-1" aria-hidden="true" tabindex="-1"></a><span class="co"># 1. Install the binary (once per machine)</span></span>
+<span id="cb2-2"><a href="#cb2-2" aria-hidden="true" tabindex="-1"></a><span class="ex">cargo</span> install <span class="at">--path</span> crates/phronesis-mcp</span>
+<span id="cb2-3"><a href="#cb2-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-4"><a href="#cb2-4" aria-hidden="true" tabindex="-1"></a><span class="co"># 2. Register the MCP server at user scope (once per machine)</span></span>
+<span id="cb2-5"><a href="#cb2-5" aria-hidden="true" tabindex="-1"></a><span class="ex">phr-mcp</span> install</span>
+<span id="cb2-6"><a href="#cb2-6" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb2-7"><a href="#cb2-7" aria-hidden="true" tabindex="-1"></a><span class="co"># 3. Initialize the default platform plus the relevant language pack</span></span>
+<span id="cb2-8"><a href="#cb2-8" aria-hidden="true" tabindex="-1"></a><span class="bu">cd</span> /your/project</span>
+<span id="cb2-9"><a href="#cb2-9" aria-hidden="true" tabindex="-1"></a><span class="ex">phr-mcp</span> init <span class="at">--packs</span> rust</span></code></pre></div>
+<p>Journey support and the other language-agnostic subsystems are
+enabled by default. <code>init</code> is idempotent and only adds its
+own entries — existing permissions, hooks, and gitignore lines are
+preserved. After running it, restart the agent host so it picks up the
+hooks and MCP server. Codex users must also review changed project hooks
+with <code>/hooks</code>; Phronesis does not bypass that trust
+boundary.</p>
+<p>You can sanity-check the install at any time:</p>
+<div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> phr-mcp <span class="at">--version</span></span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">phr-mcp</span> 0.26.0</span></code></pre></div>
+<p>Everything in the rest of this guide is drawn from the actual state
+of this repository at the time of writing — the configs, rules, stats,
+and confidence band shown below are what <code>phr-mcp</code> reports on
+this machine, not synthetic examples. The point is that you can run the
+same commands against your own project and see equivalent output.</p>
+<hr />
+<h2 id="defining-your-loops-risk-surface">4. Defining your loop’s risk
+surface</h2>
+<p>Journey rules don’t match on hardcoded concepts like “sql” or “auth”
+— the engine is domain-neutral. Instead, <em>you</em> define your loop’s
+risk surface in <code>.phronesis/journey.json</code>, reusing the same
+predicate vocabulary the syntactic rules already use. A
+<strong>tagger</strong> is a mini-rule whose effect is “stamp this tag
+on the journal record” instead of “block.”</p>
+<p>The minimum useful surface is one tag. Here is the actual
+<code>journey.json</code> from this repository — it is exactly what the
+<code>journey</code> pack ships:</p>
+<div class="sourceCode" id="cb4"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb4-1"><a href="#cb4-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb4-2"><a href="#cb4-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;version&quot;</span><span class="fu">:</span> <span class="dv">1</span><span class="fu">,</span></span>
+<span id="cb4-3"><a href="#cb4-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;taggers&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb4-4"><a href="#cb4-4" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;tag&quot;</span><span class="fu">:</span> <span class="st">&quot;build&quot;</span><span class="fu">,</span> <span class="dt">&quot;when&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="fu">{</span> <span class="dt">&quot;bash_command_matches&quot;</span><span class="fu">:</span> <span class="st">&quot;cargo (build|check|test)&quot;</span> <span class="fu">}</span> <span class="ot">]</span> <span class="fu">}</span></span>
+<span id="cb4-5"><a href="#cb4-5" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb4-6"><a href="#cb4-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;modules&quot;</span><span class="fu">:</span> <span class="ot">[]</span></span>
+<span id="cb4-7"><a href="#cb4-7" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>That single tag is enough to power the build-staleness rule in §5,
+which on this repository fired <strong>125 times in the last 7
+days</strong> — by far the most active warning. Most loop pathologies
+you’ll hit early are <em>temporal</em> (you forgot to rebuild) rather
+than <em>cross-module</em> (you touched auth without tests). Start
+there.</p>
+<p>Once a tag earns its keep, grow the surface. Plausible next additions
+for a Rust project look like this:</p>
+<div class="sourceCode" id="cb5"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;taggers&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb5-3"><a href="#cb5-3" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;tag&quot;</span><span class="fu">:</span> <span class="st">&quot;build&quot;</span><span class="fu">,</span> <span class="dt">&quot;when&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="fu">{</span> <span class="dt">&quot;bash_command_matches&quot;</span><span class="fu">:</span> <span class="st">&quot;cargo (build|check|test)&quot;</span> <span class="fu">}</span> <span class="ot">]</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb5-4"><a href="#cb5-4" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;tag&quot;</span><span class="fu">:</span> <span class="st">&quot;tests&quot;</span><span class="fu">,</span> <span class="dt">&quot;when&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="fu">{</span> <span class="dt">&quot;file_path_matches&quot;</span><span class="fu">:</span> <span class="st">&quot;tests/&quot;</span> <span class="fu">}</span> <span class="ot">]</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb5-5"><a href="#cb5-5" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;tag&quot;</span><span class="fu">:</span> <span class="st">&quot;sql&quot;</span><span class="fu">,</span>   <span class="dt">&quot;when&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="fu">{</span> <span class="dt">&quot;or&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb5-6"><a href="#cb5-6" aria-hidden="true" tabindex="-1"></a>                                    <span class="fu">{</span> <span class="dt">&quot;new_content_contains&quot;</span><span class="fu">:</span> <span class="st">&quot;INSERT INTO&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb5-7"><a href="#cb5-7" aria-hidden="true" tabindex="-1"></a>                                    <span class="fu">{</span> <span class="dt">&quot;new_content_contains&quot;</span><span class="fu">:</span> <span class="st">&quot;DELETE FROM&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb5-8"><a href="#cb5-8" aria-hidden="true" tabindex="-1"></a>                                    <span class="fu">{</span> <span class="dt">&quot;file_path_matches&quot;</span><span class="fu">:</span> <span class="st">&quot;migrations/&quot;</span> <span class="fu">}</span> <span class="ot">]</span> <span class="fu">}</span> <span class="ot">]</span> <span class="fu">}</span></span>
+<span id="cb5-9"><a href="#cb5-9" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb5-10"><a href="#cb5-10" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;modules&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb5-11"><a href="#cb5-11" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;name&quot;</span><span class="fu">:</span> <span class="st">&quot;engine&quot;</span><span class="fu">,</span> <span class="dt">&quot;paths&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="st">&quot;crates/phronesis-mcp/src/engine/**&quot;</span> <span class="ot">]</span> <span class="fu">}</span></span>
+<span id="cb5-12"><a href="#cb5-12" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span></span>
+<span id="cb5-13"><a href="#cb5-13" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>Pick the handful of surfaces where churn or absence actually hurts in
+<em>your</em> loop: the module you keep re-touching, the test directory
+you keep forgetting, the destructive operations. Adding a tag costs
+nothing until a rule references it — the derivation pass only computes
+aggregates the loaded rules consume.</p>
+<blockquote>
+<p><strong>Selector validation is your typo guard.</strong> A rule that
+references a tag your <code>journey.json</code> doesn’t define is
+<strong>rejected</strong> — the next pre-check exits non-zero with
+<code>phronesis: BLOCKED — rule \</code><id>` references undefined
+selector `<sel>` — not in journey.json taggers or
+modules<code>, naming both the offending rule and the missing tag. This is safe by default: the dangerous case (absence rules of the form</code>==
+0`) would otherwise fire constantly when the tag is missing, so
+rejecting at config time keeps that failure mode out of the loop
+entirely. Wire the tagger up first, then add the rule that depends on
+it.</p>
+</blockquote>
+<hr />
+<h2 id="writing-loop-aware-rules">5. Writing loop-aware rules</h2>
+<p>Journey rules live in <code>.phronesis/rules.json</code> alongside
+your syntactic rules and use the same v2
+<code>when</code>/<code>then</code> shape. The derivation pass scans
+your loaded rules for <code>journey_*</code> conditions and computes
+<em>exactly those aggregates and nothing more</em> — you never pay to
+derive a fact no rule consumes.</p>
+<p>The aggregator family:</p>
+<table>
+<colgroup>
+<col style="width: 42%" />
+<col style="width: 23%" />
+<col style="width: 34%" />
+</colgroup>
+<thead>
+<tr>
+<th>Predicate</th>
+<th>Args</th>
+<th>Use for</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>journey_occurrence</code></td>
+<td><code>[selector, window]</code></td>
+<td>counting (one fact per match) — feeds
+<code>facts_count(...) &gt;= N</code> and <code>== 0</code></td>
+</tr>
+<tr>
+<td><code>journey_seen</code></td>
+<td><code>[selector, window]</code></td>
+<td>presence (≥1) — a plain boolean</td>
+</tr>
+<tr>
+<td><code>journey_since_ge</code></td>
+<td><code>[selector, k]</code></td>
+<td>distance since last occurrence ≥ k</td>
+</tr>
+<tr>
+<td><code>journey_count</code></td>
+<td><code>[selector, window, count]</code></td>
+<td>the count as a bindable value</td>
+</tr>
+<tr>
+<td><code>journey_distinct</code></td>
+<td><code>[field, window, count]</code></td>
+<td>distinct values of a field in a window</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Window tokens:</strong> <code>5c</code> = last 5 calls ·
+<code>30m</code>/<code>2h</code>/<code>7d</code> = wall time ·
+<code>s</code> = current session.</p>
+<h3 id="the-headline-four">The headline four</h3>
+<p>These are the patterns worth starting with — each maps to a
+recognizable loop failure mode. Only the fourth (<code>build</code>)
+works with the minimum <code>journey.json</code> from §4; the
+<code>auth</code>, <code>tests</code>, and <code>sql</code> selectors
+require the expanded taggers from the same section.</p>
+<p><strong>Auth churn (count over a session):</strong></p>
+<div class="sourceCode" id="cb6"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;auth-churn-session&quot;</span><span class="fu">,</span></span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;phase&quot;</span><span class="fu">:</span> <span class="st">&quot;pre&quot;</span><span class="fu">,</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;priority&quot;</span><span class="fu">:</span> <span class="dv">20</span><span class="fu">,</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;when&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="fu">{</span> <span class="dt">&quot;__script__&quot;</span><span class="fu">:</span> <span class="st">&quot;facts_count(&#39;journey_occurrence&#39;, [&#39;auth&#39;,&#39;s&#39;]) &gt;= 3&quot;</span> <span class="fu">}</span> <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;then&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;warn&quot;</span><span class="fu">:</span> <span class="st">&quot;You&#39;ve edited the auth module 3+ times this session. Does this need test coverage or a review before the next change?&quot;</span> <span class="fu">}</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Churn without tests (count + absence — composable through
+ordinary <code>when</code>):</strong></p>
+<div class="sourceCode" id="cb7"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb7-1"><a href="#cb7-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb7-2"><a href="#cb7-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;auth-churn-without-tests&quot;</span><span class="fu">,</span></span>
+<span id="cb7-3"><a href="#cb7-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;phase&quot;</span><span class="fu">:</span> <span class="st">&quot;pre&quot;</span><span class="fu">,</span></span>
+<span id="cb7-4"><a href="#cb7-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;priority&quot;</span><span class="fu">:</span> <span class="dv">25</span><span class="fu">,</span></span>
+<span id="cb7-5"><a href="#cb7-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;when&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb7-6"><a href="#cb7-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;__script__&quot;</span><span class="fu">:</span> <span class="st">&quot;facts_count(&#39;journey_occurrence&#39;, [&#39;auth&#39;,&#39;s&#39;]) &gt;= 3&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb7-7"><a href="#cb7-7" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;__script__&quot;</span><span class="fu">:</span> <span class="st">&quot;facts_count(&#39;journey_occurrence&#39;, [&#39;tests&#39;,&#39;s&#39;]) == 0&quot;</span> <span class="fu">}</span></span>
+<span id="cb7-8"><a href="#cb7-8" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb7-9"><a href="#cb7-9" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;then&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;warn&quot;</span><span class="fu">:</span> <span class="st">&quot;You&#39;ve edited auth 3+ times this session without touching its tests. Add or update coverage before continuing.&quot;</span> <span class="fu">}</span></span>
+<span id="cb7-10"><a href="#cb7-10" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Recent destructive SQL (presence in a call
+window):</strong></p>
+<div class="sourceCode" id="cb8"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;sql-recent-call-window&quot;</span><span class="fu">,</span></span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;phase&quot;</span><span class="fu">:</span> <span class="st">&quot;pre&quot;</span><span class="fu">,</span></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;when&quot;</span><span class="fu">:</span> <span class="ot">[</span> <span class="fu">{</span> <span class="dt">&quot;journey_seen&quot;</span><span class="fu">:</span> <span class="ot">[</span><span class="st">&quot;sql&quot;</span><span class="ot">,</span> <span class="st">&quot;5c&quot;</span><span class="ot">]</span> <span class="fu">}</span> <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb8-5"><a href="#cb8-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;then&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;warn&quot;</span><span class="fu">:</span> <span class="st">&quot;A SQL/migration edit happened in the last 5 tool calls — double-check it ran against the right database.&quot;</span> <span class="fu">}</span></span>
+<span id="cb8-6"><a href="#cb8-6" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p><strong>Build staleness (distance-since-last — the classic loop
+pathology):</strong></p>
+<p>This is the rule that actually ships in this repository. It’s worth
+showing in full because the production version is more nuanced than the
+textbook form above:</p>
+<div class="sourceCode" id="cb9"><pre
+class="sourceCode json"><code class="sourceCode json"><span id="cb9-1"><a href="#cb9-1" aria-hidden="true" tabindex="-1"></a><span class="fu">{</span></span>
+<span id="cb9-2"><a href="#cb9-2" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;id&quot;</span><span class="fu">:</span> <span class="st">&quot;build-staleness&quot;</span><span class="fu">,</span></span>
+<span id="cb9-3"><a href="#cb9-3" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;phase&quot;</span><span class="fu">:</span> <span class="st">&quot;pre&quot;</span><span class="fu">,</span></span>
+<span id="cb9-4"><a href="#cb9-4" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;priority&quot;</span><span class="fu">:</span> <span class="dv">5</span><span class="fu">,</span></span>
+<span id="cb9-5"><a href="#cb9-5" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;when&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb9-6"><a href="#cb9-6" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;__script__&quot;</span><span class="fu">:</span> <span class="st">&quot;facts_count(&#39;journey_since_ge&#39;, [&#39;build&#39;,&#39;8&#39;]) &gt;= 1&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb9-7"><a href="#cb9-7" aria-hidden="true" tabindex="-1"></a>    <span class="fu">{</span> <span class="dt">&quot;or&quot;</span><span class="fu">:</span> <span class="ot">[</span></span>
+<span id="cb9-8"><a href="#cb9-8" aria-hidden="true" tabindex="-1"></a>        <span class="fu">{</span> <span class="dt">&quot;change_type&quot;</span><span class="fu">:</span> <span class="st">&quot;edit&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb9-9"><a href="#cb9-9" aria-hidden="true" tabindex="-1"></a>        <span class="fu">{</span> <span class="dt">&quot;change_type&quot;</span><span class="fu">:</span> <span class="st">&quot;write&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb9-10"><a href="#cb9-10" aria-hidden="true" tabindex="-1"></a>        <span class="fu">{</span> <span class="dt">&quot;change_type&quot;</span><span class="fu">:</span> <span class="st">&quot;multiedit&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb9-11"><a href="#cb9-11" aria-hidden="true" tabindex="-1"></a>        <span class="fu">{</span> <span class="dt">&quot;change_type&quot;</span><span class="fu">:</span> <span class="st">&quot;replace&quot;</span> <span class="fu">}</span><span class="ot">,</span></span>
+<span id="cb9-12"><a href="#cb9-12" aria-hidden="true" tabindex="-1"></a>        <span class="fu">{</span> <span class="dt">&quot;change_type&quot;</span><span class="fu">:</span> <span class="st">&quot;write_file&quot;</span> <span class="fu">}</span></span>
+<span id="cb9-13"><a href="#cb9-13" aria-hidden="true" tabindex="-1"></a>    <span class="ot">]</span> <span class="fu">}</span></span>
+<span id="cb9-14"><a href="#cb9-14" aria-hidden="true" tabindex="-1"></a>  <span class="ot">]</span><span class="fu">,</span></span>
+<span id="cb9-15"><a href="#cb9-15" aria-hidden="true" tabindex="-1"></a>  <span class="dt">&quot;then&quot;</span><span class="fu">:</span> <span class="fu">{</span> <span class="dt">&quot;warn&quot;</span><span class="fu">:</span> <span class="st">&quot;8+ tool calls since the last build/test. Run the build before reporting done.&quot;</span> <span class="fu">}</span></span>
+<span id="cb9-16"><a href="#cb9-16" aria-hidden="true" tabindex="-1"></a><span class="fu">}</span></span></code></pre></div>
+<p>The trajectory clause (<code>journey_since_ge</code>) is only half
+the rule. Without the <code>change_type</code> filter on the current
+call, the warning would fire on every Read, Grep, and idle Bash call
+after the eighth tool call since the last build — the agent would be
+drowning in noise and would learn to ignore it. Restricting to
+edit-shaped tool calls means the warning fires <em>when it can act on
+it</em>: “you’re about to write more code without rebuilding.”</p>
+<p>This is the general shape of a good journey rule:</p>
+<blockquote>
+<p><code>&lt;trajectory condition&gt;</code> <strong>and</strong>
+<code>&lt;the current action this trajectory matters for&gt;</code>.</p>
+</blockquote>
+<p>The trajectory tells you the loop is in a precarious state; the
+current-call clause tells you <em>this</em> is the call where
+intervention helps.</p>
+<blockquote>
+<p><strong>Threshold rules fire once per session.</strong> Pure-script
+rules dedupe on rule id, which is the right semantics for “≥3
+occurrences” — you get one warning per condition, not one per matching
+call.</p>
+</blockquote>
+<hr />
+<h2 id="watching-the-loop">6. Watching the loop</h2>
+<p>Phronesis gives you read-only surfaces to see what the loop is doing
+and tune your rules. The outputs below are real captures from this
+repository at the time of writing.</p>
+<p><strong><code>phr-mcp stats --since 7d</code></strong> — per-rule
+activity over the last week. This is where you discover which rules are
+pulling their weight and which are dead code:</p>
+<pre><code>Rule                                 Blocked  Warned  Last fired
+build-staleness                            0     125  2d ago
+warn-rust-function-param-count-high        0     115  1h ago
+nudge-verify-before-commit                 0      57  1m ago
+build-staleness#or0                        0      44  1h ago
+confidence-medium-warns-commit             0      22  1m ago
+warn-cargo-build-without-workspace         0      18  1h ago
+confidence-low-blocks-commit              12       0  3m ago
+build-staleness#or1                        0       5  1h ago
+enforce-no-result-string-error             2       0  3d ago
+warn-clone-heavy                           0       2  3d ago
+llm-warn-git-add-all                       0       1  3d ago
+
+Total: 14 blocked, 389 warned across 11 rules (window: 1w)</code></pre>
+<p>Three things to read from that table:</p>
+<ol type="1">
+<li><strong><code>build-staleness</code> is the workhorse</strong> (125
+warns). The single tagger in §4 is doing real work — the loop genuinely
+does forget to rebuild.</li>
+<li><strong><code>confidence-low-blocks-commit</code> actually blocked
+12 commits.</strong> Layer 3 is not theoretical; it intercepted closure
+12 times this week alone — the most recent of those, three minutes
+before this capture, was the commit that landed this very guide (see
+§8).</li>
+<li>The <code>#or0..#or4</code> siblings under
+<code>build-staleness</code> are the per-branch fire counts for the
+<code>or</code> clause from §5 — useful when debugging which arm of a
+multi-branch rule is doing the matching.</li>
+</ol>
+<p><strong><code>phr-mcp confidence</code></strong> — current band and
+grounded signals. Three real captures from this session, in temporal
+order:</p>
+<pre><code>$ phr-mcp confidence --json   # build was stale; commit attempt would block
+{ &quot;band&quot;: &quot;low&quot;,    &quot;signals&quot;: [&quot;compile&quot;],          &quot;subject&quot;: &quot;unit-…&quot; }
+
+$ phr-mcp confidence --json   # after cargo check + cargo test refreshed signals
+{ &quot;band&quot;: &quot;medium&quot;, &quot;signals&quot;: [&quot;compile&quot;, &quot;tests&quot;], &quot;subject&quot;: &quot;unit-…&quot; }
+
+$ phr-mcp confidence --json   # after the commit settled the unit
+{ &quot;subject&quot;: null }</code></pre>
+<p>The signal isn’t a heuristic vibe — it’s the actual exit status of
+the last <code>cargo check</code> and the test summary line from the
+last <code>cargo test</code>, captured by the post-check hook and
+persisted to <code>.phronesis/outcomes/</code>. A
+<code>git commit</code> both settles the open work unit (subject goes
+<code>null</code> between units) and opens the next one on the next tool
+call.</p>
+<p><strong><code>phr-mcp journey</code></strong> — what journey facts
+the engine <em>would</em> assert against the current journal, before any
+rule fires:</p>
+<pre><code>PREDICATE         ARGS       RULES
+journey_since_ge  build | 1  build-staleness#or0..or4
+journey_since_ge  build | 2  build-staleness#or0..or4
+…
+journey_since_ge  build | 8  build-staleness#or0..or4</code></pre>
+<p>This is the “why did this fire” view. Add
+<code>--explain &lt;rule-id&gt;</code> to filter to a specific rule’s
+dependencies.</p>
+<p><strong><code>phr-mcp audit</code></strong> — whole-tree sweep (the
+hook only sees per-call diffs).
+<strong><code>phr-mcp audit --fail-on block</code></strong> turns it
+into a CI gate.</p>
+<p><strong><code>phr-mcp trend</code></strong> — debt-over-time, diffing
+successive audit snapshots:</p>
+<pre><code>Rule                                 2026-06-20  Δ
+audit-rust-let-binding-count-high            45  0 ·
+audit-rust-let-mut-count-high                29  0 ·
+warn-rust-function-param-count-high          16  0 ·
+…</code></pre>
+<p><code>get_journey</code>, <code>get_confidence</code>, and the other
+MCP tools expose the same views <em>in-conversation</em>, so the agent
+can ask “what does my trajectory look like” mid-loop and
+self-correct.</p>
+<p>Use <code>phr-mcp stats</code> to spot noisy rules (silence them with
+<code>silent: true</code>), dead rules (delete them), or to confirm a
+tuning change had the effect you wanted. Use <code>phr-mcp trend</code>
+after a cleanup sweep to confirm the pile actually shrank.</p>
+<hr />
+<h2 id="participatory-governance-the-loop-helps-evolve-its-own-rules">7.
+Participatory governance: the loop helps evolve its own rules</h2>
+<p>So far the loop has been a <em>subject</em> of governance — rules
+constrain it from outside. But the same loop is also the cheapest place
+to <em>discover</em> new rules: it has live evidence of where it slips,
+where existing rules over-fire, and where guidance lives as prose that
+nobody can enforce.</p>
+<p>Phronesis exposes one consolidated drift surface with source
+filters:</p>
+<ul>
+<li><strong><code>phr-mcp drift --source claude_md</code></strong> —
+bullets in <code>CLAUDE.md</code> that no current rule covers.
+Candidates for porting to a rule, or for explicitly marking
+“non-lintable by design.”</li>
+<li><strong><code>phr-mcp drift --source memory</code></strong> —
+entries in the agent’s auto-memory store that have no matching rule or
+<code>durable.md</code> paragraph. Actionable memories (named commands,
+named tool calls) should become rules; ambient ones (shared prose)
+belong in <code>durable.md</code>.</li>
+<li><strong><code>phr-mcp drift --source wiki</code></strong> —
+ADR-style decisions under <code>.phronesis/wiki/decisions/</code> that
+no rule enforces. Decisions with explicit
+<code>enforces: [rule-id]</code> frontmatter resolve deterministically;
+others fall through to a token-overlap fallback.</li>
+</ul>
+<p>A snippet of real output from <code>drift --source wiki</code> on
+this repo:</p>
+<pre><code>Decision                      Bucket          Match
+journey-derivation-scaling    uncovered       (no match)
+no-panic-in-production        covered         → rule enforce-no-todo-in-src
+no-llm-deflection             covered         → rule enforce-no-pre-existing-issue
+borrow-ergonomic-apis         covered         → rule warn-rust-public-fn-takes-string-ref
+…</code></pre>
+<p>The “uncovered” rows are the actionable signal: each one is a design
+decision that lives only as prose, with no enforcement teeth. Some of
+those <em>should</em> become rules; others are inherently non-lintable
+and that’s fine — but the list is concrete instead of speculative.</p>
+<p>When the loop hits a real moment of friction or insight, it can
+participate in closing the gap:</p>
+<ol type="1">
+<li><strong>Remember → decide → enforce.</strong> When the human says
+“remember X” or “make a rule for X”, check the drift tools first, then
+scaffold a decision with <code>phr-mcp decision new &lt;slug&gt;</code>.
+Fill in Context / Decision / Enforcement / Consequences. If the decision
+is mechanically enforceable, propose a rule in
+<code>.phronesis/rules.json</code> and wire
+<code>enforces: [rule-id]</code> into the decision’s frontmatter so the
+next wiki-source drift run picks it up as covered.</li>
+<li><strong>Friction-driven proposals.</strong> When a rule blocks the
+loop three or more times in the same session for what looks like a
+legitimate pattern, pause: either the rule’s scope is too broad (propose
+a narrower <code>file_path_matches</code> or an exclusion) or the loop
+is doing something it shouldn’t (adjust the approach, don’t weaken the
+rule).</li>
+<li><strong>Cross-session knowledge transfer.</strong> A discovery that
+warrants permanence — a bug pattern, a rollout lesson — becomes a
+decision page. ADRs travel with the repo and outlive any one session’s
+context window.</li>
+</ol>
+<p>The bidirectionality is the point: the rules govern the loop
+<em>and</em> the loop proposes new rules, with the human ratifying.
+Drift surfaces are how that feedback channel stays in sync.</p>
+<hr />
+<h2 id="a-worked-example-this-repository-last-week">8. A worked example:
+this repository, last week</h2>
+<p>Pull the trail from §6 together with a concrete narrative. Everything
+below is what <code>phr-mcp</code> actually reports about this
+repository over the last 7 days — there is no hypothetical.</p>
+<p><strong>Layer 1 (per-iteration)</strong> kept syntactic discipline
+cheap and quiet. Two <code>enforce-no-result-string-error</code> blocks
+intercepted <code>Result&lt;_, String&gt;</code> returns before they
+landed; one <code>llm-warn-git-add-all</code> nudge caught a
+<code>git add -A</code>; a handful of <code>warn-clone-heavy</code> and
+<code>warn-dbg-in-src</code> warnings flagged small slips on the way
+past.</p>
+<p><strong>Layer 2 (trajectory)</strong> was, by volume, the dominant
+voice in the loop. <code>build-staleness</code> fired <strong>125
+times</strong> — every time the trajectory accumulated eight tool calls
+without a <code>cargo build|check|test</code>, and the <em>current</em>
+call was an edit. Each fire was a quiet course-correct: “rebuild before
+you write more.” <code>warn-rust-function-param-count-high</code> chimed
+in 106 times on the syntactic side, but the <em>temporal</em> warning
+was the one preventing late-loop collapse.</p>
+<p><strong>Layer 3 (closure)</strong> intercepted closure 12 separate
+times. <code>confidence-low-blocks-commit</code> blocked
+<code>git commit</code> because the build-or-test signal in
+<code>.phronesis/outcomes/</code> was red. The companion
+<code>confidence-medium-warns-commit</code> warned 22 more times —
+yellow band, “commit if you mean to, but the signal is unstable.” Across
+the same window <code>nudge-verify-before-commit</code> fired 57 times
+reminding the loop to actually run the verification before reaching for
+the commit verb.</p>
+<p>The cleanest illustration is the most recent one of those 12 blocks,
+three minutes before the stats capture above: <strong>the commit that
+landed this very guide.</strong> The loop tried <code>git commit</code>
+with a stale red compile signal in <code>.phronesis/outcomes/</code>,
+and <code>confidence-low-blocks-commit</code> refused:</p>
+<pre><code>[phr-mcp pre-check]: phronesis: BLOCKED — Low confidence — compile/tests/
+known-bug not all green. Run the build and tests and resolve failing signals
+before committing.</code></pre>
+<p>The agent (running this session) refreshed the signals with
+<code>cargo check --workspace</code> and
+<code>cargo test -p phronesis-mcp</code>, which stamped
+<code>outcome:compile_ok</code> and <code>outcome:test_pass</code>
+against the open subject. The band rose to <code>medium</code>, the
+block fell back to a warn, and the commit landed:</p>
+<pre><code>$ git log --oneline -1
+5f5e84c docs(loop-guide): rewrite with real captures from this repo</code></pre>
+<p>None of this fired from a <code>CLAUDE.md</code> paragraph that might
+have been compacted away. It fired from disk, from outside the context
+window, against the recorded exit status of the last
+<code>cargo check</code>. The same mechanism would fire identically at
+turn 12 or at turn 1,200.</p>
+<p>That is the entire premise of the guide, captured live — the guide
+demonstrates itself.</p>
+<hr />
+<h2 id="inner-loop-vs.-outer-loop">9. Inner loop vs. outer loop</h2>
+<p>“Loop-based programming” has two meanings, and phronesis serves
+both:</p>
+<ul>
+<li><p><strong>The inner agentic loop</strong> — the per-turn
+propose/act/observe cycle this guide has been describing throughout.
+This is phronesis’s home turf: per-call hooks, trajectory-aware journey
+rules, confidence-gated closure.</p></li>
+<li><p><strong>An outer recurring loop</strong> — running a whole task
+repeatedly on an interval (for example, an unattended job that keeps
+grinding on a backlog). Phronesis composes cleanly here too: end each
+iteration with <code>phr-mcp audit --fail-on block</code> to gate it, so
+the recurring loop can’t drift past your rules even when nobody is
+watching. The deep integration, though, is the inner loop — that is the
+cycle phronesis exists to keep honest.</p></li>
+</ul>
+<hr />
+<h2 id="command-reference">Command reference</h2>
+<p>The commands below cover the operational surface used most often in a
+long agent loop. Run <code>phr-mcp &lt;command&gt; --help</code> for
+every option.</p>
+<table>
+<colgroup>
+<col style="width: 50%" />
+<col style="width: 50%" />
+</colgroup>
+<thead>
+<tr>
+<th>Command</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>phr-mcp init</code></td>
+<td>Install the default platform and host integrations</td>
+</tr>
+<tr>
+<td><code>phr-mcp init --packs rust</code></td>
+<td>Add the Rust language rules to the default platform</td>
+</tr>
+<tr>
+<td><code>phr-mcp stats</code></td>
+<td>Summarize rule activity from the append-only action log</td>
+</tr>
+<tr>
+<td><code>phr-mcp audit --fail-on block</code></td>
+<td>Scan the tree and fail when blocking debt is present</td>
+</tr>
+<tr>
+<td><code>phr-mcp trend</code></td>
+<td>Inspect debt over time from audit snapshots</td>
+</tr>
+<tr>
+<td><code>phr-mcp confidence</code></td>
+<td>Show the grounded confidence band for the open work unit</td>
+</tr>
+<tr>
+<td><code>phr-mcp journey --explain</code></td>
+<td>Show current trajectory facts and their derivation</td>
+</tr>
+<tr>
+<td><code>phr-mcp drift</code></td>
+<td>Compare rules with durable guidance, memory, ADRs, and bound
+code</td>
+</tr>
+<tr>
+<td><code>phr-mcp graph status --json</code></td>
+<td>Inspect structural graph freshness and generation</td>
+</tr>
+<tr>
+<td><code>phr-mcp graph rebuild --json</code></td>
+<td>Rebuild the graph and reconcile rule-to-code bindings</td>
+</tr>
+</tbody>
+</table>
+<p>The MCP server exposes the same governance state as structured JSON
+objects. Collection tools such as <code>list_rules</code>,
+<code>list_facts</code>, <code>get_agenda</code>,
+<code>get_consequences</code>, and <code>get_action_log</code> always
+wrap arrays in named object envelopes. Structural clients can use
+<code>query_code_graph</code>, <code>get_code_graph_status</code>, and
+<code>rebuild_code_graph</code> without dropping to a shell. Mutating
+rule and fact tools persist or reconcile their related state at the same
+boundary.</p>
+<hr />
+<h2 id="further-reading">Further reading</h2>
+<ul>
+<li><a href="./index.html">README</a> — project overview and the
+premise</li>
+<li><a href="./guide.html#command-reference">Command Reference</a> —
+full CLI + pack details</li>
+<li><a href="./explainer.html#journey">SPEC-journey-facts</a> — the
+trajectory layer in depth</li>
+<li><a
+href="./explainer.html#confidence">SPEC-confidence-scoring</a> —
+grounded closure gating</li>
+<li><a href="./explainer.html">The
+Explainer</a> — the RETE engine and design intent</li>
+<li><a href="./catalogue.html">The
+Catalogue</a> — visual reference of starter rules</li>
+</ul>
+</main>
+<footer class="web-footer">Phronesis · durable governance for LLM-assisted work · v0.26.0</footer>
+</body>
+</html>

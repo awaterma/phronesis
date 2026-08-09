@@ -44,8 +44,8 @@ cargo run -- -p phronesis-mcp post-check
 ### CLI Commands (after cargo install)
 ```bash
 # Project setup
-phr-mcp init                    # LLM rules only
-phr-mcp init --packs llm,rust   # LLM + Rust rules
+phr-mcp init                    # Complete language-agnostic platform
+phr-mcp init --packs rust       # Default platform + Rust rules
 phr-mcp init --packs none       # No starter rules
 
 # Configuration refresh
@@ -53,10 +53,10 @@ phr-mcp init --rules-only --force --packs llm,rust   # Update rules only
 phr-mcp init --hooks-only                                            # Update hooks only
 
 # Activity inspection
-phr-mcp values                    # Per-rule summary from log
-phr-mcp values --since 7d
-phr-mcp values --rule no-unwrap-in-src
-phr-mcp values --json
+phr-mcp stats                     # Per-rule summary from log
+phr-mcp stats --since 7d
+phr-mcp stats --rule no-unwrap-in-src
+phr-mcp stats --json
 
 phr-mcp audit                    # Whole-tree rule audit
 phr-mcp audit --fail-on block    # Exit 1 on blocked violations
@@ -157,9 +157,8 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `trend` | Debt-over-time from audit snapshots |
 | `confidence` | Confidence band + grounded signals for the open work unit |
 | `journey` | `journey_*` facts asserted right now (`--json`/`--explain`) |
-| `claude-md-drift` | Find CLAUDE.md imperatives without matching rules |
-| `memory-drift` | Find auto-memory entries without matching rules |
-| `wiki-drift` | Find ADR decisions without matching rules |
+| `drift` | Consolidated guidance/rule drift across `claude_md`, `memory`, `wiki`, and `code` sources |
+| `claude-md-drift`, `memory-drift`, `wiki-drift` | Frozen compatibility commands for the original single-source reports |
 | `decision new <slug>` | Scaffold an ADR page under `.phronesis/wiki/decisions/` |
 | `migrate-rules <path>` | Convert v1 rules.json to v2 in place |
 | `init` | One-command project setup (hooks + rules) |
@@ -323,7 +322,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 
 **Read-only tools:**
 - `get_action_log` - Filter entries by kind/event/since
-- `phr-mcp values` - Per-rule summary
+- `phr-mcp stats` - Per-rule summary
 - `phr-mcp trend` - Debt-over-time
 
 **Rotation:** At 50 MB, renamed to `log.jsonl.1`. Maximum 100 MB per project.
@@ -493,7 +492,7 @@ set_section_context { "file": "docs/RUST-PATTERNS-GUIDE.md", "section": "API Des
 phr-mcp audit --fail-on block
 
 # Check for CLAUDE.md drift (heuristic, never fails)
-phr-mcp claude-md-drift
+phr-mcp drift --source claude_md
 ```
 
 ---
@@ -628,10 +627,13 @@ The `phr-mcp serve` command exposes these tools:
 | `clear_consequences` | Clear accumulated consequences | `{ "success": true }` |
 | `set_section_context` | Set markdown section context | `{ "success": true }` |
 | `clear_section_context` | Clear section context | `{ "success": true }` |
-| `get_action_log` | Read action log entries | `[ {...}, ... ]` |
-| `get_values` | Get per-rule statistics | `{ "rules": [...] }` |
+| `get_action_log` | Read action log entries | `{ "entries": [...] }` |
+| `get_stats` | Get per-rule statistics | `{ "rules": [...] }` |
 | `audit_codebase` | Scan project for violations | `{ "per_rule": [...] }` |
 | `get_debt_trend` | Get debt-over-time from audit snapshots | `{ "trend": [...] }` |
+| `query_code_graph` | Query structural graph relations | `{ "results": [...] }` |
+| `get_code_graph_status` | Inspect graph freshness, generation, and binding state | `{ "status": "fresh|stale|outdated|missing", ... }` |
+| `rebuild_code_graph` | Rebuild the server-rooted derived graph and reconcile bindings | `{ "status": "fresh", "generation": N, ... }` |
 
 ---
 
@@ -695,7 +697,7 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 | CLI help | `phr-mcp --help` |
 | Project init | `phr-mcp init --packs llm,rust` |
 | Audit | `phr-mcp audit --fail-on block` |
-| Values | `phr-mcp values --rule no-unwrap-in-src` |
+| Stats | `phr-mcp stats --rule no-unwrap-in-src` |
 | Trend | `phr-mcp trend --rule no-unwrap-in-src` |
 
 ### MCP Tools (when server is running)
@@ -708,9 +710,11 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 | `fire_rules` | Trigger rule evaluation |
 | `get_action_log` | Review hook decisions |
 | `audit_codebase` | Scan project for violations |
-| `get_values` | Per-rule activity summary |
+| `get_stats` | Per-rule activity summary |
+| `get_code_graph_status` | Inspect graph freshness and binding state |
+| `rebuild_code_graph` | Rebuild graph state without shell access |
 
 ---
 
-*Last updated: 2026-07-25*
-*Based on phronesis v0.22.0*
+*Last updated: 2026-08-09*
+*Based on phronesis v0.26.0*

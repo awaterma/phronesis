@@ -95,12 +95,9 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         // graph relation. Only facts about the code are asserted; whether the
         // graph is trustworthy is machinery health, handled below.
         {
+            let root = security::project_root();
             let edited = (!file_path.is_empty()).then_some(file_path.as_str());
-            let h = crate::graph::hydrate::hydrate(
-                &security::project_root(),
-                &rules_for_journey,
-                edited,
-            );
+            let h = crate::graph::hydrate::hydrate(&root, &rules_for_journey, edited);
             if !h.fresh && !h.facts.is_empty() {
                 let cause = if h.outdated {
                     "was built by an older phronesis and names entities differently".to_string()
@@ -116,6 +113,13 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                 // Rules reading a drifted graph reason from evidence we can't
                 // vouch for, so the harness declines to act on their verdicts.
                 stale_graph_rules = h.graph_rules;
+            }
+            for (rule_id, symbols) in crate::graph::bindings::stale_rules(&root) {
+                eprintln!(
+                    "phronesis: NOTE — rule `{rule_id}` names `{}`, which the code graph no longer defines; this rule will warn, not block. Review or retire it.",
+                    symbols.join("`, `")
+                );
+                stale_graph_rules.insert(rule_id);
             }
             for fact in h.facts {
                 if let Err(e) = net.assert_fact(fact).await {

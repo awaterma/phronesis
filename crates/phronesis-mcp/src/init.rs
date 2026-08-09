@@ -141,8 +141,8 @@ impl Pack {
 /// Language packs are excluded on purpose. Several of their rules match raw
 /// substrings gated only by path — the TypeScript `: any` rule fires on Rust's
 /// `: anyhow::Error`, for instance — so composing every language at once is a
-/// false-positive source rather than a convenience. Name the one you want:
-/// `base,rust`.
+/// false-positive source rather than a convenience. Name the language you
+/// want (for example, `rust`); the base is included automatically.
 pub const BASE_PACKS: &[Pack] = &[
     Pack::Llm,
     Pack::Confidence,
@@ -151,28 +151,38 @@ pub const BASE_PACKS: &[Pack] = &[
     Pack::Context,
 ];
 
-/// Parse a comma-separated pack list (e.g. `"base,rust"`). Whitespace
-/// tolerated. Empty input → just `[Llm]` (the default). Duplicates are deduped,
-/// so `base,llm` is the same as `base`.
+/// Parse a comma-separated pack list (e.g. `"rust"`). Whitespace is
+/// tolerated. Every non-`none` selection includes the complete base, and
+/// duplicates are deduped. `none` is the sole escape hatch.
 pub fn parse_packs(s: &str) -> Result<Vec<Pack>, InitError> {
     if s.trim().is_empty() {
-        return Ok(vec![Pack::Llm]);
+        return Ok(BASE_PACKS.to_vec());
+    }
+    let requested: Vec<_> = s.split(',').map(str::trim).collect();
+    if requested.len() == 1 && requested[0].eq_ignore_ascii_case("none") {
+        return Ok(vec![Pack::None]);
+    }
+    if requested
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("none"))
+    {
+        return Err(InitError::InvalidPackSelection(
+            "`none` cannot be combined with other packs".to_string(),
+        ));
     }
     let mut seen = std::collections::HashSet::new();
-    let mut out = Vec::new();
+    let mut out = BASE_PACKS.to_vec();
+    seen.extend(BASE_PACKS.iter().copied());
     let mut push = |pack: Pack, out: &mut Vec<Pack>| {
         if seen.insert(pack) {
             out.push(pack);
         }
     };
-    for part in s.split(',') {
+    for part in requested {
         // `base` is an expansion, not a pack: every downstream step
         // (scaffolding, gitignore carveouts, the catalogue) keys off the
         // concrete packs, so it must never see a composite variant.
         if part.trim().eq_ignore_ascii_case("base") {
-            for &pack in BASE_PACKS {
-                push(pack, &mut out);
-            }
             continue;
         }
         push(Pack::parse(part)?, &mut out);
@@ -212,6 +222,8 @@ pub enum InitError {
         "unknown pack `{0}`; valid: base, llm, rust, rhai, python, typescript, swift, confidence, journey, context, structural, none"
     )]
     UnknownPack(String),
+    #[error("invalid pack selection: {0}")]
+    InvalidPackSelection(String),
     #[error("project root does not exist: {0}")]
     NoSuchPath(String),
     #[error("project root is not a directory: {0}")]
@@ -839,7 +851,7 @@ keep anything needed every turn there, not here. Budget is measured:
 `get_drift(source)` surfaces guidance that no rule enforces — `source` is
 `claude_md`, `memory`, `wiki`, `code`, or `all`. Run it when the user asks
 about rules, memory, or project conventions, or says "remember X" / "make
-a rule for X". `code` reports no-graph until rule-staleness lands.
+a rule for X".
 
 Scoring is token-overlap Jaccard with no semantic match, so output is
 a triage list, not ground truth.
@@ -873,20 +885,26 @@ fn write_durable_md(
     let path = root.join(".phronesis").join("durable.md");
 
     if path.exists() {
-        // Report a stale template, never rewrite it. `init` promises to leave
-        // an existing durable.md alone — operators are told to edit it in
-        // place, and `--rules-only` / `--hooks-only` promise to touch nothing
-        // else. Silently replacing a file someone owns would break that, so
-        // the fix-up is the explicit `migrate-durable` subcommand, following
-        // the `migrate-rules` idiom.
-        let note = match crate::durable_migrate::inspect(&path) {
-            Ok(crate::durable_migrate::Status::Stale { version }) => format!(
-                "= .phronesis/durable.md matches shipped template v{version} \
-                 — run `phr-mcp migrate-durable` to update it"
-            ),
-            Ok(_) => "= .phronesis/durable.md already exists — leaving unchanged \
-                      (edit in place to customize)"
-                .to_string(),
+        // Shipped templates are product-owned and migrate forward by default;
+        // customized files remain byte-for-byte operator-owned.
+        let note = match crate::durable_migrate::migrate(&path, opts.dry_run) {
+            Ok(crate::durable_migrate::Outcome::Migrated) => {
+                "+ migrated .phronesis/durable.md to the smaller current template \
+                 (previous template saved as durable.md.bak)"
+                    .to_string()
+            }
+            Ok(crate::durable_migrate::Outcome::WouldMigrate) => {
+                "+ would migrate .phronesis/durable.md to the smaller current template".to_string()
+            }
+            Ok(crate::durable_migrate::Outcome::AlreadyCurrent) => {
+                "= .phronesis/durable.md already uses the current template".to_string()
+            }
+            Ok(crate::durable_migrate::Outcome::SkippedCustomized) => {
+                "= .phronesis/durable.md is customized — leaving unchanged".to_string()
+            }
+            Ok(crate::durable_migrate::Outcome::SkippedAbsent) => {
+                "= .phronesis/durable.md disappeared before migration".to_string()
+            }
             Err(e) => format!(
                 "! .phronesis/durable.md exists but could not be read: {e} \
                  — check file permissions and retry"
@@ -897,9 +915,8 @@ fn write_durable_md(
     }
 
     // `durable.md` keeps its meaning whatever packs are selected: it is the
-    // session-level project document. The context pack adds `kernel.md`
-    // alongside it rather than replacing it, so opting in never changes what
-    // this file is for.
+    // session-level project document. The default context support adds
+    // `kernel.md` alongside it rather than replacing it.
     if opts.dry_run {
         report.steps.push(
             "+ would write .phronesis/durable.md (default drift-discipline notes)".to_string(),
@@ -1104,7 +1121,7 @@ frontmatter (`id`, `date`, `status`, optional `enforces`, \
 `superseded_by`, `tags`). The body uses Context / Decision / \
 Enforcement / Consequences sections.
 
-Run `phr-mcp wiki-drift` to see which decisions lack rule coverage.
+Run `phr-mcp drift --source wiki` to see which decisions lack rule coverage.
 Create new pages with `phr-mcp decision new <slug>`.
 
 This directory is tracked in git (un-ignored from the broader \
@@ -1149,7 +1166,7 @@ fn write_wiki_scaffold(
     Ok(())
 }
 
-/// Default `.phronesis/confidence.json` — the opt-in marker that activates
+/// Default `.phronesis/confidence.json` configuration that activates
 /// confidence scoring for the project.
 const CONFIDENCE_JSON: &str = "{\n  \"version\": 1\n}\n";
 
@@ -1181,7 +1198,7 @@ const TOOLCHAINS_JSON: &str = r#"[
 ]
 "#;
 
-/// Write the confidence opt-in marker, known-bug registry, and
+/// Write the confidence configuration, known-bug registry, and
 /// toolchains.json example when the `confidence` pack is selected. Idempotent (leaves existing files alone).
 fn write_confidence_scaffold(
     root: &Path,
@@ -1288,9 +1305,6 @@ fn write_journey_scaffold(
 /// enforcement at all. Failures are reported as warnings and named, so the
 /// user knows to run the rebuild by hand.
 fn build_structural_graph(root: &Path, opts: &InitOpts, report: &mut InitReport) {
-    if !opts.packs.contains(&Pack::Structural) {
-        return;
-    }
     if opts.dry_run {
         report
             .steps
@@ -1589,7 +1603,7 @@ fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Value) {
 /// Confidence-scoring gate rules (SPEC-confidence-scoring §3, approach A).
 /// They count the open work unit's passed `signal_pass` facts (asserted by the
 /// pre-check hook) and gate a `git commit` by band: ≤1 signal blocks, exactly 2
-/// warns, 3 passes clean. Paired with the `.phronesis/confidence.json` opt-in
+/// warns, 3 passes clean. Paired with the `.phronesis/confidence.json`
 /// marker + `.phronesis/bugs.json` registry written by `write_confidence_scaffold`.
 fn confidence_rules() -> Value {
     json!({
@@ -2444,7 +2458,7 @@ mod tests {
     }
 
     #[test]
-    fn init_without_the_structural_pack_builds_no_graph() {
+    fn graph_is_built_even_when_structural_rules_are_not_selected() {
         let d = structural_project();
         let opts = InitOpts {
             project_root: d.path().to_path_buf(),
@@ -2455,7 +2469,7 @@ mod tests {
             hooks_only: false,
         };
         run(opts).expect("init");
-        assert!(!d.path().join(".phronesis/graph.jsonl").exists());
+        assert!(d.path().join(".phronesis/graph.jsonl").exists());
     }
 
     #[test]
@@ -2682,20 +2696,31 @@ mod tests {
     }
 
     #[test]
-    fn parse_packs_default_is_llm_only() {
-        assert_eq!(parse_packs("").unwrap(), vec![Pack::Llm]);
+    fn parse_packs_default_is_the_complete_base() {
+        assert_eq!(parse_packs("").unwrap(), BASE_PACKS);
     }
 
     #[test]
     fn parse_packs_handles_comma_separated_list() {
         let p = parse_packs("llm, rust").unwrap();
-        assert_eq!(p, vec![Pack::Llm, Pack::Rust]);
+        let mut expected = BASE_PACKS.to_vec();
+        expected.push(Pack::Rust);
+        assert_eq!(p, expected);
     }
 
     #[test]
     fn parse_packs_dedupes_duplicates() {
         let p = parse_packs("rust,llm,rust,llm").unwrap();
-        assert_eq!(p, vec![Pack::Rust, Pack::Llm]);
+        let mut expected = BASE_PACKS.to_vec();
+        expected.push(Pack::Rust);
+        assert_eq!(p, expected);
+    }
+
+    #[test]
+    fn parse_packs_rejects_none_combined_with_another_pack() {
+        let err = parse_packs("none,rust").expect_err("none must be exclusive");
+        assert!(matches!(err, InitError::InvalidPackSelection(_)));
+        assert!(err.to_string().contains("cannot be combined"));
     }
 
     #[test]

@@ -19,7 +19,7 @@ phr-mcp install
 
 # Initialize in your project
 cd /your/project
-phr-mcp init --packs llm,rust,confidence,journey
+phr-mcp init --packs rust
 ```
 
 ## What it does
@@ -29,6 +29,15 @@ phr-mcp init --packs llm,rust,confidence,journey
 - **MCP tools** let the model query rules, fire the engine, audit the tree,
   detect drift between prose guidance and enforced rules, and test/manage
   sandboxed project predicate providers.
+- **Graph recovery over MCP** lets shell-less agents inspect freshness with
+  `get_code_graph_status` and safely rebuild derived graph and binding state
+  with `rebuild_code_graph`; neither tool accepts an arbitrary path.
+- **Stable MCP envelopes** keep collection results compatible across SDKs:
+  `list_rules` returns `{"rules": [...]}`, `list_facts` returns
+  `{"facts": [...]}`, `get_agenda` returns `{"agenda": [...]}`,
+  `get_consequences` returns `{"consequences": [...]}`, and
+  `get_action_log` returns `{"entries": [...]}` in both structured and text
+  output.
 - **Extensible predicates** — Rhai providers derive project vocabulary from
   normalized events. Codex `apply_patch` supplies a batch `files` change set
   before the existing per-file `file_path` evaluation.
@@ -42,7 +51,15 @@ phr-mcp init --packs llm,rust,confidence,journey
   Cargo plus project definitions in `.phronesis/toolchains.json`) feed one
   generic parser that turns build / test / known-bug outcomes into grounded
   signals; gate rules block or warn a `git commit` by confidence band.
-  Opt-in via `.phronesis/confidence.json`.
+  Enabled by default through `.phronesis/confidence.json`.
+- **Structural graph, compact durable context, journey facts, confidence, and
+  LLM rules are defaults.** Language packs are additive; `--packs none` is the
+  only way to initialize without the default platform.
+- **Rule staleness** records conservative bindings from unqualified
+  function-call patterns such as `legacy_call(` to graph definitions. If every
+  bound definition later disappears, a blocking rule warns instead until it
+  is reviewed. Prose, attributes, method/namespace calls, and rules with
+  `"binds": false` never bind.
 - **Wiki decisions** — ADR-style pages in `.phronesis/wiki/decisions/`
   travel with the repo and are scored against rules for coverage.
 
@@ -58,7 +75,7 @@ phr-mcp audit             # Whole-tree rule sweep
 phr-mcp stats             # Per-rule activity summary
 phr-mcp journey           # journey_* facts asserted right now
 phr-mcp confidence        # Confidence band + grounded signals
-phr-mcp wiki-drift        # Decision/rule coverage gaps
+phr-mcp drift             # Guidance/rule gaps (`--source wiki`, memory, claude_md, code)
 phr-mcp decision new <s>  # Scaffold an ADR page
 ```
 
@@ -76,7 +93,7 @@ hooks are deterministic guardrails, not a complete security boundary: some
 specialized or hosted tool paths may not traverse local lifecycle hooks.
 
 Codex observes unified shell execution as `Bash`, file edits as `apply_patch`,
-and can expose other local or MCP tools. Phronesis v0.22 governs only `Bash` and
+and can expose other local or MCP tools. Phronesis v0.26 governs only `Bash` and
 `apply_patch`; unsupported tools are safe no-ops.
 
 ## Documentation

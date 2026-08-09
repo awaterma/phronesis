@@ -69,6 +69,87 @@ impl EpistemeMcp {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
+    /// Return a machine-readable MCP result while retaining JSON text for
+    /// clients that do not yet consume `structuredContent`.
+    ///
+    /// MCP structured results must be objects. Keeping that invariant here
+    /// prevents collection tools from accidentally exposing top-level arrays,
+    /// which several SDKs reject even when the same array is valid JSON text.
+    fn ok_json(value: serde_json::Value) -> Result<CallToolResult, McpError> {
+        if !value.is_object() {
+            return Err(Self::err("structured MCP results must be JSON objects"));
+        }
+        Ok(CallToolResult::structured(value))
+    }
+
+    fn ok_collection(
+        key: &'static str,
+        values: impl serde::Serialize,
+    ) -> Result<CallToolResult, McpError> {
+        let values = serde_json::to_value(values).map_err(|e| Self::err(e.to_string()))?;
+        let mut envelope = serde_json::Map::new();
+        envelope.insert(key.to_string(), values);
+        Self::ok_json(serde_json::Value::Object(envelope))
+    }
+
+    fn code_graph_status(root: &std::path::Path) -> Result<serde_json::Value, McpError> {
+        use crate::graph::{bindings, store, sync};
+
+        let graph_path = store::graph_path(root);
+        let index_path = sync::index_path(root);
+        let available = graph_path.exists() && index_path.exists();
+        let index = sync::load_index(&index_path).map_err(|e| Self::err(e.to_string()))?;
+        let edges = store::load(&graph_path).map_err(|e| Self::err(e.to_string()))?;
+        let base_edges = edges.iter().filter(|edge| !edge.d).count();
+        let derived_edges = edges.len().saturating_sub(base_edges);
+
+        let (status, drifted_files, outdated_format) = if !available {
+            ("missing", Vec::new(), false)
+        } else {
+            match sync::check_freshness(root, &index) {
+                sync::Freshness::Fresh => ("fresh", Vec::new(), false),
+                sync::Freshness::Stale(files) => ("stale", files, false),
+                sync::Freshness::Outdated { .. } => ("outdated", Vec::new(), true),
+            }
+        };
+
+        let binding_set =
+            bindings::load(&bindings::bindings_path(root)).map_err(|e| Self::err(e.to_string()))?;
+        let bindings_available = binding_set.is_some();
+        let mut bound = 0;
+        let mut moved = 0;
+        let mut stale = 0;
+        if let Some(set) = binding_set {
+            for binding in set.bindings {
+                match binding.state {
+                    bindings::BindingState::Bound => bound += 1,
+                    bindings::BindingState::Moved => moved += 1,
+                    bindings::BindingState::Stale => stale += 1,
+                }
+            }
+        }
+
+        Ok(serde_json::json!({
+            "status": status,
+            "available": available,
+            "fresh": status == "fresh",
+            "generation": index.generation,
+            "graph_format": index.format,
+            "expected_format": sync::GRAPH_FORMAT,
+            "outdated_format": outdated_format,
+            "files_indexed": index.entries.len(),
+            "drifted_files": drifted_files,
+            "base_edges": base_edges,
+            "derived_edges": derived_edges,
+            "bindings": {
+                "available": bindings_available,
+                "bound": bound,
+                "moved": moved,
+                "stale": stale,
+            },
+        }))
+    }
+
     pub(crate) fn err(msg: impl ToString) -> McpError {
         McpError::new(ErrorCode(-1), msg.to_string(), None::<serde_json::Value>)
     }
@@ -207,12 +288,13 @@ impl EpistemeMcp {
         Self::ok_text(format!("Rule '{}' added", params.id))
     }
 
-    #[tool(description = "List all rules currently loaded in the RETE network")]
+    #[tool(
+        description = "List all rules currently loaded in the RETE network. Returns {rules: [...]} as structured JSON."
+    )]
     async fn list_rules(&self) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
         let rules = network.get_all_rules().map_err(Self::err)?;
-        let json = serde_json::to_string_pretty(&rules).map_err(|e| Self::err(e.to_string()))?;
-        Self::ok_text(json)
+        Self::ok_collection("rules", rules)
     }
 
     #[tool(description = "Get a specific rule by its ID")]
@@ -398,7 +480,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "List or query facts in working memory. No params → all facts. `predicate` → facts with that predicate, optionally narrowed by `arg_filters` (positional arg = value constraints). `predicates` → facts whose predicate is in the set. Results are sorted by fact id."
+        description = "List or query facts in working memory. No params → all facts. `predicate` → facts with that predicate, optionally narrowed by `arg_filters` (positional arg = value constraints). `predicates` → facts whose predicate is in the set. Results are sorted by fact id and returned as {facts: [...]} structured JSON."
     )]
     async fn list_facts(
         &self,
@@ -406,8 +488,7 @@ impl EpistemeMcp {
     ) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
         let facts = select_facts(&network, &params).map_err(Self::err)?;
-        let json = serde_json::to_string_pretty(&facts).map_err(|e| Self::err(e.to_string()))?;
-        Self::ok_text(json)
+        Self::ok_collection("facts", facts)
     }
 
     #[tool(description = "Get a specific fact by its ID")]
@@ -484,7 +565,9 @@ impl EpistemeMcp {
         Self::ok_text(json)
     }
 
-    #[tool(description = "Peek at the current agenda (pending rule activations)")]
+    #[tool(
+        description = "Peek at the current agenda (pending rule activations). Returns {agenda: [...]} as structured JSON."
+    )]
     async fn get_agenda(&self) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
         let agenda = network
@@ -503,9 +586,7 @@ impl EpistemeMcp {
                 })
             })
             .collect();
-        let json =
-            serde_json::to_string_pretty(&summaries).map_err(|e| Self::err(e.to_string()))?;
-        Self::ok_text(json)
+        Self::ok_collection("agenda", summaries)
     }
 
     #[tool(
@@ -542,7 +623,7 @@ impl EpistemeMcp {
     // ── Consequence Query ──
 
     #[tool(
-        description = "Get accumulated consequences, optionally filtered by kind (event, snapshot, constraint, affordance)"
+        description = "Get accumulated consequences, optionally filtered by kind (event, snapshot, constraint, affordance). Returns {consequences: [...]} as structured JSON."
     )]
     async fn get_consequences(
         &self,
@@ -563,8 +644,7 @@ impl EpistemeMcp {
                 })
             })
             .collect();
-        let json = serde_json::to_string_pretty(&filtered).map_err(|e| Self::err(e.to_string()))?;
-        Self::ok_text(json)
+        Self::ok_collection("consequences", filtered)
     }
 
     // ── Rules Extraction ──
@@ -761,7 +841,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Read entries from the action log at .phronesis/log.jsonl. Default returns the most recent 100 entries across both hook and MCP events. Filter by `kind` (hook|mcp), `event` name, `since` timestamp, or `only_nonzero_exit: true` to find blocks/warnings."
+        description = "Read entries from the action log at .phronesis/log.jsonl. Default returns the most recent 100 entries across both hook and MCP events in {entries: [...]} structured JSON. Filter by `kind` (hook|mcp), `event` name, `since` timestamp, or `only_nonzero_exit: true` to find blocks/warnings."
     )]
     async fn get_action_log(
         &self,
@@ -777,8 +857,7 @@ impl EpistemeMcp {
         let path = action_log::default_path(&security::project_root());
         let entries =
             action_log::read_recent(&path, &opts).map_err(|e| Self::err(e.to_string()))?;
-        let json = serde_json::to_string_pretty(&entries).map_err(|e| Self::err(e.to_string()))?;
-        Self::ok_text(json)
+        Self::ok_collection("entries", entries)
     }
 
     #[tool(description = "Clear all accumulated consequences from memory")]
@@ -1009,7 +1088,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of the codebase built by the PostToolUse sensor. Answers questions about code structure without reading source files. Relations: `defines_fn` [file, function], `tested_by` [function, test] (a test that calls it *directly*), `untested` [function], `calls_api` [function, api] (risky-API watchlist, language-specific: Rust — unwrap/expect/panic/todo/unimplemented; TypeScript — non_null_assertion (the `!` operator); there is no defensible Python equivalent), `imports` [module, module], `in_cycle` [module, cycle_id], `file_type` [file, production|test|example|build], `declares_module` [file, module]. Use `\"*\"` for an unconstrained position. Worked examples: which tests cover a function -> relation `tested_by`, args `[\"my_fn\", \"*\"]` (use this to pick which tests to run after a change); what depends on a module -> relation `imports`, args `[\"*\", \"rust:phronesis::wme\"]`; untested functions in a file -> relation `defines_fn`, args `[\"src/x.rs\", \"*\"]` then cross-check `untested`. Omit `relation` to list the vocabulary. Rust, Python, and TypeScript are all extracted. Entities are named `<lang>:<package>[#<target>]::<module path>` — e.g. `rust:phronesis::wme`, `python:my-dist::pkg::mod`, `typescript:myapp::src::billing::charge` — so query with that form, not a bare module path. `tested_by` is a direct-call heuristic, so transitively-covered code can still appear untested. Requires `phr-mcp graph rebuild` if the graph has never been built."
+        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of the codebase built by the PostToolUse sensor. Answers questions about code structure without reading source files. Relations: `defines_fn` [file, function], `tested_by` [function, test] (a test that calls it *directly*), `untested` [function], `calls_api` [function, api] (risky-API watchlist, language-specific: Rust — unwrap/expect/panic/todo/unimplemented; TypeScript — non_null_assertion (the `!` operator); there is no defensible Python equivalent), `imports` [module, module], `in_cycle` [module, cycle_id], `file_type` [file, production|test|example|build], `declares_module` [file, module]. Use `\"*\"` for an unconstrained position. Worked examples: which tests cover a function -> relation `tested_by`, args `[\"my_fn\", \"*\"]` (use this to pick which tests to run after a change); what depends on a module -> relation `imports`, args `[\"*\", \"rust:phronesis::wme\"]`; untested functions in a file -> relation `defines_fn`, args `[\"src/x.rs\", \"*\"]` then cross-check `untested`. Omit `relation` to list the vocabulary. Rust, Python, and TypeScript are all extracted. Entities are named `<lang>:<package>[#<target>]::<module path>` — e.g. `rust:phronesis::wme`, `python:my-dist::pkg::mod`, `typescript:myapp::src::billing::charge` — so query with that form, not a bare module path. `tested_by` is a direct-call heuristic, so transitively-covered code can still appear untested. Call `rebuild_code_graph` if the graph has never been built or `get_code_graph_status` reports stale or outdated state."
     )]
     async fn query_code_graph(
         &self,
@@ -1067,6 +1146,53 @@ impl EpistemeMcp {
             })
             .to_string(),
         )
+    }
+
+    #[tool(
+        description = "Report whether the current project's derived code graph is missing, fresh, stale, or built with an outdated format. Returns generation, indexed-file and edge counts, drifted files, and rule-binding state as structured JSON."
+    )]
+    async fn get_code_graph_status(&self) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        Self::ok_json(Self::code_graph_status(&root)?)
+    }
+
+    #[tool(
+        description = "Rebuild the current project's derived code graph from tracked Rust, Python, and TypeScript source, reconcile rule bindings, and return the resulting fresh status as structured JSON. The project root is server-controlled; this tool does not accept a filesystem path."
+    )]
+    async fn rebuild_code_graph(&self) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        let generation_before =
+            crate::graph::sync::load_index(&crate::graph::sync::index_path(&root))
+                .map_err(|e| Self::err(e.to_string()))?
+                .generation;
+        let outcome = crate::graph::sync::rebuild(&root).map_err(|e| Self::err(e.to_string()))?;
+        let mut status = Self::code_graph_status(&root)?;
+        let generation_after = status["generation"].as_u64().unwrap_or(0);
+        let object = status
+            .as_object_mut()
+            .ok_or_else(|| Self::err("code graph status was not an object"))?;
+        object.insert(
+            "generation_before".to_string(),
+            serde_json::json!(generation_before),
+        );
+        object.insert(
+            "generation_after".to_string(),
+            serde_json::json!(generation_after),
+        );
+        object.insert(
+            "skipped_items".to_string(),
+            serde_json::json!(outcome.skipped),
+        );
+
+        Self::log_event("rebuild_code_graph", |entry| {
+            entry
+                .with("generation_before", generation_before)
+                .with("generation_after", generation_after)
+                .with("base_edges", outcome.base as u64)
+                .with("derived_edges", outcome.derived as u64)
+                .with("skipped_items", outcome.skipped as u64)
+        });
+        Self::ok_json(status)
     }
 
     #[tool(
@@ -1644,6 +1770,14 @@ mod tool_registration_tests {
         assert!(
             mcp.tool_router.has_route("query_code_graph"),
             "query_code_graph tool must be registered (matches `phr-mcp graph query` CLI)"
+        );
+        assert!(
+            mcp.tool_router.has_route("get_code_graph_status"),
+            "get_code_graph_status must expose `phr-mcp graph status` over MCP"
+        );
+        assert!(
+            mcp.tool_router.has_route("rebuild_code_graph"),
+            "rebuild_code_graph must expose `phr-mcp graph rebuild` over MCP"
         );
     }
 }

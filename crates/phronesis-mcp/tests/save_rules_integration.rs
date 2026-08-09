@@ -108,6 +108,134 @@ impl Drop for McpClient {
     }
 }
 
+fn assert_structured_collection(
+    client: &mut McpClient,
+    tool: &str,
+    arguments: serde_json::Value,
+    key: &str,
+) {
+    let response = client.call(
+        "tools/call",
+        serde_json::json!({"name": tool, "arguments": arguments}),
+    );
+    let result = &response["result"];
+    let structured = &result["structuredContent"];
+    assert!(structured.is_object(), "{tool} must return an object");
+    assert!(structured[key].is_array(), "{tool}.{key} must be an array");
+
+    let text: serde_json::Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, *structured, "text and structured output must agree");
+}
+
+fn structured_object_tool(
+    client: &mut McpClient,
+    tool: &str,
+    arguments: serde_json::Value,
+) -> serde_json::Value {
+    let response = client.call(
+        "tools/call",
+        serde_json::json!({"name": tool, "arguments": arguments}),
+    );
+    let result = &response["result"];
+    let structured = result["structuredContent"].clone();
+    assert!(structured.is_object(), "{tool} must return an object");
+    let text: serde_json::Value =
+        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(text, structured, "text and structured output must agree");
+    structured
+}
+
+#[test]
+fn collection_tools_return_named_structured_envelopes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = McpClient::spawn(dir.path());
+
+    assert_structured_collection(&mut client, "list_rules", serde_json::json!({}), "rules");
+    assert_structured_collection(&mut client, "list_facts", serde_json::json!({}), "facts");
+    assert_structured_collection(&mut client, "get_agenda", serde_json::json!({}), "agenda");
+    assert_structured_collection(
+        &mut client,
+        "get_consequences",
+        serde_json::json!({}),
+        "consequences",
+    );
+    assert_structured_collection(
+        &mut client,
+        "get_action_log",
+        serde_json::json!({}),
+        "entries",
+    );
+}
+
+#[test]
+fn tools_list_advertises_collection_envelopes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = McpClient::spawn(dir.path());
+    let response = client.call("tools/list", serde_json::json!({}));
+    let tools = response["result"]["tools"].as_array().expect("tools array");
+
+    for (name, envelope) in [
+        ("list_rules", "{rules: [...]}"),
+        ("list_facts", "{facts: [...]}"),
+        ("get_agenda", "{agenda: [...]}"),
+        ("get_consequences", "{consequences: [...]}"),
+        ("get_action_log", "{entries: [...]}"),
+    ] {
+        let tool = tools
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap_or_else(|| panic!("missing tool {name}"));
+        let description = tool["description"].as_str().expect("description");
+        assert!(
+            description.contains(envelope),
+            "{name} does not advertise {envelope}: {description}"
+        );
+    }
+}
+
+#[test]
+fn mcp_reports_and_rebuilds_the_code_graph_lifecycle() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/lib.rs"), "pub fn first() {}\n").unwrap();
+    let mut client = McpClient::spawn(dir.path());
+
+    let missing =
+        structured_object_tool(&mut client, "get_code_graph_status", serde_json::json!({}));
+    assert_eq!(missing["status"], "missing");
+    assert_eq!(missing["available"], false);
+    assert_eq!(missing["generation"], 0);
+
+    let rebuilt = structured_object_tool(&mut client, "rebuild_code_graph", serde_json::json!({}));
+    assert_eq!(rebuilt["status"], "fresh");
+    assert_eq!(rebuilt["available"], true);
+    assert_eq!(rebuilt["generation_before"], 0);
+    assert_eq!(rebuilt["generation"], 1);
+    assert_eq!(rebuilt["generation_after"], 1);
+    assert_eq!(rebuilt["files_indexed"], 1);
+    assert!(rebuilt["base_edges"].as_u64().unwrap() > 0);
+
+    std::fs::write(dir.path().join("src/lib.rs"), "pub fn changed() {}\n").unwrap();
+    let stale = client.tool("get_code_graph_status", serde_json::json!({}));
+    assert_eq!(stale["status"], "stale");
+    assert_eq!(stale["fresh"], false);
+    assert_eq!(stale["drifted_files"], serde_json::json!(["src/lib.rs"]));
+
+    let rebuilt = client.tool("rebuild_code_graph", serde_json::json!({}));
+    assert_eq!(rebuilt["generation_before"], 1);
+    assert_eq!(rebuilt["generation"], 2);
+    assert_eq!(rebuilt["generation_after"], 2);
+    assert_eq!(rebuilt["status"], "fresh");
+    assert_eq!(rebuilt["drifted_files"], serde_json::json!([]));
+
+    let log = client.tool(
+        "get_action_log",
+        serde_json::json!({"event": "rebuild_code_graph"}),
+    );
+    assert_eq!(log["entries"].as_array().unwrap().len(), 2);
+}
+
 fn rules_path(root: &Path) -> PathBuf {
     root.join(".phronesis").join("rules.json")
 }
@@ -124,6 +252,90 @@ fn simple_rule(id: &str, predicate: &str, arg: &str) -> serde_json::Value {
         "conditions": [{"predicate": predicate, "args": [arg]}],
         "actions": [{"action_type":"log","params":["matched"]}]
     })
+}
+
+#[test]
+fn autosaved_rule_is_bound_without_a_later_code_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub fn late_rule_target() {}\n",
+    )
+    .unwrap();
+    phronesis_mcp::graph::sync::rebuild(dir.path()).expect("initial graph");
+    let generation =
+        phronesis_mcp::graph::sync::load_index(&phronesis_mcp::graph::sync::index_path(dir.path()))
+            .expect("index")
+            .generation;
+
+    let mut client = McpClient::spawn_with_autopersist(dir.path());
+    client.tool(
+        "add_rule",
+        simple_rule("late-rule", "new_content_contains", "late_rule_target("),
+    );
+
+    let set = phronesis_mcp::graph::bindings::load(&phronesis_mcp::graph::bindings::bindings_path(
+        dir.path(),
+    ))
+    .expect("load")
+    .expect("bindings");
+    assert_eq!(set.generation, generation);
+    assert_eq!(set.bindings.len(), 1);
+    assert_eq!(set.bindings[0].symbol, "late_rule_target");
+
+    client.tool("remove_rule", serde_json::json!({"rule_id": "late-rule"}));
+    let removed = phronesis_mcp::graph::bindings::load(
+        &phronesis_mcp::graph::bindings::bindings_path(dir.path()),
+    )
+    .expect("load")
+    .expect("bindings");
+    assert_eq!(removed.generation, generation);
+    assert!(removed.bindings.is_empty());
+}
+
+#[test]
+fn mcp_rule_and_fact_mutations_are_visible_through_collection_envelopes() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = McpClient::spawn(dir.path());
+
+    client.tool("add_rule", simple_rule("lifecycle-rule", "status", "ready"));
+    let listed = client.tool("list_rules", serde_json::json!({}));
+    assert_eq!(listed["rules"].as_array().unwrap().len(), 1);
+    let fetched = client.tool("get_rule", serde_json::json!({"rule_id": "lifecycle-rule"}));
+    assert_eq!(fetched["id"], "lifecycle-rule");
+
+    client.tool(
+        "assert_fact",
+        serde_json::json!({"id": "lifecycle-fact", "predicate": "status", "args": ["ready"]}),
+    );
+    let listed = client.tool("list_facts", serde_json::json!({}));
+    assert_eq!(listed["facts"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["facts"][0]["id"], "lifecycle-fact");
+    let fetched = client.tool("get_fact", serde_json::json!({"fact_id": "lifecycle-fact"}));
+    assert_eq!(fetched["id"], "lifecycle-fact");
+
+    client.tool(
+        "retract_fact",
+        serde_json::json!({"fact_id": "lifecycle-fact"}),
+    );
+    assert!(
+        client.tool("list_facts", serde_json::json!({}))["facts"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    client.tool(
+        "remove_rule",
+        serde_json::json!({"rule_id": "lifecycle-rule"}),
+    );
+    assert!(
+        client.tool("list_rules", serde_json::json!({}))["rules"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -387,8 +599,9 @@ fn load_rules_file_hydrates_from_disk() {
     assert_eq!(summary["loaded"], 2);
     assert_eq!(summary["skipped_duplicate_ids"], 0);
 
-    let rules: Vec<serde_json::Value> =
+    let result: serde_json::Value =
         serde_json::from_str(&c.tool_text("list_rules", serde_json::json!({}))).unwrap();
+    let rules = result["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 2);
 }
 
@@ -545,8 +758,8 @@ fn autoload_hydrates_in_memory_state_at_startup() {
 
     let mut c = McpClient::spawn_with_autopersist(dir.path());
     // No explicit load_rules_file — autoload should have hydrated it.
-    let rules_text = c.tool_text("list_rules", serde_json::json!({}));
-    let rules: Vec<serde_json::Value> = serde_json::from_str(&rules_text).unwrap();
+    let result = c.tool("list_rules", serde_json::json!({}));
+    let rules = result["rules"].as_array().unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0]["id"], "pre-loaded");
 }
@@ -563,8 +776,8 @@ fn autoload_plus_autosave_round_trips_added_rules() {
 
     // Session 2: fresh server, autoload should pick up session 1's rule.
     let mut c = McpClient::spawn_with_autopersist(dir.path());
-    let rules_text = c.tool_text("list_rules", serde_json::json!({}));
-    let rules: Vec<serde_json::Value> = serde_json::from_str(&rules_text).unwrap();
+    let result = c.tool("list_rules", serde_json::json!({}));
+    let rules = result["rules"].as_array().unwrap();
     assert_eq!(
         rules.len(),
         1,
@@ -590,8 +803,8 @@ fn no_autopersist_env_var_disables_both_directions() {
 
     // Spawn with the opt-out — no autoload.
     let mut c = McpClient::spawn(dir.path());
-    let rules_text = c.tool_text("list_rules", serde_json::json!({}));
-    let rules: Vec<serde_json::Value> = serde_json::from_str(&rules_text).unwrap();
+    let result = c.tool("list_rules", serde_json::json!({}));
+    let rules = result["rules"].as_array().unwrap();
     assert_eq!(
         rules.len(),
         0,

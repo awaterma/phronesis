@@ -4,6 +4,55 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [0.26.0] - 2026-08-09
+
+### Added
+
+- **Rule-to-code staleness bindings.** Conservative, unqualified call-shaped
+  literals in rules bind to locally defined functions in the structural graph.
+  When every established referent disappears, a formerly blocking rule warns
+  instead of claiming authority from stale evidence. Method calls, namespace
+  calls, attributes, prose, foreign symbols, and rules with `binds: false` do
+  not bind.
+- **Code drift in the consolidated drift surface.** `phr-mcp drift --source
+  code` and `get_drift(source="code")` report stale rule bindings alongside
+  the existing prose, memory, and decision corpora.
+- **MCP graph recovery.** `get_code_graph_status` reports missing, fresh,
+  stale, or outdated graph state with generation, edge, file, and binding
+  counts. `rebuild_code_graph` performs a server-rooted full rebuild, reconciles
+  bindings, and records the generation transition in the action log.
+- **GitHub release binaries.** Release automation builds and attaches
+  `phr-mcp` archives for Linux x86-64, macOS x86-64, macOS Apple Silicon, and
+  Windows x86-64 after release-plz creates the matching package release.
+
+### Changed
+
+- **The complete language-agnostic platform is now the default.** `init` and
+  every non-`none` pack selection include `llm`, `confidence`, `journey`,
+  `structural`, and `context`; language packs remain additive. `none` is an
+  explicit, mutually exclusive escape hatch.
+- **Smaller durable context is the default.** Fresh projects receive the
+  bounded kernel/context scaffolding and graph state without a separate pack
+  opt-in.
+- **MCP collection results use stable object envelopes.** `list_rules`,
+  `list_facts`, `get_agenda`, `get_consequences`, and `get_action_log` now
+  return named JSON objects through both `structuredContent` and compatibility
+  text, avoiding SDK failures on top-level arrays.
+- **Documentation is web-native and current.** The GitHub Pages navigation no
+  longer sends readers into Markdown sources; the loop guide and changelog now
+  have dedicated HTML pages. The README, explainer, and catalogue use a new
+  mineral teal/indigo visual system with progressive SVG diagrams for the
+  governance boundary, default subsystems, structural code graph, RETE
+  internals, and concrete rule behavior. The docs describe the unified
+  `drift`, `stats`, default-platform, graph lifecycle, and MCP envelope
+  surfaces.
+
+### Safety
+
+- Missing, malformed, stale-graph, or generation-mismatched binding evidence
+  never demotes a block. Direct rule-file edits and MCP rule mutations
+  reconcile bindings without advancing the graph generation.
+
 ## [0.25.0] - 2026-08-01
 
 ### Changed

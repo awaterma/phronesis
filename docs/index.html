@@ -7,19 +7,19 @@
 <meta name="description" content="A RETE rules engine that enforces project conventions from disk, outside the LLM context window. Trajectory predicates over a durable journal + a confidence gate that demands compile, tests, and known-bug catch before a commit lands. Rules fire the same in token 900k as in token 800.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght,SOFT@0,9..144,300..900,30..100;1,9..144,300..700,30..100&family=Newsreader:ital,opsz,wght@0,6..72,300..700;1,6..72,400..600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght;500;600;700;800&family=JetBrains+Mono:ital,wght,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
 <style>
   :root {
-    --paper:        #F2EDDD;
-    --paper-deep:   #E8DFC6;
-    --ink:          #1A1510;
-    --ink-soft:     #3A2F22;
-    --mute:         #6E5F4A;
-    --rule:         #C8BC9F;
-    --accent:       #B23A1B;
-    --accent-deep:  #7E2710;
-    --slate:        #324B4D;
-    --highlight:    #E8D785;
+    --paper:        #F4F8F7;
+    --paper-deep:   #E4EFED;
+    --ink:          #102A2E;
+    --ink-soft:     #29484B;
+    --mute:         #536F70;
+    --rule:         #B5CECA;
+    --accent:       #0F766E;
+    --accent-deep:  #0B514C;
+    --slate:        #4657A6;
+    --highlight:    #BFE9DF;
     --measure: 70ch;
     --pad-x: clamp(1.25rem, 5vw, 4rem);
   }
@@ -29,7 +29,7 @@
     margin: 0;
     background: var(--paper);
     color: var(--ink);
-    font-family: "Newsreader", Georgia, serif;
+    font-family: "Manrope", Georgia, serif;
     font-size: 18px;
     line-height: 1.65;
     font-feature-settings: "kern", "liga", "onum";
@@ -46,13 +46,13 @@
     background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
   }
   h1, h2, h3 {
-    font-family: "Fraunces", "Times New Roman", serif;
+    font-family: "Manrope", "Times New Roman", serif;
     color: var(--ink);
     margin: 0;
     font-feature-settings: "ss01", "ss02", "lnum";
   }
   h1 {
-    font-variation-settings: "opsz" 144, "SOFT" 30;
+
     font-weight: 350;
     font-size: clamp(3rem, 9vw, 7rem);
     letter-spacing: -0.025em;
@@ -60,11 +60,11 @@
   }
   h1 .it {
     font-style: italic;
-    font-variation-settings: "opsz" 144, "SOFT" 80, "wght" 350;
+
     color: var(--accent);
   }
   h2 {
-    font-variation-settings: "opsz" 36, "SOFT" 50;
+
     font-size: 1.45rem;
     font-weight: 500;
     letter-spacing: -0.01em;
@@ -102,8 +102,8 @@
   pre .s { color: var(--slate); }
 
   .label {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12, "SOFT" 100;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 0.72rem;
     letter-spacing: 0.16em;
@@ -127,8 +127,8 @@
     gap: 3rem;
   }
   .hero .meta {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 0.7rem;
     letter-spacing: 0.34em;
@@ -141,7 +141,7 @@
   }
   .hero .meta .bar { width: 3rem; height: 1px; background: var(--accent); }
   .hero .subtitle {
-    font-family: "Newsreader", serif;
+    font-family: "Manrope", serif;
     font-style: italic;
     font-weight: 400;
     font-size: clamp(1.1rem, 1.6vw, 1.4rem);
@@ -164,8 +164,8 @@
 
   /* ─── Pull quote ─── */
   blockquote.pull {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 60, "SOFT" 50, "wght" 350;
+    font-family: "Manrope", serif;
+
     font-style: italic;
     font-size: clamp(1.4rem, 2.6vw, 2rem);
     line-height: 1.25;
@@ -207,7 +207,7 @@
   }
   .surface h2 { margin-bottom: 0.3rem; }
   .surface .role {
-    font-family: "Fraunces", serif;
+    font-family: "Manrope", serif;
     font-style: italic;
     color: var(--accent);
     font-size: 0.88rem;
@@ -232,7 +232,7 @@
   @media (max-width: 780px) { .quickstart { grid-template-columns: 1fr; } }
   .quickstart .prose { max-width: var(--measure); }
   .quickstart .prose h2 {
-    font-variation-settings: "opsz" 96, "SOFT" 40;
+
     font-size: clamp(1.8rem, 4vw, 2.8rem);
     font-weight: 400;
     letter-spacing: -0.018em;
@@ -241,7 +241,7 @@
   }
   .quickstart .prose h2 .it {
     font-style: italic;
-    font-variation-settings: "opsz" 96, "SOFT" 80;
+
     color: var(--accent-deep);
   }
 
@@ -260,8 +260,8 @@
   }
   .doc-card h2 { margin-bottom: 0.5rem; }
   .doc-card h2 a {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 36, "SOFT" 40;
+    font-family: "Manrope", serif;
+
     font-weight: 500;
     font-size: 1.6rem;
     color: var(--accent);
@@ -289,8 +289,8 @@
     min-width: 8rem;
   }
   .stat .num {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 96, "SOFT" 30;
+    font-family: "Manrope", serif;
+
     font-size: 2.4rem;
     color: var(--accent);
     line-height: 1;
@@ -298,8 +298,8 @@
     letter-spacing: -0.02em;
   }
   .stat .desc {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 12;
+    font-family: "Manrope", serif;
+
     font-weight: 600;
     font-size: 0.68rem;
     letter-spacing: 0.18em;
@@ -323,8 +323,8 @@
   }
   footer a { color: var(--accent); }
   .folio {
-    font-family: "Fraunces", serif;
-    font-variation-settings: "opsz" 96;
+    font-family: "Manrope", serif;
+
     font-size: 3rem;
     color: var(--accent);
     line-height: 1;
@@ -385,16 +385,16 @@
         <defs>
           <path id="circle-text" d="M 0,0 m -76,0 a 76,76 0 1,1 152,0 a 76,76 0 1,1 -152,0"/>
         </defs>
-        <circle r="90" fill="none" stroke="#B23A1B" stroke-width="1.2"/>
-        <circle r="82" fill="none" stroke="#B23A1B" stroke-width="0.6"/>
-        <circle r="62" fill="none" stroke="#1A1510" stroke-width="1"/>
-        <text font-family="Fraunces, serif" font-size="9" font-weight="600"
-              letter-spacing="3" fill="#B23A1B">
+        <circle r="90" fill="none" stroke="#0F766E" stroke-width="1.2"/>
+        <circle r="82" fill="none" stroke="#0F766E" stroke-width="0.6"/>
+        <circle r="62" fill="none" stroke="#102A2E" stroke-width="1"/>
+        <text font-family="Manrope, serif" font-size="9" font-weight="600"
+              letter-spacing="3" fill="#0F766E">
           <textPath xlink:href="#circle-text" startOffset="0">
-            PHRONESIS · RULES ENGINE · v 0.9 · MCP HOSTED · A DURABLE INSTRUMENT ·
+            PHRONESIS · RULES ENGINE · v 0.26 · MCP HOSTED · A DURABLE INSTRUMENT ·
           </textPath>
         </text>
-        <g stroke="#1A1510" stroke-width="1" fill="#F2EDDD">
+        <g stroke="#102A2E" stroke-width="1" fill="#F4F8F7">
           <line x1="-30" y1="-20" x2="0" y2="0"/>
           <line x1="30" y1="-20" x2="0" y2="0"/>
           <line x1="-15" y1="25" x2="0" y2="0"/>
@@ -403,11 +403,11 @@
           <circle cx="30" cy="-20" r="5"/>
           <circle cx="-15" cy="25" r="5"/>
           <circle cx="15" cy="25" r="5"/>
-          <circle cx="0" cy="0" r="7" fill="#B23A1B" stroke="#7E2710"/>
+          <circle cx="0" cy="0" r="7" fill="#0F766E" stroke="#0B514C"/>
         </g>
         <text x="0" y="48" text-anchor="middle"
-              font-family="Fraunces, serif" font-size="7" font-weight="700"
-              letter-spacing="2.5" fill="#1A1510">
+              font-family="Manrope, serif" font-size="7" font-weight="700"
+              letter-spacing="2.5" fill="#102A2E">
           ⌘ — INST. — ⌘
         </text>
       </svg>
@@ -417,24 +417,24 @@
   <!-- ─── STATS ─── -->
   <div class="stats">
     <div class="stat">
-      <span class="num">61</span>
-      <span class="desc">Rules shipped</span>
+      <span class="num">64</span>
+      <span class="desc">Rules catalogued</span>
+    </div>
+    <div class="stat">
+      <span class="num">5</span>
+      <span class="desc">Default subsystems</span>
     </div>
     <div class="stat">
       <span class="num">8</span>
-      <span class="desc">Default packs</span>
-    </div>
-    <div class="stat">
-      <span class="num">7</span>
       <span class="desc">Enforcement surfaces</span>
     </div>
     <div class="stat">
-      <span class="num">3</span>
-      <span class="desc">Drift detectors</span>
+      <span class="num">4</span>
+      <span class="desc">Drift corpora</span>
     </div>
     <div class="stat">
       <span class="num">0</span>
-      <span class="desc">Context tokens consumed</span>
+      <span class="desc">Rules lost to compaction</span>
     </div>
   </div>
 
@@ -445,9 +445,9 @@
     was first imagined.
   </blockquote>
 
-  <!-- ─── SEVEN SURFACES ─── -->
+  <!-- ─── EIGHT SURFACES ─── -->
   <section class="surfaces">
-    <div class="label" style="margin-bottom: 0.6rem;">Seven surfaces — one rule format</div>
+    <div class="label" style="margin-bottom: 0.6rem;">Eight surfaces — one rule format</div>
     <div class="surfaces-grid">
       <article class="surface">
         <h2>Hook-time</h2>
@@ -488,9 +488,20 @@
         <h2>Drift detection</h2>
         <span class="role">gap · triage · suggest</span>
         <p>
-          Three heuristic tools compare what the project says
-          (CLAUDE.md, auto-memory, ADR decisions) against what
-          the rules actually enforce. No LLM call — Jaccard overlap.
+          One consolidated report compares CLAUDE.md, auto-memory,
+          ADR decisions, and rule-to-code bindings against what the
+          project currently enforces or defines. Evidence for triage,
+          not proof.
+        </p>
+      </article>
+      <article class="surface">
+        <h2>Structural graph</h2>
+        <span class="role">query · freshness · rebuild</span>
+        <p>
+          Rust, Python, and TypeScript structure becomes a durable graph.
+          MCP clients can query relations, inspect generation and drift,
+          and rebuild server-rooted graph and binding state without shell
+          access.
         </p>
       </article>
       <article class="surface">
@@ -539,19 +550,19 @@
     </div>
     <div>
 <pre><span class="c"># install</span>
-<span class="k">cargo</span> install --path .
+<span class="k">cargo</span> install --path crates/phronesis-mcp
 <span class="k">phr-mcp</span> install                <span class="c"># user-scope MCP</span>
 
 <span class="c"># wire into a project</span>
 <span class="k">cd</span> ~/Git/my-project
-<span class="k">phr-mcp</span> init --packs llm,rust,confidence,journey   <span class="c"># hooks + starter rules</span>
+<span class="k">phr-mcp</span> init --packs rust             <span class="c"># default platform + Rust rules</span>
 
 <span class="c"># use</span>
 <span class="k">phr-mcp</span> audit                    <span class="c"># sweep existing debt</span>
 <span class="k">phr-mcp</span> trend                    <span class="c"># debt over time</span>
-<span class="k">phr-mcp</span> claude-md-drift          <span class="c"># uncovered CLAUDE.md bullets</span>
-<span class="k">phr-mcp</span> memory-drift             <span class="c"># uncovered auto-memory entries</span>
-<span class="k">phr-mcp</span> wiki-drift               <span class="c"># uncovered ADR decisions</span>
+<span class="k">phr-mcp</span> drift                    <span class="c"># uncovered guidance across all sources</span>
+<span class="k">phr-mcp</span> drift --source wiki      <span class="c"># narrow to ADR decisions</span>
+<span class="k">phr-mcp</span> graph status --json      <span class="c"># inspect structural freshness</span>
 <span class="k">phr-mcp</span> decision new my-slug     <span class="c"># scaffold an ADR page</span></pre>
     </div>
   </section>
@@ -575,47 +586,40 @@
       </p>
     </article>
     <article class="doc-card">
-      <h2>Further Reading &rarr;</h2>
+      <h2>Operate Phronesis &rarr;</h2>
       <p>
-        The living documents, rendered on GitHub:
-        <a href="https://github.com/awaterma/phronesis/blob/main/docs/loop-programming-guide.md">the loop-programming guide</a>
-        (recurring agent workflows against phronesis),
-        <a href="https://github.com/awaterma/phronesis/blob/main/CHANGELOG.md">the changelog</a>,
-        and the crate READMEs for
-        <a href="https://github.com/awaterma/phronesis/blob/main/crates/phronesis/README.md">the engine</a>,
-        <a href="https://github.com/awaterma/phronesis/blob/main/crates/phronesis-mcp/README.md">the MCP server</a>, and
-        <a href="https://github.com/awaterma/phronesis/blob/main/crates/phronesis-rhai/README.md">the Rhai evaluator</a>.
+        Use the <a href="./guide.html">loop-programming guide</a> for setup,
+        journey rules, grounded closure, graph recovery, and recurring agent
+        workflows. Use the <a href="./changelog.html">HTML changelog</a> for
+        compatibility notes and the exact release history.
       </p>
       <p>
-        Landmark designs:
-        <a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-codex-hooks-integration.md">Codex lifecycle hooks</a>,
-        <a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-extensible-predicates.md">extensible predicates</a>,
-        <a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-journey-facts.md">journey facts</a>,
-        <a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-confidence-scoring.md">confidence scoring</a>,
-        <a href="https://github.com/awaterma/phronesis/blob/main/docs/superpowers/specs/2026-06-01-rhai-script-evaluator-design.md">the Rhai script evaluator</a>, and
-        <a href="https://github.com/awaterma/phronesis/blob/main/docs/superpowers/specs/2026-06-28-mcp-crate-decomposition-design.md">the MCP-crate decomposition</a>.
+        The <a href="./explainer.html">explainer</a> contains the architecture,
+        host integration, RETE mechanics, durable context, graph, trajectory,
+        and confidence design in one web-native narrative. No Markdown hop is
+        required from the documentation site.
       </p>
     </article>
   </section>
 
   <!-- ─── FOOTER ─── -->
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
-    <span class="doc-web-here">Home</span> &middot; <a href="./explainer.html">Explainer</a> &middot; <a href="./catalogue.html">Catalogue</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/docs/loop-programming-guide.md">Guide</a> &middot; <a href="https://github.com/awaterma/phronesis/blob/main/CHANGELOG.md">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.22.0</span>
+    <span class="doc-web-here">Home</span> &middot; <a href="./explainer.html">Explainer</a> &middot; <a href="./catalogue.html">Catalogue</a> &middot; <a href="./guide.html">Guide</a> &middot; <a href="./changelog.html">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.26.0</span>
   </nav>
   <footer>
     <div>
       <div class="label" style="margin-bottom: 0.4rem;">Colophon</div>
-      Set in <em>Fraunces</em> &amp; <em>Newsreader</em>, with
+      Set in <em>Manrope</em>, with
       <em>JetBrains Mono</em> for code.<br>
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
-      with Claude and Codex.<br>
-      v 0.22.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
+      with the open-source agent community.<br>
+      v 0.26.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
       ⁂
-      <small>Phronesis · v 0.22.0</small>
+      <small>Phronesis · v 0.26.0</small>
     </div>
   </footer>
 

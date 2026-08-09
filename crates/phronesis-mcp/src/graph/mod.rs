@@ -9,6 +9,7 @@
 //! `Fact { predicate, args }` with the relation as the predicate.
 
 pub mod audit;
+pub mod bindings;
 pub mod derive;
 pub mod extract;
 pub mod hydrate;

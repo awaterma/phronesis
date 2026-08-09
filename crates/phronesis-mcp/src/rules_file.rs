@@ -103,6 +103,9 @@ pub struct SourceRule {
     pub silent: Option<bool>,
     pub audit: Option<bool>,
     pub doc_excepted: Option<bool>,
+    /// Disable code-symbol binding for rules that intentionally name foreign
+    /// or removed referents.
+    pub binds: Option<bool>,
 }
 
 /// Map a v2 `then` object (`{"block": "msg"}`) to an internal action.
@@ -179,6 +182,7 @@ impl SourceRule {
             silent: None,
             audit: None,
             doc_excepted: None,
+            binds: None,
         })
     }
 }
@@ -296,6 +300,7 @@ impl<'de> Deserialize<'de> for SourceRule {
             silent: obj.get("silent").and_then(|x| x.as_bool()),
             audit: obj.get("audit").and_then(|x| x.as_bool()),
             doc_excepted: obj.get("doc_excepted").and_then(|x| x.as_bool()),
+            binds: obj.get("binds").and_then(|x| x.as_bool()),
         })
     }
 }
@@ -342,7 +347,7 @@ impl Serialize for SourceRule {
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
-        // Pinned key order: id, phase, priority, [audit, silent, doc_excepted], when, then.
+        // Pinned key order: id, phase, priority, metadata, when, then.
         let mut map = serializer.serialize_map(None)?;
         map.serialize_entry("id", &self.id)?;
         map.serialize_entry("phase", &self.phase)?;
@@ -355,6 +360,9 @@ impl Serialize for SourceRule {
         }
         if let Some(d) = self.doc_excepted {
             map.serialize_entry("doc_excepted", &d)?;
+        }
+        if let Some(b) = self.binds {
+            map.serialize_entry("binds", &b)?;
         }
         map.serialize_entry("when", &self.when)?;
         map.serialize_entry("then", &action_to_then(&self.then))?;
@@ -585,7 +593,20 @@ pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
 /// Atomically write a rules file to `path`. Creates parent directories if needed
 /// and preserves a single `.bak` of the previous contents. Emits v2 shape.
 pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError> {
-    let sources: Vec<SourceRule> = file.rules.iter().map(diskrule_to_source).collect();
+    let existing_binds: HashMap<String, Option<bool>> = read_source(path)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|rule| (rule.id, rule.binds))
+        .collect();
+    let sources: Vec<SourceRule> = file
+        .rules
+        .iter()
+        .map(|rule| {
+            let mut source = diskrule_to_source(rule);
+            source.binds = existing_binds.get(&rule.id).copied().flatten();
+            source
+        })
+        .collect();
     write_source(path, &sources)
 }
 
@@ -618,7 +639,30 @@ pub fn write_source(path: &Path, sources: &[SourceRule]) -> Result<(), RulesFile
         path: path.display().to_string(),
         source: e,
     })?;
+    // Rule persistence and binding persistence are one lifecycle. Without
+    // this, a newly added rule has no binding history until an unrelated code
+    // edit happens to advance the graph. Keep the rules write authoritative;
+    // reconciliation is best-effort and hook-time generation checks fail safe.
+    reconcile_bindings_after_write(path);
     Ok(())
+}
+
+fn reconcile_bindings_after_write(path: &Path) {
+    if path.file_name().and_then(|name| name.to_str()) != Some("rules.json") {
+        return;
+    }
+    let Some(phronesis_dir) = path
+        .parent()
+        .filter(|parent| parent.file_name().and_then(|name| name.to_str()) == Some(".phronesis"))
+    else {
+        return;
+    };
+    let Some(root) = phronesis_dir.parent() else {
+        return;
+    };
+    if let Err(error) = crate::graph::sync::reconcile_rules(root) {
+        tracing::debug!("rule write could not reconcile code bindings: {error}");
+    }
 }
 
 /// Flat DiskRule → SourceRule (all-Leaf when, single then). Inverse of the
@@ -636,6 +680,7 @@ fn diskrule_to_source(d: &DiskRule) -> SourceRule {
         silent: d.silent,
         audit: d.audit,
         doc_excepted: d.doc_excepted,
+        binds: None,
     }
 }
 
@@ -1122,7 +1167,7 @@ mod tests {
     #[test]
     fn source_rule_parses_v2() {
         let json = r#"{
-            "id": "r1", "phase": "pre", "priority": 10, "audit": true,
+            "id": "r1", "phase": "pre", "priority": 10, "audit": true, "binds": false,
             "when": [ { "new_content_contains": ".unwrap()" }, { "file_path_matches": "src" } ],
             "then": { "block": "no unwrap" }
         }"#;
@@ -1153,7 +1198,7 @@ mod tests {
     #[test]
     fn source_rule_serializes_v2_round_trip() {
         let json = r#"{
-            "id": "r1", "phase": "pre", "priority": 10, "audit": true,
+            "id": "r1", "phase": "pre", "priority": 10, "audit": true, "binds": false,
             "when": [ { "new_content_contains": ".unwrap()" }, { "file_path_matches": "src" } ],
             "then": { "block": "no unwrap" }
         }"#;
@@ -1164,11 +1209,13 @@ mod tests {
         assert_eq!(sr2.id, "r1");
         assert_eq!(sr2.when.len(), 2);
         assert_eq!(sr2.then.action_type, "constraint_violation");
+        assert_eq!(sr2.binds, Some(false));
         // Spot-check the emitted shape is v2, not v1.
         assert!(out.get("when").is_some());
         assert!(out.get("conditions").is_none());
         assert_eq!(out["then"]["block"], "no unwrap");
         assert_eq!(out["when"][0]["new_content_contains"], ".unwrap()");
+        assert_eq!(out["binds"], false);
     }
 
     #[test]
@@ -1278,6 +1325,7 @@ mod tests {
             silent: None,
             audit: None,
             doc_excepted: None,
+            binds: None,
         }
     }
 

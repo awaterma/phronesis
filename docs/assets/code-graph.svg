@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+  <title id="title">Phronesis structural code graph</title>
+  <desc id="desc">Source files become typed graph relations, rule-to-code bindings, structural findings, and code-drift evidence.</desc>
+  <style>
+    :root{color-scheme:light dark}.bg{fill:#f4f8f7}.panel{fill:#fff;stroke:#b5ceca;stroke-width:2}.node{fill:#e4efed;stroke:#0f766e;stroke-width:2}.risk{fill:#4657a6;stroke:#344284;stroke-width:2}.ink{fill:#102a2e}.muted{fill:#536f70}.inverse{fill:#fff}.wire{fill:none;stroke:#29484b;stroke-width:3}.dashed{stroke-dasharray:8 7}.arrow{fill:#29484b}text{font-family:Manrope,Inter,system-ui,sans-serif}.eyebrow{font-size:17px;font-weight:800;letter-spacing:2.4px}.heading{font-size:25px;font-weight:800}.small{font-size:16px;font-weight:600}.mono{font-family:"JetBrains Mono",ui-monospace,monospace;font-size:14px}
+    @media(prefers-color-scheme:dark){.bg{fill:#0d2023}.panel{fill:#142c30;stroke:#426462}.node{fill:#173f3d;stroke:#55b9ae}.ink{fill:#eef8f6}.muted{fill:#b4ceca}.wire{stroke:#9fc2bd}.arrow{fill:#9fc2bd}}
+  </style>
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path class="arrow" d="M0 0 10 5 0 10z"/></marker></defs>
+  <rect class="bg" width="1200" height="500" rx="24"/>
+  <text class="eyebrow muted" x="54" y="50">STRUCTURAL CODE GRAPH · RUST · PYTHON · TYPESCRIPT</text>
+  <g class="panel"><rect x="54" y="88" width="220" height="310" rx="16"/><rect x="332" y="88" width="286" height="310" rx="16"/><rect x="676" y="88" width="470" height="310" rx="16"/></g>
+  <text class="eyebrow muted" x="80" y="125">SOURCE</text><text class="heading ink" x="80" y="165">Parse structure</text>
+  <g class="node"><rect x="80" y="202" width="168" height="54" rx="10"/><rect x="80" y="278" width="168" height="54" rx="10"/></g>
+  <text class="mono ink" x="164" y="234" text-anchor="middle">server.rs</text><text class="mono ink" x="164" y="310" text-anchor="middle">bindings.rs</text>
+
+  <text class="eyebrow muted" x="358" y="125">TYPED RELATIONS</text><text class="heading ink" x="358" y="165">Query the shape</text>
+  <g class="node"><rect x="358" y="196" width="234" height="48" rx="24"/><rect x="358" y="260" width="234" height="48" rx="24"/><rect x="358" y="324" width="234" height="48" rx="24"/></g>
+  <text class="mono ink" x="475" y="226" text-anchor="middle">defines_fn</text><text class="mono ink" x="475" y="290" text-anchor="middle">calls_api</text><text class="mono ink" x="475" y="354" text-anchor="middle">tested_by · untested</text>
+
+  <text class="eyebrow muted" x="702" y="125">GOVERNANCE USES</text><text class="heading ink" x="702" y="165">Bind, reason, recover</text>
+  <rect class="risk" x="702" y="198" width="190" height="74" rx="12"/><rect class="node" x="930" y="198" width="190" height="74" rx="12"/><rect class="node" x="702" y="306" width="190" height="74" rx="12"/><rect class="node" x="930" y="306" width="190" height="74" rx="12"/>
+  <text class="small inverse" x="797" y="228" text-anchor="middle">Structural rules</text><text class="mono inverse" x="797" y="251" text-anchor="middle">cycle · untested</text>
+  <text class="small ink" x="1025" y="228" text-anchor="middle">Code bindings</text><text class="mono muted" x="1025" y="251" text-anchor="middle">rule ↔ referent</text>
+  <text class="small ink" x="797" y="336" text-anchor="middle">Freshness</text><text class="mono muted" x="797" y="359" text-anchor="middle">generation · drift</text>
+  <text class="small ink" x="1025" y="336" text-anchor="middle">MCP recovery</text><text class="mono muted" x="1025" y="359" text-anchor="middle">status · rebuild</text>
+
+  <g class="wire" marker-end="url(#a)"><path d="M274 243 H332"/><path d="M618 243 H676"/></g>
+  <path class="wire dashed" d="M1025 398 C1025 450 475 450 475 398" marker-end="url(#a)"/>
+  <text class="small muted" x="750" y="473" text-anchor="middle">rebuild advances the generation and reconciles bindings; stale state fails safely</text>
+</svg>
