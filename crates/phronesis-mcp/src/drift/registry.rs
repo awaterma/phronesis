@@ -156,14 +156,7 @@ fn run_code(inputs: &SourceInputs<'_>) -> DriftReport {
 }
 
 fn run_claude_md(inputs: &SourceInputs<'_>) -> DriftReport {
-    // `claude_md_drift::run` resolves CLAUDE.md from the project root
-    // itself, so the only job here is the availability pre-check: report a
-    // missing file rather than letting the source raise
-    // `DriftError::ClaudeMdMissing`.
-    if !inputs.project_root.join("CLAUDE.md").exists() {
-        return DriftReport::missing(Source::ClaudeMd, MissingReason::NoFile);
-    }
-    match crate::claude_md_drift::run(inputs.project_root) {
+    match crate::claude_md_drift::run_discovered(inputs.project_root) {
         Ok(report) => {
             let items = apply_suggest(crate::claude_md_drift::into_items(&report), inputs.suggest);
             DriftReport {
@@ -174,6 +167,9 @@ fn run_claude_md(inputs: &SourceInputs<'_>) -> DriftReport {
                 uncovered_count: uncovered_count(&items),
                 items,
             }
+        }
+        Err(crate::claude_md_drift::DriftError::ClaudeMdMissing(_)) => {
+            DriftReport::missing(Source::ClaudeMd, MissingReason::NoFile)
         }
         Err(e) => DriftReport::errored(Source::ClaudeMd, e.to_string()),
     }
@@ -380,6 +376,67 @@ mod tests {
         ));
         assert_eq!(report.uncovered_count, 0);
         assert!(report.items.is_empty());
+    }
+
+    #[test]
+    fn claude_md_source_discovers_and_deduplicates_project_guidance() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let root = d.path();
+        std::fs::create_dir_all(root.join(".phronesis")).expect("phronesis dir");
+        std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).expect("rules");
+        std::fs::write(
+            root.join("AGENTS.md"),
+            "- Always run workspace tests before committing\n",
+        )
+        .expect("root guidance");
+        std::fs::create_dir_all(root.join("crates/widget")).expect("crate dir");
+        std::fs::write(
+            root.join("crates/widget/CLAUDE.md"),
+            "- Always run workspace tests before committing\n- Prefer borrowed inputs\n",
+        )
+        .expect("crate guidance");
+        for excluded in ["target", ".worktrees", "node_modules"] {
+            let excluded_dir = root.join(excluded).join("generated");
+            std::fs::create_dir_all(&excluded_dir).expect("excluded dir");
+            std::fs::write(
+                excluded_dir.join("AGENTS.md"),
+                format!("- Never report {excluded} guidance\n"),
+            )
+            .expect("excluded guidance");
+        }
+        let too_deep = root.join("one/two/three/four");
+        std::fs::create_dir_all(&too_deep).expect("deep dir");
+        std::fs::write(
+            too_deep.join("CLAUDE.md"),
+            "- Never report deeply nested guidance\n",
+        )
+        .expect("deep guidance");
+
+        let paths = absent_paths(root);
+        let report = run_source(Source::ClaudeMd, &empty_inputs(root, &paths));
+
+        assert!(
+            matches!(report.availability, Availability::Present { scanned: 2 }),
+            "two unique imperatives should be scanned: {report:?}"
+        );
+        assert_eq!(report.items.len(), 2, "duplicate text must collapse");
+        let shared = report
+            .items
+            .iter()
+            .find(|item| item.subject.contains("workspace tests"))
+            .expect("shared imperative");
+        assert!(shared.subject.contains("AGENTS.md"), "got {shared:?}");
+        assert!(
+            shared.subject.contains("crates/widget/CLAUDE.md"),
+            "got {shared:?}"
+        );
+        assert!(
+            report
+                .items
+                .iter()
+                .all(|item| !item.subject.contains("Never report")),
+            "excluded directories must not contribute guidance: {report:?}"
+        );
     }
 
     #[test]

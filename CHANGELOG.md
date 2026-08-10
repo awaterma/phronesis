@@ -8,6 +8,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **Guidance drift discovers project and package instructions.** Consolidated
+  `get_drift(source="claude_md")` and `phr-mcp drift --source claude_md` now
+  scan root and package-level `CLAUDE.md` and `AGENTS.md` files with bounded,
+  exclusion-aware traversal, deduplicate repeated imperatives, and identify
+  every source file on each finding. The frozen `phr-mcp claude-md-drift`
+  compatibility command remains root-`CLAUDE.md`-only.
 - **Scoped audits no longer report out-of-scope debt.** `phr-mcp audit --path
   <dir>` and `audit_codebase(path)` folded in graph-rule findings from the
   whole project, so an audit scoped to one module returned violations from
