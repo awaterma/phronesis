@@ -297,7 +297,15 @@ impl Sensor<'_> {
                     .map(|t| text(t, self.source).to_string());
                 self.walk_children(node, &inner);
             }
-            "function_item" => self.visit_function(node, scope),
+            "function_item" => {
+                self.visit_function(node, scope);
+                // A function body is not walked as items — that would invent
+                // nested `defines_fn` entries for closures and inner helpers.
+                // But function-local `use` is how a dependency needed by one
+                // function is conventionally scoped, and skipping it makes a
+                // file that visibly imports a module report no edge to it.
+                self.visit_nested_uses(node, scope);
+            }
             "use_declaration" => self.visit_use(node, scope),
             _ => self.walk_children(node, scope),
         }
@@ -396,6 +404,23 @@ impl Sensor<'_> {
         found
     }
 
+    /// Record every `use` nested inside `node`, without treating anything else
+    /// in it as an item.
+    ///
+    /// The scope stays the enclosing one: a `use` in a function body resolves
+    /// against the module the function is written in, exactly as the compiler
+    /// resolves it.
+    fn visit_nested_uses(&mut self, node: Node, scope: &Scope) {
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            if child.kind() == "use_declaration" {
+                self.visit_use(child, scope);
+            } else {
+                self.visit_nested_uses(child, scope);
+            }
+        }
+    }
+
     /// Intra-crate `use` declarations become `imports` edges. External crates
     /// are ignored: only intra-crate edges can form the cycles we detect.
     ///
@@ -418,6 +443,15 @@ impl Sensor<'_> {
             .collect();
 
         // Resolve the leading anchor to an absolute module path.
+        //
+        // `floor` is the shortest path the item-dropping step below may leave.
+        // Inside our own crate it is 2 — one segment past the crate root —
+        // because `use crate::rules_file;` names a *module*, and popping it
+        // would both lose the dependency and leave a crate-to-crate self-edge
+        // that `in_cycle` reports as a cycle. For a sibling crate the root is
+        // a legitimate target: `use phr::Rule;` depends on `phr`, not on a
+        // module named `Rule`.
+        let mut floor = 2usize;
         let mut resolved: Vec<String> = match segments.first() {
             Some(&"crate") => {
                 segments.remove(0);
@@ -446,6 +480,7 @@ impl Sensor<'_> {
                     return;
                 };
                 segments.remove(0);
+                floor = 1;
                 vec![target.clone()]
             }
             None => return,
@@ -454,7 +489,7 @@ impl Sensor<'_> {
 
         // Drop the imported item, leaving its module. A trailing `::` means a
         // brace group or glob followed, so we are already at the module.
-        if !head.ends_with("::") && resolved.len() > 1 {
+        if !head.ends_with("::") && resolved.len() > floor {
             resolved.pop();
         }
         let target = resolved.join("::");
@@ -788,6 +823,40 @@ mod tests {
     #[test]
     fn a_use_declaration_becomes_an_import_edge() {
         let out = run("src/a.rs", "use crate::network::Thing;");
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "rust:crate::a".to_string(),
+                "rust:crate::network".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_module_only_use_keeps_the_module_as_the_target() {
+        // `use crate::rules_file;` names a module, not an item in one. Popping
+        // the last segment here collapses the edge onto the crate root, which
+        // both loses the real dependency and manufactures a crate-to-crate
+        // self-edge that `in_cycle` then reports as a cycle.
+        let out = run("src/a.rs", "use crate::rules_file;");
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "rust:crate::a".to_string(),
+                "rust:crate::rules_file".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn a_use_inside_a_function_body_becomes_an_import_edge() {
+        // Function-local `use` is how a dependency needed by exactly one
+        // function is conventionally scoped. Skipping the body means a file
+        // that visibly imports a module reports no edge to it.
+        let out = run(
+            "src/a.rs",
+            "fn f() { use crate::network::Thing; let _ = Thing; }",
+        );
         assert_eq!(
             edges_of(&out, "imports"),
             vec![vec![

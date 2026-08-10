@@ -964,7 +964,13 @@ impl EpistemeMcp {
                     .collect();
                 let hits =
                     crate::graph::audit::audit_graph_rules(&project_root, &engine_rules).await;
-                crate::audit::merge_graph_hits(&mut report, &hits, params.rule.as_deref());
+                let scope = crate::audit::graph_scope_prefix(&project_root, &opts.scan_root);
+                crate::audit::merge_graph_hits(
+                    &mut report,
+                    &hits,
+                    params.rule.as_deref(),
+                    scope.as_deref(),
+                );
             }
             let report = report;
             let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();

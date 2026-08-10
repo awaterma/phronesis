@@ -794,7 +794,13 @@ async fn handle_audit(
                 .collect();
             let hits =
                 phronesis_mcp::graph::audit::audit_graph_rules(&project_root, &engine_rules).await;
-            phronesis_mcp::audit::merge_graph_hits(&mut report, &hits, rule.as_deref());
+            let scope = phronesis_mcp::audit::graph_scope_prefix(&project_root, &opts.scan_root);
+            phronesis_mcp::audit::merge_graph_hits(
+                &mut report,
+                &hits,
+                rule.as_deref(),
+                scope.as_deref(),
+            );
         }
         let report = report;
         let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
