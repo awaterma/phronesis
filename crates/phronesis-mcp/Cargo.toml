@@ -29,8 +29,8 @@ default = ["rhai"]
 rhai = ["dep:phronesis-rhai"]
 
 [dependencies]
-phr = { version = "0.26.0", path = "../phronesis", package = "phronesis", features = ["schemars"] }
-phronesis-rhai = { version = "0.26.0", path = "../phronesis-rhai", optional = true }
+phr = { version = "0.27.0", path = "../phronesis", package = "phronesis", features = ["schemars"] }
+phronesis-rhai = { version = "0.27.0", path = "../phronesis-rhai", optional = true }
 rmcp = { version = "0.17", features = ["server", "macros", "transport-io", "schemars"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
