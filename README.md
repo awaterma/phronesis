@@ -73,13 +73,24 @@ not proof that documentation or enforcement is wrong.
 
 Rendered on GitHub Pages: **[awaterma.github.io/phronesis](https://awaterma.github.io/phronesis/)**
 
+- [**Your first Phronesis rule**](docs/tutorial.md) — Run a complete RETE rule cycle in five minutes.
 - [**Loop-Based Agent Programming**](docs/loop-programming-guide.md) — A guide to governing the iterative propose/act/observe loop so it doesn't drift across long sessions.
 - [**The Explainer**](https://awaterma.github.io/phronesis/explainer.html) — A long-form technical essay on the engine, the RETE algorithm, and the design intent. ([source](docs/explainer.html))
 - [**The Catalogue**](https://awaterma.github.io/phronesis/catalogue.html) — A visual reference of starter rules (Rust, LLM behavior, security) with rationale and examples. ([source](docs/catalogue.html))
+- [**Skills**](skills/) — Agent skills built on the MCP tools and CLI, starting with [exploring a repository](skills/exploring-a-repository/SKILL.md) before you change it.
 - [**Command Reference**](crates/phronesis-mcp/CLAUDE.md) — The full CLI surface and hook wiring details.
 - [**Specs**](docs/specs/) — Architectural roadmaps and technical debt management plans.
 
 ## Quick Start
+
+To try the core rules engine before installing anything:
+
+```sh
+cargo run --example minimal --package phronesis
+```
+
+The [five-minute tutorial](docs/tutorial.md) explains each part of that rule
+cycle. To install the agent-governance CLI:
 
 ```sh
 # 1. Install the binary

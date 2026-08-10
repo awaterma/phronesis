@@ -6,6 +6,21 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **A five-minute first run.** `cargo run --example minimal --package
+  phronesis` executes one complete RETE cycle — add a rule, assert a fact,
+  fire the agenda — and asserts its own result, so a broken engine fails the
+  command rather than printing the wrong thing. `docs/tutorial.md` walks
+  through it and maps each step to the public type and the module implementing
+  it. CI runs the example on every push, so the documented output cannot drift
+  from the real one.
+- **Agent skills.** `skills/` ships consumer-side procedures built on the MCP
+  tools and CLI, starting with `exploring-a-repository` — a five-pass
+  orientation workflow (constraints, graph freshness, structure, history and
+  debt, confidence) for an agent picking up unfamiliar work in a phronesis
+  project.
+
 ### Fixed
 
 - **Guidance drift discovers project and package instructions.** Consolidated

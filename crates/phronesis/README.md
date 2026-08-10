@@ -19,6 +19,21 @@ this crate.
 
 ## Quick example
 
+Run the smallest complete RETE cycle:
+
+```sh
+cargo run --example minimal --package phronesis
+```
+
+Expected output:
+
+```text
+rule fired: send_welcome(Ada)
+```
+
+See [Your first Phronesis rule](../../docs/tutorial.md) for the five-minute
+walkthrough. The pull-mode API is shown below:
+
 ```rust
 use phronesis::{Consequence, ConsequenceKind, Lookup, lookup_as_consequence};
 
@@ -53,6 +68,7 @@ and Gemini CLI.
 ## Documentation
 
 - [API docs (docs.rs)](https://docs.rs/phronesis)
+- [Your first Phronesis rule](../../docs/tutorial.md) — a five-minute runnable tutorial
 - [The Explainer](https://awaterma.github.io/phronesis/explainer.html) — long-form essay on the engine and RETE algorithm
 - [The Catalogue](https://awaterma.github.io/phronesis/catalogue.html) — visual reference of starter rules
 

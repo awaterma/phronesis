@@ -48,6 +48,10 @@ name = "push_and_pull"
 path = "examples/push_and_pull.rs"
 
 [[example]]
+name = "minimal"
+path = "examples/minimal.rs"
+
+[[example]]
 name = "rule_driven_lookup"
 path = "examples/rule_driven_lookup.rs"
 
