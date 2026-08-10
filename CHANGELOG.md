@@ -4,6 +4,33 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). This project is
 pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
+## [Unreleased]
+
+### Fixed
+
+- **Guidance drift discovers project and package instructions.** Consolidated
+  `get_drift(source="claude_md")` and `phr-mcp drift --source claude_md` now
+  scan root and package-level `CLAUDE.md` and `AGENTS.md` files with bounded,
+  exclusion-aware traversal, deduplicate repeated imperatives, and identify
+  every source file on each finding. The frozen `phr-mcp claude-md-drift`
+  compatibility command remains root-`CLAUDE.md`-only.
+- **Scoped audits no longer report out-of-scope debt.** `phr-mcp audit --path
+  <dir>` and `audit_codebase(path)` folded in graph-rule findings from the
+  whole project, so an audit scoped to one module returned violations from
+  unrelated files while `files_scanned` reflected the narrow scope. Graph rules
+  still evaluate against the entire graph — a covering test may live anywhere —
+  but reported findings are now filtered to the requested path on segment
+  boundaries.
+- **`use crate::<module>;` no longer collapses onto the crate root.** A `use`
+  naming a module directly had its last segment dropped as though it were an
+  item, erasing the real dependency and emitting a crate-to-crate self-edge.
+  Sibling-crate imports (`use phr::Rule;`) still resolve to the crate root,
+  where that is the correct target.
+- **Function-local `use` now produces `imports` edges.** The Rust extractor
+  never walked function bodies, so a file whose source visibly imported a
+  module could show no edge to it — understating fan-in and hiding import
+  cycles.
+
 ## [0.26.0] - 2026-08-09
 
 ### Added

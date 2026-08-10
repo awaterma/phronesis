@@ -190,6 +190,35 @@ fn claude_md_drift_exits_nonzero_and_names_missing_file() {
 }
 
 #[test]
+fn consolidated_claude_md_drift_discovers_agents_guidance() {
+    let dir = tempfile::tempdir().unwrap();
+    make_project(dir.path());
+    std::fs::write(
+        dir.path().join("AGENTS.md"),
+        "- Always run workspace tests before committing\n",
+    )
+    .unwrap();
+    let out = Command::new(bin())
+        .args(["drift", "--source", "claude_md"])
+        .env("PHRONESIS_PROJECT_ROOT", dir.path())
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "consolidated drift exited non-zero: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 present, 0 missing"), "got: {stdout}");
+    assert!(
+        stdout.contains("AGENTS.md"),
+        "origin path missing: {stdout}"
+    );
+}
+
+#[test]
 fn memory_drift_exits_nonzero_when_memory_dir_missing() {
     let dir = tempfile::tempdir().unwrap();
     make_project(dir.path());

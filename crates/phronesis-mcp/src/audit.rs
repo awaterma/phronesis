@@ -3164,15 +3164,49 @@ fn short() {
 /// Findings carry no line number: the graph records that a function is
 /// untested, not where it sits. They use the same line-1 placeholder plus
 /// detail string that AST hits already use, so renderers need no new case.
+/// The repo-relative prefix a scoped audit reports under, or `None` for a
+/// whole-tree scan.
+///
+/// Graph rules are evaluated over the entire graph by design — the test that
+/// covers a function may live anywhere — but a caller who scoped the audit to
+/// one directory is asking "what is wrong *here*", and answering with another
+/// module's debt reads as their own.
+pub fn graph_scope_prefix(project_root: &Path, scan_root: &Path) -> Option<String> {
+    let rel = scan_root.strip_prefix(project_root).ok()?;
+    let s = rel.to_str()?.trim_end_matches('/');
+    if s.is_empty() {
+        None
+    } else {
+        Some(s.to_string())
+    }
+}
+
+/// True when `file` (repo-relative) lies under `scope`.
+///
+/// Compares whole path segments: `src/journey` must not swallow
+/// `src/journeyman.rs`.
+fn within_scope(file: &str, scope: &str) -> bool {
+    file == scope
+        || file
+            .strip_prefix(scope)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 pub fn merge_graph_hits(
     report: &mut AuditReport,
     hits: &[crate::graph::audit::GraphHit],
     rule_filter: Option<&str>,
+    scope: Option<&str>,
 ) {
     let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
     for hit in hits {
         if let Some(want) = rule_filter
             && hit.rule_id != want
+        {
+            continue;
+        }
+        if let Some(scope) = scope
+            && !within_scope(&hit.file, scope)
         {
             continue;
         }
@@ -3225,9 +3259,55 @@ mod graph_merge_tests {
             &mut r,
             &[hit("warn-import-cycle", "src/a.rs", "constraint_warning")],
             None,
+            None,
         );
         assert_eq!(r.per_rule.len(), 1);
         assert_eq!(r.per_rule[0].hits, 1);
+    }
+
+    #[test]
+    fn graph_hits_outside_the_scan_scope_are_dropped() {
+        // Graph rules must still *evaluate* over the whole graph — a test that
+        // covers this file may live anywhere — but a scoped audit reports
+        // findings in scope. Without this, `--path src/journey` returns
+        // violations in src/init.rs and reads as debt in the caller's area.
+        let mut r = empty_report();
+        merge_graph_hits(
+            &mut r,
+            &[
+                hit(
+                    "warn-import-cycle",
+                    "src/journey/mod.rs",
+                    "constraint_warning",
+                ),
+                hit("warn-import-cycle", "src/init.rs", "constraint_warning"),
+            ],
+            None,
+            Some("src/journey"),
+        );
+        assert_eq!(r.per_rule.len(), 1, "one rule survives");
+        assert_eq!(r.per_rule[0].hits, 1, "only the in-scope hit");
+        assert_eq!(
+            r.per_rule[0].files[0].path,
+            PathBuf::from("src/journey/mod.rs")
+        );
+    }
+
+    #[test]
+    fn a_scope_matches_on_path_boundaries_not_string_prefix() {
+        // `src/journey` must not swallow `src/journeyman.rs`.
+        let mut r = empty_report();
+        merge_graph_hits(
+            &mut r,
+            &[hit(
+                "warn-import-cycle",
+                "src/journeyman.rs",
+                "constraint_warning",
+            )],
+            None,
+            Some("src/journey"),
+        );
+        assert!(r.per_rule.is_empty(), "sibling path must not match");
     }
 
     #[test]
@@ -3239,6 +3319,7 @@ mod graph_merge_tests {
                 hit("warn-import-cycle", "src/a.rs", "constraint_warning"),
                 hit("warn-import-cycle", "src/b.rs", "constraint_warning"),
             ],
+            None,
             None,
         );
         assert_eq!(r.per_rule.len(), 1, "one rule");
@@ -3256,6 +3337,7 @@ mod graph_merge_tests {
                 hit("warn-untested-risky-call", "src/b.rs", "constraint_warning"),
             ],
             Some("warn-import-cycle"),
+            None,
         );
         assert_eq!(r.per_rule.len(), 1);
         assert_eq!(r.per_rule[0].rule_id.to_string(), "warn-import-cycle");
@@ -3267,6 +3349,7 @@ mod graph_merge_tests {
         merge_graph_hits(
             &mut r,
             &[hit("warn-import-cycle", "src/a.rs", "constraint_warning")],
+            None,
             None,
         );
         assert_eq!(
@@ -3284,6 +3367,7 @@ mod graph_merge_tests {
                 hit("a-warn", "src/a.rs", "constraint_warning"),
                 hit("z-block", "src/b.rs", "constraint_violation"),
             ],
+            None,
             None,
         );
         assert_eq!(r.per_rule[0].rule_id.to_string(), "z-block");

@@ -1,5 +1,5 @@
-//! Detect drift between `CLAUDE.md` (human-facing project guide) and the
-//! materialized rule pack in `.phronesis/rules.json`.
+//! Detect drift between human-facing project guidance and the materialized
+//! rule pack in `.phronesis/rules.json`.
 //!
 //! Imperative bullets in CLAUDE.md ("Don't X", "Always Y", "Prefer Z") are
 //! the natural source of enforceable conventions. This module extracts them
@@ -13,15 +13,16 @@
 
 use crate::rules_file::{self, DiskRule, RulesFile};
 use phr::RuleId;
-use std::collections::HashSet;
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
-/// A single CLAUDE.md imperative, with its best-match rule (if any) and the
-/// terms they share. `similarity` is the Jaccard coefficient over the
+/// A single guidance imperative, its originating paths, and its best-match
+/// rule (if any). `similarity` is the Jaccard coefficient over the
 /// stop-word-stripped token sets — between 0.0 and 1.0.
 #[derive(Debug, Clone)]
 pub struct DriftItem {
     pub imperative: String,
+    pub guidance_paths: Vec<String>,
     pub best_match: Option<MatchedRule>,
     pub similarity: f32,
 }
@@ -47,7 +48,7 @@ pub struct DriftReport {
 pub enum DriftError {
     #[error("CLAUDE.md not found at {0}")]
     ClaudeMdMissing(String),
-    #[error("failed to read CLAUDE.md: {0}")]
+    #[error("failed to read guidance file: {0}")]
     ClaudeMdIo(#[from] std::io::Error),
     #[error("failed to read rules file: {0}")]
     RulesIo(String),
@@ -89,18 +90,100 @@ pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
             claude_path.display().to_string(),
         ));
     }
-    let claude_md = std::fs::read_to_string(&claude_path)?;
+    run_with_guidance_files(project_root, &[claude_path])
+}
+
+const MAX_GUIDANCE_DIR_DEPTH: usize = 3;
+const EXCLUDED_GUIDANCE_DIRS: &[&str] = &[".git", ".worktrees", "target", "node_modules"];
+
+/// Discover project guidance for the consolidated drift surface.
+///
+/// The walk is deliberately bounded to the root and three directory levels,
+/// does not follow directory symlinks, and prunes generated or external trees.
+pub fn discover_guidance_files(project_root: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    fn visit(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) -> Result<(), std::io::Error> {
+        let mut entries = std::fs::read_dir(dir)?.collect::<Result<Vec<_>, _>>()?;
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            let name = entry.file_name();
+            if file_type.is_file() && matches!(name.to_str(), Some("CLAUDE.md" | "AGENTS.md")) {
+                found.push(path);
+            } else if file_type.is_dir()
+                && depth < MAX_GUIDANCE_DIR_DEPTH
+                && !EXCLUDED_GUIDANCE_DIRS
+                    .iter()
+                    .any(|excluded| name == std::ffi::OsStr::new(excluded))
+            {
+                visit(&path, depth + 1, found)?;
+            }
+        }
+        Ok(())
+    }
+
+    let mut found = Vec::new();
+    visit(project_root, 0, &mut found)?;
+    found.sort();
+    found.dedup();
+    Ok(found)
+}
+
+/// Discover and score root plus package-level CLAUDE.md / AGENTS.md files.
+/// Used by the consolidated `drift` surface; the frozen `claude-md-drift`
+/// compatibility command continues to call [`run`].
+pub fn run_discovered(project_root: &Path) -> Result<DriftReport, DriftError> {
+    let guidance_files = discover_guidance_files(project_root)?;
+    if guidance_files.is_empty() {
+        return Err(DriftError::ClaudeMdMissing(
+            project_root.display().to_string(),
+        ));
+    }
+    run_with_guidance_files(project_root, &guidance_files)
+}
+
+fn run_with_guidance_files(
+    project_root: &Path,
+    guidance_files: &[PathBuf],
+) -> Result<DriftReport, DriftError> {
     let rules_path = rules_file::default_path(project_root);
     let rules = rules_file::read(&rules_path).map_err(|e| DriftError::RulesIo(e.to_string()))?;
 
-    let imperatives = extract_imperatives(&claude_md);
+    let mut indexed = HashMap::<String, usize>::new();
+    let mut imperatives = Vec::<(String, Vec<String>)>::new();
+    for path in guidance_files {
+        let guidance = std::fs::read_to_string(path)?;
+        let relative_path = path
+            .strip_prefix(project_root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        for imperative in extract_imperatives(&guidance) {
+            if let Some(index) = indexed.get(&imperative).copied() {
+                if !imperatives[index].1.contains(&relative_path) {
+                    imperatives[index].1.push(relative_path.clone());
+                }
+            } else {
+                indexed.insert(imperative.clone(), imperatives.len());
+                imperatives.push((imperative, vec![relative_path.clone()]));
+            }
+        }
+    }
     let items = imperatives
         .into_iter()
-        .map(|imp| score_imperative(&imp, &rules))
+        .map(|(imperative, guidance_paths)| {
+            let mut item = score_imperative(&imperative, &rules);
+            item.guidance_paths = guidance_paths;
+            item
+        })
         .collect();
 
     Ok(DriftReport {
-        claude_md_path: claude_path.display().to_string(),
+        claude_md_path: guidance_files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
         rules_path: rules_path.display().to_string(),
         items,
         coverage_threshold: COVERAGE_THRESHOLD,
@@ -178,6 +261,7 @@ fn score_imperative(imp: &str, rules: &RulesFile) -> DriftItem {
     if imp_tokens.is_empty() {
         return DriftItem {
             imperative: imp.to_string(),
+            guidance_paths: Vec::new(),
             best_match: None,
             similarity: 0.0,
         };
@@ -209,6 +293,7 @@ fn score_imperative(imp: &str, rules: &RulesFile) -> DriftItem {
     match best {
         Some((similarity, rule_id, shared_terms)) => DriftItem {
             imperative: imp.to_string(),
+            guidance_paths: Vec::new(),
             best_match: Some(MatchedRule {
                 rule_id: rule_id.into(),
                 shared_terms,
@@ -217,6 +302,7 @@ fn score_imperative(imp: &str, rules: &RulesFile) -> DriftItem {
         },
         None => DriftItem {
             imperative: imp.to_string(),
+            guidance_paths: Vec::new(),
             best_match: None,
             similarity: 0.0,
         },
@@ -364,7 +450,11 @@ pub fn into_items(report: &DriftReport) -> Vec<crate::drift::DriftItem> {
                 .map(|m| vec![m.rule_id.as_str().to_string()])
                 .unwrap_or_default();
             crate::drift::DriftItem {
-                subject: item.imperative.clone(),
+                subject: if item.guidance_paths.is_empty() {
+                    item.imperative.clone()
+                } else {
+                    format!("{}: {}", item.guidance_paths.join(", "), item.imperative)
+                },
                 verdict,
                 category: None,
                 suggestion: None,
@@ -446,6 +536,18 @@ Some intro.
         assert_eq!(imps.len(), 2);
     }
 
+    #[test]
+    fn compatibility_run_still_requires_root_claude_md() {
+        let d = tempfile::tempdir().expect("tempdir");
+        std::fs::write(d.path().join("AGENTS.md"), "- Always run tests\n")
+            .expect("agents guidance");
+
+        assert!(
+            matches!(run(d.path()), Err(DriftError::ClaudeMdMissing(_))),
+            "the frozen compatibility entry point must remain root-CLAUDE.md-only"
+        );
+    }
+
     fn rule_with(id: &str, message: &str) -> DiskRule {
         DiskRule {
             id: id.to_string(),
@@ -518,6 +620,7 @@ Some intro.
             items: vec![
                 DriftItem {
                     imperative: "Don't use unwrap".to_string(),
+                    guidance_paths: Vec::new(),
                     best_match: Some(MatchedRule {
                         rule_id: "enforce-no-unwrap-in-src".into(),
                         shared_terms: vec!["unwrap".to_string()],
@@ -526,6 +629,7 @@ Some intro.
                 },
                 DriftItem {
                     imperative: "Always playtest before pushing".to_string(),
+                    guidance_paths: Vec::new(),
                     best_match: None,
                     similarity: 0.0,
                 },
@@ -546,6 +650,7 @@ Some intro.
             coverage_threshold: 0.15,
             items: vec![DriftItem {
                 imperative: String::from("avoid panics in hot paths"),
+                guidance_paths: Vec::new(),
                 best_match: None,
                 similarity: 0.0,
             }],
@@ -570,6 +675,7 @@ Some intro.
             coverage_threshold: 0.15,
             items: vec![DriftItem {
                 imperative: String::from("forbid unwrap in src"),
+                guidance_paths: Vec::new(),
                 best_match: Some(MatchedRule {
                     rule_id: "enforce-no-unwrap-in-src".into(),
                     shared_terms: vec![String::from("unwrap")],

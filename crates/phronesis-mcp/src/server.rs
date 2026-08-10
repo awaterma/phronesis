@@ -964,7 +964,13 @@ impl EpistemeMcp {
                     .collect();
                 let hits =
                     crate::graph::audit::audit_graph_rules(&project_root, &engine_rules).await;
-                crate::audit::merge_graph_hits(&mut report, &hits, params.rule.as_deref());
+                let scope = crate::audit::graph_scope_prefix(&project_root, &opts.scan_root);
+                crate::audit::merge_graph_hits(
+                    &mut report,
+                    &hits,
+                    params.rule.as_deref(),
+                    scope.as_deref(),
+                );
             }
             let report = report;
             let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
@@ -1036,7 +1042,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Detect drift between written guidance and enforced rules across every corpus: CLAUDE.md imperatives, Claude Code auto-memory entries, ADR decisions under .phronesis/wiki/decisions/, and (once SPEC-rule-staleness lands) rules naming code the graph no longer defines. Read-only, heuristic, no LLM call — output is a triage list, not ground truth. `source` selects one of \"claude_md\", \"memory\", \"wiki\", \"code\", or \"all\" (default). With \"all\" the response is a bounded summary: use a single source plus a higher `limit` for detail. A corpus that does not exist is reported as unavailable rather than failing the call. Optional: `limit` (default 5, max 50), `format` (\"json\" default or \"table\"), `suggest` (default false — set true to get a draft rule per item, which is large), `memory_dir`, `wiki_dir`."
+        description = "Detect drift between written guidance and enforced rules across every corpus: root and package-level CLAUDE.md/AGENTS.md imperatives, Claude Code auto-memory entries, ADR decisions under .phronesis/wiki/decisions/, and rules naming code the graph no longer defines. Read-only, heuristic, no LLM call — output is a triage list, not ground truth. `source` selects one of \"claude_md\", \"memory\", \"wiki\", \"code\", or \"all\" (default). With \"all\" the response is a bounded summary: use a single source plus a higher `limit` for detail. A corpus that does not exist is reported as unavailable rather than failing the call. Optional: `limit` (default 5, max 50), `format` (\"json\" default or \"table\"), `suggest` (default false — set true to get a draft rule per item, which is large), `memory_dir`, `wiki_dir`."
     )]
     async fn get_drift(
         &self,

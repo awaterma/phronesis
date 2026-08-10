@@ -140,6 +140,13 @@ or `all` (the default). It also accepts `limit` (default 5, maximum 50),
 drift [--source S] [--limit N] [--json] [--suggest] [--memory-dir P]
 [--wiki-dir P]`.
 
+The consolidated `claude_md` source discovers root and package-level
+`CLAUDE.md` and `AGENTS.md` files within three directory levels, excluding
+`.git/`, `.worktrees/`, `target/`, and `node_modules/`. Repeated imperatives
+are deduplicated and each finding names every guidance file it came from. The
+source is missing only when no guidance file is found anywhere in that bounded
+search.
+
 `phr-mcp claude-md-drift` is a frozen compatibility command retaining its
 existing single-source output and `--suggest` behavior. It extracts imperative
 bullets from CLAUDE.md ("Don't X", "Always Y", "Prefer Z") and matches each
