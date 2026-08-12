@@ -11,6 +11,7 @@
 
 use super::derive::derive_all;
 use super::extract::{DEFAULT_WATCHLIST, extract_rust};
+use super::helm3;
 use super::model::Edge;
 use super::store;
 use super::unit::UnitMap;
@@ -26,10 +27,13 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// Without it, an upgrade silently yields a graph half in the old naming and
 /// half in the new, whose `imports` never join to its `declares_module`.
 ///
-/// 4 — `<lang>:<package>[#<target>]::<module path>` (introduced in spec
-/// rev 4; unchanged by rev 5, which added Python under the same scheme).
+/// 5 — `<lang>:<package>[#<target>]::<module path>` (unchanged by rev 5,
+/// which added `graph_definition`, `defines`, `element_in_file`,
+/// `element_in_module`, `graph_module`, `graph_function`, `graph_test`,
+/// `graph_file` and multilingual dialect support; format 4 remains the
+/// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 4;
+pub const GRAPH_FORMAT: u32 = 5;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -142,11 +146,12 @@ pub fn save_index(path: &Path, index: &Index) -> std::io::Result<()> {
 }
 
 /// Every file under `root`, in a tracked language (Rust, Python,
-/// TypeScript), that the graph should track, as paths relative to `root`.
-/// Honours `.gitignore` so build output and vendored trees never enter the
-/// graph, and prunes `node_modules` unconditionally — `.gitignore` alone
-/// cannot be relied on to exclude it, and `is_tracked` must agree with this
-/// walk or a sensor-recorded file becomes permanent drift.
+/// TypeScript, Lua, CUE, JSON, YAML, Helm), that the graph should track, as
+/// paths relative to `root`.  Honours `.gitignore` so build output and
+/// vendored trees never enter the graph, and prunes `node_modules`
+/// unconditionally — `.gitignore` alone cannot be relied on to exclude it,
+/// and `is_tracked` must agree with this walk or a sensor-recorded file
+/// becomes permanent drift.
 fn tracked_files(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     for entry in ignore::WalkBuilder::new(root)
@@ -159,9 +164,24 @@ fn tracked_files(root: &Path) -> Vec<String> {
             continue;
         }
         let path = entry.path();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.trim_start_matches('.'))
+            .unwrap_or("");
         if !matches!(
-            path.extension().and_then(|e| e.to_str()),
-            Some("rs") | Some("py") | Some("ts") | Some("tsx") | Some("mts") | Some("cts")
+            ext,
+            "rs" | "py"
+                | "ts"
+                | "tsx"
+                | "mts"
+                | "cts"
+                | "lua"
+                | "cue"
+                | "json"
+                | "yaml"
+                | "yml"
+                | "tpl"
         ) {
             continue;
         }
@@ -217,7 +237,12 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
 
 /// Every file extension the graph has an extractor for. A file outside this
 /// set is not tracked, not indexed, and not counted as drift.
-pub const TRACKED_EXTENSIONS: &[&str] = &[".rs", ".py", ".ts", ".tsx", ".mts", ".cts"];
+///
+/// Covers Rust, Python, TypeScript (and siblings), Lua, CUE, JSON, YAML,
+/// and Helm3 template files.
+pub const TRACKED_EXTENSIONS: &[&str] = &[
+    ".rs", ".py", ".ts", ".tsx", ".mts", ".cts", ".lua", ".cue", ".json", ".yaml", ".yml", ".tpl",
+];
 
 /// Whether `on_save`/`record_from_disk` should index this file.
 ///
@@ -237,13 +262,87 @@ fn is_tracked(file_path: &str) -> bool {
     TRACKED_EXTENSIONS.iter().any(|e| file_path.ends_with(e))
 }
 
+fn chart_for(root: &Path, rel: &str) -> Option<(String, String)> {
+    tracked_files(root)
+        .into_iter()
+        .filter(|file| file.ends_with("Chart.yaml") || file.ends_with("Chart.yml"))
+        .filter_map(|file| {
+            let directory = file.rsplit_once('/').map_or("", |(directory, _)| directory);
+            if !rel.starts_with(directory) {
+                return None;
+            }
+            let body = std::fs::read_to_string(root.join(&file)).ok()?;
+            let value: serde_norway::Value = serde_norway::from_str(&body).ok()?;
+            let name = value.get("name")?.as_str()?.to_string();
+            Some((directory.to_string(), name))
+        })
+        .max_by_key(|(directory, _)| directory.len())
+}
+
 /// Route one file to the extractor for its language.
-fn extract_one(rel: &str, content: &str, units: &UnitMap) -> super::extract::Extracted {
+fn extract_one(
+    root: &Path,
+    rel: &str,
+    content: &str,
+    units: &UnitMap,
+) -> super::extract::Extracted {
     let unit = units.context_for(rel);
+    // Helm owns templated YAML beneath a chart's templates/ tree. Extension
+    // alone is insufficient: routing such a file through generic YAML first
+    // would either misparse Go actions or silently discard the file.
+    if matches!(super::unit::lang_of_path(rel), Some(super::unit::LANG_YAML))
+        && rel.contains("/templates/")
+        && content.contains("{{")
+        && let Some((chart_root, _chart_name)) = chart_for(root, rel)
+    {
+        let mut helm_unit = super::unit::UnitContext::unnamed_for(super::unit::LANG_HELM3);
+        let chart_identity = if chart_root.is_empty() {
+            "project"
+        } else {
+            chart_root.as_str()
+        };
+        helm_unit.id = format!("helm3:{chart_identity}");
+        return helm3::extract_helm3(rel, content, &helm_unit, Some(&chart_root));
+    }
     match super::unit::lang_of_path(rel) {
         Some(super::unit::LANG_PYTHON) => super::python::extract_python(rel, content, &unit),
         Some(super::unit::LANG_TYPESCRIPT) => {
             super::typescript::extract_typescript(rel, content, &unit)
+        }
+        Some(super::unit::LANG_LUA) => {
+            let mut lua_unit = unit;
+            lua_unit.lua_files = tracked_files(root);
+            super::lua::extract_lua(rel, content, &lua_unit)
+        }
+        Some(super::unit::LANG_CUE) => {
+            let mut cue_unit = unit;
+            cue_unit.id = format!("cue:{}", super::cue::discover_module(root, rel));
+            cue_unit.cue_files = super::cue::discover_cue_files(root, rel);
+            super::cue::extract_cue(rel, content, &cue_unit)
+        }
+        Some(super::unit::LANG_HELM3) => {
+            if let Some((chart_root, _chart_name)) = chart_for(root, rel) {
+                let mut helm_unit = unit;
+                let chart_identity = if chart_root.is_empty() {
+                    "project"
+                } else {
+                    chart_root.as_str()
+                };
+                helm_unit.id = format!("helm3:{chart_identity}");
+                helm3::extract_helm3(rel, content, &helm_unit, Some(&chart_root))
+            } else {
+                helm3::extract_helm3(rel, content, &unit, None)
+            }
+        }
+        Some(super::unit::LANG_JSON) => {
+            let mut json_unit = unit;
+            json_unit.files = tracked_files(root);
+            super::json_extractor::extract_json(rel, content, &json_unit)
+        }
+        Some(super::unit::LANG_YAML) => {
+            let mut yaml_unit = unit;
+            yaml_unit.files = tracked_files(root);
+            super::yaml::extract_yaml(rel, content, &yaml_unit)
         }
         _ => extract_rust(rel, content, DEFAULT_WATCHLIST, &unit),
     }
@@ -323,7 +422,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     }
 
     let units = UnitMap::discover(root);
-    let extracted = extract_one(file_path, content, &units);
+    let extracted = extract_one(root, file_path, content, &units);
     let existing = store::load(&store::graph_path(root))?;
     if extracted.parse_failed {
         // Leave the graph and the index exactly as they were. Compacting the
@@ -454,7 +553,7 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
         let Ok(content) = std::fs::read_to_string(root.join(&rel)) else {
             continue;
         };
-        let extracted = extract_one(&rel, &content, &units);
+        let extracted = extract_one(root, &rel, &content, &units);
         skipped += extracted.skipped;
         if extracted.parse_failed {
             // Not indexed: a rebuild cannot invent evidence for a file it
@@ -1142,6 +1241,88 @@ mod tests {
             .filter_map(|e| e.a.get(1).cloned())
             .collect();
         assert_eq!(names.len(), 2, "both files must be scanned");
+    }
+
+    #[test]
+    fn rebuild_composes_multilingual_modules_and_cross_language_schema_imports() {
+        let d = project();
+        write(d.path(), "src/lib.rs", "pub fn run() {}");
+        write(
+            d.path(),
+            "scripts/run.lua",
+            "function run() return true end",
+        );
+        write(d.path(), "config/model.cue", "#Model: { name: string }");
+        write(
+            d.path(),
+            "schemas/base.yaml",
+            "$schema: https://json-schema.org/draft/2020-12/schema\n$anchor: User\n",
+        );
+        write(
+            d.path(),
+            "schemas/user.json",
+            r#"{"$schema":"https://json-schema.org/draft/2020-12/schema","$ref":"base.yaml#User"}"#,
+        );
+        write(
+            d.path(),
+            "charts/app/Chart.yaml",
+            "name: app\nversion: 0.1.0\n",
+        );
+        write(
+            d.path(),
+            "charts/app/templates/_helpers.tpl",
+            "{{ define \"app.name\" }}app{{ end }}",
+        );
+        write(
+            d.path(),
+            "charts/app/templates/deployment.yaml",
+            "apiVersion: apps/v1\nmetadata:\n  name: {{ include \"app.name\" . }}\n",
+        );
+
+        rebuild(d.path()).expect("rebuild multilingual graph");
+        let graph = edges(d.path());
+
+        for prefix in ["rust:", "lua:", "cue:", "json:", "yaml:", "helm3:"] {
+            assert!(
+                graph.iter().any(|edge| {
+                    edge.p == "declares_module"
+                        && edge
+                            .a
+                            .get(1)
+                            .is_some_and(|module| module.starts_with(prefix))
+                }),
+                "missing language-qualified {prefix} module"
+            );
+        }
+        assert!(graph.iter().any(|edge| {
+            edge.p == "imports"
+                && edge.a
+                    == [
+                        "json:project::schemas::user".to_string(),
+                        "yaml:project::schemas::base".to_string(),
+                    ]
+        }));
+        assert!(
+            graph.iter().any(|edge| {
+                edge.p == "declares_module"
+                    && edge.a
+                        == [
+                            "charts/app/templates/deployment.yaml".to_string(),
+                            "helm3:charts/app::templates::deployment".to_string(),
+                        ]
+            }),
+            "templated YAML ownership: {:?}",
+            graph
+                .iter()
+                .filter(|edge| edge.src.contains("deployment.yaml"))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            graph
+                .iter()
+                .filter(|edge| edge.p == "graph_definition")
+                .all(|edge| { edge.a.len() == 1 && edge.a[0].contains(':') })
+        );
     }
 
     #[test]

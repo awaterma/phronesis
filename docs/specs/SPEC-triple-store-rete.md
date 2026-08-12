@@ -2,7 +2,14 @@
 
 **Status:** Phase One implemented on `feat/structural-graph-facts`; measurements in §2.3 and §10
 **Target release:** 0.23.0
-**Revision:** 6 — first-class elements and state-bound journey evidence specified
+**Revision:** 7 — multilingual nodes, generic definitions, and ownership arbitration specified
+
+> **Revision 7 (2026-08-11)** generalizes `imports` from an intra-crate edge to
+> a static build/evaluation dependency between language-qualified graph nodes,
+> permits multiple modules in one physical file, adds generic non-callable
+> definition facts, and defines pre-dispatch ownership arbitration for embedded
+> languages such as Helm templates over YAML. These changes are required by the
+> Lua, CUE, JSON, YAML, and Helm 3 language-pack designs dated 2026-08-11.
 
 ## Summary
 
@@ -49,21 +56,23 @@ This works in the engine **today, unmodified**. It reuses the predicate index fo
 | `file_type` | `[file, kind]` | `production` \| `test` \| `example` \| `build` |
 | `defines_fn` | `[file, func]` | Fully-qualified function path defined in file |
 | `calls_api` | `[func, callee]` | Call edge to a watched API (closed watchlist, §4.3) |
-| `imports` | `[module, module]` | Intra-crate module dependency. `crate::`, `super::` and `self::` anchors all resolve to absolute module paths (§4.7) |
+| `imports` | `[module, module]` | Static build/evaluation dependency between tracked, language-qualified graph nodes. Cross-language edges require explicit dialect, manifest, trace, or project binding evidence; names or proximity alone are insufficient. |
 | `tested_by` | `[func, test_func]` | Test coverage edge (§4.4) |
-| `in_cycle` | `[module, cycle_id]` | Module participates in an import cycle (§4.5) |
-| `declares_module` | `[file, module]` | Links a file to its module, so module-keyed relations can be scoped to a file (§5.7) |
+| `in_cycle` | `[module, cycle_id]` | Graph node participates in a static build/evaluation dependency cycle (§4.5) |
+| `declares_module` | `[file, module]` | Links a file to each module it declares or contains. A file may declare zero or more modules, so file-scoped joins may bind more than once (§5.7). |
 | `edited_file` | `[file]` | The file the current call is touching, repo-relative. Not stored on disk — asserted per invocation (§5.7) |
 | `graph_file` | `[file]` | A source file known to the graph, including an otherwise-empty file (§9.1) |
 | `graph_module` | `[module]` | A language-qualified module identity (§9.1) |
 | `graph_function` | `[function]` | A callable function or method identity, including tests (§9.1) |
 | `graph_test` | `[test]` | A test function identity. Tests are also functions (§9.1) |
+| `graph_definition` | `[definition]` | A stable, named non-callable definition such as a CUE definition, schema resource, anchor, or Helm named template (§9.1) |
+| `defines` | `[file, definition]` | Links a physical file to a named non-callable definition it declares (§9.1) |
 | `element_in_file` | `[element, file]` | Exact containment used to scope any element kind to a file (§9.1) |
 | `element_in_module` | `[element, module]` | Exact containment used to roll function/test evidence up to a module (§9.1) |
 
 Provenance is **not** a relation. It is the `src` field on every stored edge (§2.1), and is never asserted into working memory.
 
-The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user.
+The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user. Revision 7's `graph_definition` and `defines` additions therefore require graph format 5: an unchanged worktree built by an older binary otherwise appears fresh while lacking the newly promised definition facts.
 
 ---
 
@@ -155,6 +164,26 @@ separator, and nothing else. Their module systems and test shapes differ, so
 a shared "generic extractor" would hide the semantics that determine whether
 an edge is trustworthy. Each extractor is written explicitly.
 
+#### 4.1.1 Dispatch and ownership arbitration
+
+Extension dispatch is insufficient when one language is embedded in files
+normally associated with another. Before per-file extraction, rebuild and
+incremental synchronization construct an ownership map from repository
+manifests and explicit graph configuration. Each physical file has exactly one
+syntax owner for a generation. Metadata consumers may still read that file,
+but only the syntax owner emits its syntax-derived subgraph.
+
+Ownership uses ordered, explicit claims. A Helm 3 chart's valid `templates/`
+boundary, for example, owns `.yaml`, `.yml`, `.tpl`, and `NOTES.txt` template
+source before generic YAML dispatch; `Chart.yaml`, `values.yaml`, and
+`values.schema.json` remain YAML/JSON syntax. The map is complete before any
+extractor runs, deterministic under traversal-order changes, and included in
+freshness. An ownership-changing manifest edit routes to `rebuild()` because
+per-file compaction cannot retract facts produced under a former owner.
+
+When two claims at the same precedence own one file, extraction skips it and
+reports `owner_ambiguous`; it never lets whichever extractor ran last win.
+
 ### 4.2 Entity naming
 
 Entities are identified by
@@ -206,6 +235,7 @@ identity scheme it was built under, as a `# format <n>` header:
 |--------|-----------------|
 | 0 | pre-versioning; bare `crate::…` |
 | 4 | `<lang>:<package>[#<target>]::<module path>` |
+| 5 | format 4 identities plus revision 7 multilingual `imports`, multi-module files, `graph_definition`, and `defines` contracts |
 
 A non-empty index whose format differs from the running binary's is reported
 as `Outdated` — distinct from `Stale`, because no file drifted and only a
@@ -401,7 +431,7 @@ Rules are ordinary Phronesis rules over the relations in §1.2 — no new syntax
   ],
   "then": {
     "action_type": "warn",
-    "params": ["Module `?module` participates in import cycle `?cycle`."]
+    "params": ["Graph node `?module` participates in static dependency cycle `?cycle`."]
   }
 }
 ```
@@ -577,6 +607,7 @@ graph_file("crates/phronesis/src/network.rs")
 graph_module("rust:phronesis::network")
 graph_function("rust:phronesis::network::fire")
 graph_test("rust:phronesis::network::tests::fire_works")
+graph_definition("cue:example.com/mod@v0::schema::#Request")
 ```
 
 Dedicated predicates are intentional. A generic
@@ -590,6 +621,14 @@ mean production callable add a
 `file_type(File, "production")` join. Future kinds such as `graph_class` and
 `graph_type` follow the same additive rule rather than creating a disjoint
 type hierarchy.
+
+`graph_definition` is the shared kind for stable, named, non-callable
+definitions. It covers CUE definitions, JSON/YAML schema resources and anchors,
+and Helm named templates. It excludes arbitrary object keys and fields:
+extractors emit it only where the hosted language assigns a stable addressable
+identity. `defines(File, Definition)` is its declaration edge, parallel to
+`defines_fn` for callables. Language-specific attributes such as "open CUE
+struct" remain syntax facts unless separately admitted to the closed set.
 
 Containment is explicit:
 

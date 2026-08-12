@@ -10,9 +10,13 @@
 
 pub mod audit;
 pub mod bindings;
+pub mod cue;
 pub mod derive;
 pub mod extract;
+pub mod helm3;
 pub mod hydrate;
+pub mod json_extractor;
+pub mod lua;
 pub mod model;
 pub mod python;
 pub mod query;
@@ -21,5 +25,6 @@ pub mod store;
 pub mod sync;
 pub mod typescript;
 pub mod unit;
+pub mod yaml;
 
 pub use model::Edge;

@@ -385,6 +385,8 @@ mod tests {
             siblings: BTreeMap::new(),
             ts: crate::graph::unit::TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         }
     }
 
@@ -599,6 +601,8 @@ mod tests {
             siblings: BTreeMap::from([("core".to_string(), "python:core".to_string())]),
             ts: crate::graph::unit::TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         };
         let out = extract_python(
             "libs/app/src/app/__init__.py",
@@ -616,6 +620,8 @@ mod tests {
             siblings: BTreeMap::from([("core".to_string(), "python:core".to_string())]),
             ts: crate::graph::unit::TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         };
         let out = extract_python(
             "libs/app/src/app/__init__.py",

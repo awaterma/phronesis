@@ -276,23 +276,23 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
         /// Comma-separated starter packs. Available: base, llm, rust, rhai,
-        /// python, typescript, swift, confidence, journey, context, structural,
-        /// none. Every selection except `none` automatically includes every
-        /// language-agnostic base pack, so select only the additional language
-        /// packs you need (e.g. "rust" or "typescript"). The `llm` pack
-        /// carries deflection rules that catch LLM-bad-behavior disclaimers
-        /// and unverified completion claims;
-        /// it is independent of language. Language packs carry only
-        /// language-specific enforcement and are deliberately NOT in `base`:
-        /// several match raw substrings gated only by path, so composing every
-        /// language at once produces cross-language false positives. The
-        /// `confidence` pack adds the commit-gating rules plus a
-        /// .phronesis/confidence.json configuration and a .phronesis/bugs.json
-        /// registry. The `journey` pack scaffolds .phronesis/journey.json for
-        /// project-defined cross-call taggers; projects add the journey_* rules
-        /// they need. The `context` pack provides bounded durable context and
-        /// static situational capsules, and replaces the generated durable.md
-        /// with a compact kernel when no durable file exists yet.
+        /// python, typescript, swift, lua, cue, json, yaml, helm3, confidence,
+        /// journey, context, structural, none. Every selection except `none`
+        /// automatically includes every language-agnostic base pack, so select
+        /// only the additional language packs you need (e.g. "rust" or "lua").
+        /// The `llm` pack carries deflection rules that catch LLM-bad-behavior
+        /// disclaimers and unverified completion claims; it is independent of
+        /// language. Language packs carry only language-specific enforcement and
+        /// are deliberately NOT in `base`: several match raw substrings gated
+        /// only by path, so composing every language at once produces cross-
+        /// language false positives. The `confidence` pack adds the commit-
+        /// gating rules plus a .phronesis/confidence.json configuration and a
+        /// .phronesis/bugs.json registry. The `journey` pack scaffolds
+        /// .phronesis/journey.json for project-defined cross-call taggers;
+        /// projects add the journey_* rules they need. The `context` pack
+        /// provides bounded durable context and static situational capsules,
+        /// and replaces the generated durable.md with a compact kernel when no
+        /// durable file exists yet.
         #[arg(long, default_value = "base")]
         packs: String,
         /// Deprecated alias for --packs. Single value; auto-composed with

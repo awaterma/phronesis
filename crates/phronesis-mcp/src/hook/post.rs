@@ -4,9 +4,10 @@ use phr::Fact;
 
 use crate::diff_extract;
 use crate::hook_facts::{
-    assert_common_facts, assert_diff_facts, assert_test_facts, assert_values_facts,
-    check_bash_command_patterns, check_content_patterns, check_missing_patterns,
-    collect_bash_command_patterns, collect_content_patterns, collect_missing_patterns,
+    assert_common_facts, assert_diff_facts, assert_language_pack_facts, assert_test_facts,
+    assert_values_facts, check_bash_command_patterns, check_content_patterns,
+    check_missing_patterns, collect_bash_command_patterns, collect_content_patterns,
+    collect_missing_patterns,
 };
 use crate::security::{self, MAX_FACT_CONTENT_BYTES, read_file_capped, resolve_safe_path};
 
@@ -338,6 +339,16 @@ async fn assert_post_content_facts(
         .await
         .map_err(|e| {
             eprintln!("phronesis: WARNING — values-fact assertion failed: {}", e);
+            e
+        })?;
+
+    assert_language_pack_facts(network, file_path, content)
+        .await
+        .map_err(|e| {
+            eprintln!(
+                "phronesis: WARNING — language-pack fact assertion failed: {}",
+                e
+            );
             e
         })?;
 

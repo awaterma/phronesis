@@ -489,6 +489,17 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
                     files: Vec::new(),
                 };
             }
+            if let Err(error) =
+                crate::hook_facts::assert_language_pack_facts(&network, &pf.path, &content).await
+            {
+                return CodexDecision {
+                    exit: 2,
+                    block_messages: vec![format!("language-pack fact assertion failed: {error}")],
+                    warn_messages: Vec::new(),
+                    additional_context: String::new(),
+                    files: Vec::new(),
+                };
+            }
         }
         let provider_event =
             codex_provider_event(payload, "apply_patch", &pf.path, "pre", &content);

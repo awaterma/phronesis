@@ -23,8 +23,34 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     "tested_by",
     "untested",
     "in_cycle",
+    // Graph-format-5 relations: multilingual dialects, entity-level
+    // definitions, and file/module membership.
+    "graph_definition",
+    "defines",
+    "element_in_file",
+    "element_in_module",
+    "graph_module",
+    "graph_function",
+    "graph_test",
+    "graph_file",
     // Not stored on disk — asserted per invocation, see `EDITED_FILE`.
     EDITED_FILE,
+    // Per-file diagnostic predicates emitted by language extractors.
+    // These allow structural rules to warn/block on concrete defects
+    // detected during extraction without needing cross-file analysis.
+    //
+    // Lua diagnostics
+    "lua_dynamic_code_load",
+    // CUE diagnostics — none currently (import resolution needs repo chart index)
+    // JSON diagnostics
+    "json_schema_unknown_dialect",
+    // YAML diagnostics
+    "yaml_duplicate_key",
+    "yaml_undefined_alias",
+    "yaml_merge_key",
+    // Helm3 diagnostics
+    "helm3_dynamic_tpl",
+    "helm3_cluster_lookup",
 ];
 
 /// The file the current tool call is touching, expressed in the graph's

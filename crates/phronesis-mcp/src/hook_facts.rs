@@ -13,6 +13,67 @@ use crate::diff_extract;
 use crate::hook::HookError;
 use crate::syntax;
 
+/// Assert language-pack diagnostics from the content currently being checked.
+/// Structural relations still come from the durable graph; this live producer
+/// covers proposed pre-check content that has not reached disk yet.
+pub(crate) async fn assert_language_pack_facts(
+    network: &ReteNetwork,
+    file_path: &str,
+    content: &str,
+) -> Result<(), HookError> {
+    use crate::graph::extract::Extracted;
+    use crate::graph::unit::{LANG_HELM3, UnitContext};
+
+    let unit = crate::graph::unit::lang_of_path(file_path)
+        .map(UnitContext::unnamed_for)
+        .unwrap_or_default();
+    let extracted = if file_path.ends_with(".lua") {
+        crate::graph::lua::extract_lua(file_path, content, &unit)
+    } else if file_path.ends_with(".json") {
+        crate::graph::json_extractor::extract_json(file_path, content, &unit)
+    } else if file_path.ends_with(".yaml") || file_path.ends_with(".yml") {
+        if content.contains("{{") && file_path.contains("/templates/") {
+            let chart_root = file_path.split_once("/templates/").map(|(root, _)| root);
+            crate::graph::helm3::extract_helm3(
+                file_path,
+                content,
+                &UnitContext::unnamed_for(LANG_HELM3),
+                chart_root,
+            )
+        } else {
+            crate::graph::yaml::extract_yaml(file_path, content, &unit)
+        }
+    } else if file_path.ends_with(".tpl") {
+        let chart_root = file_path.split_once("/templates/").map(|(root, _)| root);
+        crate::graph::helm3::extract_helm3(
+            file_path,
+            content,
+            &UnitContext::unnamed_for(LANG_HELM3),
+            chart_root,
+        )
+    } else {
+        Extracted::default()
+    };
+
+    const DIAGNOSTICS: &[&str] = &[
+        "lua_dynamic_code_load",
+        "json_schema_unknown_dialect",
+        "yaml_duplicate_key",
+        "yaml_undefined_alias",
+        "yaml_merge_key",
+        "helm3_dynamic_tpl",
+        "helm3_cluster_lookup",
+    ];
+    for edge in extracted
+        .edges
+        .into_iter()
+        .filter(|edge| DIAGNOSTICS.contains(&edge.p.as_str()))
+    {
+        network.assert_fact(edge.to_fact()).await?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn assert_diff_facts(
     network: &ReteNetwork,
     file_path: &str,

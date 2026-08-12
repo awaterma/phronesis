@@ -446,11 +446,11 @@ pub(super) fn collect_logged(
 mod tests {
     use super::*;
     use crate::hook_facts::{
-        assert_common_facts, check_content_patterns, check_missing_patterns,
-        collect_content_patterns, filter_new_or_increased_clone_counts,
+        assert_common_facts, assert_language_pack_facts, check_content_patterns,
+        check_missing_patterns, collect_content_patterns, filter_new_or_increased_clone_counts,
     };
-    use phr::Condition;
     use phr::consequence::Consequence;
+    use phr::{Action, Condition, Rule};
     use std::collections::HashMap;
 
     fn make_payload(tool_name: &str, input: serde_json::Value) -> HookPayload {
@@ -459,6 +459,70 @@ mod tests {
             tool_input: Some(input),
             tool_output: None,
         }
+    }
+
+    #[tokio::test]
+    async fn proposed_lua_content_drives_a_pack_rule_end_to_end() {
+        let network = ReteNetwork::new();
+        network
+            .add_rule(Rule {
+                id: "warn-lua-dynamic-code-load".into(),
+                priority: 10,
+                conditions: vec![Condition {
+                    predicate: "lua_dynamic_code_load".into(),
+                    args: vec!["?file".into(), "?module".into(), "?loader".into()],
+                    script: None,
+                }],
+                actions: vec![Action {
+                    action_type: "constraint_warning".into(),
+                    params: vec!["dynamic ?loader in ?file".into()],
+                }],
+            })
+            .await
+            .unwrap();
+
+        assert_language_pack_facts(&network, "scripts/bootstrap.lua", "load(payload)")
+            .await
+            .unwrap();
+        network.update_agenda().await.unwrap();
+        let actions = network.execute_all_agenda_items().unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].action_type, "constraint_warning");
+        assert_eq!(
+            actions[0].params,
+            vec!["dynamic load in scripts/bootstrap.lua"]
+        );
+    }
+
+    #[tokio::test]
+    async fn proposed_yaml_duplicate_drives_a_pack_rule_end_to_end() {
+        let network = ReteNetwork::new();
+        network
+            .add_rule(Rule {
+                id: "block-yaml-duplicate-key".into(),
+                priority: 10,
+                conditions: vec![Condition {
+                    predicate: "yaml_duplicate_key".into(),
+                    args: vec!["?file".into(), "?key".into(), "?line".into()],
+                    script: None,
+                }],
+                actions: vec![Action {
+                    action_type: "constraint_warning".into(),
+                    params: vec!["duplicate ?key in ?file".into()],
+                }],
+            })
+            .await
+            .unwrap();
+
+        assert_language_pack_facts(&network, "config/app.yaml", "name: one\nname: two\n")
+            .await
+            .unwrap();
+        network.update_agenda().await.unwrap();
+        let actions = network.execute_all_agenda_items().unwrap();
+
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].params, vec!["duplicate name in config/app.yaml"]);
     }
 
     #[test]

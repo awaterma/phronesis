@@ -3,9 +3,9 @@ use std::process;
 use phr::{Fact, ReteNetwork};
 
 use crate::hook_facts::{
-    assert_common_facts, assert_diff_facts, assert_test_facts, assert_values_facts,
-    check_bash_command_patterns, check_content_patterns, collect_bash_command_patterns,
-    collect_content_patterns,
+    assert_common_facts, assert_diff_facts, assert_language_pack_facts, assert_test_facts,
+    assert_values_facts, check_bash_command_patterns, check_content_patterns,
+    collect_bash_command_patterns, collect_content_patterns,
 };
 use crate::security;
 
@@ -321,6 +321,16 @@ async fn assert_pre_content_facts(
         .await
         .map_err(|e| {
             eprintln!("phronesis: BLOCKED — values-fact assertion failed: {}", e);
+            e
+        })?;
+
+    assert_language_pack_facts(network, file_path, content)
+        .await
+        .map_err(|e| {
+            eprintln!(
+                "phronesis: BLOCKED — language-pack fact assertion failed: {}",
+                e
+            );
             e
         })?;
 

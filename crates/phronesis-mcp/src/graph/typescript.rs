@@ -552,6 +552,8 @@ mod tests {
                 paths: BTreeMap::new(),
             },
             files: files.iter().map(|f| (*f).to_string()).collect(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         }
     }
 
