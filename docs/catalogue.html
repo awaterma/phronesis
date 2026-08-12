@@ -688,7 +688,7 @@
   </section>
 
 <!-- BEGIN GENERATED RULES -->
-<p class="catalogue-stamp">documents the default packs as of v0.26.0</p>
+<p class="catalogue-stamp">documents the default packs as of v0.28.0</p>
 <section class="pack-section" id="pack-llm">
 <h2 class="pack-name">llm pack</h2>
 <article class="rule" data-level="block" id="enforce-no-pre-existing-issue">
@@ -1286,6 +1286,81 @@
     <h3 class="rule-id">warn-ts-untested-risky-call</h3>
     <p class="rule-summary">`?func` uses a non-null assertion (`!`) and has no direct test. `!` tells the compiler a value cannot be null and produces no runtime check, so when the assumption is wrong the failure surfaces later and elsewhere, usually as a TypeError. Add a test that exercises the null case, or narrow the type so the assertion is unnecessary.</p>
     <div class="rule-body"><code>edited_file + file_type + defines_fn + calls_api + untested</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-lua">
+<h2 class="pack-name">lua pack</h2>
+<article class="rule" data-level="warn" id="warn-lua-dynamic-code-load">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">lua</span></div>
+    <h3 class="rule-id">warn-lua-dynamic-code-load</h3>
+    <p class="rule-summary">Dynamic code load (`?loader`) in Lua module `?module` — dynamic code loading bypasses static analysis and may execute untrusted code. Prefer pre-loaded modules via `require`.</p>
+    <div class="rule-body"><code>lua_dynamic_code_load + file_extension_is</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-json">
+<h2 class="pack-name">json pack</h2>
+<article class="rule" data-level="warn" id="audit-json-schema-unknown-dialect">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">json</span></div>
+    <h3 class="rule-id">audit-json-schema-unknown-dialect</h3>
+    <p class="rule-summary">JSON Schema file ?file declares `$schema` as `?$dialect` which is not a supported dialect. Only recognized dialects receive schema resolution support — check the `$schema` value or file is not a JSON Schema.</p>
+    <div class="rule-body"><code>json_schema_unknown_dialect</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-yaml">
+<h2 class="pack-name">yaml pack</h2>
+<article class="rule" data-level="warn" id="block-yaml-duplicate-key">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">yaml</span></div>
+    <h3 class="rule-id">block-yaml-duplicate-key</h3>
+    <p class="rule-summary">Duplicate key `?key` at line ?line in ?file — YAML consumers may silently choose one value or reject the document. Merge the conflicting keys into a single entry.</p>
+    <div class="rule-body"><code>yaml_duplicate_key</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="block-yaml-invalid-alias">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">yaml</span></div>
+    <h3 class="rule-id">block-yaml-invalid-alias</h3>
+    <p class="rule-summary">YAML alias `?alias` in module ?module (?file) is undefined — the anchor has not been defined earlier in this document. Define the anchor before using it.</p>
+    <div class="rule-body"><code>yaml_undefined_alias</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-yaml-legacy-merge-key">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">yaml</span></div>
+    <h3 class="rule-id">warn-yaml-legacy-merge-key</h3>
+    <p class="rule-summary">Legacy merge key `&lt;&lt;` at line ?line in ?file — the YAML merge key is a legacy feature from YAML 1.1 that can produce unexpected results with complex mappings. Consider using explicit key duplication or a dedicated configuration format.</p>
+    <div class="rule-body"><code>yaml_merge_key</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-helm3">
+<h2 class="pack-name">helm3 pack</h2>
+<article class="rule" data-level="warn" id="audit-helm3-tpl">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">helm3</span></div>
+    <h3 class="rule-id">audit-helm3-tpl</h3>
+    <p class="rule-summary">Dynamic template evaluation `?tpl_call` in ?file — the template name is computed at render time, so the static graph cannot determine which template will be invoked. Verify the dynamic call resolves correctly at render time.</p>
+    <div class="rule-body"><code>helm3_dynamic_tpl</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-helm3-lookup">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">helm3</span></div>
+    <h3 class="rule-id">audit-helm3-lookup</h3>
+    <p class="rule-summary">Helm template in ?file uses `lookup` — render depends on live cluster state and cannot be fully validated offline. Use `helm template --dry-run` with a test cluster to verify behavior.</p>
+    <div class="rule-body"><code>helm3_cluster_lookup</code></div>
   </div>
 </article>
 </section>

@@ -6,6 +6,38 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-08-12
+
+### Added
+
+- **Multilingual structural graph packs.** Opt-in `lua`, `cue`, `json`,
+  `yaml`, and `helm3` packs add language-qualified modules, definitions,
+  containment, imports, diagnostics, and starter rules to the shared graph.
+  JSON Schema references may create explicit JSON-to-YAML dependencies, and
+  Helm chart templates are distinguished from ordinary YAML ownership.
+- **Addressable graph inventory.** Graph format 5 derives `graph_file`,
+  `graph_module`, `graph_function`, `graph_test`, and `graph_definition`
+  facts, with `element_in_file` and `element_in_module` containment, so rules
+  and queries can join consistently across languages.
+- **Live language-pack hook evidence.** Claude and Codex pre/post hooks derive
+  pack diagnostics from proposed or resulting content rather than waiting for
+  a later graph rebuild. Integration tests exercise extraction through RETE
+  rule firing.
+
+### Changed
+
+- **The structural graph format is now 5.** Existing graph users must run
+  `phr-mcp graph rebuild`. Until rebuilt, structural findings continue to
+  degrade to warnings rather than block on incompatible evidence.
+- **Helm template extraction uses a purpose-built action parser.** It handles
+  trim markers, comments, quoted and raw strings, pipelines, named templates,
+  `.Values`, `.Files.Get`, `tpl`, and `lookup` without treating YAML text or
+  malformed actions as template evidence.
+- **Graph unit contexts carry Lua and CUE source indexes.** This adds public
+  fields to `UnitContext`; external struct literals must initialize them.
+  Adding the five `Pack` variants also changes numeric discriminants for later
+  variants, so consumers must not rely on `Pack as isize` values.
+
 ### Fixed
 
 - **Guidance drift discovers project and package instructions.** Consolidated
