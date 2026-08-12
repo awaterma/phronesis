@@ -12,9 +12,77 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Compute all derived edges over a complete base-edge set.
 pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
-    let mut out = untested(base);
+    let mut out = inventory(base);
+    out.extend(untested(base));
     out.extend(in_cycle(base));
     out
+}
+
+/// Materialize the positive unary inventory promised by graph format 5 and
+/// containment for callable elements.  These facts are mechanical projections
+/// of the older binary relations, so deriving them centrally keeps every
+/// language extractor on the same contract.
+pub fn inventory(base: &[Edge]) -> Vec<Edge> {
+    let mut out: BTreeSet<(String, Vec<String>)> = BTreeSet::new();
+    let mut modules_by_file: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+
+    for edge in base_edges(base, "file_type") {
+        if let Some(file) = edge.a.first() {
+            out.insert(("graph_file".into(), vec![file.clone()]));
+        }
+    }
+    for edge in base_edges(base, "declares_module") {
+        if let (Some(file), Some(module)) = (edge.a.first(), edge.a.get(1)) {
+            out.insert(("graph_file".into(), vec![file.clone()]));
+            out.insert(("graph_module".into(), vec![module.clone()]));
+            modules_by_file
+                .entry(file.as_str())
+                .or_default()
+                .insert(module.as_str());
+        }
+    }
+    for edge in base_edges(base, "defines_fn") {
+        if let (Some(file), Some(function)) = (edge.a.first(), edge.a.get(1)) {
+            out.insert(("graph_function".into(), vec![function.clone()]));
+            out.insert((
+                "element_in_file".into(),
+                vec![function.clone(), file.clone()],
+            ));
+            for module in modules_by_file.get(file.as_str()).into_iter().flatten() {
+                out.insert((
+                    "element_in_module".into(),
+                    vec![function.clone(), (*module).to_string()],
+                ));
+            }
+        }
+    }
+    for edge in base_edges(base, "tested_by") {
+        if let Some(test) = edge.a.get(1) {
+            out.insert(("graph_function".into(), vec![test.clone()]));
+            out.insert(("graph_test".into(), vec![test.clone()]));
+            if !edge.src.is_empty() {
+                out.insert((
+                    "element_in_file".into(),
+                    vec![test.clone(), edge.src.clone()],
+                ));
+                for module in modules_by_file.get(edge.src.as_str()).into_iter().flatten() {
+                    out.insert((
+                        "element_in_module".into(),
+                        vec![test.clone(), (*module).to_string()],
+                    ));
+                }
+            }
+        }
+    }
+
+    out.into_iter()
+        .map(|(predicate, args)| {
+            Edge::derived(
+                &predicate,
+                &args.iter().map(String::as_str).collect::<Vec<_>>(),
+            )
+        })
+        .collect()
 }
 
 /// Iterate base (non-derived) edges of one relation. Pre-existing derived
@@ -202,6 +270,44 @@ mod tests {
     }
     fn imports(from: &str, to: &str) -> Edge {
         Edge::base("imports", &[from, to], from)
+    }
+
+    #[test]
+    fn inventory_projects_modules_functions_tests_and_containment() {
+        let base = vec![
+            Edge::base("file_type", &["src/lib.rs", "production"], "src/lib.rs"),
+            Edge::base("declares_module", &["src/lib.rs", "rust:app"], "src/lib.rs"),
+            defines("src/lib.rs", "rust:app::run"),
+            Edge::base("file_type", &["tests/run.rs", "test"], "tests/run.rs"),
+            Edge::base(
+                "declares_module",
+                &["tests/run.rs", "rust:app#test:run"],
+                "tests/run.rs",
+            ),
+            tested("rust:app::run", "rust:app#test:run::works"),
+        ];
+
+        let out = inventory(&base);
+        assert!(
+            out.iter()
+                .any(|e| e.p == "graph_file" && e.a == ["src/lib.rs"])
+        );
+        assert!(
+            out.iter()
+                .any(|e| e.p == "graph_module" && e.a == ["rust:app"])
+        );
+        assert!(
+            out.iter()
+                .any(|e| e.p == "graph_function" && e.a == ["rust:app::run"])
+        );
+        assert!(
+            out.iter()
+                .any(|e| e.p == "graph_test" && e.a == ["rust:app#test:run::works"])
+        );
+        assert!(
+            out.iter()
+                .any(|e| { e.p == "element_in_module" && e.a == ["rust:app::run", "rust:app"] })
+        );
     }
 
     fn args_of<'a>(edges: &'a [Edge], p: &str) -> Vec<&'a Vec<String>> {

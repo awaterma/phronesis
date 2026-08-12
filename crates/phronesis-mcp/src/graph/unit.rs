@@ -31,6 +31,21 @@ pub const LANG_PYTHON: &str = "python";
 /// Language tag for the TypeScript extractor.
 pub const LANG_TYPESCRIPT: &str = "typescript";
 
+/// Language tag for the Lua extractor.
+pub const LANG_LUA: &str = "lua";
+
+/// Language tag for the CUE extractor.
+pub const LANG_CUE: &str = "cue";
+
+/// Language tag for the JSON extractor.
+pub const LANG_JSON: &str = "json";
+
+/// Language tag for the YAML extractor.
+pub const LANG_YAML: &str = "yaml";
+
+/// Language tag for the Helm3 extractor.
+pub const LANG_HELM3: &str = "helm3";
+
 /// The language that owns a source file, by extension. A file in no known
 /// language belongs to no unit — better to name nothing than to name it under
 /// whichever manifest happens to sit nearest.
@@ -39,6 +54,11 @@ pub fn lang_of_path(file_rel: &str) -> Option<&'static str> {
         Some((_, "rs")) => Some(LANG_RUST),
         Some((_, "py")) => Some(LANG_PYTHON),
         Some((_, "ts" | "tsx" | "mts" | "cts")) => Some(LANG_TYPESCRIPT),
+        Some((_, "lua")) => Some(LANG_LUA),
+        Some((_, "cue")) => Some(LANG_CUE),
+        Some((_, "json")) => Some(LANG_JSON),
+        Some((_, "yaml" | "yml")) => Some(LANG_YAML),
+        Some((_, "tpl")) => Some(LANG_HELM3),
         _ => None,
     }
 }
@@ -53,8 +73,8 @@ pub const UNNAMED: &str = "crate";
 /// inheriting Rust's.
 fn unnamed_name(lang: &str) -> &'static str {
     match lang {
-        LANG_PYTHON | LANG_TYPESCRIPT => "project",
-        _ => UNNAMED,
+        LANG_RUST => UNNAMED,
+        _ => "project",
     }
 }
 
@@ -116,6 +136,12 @@ pub struct UnitContext {
     pub ts: TsConfig,
     /// Repo-relative TypeScript sources belonging to this unit, sorted.
     pub files: Vec<String>,
+    /// Repo-relative Lua sources belonging to this unit, sorted.
+    /// Used for resolving `require` calls without disk I/O.
+    pub lua_files: Vec<String>,
+    /// Repo-relative CUE sources belonging to this unit, sorted.
+    /// Used for resolving `import` calls without disk I/O.
+    pub cue_files: Vec<String>,
 }
 
 impl UnitContext {
@@ -137,6 +163,8 @@ impl UnitContext {
             siblings: BTreeMap::new(),
             ts: TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         }
     }
 }
@@ -693,6 +721,8 @@ impl UnitMap {
                 siblings: BTreeMap::new(),
                 ts: unit.ts.clone(),
                 files: unit.files.clone(),
+                lua_files: Vec::new(),
+                cue_files: Vec::new(),
             };
         }
 
@@ -715,6 +745,8 @@ impl UnitMap {
                 siblings,
                 ts: TsConfig::default(),
                 files: Vec::new(),
+                lua_files: Vec::new(),
+                cue_files: Vec::new(),
             };
         }
 
@@ -738,6 +770,8 @@ impl UnitMap {
             siblings,
             ts: TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         }
     }
 }

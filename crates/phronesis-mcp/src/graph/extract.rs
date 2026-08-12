@@ -629,6 +629,8 @@ mod tests {
             siblings: BTreeMap::new(),
             ts: TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         };
         assert_eq!(
             module_path("crates/app/benches/sync.rs", &unit),
@@ -646,6 +648,8 @@ mod tests {
             siblings: BTreeMap::new(),
             ts: TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         };
         assert_eq!(
             module_path("crates/app/tests/helper.rs", &unit),
@@ -661,6 +665,8 @@ mod tests {
             siblings: BTreeMap::new(),
             ts: TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         };
         assert_eq!(module_path("crates/app/src/lib.rs", &unit), "rust:app");
         assert_eq!(
@@ -950,6 +956,8 @@ mod tests {
             siblings: BTreeMap::from([("core".to_string(), "rust:core-lib".to_string())]),
             ts: TsConfig::default(),
             files: Vec::new(),
+            lua_files: Vec::new(),
+            cue_files: Vec::new(),
         };
         let out = extract_rust(
             "crates/app/src/a.rs",

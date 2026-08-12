@@ -50,6 +50,11 @@ pub enum Pack {
     Journey,
     Context,
     Structural,
+    Lua,
+    Cue,
+    Json,
+    Yaml,
+    Helm3,
     None,
 }
 
@@ -71,6 +76,11 @@ impl Pack {
         Self::Journey,
         Self::Context,
         Self::Structural,
+        Self::Lua,
+        Self::Cue,
+        Self::Json,
+        Self::Yaml,
+        Self::Helm3,
         Self::None,
     ];
 
@@ -83,6 +93,11 @@ impl Pack {
             "python" | "py" => Ok(Self::Python),
             "typescript" | "ts" | "javascript" | "js" => Ok(Self::TypeScript),
             "swift" => Ok(Self::Swift),
+            "lua" => Ok(Self::Lua),
+            "cue" => Ok(Self::Cue),
+            "json" => Ok(Self::Json),
+            "yaml" | "yml" => Ok(Self::Yaml),
+            "helm3" | "helm" => Ok(Self::Helm3),
             "confidence" => Ok(Self::Confidence),
             "journey" => Ok(Self::Journey),
             "context" => Ok(Self::Context),
@@ -109,6 +124,11 @@ impl Pack {
             // rules.json. The pack's contribution is the journey.json starter
             // config + gitignore carveout, written by `write_journey_scaffold`.
             Self::Journey => json!({"rules": []}),
+            Self::Lua => lua_rules(),
+            Self::Cue => cue_rules(),
+            Self::Json => json_rules(),
+            Self::Yaml => yaml_rules(),
+            Self::Helm3 => helm3_rules(),
         }
     }
 
@@ -120,6 +140,11 @@ impl Pack {
             Self::Python => "python",
             Self::TypeScript => "typescript",
             Self::Swift => "swift",
+            Self::Lua => "lua",
+            Self::Cue => "cue",
+            Self::Json => "json",
+            Self::Yaml => "yaml",
+            Self::Helm3 => "helm3",
             Self::Confidence => "confidence",
             Self::Journey => "journey",
             Self::Context => "context",
@@ -219,7 +244,7 @@ pub fn compose_packs(packs: &[Pack]) -> Value {
 #[derive(Debug, Error)]
 pub enum InitError {
     #[error(
-        "unknown pack `{0}`; valid: base, llm, rust, rhai, python, typescript, swift, confidence, journey, context, structural, none"
+        "unknown pack `{0}`; valid: base, llm, rust, rhai, python, typescript, swift, lua, cue, json, yaml, helm3, confidence, journey, context, structural, none"
     )]
     UnknownPack(String),
     #[error("invalid pack selection: {0}")]
@@ -2384,6 +2409,135 @@ fn swift_rules() -> Value {
     })
 }
 
+/// Lua language pack rules.
+///
+/// Warning-first set of syntax rules (spec §Starter pack).
+/// Primary value is graph participation — mixed repos can query Lua
+/// definitions, tests, and imports alongside every other language.
+fn lua_rules() -> Value {
+    json!({
+        "rules": [
+            {
+                "id": "warn-lua-dynamic-code-load",
+                "phase": "pre",
+                "priority": 10,
+                "audit": true,
+                "when": [
+                    {"lua_dynamic_code_load": ["?file", "?module", "?loader"]},
+                    {"file_extension_is": "lua"}
+                ],
+                "then": {
+                    "warn": "Dynamic code load (`?loader`) in Lua module `?module` — dynamic code loading bypasses static analysis and may execute untrusted code. Prefer pre-loaded modules via `require`."
+                }
+            }
+        ]
+    })
+}
+
+/// CUE language pack rules.
+///
+/// Low-noise starter set (spec §Starter pack). CUE is a constraint language;
+/// graph claims must use its semantics rather than force it into an imperative
+/// language shape. Currently ships no rules because import resolution requires
+/// repo chart index and the other diagnostic predicates are deferred.
+fn cue_rules() -> Value {
+    json!({"rules": []})
+}
+
+/// JSON language pack rules.
+///
+/// Syntax-safe, low-noise starter rules. Arbitrary application JSON has no
+/// import or module system, so rules only fire when schema keywords identify
+/// a document as a JSON Schema resource (spec §Starter pack).
+fn json_rules() -> Value {
+    json!({
+        "rules": [
+            {
+                "id": "audit-json-schema-unknown-dialect",
+                "phase": "audit",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"json_schema_unknown_dialect": ["?file", "?module", "?dialect"]}
+                ],
+                "then": {"warn": "JSON Schema file ?file declares `$schema` as `?$dialect` which is not a supported dialect. Only recognized dialects receive schema resolution support — check the `$schema` value or file is not a JSON Schema."}
+            }
+        ]
+    })
+}
+
+/// YAML language pack rules.
+///
+/// Conservative, syntax-safe starter rules. Generic YAML has no cross-file
+/// import system, so rules focus on anchors, aliases, and unsafe tags
+/// (spec §Starter pack).
+fn yaml_rules() -> Value {
+    json!({
+        "rules": [
+            {
+                "id": "block-yaml-duplicate-key",
+                "phase": "pre",
+                "priority": 10,
+                "audit": true,
+                "when": [
+                    {"yaml_duplicate_key": ["?file", "?key", "?line"]}
+                ],
+                "then": {"warn": "Duplicate key `?key` at line ?line in ?file — YAML consumers may silently choose one value or reject the document. Merge the conflicting keys into a single entry."}
+            },
+            {
+                "id": "block-yaml-invalid-alias",
+                "phase": "pre",
+                "priority": 10,
+                "audit": true,
+                "when": [
+                    {"yaml_undefined_alias": ["?file", "?module", "?alias"]}
+                ],
+                "then": {"warn": "YAML alias `?alias` in module ?module (?file) is undefined — the anchor has not been defined earlier in this document. Define the anchor before using it."}
+            },
+            {
+                "id": "warn-yaml-legacy-merge-key",
+                "phase": "post",
+                "priority": 10,
+                "when": [
+                    {"yaml_merge_key": ["?file", "?line"]}
+                ],
+                "then": {"warn": "Legacy merge key `<<` at line ?line in ?file — the YAML merge key is a legacy feature from YAML 1.1 that can produce unexpected results with complex mappings. Consider using explicit key duplication or a dedicated configuration format."}
+            }
+        ]
+    })
+}
+
+/// Helm 3 language pack rules.
+///
+/// High-value chart defect detection without invoking a cluster (spec §Starter pack).
+/// Rules target template source files under valid chart `templates/` directories.
+fn helm3_rules() -> Value {
+    json!({
+        "rules": [
+            {
+                "id": "audit-helm3-tpl",
+                "phase": "audit",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"helm3_dynamic_tpl": ["?file", "?module", "?tpl_call"]}
+                ],
+                "then": {"warn": "Dynamic template evaluation `?tpl_call` in ?file — the template name is computed at render time, so the static graph cannot determine which template will be invoked. Verify the dynamic call resolves correctly at render time."}
+            },
+            {
+                "id": "audit-helm3-lookup",
+                "phase": "audit",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"helm3_cluster_lookup": ["?file", "?module"]}
+                ],
+                "then": {"warn": "Helm template in ?file uses `lookup` — render depends on live cluster state and cannot be fully validated offline. Use `helm template --dry-run` with a test cluster to verify behavior."}
+            }
+        ]
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2405,6 +2559,18 @@ mod tests {
     #[test]
     fn parses_swift_pack() {
         assert_eq!(Pack::parse("swift").unwrap(), Pack::Swift);
+    }
+
+    #[test]
+    fn parses_new_language_packs() {
+        assert_eq!(Pack::parse("lua").unwrap(), Pack::Lua);
+        assert_eq!(Pack::parse("LUA").unwrap(), Pack::Lua);
+        assert_eq!(Pack::parse("cue").unwrap(), Pack::Cue);
+        assert_eq!(Pack::parse("json").unwrap(), Pack::Json);
+        assert_eq!(Pack::parse("yaml").unwrap(), Pack::Yaml);
+        assert_eq!(Pack::parse("yml").unwrap(), Pack::Yaml);
+        assert_eq!(Pack::parse("helm3").unwrap(), Pack::Helm3);
+        assert_eq!(Pack::parse("helm").unwrap(), Pack::Helm3);
     }
 
     /// The Rhai pack carries the two formerly-rust-bundled rules with
