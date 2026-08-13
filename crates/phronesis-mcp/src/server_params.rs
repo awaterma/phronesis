@@ -112,6 +112,8 @@ pub struct AssertFactParams {
     pub id: String,
     pub predicate: String,
     pub args: Vec<String>,
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

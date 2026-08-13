@@ -107,6 +107,7 @@ pub async fn audit_graph_rules(root: &Path, rules: &[Rule]) -> Vec<GraphHit> {
                 predicate: EDITED_FILE.to_string(),
                 args: vec![file],
                 timestamp: 0,
+                source: Some("graph:context".to_string()),
             })
             .await;
     }

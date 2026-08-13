@@ -155,6 +155,11 @@ impl SyntaxFacts {
     /// `file_path` is the first arg of every fact (matches existing convention).
     pub fn all_facts(&self, file_path: &str) -> Vec<Fact> {
         let mut out = Vec::new();
+        let language = std::path::Path::new(file_path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("unknown");
+        let source = Some(format!("ast:{language}"));
 
         for (i, name) in self.functions_returning_result_string.iter().enumerate() {
             out.push(Fact {
@@ -162,6 +167,7 @@ impl SyntaxFacts {
                 predicate: "function_returns_result_string".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -176,6 +182,7 @@ impl SyntaxFacts {
                     ty.clone(),
                 ],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -185,6 +192,7 @@ impl SyntaxFacts {
                 predicate: "function_param_is_vec_ref".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), param.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -194,6 +202,7 @@ impl SyntaxFacts {
                 predicate: "function_param_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -203,6 +212,7 @@ impl SyntaxFacts {
                 predicate: "function_clone_count".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -212,6 +222,7 @@ impl SyntaxFacts {
                 predicate: "function_clone_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -221,6 +232,7 @@ impl SyntaxFacts {
                 predicate: "function_let_binding_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -230,6 +242,7 @@ impl SyntaxFacts {
                 predicate: "function_let_mut_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -239,6 +252,7 @@ impl SyntaxFacts {
                 predicate: "pub_fn_without_doc_comment".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -248,6 +262,7 @@ impl SyntaxFacts {
                 predicate: "test_without_assertion".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -257,6 +272,7 @@ impl SyntaxFacts {
                 predicate: "function_is_public".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -266,6 +282,7 @@ impl SyntaxFacts {
                 predicate: "function_is_async".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -279,6 +296,7 @@ impl SyntaxFacts {
                     trait_name.clone(),
                 ],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -288,6 +306,7 @@ impl SyntaxFacts {
                 predicate: "engine_eval_string_literal".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -297,6 +316,7 @@ impl SyntaxFacts {
                 predicate: "function_uses_force_unwrap".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -306,6 +326,7 @@ impl SyntaxFacts {
                 predicate: "function_throws".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -315,6 +336,7 @@ impl SyntaxFacts {
                 predicate: "function_is_async".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -324,6 +346,7 @@ impl SyntaxFacts {
                 predicate: "python_bare_except".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -333,6 +356,7 @@ impl SyntaxFacts {
                 predicate: "python_mutable_default_arg".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), param.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -342,6 +366,7 @@ impl SyntaxFacts {
                 predicate: "python_function_param_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -351,6 +376,7 @@ impl SyntaxFacts {
                 predicate: "python_function_missing_docstring".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -360,6 +386,7 @@ impl SyntaxFacts {
                 predicate: "python_print_call".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -377,6 +404,7 @@ impl SyntaxFacts {
                     callee.clone(),
                 ],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -386,6 +414,7 @@ impl SyntaxFacts {
                 predicate: "python_exception_handler_passes".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), exc.clone()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -395,6 +424,7 @@ impl SyntaxFacts {
                 predicate: "ts_explicit_any".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -404,6 +434,7 @@ impl SyntaxFacts {
                 predicate: "ts_non_null_assertion".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -416,6 +447,7 @@ impl SyntaxFacts {
                     self.ts_suppression_comment_count.to_string(),
                 ],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 
@@ -425,6 +457,7 @@ impl SyntaxFacts {
                 predicate: "ts_function_param_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
+                source: source.clone(),
             });
         }
 

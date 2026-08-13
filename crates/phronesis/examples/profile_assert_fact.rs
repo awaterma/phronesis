@@ -33,6 +33,7 @@ fn fact(id: impl Into<String>, index: usize) -> Fact {
         predicate: format!("predicate_{}", index % 5),
         args: vec![format!("value-{index}")],
         timestamp: 0,
+        source: None,
     }
 }
 

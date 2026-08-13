@@ -1159,6 +1159,7 @@ mod fire_all_consequences_tests {
             predicate: "p".to_string(),
             args: vec!["hello".to_string()],
             timestamp: 0,
+            source: None,
         })
         .await
         .unwrap();
@@ -1224,6 +1225,7 @@ mod fire_all_consequences_tests {
                 predicate: p.to_string(),
                 args: vec!["v".to_string()],
                 timestamp: 0,
+                source: None,
             })
             .await
             .unwrap();

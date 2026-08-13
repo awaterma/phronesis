@@ -460,6 +460,7 @@ impl EpistemeMcp {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            source: Some(params.source.unwrap_or_else(|| "mcp".to_string())),
         };
         network.assert_fact(fact).await.map_err(Self::err)?;
         Self::ok_text(format!("Fact '{}' asserted", params.id))
@@ -807,6 +808,7 @@ impl EpistemeMcp {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs(),
+                source: Some("context".to_string()),
             })
             .await
             .map_err(Self::err)?;
@@ -1620,6 +1622,7 @@ mod list_facts_query_tests {
             predicate: predicate.into(),
             args: args.iter().map(|s| s.to_string()).collect(),
             timestamp: 0,
+            source: None,
         }
     }
 

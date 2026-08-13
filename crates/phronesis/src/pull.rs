@@ -164,6 +164,7 @@ impl Consequence {
                 rule_id: context.rule_id,
                 bound_facts: context.bound_facts,
                 bindings: Default::default(),
+                fact_sources: context.fact_sources,
             },
         })
     }
@@ -175,6 +176,7 @@ pub struct RuleFiringContext {
     pub rule_id: crate::RuleId,
     pub predicate: String,
     pub bound_facts: Vec<String>,
+    pub fact_sources: std::collections::BTreeMap<String, String>,
     pub kind: ConsequenceKind,
 }
 
@@ -189,8 +191,18 @@ impl RuleFiringContext {
             rule_id: rule_id.into(),
             predicate: predicate.into(),
             bound_facts,
+            fact_sources: Default::default(),
             kind,
         }
+    }
+
+    /// Attach stable source labels for the bound fact IDs.
+    pub fn with_fact_sources(
+        mut self,
+        fact_sources: std::collections::BTreeMap<String, String>,
+    ) -> Self {
+        self.fact_sources = fact_sources;
+        self
     }
 }
 

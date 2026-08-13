@@ -58,14 +58,18 @@ impl Edge {
         format!("graph:{}:{}", self.p, self.a.join("\u{1f}"))
     }
 
-    /// Hydrate into an engine fact. Provenance is compaction metadata and is
-    /// deliberately not asserted into working memory (§2.1).
+    /// Hydrate into an engine fact while retaining the bounded graph producer.
     pub fn to_fact(&self) -> Fact {
         Fact {
             id: self.fact_id(),
             predicate: self.p.clone(),
             args: self.a.clone(),
             timestamp: 0,
+            source: Some(if self.src.is_empty() {
+                "graph:structural".to_string()
+            } else {
+                format!("graph:{}", self.src)
+            }),
         }
     }
 }
@@ -142,10 +146,11 @@ mod tests {
     }
 
     #[test]
-    fn provenance_is_not_asserted_into_working_memory() {
+    fn graph_source_is_metadata_not_a_relation_argument() {
         let fact = Edge::base("defines_fn", &["src/f.rs", "crate::f"], "src/f.rs").to_fact();
         assert!(!fact.args.contains(&"src/f.rs".to_string()) || fact.args.len() == 2);
         assert_eq!(fact.args.len(), 2, "src must not be appended to args");
+        assert_eq!(fact.source.as_deref(), Some("graph:src/f.rs"));
     }
 
     #[test]

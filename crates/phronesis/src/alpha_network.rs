@@ -35,6 +35,7 @@ mod tests {
             predicate: "same".to_string(),
             args: vec!["left".to_string(), "right".to_string()],
             timestamp: 0,
+            source: None,
         });
 
         assert!(matches!(

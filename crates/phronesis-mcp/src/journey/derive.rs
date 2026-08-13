@@ -590,6 +590,7 @@ async fn emit_occurrence(network: &ReteNetwork, context: &WindowContext<'_>, sca
                     predicate: "journey_occurrence".to_string(),
                     args: vec![sel.clone(), win.clone()],
                     timestamp: 0,
+                    source: Some("journey".to_string()),
                 })
                 .await;
             // Avoid unbounded blow-up if windows are degenerate; the hard
@@ -621,6 +622,7 @@ async fn emit_count(network: &ReteNetwork, context: &WindowContext<'_>, scan: &R
                 predicate: "journey_count".to_string(),
                 args: vec![sel.clone(), win.clone(), count.to_string()],
                 timestamp: 0,
+                source: Some("journey".to_string()),
             })
             .await;
     }
@@ -642,6 +644,7 @@ async fn emit_seen(network: &ReteNetwork, context: &WindowContext<'_>, scan: &Ru
                 predicate: "journey_seen".to_string(),
                 args: vec![sel.clone(), win.clone()],
                 timestamp: 0,
+                source: Some("journey".to_string()),
             })
             .await;
     }
@@ -672,6 +675,7 @@ async fn emit_since_ge(network: &ReteNetwork, records: &[JournalRecord], scan: &
                     predicate: "journey_since_ge".to_string(),
                     args: vec![sel.clone(), k.to_string()],
                     timestamp: 0,
+                    source: Some("journey".to_string()),
                 })
                 .await;
         }
@@ -702,6 +706,7 @@ async fn emit_distinct(network: &ReteNetwork, context: &WindowContext<'_>, scan:
                 predicate: "journey_distinct".to_string(),
                 args: vec![field.clone(), win.clone(), seen.len().to_string()],
                 timestamp: 0,
+                source: Some("journey".to_string()),
             })
             .await;
     }
@@ -735,6 +740,7 @@ async fn emit_filtered_since_ge(network: &ReteNetwork, records: &[JournalRecord]
                     predicate: "journey_filtered_since_ge".to_string(),
                     args: vec![target.clone(), counted.clone(), k.to_string()],
                     timestamp: 0,
+                    source: Some("journey".to_string()),
                 })
                 .await;
         }

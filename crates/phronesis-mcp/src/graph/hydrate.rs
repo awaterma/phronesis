@@ -204,6 +204,7 @@ pub fn hydrate(root: &Path, rules: &[Rule], edited_file: Option<&str>) -> Hydrat
             predicate: EDITED_FILE.to_string(),
             args: vec![rel],
             timestamp: 0,
+            source: Some("graph:context".to_string()),
         });
     }
 

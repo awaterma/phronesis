@@ -294,6 +294,7 @@ async fn assert_post_content_facts(
                 predicate: "file_content".to_string(),
                 args: vec![content.to_string()],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await
             .map_err(|e| {

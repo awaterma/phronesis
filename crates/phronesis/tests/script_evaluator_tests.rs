@@ -12,12 +12,14 @@ fn facts_contain_basic_match() {
             predicate: "greet".to_string(),
             args: vec!["alice".to_string()],
             timestamp: 0,
+            source: None,
         },
         Fact {
             id: "2".to_string(),
             predicate: "farewell".to_string(),
             args: vec!["bob".to_string()],
             timestamp: 0,
+            source: None,
         },
     ];
     let bindings = HashMap::new();
@@ -35,6 +37,7 @@ fn facts_contain_no_match() {
         predicate: "greet".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     }];
     let bindings = HashMap::new();
 
@@ -51,6 +54,7 @@ fn facts_contain_wildcard_match() {
         predicate: "greet".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     }];
     let bindings = HashMap::new();
 
@@ -67,6 +71,7 @@ fn facts_contain_negation() {
         predicate: "greet".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     }];
     let bindings = HashMap::new();
 
@@ -84,18 +89,21 @@ fn facts_count_basic() {
             predicate: "greet".to_string(),
             args: vec!["alice".to_string()],
             timestamp: 0,
+            source: None,
         },
         Fact {
             id: "2".to_string(),
             predicate: "greet".to_string(),
             args: vec!["bob".to_string()],
             timestamp: 0,
+            source: None,
         },
         Fact {
             id: "3".to_string(),
             predicate: "greet".to_string(),
             args: vec!["carol".to_string()],
             timestamp: 0,
+            source: None,
         },
     ];
     let bindings = HashMap::new();
@@ -114,12 +122,14 @@ fn facts_count_with_wildcard() {
             predicate: "greet".to_string(),
             args: vec!["alice".to_string()],
             timestamp: 0,
+            source: None,
         },
         Fact {
             id: "2".to_string(),
             predicate: "farewell".to_string(),
             args: vec!["alice".to_string()],
             timestamp: 0,
+            source: None,
         },
     ];
     let bindings = HashMap::new();
@@ -138,12 +148,14 @@ fn facts_count_comparison_operators() {
             predicate: "greet".to_string(),
             args: vec!["alice".to_string()],
             timestamp: 0,
+            source: None,
         },
         Fact {
             id: "2".to_string(),
             predicate: "greet".to_string(),
             args: vec!["bob".to_string()],
             timestamp: 0,
+            source: None,
         },
     ];
     let bindings = HashMap::new();
@@ -176,6 +188,7 @@ fn variable_substitution() {
         predicate: "greet".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     }];
     let mut bindings = HashMap::new();
     bindings.insert("?name".to_string(), "alice".to_string());

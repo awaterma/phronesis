@@ -23,7 +23,7 @@
 //! `docs/research/episteme-extraction.md`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::ids::RuleId;
 
@@ -99,6 +99,9 @@ pub enum Provenance {
         /// the rule definition.
         #[serde(default)]
         bindings: HashMap<String, String>,
+        /// Source labels for attributed bound facts, keyed by fact ID.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        fact_sources: BTreeMap<String, String>,
     },
 
     /// Returned by a deterministic lookup tool. `tool` is a stable
@@ -127,6 +130,9 @@ pub enum Provenance {
         /// See [`Provenance::RuleFiring`]'s `bindings` field for semantics.
         #[serde(default)]
         bindings: HashMap<String, String>,
+        /// Source labels for attributed bound facts, keyed by fact ID.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        fact_sources: BTreeMap<String, String>,
         tool: String,
         schema_version: u8,
     },

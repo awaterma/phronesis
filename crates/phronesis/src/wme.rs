@@ -181,3 +181,33 @@ impl Condition {
         existing_bindings.can_bind(self, fact)
     }
 }
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+
+    #[test]
+    fn duplicate_assertion_keeps_first_source() {
+        let mut manager = WmeManager::new();
+        let fact = Fact {
+            id: "f1".to_string(),
+            predicate: "p".to_string(),
+            args: vec!["a".to_string()],
+            timestamp: 0,
+            source: Some("graph:rust".to_string()),
+        };
+        manager
+            .assert(WorkingMemoryElement::new(fact.clone()))
+            .unwrap();
+        let mut duplicate = fact;
+        duplicate.source = Some("mcp".to_string());
+        manager
+            .assert(WorkingMemoryElement::new(duplicate))
+            .unwrap();
+
+        assert_eq!(
+            manager.get("f1").and_then(|wme| wme.fact.source.as_deref()),
+            Some("graph:rust")
+        );
+    }
+}

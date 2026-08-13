@@ -95,6 +95,7 @@ pub(crate) async fn assert_diff_facts(
                     predicate: predicate.to_string(),
                     args: vec![file_path.to_string(), item.clone()],
                     timestamp: 0,
+                    source: Some(format!("diff:{predicate}")),
                 })
                 .await?;
         }
@@ -215,6 +216,7 @@ pub(crate) async fn assert_test_facts(
                 predicate: predicate.to_string(),
                 args: vec![name.clone()],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await?;
     }
@@ -268,18 +270,21 @@ pub(crate) async fn assert_common_facts(
             predicate: "file_path".to_string(),
             args: vec![file_path.to_string()],
             timestamp: 0,
+            source: Some("hook".to_string()),
         },
         Fact {
             id: "hook_phase".to_string(),
             predicate: "hook_phase".to_string(),
             args: vec![phase.to_string()],
             timestamp: 0,
+            source: Some("hook".to_string()),
         },
         Fact {
             id: "change_type".to_string(),
             predicate: "change_type".to_string(),
             args: vec![tool_name.to_lowercase()],
             timestamp: 0,
+            source: Some("hook".to_string()),
         },
     ];
 
@@ -292,6 +297,7 @@ pub(crate) async fn assert_common_facts(
                     predicate: "file_path_matches".to_string(),
                     args: vec![part.to_string()],
                     timestamp: 0,
+                    source: Some("hook".to_string()),
                 })
                 .await?;
         }
@@ -310,6 +316,7 @@ pub(crate) async fn assert_common_facts(
                 predicate: "file_extension_is".to_string(),
                 args: vec![ext],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await?;
     }
@@ -329,6 +336,7 @@ pub(crate) async fn assert_common_facts(
                 predicate: cf.predicate.to_string(),
                 args: cf.args,
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await?;
     }
@@ -359,6 +367,7 @@ pub(crate) async fn check_content_patterns(
                     predicate: "new_content_contains".to_string(),
                     args: vec![pattern.clone()],
                     timestamp: 0,
+                    source: Some("hook".to_string()),
                 })
                 .await?;
         }
@@ -401,6 +410,7 @@ pub(crate) async fn check_bash_command_patterns(
                     predicate: "bash_command_matches".to_string(),
                     args: vec![pattern.clone()],
                     timestamp: 0,
+                    source: Some("hook".to_string()),
                 })
                 .await?;
         }
@@ -476,6 +486,7 @@ pub(crate) async fn check_missing_patterns(
                     predicate: "file_missing_pattern".to_string(),
                     args: vec![pattern.clone()],
                     timestamp: 0,
+                    source: Some("hook".to_string()),
                 })
                 .await?;
         }

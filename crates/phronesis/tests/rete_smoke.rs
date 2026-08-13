@@ -35,6 +35,7 @@ fn greet_fact(who: &str, id: &str) -> Fact {
         predicate: "greet".to_string(),
         args: vec![who.to_string()],
         timestamp: 0,
+        source: None,
     }
 }
 
@@ -99,6 +100,7 @@ async fn non_matching_fact_produces_no_action() {
         predicate: "sneeze".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     };
     network.assert_fact(fact).await.unwrap();
 
@@ -205,6 +207,7 @@ mod token_merge_tests {
                     predicate: "test".to_string(),
                     args: vec![],
                     timestamp: 0,
+                    source: None,
                 }),
                 &Bindings::new(),
             )
@@ -234,6 +237,7 @@ mod token_conditions_match_tests {
             predicate: "greet".to_string(),
             args: vec!["alice".to_string()],
             timestamp: 0,
+            source: None,
         };
 
         let bindings = Bindings::new();
@@ -253,6 +257,7 @@ mod token_conditions_match_tests {
             predicate: "greet".to_string(),
             args: vec!["alice".to_string(), "bob".to_string()],
             timestamp: 0,
+            source: None,
         };
 
         let bindings = Bindings::new();
@@ -275,6 +280,7 @@ mod token_conditions_match_tests {
             predicate: "greet".to_string(),
             args: vec!["alice".to_string(), "bob".to_string()],
             timestamp: 0,
+            source: None,
         };
 
         let bindings = Bindings::new();

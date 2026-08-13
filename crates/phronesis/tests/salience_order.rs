@@ -28,6 +28,7 @@ fn fact(id: &str, pred: &str) -> Fact {
         predicate: pred.into(),
         args: vec!["v".into()],
         timestamp: 0,
+        source: None,
     }
 }
 

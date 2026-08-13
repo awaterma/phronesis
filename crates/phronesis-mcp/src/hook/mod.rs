@@ -277,6 +277,7 @@ pub(crate) async fn assert_pack_marker_facts(network: &ReteNetwork, project_root
                 predicate: marker.predicate.to_string(),
                 args: marker.args,
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await
         {
@@ -363,6 +364,7 @@ pub(crate) async fn assert_confidence_signals(network: &ReteNetwork) {
                 predicate: fact.predicate.to_string(),
                 args: fact.args,
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await;
     }
@@ -423,6 +425,7 @@ pub(super) async fn assert_cargo_workspace_facts(network: &ReteNetwork, content:
                 predicate: "cargo_command_lacks_workspace".to_string(),
                 args: vec![cmd],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await
             .ok();
@@ -875,6 +878,7 @@ mod tests {
                 rule_id: "rust-error-thiserror-for-libraries".into(),
                 bound_facts: vec![],
                 bindings,
+                fact_sources: Default::default(),
             },
         };
 

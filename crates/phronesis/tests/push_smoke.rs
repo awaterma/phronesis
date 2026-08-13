@@ -61,6 +61,7 @@ async fn full_push_loop_produces_actor_text() {
         predicate: "greet".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     };
     network.assert_fact(fact).await.unwrap();
     network.update_agenda().await.unwrap();

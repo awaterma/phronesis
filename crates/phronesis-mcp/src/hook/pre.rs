@@ -262,6 +262,7 @@ async fn assert_pre_content_facts(
             predicate: "new_content".to_string(),
             args: vec![content.to_string()],
             timestamp: 0,
+            source: Some("hook".to_string()),
         })
         .await
         .map_err(|e| {

@@ -159,6 +159,7 @@ fn action_to_request(action: &Action) -> serde_json::Value {
 struct LookupConsequenceContext<'a> {
     rule_id: &'a str,
     bound_facts: &'a [String],
+    fact_sources: &'a std::collections::BTreeMap<String, String>,
 }
 
 fn make_consequence(
@@ -175,6 +176,7 @@ fn make_consequence(
             rule_id: context.rule_id.into(),
             bound_facts: context.bound_facts.to_vec(),
             bindings: Default::default(),
+            fact_sources: context.fact_sources.clone(),
             tool: tool.name().to_string(),
             schema_version: tool.schema_version(),
         },
@@ -209,9 +211,27 @@ pub fn invoke_rule_driven_lookups(
     actions: Vec<Action>,
     registry: &LookupRegistry,
 ) -> (Vec<Consequence>, Vec<Action>) {
+    invoke_rule_driven_lookups_with_sources(
+        rule_id,
+        bound_facts,
+        &Default::default(),
+        actions,
+        registry,
+    )
+}
+
+/// Lenient rule-driven lookup routing with bound-fact source provenance.
+pub fn invoke_rule_driven_lookups_with_sources(
+    rule_id: &str,
+    bound_facts: &[String],
+    fact_sources: &std::collections::BTreeMap<String, String>,
+    actions: Vec<Action>,
+    registry: &LookupRegistry,
+) -> (Vec<Consequence>, Vec<Action>) {
     let context = LookupConsequenceContext {
         rule_id,
         bound_facts,
+        fact_sources,
     };
     let mut consequences = Vec::new();
     let mut remaining = Vec::new();
@@ -256,9 +276,27 @@ pub fn try_invoke_rule_driven_lookups(
     actions: Vec<Action>,
     registry: &LookupRegistry,
 ) -> Result<(Vec<Consequence>, Vec<Action>), ToolInvocationError> {
+    try_invoke_rule_driven_lookups_with_sources(
+        rule_id,
+        bound_facts,
+        &Default::default(),
+        actions,
+        registry,
+    )
+}
+
+/// Strict rule-driven lookup routing with bound-fact source provenance.
+pub fn try_invoke_rule_driven_lookups_with_sources(
+    rule_id: &str,
+    bound_facts: &[String],
+    fact_sources: &std::collections::BTreeMap<String, String>,
+    actions: Vec<Action>,
+    registry: &LookupRegistry,
+) -> Result<(Vec<Consequence>, Vec<Action>), ToolInvocationError> {
     let context = LookupConsequenceContext {
         rule_id,
         bound_facts,
+        fact_sources,
     };
     let mut consequences = Vec::new();
     let mut remaining = Vec::new();

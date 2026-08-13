@@ -18,6 +18,9 @@ pub struct Fact {
     pub args: Vec<String>,
     /// Timestamp when the fact was created
     pub timestamp: u64,
+    /// Stable label identifying the subsystem that produced this fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// A condition in a rule
@@ -132,6 +135,27 @@ impl PerformanceStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fact_serialization_roundtrips_with_source() {
+        let fact = Fact {
+            id: "f1".to_string(),
+            predicate: "defines".to_string(),
+            args: vec!["module".to_string(), "item".to_string()],
+            timestamp: 0,
+            source: Some("graph:rust".to_string()),
+        };
+        let json = serde_json::to_string(&fact).unwrap();
+        let restored: Fact = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.source.as_deref(), Some("graph:rust"));
+    }
+
+    #[test]
+    fn fact_deserializes_without_source() {
+        let restored: Fact =
+            serde_json::from_str(r#"{"id":"f1","predicate":"p","args":[],"timestamp":0}"#).unwrap();
+        assert_eq!(restored.source, None);
+    }
 
     #[test]
     fn new_starts_at_zero() {

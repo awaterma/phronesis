@@ -458,6 +458,7 @@ fn provenance_serializes_with_expected_source_tag() {
         rule_id: "r".into(),
         bound_facts: vec!["f1".into()],
         bindings: Default::default(),
+        fact_sources: Default::default(),
         tool: "t".into(),
         schema_version: 1,
     };

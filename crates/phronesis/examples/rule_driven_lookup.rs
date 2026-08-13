@@ -98,6 +98,7 @@ async fn main() -> anyhow::Result<()> {
         predicate: "card_drawn".to_string(),
         args: vec!["ace_spades".to_string()],
         timestamp: 0,
+        source: None,
     };
     println!("\nAsserting fact: card_drawn(ace_spades)");
     network

@@ -953,6 +953,7 @@ async fn assert_new_content(
             predicate: "new_content".to_string(),
             args: vec![content.to_string()],
             timestamp: 0,
+            source: Some("hook".to_string()),
         })
         .await
 }
@@ -1039,6 +1040,7 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
         predicate: "file_path".to_string(),
         args: vec![file_path.to_string()],
         timestamp: 0,
+        source: Some("hook".to_string()),
     });
     for part in file_path.split('/') {
         if !part.is_empty() {
@@ -1047,6 +1049,7 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
                 predicate: "file_path_matches".to_string(),
                 args: vec![part.to_string()],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             });
         }
     }
