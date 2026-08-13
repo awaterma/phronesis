@@ -14,8 +14,30 @@ use std::collections::{BTreeMap, BTreeSet};
 pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
     let mut out = inventory(base);
     out.extend(data_flows_to(base));
+    out.extend(configuration_lifecycle_gaps(base));
     out.extend(untested(base));
     out.extend(in_cycle(base));
+    out
+}
+
+/// Closed-world lifecycle evidence for project-specific policy. These facts
+/// are derived centrally because RETE conditions intentionally have no
+/// negation-as-failure. Starter packs do not warn on them: deployment outputs
+/// and hand-authored configuration make the policy project-dependent.
+pub fn configuration_lifecycle_gaps(base: &[Edge]) -> Vec<Edge> {
+    let generated = base_edges(base, "generates")
+        .filter_map(|edge| edge.a.get(1).map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let consumed = base_edges(base, "consumes_data")
+        .filter_map(|edge| edge.a.get(1).map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let mut out = Vec::new();
+    for artifact in generated.difference(&consumed) {
+        out.push(Edge::derived("generated_without_consumer", &[artifact]));
+    }
+    for artifact in consumed.difference(&generated) {
+        out.push(Edge::derived("consumed_without_producer", &[artifact]));
+    }
     out
 }
 
@@ -530,6 +552,31 @@ mod tests {
                 "json:project::config::manifest".to_string(),
                 "python:app::config::load".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn configuration_lifecycle_gaps_are_derived_without_policy() {
+        let base = vec![
+            Edge::base(
+                "generates",
+                &["cue:app::export", "yaml:app::unused"],
+                "graph.toml",
+            ),
+            Edge::base(
+                "consumes_data",
+                &["rust:app::load", "json:app::hand_authored"],
+                "graph.toml",
+            ),
+        ];
+        let derived = derive_all(&base);
+        assert_eq!(
+            args_of(&derived, "generated_without_consumer")[0],
+            &["yaml:app::unused".to_string()]
+        );
+        assert_eq!(
+            args_of(&derived, "consumed_without_producer")[0],
+            &["json:app::hand_authored".to_string()]
         );
     }
 

@@ -24,7 +24,7 @@ Revision 2 corrects the first implementation before release. It makes package
 identity and repository-wide import resolution normative, replaces the broad
 line regex with a comment/string-aware structural scan, and specifies explicit
 and narrowly inferred CUE-to-data-to-Rust contracts. Existing format-5 graphs
-must not be mixed with these identities; this revision requires graph format 7.
+must not be mixed with these identities; this revision requires graph format 8.
 
 ## Authority and compatibility target
 
@@ -267,7 +267,7 @@ metadata, `.phronesis/graph.toml`, a package clause, or an `@if` constraint,
 and every add/delete/rename, trigger a full graph rebuild in revision 8. This
 deliberately favors correctness over a new partial-rebuild mechanism. A
 single-file patch must never resolve against an obsolete package index. The
-coordinated release writes graph format 7 so older file identities and seams cannot
+coordinated release writes graph format 8 so older file identities and seams cannot
 survive beside package identities.
 
 ## Pack mechanics

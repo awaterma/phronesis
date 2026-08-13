@@ -23,6 +23,18 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     "tested_by",
     "untested",
     "in_cycle",
+    "generates",
+    "consumes_data",
+    "deserializes",
+    "data_flows_to",
+    "data_key",
+    "serde_field",
+    "emits_key",
+    "maps_data_key",
+    "unconsumed_data_key",
+    "generated_without_consumer",
+    "consumed_without_producer",
+    "generated_artifact_diagnostic",
     // Graph-format-5 relations: multilingual dialects, entity-level
     // definitions, and file/module membership.
     "graph_definition",
@@ -41,7 +53,8 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     //
     // Lua diagnostics
     "lua_dynamic_code_load",
-    // CUE diagnostics — none currently (import resolution needs repo chart index)
+    // CUE diagnostics
+    "cue_import_diagnostic",
     // JSON diagnostics
     "json_schema_unknown_dialect",
     // YAML diagnostics

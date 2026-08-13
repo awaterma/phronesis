@@ -80,10 +80,12 @@ This works in the engine **today, unmodified**. It reuses the predicate index fo
 | `unconsumed_data_key` | `[artifact_module, pointer, consumer_type]` | A bound key has no accepted field and can be silently dropped. |
 | `cue_import_diagnostic` | `[file, import_path, kind]` | A repository-local CUE import was `unresolved` or `ambiguous`; no dependency edge is guessed. Built-ins are not diagnostics. |
 | `generated_artifact_diagnostic` | `[kind, reference]` | A configured generated-artifact reference is missing, malformed, invalid, or ambiguous; no seam edge is guessed. |
+| `generated_without_consumer` | `[artifact_module]` | Derived closed-world evidence that a generated artifact has no indexed consumer. Policy is project-specific. |
+| `consumed_without_producer` | `[artifact_module]` | Derived closed-world evidence that a consumed artifact has no indexed producer. Policy is project-specific. |
 
 Provenance is **not** a relation. It is the `src` field on every stored edge (§2.1), and is never asserted into working memory.
 
-The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user. Revision 8's data-contract relations, corrected CUE package identities, and forward Config → Rust navigation edge require graph format 7: an unchanged worktree built by an older binary otherwise appears fresh while lacking the promised seams or retaining file-shaped CUE nodes.
+The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user. Revision 8's data-contract relations, corrected CUE package identities, forward Config → consumer navigation, and lifecycle-gap evidence require graph format 8: an unchanged worktree built by an older binary otherwise appears fresh while lacking the promised seams or retaining obsolete identities.
 
 ---
 
@@ -1001,8 +1003,9 @@ Omitting the relation returns the relation inventory with edge counts, so the vo
 
 **Revision 8** — corrected CUE identities and added data seams:
 
-* Required graph format 7 for package-shaped CUE nodes, the shared
-  generated-artifact relation set, and forward Config → Rust navigation.
+* Required graph format 8 for package-shaped CUE nodes, the shared
+  generated-artifact relation set, forward Config → consumer navigation, and
+  lifecycle-gap evidence.
 * Specified exact `.phronesis/graph.toml` bindings and bounded inference.
 * Added compatible embedded-glob query semantics shared by CLI and MCP.
 
