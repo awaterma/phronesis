@@ -102,6 +102,8 @@ impl EpistemeMcp {
         let edges = store::load(&graph_path).map_err(|e| Self::err(e.to_string()))?;
         let base_edges = edges.iter().filter(|edge| !edge.d).count();
         let derived_edges = edges.len().saturating_sub(base_edges);
+        let deprecated_rule_predicates =
+            sync::deprecated_graph_rule_predicates(root).map_err(|e| Self::err(e.to_string()))?;
 
         let (status, drifted_files, outdated_format) = if !available {
             ("missing", Vec::new(), false)
@@ -141,6 +143,7 @@ impl EpistemeMcp {
             "drifted_files": drifted_files,
             "base_edges": base_edges,
             "derived_edges": derived_edges,
+            "rule_predicate_drift": deprecated_rule_predicates,
             "bindings": {
                 "available": bindings_available,
                 "bound": bound,
@@ -1189,6 +1192,10 @@ impl EpistemeMcp {
             "skipped_items".to_string(),
             serde_json::json!(outcome.skipped),
         );
+        object.insert(
+            "migrated_rules".to_string(),
+            serde_json::json!(outcome.migrated_rules),
+        );
 
         Self::log_event("rebuild_code_graph", |entry| {
             entry
@@ -1197,6 +1204,7 @@ impl EpistemeMcp {
                 .with("base_edges", outcome.base as u64)
                 .with("derived_edges", outcome.derived as u64)
                 .with("skipped_items", outcome.skipped as u64)
+                .with("migrated_rules", outcome.migrated_rules as u64)
         });
         Self::ok_json(status)
     }

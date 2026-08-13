@@ -99,7 +99,7 @@ same gate `SPEC-triple-store-rete.md` applies to the structural rules.
 ## 4. Call-graph reachability
 
 This is the substantive item. The consumer's stated problem is real:
-`untested(?fn)` fires on functions that tests exercise *transitively* through
+`no_direct_test(?fn)` fires on functions that tests exercise *transitively* through
 dispatchers and command pipelines but never call directly, so the signal is
 noisy on exactly the handler-shaped functions where coverage matters.
 
@@ -107,7 +107,7 @@ noisy on exactly the handler-shaped functions where coverage matters.
 
 `graph/extract.rs:332` emits `tested_by(callee, test_fn)` — a call edge,
 restricted to calls made inside a `#[test]` function, and only direct ones.
-`untested` is then "every `defines_fn` with no `tested_by` naming it"
+`no_direct_test` is then "every `defines_fn` with no `tested_by` naming it"
 (`graph/derive.rs:37`).
 
 So this is not a new mechanism. It is generalising an existing one: emit
@@ -127,7 +127,7 @@ module without whole-crate name resolution, so `tested_by` carries bare callee
 names while `defines_fn` carries qualified ones, and matching bridges them on
 the final path segment. `calls_fn` inherits that limitation. It
 over-approximates — two functions sharing a short name are conflated — and
-that direction is deliberate for the same reason `untested` chose it: a missed
+that direction is deliberate for the same reason `no_direct_test` chose it: a missed
 warning is recoverable, a false accusation blocks legitimate work.
 
 `tested_by` becomes derivable from `calls_fn` plus a test-function marker.
@@ -157,7 +157,7 @@ not a callable taking a predicate and an argument pattern.
 **The wrong layer, by the codebase's own stated rule.** `graph/derive.rs`
 opens: *"Derived facts: whole-graph computations the engine cannot express.
 The engine has no negation-as-failure at the pattern level and no forward
-chaining, so `untested` (closed-world negation) and `in_cycle` (transitive
+chaining, so `no_direct_test` (closed-world negation) and `in_cycle` (transitive
 closure) are computed here instead."* `untested_reverse` is closed-world
 negation over a transitive closure — both halves, and the module that exists
 for exactly that already implements the closure machinery for `in_cycle`.
@@ -174,10 +174,10 @@ So:
 pub fn untested_reverse(base: &[Edge]) -> Vec<Edge>
 ```
 
-Computed in `graph/derive.rs` alongside `untested` and `in_cycle`, seeded from
+Computed in `graph/derive.rs` alongside `no_direct_test` and `in_cycle`, seeded from
 the set of test functions and closed forward over `calls_fn`.
 
-`untested` is **kept**, not replaced. The two answer different questions —
+`no_direct_test` is **kept**, not replaced. The two answer different questions —
 "does a test call this directly" and "can a test reach this at all" — and a
 rule author should choose. The existing `warn-untested-risky-call` should
 migrate to `untested_reverse`, since transitive reachability is what its
@@ -229,7 +229,7 @@ Current graph, measured on this repository (10,385 edges, 1.6 MB):
 |---|---|
 | 7,271 | `tested_by` |
 | 1,455 | `defines_fn` |
-| 887 | `untested` (derived) |
+| 887 | `no_direct_test` (derived) |
 | 245 | `imports` |
 | 205 | `calls_api` |
 | 159 | `declares_module` |
@@ -300,13 +300,13 @@ Deferred with reasons recorded, not silently dropped: `has_attribute` (§3),
 
 **`calls_fn` / `untested_reverse`**
 
-1. A function called only through one intermediary from a test is `untested`
+1. A function called only through one intermediary from a test is `no_direct_test`
    but **not** `untested_reverse`. This is the whole point of the feature.
 2. A function no test reaches at any depth is both.
 3. Mutual recursion between two unreached functions terminates and marks both
    `untested_reverse`.
 4. A recursive function reached from a test is not `untested_reverse`.
-5. `untested` output is byte-identical to today's for the existing corpus —
+5. `no_direct_test` output is byte-identical to today's for the existing corpus —
    this adds a relation, it does not change an existing one.
 6. Derivation ignores pre-existing derived edges, so a stale `untested_reverse`
    cannot feed back and pin itself in place (the invariant at

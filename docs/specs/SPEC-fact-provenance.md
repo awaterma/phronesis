@@ -11,7 +11,7 @@ When a rule fires and produces a consequence, the `Provenance::RuleFiring` recor
 
 Facts enter the engine from multiple origins:
 - **Hook diffs** — regex-based diff extraction (`function_added`, `import_added`)
-- **Code graph** — AST parsing (`in_cycle`, `defines_fn`, `untested`)
+- **Code graph** — AST parsing (`in_cycle`, `defines_fn`, `no_direct_test`)
 - **Journey journal** — agent trajectory analysis (`journey_*`)
 - **Rhai providers** — sandboxed predicate scripts (`change_set_production_rust`)
 - **Manual MCP** — `assert_fact` tool calls

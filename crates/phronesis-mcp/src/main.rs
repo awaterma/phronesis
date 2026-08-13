@@ -1253,12 +1253,13 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                         "base_edges": out.base,
                         "derived_edges": out.derived,
                         "skipped_items": out.skipped,
+                        "migrated_rules": out.migrated_rules,
                     })
                 );
             } else {
                 println!(
-                    "Rebuilt graph: {} base edges, {} derived, {} items skipped.",
-                    out.base, out.derived, out.skipped
+                    "Rebuilt graph: {} base edges, {} derived, {} items skipped, {} rules migrated.",
+                    out.base, out.derived, out.skipped, out.migrated_rules
                 );
             }
             Ok(())

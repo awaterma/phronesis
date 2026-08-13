@@ -15,7 +15,7 @@ use super::helm3;
 use super::model::Edge;
 use super::store;
 use super::unit::UnitMap;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Location of the staleness index, relative to project root.
@@ -75,6 +75,88 @@ pub struct SaveOutcome {
     pub derived: usize,
     /// Items the extractor declined to name.
     pub skipped: usize,
+    /// Rules whose deprecated graph predicates were migrated during rebuild.
+    pub migrated_rules: usize,
+}
+
+const GRAPH_PREDICATE_MIGRATIONS: &[(&str, &str)] = &[("untested", "no_direct_test")];
+
+fn migrate_clause_predicates(clause: &mut crate::rules_file::WhenClause) -> bool {
+    match clause {
+        crate::rules_file::WhenClause::Leaf(condition) => {
+            let Some((_, replacement)) = GRAPH_PREDICATE_MIGRATIONS
+                .iter()
+                .find(|(deprecated, _)| condition.predicate == *deprecated)
+            else {
+                return false;
+            };
+            condition.predicate = (*replacement).to_string();
+            true
+        }
+        crate::rules_file::WhenClause::Or(alternatives) => {
+            let mut changed = false;
+            for alternative in alternatives {
+                changed |= migrate_clause_predicates(alternative);
+            }
+            changed
+        }
+    }
+}
+
+fn collect_deprecated_predicates(
+    clause: &crate::rules_file::WhenClause,
+    found: &mut BTreeSet<String>,
+) {
+    match clause {
+        crate::rules_file::WhenClause::Leaf(condition) => {
+            if GRAPH_PREDICATE_MIGRATIONS
+                .iter()
+                .any(|(deprecated, _)| condition.predicate == *deprecated)
+            {
+                found.insert(condition.predicate.clone());
+            }
+        }
+        crate::rules_file::WhenClause::Or(alternatives) => {
+            for alternative in alternatives {
+                collect_deprecated_predicates(alternative, found);
+            }
+        }
+    }
+}
+
+/// Deprecated graph predicates still referenced by durable project rules.
+///
+/// This is semantic rule/graph drift: file hashes may be current while the
+/// consumer vocabulary no longer matches the graph producer vocabulary.
+pub fn deprecated_graph_rule_predicates(root: &Path) -> std::io::Result<Vec<String>> {
+    let rules = crate::rules_file::read_source(&crate::rules_file::default_path(root))
+        .map_err(std::io::Error::other)?;
+    let mut found = BTreeSet::new();
+    for rule in &rules {
+        for clause in &rule.when {
+            collect_deprecated_predicates(clause, &mut found);
+        }
+    }
+    Ok(found.into_iter().collect())
+}
+
+fn migrate_graph_rule_predicates(root: &Path) -> std::io::Result<usize> {
+    let path = crate::rules_file::default_path(root);
+    let mut rules = crate::rules_file::read_source(&path).map_err(std::io::Error::other)?;
+    let migrated = rules
+        .iter_mut()
+        .map(|rule| {
+            let mut changed = false;
+            for clause in &mut rule.when {
+                changed |= migrate_clause_predicates(clause);
+            }
+            usize::from(changed)
+        })
+        .sum();
+    if migrated > 0 {
+        crate::rules_file::write_source(&path, &rules).map_err(std::io::Error::other)?;
+    }
+    Ok(migrated)
 }
 
 /// Deterministic content hash (FNV-1a, 64-bit).
@@ -456,6 +538,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             base: 0,
             derived: 0,
             skipped: 0,
+            migrated_rules: 0,
         });
     }
     let ipath = index_path(root);
@@ -484,6 +567,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             base,
             derived: existing.len() - base,
             skipped: extracted.skipped,
+            migrated_rules: 0,
         });
     }
     let base = store::compact(existing, file_path, extracted.edges);
@@ -500,6 +584,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
         base: n_base,
         derived: n_derived,
         skipped: extracted.skipped,
+        migrated_rules: 0,
     })
 }
 
@@ -596,6 +681,9 @@ fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
 /// `node_modules`. The recovery path after the graph has drifted, and the
 /// only way edges for deleted files are cleared.
 pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
+    // Rules are graph consumers. Migrate their vocabulary before hashing
+    // inputs so the rebuild cannot make its own index immediately stale.
+    let migrated_rules = migrate_graph_rule_predicates(root)?;
     let mut base = Vec::new();
     let previous_generation = load_index(&index_path(root))
         .map(|index| index.generation)
@@ -646,6 +734,7 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
         base: n_base,
         derived: n_derived,
         skipped,
+        migrated_rules,
     })
 }
 
@@ -817,6 +906,67 @@ mod tests {
             check_freshness(d.path(), &index),
             Freshness::Stale { .. }
         ));
+    }
+
+    #[test]
+    fn rebuild_migrates_deprecated_graph_predicates_without_losing_rule_metadata() {
+        let d = project();
+        write(d.path(), "src/a.rs", "fn risky() { panic!(); }");
+        write(
+            d.path(),
+            ".phronesis/rules.json",
+            r#"{
+              "rules": [{
+                "id": "legacy-graph-rule",
+                "phase": "audit",
+                "priority": 17,
+                "audit": true,
+                "silent": true,
+                "doc_excepted": true,
+                "binds": false,
+                "when": [
+                  {"untested": ["?func"]},
+                  {"or": [
+                    {"untested": ["?other"]},
+                    {"calls_api": ["?func", "panic"]}
+                  ]}
+                ],
+                "then": {"warn": "legacy relation"}
+              }]
+            }"#,
+        );
+        assert_eq!(
+            deprecated_graph_rule_predicates(d.path()).expect("predicate drift"),
+            vec!["untested"]
+        );
+
+        let outcome = rebuild(d.path()).expect("rebuild");
+        assert_eq!(outcome.migrated_rules, 1);
+        let migrated = std::fs::read_to_string(d.path().join(".phronesis/rules.json"))
+            .expect("migrated rules");
+        assert!(!migrated.contains("\"untested\""));
+        assert_eq!(migrated.matches("\"no_direct_test\"").count(), 2);
+        for metadata in [
+            "\"audit\": true",
+            "\"silent\": true",
+            "\"doc_excepted\": true",
+            "\"binds\": false",
+        ] {
+            assert!(
+                migrated.contains(metadata),
+                "missing {metadata}: {migrated}"
+            );
+        }
+        let index = load_index(&index_path(d.path())).expect("index");
+        assert_eq!(check_freshness(d.path(), &index), Freshness::Fresh);
+        assert!(
+            deprecated_graph_rule_predicates(d.path())
+                .expect("resolved drift")
+                .is_empty()
+        );
+
+        let second = rebuild(d.path()).expect("idempotent rebuild");
+        assert_eq!(second.migrated_rules, 0);
     }
 
     #[test]
