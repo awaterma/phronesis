@@ -16,6 +16,16 @@
 > guidance **remains live** and is deferred to the embedded-consumer-gated
 > engine spec.
 
+> **2026-08-12 maintenance correction:** the claim above no longer describes
+> the current tree. `audit.rs` has regrown to more than 3,300 physical lines,
+> `server.rs` to more than 1,700, and `init.rs` (not covered by the original
+> three-file scope) to more than 4,000. The earlier decomposition work remains
+> historically real, but subsequent feature growth recombined responsibilities.
+> Do not execute the old line-oriented split mechanically: refresh the module
+> inventory and characterize CLI/MCP output first. The core-engine API and beta
+> indexing maintenance completed on 2026-08-12 is independent of that follow-up
+> structural change.
+
 ## Summary
 
 Three files in the phronesis workspace currently exceed the
