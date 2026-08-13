@@ -570,11 +570,9 @@ impl EpistemeMcp {
     )]
     async fn get_agenda(&self) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
-        let agenda = network
-            .agenda
-            .lock()
+        let items = network
+            .agenda_snapshot()
             .map_err(|e| Self::err(e.to_string()))?;
-        let items = agenda.get_all_items();
         let summaries: Vec<_> = items
             .iter()
             .map(|item| {

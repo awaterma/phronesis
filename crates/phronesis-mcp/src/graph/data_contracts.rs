@@ -223,6 +223,10 @@ fn function_chunks(content: &str) -> impl Iterator<Item = &str> {
 }
 
 fn literal_paths(chunk: &str, suffixes: &[&str]) -> BTreeSet<String> {
+    let is_path = |value: &str| {
+        !value.chars().any(char::is_whitespace)
+            && suffixes.iter().any(|suffix| value.ends_with(suffix))
+    };
     let mut paths = BTreeSet::new();
     let mut outside_concat = chunk.to_string();
     for capture in CONCAT_RE.captures_iter(chunk) {
@@ -235,8 +239,8 @@ fn literal_paths(chunk: &str, suffixes: &[&str]) -> BTreeSet<String> {
             .flat_map(|parts| STRING_RE.captures_iter(parts.as_str()))
             .filter_map(|part| part.get(1).map(|value| value.as_str()))
             .collect::<String>();
-        if suffixes.iter().any(|suffix| value.ends_with(suffix)) {
-            paths.insert(value);
+        if is_path(&value) {
+            paths.insert(value.trim_start_matches("./").to_string());
         }
         outside_concat.replace_range(whole.range(), &" ".repeat(whole.as_str().len()));
     }
@@ -244,8 +248,8 @@ fn literal_paths(chunk: &str, suffixes: &[&str]) -> BTreeSet<String> {
         STRING_RE
             .captures_iter(&outside_concat)
             .filter_map(|capture| capture.get(1).map(|value| value.as_str()))
-            .filter(|value| suffixes.iter().any(|suffix| value.ends_with(suffix)))
-            .map(str::to_string),
+            .filter(|value| is_path(value))
+            .map(|value| value.trim_start_matches("./").to_string()),
     );
     paths
 }
@@ -789,6 +793,27 @@ fn load() {
         augment(temp.path(), &mut edges);
         assert!(edges.iter().any(|edge| edge.p == "generates"));
         assert!(edges.iter().any(|edge| edge.p == "deserializes"));
+    }
+
+    #[test]
+    fn log_and_panic_messages_ending_in_artifact_extensions_are_not_paths() {
+        let paths = literal_paths(
+            r#"
+            std::fs::write("config/manifest.yaml", output.stdout)
+                .expect("Failed to write manifest.yaml");
+            println!("Exported base manifest.yaml");
+            "#,
+            &[".yaml", ".yml", ".json"],
+        );
+        assert_eq!(paths, BTreeSet::from(["config/manifest.yaml".to_string()]));
+    }
+
+    #[test]
+    fn tracked_literal_paths_are_normalized_to_repository_form() {
+        assert_eq!(
+            literal_paths(r#".arg("./cue/export/manifest.cue")"#, &[".cue"]),
+            BTreeSet::from(["cue/export/manifest.cue".to_string()])
+        );
     }
 
     #[test]

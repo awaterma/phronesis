@@ -456,8 +456,7 @@ async fn when_fire_rules(world: &mut World) {
 #[when("I peek at the agenda")]
 async fn when_get_agenda(world: &mut World) {
     world.network.update_agenda().await.ok();
-    let agenda = world.network.agenda.lock().unwrap();
-    let items = agenda.get_all_items();
+    let items = world.network.agenda_snapshot().unwrap();
     let summaries: Vec<_> = items
         .iter()
         .map(|item| {

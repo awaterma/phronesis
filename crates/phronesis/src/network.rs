@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::agenda::Agenda;
+use crate::agenda::{Agenda, AgendaItem};
 use crate::alpha_network::AlphaNetwork;
 use crate::beta_network::{BetaNetwork, PStateActivation};
 use crate::consequence::Consequence;
@@ -29,16 +29,11 @@ use tracing::{debug, warn};
 
 #[derive(Debug)]
 pub struct ReteNetwork {
-    /// Working memory. Public for legacy embedders, but **prefer the
-    /// fact-query API** (`facts_snapshot`, `facts_matching`,
-    /// `get_fact_by_id`, `fact_ids_matching`, `fact_count`) over locking
-    /// this directly — the field's internal layout is not a stability
-    /// surface and will go private in a future release.
-    pub wme_manager: Arc<Mutex<WmeManager>>,
-    pub alpha_network: Arc<Mutex<AlphaNetwork>>,
-    pub beta_network: Arc<Mutex<BetaNetwork>>,
-    pub agenda: Arc<Mutex<Agenda>>,
-    pub production_network: Arc<Mutex<ProductionNetwork>>,
+    wme_manager: Arc<Mutex<WmeManager>>,
+    alpha_network: Arc<Mutex<AlphaNetwork>>,
+    beta_network: Arc<Mutex<BetaNetwork>>,
+    agenda: Arc<Mutex<Agenda>>,
+    production_network: Arc<Mutex<ProductionNetwork>>,
     /// Performance tracking (interior mutability via Mutex)
     performance_stats: Arc<Mutex<PerformanceStats>>,
     /// Track activations that have already been added to the agenda to avoid duplicates
@@ -112,7 +107,7 @@ impl ReteNetwork {
                     .map_err(|_| ReteError::poisoned("wme_manager"))?;
                 alpha_network.process_wme(wme_manager.get(&wme_id).ok_or_else(|| {
                     ReteError::Internal("WME missing after assertion".to_string())
-                })?)
+                })?)?
             };
 
         // Process through beta network — p-states create activations directly (Forgy).
@@ -431,12 +426,8 @@ impl ReteNetwork {
                 continue;
             }
 
-            let mut bindings = crate::variable_binding::Bindings::new();
-            for (cond_arg, fact_arg) in entry.condition.args.iter().zip(wme.fact.args.iter()) {
-                if cond_arg.starts_with('?') {
-                    bindings.add_binding(cond_arg, fact_arg).ok();
-                }
-            }
+            let bindings =
+                crate::variable_binding::Bindings::new().can_bind(&entry.condition, &wme.fact)?;
 
             let script_passes = self.evaluate_script_conditions(&entry.rule, &bindings)?;
             if !script_passes {
@@ -526,12 +517,8 @@ impl ReteNetwork {
                 debug!("Skipping duplicate activation: {}", activation_key);
                 continue;
             }
-            let mut bindings = crate::variable_binding::Bindings::new();
-            for (condition_arg, fact_arg) in condition.args.iter().zip(&wme.fact.args) {
-                if condition_arg.starts_with('?') {
-                    bindings.add_binding(condition_arg, fact_arg).ok();
-                }
-            }
+            let bindings =
+                crate::variable_binding::Bindings::new().can_bind(condition, &wme.fact)?;
             if !self.evaluate_script_conditions(rule, &bindings)? {
                 debug!(
                     "Full-scan: rule '{}' blocked by script condition for WME '{}'",
@@ -1048,6 +1035,21 @@ impl ReteNetwork {
             .lock()
             .map_err(|_| ReteError::poisoned("wme_manager"))?;
         Ok(wme_manager.len())
+    }
+
+    /// Snapshot pending activations in deterministic firing order.
+    ///
+    /// The returned values are detached from the engine, so callers cannot
+    /// hold an internal agenda lock or mutate scheduling state.
+    pub fn agenda_snapshot(&self) -> Result<Vec<AgendaItem>, ReteError> {
+        Ok(self
+            .agenda
+            .lock()
+            .map_err(|_| ReteError::poisoned("agenda"))?
+            .get_all_items()
+            .into_iter()
+            .cloned()
+            .collect())
     }
 
     /// Bulk-assert a batch of facts (async version).

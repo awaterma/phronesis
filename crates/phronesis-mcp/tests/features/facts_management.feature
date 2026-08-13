@@ -1,6 +1,6 @@
 Feature: Facts Management
   As an LLM agent using phr-mcp
-  I want to resourcege facts in working memory
+  I want to manage facts in working memory
   So that the RETE network can match rules against current state
 
   Background:
@@ -20,8 +20,8 @@ Feature: Facts Management
   Scenario: Retract a fact from working memory
     Given the following facts are asserted
       | id      | predicate | args   |
-      | temana-1  | valueus    | active |
-    When I retract the fact "temana-1"
+      | tenant-1 | status    | active |
+    When I retract the fact "tenant-1"
     Then working memory should contain 0 facts
 
   Scenario: List facts filtered by predicate
@@ -44,7 +44,7 @@ Feature: Facts Management
   Scenario: Get a specific fact by ID
     Given the following facts are asserted
       | id        | predicate | args   |
-      | my-fact   | valueus    | ready  |
+      | my-fact   | status     | ready  |
     When I get the fact "my-fact"
     Then the result should contain "my-fact"
     And the result should contain "ready"

@@ -169,6 +169,14 @@ pub struct BetaNetwork {
     pub states: HashMap<String, BetaState>,
     /// Index to track join patterns for sharing
     join_index: HashMap<String, String>, // Maps join pattern hash to state ID
+    /// Beta states keyed by each alpha/beta source that can feed them.
+    input_index: HashMap<String, Vec<(String, InputSide)>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputSide {
+    Left,
+    Right,
 }
 
 impl Default for BetaNetwork {
@@ -182,6 +190,7 @@ impl BetaNetwork {
         BetaNetwork {
             states: HashMap::new(),
             join_index: HashMap::new(),
+            input_index: HashMap::new(),
         }
     }
 
@@ -218,6 +227,14 @@ impl BetaNetwork {
         state.add_join_condition(join_condition);
 
         self.states.insert(state_id.clone(), state);
+        self.input_index
+            .entry(left_source.clone())
+            .or_default()
+            .push((state_id.clone(), InputSide::Left));
+        self.input_index
+            .entry(right_source.clone())
+            .or_default()
+            .push((state_id.clone(), InputSide::Right));
 
         // FIX (T006): Register this state as a child of its parent states
         // Register as child of left source
@@ -270,30 +287,19 @@ impl BetaNetwork {
         let (mut activations, mut work_queue) = (Vec::new(), vec![(source_id.to_string(), token)]);
 
         while let Some((current_source, current_token)) = work_queue.pop() {
-            // Find all beta states that have this source as input
             let states_to_update = self
-                .states
-                .iter()
-                .flat_map(|(state_id, state)| {
-                    let mut inputs = Vec::with_capacity(2);
-                    if state.left_input.contains(&current_source) {
-                        inputs.push((state_id.clone(), "left"));
-                    }
-                    if state.right_input.contains(&current_source) {
-                        inputs.push((state_id.clone(), "right"));
-                    }
-                    inputs
-                })
-                .collect::<Vec<_>>();
+                .input_index
+                .get(&current_source)
+                .cloned()
+                .unwrap_or_default();
 
             // Process the token through each relevant state and collect new tokens
             for (state_id, input_type) in states_to_update {
                 let (new_tokens, children, p_state_info) = {
                     if let Some(state) = self.states.get_mut(&state_id) {
                         let new_tokens = match input_type {
-                            "left" => state.process_left_token(current_token.clone()),
-                            "right" => state.process_right_token(current_token.clone()),
-                            _ => Vec::new(),
+                            InputSide::Left => state.process_left_token(current_token.clone()),
+                            InputSide::Right => state.process_right_token(current_token.clone()),
                         };
                         (new_tokens, state.children.clone(), state.p_state.clone())
                     } else {
@@ -350,5 +356,29 @@ impl BetaNetwork {
         for state in self.states.values_mut() {
             state.remove_wme_from_tokens(wme_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_inputs_are_indexed_by_source() {
+        let mut network = BetaNetwork::new();
+        let state = network.add_join("alpha:a".into(), "alpha:b".into(), "?x".into());
+        for index in 0..100 {
+            network.add_join(
+                format!("unrelated:left:{index}"),
+                format!("unrelated:right:{index}"),
+                "?x".into(),
+            );
+        }
+
+        assert_eq!(
+            network.input_index.get("alpha:a"),
+            Some(&vec![(state, InputSide::Left)])
+        );
+        assert_eq!(network.input_index.get("alpha:b").map(Vec::len), Some(1));
     }
 }

@@ -17,6 +17,34 @@ pub struct AlphaState {
     pub shared: bool,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine_types::Fact;
+
+    #[test]
+    fn repeated_variable_conflicts_are_returned_and_not_stored() {
+        let condition = Condition {
+            predicate: "same".to_string(),
+            args: vec!["?value".to_string(), "?value".to_string()],
+            script: None,
+        };
+        let mut state = AlphaState::new(condition);
+        let wme = WorkingMemoryElement::new(Fact {
+            id: "fact".to_string(),
+            predicate: "same".to_string(),
+            args: vec!["left".to_string(), "right".to_string()],
+            timestamp: 0,
+        });
+
+        assert!(matches!(
+            state.process_wme(&wme),
+            Err(ReteError::BindingConflict { .. })
+        ));
+        assert!(state.alpha_memory.is_empty());
+    }
+}
+
 impl AlphaState {
     pub fn new(condition: Condition) -> Self {
         AlphaState {
@@ -37,9 +65,10 @@ impl AlphaState {
     }
 
     /// Process a WME through this alpha state, returning tokens if it matches
-    pub fn process_wme(&mut self, wme: &WorkingMemoryElement) -> Option<Token> {
+    pub fn process_wme(&mut self, wme: &WorkingMemoryElement) -> Result<Option<Token>, ReteError> {
         // Check if WME matches condition with no existing bindings (first match)
         if self.condition.matches(&wme.fact) {
+            let bindings = Bindings::new().can_bind(&self.condition, &wme.fact)?;
             // Add to alpha memory if not already present
             if !self
                 .alpha_memory
@@ -50,17 +79,9 @@ impl AlphaState {
             }
 
             // Create a token with the matching WME and appropriate bindings
-            let mut bindings = Bindings::new();
-            // Build bindings from condition variables to fact values
-            for (cond_arg, fact_arg) in self.condition.args.iter().zip(wme.fact.args.iter()) {
-                if cond_arg.starts_with('?') {
-                    bindings.add_binding(cond_arg, fact_arg).ok(); // Ignore errors for now
-                }
-            }
-
-            Some(Token::new_with_bindings(vec![wme.clone()], bindings))
+            Ok(Some(Token::new_with_bindings(vec![wme.clone()], bindings)))
         } else {
-            None // WME did not match condition
+            Ok(None) // WME did not match condition
         }
     }
 
@@ -69,12 +90,7 @@ impl AlphaState {
         // For each WME in alpha memory, create a token and send to child beta states
         for wme in &self.alpha_memory {
             // Create bindings for this WME
-            let mut bindings = Bindings::new();
-            for (cond_arg, fact_arg) in self.condition.args.iter().zip(wme.fact.args.iter()) {
-                if cond_arg.starts_with('?') {
-                    bindings.add_binding(cond_arg, fact_arg).ok(); // Ignore errors for now
-                }
-            }
+            let bindings = Bindings::new().can_bind(&self.condition, &wme.fact)?;
 
             let token = Token::new_with_bindings(vec![wme.clone()], bindings);
             for child_id in &self.children {
@@ -134,16 +150,19 @@ impl AlphaNetwork {
     }
 
     /// Process a WME through all alpha states
-    pub fn process_wme(&mut self, wme: &WorkingMemoryElement) -> Vec<(String, Token)> {
+    pub fn process_wme(
+        &mut self,
+        wme: &WorkingMemoryElement,
+    ) -> Result<Vec<(String, Token)>, ReteError> {
         let mut matching_states = Vec::new();
 
         for (state_id, state) in self.states.iter_mut() {
-            if let Some(token) = state.process_wme(wme) {
+            if let Some(token) = state.process_wme(wme)? {
                 matching_states.push((state_id.clone(), token));
             }
         }
 
-        matching_states
+        Ok(matching_states)
     }
 
     /// Process a WME through all alpha states and propagate tokens to beta network
@@ -156,7 +175,7 @@ impl AlphaNetwork {
 
         // Process WMEs to identify matching states and get tokens
         for (_state_id, state) in self.states.iter_mut() {
-            if let Some(token) = state.process_wme(wme) {
+            if let Some(token) = state.process_wme(wme)? {
                 // Send this specific token to connected beta states
                 for child_id in &state.children {
                     beta_network.process_token_from_source(child_id, token.clone());
