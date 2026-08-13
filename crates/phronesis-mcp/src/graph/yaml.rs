@@ -177,10 +177,33 @@ fn has_duplicate_keys_in_mapping(content: &str) -> bool {
 
         let indent = line.len() - line.trim_start().len();
 
+        // A block-sequence item starts a fresh node. Mapping keys in sibling
+        // items belong to different mappings even though they share the same
+        // indentation (`- id: ...`). Reset scopes owned by the prior item,
+        // then treat an inline key after `-` as belonging one level deeper.
+        let (mapping_indent, mapping_text) = if let Some(rest) = trimmed
+            .strip_prefix('-')
+            .filter(|rest| rest.chars().next().is_none_or(char::is_whitespace))
+        {
+            while indents.last().is_some_and(|top| *top >= indent) {
+                indents.pop();
+                stack.pop();
+            }
+            // Block sequence indicators occupy `- `, so an inline mapping key
+            // shares the scope of following keys conventionally indented two
+            // columns beneath the dash.
+            let item_indent = indent.saturating_add(2);
+            indents.push(item_indent);
+            stack.push(std::collections::HashSet::new());
+            (item_indent, rest.trim_start())
+        } else {
+            (indent, trimmed)
+        };
+
         // Pop levels that are strictly above current indent.
         // We keep levels at the current indent (they may contain more keys).
         while let Some(&top) = indents.last() {
-            if top <= indent {
+            if top <= mapping_indent {
                 break;
             }
             indents.pop();
@@ -189,15 +212,15 @@ fn has_duplicate_keys_in_mapping(content: &str) -> bool {
 
         // If this line is indented deeper than the top of stack, push a new level.
         if let Some(&top) = indents.last()
-            && indent > top
+            && mapping_indent > top
         {
-            indents.push(indent);
+            indents.push(mapping_indent);
             stack.push(std::collections::HashSet::new());
         }
 
         // Check if this line is a mapping key.
-        if let Some(colon_pos) = find_mapping_key_colon(trimmed) {
-            let key_str = trimmed[..colon_pos].trim().to_string();
+        if let Some(colon_pos) = find_mapping_key_colon(mapping_text) {
+            let key_str = mapping_text[..colon_pos].trim().to_string();
             if key_str.is_empty() || key_str == "{" || key_str == "}" {
                 continue;
             }
@@ -832,6 +855,60 @@ key2: value2
 ";
         let out = extract_yaml("src/config.yaml", content, &ctx());
         assert!(!out.parse_failed);
+    }
+
+    #[test]
+    fn uniform_record_list_does_not_report_duplicate_keys_or_discard_structure() {
+        let content = r#"
+rules:
+  - id: first_rule
+    when: alpha
+  - id: second_rule
+    when: beta
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/rules.yaml", content, &ctx());
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+        assert!(
+            !out.edges.is_empty(),
+            "valid record lists must retain graph edges"
+        );
+    }
+
+    #[test]
+    fn duplicate_key_within_one_sequence_item_is_reported() {
+        let content = r#"
+rules:
+  - id: first_rule
+    id: shadowed_rule
+  - id: second_rule
+"#;
+        assert!(has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/rules.yaml", content, &ctx());
+        assert!(out.skipped > 0);
+        assert_eq!(edges_of(&out, "yaml_duplicate_key").len(), 1);
+    }
+
+    #[test]
+    fn nested_record_lists_have_independent_item_scopes() {
+        let content = r#"
+groups:
+  - name: first
+    rules:
+      - id: one
+        when: alpha
+      - id: two
+        when: beta
+  - name: second
+    rules:
+      - id: three
+        when: gamma
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/nested.yaml", content, &ctx());
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
     }
 
     // ─── unsafe tags ────────────────────────────────────────────────
