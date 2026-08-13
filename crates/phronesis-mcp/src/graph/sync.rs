@@ -33,7 +33,7 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// `graph_file` and multilingual dialect support; format 4 remains the
 /// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 5;
+pub const GRAPH_FORMAT: u32 = 7;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -207,7 +207,10 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
         };
     }
     let mut drifted = Vec::new();
-    let on_disk = tracked_files(root);
+    let mut on_disk = tracked_files(root);
+    if root.join(".phronesis/graph.toml").is_file() {
+        on_disk.push(".phronesis/graph.toml".to_string());
+    }
 
     for rel in &on_disk {
         let current = std::fs::read_to_string(root.join(rel))
@@ -285,6 +288,7 @@ fn extract_one(
     rel: &str,
     content: &str,
     units: &UnitMap,
+    cue_index: Option<&super::cue::PackageIndex>,
 ) -> super::extract::Extracted {
     let unit = units.context_for(rel);
     // Helm owns templated YAML beneath a chart's templates/ tree. Extension
@@ -315,10 +319,13 @@ fn extract_one(
             super::lua::extract_lua(rel, content, &lua_unit)
         }
         Some(super::unit::LANG_CUE) => {
-            let mut cue_unit = unit;
-            cue_unit.id = format!("cue:{}", super::cue::discover_module(root, rel));
-            cue_unit.cue_files = super::cue::discover_cue_files(root, rel);
-            super::cue::extract_cue(rel, content, &cue_unit)
+            if let Some(index) = cue_index {
+                let mut cue_unit = super::unit::UnitContext::unnamed_for(super::unit::LANG_CUE);
+                cue_unit.id = format!("cue:{}", super::cue::discover_module(root, rel));
+                super::cue::extract_cue_with_index(rel, content, &cue_unit, Some(index))
+            } else {
+                super::cue::extract_cue_at_root(root, rel, content)
+            }
         }
         Some(super::unit::LANG_HELM3) => {
             if let Some((chart_root, _chart_name)) = chart_for(root, rel) {
@@ -403,6 +410,16 @@ fn reconcile_bindings_best_effort(root: &Path, generation: u64) {
 /// Only the edited file is parsed; derivation runs over the full edge set
 /// already on disk. That is what makes whole-repo facts affordable per save.
 pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<SaveOutcome> {
+    let data_contract_input = root.join(".phronesis/graph.toml").is_file()
+        && matches!(
+            Path::new(file_path)
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("rs" | "json" | "yaml" | "yml")
+        );
+    if file_path.ends_with(".cue") || file_path == ".phronesis/graph.toml" || data_contract_input {
+        return rebuild(root);
+    }
     if !is_tracked(file_path) {
         return Ok(SaveOutcome {
             base: 0,
@@ -422,7 +439,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     }
 
     let units = UnitMap::discover(root);
-    let extracted = extract_one(root, file_path, content, &units);
+    let extracted = extract_one(root, file_path, content, &units, None);
     let existing = store::load(&store::graph_path(root))?;
     if extracted.parse_failed {
         // Leave the graph and the index exactly as they were. Compacting the
@@ -520,6 +537,17 @@ pub fn record_from_disk(root: &Path, file_path: &str) {
 /// hash recorded against a path that no longer exists is stale evidence that
 /// `check_freshness` reports as drift forever.
 fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
+    let data_contract_input = root.join(".phronesis/graph.toml").is_file()
+        && matches!(
+            Path::new(file_path)
+                .extension()
+                .and_then(|value| value.to_str()),
+            Some("rs" | "json" | "yaml" | "yml")
+        );
+    if file_path.ends_with(".cue") || file_path == ".phronesis/graph.toml" || data_contract_input {
+        rebuild(root)?;
+        return Ok(());
+    }
     let existing = store::load(&store::graph_path(root))?;
     let base = store::compact(existing, file_path, Vec::new());
     persist(root, base)?;
@@ -548,12 +576,13 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     };
     let mut skipped = 0;
     let units = UnitMap::discover(root);
+    let cue_index = super::cue::build_package_index(root);
 
     for rel in tracked_files(root) {
         let Ok(content) = std::fs::read_to_string(root.join(&rel)) else {
             continue;
         };
-        let extracted = extract_one(root, &rel, &content, &units);
+        let extracted = extract_one(root, &rel, &content, &units, Some(&cue_index));
         skipped += extracted.skipped;
         if extracted.parse_failed {
             // Not indexed: a rebuild cannot invent evidence for a file it
@@ -563,6 +592,13 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
         }
         base.extend(extracted.edges);
         index.entries.insert(rel, hash_content(&content));
+    }
+
+    super::data_contracts::augment(root, &mut base);
+    if let Ok(content) = std::fs::read_to_string(root.join(".phronesis/graph.toml")) {
+        index
+            .entries
+            .insert(".phronesis/graph.toml".to_string(), hash_content(&content));
     }
 
     let (n_base, n_derived) = persist(root, base)?;
@@ -578,6 +614,7 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use tempfile::TempDir;
 
     fn project() -> TempDir {
@@ -1299,7 +1336,7 @@ mod tests {
                 && edge.a
                     == [
                         "json:project::schemas::user".to_string(),
-                        "yaml:project::schemas::base".to_string(),
+                        "yaml:project::schemas::base::doc:0".to_string(),
                     ]
         }));
         assert!(
@@ -1323,6 +1360,37 @@ mod tests {
                 .filter(|edge| edge.p == "graph_definition")
                 .all(|edge| { edge.a.len() == 1 && edge.a[0].contains(':') })
         );
+
+        let modules = graph
+            .iter()
+            .filter(|edge| edge.p == "declares_module")
+            .filter_map(|edge| edge.a.get(1))
+            .collect::<BTreeSet<_>>();
+        for edge in graph.iter().filter(|edge| edge.p == "imports") {
+            let Some(target) = edge.a.get(1) else {
+                continue;
+            };
+            if ["cue:", "lua:", "json:", "yaml:", "helm3:"]
+                .iter()
+                .any(|prefix| target.starts_with(prefix))
+            {
+                assert!(
+                    modules.contains(target),
+                    "repository-local dependency target is not a graph node: {edge:?}"
+                );
+            }
+        }
+        for prefix in ["cue:", "lua:", "json:", "yaml:", "helm3:"] {
+            let definitions = graph
+                .iter()
+                .filter(|edge| edge.p == "graph_definition")
+                .filter(|edge| edge.a[0].starts_with(prefix))
+                .count();
+            assert!(
+                definitions <= 8,
+                "representative {prefix} fixture emitted excessive definitions: {definitions}"
+            );
+        }
     }
 
     #[test]

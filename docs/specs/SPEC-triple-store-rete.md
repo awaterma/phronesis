@@ -2,7 +2,7 @@
 
 **Status:** Phase One implemented on `feat/structural-graph-facts`; measurements in §2.3 and §10
 **Target release:** 0.23.0
-**Revision:** 7 — multilingual nodes, generic definitions, and ownership arbitration specified
+**Revision:** 8 — glob queries and explicit cross-language data contracts specified
 
 > **Revision 7 (2026-08-11)** generalizes `imports` from an intra-crate edge to
 > a static build/evaluation dependency between language-qualified graph nodes,
@@ -69,10 +69,21 @@ This works in the engine **today, unmodified**. It reuses the predicate index fo
 | `defines` | `[file, definition]` | Links a physical file to a named non-callable definition it declares (§9.1) |
 | `element_in_file` | `[element, file]` | Exact containment used to scope any element kind to a file (§9.1) |
 | `element_in_module` | `[element, module]` | Exact containment used to roll function/test evidence up to a module (§9.1) |
+| `generates` | `[producer, artifact_module]` | An exact producer graph element generates a uniquely indexed tracked artifact. Structured key analysis is limited to JSON/YAML. |
+| `consumes_data` | `[consumer, artifact_module]` | An exact indexed consumer reads a configured or narrowly inferred artifact. Explicit bindings support every indexed language pack. |
+| `deserializes` | `[consumer_type, artifact_module]` | Stronger Rust/Serde-specific evidence that a `Deserialize` type consumes the artifact. |
+| `data_flows_to` | `[artifact_module, consumer]` | Derived inverse of `consumes_data` (and compatibility `deserializes` evidence), providing forward Config → consumer navigation across languages. |
+| `data_key` | `[artifact_module, pointer]` | A bound JSON/YAML artifact's top-level key, encoded as a JSON pointer. |
+| `serde_field` | `[type, field, wire_name]` | A `Deserialize` field and one accepted wire name. |
+| `emits_key` | `[producer, artifact_module, pointer]` | A producer definition supplies a bound artifact key. |
+| `maps_data_key` | `[artifact_module, pointer, rust_field]` | An artifact key maps to an accepted Rust field. |
+| `unconsumed_data_key` | `[artifact_module, pointer, consumer_type]` | A bound key has no accepted field and can be silently dropped. |
+| `cue_import_diagnostic` | `[file, import_path, kind]` | A repository-local CUE import was `unresolved` or `ambiguous`; no dependency edge is guessed. Built-ins are not diagnostics. |
+| `generated_artifact_diagnostic` | `[kind, reference]` | A configured generated-artifact reference is missing, malformed, invalid, or ambiguous; no seam edge is guessed. |
 
 Provenance is **not** a relation. It is the `src` field on every stored edge (§2.1), and is never asserted into working memory.
 
-The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user. Revision 7's `graph_definition` and `defines` additions therefore require graph format 5: an unchanged worktree built by an older binary otherwise appears fresh while lacking the newly promised definition facts.
+The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user. Revision 8's data-contract relations, corrected CUE package identities, and forward Config → Rust navigation edge require graph format 7: an unchanged worktree built by an older binary otherwise appears fresh while lacking the promised seams or retaining file-shaped CUE nodes.
 
 ---
 
@@ -236,6 +247,7 @@ identity scheme it was built under, as a `# format <n>` header:
 | 0 | pre-versioning; bare `crate::…` |
 | 4 | `<lang>:<package>[#<target>]::<module path>` |
 | 5 | format 4 identities plus revision 7 multilingual `imports`, multi-module files, `graph_definition`, and `defines` contracts |
+| 6 | format 5 plus package-shaped CUE identities, glob queries, and generated-artifact data seams |
 
 A non-empty index whose format differs from the running binary's is reported
 as `Outdated` — distinct from `Stale`, because no file drifted and only a
@@ -969,7 +981,15 @@ Acceptance tests must prove:
 
 ## 10.1 Query surface
 
-`phr-mcp graph query <relation> [arg...]` and the `query_code_graph` MCP tool expose the graph directly. The pattern language mirrors the fact shape — relation plus positional arguments, `*` for a wildcard — rather than inventing a vocabulary of named questions: one concept to learn, and it composes with any relation added later instead of needing a new verb per question.
+`phr-mcp graph query <relation> [arg...]` and the `query_code_graph` MCP tool expose the graph directly. The pattern language mirrors the fact shape — relation plus positional arguments — rather than inventing a vocabulary of named questions: one concept to learn, and it composes with any relation added later instead of needing a new verb per question.
+
+Ordinary tokens match exactly. A token consisting solely of `*` or `?`
+remains a whole-position wildcard for compatibility. Within any relation or
+argument token, `*` matches zero or more characters and `?` matches exactly
+one character; all other characters are literal. CLI and MCP use the same
+matcher, limit, and unlimited-count semantics. Thus
+`defines '*' '*rete_rules*'` keeps the first argument unconstrained while
+selecting definition identities containing `rete_rules`.
 
 Both always report the unlimited total alongside a truncated result set. A capped list that reported only its own length would read as a complete answer.
 
@@ -978,6 +998,13 @@ Omitting the relation returns the relation inventory with edge counts, so the vo
 ---
 
 ## 11. Revision History
+
+**Revision 8** — corrected CUE identities and added data seams:
+
+* Required graph format 7 for package-shaped CUE nodes, the shared
+  generated-artifact relation set, and forward Config → Rust navigation.
+* Specified exact `.phronesis/graph.toml` bindings and bounded inference.
+* Added compatible embedded-glob query semantics shared by CLI and MCP.
 
 **Revision 7** — added the TypeScript extractor:
 

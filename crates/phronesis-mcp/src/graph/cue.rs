@@ -11,84 +11,266 @@
 use super::extract::Extracted;
 use super::model::Edge;
 use super::unit::UnitContext;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::sync::LazyLock;
 
-/// Regex matching CUE constraint definitions: `#Name` followed by `:` and
-/// then `{` (optionally with content and/or closing brace on the same line).
-static CONSTRAINT_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(?m)^[\t ]*#(\w+):.*\{").expect("static regex compiles"));
+#[derive(Debug, Clone, Default)]
+pub struct PackageIndex {
+    by_import: BTreeMap<(String, String), BTreeSet<String>>,
+    by_file: BTreeMap<String, String>,
+}
 
-/// Regex matching CUE type definitions: `type <Name> = ...`.
-static TYPE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?m)^[\t ]*type\s+(\w+)\s*=").expect("static regex compiles")
-});
+fn package_name(content: &str) -> String {
+    content
+        .lines()
+        .map(str::trim)
+        .find_map(|line| {
+            let rest = line.strip_prefix("package")?.trim_start();
+            rest.split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .next()
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| "_anonymous".to_string())
+}
 
-/// Regex matching CUE field/definition lines: a bare top-level identifier
-/// followed by `:`, `:=`, or `=`.
-static FIELD_DEF_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?m)^[\t ]*([A-Za-z]\w*)(?::=|:\s|\s*=)").expect("static regex compiles")
-});
+fn package_id(module: &str, file_path: &str, package: &str) -> String {
+    let directory = file_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+    if directory.is_empty() {
+        format!("cue:{module}::{package}")
+    } else {
+        format!("cue:{module}::{}::{package}", directory.replace('/', "::"))
+    }
+}
 
-/// Regex matching standard imports: `import "..."` or `import '...'`.
-static IMPORT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r#"import\s+(?:local\s+)?["']([^"']+)["']"#).expect("static regex compiles")
-});
+fn module_root(root: &Path, file_path: &str) -> (String, String) {
+    let mut directory = root.join(file_path).parent().map(Path::to_path_buf);
+    while let Some(current) = directory {
+        let module_file = current.join("cue.mod/module.cue");
+        if let Ok(content) = std::fs::read_to_string(module_file) {
+            let relative = current
+                .strip_prefix(root)
+                .ok()
+                .and_then(Path::to_str)
+                .unwrap_or("")
+                .replace('\\', "/");
+            return (parse_module_name(&content), relative);
+        }
+        if current == root {
+            break;
+        }
+        directory = current.parent().map(Path::to_path_buf);
+    }
+    ("project".to_string(), String::new())
+}
 
-/// Resolve a CUE import path to a language-qualified module path.
-///
-/// Handles:
-/// - Relative paths starting with `.` — resolved against the file's directory
-/// - Absolute module paths — converted to `cue:<module_path>` form
-fn resolve_import(import_path: &str, file_path: &str, cue_files: &[String]) -> String {
-    // Relative import: resolve against the file's directory.
-    if import_path.starts_with('.') {
-        let dir = file_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
-        let mut path = dir.to_string();
+pub fn build_package_index(root: &Path) -> PackageIndex {
+    let mut index = PackageIndex::default();
+    for file in discover_cue_files(root, "") {
+        if file.ends_with("cue.mod/module.cue") {
+            continue;
+        }
+        let Ok(content) = std::fs::read_to_string(root.join(&file)) else {
+            continue;
+        };
+        let package = package_name(&content);
+        let (module, module_dir) = module_root(root, &file);
+        let relative = file
+            .strip_prefix(&format!("{module_dir}/"))
+            .unwrap_or(&file);
+        let id = package_id(&module, relative, &package);
+        index.by_file.insert(file.clone(), id.clone());
+        let directory = relative.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let import_path = if directory.is_empty() {
+            module.clone()
+        } else {
+            format!("{module}/{directory}")
+        };
+        index
+            .by_import
+            .entry((import_path, package))
+            .or_default()
+            .insert(id);
+    }
+    index
+}
 
-        for component in import_path.split('/') {
-            match component {
-                ".." => {
-                    if let Some(pos) = path.rfind('/') {
-                        path.truncate(pos);
-                    } else {
-                        path.clear();
-                    }
+fn import_literals(content: &str) -> Vec<String> {
+    let mut imports = Vec::new();
+    let mut in_block = false;
+    for raw in content.lines() {
+        let line = raw.split("//").next().unwrap_or("").trim();
+        let import_body = line.strip_prefix("import").map(str::trim_start);
+        if import_body.is_some_and(|body| body.starts_with('(')) {
+            in_block = true;
+            continue;
+        }
+        if in_block && line.starts_with(')') {
+            in_block = false;
+            continue;
+        }
+        if !(in_block || import_body.is_some()) {
+            continue;
+        }
+        if let Some(start) = line.find('"')
+            && let Some(end) = line[start + 1..].find('"')
+        {
+            imports.push(line[start + 1..start + 1 + end].to_string());
+        }
+    }
+    imports
+}
+
+fn split_qualifier(path: &str) -> (&str, Option<&str>) {
+    match path.rsplit_once(':') {
+        Some((base, package)) if !package.contains('/') && !package.is_empty() => {
+            (base, Some(package))
+        }
+        _ => (path, None),
+    }
+}
+
+enum ImportResolution {
+    Resolved(String),
+    Builtin,
+    Unresolved,
+    Ambiguous,
+}
+
+fn resolve_indexed_import(path: &str, index: &PackageIndex) -> ImportResolution {
+    const BUILTINS: &[&str] = &[
+        "crypto", "encoding", "html", "list", "math", "net", "path", "regexp", "strconv",
+        "strings", "struct", "text", "time", "tool",
+    ];
+    let (base, qualifier) = split_qualifier(path);
+    if !base.contains('/') && BUILTINS.contains(&base) {
+        return ImportResolution::Builtin;
+    }
+    let mut candidates = BTreeSet::new();
+    for ((import_path, package), ids) in &index.by_import {
+        if import_path == base && qualifier.is_none_or(|wanted| wanted == package) {
+            candidates.extend(ids.iter().cloned());
+        }
+    }
+    if candidates.len() == 1 {
+        ImportResolution::Resolved(candidates.into_iter().next().expect("one candidate"))
+    } else if candidates.is_empty() {
+        ImportResolution::Unresolved
+    } else {
+        ImportResolution::Ambiguous
+    }
+}
+
+fn code_shape(line: &str, in_block_comment: &mut bool) -> String {
+    let mut out = String::with_capacity(line.len());
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut quote = None;
+    while i < bytes.len() {
+        if *in_block_comment {
+            if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                *in_block_comment = false;
+                out.push_str("  ");
+                i += 2;
+            } else {
+                out.push(' ');
+                i += 1;
+            }
+        } else if let Some(q) = quote {
+            if bytes[i] == b'\\' {
+                out.push_str("  ");
+                i += 2;
+            } else {
+                if bytes[i] == q {
+                    quote = None;
                 }
-                "" | "." => {}
-                seg => {
-                    if !path.is_empty() {
-                        path.push('/');
-                    }
-                    path.push_str(seg);
+                out.push(' ');
+                i += 1;
+            }
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            out.extend(std::iter::repeat_n(' ', bytes.len() - i));
+            break;
+        } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            *in_block_comment = true;
+            out.push_str("  ");
+            i += 2;
+        } else if bytes[i] == b'"' || bytes[i] == b'\'' {
+            quote = Some(bytes[i]);
+            out.push(' ');
+            i += 1;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+fn structural_definitions(content: &str) -> Vec<String> {
+    let mut definitions = BTreeSet::new();
+    let mut depth = 0usize;
+    let mut scopes: Vec<(usize, String)> = Vec::new();
+    let mut in_block_comment = false;
+    for raw in content.lines() {
+        let shaped = code_shape(raw, &mut in_block_comment);
+        let trimmed = shaped.trim_start();
+        let leading_closes = trimmed.chars().take_while(|c| *c == '}').count();
+        depth = depth.saturating_sub(leading_closes);
+        while scopes
+            .last()
+            .is_some_and(|(scope_depth, _)| *scope_depth > depth)
+        {
+            scopes.pop();
+        }
+
+        let label = trimmed
+            .split_once(':')
+            .map(|(candidate, _)| candidate.trim().trim_end_matches('?'))
+            .filter(|candidate| {
+                !candidate.is_empty()
+                    && candidate
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '#')
+            });
+        let type_name = trimmed
+            .strip_prefix("type ")
+            .and_then(|rest| rest.split_once('=').map(|(name, _)| name.trim()))
+            .filter(|name| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+        if depth == 0
+            && let Some(name) = type_name
+        {
+            definitions.insert(name.to_string());
+        }
+        if let Some(label) = label {
+            let is_definition = label.starts_with('#') || label.starts_with("_#");
+            if is_definition || depth == 0 {
+                let path = if is_definition {
+                    scopes.last().map_or_else(
+                        || label.to_string(),
+                        |(_, parent)| format!("{parent}::{label}"),
+                    )
+                } else {
+                    label.to_string()
+                };
+                definitions.insert(path.clone());
+                if is_definition && trimmed.contains('{') {
+                    scopes.push((depth + 1, path));
                 }
             }
         }
-
-        // Check exact match in cue files.
-        for candidate in [&path, &format!("{path}/init.cue")] {
-            if cue_files.iter().any(|f| f.as_str() == candidate) {
-                return cue_module_path(candidate);
-            }
+        let opens = shaped.matches('{').count();
+        let closes = shaped.matches('}').count().saturating_sub(leading_closes);
+        depth = depth.saturating_add(opens).saturating_sub(closes);
+        while scopes
+            .last()
+            .is_some_and(|(scope_depth, _)| *scope_depth > depth)
+        {
+            scopes.pop();
         }
-
-        // Fallback: construct path from the resolved directory.
-        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        if segments.is_empty() {
-            return "cue:.".to_string();
-        }
-        return format!("cue:{}", segments.join("::"));
     }
-
-    // Standard import: convert path to `cue:<module_path>` form.
-    let normalized = import_path.replace('.', "/");
-    let stripped = normalized.strip_suffix(".cue").unwrap_or(&normalized);
-    let segments: Vec<&str> = stripped.split('/').filter(|s| !s.is_empty()).collect();
-    if segments.is_empty() {
-        return "cue:.".to_string();
-    }
-    format!("cue:{}", segments.join("::"))
+    definitions.into_iter().collect()
 }
 
 /// Classification of a `.cue` file as test, build, example, or production.
@@ -120,16 +302,6 @@ fn file_type(file_path: &str) -> &'static str {
     }
 
     "production"
-}
-
-/// Build the language-qualified module path for a `.cue` file.
-///
-/// `schemas/workload/deployment.cue` →
-/// `cue:my-module::schemas::workload::deployment`
-fn cue_module_path(file_path: &str) -> String {
-    let trimmed = file_path.strip_suffix(".cue").unwrap_or(file_path);
-    let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
-    format!("cue:{}", segments.join("::"))
 }
 
 /// Discover the module path from a project's `cue.mod/module.cue`.
@@ -223,6 +395,22 @@ pub fn discover_cue_files(root: &Path, _file_path: &str) -> Vec<String> {
 
 /// Extract every base relation from one CUE file.
 pub fn extract_cue(file_path: &str, content: &str, unit: &UnitContext) -> Extracted {
+    extract_cue_with_index(file_path, content, unit, None)
+}
+
+pub fn extract_cue_at_root(root: &Path, file_path: &str, content: &str) -> Extracted {
+    let index = build_package_index(root);
+    let mut unit = UnitContext::unnamed_for(super::unit::LANG_CUE);
+    unit.id = format!("cue:{}", discover_module(root, file_path));
+    extract_cue_with_index(file_path, content, &unit, Some(&index))
+}
+
+pub(crate) fn extract_cue_with_index(
+    file_path: &str,
+    content: &str,
+    unit: &UnitContext,
+    index: Option<&PackageIndex>,
+) -> Extracted {
     if !file_path.ends_with(".cue") {
         return Extracted::default();
     }
@@ -233,11 +421,11 @@ pub fn extract_cue(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
         return Extracted::unparseable();
     }
 
-    let path = file_path.strip_suffix(".cue").unwrap_or(file_path);
-    let self_module = format!("{}::{}", unit.id, path.replace('/', "::"));
+    let module = unit.id.strip_prefix("cue:").unwrap_or("project");
+    let self_module = index
+        .and_then(|packages| packages.by_file.get(file_path).cloned())
+        .unwrap_or_else(|| package_id(module, file_path, &package_name(content)));
     let ft = file_type(file_path);
-    let cue_files = &unit.cue_files;
-
     let mut out: BTreeSet<(String, Vec<String>)> = BTreeSet::new();
 
     // Always emit file_type and declares_module.
@@ -250,82 +438,44 @@ pub fn extract_cue(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
         vec![file_path.to_string(), self_module.clone()],
     ));
 
-    // Extract constraint definitions: #Name: { ... }
-    for cap in CONSTRAINT_RE.captures_iter(content) {
-        let name = cap.get(1).map_or("", |m| m.as_str());
-        if !name.is_empty() {
-            let qualified = format!("{self_module}::#{name}");
-            out.insert(("graph_definition".to_string(), vec![qualified.clone()]));
-            out.insert((
-                "defines".to_string(),
-                vec![file_path.to_string(), qualified.clone()],
-            ));
-            out.insert((
-                "element_in_file".to_string(),
-                vec![qualified.clone(), file_path.to_string()],
-            ));
-            out.insert((
-                "element_in_module".to_string(),
-                vec![qualified, self_module.clone()],
-            ));
-        }
+    for name in structural_definitions(content) {
+        let qualified = format!("{self_module}::{name}");
+        out.insert(("graph_definition".to_string(), vec![qualified.clone()]));
+        out.insert((
+            "defines".to_string(),
+            vec![file_path.to_string(), qualified.clone()],
+        ));
+        out.insert((
+            "element_in_file".to_string(),
+            vec![qualified.clone(), file_path.to_string()],
+        ));
+        out.insert((
+            "element_in_module".to_string(),
+            vec![qualified, self_module.clone()],
+        ));
     }
 
-    // Extract type definitions: type Foo = Bar
-    for cap in TYPE_RE.captures_iter(content) {
-        let name = cap.get(1).map_or("", |m| m.as_str());
-        if !name.is_empty() {
-            let qualified = format!("{self_module}::{name}");
-            out.insert(("graph_definition".to_string(), vec![qualified.clone()]));
-            out.insert((
-                "defines".to_string(),
-                vec![file_path.to_string(), qualified.clone()],
-            ));
-            out.insert((
-                "element_in_file".to_string(),
-                vec![qualified.clone(), file_path.to_string()],
-            ));
-            out.insert((
-                "element_in_module".to_string(),
-                vec![qualified, self_module.clone()],
-            ));
-        }
-    }
-
-    // Extract field/definition lines: Name: ... or Name = ...
-    for cap in FIELD_DEF_RE.captures_iter(content) {
-        let name = cap.get(1).map_or("", |m| m.as_str());
-        if !name.is_empty() {
-            // Skip type keyword matches (already handled above).
-            if name == "type" {
-                continue;
+    if let Some(packages) = index {
+        for import_path in import_literals(content) {
+            match resolve_indexed_import(&import_path, packages) {
+                ImportResolution::Resolved(resolved) => {
+                    out.insert(("imports".to_string(), vec![self_module.clone(), resolved]));
+                }
+                ImportResolution::Builtin => {}
+                ImportResolution::Unresolved => {
+                    out.insert((
+                        "cue_import_diagnostic".to_string(),
+                        vec![file_path.to_string(), import_path, "unresolved".to_string()],
+                    ));
+                }
+                ImportResolution::Ambiguous => {
+                    out.insert((
+                        "cue_import_diagnostic".to_string(),
+                        vec![file_path.to_string(), import_path, "ambiguous".to_string()],
+                    ));
+                }
             }
-            // Skip constraint defs that were already captured.
-            if name.starts_with('#') {
-                continue;
-            }
-            let qualified = format!("{self_module}::{name}");
-            out.insert(("graph_definition".to_string(), vec![qualified.clone()]));
-            out.insert((
-                "defines".to_string(),
-                vec![file_path.to_string(), qualified.clone()],
-            ));
-            out.insert((
-                "element_in_file".to_string(),
-                vec![qualified.clone(), file_path.to_string()],
-            ));
-            out.insert((
-                "element_in_module".to_string(),
-                vec![qualified, self_module.clone()],
-            ));
         }
-    }
-
-    // Extract import statements and resolve to imports edges.
-    for cap in IMPORT_RE.captures_iter(content) {
-        let import_path = cap.get(1).map_or("", |m| m.as_str());
-        let resolved = resolve_import(import_path, file_path, cue_files);
-        out.insert(("imports".to_string(), vec![self_module.clone(), resolved]));
     }
 
     // Risk watchlist: calls to APIs that pose security concerns.
@@ -415,13 +565,13 @@ mod tests {
     }
 
     #[test]
-    fn hidden_definitions_are_skipped() {
+    fn hidden_definitions_are_preserved() {
         let content = r#"
 _#Internal: {}
 "#;
         let out = extract_cue("schemas/schema.cue", content, &ctx());
         let defs = edges_of(&out, "defines");
-        assert!(defs.iter().all(|a| a[1] != "_#Internal"));
+        assert!(defs.iter().any(|a| a[1].ends_with("::_#Internal")));
     }
 
     #[test]
@@ -438,7 +588,7 @@ type Deployment = {
     }
 
     #[test]
-    fn imports_become_imports_edges() {
+    fn unresolved_imports_do_not_create_dangling_edges() {
         let content = r#"
 import "example.com/acme/common"
 
@@ -446,59 +596,92 @@ common.Schema
 "#;
         let out = extract_cue("schemas/schema.cue", content, &ctx());
         let imps = edges_of(&out, "imports");
-        assert_eq!(imps.len(), 1);
-        // resolve_import converts dots to slashes, so example.com -> example::com
-        assert!(imps[0][1].starts_with("cue:example::com::acme::common"));
+        assert!(imps.is_empty());
+    }
+
+    #[test]
+    fn indexed_unresolved_imports_emit_queryable_diagnostics() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("cue.mod")).expect("module dir");
+        std::fs::write(
+            temp.path().join("cue.mod/module.cue"),
+            "module: \"example.test\"\n",
+        )
+        .expect("module");
+        let source = "package app\nimport \"example.test/missing\"\n";
+        std::fs::write(temp.path().join("app.cue"), source).expect("app");
+        let out = extract_cue_at_root(temp.path(), "app.cue", source);
+        assert!(edges_of(&out, "imports").is_empty());
+        assert_eq!(
+            edges_of(&out, "cue_import_diagnostic"),
+            vec![vec![
+                "app.cue".to_string(),
+                "example.test/missing".to_string(),
+                "unresolved".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn unqualified_ambiguous_imports_emit_diagnostics_not_edges() {
+        let mut index = PackageIndex::default();
+        index.by_import.insert(
+            ("example.test/common".to_string(), "one".to_string()),
+            BTreeSet::from(["cue:example.test::common::one".to_string()]),
+        );
+        index.by_import.insert(
+            ("example.test/common".to_string(), "two".to_string()),
+            BTreeSet::from(["cue:example.test::common::two".to_string()]),
+        );
+        let source = "package app\nimport \"example.test/common\"\n";
+        let out = extract_cue_with_index("app.cue", source, &ctx(), Some(&index));
+        assert!(edges_of(&out, "imports").is_empty());
+        assert_eq!(edges_of(&out, "cue_import_diagnostic")[0][2], "ambiguous");
     }
 
     #[test]
     fn build_files_are_classified_as_build() {
-        assert_eq!(
+        assert!(
             extract_cue("cue.mod/schema.cue", "package foo\n", &ctx())
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "build"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "build")
         );
-        assert_eq!(
+        assert!(
             extract_cue("_tool.cue", "package tool\n", &ctx())
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "build"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "build")
         );
     }
 
     #[test]
     fn test_files_are_classified_as_test() {
-        assert_eq!(
+        assert!(
             extract_cue("test/schema_test.cue", "package test\n", &ctx())
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "test"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "test")
         );
     }
 
     #[test]
     fn example_files_are_classified_as_example() {
-        assert_eq!(
+        assert!(
             extract_cue("example/schema.cue", "package example\n", &ctx())
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "example"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "example")
         );
     }
 
     #[test]
     fn production_files_are_classified_as_production() {
-        assert_eq!(
+        assert!(
             extract_cue("schemas/schema.cue", "package schemas\n", &ctx())
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "production"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "production")
         );
     }
 
@@ -513,41 +696,118 @@ common.Schema
 
     #[test]
     fn file_type_classifies_example_files() {
-        assert_eq!(
+        assert!(
             extract_cue("example/customer.cue", "package example\n", &ctx())
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "example"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "example")
         );
     }
 
     #[test]
-    fn import_resolution_resolves_module_path() {
-        let files = vec![
-            "schemas/schema.cue".to_string(),
-            "example/common.cue".to_string(),
-        ];
-        let unit = UnitContext {
-            id: "cue:my-module".to_string(),
-            module_base: String::new(),
-            siblings: std::collections::BTreeMap::new(),
-            ts: super::super::unit::TsConfig::default(),
-            files: Vec::new(),
-            lua_files: Vec::new(),
-            cue_files: files,
-        };
-        let out = extract_cue(
-            "schemas/schema.cue",
-            r#"import "example.com/acme/common"
-
-common.Schema
-"#,
-            &unit,
-        );
+    fn indexed_block_and_qualified_imports_resolve_packages() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("cue.mod")).expect("module dir");
+        std::fs::create_dir_all(temp.path().join("common")).expect("common dir");
+        std::fs::create_dir_all(temp.path().join("app")).expect("app dir");
+        std::fs::write(
+            temp.path().join("cue.mod/module.cue"),
+            "module: \"example.com/acme.game\"\n",
+        )
+        .expect("module");
+        std::fs::write(
+            temp.path().join("common/types.cue"),
+            "package schema\n#Type: {}\n",
+        )
+        .expect("common");
+        let source = r#"package app
+import (
+    alias "example.com/acme.game/common:schema"
+    "list"
+)
+"#;
+        std::fs::write(temp.path().join("app/main.cue"), source).expect("app");
+        let out = extract_cue_at_root(temp.path(), "app/main.cue", source);
         let imps = edges_of(&out, "imports");
         assert_eq!(imps.len(), 1);
-        assert!(imps[0][1].starts_with("cue:"));
+        assert_eq!(imps[0][1], "cue:example.com/acme.game::common::schema");
+    }
+
+    #[test]
+    fn tabs_after_package_and_import_keywords_are_supported() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("cue.mod")).expect("module dir");
+        std::fs::create_dir_all(temp.path().join("common")).expect("common dir");
+        std::fs::write(
+            temp.path().join("cue.mod/module.cue"),
+            "module: \"example.test\"\n",
+        )
+        .expect("module");
+        std::fs::write(
+            temp.path().join("common/value.cue"),
+            "package\tcommon\n#Value: {}\n",
+        )
+        .expect("common");
+        let source = "package\tapp\nimport\t\"example.test/common\"\n";
+        std::fs::write(temp.path().join("app.cue"), source).expect("app");
+        let out = extract_cue_at_root(temp.path(), "app.cue", source);
+        assert_eq!(edges_of(&out, "imports").len(), 1);
+        assert_eq!(
+            edges_of(&out, "declares_module")[0][1],
+            "cue:example.test::app"
+        );
+    }
+
+    #[test]
+    fn files_in_one_directory_and_package_share_a_node() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("cue.mod")).expect("module dir");
+        std::fs::create_dir_all(temp.path().join("schemas")).expect("schemas dir");
+        std::fs::write(
+            temp.path().join("cue.mod/module.cue"),
+            "module: \"rulgamr.game\"\n",
+        )
+        .expect("module");
+        for name in ["a.cue", "b.cue"] {
+            std::fs::write(
+                temp.path().join("schemas").join(name),
+                "package manifest\n#Thing: {}\n",
+            )
+            .expect("source");
+        }
+        let a = extract_cue_at_root(
+            temp.path(),
+            "schemas/a.cue",
+            "package manifest\n#Thing: {}\n",
+        );
+        let b = extract_cue_at_root(
+            temp.path(),
+            "schemas/b.cue",
+            "package manifest\n#Thing: {}\n",
+        );
+        assert_eq!(
+            edges_of(&a, "declares_module")[0][1],
+            edges_of(&b, "declares_module")[0][1]
+        );
+        assert_eq!(
+            edges_of(&a, "declares_module")[0][1],
+            "cue:rulgamr.game::schemas::manifest"
+        );
+    }
+
+    #[test]
+    fn nested_definitions_survive_but_nested_data_fields_do_not() {
+        let out = extract_cue(
+            "schema.cue",
+            "package p\n#Outer: {\n nested: string\n #Inner: { value: int }\n}\ntop: string\n// #Comment: {}\ntext: \"#String: {}\"\n",
+            &ctx(),
+        );
+        let defs = edges_of(&out, "defines");
+        assert!(defs.iter().any(|a| a[1].ends_with("::#Outer::#Inner")));
+        assert!(defs.iter().any(|a| a[1].ends_with("::top")));
+        assert!(!defs.iter().any(|a| a[1].ends_with("::nested")));
+        assert!(!defs.iter().any(|a| a[1].contains("#Comment")));
+        assert!(!defs.iter().any(|a| a[1].contains("#String")));
     }
 
     #[test]

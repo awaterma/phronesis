@@ -273,10 +273,11 @@ fn resolve_ref(ref_value: &str, file_path: &str, unit: &UnitContext) -> Option<S
     } else {
         UnitContext::unnamed_for(target_lang).id
     };
-    Some(format!(
-        "{target_id}::{}",
-        raw_module_path(normalized.as_ref())
-    ))
+    let mut module = format!("{target_id}::{}", raw_module_path(normalized.as_ref()));
+    if target_lang == super::unit::LANG_YAML {
+        module.push_str("::doc:0");
+    }
+    Some(module)
 }
 
 /// Strip `.` and `..` path segments.
@@ -843,7 +844,7 @@ mod tests {
             .collect();
         assert_eq!(imports.len(), 1);
         assert_eq!(imports[0].a[0], "json:project::schemas::user");
-        assert_eq!(imports[0].a[1], "yaml:project::schemas::base");
+        assert_eq!(imports[0].a[1], "yaml:project::schemas::base::doc:0");
     }
 
     #[test]

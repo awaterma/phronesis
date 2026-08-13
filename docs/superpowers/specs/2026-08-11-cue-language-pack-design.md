@@ -1,8 +1,8 @@
 # SPEC: CUE language pack and code-graph extractor
 
-**Status:** draft, revision 1, 2026-08-11
-**Target release:** a future MINOR release
-**Parent spec:** `docs/specs/SPEC-triple-store-rete.md` (revision 7)
+**Status:** corrective release gate, revision 2, 2026-08-12
+**Target release:** 0.28.0 (blocked until this revision's evidence gate passes)
+**Parent spec:** `docs/specs/SPEC-triple-store-rete.md` (revision 8)
 **Affects:** `crates/phronesis-mcp/src/graph/{unit,cue,sync,mod}.rs`,
 `crates/phronesis-mcp/src/syntax/{facts,cue,mod}.rs`, init, tests, catalogue,
 and documentation
@@ -19,6 +19,12 @@ The extractor models CUE definitions as graph elements but does not pretend
 ordinary field references are function calls. CUE is a constraint language;
 graph claims must use its semantics rather than force it into an imperative
 language shape.
+
+Revision 2 corrects the first implementation before release. It makes package
+identity and repository-wide import resolution normative, replaces the broad
+line regex with a comment/string-aware structural scan, and specifies explicit
+and narrowly inferred CUE-to-data-to-Rust contracts. Existing format-5 graphs
+must not be mixed with these identities; this revision requires graph format 7.
 
 ## Authority and compatibility target
 
@@ -185,17 +191,84 @@ not create edges. Two safe mechanisms are allowed:
 
 1. A future toolchain trace asserts observed, provenance-tagged dependencies
    for a concrete `cue vet/export` invocation.
-2. `.phronesis/graph.toml` explicitly binds a CUE package to tracked YAML/JSON
-   modules. Valid bindings emit `imports(cue-package, yaml/json-node)` with
-   configuration-file provenance.
+2. `.phronesis/graph.toml` explicitly binds a CUE definition to one tracked
+   YAML/JSON artifact and, optionally, one Rust consumer type. Configuration
+   is authoritative over inference and uses exact graph identities:
+
+```toml
+[[generated_artifacts]]
+producer = "cue:rulgamr.game::cue::export::export"
+artifact = "config/manifest.yaml"
+consumer = "rust:rulgamr-simple::config::manifest_types::GameManifest"
+```
+
+`producer` and `consumer` are exact existing graph IDs; `consumer` is
+optional. `artifact` must resolve to exactly one tracked graph module. JSON
+and YAML artifacts additionally receive key-level analysis; executable
+configuration such as Lua receives only module-level flow edges. Missing,
+invalid, or ambiguous references are diagnostics
+(`generated_artifact_diagnostic(kind, reference)`) and emit no guessed edge.
+Unresolved or ambiguous CUE imports similarly emit
+`cue_import_diagnostic(file, import_path, kind)` while built-ins remain
+external leaves with no edge or diagnostic. Identical explicit and inferred evidence
+deduplicates.
+
+Valid bindings use the shared relations below rather than overloading
+`imports`:
+
+| Relation | Meaning |
+|---|---|
+| `generates(producer, artifact_module)` | A CUE definition produces the bound data document. |
+| `consumes_data(consumer, artifact_module)` | An exact indexed consumer consumes the bound data document. Explicit consumers support every indexed language pack. |
+| `deserializes(consumer_type, artifact_module)` | Stronger Rust/Serde-specific evidence for a consuming `Deserialize` type. |
+| `data_flows_to(artifact_module, consumer)` | Derived forward navigation from Config into a consumer in any indexed language. |
+| `data_key(artifact_module, pointer)` | A top-level JSON-pointer-style key in the document. |
+| `serde_field(type, field, wire_name)` | A Rust `Deserialize` field and accepted wire name. |
+| `emits_key(cue_definition, artifact_module, pointer)` | A producer definition supplies a bound key. |
+| `maps_data_key(artifact_module, pointer, rust_field)` | A key is accepted by the consumer field. |
+| `unconsumed_data_key(artifact_module, pointer, consumer_type)` | A bound key would be silently ignored. |
+
+The artifact module is the existing YAML/JSON document module emitted by its
+language extractor (`yaml:<repo-relative-path>` or
+`json:<repo-relative-path>`); it must also have `graph_module` and
+`declares_module` evidence. Rust `Deserialize` structs are named with the
+same package/target/module prefix as functions plus the item name, and emit
+`graph_definition`, `defines`, and containment facts. A Rust field identity is
+`<type>::<field>`; this exact identity is the third `maps_data_key` argument.
+
+Bound documents index top-level keys as RFC 6901 JSON pointers: prefix `/`,
+then replace `~` with `~0` and `/` with `~1`. Only one-segment, top-level
+pointers are emitted in revision 8; producer and consumer mapping use the same
+bounded set. Rust
+extraction indexes `Deserialize` structs and fields, including `rename`,
+container `rename_all`, aliases, `flatten`, and `deny_unknown_fields`.
+`unconsumed_data_key` is emitted only when no field accepts the key and the
+consumer has neither `flatten` nor `deny_unknown_fields`; it describes a
+static silent-drop risk, not proof of runtime behavior.
+
+Automatic producer inference is limited to one Rust function that invokes
+`Command::new("cue")`, passes literal arguments containing `export`, a tracked
+`.cue` input, and YAML/JSON output selection, and writes that command's stdout
+to a tracked artifact path expressed as a string literal, `concat!` of string
+literals, or a same-function immutable `let` initialized by either form.
+Command arguments follow the same literal forms and may be supplied by
+`arg`/`args` calls within that function. Consumer inference similarly
+requires a statically resolved artifact path flowing to `serde_yaml` or
+`serde_json` deserialization with a resolvable target type. Dynamic commands,
+paths, shell strings, and cross-function dataflow remain unbound and are
+counted, never guessed.
 
 ## Invalidation
 
-Ordinary `.cue` edits compact by provenance. Edits to module metadata,
-`.phronesis/graph.toml`, a package clause, or an `@if` constraint can alter
-ownership globally and trigger full rebuild. Add/delete/rename rebuilds the
-package index. The coordinated release writes graph format 5 for revision 7's
-shared definition and multilingual-import contracts.
+Every `.cue` edit re-extracts all CUE files in the edited package after building
+a complete repository package index; stored `src` remains the physical source
+file, preserving the parent spec's file-provenance contract. Edits to module
+metadata, `.phronesis/graph.toml`, a package clause, or an `@if` constraint,
+and every add/delete/rename, trigger a full graph rebuild in revision 8. This
+deliberately favors correctness over a new partial-rebuild mechanism. A
+single-file patch must never resolve against an obsolete package index. The
+coordinated release writes graph format 7 so older file identities and seams cannot
+survive beside package identities.
 
 ## Pack mechanics
 
@@ -215,11 +288,20 @@ include it. Module metadata participates in freshness despite living below
 - Syntax: definitions, dynamic labels, comprehensions, embeddings,
   comments/strings, and malformed input.
 - Integration: rebuild, invalidation, query, audit, CUE cycles, and an
-  explicitly bound CUE-to-YAML/JSON edge.
+  explicitly bound CUE-to-YAML/JSON-to-Rust chain.
+- Data seams: malformed/missing/ambiguous bindings, explicit-over-inferred
+  precedence, inference bounds, Serde rename/rename_all/alias/flatten/
+  deny_unknown_fields, deduplication, mapped keys, and silent-drop findings.
 - At least two real modules, one constrained. Report counts by outcome,
   package/definition totals, timings, and manual cycle inspection.
 - Official CUE checks on fixtures where available plus workspace format,
   tests, clippy, and diff checks.
+- Field-test a temporary copy of rulgamr while excluding `.git`, `.phronesis`,
+  and build output. Record the source worktree status before and after. The CUE
+  base-edge count must fall by at least 50% from 19,161; every emitted local
+  import must target a real package node; block imports must appear; `cue:list`
+  must not dangle; and the manifest chain must expose producer definitions,
+  artifact keys, mapped `GameManifest` fields, and known unconsumed keys.
 
 ## Risks and honest limits
 

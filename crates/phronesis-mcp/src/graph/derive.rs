@@ -13,9 +13,25 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Compute all derived edges over a complete base-edge set.
 pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
     let mut out = inventory(base);
+    out.extend(data_flows_to(base));
     out.extend(untested(base));
     out.extend(in_cycle(base));
     out
+}
+
+/// `data_flows_to(artifact_module, consumer)` is the navigational inverse of
+/// `deserializes(consumer, artifact_module)`. Keeping both
+/// preserves the precise consumer claim while making producer -> artifact ->
+/// consumer flow follow one direction in graph renderers and queries.
+pub fn data_flows_to(base: &[Edge]) -> Vec<Edge> {
+    base.iter()
+        .filter(|edge| !edge.d && matches!(edge.p.as_str(), "consumes_data" | "deserializes"))
+        .filter_map(|edge| Some((edge.a.first()?, edge.a.get(1)?)))
+        .map(|(consumer, artifact)| (artifact.as_str(), consumer.as_str()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|(artifact, consumer)| Edge::derived("data_flows_to", &[artifact, consumer]))
+        .collect()
 }
 
 /// Materialize the positive unary inventory promised by graph format 5 and
@@ -476,6 +492,45 @@ mod tests {
         let out = derive_all(&base);
         assert_eq!(args_of(&out, "untested").len(), 1);
         assert_eq!(args_of(&out, "in_cycle").len(), 2);
+    }
+
+    #[test]
+    fn deserialization_derives_forward_config_to_rust_flow() {
+        let base = vec![Edge::base(
+            "deserializes",
+            &[
+                "rust:app::config::Manifest",
+                "yaml:project::config::manifest",
+            ],
+            ".phronesis/graph.toml",
+        )];
+        let derived = derive_all(&base);
+        let flows = args_of(&derived, "data_flows_to");
+        assert_eq!(flows.len(), 1);
+        assert_eq!(
+            flows[0],
+            &[
+                "yaml:project::config::manifest".to_string(),
+                "rust:app::config::Manifest".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn generic_consumption_derives_forward_config_flow() {
+        let base = vec![Edge::base(
+            "consumes_data",
+            &["python:app::config::load", "json:project::config::manifest"],
+            ".phronesis/graph.toml",
+        )];
+        let derived = derive_all(&base);
+        assert_eq!(
+            args_of(&derived, "data_flows_to")[0],
+            &[
+                "json:project::config::manifest".to_string(),
+                "python:app::config::load".to_string()
+            ]
+        );
     }
 
     #[test]

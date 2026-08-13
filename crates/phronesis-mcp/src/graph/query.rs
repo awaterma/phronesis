@@ -22,6 +22,34 @@ pub struct Pattern {
     pub args: Vec<Option<String>>,
 }
 
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let (mut p, mut v) = (0, 0);
+    let (mut star, mut retry) = (None, 0);
+
+    while v < value.len() {
+        if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == value[v]) {
+            p += 1;
+            v += 1;
+        } else if p < pattern.len() && pattern[p] == b'*' {
+            star = Some(p);
+            p += 1;
+            retry = v;
+        } else if let Some(star_pos) = star {
+            p = star_pos + 1;
+            retry += 1;
+            v = retry;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
 impl Pattern {
     /// Parse CLI-style tokens: the first is the relation, the rest are
     /// arguments. `*` (or `?`) in any position means "anything".
@@ -43,14 +71,14 @@ impl Pattern {
 
     fn matches(&self, e: &Edge) -> bool {
         if let Some(r) = &self.relation
-            && &e.p != r
+            && !glob_matches(r, &e.p)
         {
             return false;
         }
         for (i, want) in self.args.iter().enumerate() {
             let Some(want) = want else { continue };
             match e.a.get(i) {
-                Some(got) if got == want => {}
+                Some(got) if glob_matches(want, got) => {}
                 _ => return false,
             }
         }
@@ -138,6 +166,31 @@ mod tests {
         // "what does the graph know about crate::b::g?"
         let p = Pattern::parse(&toks(&["*", "crate::b::g"]));
         assert_eq!(query(&g, &p, 0).len(), 1);
+    }
+
+    #[test]
+    fn embedded_globs_match_relations_and_arguments() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["defines_*", "src/?.rs", "*::g"]));
+        let got = query(&g, &p, 0);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].a[0], "src/b.rs");
+        assert_eq!(count(&g, &p), 1);
+    }
+
+    #[test]
+    fn ordinary_tokens_still_match_exactly() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["defines", "src/a.rs"]));
+        assert!(query(&g, &p, 0).is_empty());
+    }
+
+    #[test]
+    fn standalone_question_mark_remains_a_whole_position_wildcard() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["tested_by", "f", "?"]));
+        assert_eq!(query(&g, &p, 1).len(), 1);
+        assert_eq!(count(&g, &p), 2);
     }
 
     #[test]
