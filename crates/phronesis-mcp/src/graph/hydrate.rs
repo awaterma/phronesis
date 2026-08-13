@@ -21,7 +21,7 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     "calls_api",
     "imports",
     "tested_by",
-    "untested",
+    "no_direct_test",
     "in_cycle",
     "generates",
     "consumes_data",
@@ -253,8 +253,8 @@ mod tests {
 
     #[test]
     fn a_rule_mentioning_a_relation_requests_it() {
-        let needed = needed_relations(&[rule_using("untested")]);
-        assert!(needed.contains("untested"));
+        let needed = needed_relations(&[rule_using("no_direct_test")]);
+        assert!(needed.contains("no_direct_test"));
     }
 
     #[test]
@@ -357,9 +357,9 @@ mod tests {
 
     #[test]
     fn rules_reading_the_graph_are_identified_for_downgrade() {
-        let ids = graph_rule_ids(&[rule_using("untested"), rule_using("file_path")]);
+        let ids = graph_rule_ids(&[rule_using("no_direct_test"), rule_using("file_path")]);
         assert_eq!(ids.len(), 1);
-        assert!(ids.contains(&"uses-untested".into()));
+        assert!(ids.contains(&"uses-no_direct_test".into()));
     }
 
     #[test]

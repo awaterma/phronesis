@@ -394,7 +394,7 @@ enum GraphCmd {
     ///   graph query                              # what relations exist
     ///   graph query tested_by fire_all            # which tests cover it
     ///   graph query imports '*' crate::wme        # what depends on wme
-    ///   graph query untested                      # every untested function
+    ///   graph query no_direct_test                # functions with no attributed direct test
     Query {
         /// Relation, then positional argument constraints. `*` matches any.
         #[arg(value_name = "RELATION [ARG...]")]

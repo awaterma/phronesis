@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn derived_edge_round_trips_and_keeps_derived_flag() {
-        let edges = vec![Edge::derived("untested", &["crate::network::fire"])];
+        let edges = vec![Edge::derived("no_direct_test", &["crate::network::fire"])];
         let (parsed, _) = parse_jsonl(&to_jsonl(&edges));
         assert_eq!(parsed, edges);
         assert!(parsed[0].d);

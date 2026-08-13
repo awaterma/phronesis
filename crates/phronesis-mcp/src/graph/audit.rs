@@ -166,7 +166,7 @@ mod tests {
                 cond("file_type", &["?file", "production"]),
                 cond("defines_fn", &["?file", "?func"]),
                 cond("calls_api", &["?func", "?api"]),
-                cond("untested", &["?func"]),
+                cond("no_direct_test", &["?func"]),
             ],
             actions: vec![Action {
                 action_type: "constraint_warning".into(),
@@ -266,7 +266,11 @@ mod tests {
         let hits = audit_graph_rules(d.path(), &[untested_rule()]).await;
         assert!(!hits.is_empty());
         for h in &hits {
-            assert!(!h.detail.contains("untested"), "prose leaked: {}", h.detail);
+            assert!(
+                !h.detail.contains("no_direct_test"),
+                "prose leaked: {}",
+                h.detail
+            );
             assert!(h.detail.len() < 120, "detail too long: {}", h.detail);
         }
     }

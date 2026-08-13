@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn compaction_discards_all_derived_edges_wholesale() {
         let existing = vec![
-            Edge::derived("untested", &["crate::g"]),
+            Edge::derived("no_direct_test", &["crate::g"]),
             Edge::base("imports", &["a", "b"], "other.rs"),
         ];
         let out = compact(existing, "src/f.rs", vec![]);
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn compaction_refuses_to_persist_derived_edges_supplied_as_fresh() {
-        let fresh = vec![Edge::derived("untested", &["crate::h"])];
+        let fresh = vec![Edge::derived("no_direct_test", &["crate::h"])];
         assert!(compact(vec![], "src/f.rs", fresh).is_empty());
     }
 

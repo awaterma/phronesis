@@ -164,18 +164,23 @@ fn has_duplicate_keys_in_mapping(content: &str) -> bool {
     let mut indents: Vec<usize> = Vec::new();
     stack.push(std::collections::HashSet::new());
     indents.push(0);
+    let mut block_scalar_indent: Option<usize> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty()
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("---")
-            || trimmed.starts_with("...")
-        {
+        if trimmed.is_empty() {
             continue;
         }
-
         let indent = line.len() - line.trim_start().len();
+        if let Some(parent_indent) = block_scalar_indent {
+            if indent > parent_indent {
+                continue;
+            }
+            block_scalar_indent = None;
+        }
+        if trimmed.starts_with('#') || trimmed.starts_with("---") || trimmed.starts_with("...") {
+            continue;
+        }
 
         // A block-sequence item starts a fresh node. Mapping keys in sibling
         // items belong to different mappings even though they share the same
@@ -238,6 +243,10 @@ fn has_duplicate_keys_in_mapping(content: &str) -> bool {
                 return true; // Duplicate found!
             }
             keys.insert(key_str);
+            let value = mapping_text[colon_pos + 1..].trim_start();
+            if value.starts_with('|') || value.starts_with('>') {
+                block_scalar_indent = Some(mapping_indent);
+            }
         }
     }
     false
@@ -973,6 +982,27 @@ rules:
         assert!(!has_duplicate_keys_in_mapping(content));
         let out = extract_yaml("config/srd_rete_rules.yaml", content, &ctx());
         assert!(!out.parse_failed);
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+        assert!(!out.edges.is_empty());
+    }
+
+    #[test]
+    fn block_scalar_prompt_content_is_not_scanned_as_mapping_keys() {
+        let content = r#"
+prompt: |
+  {"action_type": "add_combatant", "target": "first"}
+  {"action_type": "send_notification", "target": "second"}
+  [RESOLVED: yes]
+  [RESOLVED: no]
+name: Waterman's Camp
+folded: >-
+  key: first
+  key: repeated prose is still scalar text
+version: 1
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/watermans_camp.yaml", content, &ctx());
         assert_eq!(out.skipped, 0);
         assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
         assert!(!out.edges.is_empty());

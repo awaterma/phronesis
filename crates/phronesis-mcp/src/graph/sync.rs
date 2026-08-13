@@ -33,7 +33,7 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// `graph_file` and multilingual dialect support; format 4 remains the
 /// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 9;
+pub const GRAPH_FORMAT: u32 = 10;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -615,9 +615,11 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
         let extracted = extract_one(root, &rel, &content, &units, Some(&cue_index));
         skipped += extracted.skipped;
         if extracted.parse_failed {
-            // Not indexed: a rebuild cannot invent evidence for a file it
-            // cannot read, and claiming to have indexed it would report the
-            // graph fresh while the file contributes nothing.
+            // A complete rebuild has observed this exact content and
+            // intentionally excluded it. Record the hash so status does not
+            // misreport a permanently skipped input as post-build drift.
+            // A later edit changes the hash and correctly becomes stale.
+            index.entries.insert(rel, hash_content(&content));
             continue;
         }
         base.extend(extracted.edges);
@@ -801,6 +803,23 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_rebuild_records_intentionally_skipped_content_as_observed() {
+        let d = project();
+        write(d.path(), "config/broken.json", "{not valid json");
+
+        let outcome = rebuild(d.path()).expect("rebuild");
+        assert!(outcome.skipped > 0);
+        let index = load_index(&index_path(d.path())).expect("index");
+        assert_eq!(check_freshness(d.path(), &index), Freshness::Fresh);
+
+        write(d.path(), "config/broken.json", "{still not valid json");
+        assert!(matches!(
+            check_freshness(d.path(), &index),
+            Freshness::Stale { .. }
+        ));
+    }
+
+    #[test]
     fn an_index_without_a_format_header_reads_as_format_zero() {
         // The shape written before identity versioning existed.
         let d = project();
@@ -913,7 +932,7 @@ mod tests {
         write(d.path(), "src/a.rs", "fn f() {}");
         on_save(d.path(), "src/a.rs", "fn f() {}").expect("save");
         assert!(
-            has(d.path(), "untested"),
+            has(d.path(), "no_direct_test"),
             "derived facts must be current after every save, not only after rebuild"
         );
     }
@@ -923,13 +942,13 @@ mod tests {
         let d = project();
         write(d.path(), "src/a.rs", "fn fire() {}");
         on_save(d.path(), "src/a.rs", "fn fire() {}").expect("save");
-        assert!(has(d.path(), "untested"));
+        assert!(has(d.path(), "no_direct_test"));
 
         let test_src = "#[test]\nfn t() { fire(); }";
         write(d.path(), "tests/a.rs", test_src);
         on_save(d.path(), "tests/a.rs", test_src).expect("save");
         assert!(
-            !has(d.path(), "untested"),
+            !has(d.path(), "no_direct_test"),
             "coverage is whole-repo: a test elsewhere must clear it"
         );
     }
@@ -967,7 +986,7 @@ mod tests {
         on_save(d.path(), "src/a.rs", "fn f() {}").expect("save");
         let untested: Vec<_> = edges(d.path())
             .into_iter()
-            .filter(|e| e.p == "untested")
+            .filter(|e| e.p == "no_direct_test")
             .collect();
         assert_eq!(untested.len(), 1);
     }

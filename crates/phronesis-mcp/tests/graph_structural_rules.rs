@@ -35,7 +35,7 @@ fn rules_json(severity: &str) -> String {
           {{"file_type":["?file","production"]}},
           {{"defines_fn":["?file","?func"]}},
           {{"calls_api":["?func","expect"]}},
-          {{"untested":["?func"]}}
+          {{"no_direct_test":["?func"]}}
         ],
         "then":{{"{severity}":"`?file` defines `?func`, which calls a panicking API and has no direct test."}}
     }}]}}"#

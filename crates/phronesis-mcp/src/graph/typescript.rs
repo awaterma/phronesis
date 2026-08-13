@@ -356,7 +356,7 @@ impl Sensor<'_> {
     /// anything was verified. This is the one case among the member-call
     /// forms above where under-counting (treating it as "no coverage") is
     /// the *safe* direction — the opposite of every other form here, where
-    /// under-counting would produce a false "untested" accusation.
+    /// under-counting would produce a false "no_direct_test" accusation.
     fn is_test_invocation(&self, function: Node) -> bool {
         match function.kind() {
             "identifier" => matches!(text(function, self.source), "it" | "test"),

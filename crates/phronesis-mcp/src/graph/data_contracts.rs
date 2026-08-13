@@ -225,6 +225,9 @@ fn function_chunks(content: &str) -> impl Iterator<Item = &str> {
 fn literal_paths(chunk: &str, suffixes: &[&str]) -> BTreeSet<String> {
     let is_path = |value: &str| {
         !value.chars().any(char::is_whitespace)
+            && !value.contains(['{', '}'])
+            && !value.starts_with("cargo:")
+            && !value.starts_with('=')
             && suffixes.iter().any(|suffix| value.ends_with(suffix))
     };
     let mut paths = BTreeSet::new();
@@ -802,6 +805,20 @@ fn load() {
             std::fs::write("config/manifest.yaml", output.stdout)
                 .expect("Failed to write manifest.yaml");
             println!("Exported base manifest.yaml");
+            "#,
+            &[".yaml", ".yml", ".json"],
+        );
+        assert_eq!(paths, BTreeSet::from(["config/manifest.yaml".to_string()]));
+    }
+
+    #[test]
+    fn cargo_directives_and_format_templates_are_not_literal_paths() {
+        let paths = literal_paths(
+            r#"
+            println!("cargo:rerun-if-changed=config/parser_tables.yaml");
+            let manifest = format!("{}/manifest.yaml", root);
+            let module = format!("{}/modules/{}.yaml", root, name);
+            let actual = "config/manifest.yaml";
             "#,
             &[".yaml", ".yml", ".json"],
         );

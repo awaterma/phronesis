@@ -1112,7 +1112,7 @@ mod tests {
         assert!(
             out.edges
                 .iter()
-                .all(|e| e.p != "untested" && e.p != "in_cycle")
+                .all(|e| e.p != "no_direct_test" && e.p != "in_cycle")
         );
     }
 }

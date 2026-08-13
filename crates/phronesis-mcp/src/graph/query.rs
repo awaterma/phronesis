@@ -128,7 +128,7 @@ mod tests {
             Edge::base("tested_by", &["f", "t::one"], "tests/t.rs"),
             Edge::base("tested_by", &["f", "t::two"], "tests/t.rs"),
             Edge::base("imports", &["crate::a", "crate::b"], "src/a.rs"),
-            Edge::derived("untested", &["crate::b::g"]),
+            Edge::derived("no_direct_test", &["crate::b::g"]),
         ]
     }
 
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn derived_edges_are_queryable_like_any_other() {
         let g = graph();
-        let p = Pattern::parse(&toks(&["untested"]));
+        let p = Pattern::parse(&toks(&["no_direct_test"]));
         assert_eq!(query(&g, &p, 0).len(), 1);
     }
 
@@ -252,6 +252,6 @@ mod tests {
         let g = graph();
         let s = relation_summary(&g);
         assert_eq!(s[0], ("defines_fn".to_string(), 2));
-        assert!(s.iter().any(|(r, _)| r == "untested"));
+        assert!(s.iter().any(|(r, _)| r == "no_direct_test"));
     }
 }

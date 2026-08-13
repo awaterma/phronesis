@@ -1,7 +1,7 @@
 //! Derived facts: whole-graph computations the engine cannot express.
 //!
 //! The engine has no negation-as-failure at the pattern level and no forward
-//! chaining, so "untested" (closed-world negation) and "in_cycle" (transitive
+//! chaining, so "no_direct_test" (closed-world negation) and "in_cycle" (transitive
 //! closure) are computed here instead (spec §4.5).
 //!
 //! Both are pure functions of the edge set — no source parsing, no I/O — which
@@ -15,7 +15,7 @@ pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
     let mut out = inventory(base);
     out.extend(data_flows_to(base));
     out.extend(configuration_lifecycle_gaps(base));
-    out.extend(untested(base));
+    out.extend(no_direct_test(base));
     out.extend(in_cycle(base));
     out
 }
@@ -140,15 +140,15 @@ fn short_name(qualified: &str) -> &str {
     qualified.rsplit("::").next().unwrap_or(qualified)
 }
 
-/// `untested(F)` for every `F` in `defines_fn` with no `tested_by` edge
-/// naming it.
+/// `no_direct_test(F)` for every `F` in `defines_fn` with no `tested_by`
+/// edge naming it.
 ///
 /// Coverage is matched by short name, which **over-approximates** it: two
 /// functions sharing a name are both considered covered when either is
 /// tested. That direction is chosen deliberately. A missed warning is
-/// recoverable; a false "untested" verdict blocks legitimate work and is what
+/// recoverable; a false "no_direct_test" verdict blocks legitimate work and is what
 /// destroys trust in an enforcement layer (spec §4.4).
-pub fn untested(base: &[Edge]) -> Vec<Edge> {
+pub fn no_direct_test(base: &[Edge]) -> Vec<Edge> {
     let covered: BTreeSet<&str> = base_edges(base, "tested_by")
         .filter_map(|e| e.a.first())
         .map(|f| short_name(f))
@@ -160,7 +160,7 @@ pub fn untested(base: &[Edge]) -> Vec<Edge> {
         .filter(|f| !covered.contains(short_name(f)))
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .map(|f| Edge::derived("untested", &[f]))
+        .map(|f| Edge::derived("no_direct_test", &[f]))
         .collect()
 }
 
@@ -356,20 +356,20 @@ mod tests {
 
     #[test]
     fn function_with_no_test_edge_is_untested() {
-        let out = untested(&[defines("a.rs", "crate::a")]);
-        assert_eq!(args_of(&out, "untested").len(), 1);
+        let out = no_direct_test(&[defines("a.rs", "crate::a")]);
+        assert_eq!(args_of(&out, "no_direct_test").len(), 1);
         assert_eq!(out[0].a, vec!["crate::a"]);
     }
 
     #[test]
     fn function_with_a_test_edge_is_not_untested() {
         let base = vec![defines("a.rs", "crate::a"), tested("crate::a", "t::ta")];
-        assert!(untested(&base).is_empty());
+        assert!(no_direct_test(&base).is_empty());
     }
 
     #[test]
     fn untested_edges_are_marked_derived() {
-        let out = untested(&[defines("a.rs", "crate::a")]);
+        let out = no_direct_test(&[defines("a.rs", "crate::a")]);
         assert!(out.iter().all(|e| e.d && e.src.is_empty()));
     }
 
@@ -380,7 +380,7 @@ mod tests {
             defines("a.rs", "crate::b"),
             tested("crate::a", "t::ta"),
         ];
-        let out = untested(&base);
+        let out = no_direct_test(&base);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].a, vec!["crate::b"]);
     }
@@ -392,7 +392,7 @@ mod tests {
             defines("a.rs", "crate::a"),
             tested("crate::a", "t::elsewhere"),
         ];
-        assert!(untested(&base).is_empty());
+        assert!(no_direct_test(&base).is_empty());
     }
 
     #[test]
@@ -401,31 +401,31 @@ mod tests {
         // `tested_by` carries a bare name while `defines_fn` carries a
         // qualified one. Coverage matches on the final segment.
         let base = vec![defines("a.rs", "crate::a::fire"), tested("fire", "t::ta")];
-        assert!(untested(&base).is_empty());
+        assert!(no_direct_test(&base).is_empty());
     }
 
     #[test]
     fn a_shared_short_name_is_treated_as_covered() {
         // Deliberate over-approximation of coverage: a missed warning is
-        // recoverable, a false "untested" block is a trust-killer.
+        // recoverable, a false "no_direct_test" block is a trust-killer.
         let base = vec![
             defines("a.rs", "crate::a::fire"),
             defines("b.rs", "crate::b::fire"),
             tested("fire", "t::ta"),
         ];
-        assert!(untested(&base).is_empty());
+        assert!(no_direct_test(&base).is_empty());
     }
 
     #[test]
     fn untested_edges_keep_the_qualified_name() {
-        let out = untested(&[defines("a.rs", "crate::a::fire")]);
+        let out = no_direct_test(&[defines("a.rs", "crate::a::fire")]);
         assert_eq!(out[0].a, vec!["crate::a::fire"]);
     }
 
     #[test]
     fn duplicate_definitions_yield_one_untested_edge() {
         let base = vec![defines("a.rs", "crate::a"), defines("a.rs", "crate::a")];
-        assert_eq!(untested(&base).len(), 1);
+        assert_eq!(no_direct_test(&base).len(), 1);
     }
 
     // ─── in_cycle ───────────────────────────────────────────────────
@@ -512,7 +512,7 @@ mod tests {
             imports("b", "a"),
         ];
         let out = derive_all(&base);
-        assert_eq!(args_of(&out, "untested").len(), 1);
+        assert_eq!(args_of(&out, "no_direct_test").len(), 1);
         assert_eq!(args_of(&out, "in_cycle").len(), 2);
     }
 
@@ -586,8 +586,8 @@ mod tests {
         let base = vec![
             defines("a.rs", "crate::a"),
             tested("crate::a", "t::ta"),
-            Edge::derived("untested", &["crate::a"]),
+            Edge::derived("no_direct_test", &["crate::a"]),
         ];
-        assert!(args_of(&derive_all(&base), "untested").is_empty());
+        assert!(args_of(&derive_all(&base), "no_direct_test").is_empty());
     }
 }

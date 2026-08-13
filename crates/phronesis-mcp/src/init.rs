@@ -2146,7 +2146,7 @@ fn structural_rules() -> Value {
                         {"calls_api": ["?func", "todo"]},
                         {"calls_api": ["?func", "unimplemented"]}
                     ]},
-                    {"untested": ["?func"]}
+                    {"no_direct_test": ["?func"]}
                 ],
                 "then": {"warn": "`?func` (in ?file) calls a panicking API from the unwrap/expect/panic/todo/unimplemented family, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged."}
             },
@@ -2172,7 +2172,7 @@ fn structural_rules() -> Value {
                     {"file_type": ["?file", "production"]},
                     {"defines_fn": ["?file", "?func"]},
                     {"calls_api": ["?func", "non_null_assertion"]},
-                    {"untested": ["?func"]}
+                    {"no_direct_test": ["?func"]}
                 ],
                 "then": {"warn": "`?func` uses a non-null assertion (`!`) and has no direct test. `!` tells the compiler a value cannot be null and produces no runtime check, so when the assumption is wrong the failure surfaces later and elsewhere, usually as a TypeError. Add a test that exercises the null case, or narrow the type so the assertion is unnecessary."}
             },
@@ -2646,7 +2646,10 @@ mod tests {
         assert!(graph.exists(), "init must leave a usable graph behind");
         let body = std::fs::read_to_string(&graph).expect("read graph");
         assert!(body.contains("defines_fn"), "graph should hold real edges");
-        assert!(body.contains("untested"), "derived facts must be present");
+        assert!(
+            body.contains("no_direct_test"),
+            "derived facts must be present"
+        );
     }
 
     #[test]

@@ -294,7 +294,8 @@ pub struct SubmitSuggestionParams {
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct QueryCodeGraphParams {
     /// Relation to match, e.g. `tested_by`, `defines_fn`, `imports`,
-    /// `untested`, `in_cycle`, `calls_api`, `file_type`, `declares_module`.
+    /// `no_direct_test`, `in_cycle`, `calls_api`, `file_type`,
+    /// `declares_module`.
     /// Omit to list the available relations and their edge counts.
     #[serde(default)]
     pub relation: Option<String>,

@@ -157,7 +157,7 @@ impl Sensor<'_> {
 
         // pytest collects `test_*` functions, at module level or as methods
         // of a `Test*` class. Those are coverage sources, not subjects — a
-        // test that is itself "untested" is noise, and a helper in a test
+        // test that is itself "no_direct_test" is noise, and a helper in a test
         // file is not evidence that anything was verified.
         if name.starts_with("test_") {
             for callee in self.called_names(body) {

@@ -593,17 +593,22 @@ pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
 /// Atomically write a rules file to `path`. Creates parent directories if needed
 /// and preserves a single `.bak` of the previous contents. Emits v2 shape.
 pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError> {
-    let existing_binds: HashMap<String, Option<bool>> = read_source(path)
+    let existing: HashMap<String, SourceRule> = read_source(path)
         .unwrap_or_default()
         .into_iter()
-        .map(|rule| (rule.id, rule.binds))
+        .map(|rule| (rule.id.clone(), rule))
         .collect();
     let sources: Vec<SourceRule> = file
         .rules
         .iter()
         .map(|rule| {
             let mut source = diskrule_to_source(rule);
-            source.binds = existing_binds.get(&rule.id).copied().flatten();
+            if let Some(previous) = existing.get(&rule.id) {
+                source.binds = previous.binds;
+                source.audit = source.audit.or(previous.audit);
+                source.silent = source.silent.or(previous.silent);
+                source.doc_excepted = source.doc_excepted.or(previous.doc_excepted);
+            }
             source
         })
         .collect();
@@ -1033,6 +1038,34 @@ mod tests {
             }],
         };
         write_atomic(&path, &rf).unwrap();
+        let reread = read(&path).unwrap();
+        assert_eq!(reread.rules[0].audit, Some(true));
+    }
+
+    #[test]
+    fn atomic_rewrite_preserves_existing_audit_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        let mut original = disk("r1", "audit");
+        original.audit = Some(true);
+        write_atomic(
+            &path,
+            &RulesFile {
+                rules: vec![original],
+            },
+        )
+        .unwrap();
+
+        let replacement = disk("r1", "audit");
+        assert_eq!(replacement.audit, None);
+        write_atomic(
+            &path,
+            &RulesFile {
+                rules: vec![replacement],
+            },
+        )
+        .unwrap();
+
         let reread = read(&path).unwrap();
         assert_eq!(reread.rules[0].audit, Some(true));
     }
