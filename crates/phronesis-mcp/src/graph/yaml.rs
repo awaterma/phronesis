@@ -185,7 +185,11 @@ fn has_duplicate_keys_in_mapping(content: &str) -> bool {
             .strip_prefix('-')
             .filter(|rest| rest.chars().next().is_none_or(char::is_whitespace))
         {
-            while indents.last().is_some_and(|top| *top >= indent) {
+            // Drop the prior item's deeper scopes, but preserve the enclosing
+            // mapping at the sequence indicator's own indentation. This is
+            // required for YAML's valid indentless-sequence form:
+            // `rules:\n- id: ...`.
+            while indents.last().is_some_and(|top| *top > indent) {
                 indents.pop();
                 stack.pop();
             }
@@ -224,8 +228,12 @@ fn has_duplicate_keys_in_mapping(content: &str) -> bool {
             if key_str.is_empty() || key_str == "{" || key_str == "}" {
                 continue;
             }
-            // stack is always non-empty (top level initialized).
-            let keys = stack.last_mut().unwrap();
+            // Malformed or future scanner states must not crash a whole graph
+            // rebuild. The top-level scope should always exist, but treat a
+            // violated invariant as unclassifiable rather than panicking.
+            let Some(keys) = stack.last_mut() else {
+                continue;
+            };
             if keys.contains(&key_str) {
                 return true; // Duplicate found!
             }
@@ -909,6 +917,65 @@ groups:
         let out = extract_yaml("config/nested.yaml", content, &ctx());
         assert_eq!(out.skipped, 0);
         assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+    }
+
+    #[test]
+    fn cue_style_indentless_record_list_preserves_enclosing_scope() {
+        let content = r#"
+rules:
+- id: first_rule
+  when: alpha
+- id: second_rule
+  when: beta
+metadata:
+  version: 1
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/srd_rete_rules.yaml", content, &ctx());
+        assert!(!out.parse_failed);
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+        assert!(!out.edges.is_empty());
+    }
+
+    #[test]
+    fn root_sequence_of_records_does_not_empty_the_scope_stack() {
+        let content = r#"
+- id: first_rule
+  when: alpha
+- id: second_rule
+  when: beta
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/rules.yaml", content, &ctx());
+        assert!(!out.parse_failed);
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+    }
+
+    #[test]
+    fn nested_indentless_actions_sequence_keeps_parent_item_scope() {
+        let content = r#"
+rules:
+- id: first_rule
+  when: alpha
+  actions:
+  - type: warn
+    message: first
+  - type: log
+    message: second
+- id: second_rule
+  when: beta
+  actions:
+  - type: block
+    message: third
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/srd_rete_rules.yaml", content, &ctx());
+        assert!(!out.parse_failed);
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+        assert!(!out.edges.is_empty());
     }
 
     // ─── unsafe tags ────────────────────────────────────────────────
