@@ -100,6 +100,7 @@ fn action_to_consequence(
             bound_facts: bound_facts.to_vec(),
             bindings: Default::default(),
             fact_sources: fact_sources.clone(),
+            decisions: Default::default(),
         },
     }
 }

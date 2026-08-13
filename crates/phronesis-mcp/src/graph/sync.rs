@@ -33,7 +33,7 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// `graph_file` and multilingual dialect support; format 4 remains the
 /// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 8;
+pub const GRAPH_FORMAT: u32 = 9;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -195,6 +195,31 @@ fn tracked_files(root: &Path) -> Vec<String> {
     out
 }
 
+fn decision_input_files(root: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    if root.join(".phronesis/rules.json").is_file() {
+        out.push(".phronesis/rules.json".to_string());
+    }
+    let dir = root.join(".phronesis/wiki/decisions");
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("md")
+                || path.file_name().and_then(|name| name.to_str()) == Some("README.md")
+            {
+                continue;
+            }
+            if let Ok(rel) = path.strip_prefix(root)
+                && let Some(rel) = rel.to_str()
+            {
+                out.push(rel.replace('\\', "/"));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Compare the index against what is on disk under `root`.
 pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     // An empty index is "nothing built yet", which the per-file loop below
@@ -211,6 +236,7 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     if root.join(".phronesis/graph.toml").is_file() {
         on_disk.push(".phronesis/graph.toml".to_string());
     }
+    on_disk.extend(decision_input_files(root));
 
     for rel in &on_disk {
         let current = std::fs::read_to_string(root.join(rel))
@@ -417,7 +443,12 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
                 .and_then(|value| value.to_str()),
             Some("rs" | "json" | "yaml" | "yml")
         );
-    if file_path.ends_with(".cue") || file_path == ".phronesis/graph.toml" || data_contract_input {
+    if file_path.ends_with(".cue")
+        || file_path == ".phronesis/graph.toml"
+        || file_path == ".phronesis/rules.json"
+        || file_path.starts_with(".phronesis/wiki/decisions/")
+        || data_contract_input
+    {
         return rebuild(root);
     }
     if !is_tracked(file_path) {
@@ -504,12 +535,6 @@ pub fn record_from_disk(root: &Path, file_path: &str) {
         return;
     }
     let file_path = rel.as_str();
-    if file_path == ".phronesis/rules.json" {
-        if let Err(error) = reconcile_rules(root) {
-            tracing::debug!("graph sensor could not reconcile changed rules: {error}");
-        }
-        return;
-    }
     let content = match std::fs::read_to_string(root.join(file_path)) {
         Ok(content) => content,
         // The file is gone — a `Delete File` patch block, or a delete routed
@@ -544,7 +569,12 @@ fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
                 .and_then(|value| value.to_str()),
             Some("rs" | "json" | "yaml" | "yml")
         );
-    if file_path.ends_with(".cue") || file_path == ".phronesis/graph.toml" || data_contract_input {
+    if file_path.ends_with(".cue")
+        || file_path == ".phronesis/graph.toml"
+        || file_path == ".phronesis/rules.json"
+        || file_path.starts_with(".phronesis/wiki/decisions/")
+        || data_contract_input
+    {
         rebuild(root)?;
         return Ok(());
     }
@@ -595,10 +625,16 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     }
 
     super::data_contracts::augment(root, &mut base);
+    base.extend(super::decisions::extract(root));
     if let Ok(content) = std::fs::read_to_string(root.join(".phronesis/graph.toml")) {
         index
             .entries
             .insert(".phronesis/graph.toml".to_string(), hash_content(&content));
+    }
+    for rel in decision_input_files(root) {
+        if let Ok(content) = std::fs::read_to_string(root.join(&rel)) {
+            index.entries.insert(rel, hash_content(&content));
+        }
     }
 
     let (n_base, n_derived) = persist(root, base)?;

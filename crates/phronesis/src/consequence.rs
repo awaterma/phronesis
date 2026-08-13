@@ -102,6 +102,9 @@ pub enum Provenance {
         /// Source labels for attributed bound facts, keyed by fact ID.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         fact_sources: BTreeMap<String, String>,
+        /// Accepted ADR IDs governing this rule.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        decisions: Vec<String>,
     },
 
     /// Returned by a deterministic lookup tool. `tool` is a stable
@@ -133,6 +136,9 @@ pub enum Provenance {
         /// Source labels for attributed bound facts, keyed by fact ID.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         fact_sources: BTreeMap<String, String>,
+        /// Accepted ADR IDs governing this rule.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        decisions: Vec<String>,
         tool: String,
         schema_version: u8,
     },

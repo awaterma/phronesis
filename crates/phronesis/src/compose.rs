@@ -177,6 +177,7 @@ fn make_consequence(
             bound_facts: context.bound_facts.to_vec(),
             bindings: Default::default(),
             fact_sources: context.fact_sources.clone(),
+            decisions: Default::default(),
             tool: tool.name().to_string(),
             schema_version: tool.schema_version(),
         },

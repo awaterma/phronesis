@@ -12,6 +12,7 @@ pub mod audit;
 pub mod bindings;
 pub mod cue;
 pub mod data_contracts;
+pub mod decisions;
 pub mod derive;
 pub mod extract;
 pub mod helm3;

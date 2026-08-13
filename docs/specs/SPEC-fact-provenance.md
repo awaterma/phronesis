@@ -164,6 +164,28 @@ need to replace origin metadata must retract and reassert.
 
 **R9e.** Integration test: a hook invocation that fires structural rules (e.g., cycle detection) produces a consequence whose provenance includes graph-origin values.
 
+### R10. Architectural-decision traceability
+
+Accepted ADRs under `.phronesis/wiki/decisions/` project their explicit
+`enforces` declarations into the graph as
+`decision_enforces(decision, rule)` and the navigational inverse
+`rule_governed_by(rule, decision)`. Only existing rule IDs produce those
+resolved relations.
+
+Unresolved and stale declarations remain visible as evidence rather than being
+guessed or silently dropped:
+
+- `decision_missing_rule(decision, rule)`
+- `proposed_decision_enforces(decision, rule)`
+- `superseded_decision_enforces(decision, rule)`
+- `rule_without_decision(rule)`
+
+Rule-firing and rule-driven-lookup provenance carries a deterministic list of
+governing decision IDs. Hook action-log projections retain that list so a later
+reader can traverse consequence → rule → ADR as well as consequence → bound
+fact → source. ADR and rules-file changes participate in graph freshness and
+trigger a full rebuild because the relationship is repository-wide.
+
 ## Design decisions
 
 ### Why `Option<String>` not `enum`?

@@ -289,6 +289,7 @@ impl ProductionNetwork {
                     bound_facts: bound_facts.clone(),
                     bindings: agenda_item.bindings.bindings.clone(),
                     fact_sources: fact_sources.clone(),
+                    decisions: Default::default(),
                 },
             });
         }

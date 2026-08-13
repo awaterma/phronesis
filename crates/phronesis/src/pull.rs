@@ -165,6 +165,7 @@ impl Consequence {
                 bound_facts: context.bound_facts,
                 bindings: Default::default(),
                 fact_sources: context.fact_sources,
+                decisions: Default::default(),
             },
         })
     }
