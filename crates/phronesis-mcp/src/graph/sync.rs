@@ -9,7 +9,7 @@
 //! silently drifted must not be allowed to block work, so drift is detected
 //! and downgrades enforcement to warn.
 
-use super::derive::derive_all;
+use super::derive::{canonicalize_tested_by, derive_all};
 use super::extract::{DEFAULT_WATCHLIST, extract_rust};
 use super::helm3;
 use super::model::Edge;
@@ -33,7 +33,7 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// `graph_file` and multilingual dialect support; format 4 remains the
 /// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 12;
+pub const GRAPH_FORMAT: u32 = 13;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -521,7 +521,26 @@ fn extract_one(
 }
 
 /// Recompute derived edges over `base` and persist both sets.
-fn persist(root: &Path, base: Vec<Edge>) -> std::io::Result<(usize, usize)> {
+fn persist(root: &Path, mut base: Vec<Edge>) -> std::io::Result<(usize, usize)> {
+    canonicalize_tested_by(&mut base);
+    let definition_ids = base
+        .iter()
+        .filter(|edge| !edge.d && edge.p == "defines_fn")
+        .filter_map(|edge| edge.a.get(1))
+        .collect::<BTreeSet<_>>();
+    if let Some(invalid) = base.iter().find(|edge| {
+        !edge.d
+            && edge.p == "tested_by"
+            && edge
+                .a
+                .first()
+                .is_none_or(|target| !definition_ids.contains(target))
+    }) {
+        return Err(std::io::Error::other(format!(
+            "tested_by target is not a canonical defines_fn identity: {:?}",
+            invalid.a.first()
+        )));
+    }
     let derived = derive_all(&base);
     let (n_base, n_derived) = (base.len(), derived.len());
     let mut all = base;

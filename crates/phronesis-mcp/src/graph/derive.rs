@@ -10,6 +10,73 @@
 use super::model::Edge;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Replace extractor-local bare `tested_by` callees with canonical
+/// `defines_fn` identities using only same-module or explicit-import evidence.
+/// Unresolved and ambiguous calls are discarded rather than attributed to
+/// every definition sharing a leaf name.
+pub fn canonicalize_tested_by(base: &mut Vec<Edge>) {
+    let definitions = base_edges(base, "defines_fn")
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
+    let by_leaf = definitions.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, definition| {
+            let leaf = definition.rsplit("::").next().unwrap_or(definition);
+            map.entry(leaf.to_string())
+                .or_default()
+                .insert(definition.clone());
+            map
+        },
+    );
+    let imports = base_edges(base, "imports").fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, edge| {
+            if let (Some(from), Some(to)) = (edge.a.first(), edge.a.get(1)) {
+                map.entry(from.clone()).or_default().insert(to.clone());
+            }
+            map
+        },
+    );
+
+    let mut normalized = Vec::with_capacity(base.len());
+    for mut edge in base.drain(..) {
+        if edge.p != "tested_by" || edge.a.len() != 2 {
+            normalized.push(edge);
+            continue;
+        }
+        let callee = &edge.a[0];
+        if definitions.contains(callee) {
+            normalized.push(edge);
+            continue;
+        }
+        let test_module = edge.a[1].rsplit_once("::").map(|(module, _)| module);
+        let Some(candidates) = by_leaf.get(callee) else {
+            continue;
+        };
+        let resolved = candidates
+            .iter()
+            .filter(|candidate| {
+                let Some((module, _)) = candidate.rsplit_once("::") else {
+                    return false;
+                };
+                test_module.is_some_and(|test_module| {
+                    test_module == module
+                        || test_module
+                            .strip_prefix(module)
+                            .is_some_and(|suffix| suffix.starts_with("::"))
+                }) || test_module
+                    .and_then(|test_module| imports.get(test_module))
+                    .is_some_and(|targets| targets.contains(module))
+            })
+            .collect::<Vec<_>>();
+        if resolved.len() == 1 {
+            edge.a[0] = (*resolved[0]).clone();
+            normalized.push(edge);
+        }
+    }
+    *base = normalized;
+}
+
 /// Compute all derived edges over a complete base-edge set.
 pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
     let mut out = inventory(base);
@@ -226,34 +293,32 @@ fn base_edges<'a>(base: &'a [Edge], p: &'a str) -> impl Iterator<Item = &'a Edge
     base.iter().filter(move |e| !e.d && e.p == p)
 }
 
-/// Final segment of a qualified path (`crate::a::fire` -> `fire`).
-///
-/// The extractor cannot resolve a callee to its defining module without
-/// whole-crate name resolution, so `tested_by` carries bare callee names while
-/// `defines_fn` carries qualified ones. Matching on the final segment bridges
-/// them.
-fn short_name(qualified: &str) -> &str {
-    qualified.rsplit("::").next().unwrap_or(qualified)
-}
-
 /// `no_direct_test(F)` for every `F` in `defines_fn` with no `tested_by`
 /// edge naming it.
-///
-/// Coverage is matched by short name, which **over-approximates** it: two
-/// functions sharing a name are both considered covered when either is
-/// tested. That direction is chosen deliberately. A missed warning is
-/// recoverable; a false "no_direct_test" verdict blocks legitimate work and is what
-/// destroys trust in an enforcement layer (spec §4.4).
 pub fn no_direct_test(base: &[Edge]) -> Vec<Edge> {
     let covered: BTreeSet<&str> = base_edges(base, "tested_by")
         .filter_map(|e| e.a.first())
-        .map(|f| short_name(f))
+        .map(String::as_str)
         .collect();
+    let production_files = base_edges(base, "file_type")
+        .filter_map(|edge| {
+            (edge.a.get(1).map(String::as_str) == Some("production"))
+                .then(|| edge.a.first().map(String::as_str))
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
 
     base_edges(base, "defines_fn")
+        .filter(|edge| {
+            production_files.is_empty()
+                || edge
+                    .a
+                    .first()
+                    .is_some_and(|file| production_files.contains(file.as_str()))
+        })
         .filter_map(|e| e.a.get(1))
         .map(String::as_str)
-        .filter(|f| !covered.contains(short_name(f)))
+        .filter(|f| !covered.contains(f))
         .collect::<BTreeSet<_>>()
         .into_iter()
         .map(|f| Edge::derived("no_direct_test", &[f]))
@@ -537,6 +602,19 @@ mod tests {
     }
 
     #[test]
+    fn helpers_defined_in_test_files_are_not_production_test_gaps() {
+        let base = vec![
+            defines("src/lib.rs", "rust:app::run"),
+            defines("tests/common.rs", "rust:app#test:common::fixture"),
+            Edge::base("file_type", &["src/lib.rs", "production"], "src/lib.rs"),
+            Edge::base("file_type", &["tests/common.rs", "test"], "tests/common.rs"),
+        ];
+        let out = no_direct_test(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].a, ["rust:app::run"]);
+    }
+
+    #[test]
     fn function_with_a_test_edge_is_not_untested() {
         let base = vec![defines("a.rs", "crate::a"), tested("crate::a", "t::ta")];
         assert!(no_direct_test(&base).is_empty());
@@ -571,24 +649,27 @@ mod tests {
     }
 
     #[test]
-    fn a_test_calling_by_short_name_covers_the_qualified_function() {
-        // The extractor cannot resolve a callee to its defining module, so
-        // `tested_by` carries a bare name while `defines_fn` carries a
-        // qualified one. Coverage matches on the final segment.
-        let base = vec![defines("a.rs", "crate::a::fire"), tested("fire", "t::ta")];
+    fn an_imported_test_call_is_canonicalized_before_coverage_derivation() {
+        let mut base = vec![
+            defines("a.rs", "rust:app::a::fire"),
+            imports("rust:app#test:integration", "rust:app::a"),
+            tested("fire", "rust:app#test:integration::test_fire"),
+        ];
+        canonicalize_tested_by(&mut base);
+        assert_eq!(args_of(&base, "tested_by")[0][0], "rust:app::a::fire");
         assert!(no_direct_test(&base).is_empty());
     }
 
     #[test]
-    fn a_shared_short_name_is_treated_as_covered() {
-        // Deliberate over-approximation of coverage: a missed warning is
-        // recoverable, a false "no_direct_test" block is a trust-killer.
-        let base = vec![
-            defines("a.rs", "crate::a::fire"),
-            defines("b.rs", "crate::b::fire"),
-            tested("fire", "t::ta"),
+    fn an_ambiguous_bare_test_call_is_not_guessed() {
+        let mut base = vec![
+            defines("a.rs", "rust:app::a::fire"),
+            defines("b.rs", "rust:app::b::fire"),
+            tested("fire", "rust:app#test:integration::test_fire"),
         ];
-        assert!(no_direct_test(&base).is_empty());
+        canonicalize_tested_by(&mut base);
+        assert!(args_of(&base, "tested_by").is_empty());
+        assert_eq!(no_direct_test(&base).len(), 2);
     }
 
     #[test]

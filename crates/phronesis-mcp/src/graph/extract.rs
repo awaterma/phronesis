@@ -13,7 +13,12 @@ use super::model::Edge;
 use super::unit::UnitContext;
 use crate::syntax::parsed::ParsedFile;
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 use tree_sitter::Node;
+
+static MACRO_CALL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\b([_A-Za-z][_A-Za-z0-9]*)\s*\(").expect("static Rust macro call regex")
+});
 
 /// Default watched-API list. Deliberately small and explicit: `calls_api` is
 /// resolved syntactically by method name, so a broad list would over-match
@@ -349,8 +354,8 @@ impl Sensor<'_> {
         }
     }
 
-    /// Bare names of functions invoked in a body. Used only for `tested_by`,
-    /// which resolves by short name — see `derive::untested`.
+    /// Bare names of functions invoked in a body. Persistence resolves these
+    /// against canonical definitions using same-module/import evidence.
     fn called_names(&self, body: Node) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
         let mut stack = vec![body];
@@ -370,11 +375,41 @@ impl Sensor<'_> {
                 if !name.is_empty() {
                     found.insert(name);
                 }
+            } else if n.kind() == "macro_invocation" {
+                found.extend(self.called_names_in_macro(n));
             }
             let mut cursor = n.walk();
             stack.extend(n.children(&mut cursor));
         }
         found
+    }
+
+    /// Calls nested in a Rust macro token tree are opaque to tree-sitter's
+    /// ordinary `call_expression` nodes. Scan only that syntax node after
+    /// masking its parsed string/comment descendants; whole-file regexes are
+    /// deliberately avoided.
+    fn called_names_in_macro(&self, macro_node: Node) -> BTreeSet<String> {
+        let start = macro_node.start_byte();
+        let end = macro_node.end_byte();
+        let mut shaped = self.source[start..end].to_vec();
+        let mut pending = vec![macro_node];
+        while let Some(node) = pending.pop() {
+            if node != macro_node
+                && (node.kind().contains("string") || node.kind().contains("comment"))
+            {
+                let from = node.start_byte().saturating_sub(start);
+                let to = node.end_byte().saturating_sub(start).min(shaped.len());
+                shaped[from..to].fill(b' ');
+                continue;
+            }
+            let mut cursor = node.walk();
+            pending.extend(node.children(&mut cursor));
+        }
+        let shaped = String::from_utf8_lossy(&shaped);
+        MACRO_CALL_RE
+            .captures_iter(&shaped)
+            .filter_map(|captures| captures.get(1).map(|name| name.as_str().to_string()))
+            .collect()
     }
 
     /// Watched method calls and macro invocations within a body.
@@ -1220,6 +1255,18 @@ mod tests {
         let e = edges_of(&out, "tested_by");
         assert_eq!(e.len(), 1);
         assert_eq!(e[0][0], "fire");
+    }
+
+    #[test]
+    fn a_test_call_inside_an_assertion_macro_is_coverage_evidence() {
+        let out = run(
+            "tests/net.rs",
+            r#"#[test]
+fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
+        );
+        let tested = edges_of(&out, "tested_by");
+        assert!(tested.iter().any(|args| args[0] == "fire"));
+        assert!(!tested.iter().any(|args| args[0] == "fake_call"));
     }
 
     #[test]
