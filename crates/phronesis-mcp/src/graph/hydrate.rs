@@ -23,6 +23,7 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     "calls_api",
     "imports",
     "tested_by",
+    "test_reaches",
     "no_direct_test",
     "exposes",
     "calls",

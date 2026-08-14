@@ -9,7 +9,7 @@
 //! silently drifted must not be allowed to block work, so drift is detected
 //! and downgrades enforcement to warn.
 
-use super::derive::{canonicalize_tested_by, derive_all};
+use super::derive::{canonicalize_function_edges, derive_all};
 use super::extract::{DEFAULT_WATCHLIST, extract_rust};
 use super::helm3;
 use super::model::Edge;
@@ -33,7 +33,7 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// `graph_file` and multilingual dialect support; format 4 remains the
 /// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 14;
+pub const GRAPH_FORMAT: u32 = 15;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -522,7 +522,7 @@ fn extract_one(
 
 /// Recompute derived edges over `base` and persist both sets.
 fn persist(root: &Path, mut base: Vec<Edge>) -> std::io::Result<(usize, usize)> {
-    canonicalize_tested_by(&mut base);
+    canonicalize_function_edges(&mut base);
     let definition_ids = base
         .iter()
         .filter(|edge| !edge.d && edge.p == "defines_fn")

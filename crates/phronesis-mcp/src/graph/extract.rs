@@ -351,6 +351,9 @@ impl Sensor<'_> {
 
         let file_path = self.file_path.to_string();
         self.emit("defines_fn", &[&file_path, &qualified]);
+        for callee in self.called_names(body) {
+            self.emit("calls", &[&qualified, &callee]);
+        }
         for api in self.watched_calls(body) {
             self.emit("calls_api", &[&qualified, &api]);
         }
@@ -1267,6 +1270,12 @@ mod tests {
             edges_of(&out, "defines_test")[0][1],
             "rust:crate::net::exists"
         );
+    }
+
+    #[test]
+    fn production_functions_emit_raw_calls_for_whole_graph_resolution() {
+        let out = run("src/net.rs", "fn entry() { helper(); } fn helper() {}");
+        assert_eq!(edges_of(&out, "calls")[0][1], "helper");
     }
 
     #[test]

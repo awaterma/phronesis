@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// `defines_fn` identities using only same-module or explicit-import evidence.
 /// Unresolved and ambiguous calls are discarded rather than attributed to
 /// every definition sharing a leaf name.
-pub fn canonicalize_tested_by(base: &mut Vec<Edge>) {
+pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
     let definitions = base_edges(base, "defines_fn")
         .filter_map(|edge| edge.a.get(1).cloned())
         .collect::<BTreeSet<_>>();
@@ -40,16 +40,24 @@ pub fn canonicalize_tested_by(base: &mut Vec<Edge>) {
 
     let mut normalized = Vec::with_capacity(base.len());
     for mut edge in base.drain(..) {
-        if edge.p != "tested_by" || edge.a.len() != 2 {
+        if !matches!(edge.p.as_str(), "tested_by" | "calls") || edge.a.len() != 2 {
             normalized.push(edge);
             continue;
         }
-        let callee = &edge.a[0];
+        let (callee_index, caller) = if edge.p == "tested_by" {
+            (0, edge.a[1].as_str())
+        } else if edge.a[0].starts_with("rust:") {
+            (1, edge.a[0].as_str())
+        } else {
+            normalized.push(edge);
+            continue;
+        };
+        let callee = &edge.a[callee_index];
         if definitions.contains(callee) {
             normalized.push(edge);
             continue;
         }
-        let test_module = edge.a[1].rsplit_once("::").map(|(module, _)| module);
+        let caller_module = caller.rsplit_once("::").map(|(module, _)| module);
         let Some(candidates) = by_leaf.get(callee) else {
             continue;
         };
@@ -59,18 +67,18 @@ pub fn canonicalize_tested_by(base: &mut Vec<Edge>) {
                 let Some((module, _)) = candidate.rsplit_once("::") else {
                     return false;
                 };
-                test_module.is_some_and(|test_module| {
-                    test_module == module
-                        || test_module
+                caller_module.is_some_and(|caller_module| {
+                    caller_module == module
+                        || caller_module
                             .strip_prefix(module)
                             .is_some_and(|suffix| suffix.starts_with("::"))
-                }) || test_module
-                    .and_then(|test_module| imports.get(test_module))
+                }) || caller_module
+                    .and_then(|caller_module| imports.get(caller_module))
                     .is_some_and(|targets| targets.contains(module))
             })
             .collect::<Vec<_>>();
         if resolved.len() == 1 {
-            edge.a[0] = (*resolved[0]).clone();
+            edge.a[callee_index] = (*resolved[0]).clone();
             normalized.push(edge);
         }
     }
@@ -84,9 +92,44 @@ pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
     out.extend(configuration_lifecycle_gaps(base));
     out.extend(rhai_reachability(base));
     out.extend(rhai_predicate_flow(base));
+    out.extend(test_reachability(base));
     out.extend(no_direct_test(base));
     out.extend(in_cycle(base));
     out
+}
+
+/// Statically resolved transitive test reachability. `tested_by` remains the
+/// direct call evidence; this relation follows only canonical function call
+/// edges and therefore makes no claim about dynamic dispatch or execution.
+pub fn test_reachability(base: &[Edge]) -> Vec<Edge> {
+    let mut calls: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for edge in base_edges(base, "calls") {
+        let (Some(caller), Some(callee)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        if caller.starts_with("rust:") && callee.starts_with("rust:") {
+            calls.entry(caller).or_default().insert(callee);
+        }
+    }
+
+    let mut out = BTreeSet::new();
+    for edge in base_edges(base, "tested_by") {
+        let (Some(function), Some(test)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        let mut pending = vec![function.as_str()];
+        let mut seen = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            out.insert((test.as_str(), current));
+            pending.extend(calls.get(current).into_iter().flatten().copied());
+        }
+    }
+    out.into_iter()
+        .map(|(test, function)| Edge::derived("test_reaches", &[test, function]))
+        .collect()
 }
 
 pub fn rhai_predicate_flow(base: &[Edge]) -> Vec<Edge> {
@@ -654,7 +697,7 @@ mod tests {
             imports("rust:app#test:integration", "rust:app::a"),
             tested("fire", "rust:app#test:integration::test_fire"),
         ];
-        canonicalize_tested_by(&mut base);
+        canonicalize_function_edges(&mut base);
         assert_eq!(args_of(&base, "tested_by")[0][0], "rust:app::a::fire");
         assert!(no_direct_test(&base).is_empty());
     }
@@ -666,9 +709,69 @@ mod tests {
             defines("b.rs", "rust:app::b::fire"),
             tested("fire", "rust:app#test:integration::test_fire"),
         ];
-        canonicalize_tested_by(&mut base);
+        canonicalize_function_edges(&mut base);
         assert!(args_of(&base, "tested_by").is_empty());
         assert_eq!(no_direct_test(&base).len(), 2);
+    }
+
+    #[test]
+    fn ordinary_calls_are_canonicalized_without_guessing_ambiguous_names() {
+        let mut base = vec![
+            defines("a.rs", "rust:app::a::entry"),
+            defines("a.rs", "rust:app::a::helper"),
+            defines("b.rs", "rust:app::b::helper"),
+            Edge::base("calls", &["rust:app::a::entry", "helper"], "a.rs"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(base.iter().any(|edge| {
+            edge.p == "calls" && edge.a == ["rust:app::a::entry", "rust:app::a::helper"]
+        }));
+    }
+
+    #[test]
+    fn test_reachability_includes_direct_and_transitive_resolved_calls() {
+        let base = vec![
+            tested("rust:app::entry", "rust:app#test:flow::works"),
+            Edge::base(
+                "calls",
+                &["rust:app::entry", "rust:app::helper"],
+                "src/lib.rs",
+            ),
+            Edge::base(
+                "calls",
+                &["rust:app::helper", "rust:app::leaf"],
+                "src/lib.rs",
+            ),
+        ];
+        let out = test_reachability(&base);
+        assert_eq!(
+            out.iter().map(|edge| edge.a.clone()).collect::<Vec<_>>(),
+            vec![
+                vec![
+                    String::from("rust:app#test:flow::works"),
+                    String::from("rust:app::entry")
+                ],
+                vec![
+                    String::from("rust:app#test:flow::works"),
+                    String::from("rust:app::helper")
+                ],
+                vec![
+                    String::from("rust:app#test:flow::works"),
+                    String::from("rust:app::leaf")
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reachability_terminates_on_call_cycles_and_ignores_bare_calls() {
+        let base = vec![
+            tested("rust:app::a", "rust:app#test:flow::works"),
+            Edge::base("calls", &["rust:app::a", "rust:app::b"], "src/lib.rs"),
+            Edge::base("calls", &["rust:app::b", "rust:app::a"], "src/lib.rs"),
+            Edge::base("calls", &["rust:app::a", "ambiguous"], "src/lib.rs"),
+        ];
+        assert_eq!(test_reachability(&base).len(), 2);
     }
 
     #[test]
