@@ -90,7 +90,16 @@ phr-mcp install
 
 # 3. Initialize Phronesis in your project
 cd /your/project && phr-mcp init --packs rust
+
+# Inspect local state and remove only rebuildable graph caches
+phr-mcp state
+phr-mcp clean --cache
 ```
+
+`state` distinguishes authored configuration from caches, history, runtime
+state, backups, and potentially sensitive payload captures. `clean --cache`
+removes only `graph.jsonl`, `graph.index`, and `bindings.json`; rebuild them
+with `phr-mcp graph rebuild`.
 
 Codex uses the generated project-local `.codex/hooks.json` and
 `.codex/config.toml`. Review new or changed hooks with `/hooks`; Phronesis does

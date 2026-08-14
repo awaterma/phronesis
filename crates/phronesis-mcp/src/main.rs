@@ -267,6 +267,26 @@ enum Command {
         #[command(subcommand)]
         cmd: GraphCmd,
     },
+    /// Classify authored configuration, rebuildable caches, local history,
+    /// backups, and sensitive captures under `.phronesis`.
+    State {
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Emit JSON instead of a human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Conservatively remove rebuildable local state. Journals, captures,
+    /// rules, decisions, and backups are never removed.
+    Clean {
+        /// Remove graph.jsonl, graph.index, and bindings.json.
+        #[arg(long, required = true)]
+        cache: bool,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// One-command setup for a project. Writes hook config, MCP server
     /// registration, a starter rules file, and updates .gitignore.
     /// Also reachable as `setup` and `configure`.
@@ -513,6 +533,8 @@ async fn main() -> anyhow::Result<()> {
         Command::Decision { cmd } => handle_decision(cmd),
         Command::Context { cmd } => handle_context(cmd).await,
         Command::Graph { cmd } => handle_graph(cmd),
+        Command::State { path, json } => handle_state(path, json),
+        Command::Clean { cache, path } => handle_clean(cache, path),
         Command::Init {
             path,
             packs,
@@ -1375,6 +1397,58 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+fn handle_state(path: PathBuf, json: bool) -> anyhow::Result<()> {
+    let entries = phronesis_mcp::state::inspect(&path);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+    if entries.is_empty() {
+        println!("No .phronesis state found.");
+        return Ok(());
+    }
+    println!("{:<36} {:<10} {:>10}  FLAGS", "PATH", "CLASS", "SIZE");
+    for entry in &entries {
+        let mut flags = Vec::new();
+        flags.push(if entry.tracked { "tracked" } else { "local" });
+        if entry.sensitive {
+            flags.push("sensitive");
+        }
+        println!(
+            "{:<36} {:<10} {:>10}  {}",
+            entry.path,
+            entry.class,
+            phronesis_mcp::state::format_bytes(entry.bytes),
+            flags.join(", ")
+        );
+    }
+    if entries.iter().any(|entry| entry.sensitive) {
+        println!("\nSensitive captures are diagnostic input; scrub or remove them after use.");
+    }
+    println!("Rebuildable caches only: `phr-mcp clean --cache`.");
+    Ok(())
+}
+
+fn handle_clean(cache: bool, path: PathBuf) -> anyhow::Result<()> {
+    if !cache {
+        anyhow::bail!("no cleanup class selected; use --cache");
+    }
+    let removed = phronesis_mcp::state::clean_cache(&path)?;
+    if removed.is_empty() {
+        println!("No rebuildable graph cache found.");
+    } else {
+        println!("Removed rebuildable graph cache:");
+        for path in removed {
+            println!("  {path}");
+        }
+        println!(
+            "Run `phr-mcp graph rebuild --path {}` to recreate it.",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {

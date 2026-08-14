@@ -26,6 +26,8 @@ cargo run -- drift            # Multi-source drift across CLAUDE.md, memory, wik
 cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
 cargo run -- graph rebuild        # Rescan every Rust file into .phronesis/graph.jsonl (resync after git checkout/rebase)
 cargo run -- graph status         # Does the code graph still match the working tree?
+cargo run -- state                # Classify authored/cache/history/sensitive .phronesis state
+cargo run -- clean --cache        # Remove only rebuildable graph cache files
 cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shape to the v2 shape
 cargo run -- migrate-extracted-rules <path>  # Salvage pre-0.14.0 extract_rules output: strip prefixes, demote actions
 cargo run -- catalogue        # Regenerate docs/catalogue.html from the shipped packs (run from repo root)
