@@ -277,6 +277,7 @@ pub(crate) async fn assert_pack_marker_facts(network: &ReteNetwork, project_root
                 predicate: marker.predicate.to_string(),
                 args: marker.args,
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await
         {
@@ -363,6 +364,7 @@ pub(crate) async fn assert_confidence_signals(network: &ReteNetwork) {
                 predicate: fact.predicate.to_string(),
                 args: fact.args,
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await;
     }
@@ -423,6 +425,7 @@ pub(super) async fn assert_cargo_workspace_facts(network: &ReteNetwork, content:
                 predicate: "cargo_command_lacks_workspace".to_string(),
                 args: vec![cmd],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await
             .ok();
@@ -433,7 +436,10 @@ pub(super) async fn assert_cargo_workspace_facts(network: &ReteNetwork, content:
 /// `(logged, violations, warnings)`. Shared by pre- and post-check.
 pub(super) fn collect_logged(
     consequences: &[Consequence],
+    root: &std::path::Path,
 ) -> (Vec<LoggedConsequence>, Vec<String>, Vec<String>) {
+    let mut consequences = consequences.to_vec();
+    crate::graph::decisions::annotate_consequences(root, &mut consequences);
     let logged: Vec<LoggedConsequence> = consequences
         .iter()
         .filter_map(LoggedConsequence::from_consequence)
@@ -875,6 +881,8 @@ mod tests {
                 rule_id: "rust-error-thiserror-for-libraries".into(),
                 bound_facts: vec![],
                 bindings,
+                fact_sources: Default::default(),
+                decisions: vec!["error-policy".to_string()],
             },
         };
 
@@ -883,6 +891,7 @@ mod tests {
         assert_eq!(logged.action_type, "constraint_violation");
         assert!(logged.message.contains("returns Result"));
         assert_eq!(logged.bindings.get("?fn").map(String::as_str), Some("bad"));
+        assert_eq!(logged.decisions, ["error-policy"]);
     }
 
     #[test]
@@ -910,18 +919,21 @@ mod tests {
                 action_type: "constraint_violation".to_string(),
                 message: "v1".to_string(),
                 bindings: HashMap::new(),
+                decisions: Vec::new(),
             },
             LoggedConsequence {
                 rule_id: "r2".into(),
                 action_type: "constraint_warning".to_string(),
                 message: "w1".to_string(),
                 bindings: HashMap::new(),
+                decisions: Vec::new(),
             },
             LoggedConsequence {
                 rule_id: "r3".into(),
                 action_type: "constraint_violation".to_string(),
                 message: "v2".to_string(),
                 bindings: HashMap::new(),
+                decisions: Vec::new(),
             },
         ];
         let (vs, ws) = split_messages_by_action_type(&items);

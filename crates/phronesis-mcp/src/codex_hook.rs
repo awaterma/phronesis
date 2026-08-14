@@ -281,7 +281,8 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
         }
     };
 
-    let (mut logged, mut block_msgs, mut warn_msgs) = hook::collect_logged(&consequences);
+    let (mut logged, mut block_msgs, mut warn_msgs) =
+        hook::collect_logged(&consequences, &security::project_root());
     // Rules reading a drifted graph reason from evidence we cannot vouch for,
     // so the harness declines to act on their verdicts.
     if !stale_graph_rules.is_empty() {
@@ -444,7 +445,8 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             };
         }
     };
-    let (batch_logged, batch_blocks, batch_warns) = hook::collect_logged(&batch_consequences);
+    let (batch_logged, batch_blocks, batch_warns) =
+        hook::collect_logged(&batch_consequences, &security::project_root());
     logged.extend(batch_logged);
     block_msgs.extend(batch_blocks);
     warn_msgs.extend(batch_warns);
@@ -537,7 +539,8 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             }
         };
 
-        let (mut file_logged, file_blocks, file_warns) = hook::collect_logged(&consequences);
+        let (mut file_logged, file_blocks, file_warns) =
+            hook::collect_logged(&consequences, &security::project_root());
         // A drifted graph makes structural verdicts unreliable, so they warn
         // rather than block — the harness declining to enforce on evidence it
         // cannot vouch for, exactly as the Claude pre-hook does.
@@ -682,7 +685,8 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
         }
     };
 
-    let (logged, block_msgs, warn_msgs) = hook::collect_logged(&consequences);
+    let (logged, block_msgs, warn_msgs) =
+        hook::collect_logged(&consequences, &security::project_root());
 
     if !block_msgs.is_empty() || !warn_msgs.is_empty() {
         for v in &block_msgs {
@@ -953,6 +957,7 @@ async fn assert_new_content(
             predicate: "new_content".to_string(),
             args: vec![content.to_string()],
             timestamp: 0,
+            source: Some("hook".to_string()),
         })
         .await
 }
@@ -1039,6 +1044,7 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
         predicate: "file_path".to_string(),
         args: vec![file_path.to_string()],
         timestamp: 0,
+        source: Some("hook".to_string()),
     });
     for part in file_path.split('/') {
         if !part.is_empty() {
@@ -1047,6 +1053,7 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
                 predicate: "file_path_matches".to_string(),
                 args: vec![part.to_string()],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             });
         }
     }

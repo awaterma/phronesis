@@ -13,7 +13,12 @@ use super::model::Edge;
 use super::unit::UnitContext;
 use crate::syntax::parsed::ParsedFile;
 use std::collections::BTreeSet;
+use std::sync::LazyLock;
 use tree_sitter::Node;
+
+static MACRO_CALL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\b([_A-Za-z][_A-Za-z0-9]*)\s*\(").expect("static Rust macro call regex")
+});
 
 /// Default watched-API list. Deliberately small and explicit: `calls_api` is
 /// resolved syntactically by method name, so a broad list would over-match
@@ -336,6 +341,8 @@ impl Sensor<'_> {
 
         if has_test_attribute(node, self.source) {
             // Test functions are coverage sources, not coverage subjects.
+            let file_path = self.file_path.to_string();
+            self.emit("defines_test", &[&file_path, &qualified]);
             for callee in self.called_names(body) {
                 self.emit("tested_by", &[&callee, &qualified]);
             }
@@ -344,15 +351,51 @@ impl Sensor<'_> {
 
         let file_path = self.file_path.to_string();
         self.emit("defines_fn", &[&file_path, &qualified]);
+        if scope.impl_type.is_some() {
+            self.emit("defines_method", &[&file_path, &qualified]);
+        }
+        for callee in self.called_names(body) {
+            self.emit("calls", &[&qualified, &callee]);
+        }
         for api in self.watched_calls(body) {
             self.emit("calls_api", &[&qualified, &api]);
         }
     }
 
-    /// Bare names of functions invoked in a body. Used only for `tested_by`,
-    /// which resolves by short name — see `derive::untested`.
+    /// Bare names of functions invoked in a body. Persistence resolves these
+    /// against canonical definitions using same-module/import evidence.
     fn called_names(&self, body: Node) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
+        let mut receiver_types = std::collections::BTreeMap::new();
+        let mut declarations = vec![body];
+        while let Some(node) = declarations.pop() {
+            if node.kind() == "let_declaration"
+                && let Some(pattern) = node.child_by_field_name("pattern")
+                && pattern.kind() == "identifier"
+            {
+                let inferred = node
+                    .child_by_field_name("type")
+                    .map(|ty| text(ty, self.source).to_string())
+                    .or_else(|| {
+                        let value = node.child_by_field_name("value")?;
+                        if value.kind() == "call_expression" {
+                            let function = value.child_by_field_name("function")?;
+                            if function.kind() == "scoped_identifier" {
+                                return function
+                                    .child_by_field_name("path")
+                                    .map(|path| text(path, self.source).to_string());
+                            }
+                        }
+                        None
+                    })
+                    .and_then(|ty| ty.rsplit("::").next().map(str::to_string));
+                if let Some(inferred) = inferred {
+                    receiver_types.insert(text(pattern, self.source).to_string(), inferred);
+                }
+            }
+            let mut cursor = node.walk();
+            declarations.extend(node.children(&mut cursor));
+        }
         let mut stack = vec![body];
         while let Some(n) = stack.pop() {
             if n.kind() == "call_expression"
@@ -360,21 +403,66 @@ impl Sensor<'_> {
             {
                 let name = match f.kind() {
                     "identifier" => text(f, self.source).to_string(),
-                    "scoped_identifier" | "field_expression" => f
+                    "scoped_identifier" => f
                         .child_by_field_name("name")
-                        .or_else(|| f.child_by_field_name("field"))
                         .map(|x| text(x, self.source).to_string())
+                        .unwrap_or_default(),
+                    "field_expression" => f
+                        .child_by_field_name("field")
+                        .map(|x| {
+                            let method = text(x, self.source);
+                            let receiver_type = f
+                                .child_by_field_name("value")
+                                .filter(|receiver| receiver.kind() == "identifier")
+                                .and_then(|receiver| {
+                                    receiver_types.get(text(receiver, self.source))
+                                });
+                            receiver_type.map_or_else(
+                                || format!("@method:{method}"),
+                                |ty| format!("@method:{ty}:{method}"),
+                            )
+                        })
                         .unwrap_or_default(),
                     _ => String::new(),
                 };
                 if !name.is_empty() {
                     found.insert(name);
                 }
+            } else if n.kind() == "macro_invocation" {
+                found.extend(self.called_names_in_macro(n));
             }
             let mut cursor = n.walk();
             stack.extend(n.children(&mut cursor));
         }
         found
+    }
+
+    /// Calls nested in a Rust macro token tree are opaque to tree-sitter's
+    /// ordinary `call_expression` nodes. Scan only that syntax node after
+    /// masking its parsed string/comment descendants; whole-file regexes are
+    /// deliberately avoided.
+    fn called_names_in_macro(&self, macro_node: Node) -> BTreeSet<String> {
+        let start = macro_node.start_byte();
+        let end = macro_node.end_byte();
+        let mut shaped = self.source[start..end].to_vec();
+        let mut pending = vec![macro_node];
+        while let Some(node) = pending.pop() {
+            if node != macro_node
+                && (node.kind().contains("string") || node.kind().contains("comment"))
+            {
+                let from = node.start_byte().saturating_sub(start);
+                let to = node.end_byte().saturating_sub(start).min(shaped.len());
+                shaped[from..to].fill(b' ');
+                continue;
+            }
+            let mut cursor = node.walk();
+            pending.extend(node.children(&mut cursor));
+        }
+        let shaped = String::from_utf8_lossy(&shaped);
+        MACRO_CALL_RE
+            .captures_iter(&shaped)
+            .filter_map(|captures| captures.get(1).map(|name| name.as_str().to_string()))
+            .collect()
     }
 
     /// Watched method calls and macro invocations within a body.
@@ -434,6 +522,12 @@ impl Sensor<'_> {
             return;
         };
         let raw = text(arg, self.source);
+        if node
+            .named_child(0)
+            .is_some_and(|child| child.kind() == "visibility_modifier")
+        {
+            self.visit_reexport(raw, scope);
+        }
         // Take the path prefix before any brace group or glob.
         let head = raw.split(['{', '*']).next().unwrap_or("").trim();
         let mut segments: Vec<&str> = head
@@ -499,6 +593,43 @@ impl Sensor<'_> {
         let from = self.self_module.clone();
         self.emit("imports", &[&from, &target]);
     }
+
+    /// Record bounded public re-exports so a test's `use super::*` can resolve
+    /// names that the parent module deliberately places in its public scope.
+    fn visit_reexport(&mut self, raw: &str, scope: &Scope) {
+        let Some((prefix, group)) = raw.split_once("::{") else {
+            return;
+        };
+        let Some(group) = group.strip_suffix('}') else {
+            return;
+        };
+        let mut target = match prefix.split("::").next() {
+            Some("crate") => vec![self.unit.id.clone()],
+            Some("self") => scope.path.clone(),
+            Some("super") => {
+                let mut path = scope.path.clone();
+                if path.len() <= 1 {
+                    return;
+                }
+                path.pop();
+                path
+            }
+            Some(_) => scope.path.clone(),
+            None => return,
+        };
+        let mut parts = prefix
+            .split("::")
+            .filter(|part| !part.is_empty() && !matches!(*part, "crate" | "self" | "super"));
+        target.extend(parts.by_ref().map(str::to_string));
+        let target = target.join("::");
+        let from = self.self_module.clone();
+        for item in group.split(',') {
+            let item = item.split_whitespace().next().unwrap_or("");
+            if !item.is_empty() && item != "*" && !item.contains("::") {
+                self.emit("reexports", &[&from, &target, item]);
+            }
+        }
+    }
 }
 
 /// Extract every base relation from one Rust file.
@@ -507,6 +638,16 @@ pub fn extract_rust(
     content: &str,
     watchlist: &[&str],
     unit: &UnitContext,
+) -> Extracted {
+    extract_rust_at_module(file_path, content, watchlist, unit, None)
+}
+
+pub fn extract_rust_at_module(
+    file_path: &str,
+    content: &str,
+    watchlist: &[&str],
+    unit: &UnitContext,
+    module_override: Option<&str>,
 ) -> Extracted {
     if !file_path.ends_with(".rs") {
         return Extracted::default();
@@ -527,7 +668,9 @@ pub fn extract_rust(
         return Extracted::unparseable();
     }
 
-    let self_module = module_path(file_path, unit);
+    let self_module = module_override
+        .map(str::to_string)
+        .unwrap_or_else(|| module_path(file_path, unit));
     let mut sensor = Sensor {
         file_path,
         source: source.as_bytes(),
@@ -541,12 +684,111 @@ pub fn extract_rust(
     // Links a file to its module, so a rule matching on module-keyed
     // relations (`in_cycle`) can be scoped to the file being edited.
     sensor.emit("declares_module", &[file_path, &self_module]);
+    if unit.id != "rust:crate" || !unit.module_base.is_empty() {
+        sensor.emit("build_member", &[file_path, &unit.id]);
+    }
 
     let root_scope = Scope {
         path: self_module.split("::").map(str::to_string).collect(),
         impl_type: None,
     };
     sensor.walk(tree.root_node(), &root_scope);
+
+    // Rhai's host API is string-dispatched. Record only bounded literal
+    // registrations and literal script paths; dynamic names remain unknown.
+    // Restrict regexes to syntax nodes so examples in comments and string
+    // fixtures cannot masquerade as executable registrations.
+    let mut boundary_nodes = Vec::new();
+    let mut pending = vec![tree.root_node()];
+    while let Some(node) = pending.pop() {
+        if node.kind() == "call_expression"
+            && let Some(function) = node.child_by_field_name("function")
+            && let Ok(function_name) = function.utf8_text(source.as_bytes())
+            && matches!(
+                function_name
+                    .rsplit(['.', ':'])
+                    .find(|part| !part.is_empty()),
+                Some("register_fn" | "compile_file" | "compile" | "eval_file")
+            )
+            && let Ok(text) = node.utf8_text(source.as_bytes())
+        {
+            boundary_nodes.push(text.to_string());
+        } else if node.kind() == "macro_invocation"
+            && let Ok(text) = node.utf8_text(source.as_bytes())
+            && text.trim_start().starts_with("register_state_proxy!")
+        {
+            boundary_nodes.push(text.to_string());
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.children(&mut cursor));
+    }
+    let boundary_source = boundary_nodes.join("\n");
+    let registration = regex::Regex::new(r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,"#)
+        .expect("static Rhai registration regex");
+    for captures in registration.captures_iter(&boundary_source) {
+        let Some(name) = captures.get(1).map(|value| value.as_str()) else {
+            continue;
+        };
+        sensor.emit(
+            "exposes",
+            &[&self_module, &format!("rhai:callable::{name}")],
+        );
+    }
+    let named_registration = regex::Regex::new(
+        r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9:]*)\s*\)"#,
+    )
+    .expect("static named Rhai registration regex");
+    for captures in named_registration.captures_iter(&boundary_source) {
+        let (Some(name), Some(backing)) = (
+            captures.get(1).map(|value| value.as_str()),
+            captures.get(2).map(|value| value.as_str()),
+        ) else {
+            continue;
+        };
+        sensor.emit(
+            "rhai_callable_backing",
+            &[
+                &format!("rhai:callable::{name}"),
+                backing.rsplit("::").next().unwrap_or(backing),
+            ],
+        );
+    }
+    let proxy_registration =
+        regex::Regex::new(r#"register_state_proxy!\s*\([^,]+,[^,]+,\s*"([_A-Za-z][_A-Za-z0-9]*)""#)
+            .expect("static Rhai proxy registration regex");
+    for captures in proxy_registration.captures_iter(&boundary_source) {
+        if let Some(name) = captures.get(1).map(|value| value.as_str()) {
+            sensor.emit(
+                "exposes",
+                &[&self_module, &format!("rhai:callable::{name}")],
+            );
+        }
+    }
+    let proxy_backing = regex::Regex::new(
+        r#"register_state_proxy!\s*\([^,]+,[^,]+,\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9]*)"#,
+    )
+    .expect("static Rhai proxy backing regex");
+    for captures in proxy_backing.captures_iter(&boundary_source) {
+        let (Some(name), Some(backing)) = (
+            captures.get(1).map(|value| value.as_str()),
+            captures.get(2).map(|value| value.as_str()),
+        ) else {
+            continue;
+        };
+        sensor.emit(
+            "rhai_callable_backing",
+            &[&format!("rhai:callable::{name}"), backing],
+        );
+    }
+    let loader = regex::Regex::new(
+        r#"(?:compile_file|compile|eval_file)\s*\(\s*(?:PathBuf::from\s*\(\s*)?"([^"\r\n]+\.rhai)""#,
+    )
+    .expect("static Rhai loader regex");
+    for captures in loader.captures_iter(&boundary_source) {
+        if let Some(path) = captures.get(1).map(|value| value.as_str()) {
+            sensor.emit("loads_rhai_script", &[&self_module, path]);
+        }
+    }
 
     let edges = sensor
         .out
@@ -581,6 +823,84 @@ mod tests {
 
     fn run(path: &str, src: &str) -> Extracted {
         extract_rust(path, src, DEFAULT_WATCHLIST, &UnitContext::default())
+    }
+
+    #[test]
+    fn literal_rhai_registration_and_loader_are_graph_evidence() {
+        let out = run(
+            "src/bridge.rs",
+            r#"
+            fn state_attempt_stunning_strike() {}
+            fn install(engine: &mut Engine) {
+                engine.register_fn("state_attempt_stunning_strike", state_attempt_stunning_strike);
+                engine.compile_file("scripts/combat.rhai");
+            }
+            "#,
+        );
+        assert_eq!(
+            edges_of(&out, "exposes"),
+            vec![vec![
+                "rust:crate::bridge".to_string(),
+                "rhai:callable::state_attempt_stunning_strike".to_string()
+            ]]
+        );
+        assert_eq!(
+            edges_of(&out, "loads_rhai_script")[0][1],
+            "scripts/combat.rhai"
+        );
+        assert_eq!(
+            edges_of(&out, "rhai_callable_backing"),
+            vec![vec![
+                "rhai:callable::state_attempt_stunning_strike".to_string(),
+                "state_attempt_stunning_strike".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn closure_and_proxy_macro_registrations_are_exposed_rhai_names() {
+        let out = run(
+            "src/bridge.rs",
+            r#"
+            fn install(engine: &mut Engine) {
+                engine.register_fn("ability_modifier", |score: i64| score - 10);
+                register_state_proxy!(engine, state, "state_get_hp", get_hp);
+            }
+            "#,
+        );
+        let exposed = edges_of(&out, "exposes");
+        assert!(
+            exposed
+                .iter()
+                .any(|args| args[1] == "rhai:callable::ability_modifier")
+        );
+        assert!(
+            exposed
+                .iter()
+                .any(|args| args[1] == "rhai:callable::state_get_hp")
+        );
+        assert_eq!(
+            edges_of(&out, "rhai_callable_backing"),
+            vec![vec![
+                "rhai:callable::state_get_hp".to_string(),
+                "get_hp".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn rhai_boundary_examples_in_rust_comments_and_strings_are_not_evidence() {
+        let out = run(
+            "src/docs.rs",
+            r##"
+            fn example() {
+                // engine.register_fn("comment_only", comment_only);
+                let fixture = r#"engine.register_fn("fixture_only", fixture_only);"#;
+            }
+            "##,
+        );
+        assert!(edges_of(&out, "exposes").is_empty());
+        assert!(edges_of(&out, "rhai_callable_backing").is_empty());
     }
 
     // ─── module naming ──────────────────────────────────────────────
@@ -1043,6 +1363,48 @@ mod tests {
         let e = edges_of(&out, "tested_by");
         assert_eq!(e.len(), 1);
         assert_eq!(e[0][0], "fire");
+        assert_eq!(edges_of(&out, "defines_test").len(), 1);
+    }
+
+    #[test]
+    fn a_test_with_no_calls_still_has_an_independent_identity() {
+        let out = run("tests/net.rs", "#[test]\nfn exists() { assert!(true); }");
+        assert_eq!(
+            edges_of(&out, "defines_test")[0][1],
+            "rust:crate::net::exists"
+        );
+    }
+
+    #[test]
+    fn production_functions_emit_raw_calls_for_whole_graph_resolution() {
+        let out = run("src/net.rs", "fn entry() { helper(); } fn helper() {}");
+        assert_eq!(edges_of(&out, "calls")[0][1], "helper");
+    }
+
+    #[test]
+    fn inherent_methods_and_receiver_calls_keep_method_evidence() {
+        let out = run(
+            "src/state.rs",
+            "struct State; impl State { fn apply(&mut self) {} } fn use_it(state: &mut State) { state.apply(); }",
+        );
+        assert_eq!(edges_of(&out, "defines_method").len(), 1);
+        assert!(
+            edges_of(&out, "calls")
+                .iter()
+                .any(|args| args[1] == "@method:apply")
+        );
+    }
+
+    #[test]
+    fn a_test_call_inside_an_assertion_macro_is_coverage_evidence() {
+        let out = run(
+            "tests/net.rs",
+            r#"#[test]
+fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
+        );
+        let tested = edges_of(&out, "tested_by");
+        assert!(tested.iter().any(|args| args[0] == "fire"));
+        assert!(!tested.iter().any(|args| args[0] == "fake_call"));
     }
 
     #[test]
@@ -1112,7 +1474,7 @@ mod tests {
         assert!(
             out.edges
                 .iter()
-                .all(|e| e.p != "untested" && e.p != "in_cycle")
+                .all(|e| e.p != "no_direct_test" && e.p != "in_cycle")
         );
     }
 }

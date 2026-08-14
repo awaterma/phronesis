@@ -1,7 +1,7 @@
 //! Derived facts: whole-graph computations the engine cannot express.
 //!
 //! The engine has no negation-as-failure at the pattern level and no forward
-//! chaining, so "untested" (closed-world negation) and "in_cycle" (transitive
+//! chaining, so "no_direct_test" (closed-world negation) and "in_cycle" (transitive
 //! closure) are computed here instead (spec §4.5).
 //!
 //! Both are pure functions of the edge set — no source parsing, no I/O — which
@@ -10,12 +10,374 @@
 use super::model::Edge;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Replace extractor-local bare `tested_by` callees with canonical
+/// `defines_fn` identities using only same-module or explicit-import evidence.
+/// Unresolved and ambiguous calls are discarded rather than attributed to
+/// every definition sharing a leaf name.
+pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
+    let definitions = base_edges(base, "defines_fn")
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
+    let methods = base_edges(base, "defines_method")
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
+    let production_files = base_edges(base, "file_type")
+        .filter_map(|edge| {
+            (edge.a.get(1).map(String::as_str) == Some("production"))
+                .then(|| edge.a.first().cloned())
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    let mut production_definitions = base_edges(base, "defines_fn")
+        .filter(|edge| {
+            edge.a
+                .first()
+                .is_some_and(|file| production_files.contains(file))
+        })
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
+    if production_files.is_empty() {
+        production_definitions = definitions.clone();
+    }
+    let production_methods = base_edges(base, "defines_method")
+        .filter(|edge| {
+            production_files.is_empty()
+                || edge
+                    .a
+                    .first()
+                    .is_some_and(|file| production_files.contains(file))
+        })
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
+    let by_leaf = definitions.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, definition| {
+            let leaf = definition.rsplit("::").next().unwrap_or(definition);
+            map.entry(leaf.to_string())
+                .or_default()
+                .insert(definition.clone());
+            map
+        },
+    );
+    let production_by_leaf = production_definitions.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, definition| {
+            let leaf = definition.rsplit("::").next().unwrap_or(definition);
+            map.entry(leaf.to_string())
+                .or_default()
+                .insert(definition.clone());
+            map
+        },
+    );
+    let method_by_leaf = methods.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, definition| {
+            let leaf = definition.rsplit("::").next().unwrap_or(definition);
+            map.entry(leaf.to_string())
+                .or_default()
+                .insert(definition.clone());
+            map
+        },
+    );
+    let production_method_by_leaf = production_methods.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, definition| {
+            let leaf = definition.rsplit("::").next().unwrap_or(definition);
+            map.entry(leaf.to_string())
+                .or_default()
+                .insert(definition.clone());
+            map
+        },
+    );
+    let imports = base_edges(base, "imports").fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, edge| {
+            if let (Some(from), Some(to)) = (edge.a.first(), edge.a.get(1)) {
+                map.entry(from.clone()).or_default().insert(to.clone());
+            }
+            map
+        },
+    );
+    let reexports = base_edges(base, "reexports").fold(
+        BTreeMap::<(String, String), BTreeSet<String>>::new(),
+        |mut map, edge| {
+            if let (Some(module), Some(target), Some(item)) =
+                (edge.a.first(), edge.a.get(1), edge.a.get(2))
+            {
+                map.entry((module.clone(), item.clone()))
+                    .or_default()
+                    .insert(target.clone());
+            }
+            map
+        },
+    );
+
+    let mut normalized = Vec::with_capacity(base.len());
+    for mut edge in base.drain(..) {
+        if !matches!(edge.p.as_str(), "tested_by" | "calls") || edge.a.len() != 2 {
+            normalized.push(edge);
+            continue;
+        }
+        let (callee_index, caller) = if edge.p == "tested_by" {
+            (0, edge.a[1].as_str())
+        } else if edge.a[0].starts_with("rust:") {
+            (1, edge.a[0].as_str())
+        } else {
+            normalized.push(edge);
+            continue;
+        };
+        let raw_callee = &edge.a[callee_index];
+        let method_hint = raw_callee.strip_prefix("@method:");
+        let (receiver_type, callee) = method_hint.map_or((None, raw_callee.as_str()), |hint| {
+            hint.split_once(':')
+                .map_or((None, hint), |(ty, method)| (Some(ty), method))
+        });
+        let method_call = method_hint.is_some();
+        let (eligible, candidates_by_leaf) = if edge.p == "tested_by" && method_call {
+            (&production_methods, &production_method_by_leaf)
+        } else if method_call {
+            (&methods, &method_by_leaf)
+        } else if edge.p == "tested_by" {
+            (&production_definitions, &production_by_leaf)
+        } else {
+            (&definitions, &by_leaf)
+        };
+        if eligible.contains(callee) {
+            normalized.push(edge);
+            continue;
+        }
+        let caller_module = caller.rsplit_once("::").map(|(module, _)| module);
+        let Some(candidates) = candidates_by_leaf.get(callee) else {
+            continue;
+        };
+        let resolved = candidates
+            .iter()
+            .filter(|candidate| {
+                let Some((module, _)) = candidate.rsplit_once("::") else {
+                    return false;
+                };
+                let method_scope = method_call.then(|| module.rsplit_once("::")).flatten();
+                if receiver_type
+                    .is_some_and(|receiver| module.rsplit("::").next() != Some(receiver))
+                {
+                    return false;
+                }
+                let visible_imports = caller_module.into_iter().flat_map(|caller| {
+                    imports.iter().filter_map(move |(module, targets)| {
+                        (caller == module
+                            || caller
+                                .strip_prefix(module)
+                                .is_some_and(|suffix| suffix.starts_with("::")))
+                        .then_some(targets)
+                    })
+                });
+                caller_module.is_some_and(|caller_module| {
+                    caller_module == module
+                        || caller_module
+                            .strip_prefix(module)
+                            .is_some_and(|suffix| suffix.starts_with("::"))
+                }) || visible_imports.into_iter().any(|targets| {
+                    targets.contains(module)
+                        || (method_call
+                            && targets.iter().any(|imported| {
+                                method_scope.is_some_and(|(parent, ty)| {
+                                    imported == parent
+                                        || reexports
+                                            .get(&(imported.clone(), ty.to_string()))
+                                            .is_some_and(|modules| modules.contains(parent))
+                                })
+                            }))
+                        || targets.iter().any(|imported| {
+                            reexports
+                                .get(&(imported.clone(), callee.to_string()))
+                                .is_some_and(|modules| modules.contains(module))
+                        })
+                }) || receiver_type.is_some()
+            })
+            .collect::<Vec<_>>();
+        if resolved.len() == 1 {
+            edge.a[callee_index] = (*resolved[0]).clone();
+            normalized.push(edge);
+        }
+    }
+    *base = normalized;
+}
+
 /// Compute all derived edges over a complete base-edge set.
 pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
     let mut out = inventory(base);
-    out.extend(untested(base));
+    out.extend(data_flows_to(base));
+    out.extend(configuration_lifecycle_gaps(base));
+    out.extend(rhai_reachability(base));
+    out.extend(rhai_predicate_flow(base));
+    out.extend(test_reachability(base));
+    out.extend(no_direct_test(base));
     out.extend(in_cycle(base));
     out
+}
+
+/// Statically resolved transitive test reachability. `tested_by` remains the
+/// direct call evidence; this relation follows only canonical function call
+/// edges and therefore makes no claim about dynamic dispatch or execution.
+pub fn test_reachability(base: &[Edge]) -> Vec<Edge> {
+    let mut calls: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for edge in base_edges(base, "calls") {
+        let (Some(caller), Some(callee)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        if caller.starts_with("rust:") && callee.starts_with("rust:") {
+            calls.entry(caller).or_default().insert(callee);
+        }
+    }
+
+    let mut out = BTreeSet::new();
+    for edge in base_edges(base, "tested_by") {
+        let (Some(function), Some(test)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        let mut pending = vec![function.as_str()];
+        let mut seen = BTreeSet::new();
+        while let Some(current) = pending.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            out.insert((test.as_str(), current));
+            pending.extend(calls.get(current).into_iter().flatten().copied());
+        }
+    }
+    out.into_iter()
+        .map(|(test, function)| Edge::derived("test_reaches", &[test, function]))
+        .collect()
+}
+
+pub fn rhai_predicate_flow(base: &[Edge]) -> Vec<Edge> {
+    let emitted: BTreeMap<&str, BTreeSet<&str>> = base_edges(base, "rhai_emits_predicate")
+        .filter_map(|edge| Some((edge.a.get(1)?.as_str(), edge.a.first()?.as_str())))
+        .fold(BTreeMap::new(), |mut map, (predicate, script)| {
+            map.entry(predicate).or_default().insert(script);
+            map
+        });
+    let mut out = BTreeSet::new();
+    for edge in base_edges(base, "rule_uses_predicate") {
+        let (Some(rule), Some(predicate)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        if let Some(scripts) = emitted.get(predicate.as_str()) {
+            for script in scripts {
+                out.insert((script.to_string(), predicate.clone(), rule.clone()));
+            }
+        }
+    }
+    out.into_iter()
+        .map(|(script, predicate, rule)| {
+            Edge::derived("rhai_implements_predicate", &[&script, &predicate, &rule])
+        })
+        .collect()
+}
+
+pub fn rhai_reachability(base: &[Edge]) -> Vec<Edge> {
+    let mut registered_names = BTreeSet::new();
+    for edge in base_edges(base, "exposes") {
+        if let Some(callable) = edge.a.get(1)
+            && callable.starts_with("rhai:callable::")
+        {
+            registered_names.insert(callable.as_str());
+        }
+    }
+    let mut definitions: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for edge in base_edges(base, "defines_fn") {
+        if let Some(function) = edge.a.get(1) {
+            let name = function.rsplit("::").next().unwrap_or(function);
+            definitions.entry(name).or_default().insert(function);
+        }
+    }
+    let backing_names: BTreeMap<&str, BTreeSet<&str>> = base_edges(base, "rhai_callable_backing")
+        .filter_map(|edge| Some((edge.a.first()?.as_str(), edge.a.get(1)?.as_str())))
+        .fold(BTreeMap::new(), |mut map, (callable, backing)| {
+            map.entry(callable).or_default().insert(backing);
+            map
+        });
+    let mut out = BTreeSet::new();
+    for edge in base_edges(base, "calls") {
+        let (Some(script), Some(callable)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        if !callable.starts_with("rhai:callable::") || !registered_names.contains(callable.as_str())
+        {
+            continue;
+        }
+        let exposed_name = callable
+            .strip_prefix("rhai:callable::")
+            .expect("checked Rhai callable prefix");
+        let candidates = match backing_names.get(callable.as_str()) {
+            Some(names) if names.len() == 1 => *names.first().expect("one backing name"),
+            Some(_) => {
+                out.insert((
+                    "rhai_binding_diagnostic",
+                    vec![script.as_str(), callable.as_str(), "ambiguous_backing"],
+                ));
+                continue;
+            }
+            None => exposed_name,
+        };
+        match definitions.get(candidates) {
+            Some(functions) if functions.len() == 1 => {
+                let function = *functions.first().expect("one registration");
+                out.insert(("resolves_to", vec![callable.as_str(), function]));
+                out.insert(("runtime_reachable", vec![function, script.as_str()]));
+            }
+            Some(_) => {
+                out.insert((
+                    "rhai_binding_diagnostic",
+                    vec![script.as_str(), callable.as_str(), "ambiguous"],
+                ));
+            }
+            None => {
+                // Registration proves that the script call is bound, but a
+                // closure or differently named host implementation prevents
+                // a sound Rust-function identity.
+            }
+        }
+    }
+    out.into_iter()
+        .map(|(predicate, args)| Edge::derived(predicate, &args))
+        .collect()
+}
+
+/// Closed-world lifecycle evidence for project-specific policy. These facts
+/// are derived centrally because RETE conditions intentionally have no
+/// negation-as-failure. Starter packs do not warn on them: deployment outputs
+/// and hand-authored configuration make the policy project-dependent.
+pub fn configuration_lifecycle_gaps(base: &[Edge]) -> Vec<Edge> {
+    let generated = base_edges(base, "generates")
+        .filter_map(|edge| edge.a.get(1).map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let consumed = base_edges(base, "consumes_data")
+        .filter_map(|edge| edge.a.get(1).map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let mut out = Vec::new();
+    for artifact in generated.difference(&consumed) {
+        out.push(Edge::derived("generated_without_consumer", &[artifact]));
+    }
+    for artifact in consumed.difference(&generated) {
+        out.push(Edge::derived("consumed_without_producer", &[artifact]));
+    }
+    out
+}
+
+/// `data_flows_to(artifact_module, consumer)` is the navigational inverse of
+/// `deserializes(consumer, artifact_module)`. Keeping both
+/// preserves the precise consumer claim while making producer -> artifact ->
+/// consumer flow follow one direction in graph renderers and queries.
+pub fn data_flows_to(base: &[Edge]) -> Vec<Edge> {
+    base.iter()
+        .filter(|edge| !edge.d && matches!(edge.p.as_str(), "consumes_data" | "deserializes"))
+        .filter_map(|edge| Some((edge.a.first()?, edge.a.get(1)?)))
+        .map(|(consumer, artifact)| (artifact.as_str(), consumer.as_str()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|(artifact, consumer)| Edge::derived("data_flows_to", &[artifact, consumer]))
+        .collect()
 }
 
 /// Materialize the positive unary inventory promised by graph format 5 and
@@ -56,21 +418,16 @@ pub fn inventory(base: &[Edge]) -> Vec<Edge> {
             }
         }
     }
-    for edge in base_edges(base, "tested_by") {
-        if let Some(test) = edge.a.get(1) {
+    for edge in base_edges(base, "defines_test") {
+        if let (Some(file), Some(test)) = (edge.a.first(), edge.a.get(1)) {
             out.insert(("graph_function".into(), vec![test.clone()]));
             out.insert(("graph_test".into(), vec![test.clone()]));
-            if !edge.src.is_empty() {
+            out.insert(("element_in_file".into(), vec![test.clone(), file.clone()]));
+            for module in modules_by_file.get(file.as_str()).into_iter().flatten() {
                 out.insert((
-                    "element_in_file".into(),
-                    vec![test.clone(), edge.src.clone()],
+                    "element_in_module".into(),
+                    vec![test.clone(), (*module).to_string()],
                 ));
-                for module in modules_by_file.get(edge.src.as_str()).into_iter().flatten() {
-                    out.insert((
-                        "element_in_module".into(),
-                        vec![test.clone(), (*module).to_string()],
-                    ));
-                }
             }
         }
     }
@@ -92,37 +449,35 @@ fn base_edges<'a>(base: &'a [Edge], p: &'a str) -> impl Iterator<Item = &'a Edge
     base.iter().filter(move |e| !e.d && e.p == p)
 }
 
-/// Final segment of a qualified path (`crate::a::fire` -> `fire`).
-///
-/// The extractor cannot resolve a callee to its defining module without
-/// whole-crate name resolution, so `tested_by` carries bare callee names while
-/// `defines_fn` carries qualified ones. Matching on the final segment bridges
-/// them.
-fn short_name(qualified: &str) -> &str {
-    qualified.rsplit("::").next().unwrap_or(qualified)
-}
-
-/// `untested(F)` for every `F` in `defines_fn` with no `tested_by` edge
-/// naming it.
-///
-/// Coverage is matched by short name, which **over-approximates** it: two
-/// functions sharing a name are both considered covered when either is
-/// tested. That direction is chosen deliberately. A missed warning is
-/// recoverable; a false "untested" verdict blocks legitimate work and is what
-/// destroys trust in an enforcement layer (spec §4.4).
-pub fn untested(base: &[Edge]) -> Vec<Edge> {
+/// `no_direct_test(F)` for every `F` in `defines_fn` with no `tested_by`
+/// edge naming it.
+pub fn no_direct_test(base: &[Edge]) -> Vec<Edge> {
     let covered: BTreeSet<&str> = base_edges(base, "tested_by")
         .filter_map(|e| e.a.first())
-        .map(|f| short_name(f))
+        .map(String::as_str)
         .collect();
+    let production_files = base_edges(base, "file_type")
+        .filter_map(|edge| {
+            (edge.a.get(1).map(String::as_str) == Some("production"))
+                .then(|| edge.a.first().map(String::as_str))
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
 
     base_edges(base, "defines_fn")
+        .filter(|edge| {
+            production_files.is_empty()
+                || edge
+                    .a
+                    .first()
+                    .is_some_and(|file| production_files.contains(file.as_str()))
+        })
         .filter_map(|e| e.a.get(1))
         .map(String::as_str)
-        .filter(|f| !covered.contains(short_name(f)))
+        .filter(|f| !covered.contains(f))
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .map(|f| Edge::derived("untested", &[f]))
+        .map(|f| Edge::derived("no_direct_test", &[f]))
         .collect()
 }
 
@@ -273,6 +628,85 @@ mod tests {
     }
 
     #[test]
+    fn unique_rhai_registration_makes_the_rust_proxy_runtime_reachable() {
+        let base = vec![
+            defines("src/bridge.rs", "rust:game::state_attempt_stunning_strike"),
+            Edge::base(
+                "exposes",
+                &["rust:game::bridge", "rhai:callable::stunning_strike"],
+                "src/bridge.rs",
+            ),
+            Edge::base(
+                "rhai_callable_backing",
+                &[
+                    "rhai:callable::stunning_strike",
+                    "state_attempt_stunning_strike",
+                ],
+                "src/bridge.rs",
+            ),
+            Edge::base(
+                "calls",
+                &["rhai:game::combat", "rhai:callable::stunning_strike"],
+                "scripts/combat.rhai",
+            ),
+        ];
+        let out = rhai_reachability(&base);
+        assert!(out.iter().any(|edge| {
+            edge.p == "runtime_reachable"
+                && edge.a
+                    == [
+                        "rust:game::state_attempt_stunning_strike",
+                        "rhai:game::combat",
+                    ]
+        }));
+        assert!(out.iter().any(|edge| edge.p == "resolves_to"));
+    }
+
+    #[test]
+    fn ambiguous_rhai_registration_is_diagnostic_not_reachability() {
+        let base = vec![
+            defines("src/a.rs", "rust:game::a::proxy"),
+            defines("src/b.rs", "rust:game::b::proxy"),
+            Edge::base(
+                "exposes",
+                &["rust:game::bridge", "rhai:callable::proxy"],
+                "src/a.rs",
+            ),
+            Edge::base("calls", &["rhai:script", "rhai:callable::proxy"], "x.rhai"),
+        ];
+        let out = rhai_reachability(&base);
+        assert!(!out.iter().any(|edge| edge.p == "runtime_reachable"));
+        assert!(
+            out.iter()
+                .any(|edge| { edge.p == "rhai_binding_diagnostic" && edge.a[2] == "ambiguous" })
+        );
+    }
+
+    #[test]
+    fn rhai_provider_predicate_connects_to_the_rule_that_consumes_it() {
+        let base = vec![
+            Edge::base(
+                "rhai_emits_predicate",
+                &["rhai:project::change_set", "production_without_test"],
+                ".phronesis/predicates/change_set.rhai",
+            ),
+            Edge::base(
+                "rule_uses_predicate",
+                &["require-tests", "production_without_test"],
+                ".phronesis/rules.json",
+            ),
+        ];
+        assert_eq!(
+            rhai_predicate_flow(&base)[0].a,
+            [
+                "rhai:project::change_set",
+                "production_without_test",
+                "require-tests"
+            ]
+        );
+    }
+
+    #[test]
     fn inventory_projects_modules_functions_tests_and_containment() {
         let base = vec![
             Edge::base("file_type", &["src/lib.rs", "production"], "src/lib.rs"),
@@ -284,7 +718,11 @@ mod tests {
                 &["tests/run.rs", "rust:app#test:run"],
                 "tests/run.rs",
             ),
-            tested("rust:app::run", "rust:app#test:run::works"),
+            Edge::base(
+                "defines_test",
+                &["tests/run.rs", "rust:app#test:run::works"],
+                "tests/run.rs",
+            ),
         ];
 
         let out = inventory(&base);
@@ -318,20 +756,33 @@ mod tests {
 
     #[test]
     fn function_with_no_test_edge_is_untested() {
-        let out = untested(&[defines("a.rs", "crate::a")]);
-        assert_eq!(args_of(&out, "untested").len(), 1);
+        let out = no_direct_test(&[defines("a.rs", "crate::a")]);
+        assert_eq!(args_of(&out, "no_direct_test").len(), 1);
         assert_eq!(out[0].a, vec!["crate::a"]);
+    }
+
+    #[test]
+    fn helpers_defined_in_test_files_are_not_production_test_gaps() {
+        let base = vec![
+            defines("src/lib.rs", "rust:app::run"),
+            defines("tests/common.rs", "rust:app#test:common::fixture"),
+            Edge::base("file_type", &["src/lib.rs", "production"], "src/lib.rs"),
+            Edge::base("file_type", &["tests/common.rs", "test"], "tests/common.rs"),
+        ];
+        let out = no_direct_test(&base);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].a, ["rust:app::run"]);
     }
 
     #[test]
     fn function_with_a_test_edge_is_not_untested() {
         let base = vec![defines("a.rs", "crate::a"), tested("crate::a", "t::ta")];
-        assert!(untested(&base).is_empty());
+        assert!(no_direct_test(&base).is_empty());
     }
 
     #[test]
     fn untested_edges_are_marked_derived() {
-        let out = untested(&[defines("a.rs", "crate::a")]);
+        let out = no_direct_test(&[defines("a.rs", "crate::a")]);
         assert!(out.iter().all(|e| e.d && e.src.is_empty()));
     }
 
@@ -342,7 +793,7 @@ mod tests {
             defines("a.rs", "crate::b"),
             tested("crate::a", "t::ta"),
         ];
-        let out = untested(&base);
+        let out = no_direct_test(&base);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].a, vec!["crate::b"]);
     }
@@ -354,40 +805,146 @@ mod tests {
             defines("a.rs", "crate::a"),
             tested("crate::a", "t::elsewhere"),
         ];
-        assert!(untested(&base).is_empty());
+        assert!(no_direct_test(&base).is_empty());
     }
 
     #[test]
-    fn a_test_calling_by_short_name_covers_the_qualified_function() {
-        // The extractor cannot resolve a callee to its defining module, so
-        // `tested_by` carries a bare name while `defines_fn` carries a
-        // qualified one. Coverage matches on the final segment.
-        let base = vec![defines("a.rs", "crate::a::fire"), tested("fire", "t::ta")];
-        assert!(untested(&base).is_empty());
-    }
-
-    #[test]
-    fn a_shared_short_name_is_treated_as_covered() {
-        // Deliberate over-approximation of coverage: a missed warning is
-        // recoverable, a false "untested" block is a trust-killer.
-        let base = vec![
-            defines("a.rs", "crate::a::fire"),
-            defines("b.rs", "crate::b::fire"),
-            tested("fire", "t::ta"),
+    fn an_imported_test_call_is_canonicalized_before_coverage_derivation() {
+        let mut base = vec![
+            defines("a.rs", "rust:app::a::fire"),
+            imports("rust:app#test:integration", "rust:app::a"),
+            tested("fire", "rust:app#test:integration::test_fire"),
         ];
-        assert!(untested(&base).is_empty());
+        canonicalize_function_edges(&mut base);
+        assert_eq!(args_of(&base, "tested_by")[0][0], "rust:app::a::fire");
+        assert!(no_direct_test(&base).is_empty());
+    }
+
+    #[test]
+    fn an_ambiguous_bare_test_call_is_not_guessed() {
+        let mut base = vec![
+            defines("a.rs", "rust:app::a::fire"),
+            defines("b.rs", "rust:app::b::fire"),
+            tested("fire", "rust:app#test:integration::test_fire"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(args_of(&base, "tested_by").is_empty());
+        assert_eq!(no_direct_test(&base).len(), 2);
+    }
+
+    #[test]
+    fn ordinary_calls_are_canonicalized_without_guessing_ambiguous_names() {
+        let mut base = vec![
+            defines("a.rs", "rust:app::a::entry"),
+            defines("a.rs", "rust:app::a::helper"),
+            defines("b.rs", "rust:app::b::helper"),
+            Edge::base("calls", &["rust:app::a::entry", "helper"], "a.rs"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(base.iter().any(|edge| {
+            edge.p == "calls" && edge.a == ["rust:app::a::entry", "rust:app::a::helper"]
+        }));
+    }
+
+    #[test]
+    fn imported_unique_inherent_method_is_attributed_to_its_test() {
+        let method = "rust:app::state::GameState::apply_damage";
+        let test = "rust:app::state::tests::damage_works";
+        let mut base = vec![
+            defines("src/state.rs", method),
+            Edge::base("defines_method", &["src/state.rs", method], "src/state.rs"),
+            Edge::base("file_type", &["src/state.rs", "production"], "src/state.rs"),
+            Edge::base("file_type", &["tests/state.rs", "test"], "tests/state.rs"),
+            imports("rust:app::state::tests", "rust:app::state"),
+            tested("@method:apply_damage", test),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(
+            base.iter()
+                .any(|edge| { edge.p == "tested_by" && edge.a == [method, test] })
+        );
+    }
+
+    #[test]
+    fn ambiguous_inherent_method_names_are_not_guessed() {
+        let mut base = vec![
+            defines("src/a.rs", "rust:app::state::A::refresh"),
+            defines("src/b.rs", "rust:app::state::B::refresh"),
+            Edge::base(
+                "defines_method",
+                &["src/a.rs", "rust:app::state::A::refresh"],
+                "src/a.rs",
+            ),
+            Edge::base(
+                "defines_method",
+                &["src/b.rs", "rust:app::state::B::refresh"],
+                "src/b.rs",
+            ),
+            Edge::base("file_type", &["src/a.rs", "production"], "src/a.rs"),
+            Edge::base("file_type", &["src/b.rs", "production"], "src/b.rs"),
+            imports("rust:app::state::tests", "rust:app::state"),
+            tested("@method:refresh", "rust:app::state::tests::works"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(args_of(&base, "tested_by").is_empty());
+    }
+
+    #[test]
+    fn test_reachability_includes_direct_and_transitive_resolved_calls() {
+        let base = vec![
+            tested("rust:app::entry", "rust:app#test:flow::works"),
+            Edge::base(
+                "calls",
+                &["rust:app::entry", "rust:app::helper"],
+                "src/lib.rs",
+            ),
+            Edge::base(
+                "calls",
+                &["rust:app::helper", "rust:app::leaf"],
+                "src/lib.rs",
+            ),
+        ];
+        let out = test_reachability(&base);
+        assert_eq!(
+            out.iter().map(|edge| edge.a.clone()).collect::<Vec<_>>(),
+            vec![
+                vec![
+                    String::from("rust:app#test:flow::works"),
+                    String::from("rust:app::entry")
+                ],
+                vec![
+                    String::from("rust:app#test:flow::works"),
+                    String::from("rust:app::helper")
+                ],
+                vec![
+                    String::from("rust:app#test:flow::works"),
+                    String::from("rust:app::leaf")
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn test_reachability_terminates_on_call_cycles_and_ignores_bare_calls() {
+        let base = vec![
+            tested("rust:app::a", "rust:app#test:flow::works"),
+            Edge::base("calls", &["rust:app::a", "rust:app::b"], "src/lib.rs"),
+            Edge::base("calls", &["rust:app::b", "rust:app::a"], "src/lib.rs"),
+            Edge::base("calls", &["rust:app::a", "ambiguous"], "src/lib.rs"),
+        ];
+        assert_eq!(test_reachability(&base).len(), 2);
     }
 
     #[test]
     fn untested_edges_keep_the_qualified_name() {
-        let out = untested(&[defines("a.rs", "crate::a::fire")]);
+        let out = no_direct_test(&[defines("a.rs", "crate::a::fire")]);
         assert_eq!(out[0].a, vec!["crate::a::fire"]);
     }
 
     #[test]
     fn duplicate_definitions_yield_one_untested_edge() {
         let base = vec![defines("a.rs", "crate::a"), defines("a.rs", "crate::a")];
-        assert_eq!(untested(&base).len(), 1);
+        assert_eq!(no_direct_test(&base).len(), 1);
     }
 
     // ─── in_cycle ───────────────────────────────────────────────────
@@ -474,8 +1031,72 @@ mod tests {
             imports("b", "a"),
         ];
         let out = derive_all(&base);
-        assert_eq!(args_of(&out, "untested").len(), 1);
+        assert_eq!(args_of(&out, "no_direct_test").len(), 1);
         assert_eq!(args_of(&out, "in_cycle").len(), 2);
+    }
+
+    #[test]
+    fn deserialization_derives_forward_config_to_rust_flow() {
+        let base = vec![Edge::base(
+            "deserializes",
+            &[
+                "rust:app::config::Manifest",
+                "yaml:project::config::manifest",
+            ],
+            ".phronesis/graph.toml",
+        )];
+        let derived = derive_all(&base);
+        let flows = args_of(&derived, "data_flows_to");
+        assert_eq!(flows.len(), 1);
+        assert_eq!(
+            flows[0],
+            &[
+                "yaml:project::config::manifest".to_string(),
+                "rust:app::config::Manifest".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn generic_consumption_derives_forward_config_flow() {
+        let base = vec![Edge::base(
+            "consumes_data",
+            &["python:app::config::load", "json:project::config::manifest"],
+            ".phronesis/graph.toml",
+        )];
+        let derived = derive_all(&base);
+        assert_eq!(
+            args_of(&derived, "data_flows_to")[0],
+            &[
+                "json:project::config::manifest".to_string(),
+                "python:app::config::load".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn configuration_lifecycle_gaps_are_derived_without_policy() {
+        let base = vec![
+            Edge::base(
+                "generates",
+                &["cue:app::export", "yaml:app::unused"],
+                "graph.toml",
+            ),
+            Edge::base(
+                "consumes_data",
+                &["rust:app::load", "json:app::hand_authored"],
+                "graph.toml",
+            ),
+        ];
+        let derived = derive_all(&base);
+        assert_eq!(
+            args_of(&derived, "generated_without_consumer")[0],
+            &["yaml:app::unused".to_string()]
+        );
+        assert_eq!(
+            args_of(&derived, "consumed_without_producer")[0],
+            &["json:app::hand_authored".to_string()]
+        );
     }
 
     #[test]
@@ -484,8 +1105,8 @@ mod tests {
         let base = vec![
             defines("a.rs", "crate::a"),
             tested("crate::a", "t::ta"),
-            Edge::derived("untested", &["crate::a"]),
+            Edge::derived("no_direct_test", &["crate::a"]),
         ];
-        assert!(args_of(&derive_all(&base), "untested").is_empty());
+        assert!(args_of(&derive_all(&base), "no_direct_test").is_empty());
     }
 }

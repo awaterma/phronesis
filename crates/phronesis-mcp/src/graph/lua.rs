@@ -336,41 +336,37 @@ mod tests {
 
     #[test]
     fn file_type_classifies_test_files() {
-        assert_eq!(
+        assert!(
             extract_lua("tests/foo.lua", "return {}\n", &ctx("lua:test"))
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "test"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "test")
         );
-        assert_eq!(
+        assert!(
             extract_lua("src/foo_spec.lua", "return {}\n", &ctx("lua:test"))
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "test"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "test")
         );
     }
 
     #[test]
     fn file_type_classifies_build_files() {
-        assert_eq!(
+        assert!(
             extract_lua("build.lua", "return {}\n", &ctx("lua:test"))
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "build"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "build")
         );
     }
 
     #[test]
     fn file_type_classifies_production() {
-        assert_eq!(
+        assert!(
             extract_lua("src/main.lua", "return {}\n", &ctx("lua:test"))
                 .edges
                 .iter()
-                .any(|e| e.p == "file_type" && e.a[1] == "production"),
-            true
+                .any(|e| e.p == "file_type" && e.a[1] == "production")
         );
     }
 

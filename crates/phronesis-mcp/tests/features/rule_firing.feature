@@ -27,7 +27,7 @@ Feature: Rule Firing and Consequences
     And I fire the rules
     Then the consequences should contain at least 1 entry
 
-  Scenario: Emanaty agenda produces zero actions
+  Scenario: Empty agenda produces zero actions
     When I fire the rules
     Then the result should show 0 actions fired
 

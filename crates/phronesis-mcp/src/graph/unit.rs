@@ -33,6 +33,7 @@ pub const LANG_TYPESCRIPT: &str = "typescript";
 
 /// Language tag for the Lua extractor.
 pub const LANG_LUA: &str = "lua";
+pub const LANG_RHAI: &str = "rhai";
 
 /// Language tag for the CUE extractor.
 pub const LANG_CUE: &str = "cue";
@@ -55,6 +56,7 @@ pub fn lang_of_path(file_rel: &str) -> Option<&'static str> {
         Some((_, "py")) => Some(LANG_PYTHON),
         Some((_, "ts" | "tsx" | "mts" | "cts")) => Some(LANG_TYPESCRIPT),
         Some((_, "lua")) => Some(LANG_LUA),
+        Some((_, "rhai")) => Some(LANG_RHAI),
         Some((_, "cue")) => Some(LANG_CUE),
         Some((_, "json")) => Some(LANG_JSON),
         Some((_, "yaml" | "yml")) => Some(LANG_YAML),

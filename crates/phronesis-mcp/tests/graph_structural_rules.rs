@@ -35,7 +35,7 @@ fn rules_json(severity: &str) -> String {
           {{"file_type":["?file","production"]}},
           {{"defines_fn":["?file","?func"]}},
           {{"calls_api":["?func","expect"]}},
-          {{"untested":["?func"]}}
+          {{"no_direct_test":["?func"]}}
         ],
         "then":{{"{severity}":"`?file` defines `?func`, which calls a panicking API and has no direct test."}}
     }}]}}"#
@@ -238,12 +238,15 @@ fn generation_mismatched_binding_evidence_preserves_block_authority() {
 
 #[test]
 fn a_covered_function_produces_no_verdict() {
-    // The negative case: add a direct test and the rule must go silent.
+    // The negative case: add a real same-module direct test and the rule must
+    // go silent. A bare call in an unrelated integration-test module is not
+    // valid Rust name-resolution evidence.
     let d = project("block");
-    std::fs::create_dir_all(d.path().join("tests")).expect("mkdir tests");
     std::fs::write(
-        d.path().join("tests/risky_test.rs"),
-        "#[test]\nfn covers() { danger(vec![1]); }\n",
+        d.path().join("src/risky.rs"),
+        format!(
+            "{RISKY_SOURCE}\n#[cfg(test)]\nmod tests {{\n    use super::*;\n    #[test]\n    fn covers() {{ danger(vec![1]); }}\n}}\n"
+        ),
     )
     .expect("write test");
     rebuild_graph(d.path());

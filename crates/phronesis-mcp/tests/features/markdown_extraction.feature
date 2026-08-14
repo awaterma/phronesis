@@ -84,13 +84,13 @@ Feature: Markdown Rules Extraction
     And the extracted rule should have condition arg "rules/api.md"
 
   Scenario: Extract rules from a real file on disk
-    Given a markdown file on disk at a temana path with content
+    Given a markdown file on disk at a temp path with content
       """
       # Project Rules
       - Avoid using println! for logging in production
       - Always use structured logging via tracing
       """
-    When I extract rules from the temana file via the MCP tool
+    When I extract rules from the temp file via the MCP tool
     Then the MCP result should confirm 2 rules extracted
     And the network should contain 2 rules
 

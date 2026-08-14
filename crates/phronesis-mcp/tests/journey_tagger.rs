@@ -20,6 +20,7 @@ fn fact(pred: &str, args: &[&str]) -> Fact {
         predicate: pred.to_string(),
         args: args.iter().map(|s| s.to_string()).collect(),
         timestamp: 0,
+        source: None,
     }
 }
 

@@ -319,6 +319,7 @@ mod tests {
             predicate: "journey_occurrence".into(),
             args: vec!["auth".into(), "s".into()],
             timestamp: 0,
+            source: None,
         };
         let (s, w, e) = split_args(&f);
         assert_eq!(s, "auth");
@@ -333,6 +334,7 @@ mod tests {
             predicate: "journey_count".into(),
             args: vec!["auth".into(), "s".into(), "3".into()],
             timestamp: 0,
+            source: None,
         };
         let (s, w, e) = split_args(&f);
         assert_eq!(s, "auth");

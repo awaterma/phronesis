@@ -173,7 +173,8 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         }
     };
 
-    let (mut logged, violations, warnings) = super::collect_logged(&consequences);
+    let (mut logged, violations, warnings) =
+        super::collect_logged(&consequences, &security::project_root());
     // A drifted graph makes structural verdicts unreliable, so they warn
     // rather than block. The rules themselves are untouched — this is the
     // harness declining to enforce on evidence it cannot vouch for.
@@ -262,6 +263,7 @@ async fn assert_pre_content_facts(
             predicate: "new_content".to_string(),
             args: vec![content.to_string()],
             timestamp: 0,
+            source: Some("hook".to_string()),
         })
         .await
         .map_err(|e| {

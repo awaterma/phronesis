@@ -322,6 +322,7 @@ pub async fn assert_facts(
                         predicate: emitted.predicate,
                         args: emitted.args,
                         timestamp: 0,
+                        source: Some(format!("rhai:{provider}")),
                     })
                     .await?;
                 asserted += 1;

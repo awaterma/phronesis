@@ -1,6 +1,6 @@
 Feature: Rules Management
   As an LLM agent using phr-mcp
-  I want to resourcege rules in the RETE network
+  I want to manage rules in the RETE network
   So that I can define constraints and patterns for bounded interaction
 
   Background:

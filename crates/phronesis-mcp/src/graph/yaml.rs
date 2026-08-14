@@ -40,6 +40,52 @@ static ANCHOR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"\*([_a-zA-Z][_a-zA-Z0-9-]*)").expect("static regex compiles")
 });
 
+/// Preserve byte offsets while hiding quoted scalar content and comments.
+/// YAML aliases and anchors are syntax only outside quoted scalars.
+fn mask_quoted_yaml(content: &str) -> String {
+    let bytes = content.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut quote = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'\n' {
+            quote = None;
+            out.push(byte);
+            i += 1;
+            continue;
+        }
+        if let Some(active) = quote {
+            if active == b'\'' && byte == b'\'' && bytes.get(i + 1) == Some(&b'\'') {
+                out.extend_from_slice(b"  ");
+                i += 2;
+                continue;
+            }
+            if byte == active {
+                quote = None;
+            }
+            out.push(b' ');
+            i += 1;
+            continue;
+        }
+        if byte == b'#' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                out.push(b' ');
+                i += 1;
+            }
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+            out.push(b' ');
+        } else {
+            out.push(byte);
+        }
+        i += 1;
+    }
+    String::from_utf8(out).expect("mask preserves UTF-8 byte boundaries")
+}
+
 /// Regex matching JSON Schema `$anchor` values.
 static SCHEMA_ANCHOR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r#"\$anchor\s*:\s*['"]?([_a-zA-Z][_a-zA-Z0-9-]*)['"]?"#)
@@ -164,23 +210,55 @@ fn has_duplicate_keys_in_mapping(content: &str) -> bool {
     let mut indents: Vec<usize> = Vec::new();
     stack.push(std::collections::HashSet::new());
     indents.push(0);
+    let mut block_scalar_indent: Option<usize> = None;
 
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty()
-            || trimmed.starts_with('#')
-            || trimmed.starts_with("---")
-            || trimmed.starts_with("...")
-        {
+        if trimmed.is_empty() {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if let Some(parent_indent) = block_scalar_indent {
+            if indent > parent_indent {
+                continue;
+            }
+            block_scalar_indent = None;
+        }
+        if trimmed.starts_with('#') || trimmed.starts_with("---") || trimmed.starts_with("...") {
             continue;
         }
 
-        let indent = line.len() - line.trim_start().len();
+        // A block-sequence item starts a fresh node. Mapping keys in sibling
+        // items belong to different mappings even though they share the same
+        // indentation (`- id: ...`). Reset scopes owned by the prior item,
+        // then treat an inline key after `-` as belonging one level deeper.
+        let (mapping_indent, mapping_text) = if let Some(rest) = trimmed
+            .strip_prefix('-')
+            .filter(|rest| rest.chars().next().is_none_or(char::is_whitespace))
+        {
+            // Drop the prior item's deeper scopes, but preserve the enclosing
+            // mapping at the sequence indicator's own indentation. This is
+            // required for YAML's valid indentless-sequence form:
+            // `rules:\n- id: ...`.
+            while indents.last().is_some_and(|top| *top > indent) {
+                indents.pop();
+                stack.pop();
+            }
+            // Block sequence indicators occupy `- `, so an inline mapping key
+            // shares the scope of following keys conventionally indented two
+            // columns beneath the dash.
+            let item_indent = indent.saturating_add(2);
+            indents.push(item_indent);
+            stack.push(std::collections::HashSet::new());
+            (item_indent, rest.trim_start())
+        } else {
+            (indent, trimmed)
+        };
 
         // Pop levels that are strictly above current indent.
         // We keep levels at the current indent (they may contain more keys).
         while let Some(&top) = indents.last() {
-            if top <= indent {
+            if top <= mapping_indent {
                 break;
             }
             indents.pop();
@@ -189,24 +267,32 @@ fn has_duplicate_keys_in_mapping(content: &str) -> bool {
 
         // If this line is indented deeper than the top of stack, push a new level.
         if let Some(&top) = indents.last()
-            && indent > top
+            && mapping_indent > top
         {
-            indents.push(indent);
+            indents.push(mapping_indent);
             stack.push(std::collections::HashSet::new());
         }
 
         // Check if this line is a mapping key.
-        if let Some(colon_pos) = find_mapping_key_colon(trimmed) {
-            let key_str = trimmed[..colon_pos].trim().to_string();
+        if let Some(colon_pos) = find_mapping_key_colon(mapping_text) {
+            let key_str = mapping_text[..colon_pos].trim().to_string();
             if key_str.is_empty() || key_str == "{" || key_str == "}" {
                 continue;
             }
-            // stack is always non-empty (top level initialized).
-            let keys = stack.last_mut().unwrap();
+            // Malformed or future scanner states must not crash a whole graph
+            // rebuild. The top-level scope should always exist, but treat a
+            // violated invariant as unclassifiable rather than panicking.
+            let Some(keys) = stack.last_mut() else {
+                continue;
+            };
             if keys.contains(&key_str) {
                 return true; // Duplicate found!
             }
             keys.insert(key_str);
+            let value = mapping_text[colon_pos + 1..].trim_start();
+            if value.starts_with('|') || value.starts_with('>') {
+                block_scalar_indent = Some(mapping_indent);
+            }
         }
     }
     false
@@ -405,15 +491,24 @@ fn extract_yaml_document(
     );
 
     // Extract anchor names (definitions and references).
-    let anchor_defs = extract_anchor_defs(content);
+    let syntax = mask_quoted_yaml(content);
+    let anchor_defs = extract_anchor_defs(&syntax);
     let undefined_aliases: BTreeSet<String> = ANCHOR_RE
-        .captures_iter(content)
+        .captures_iter(&syntax)
         .filter_map(|alias| {
             let name = alias.get(1)?.as_str();
             let alias_offset = alias.get(0)?.start();
+            let remainder = &syntax[alias.get(0)?.end()..];
+            let scalar_tail = remainder
+                .split(['\n', ',', ']', '}', '#'])
+                .next()
+                .unwrap_or("");
+            if scalar_tail.contains('*') {
+                return None;
+            }
             let defined_earlier =
                 ANCHOR_DEF_RE
-                    .captures_iter(&content[..alias_offset])
+                    .captures_iter(&syntax[..alias_offset])
                     .any(|anchor| {
                         anchor
                             .get(2)
@@ -764,6 +859,37 @@ override: *defaults
         assert_eq!(invalid[0][2], "later");
     }
 
+    #[test]
+    fn markdown_emphasis_inside_quoted_scalars_is_not_a_yaml_alias() {
+        let content = "categories:\n  - - '*Ale*'\n    - \"*Ammunition*\"\n";
+        let out = extract_yaml("config/manifest.yaml", content, &ctx());
+        assert!(edges_of(&out, "yaml_undefined_alias").is_empty());
+    }
+
+    #[test]
+    fn markdown_emphasis_inside_plain_scalars_is_not_a_yaml_alias() {
+        let content = "items:\n  - *Ioun stone*\n  - *beads of force*\n";
+        let out = extract_yaml("config/manifest.yaml", content, &ctx());
+        assert!(edges_of(&out, "yaml_undefined_alias").is_empty());
+    }
+
+    #[test]
+    fn a_real_unquoted_alias_is_still_reported() {
+        let out = extract_yaml(
+            "config/manifest.yaml",
+            "value: *later\nlater: &later 1\n",
+            &ctx(),
+        );
+        assert_eq!(
+            edges_of(&out, "yaml_undefined_alias"),
+            vec![vec![
+                "config/manifest.yaml".to_string(),
+                "yaml:project::config::manifest::doc:0".to_string(),
+                "later".to_string()
+            ]]
+        );
+    }
+
     // ─── Helm template exclusion ────────────────────────────────────
 
     #[test]
@@ -832,6 +958,140 @@ key2: value2
 ";
         let out = extract_yaml("src/config.yaml", content, &ctx());
         assert!(!out.parse_failed);
+    }
+
+    #[test]
+    fn uniform_record_list_does_not_report_duplicate_keys_or_discard_structure() {
+        let content = r#"
+rules:
+  - id: first_rule
+    when: alpha
+  - id: second_rule
+    when: beta
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/rules.yaml", content, &ctx());
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+        assert!(
+            !out.edges.is_empty(),
+            "valid record lists must retain graph edges"
+        );
+    }
+
+    #[test]
+    fn duplicate_key_within_one_sequence_item_is_reported() {
+        let content = r#"
+rules:
+  - id: first_rule
+    id: shadowed_rule
+  - id: second_rule
+"#;
+        assert!(has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/rules.yaml", content, &ctx());
+        assert!(out.skipped > 0);
+        assert_eq!(edges_of(&out, "yaml_duplicate_key").len(), 1);
+    }
+
+    #[test]
+    fn nested_record_lists_have_independent_item_scopes() {
+        let content = r#"
+groups:
+  - name: first
+    rules:
+      - id: one
+        when: alpha
+      - id: two
+        when: beta
+  - name: second
+    rules:
+      - id: three
+        when: gamma
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/nested.yaml", content, &ctx());
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+    }
+
+    #[test]
+    fn cue_style_indentless_record_list_preserves_enclosing_scope() {
+        let content = r#"
+rules:
+- id: first_rule
+  when: alpha
+- id: second_rule
+  when: beta
+metadata:
+  version: 1
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/srd_rete_rules.yaml", content, &ctx());
+        assert!(!out.parse_failed);
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+        assert!(!out.edges.is_empty());
+    }
+
+    #[test]
+    fn root_sequence_of_records_does_not_empty_the_scope_stack() {
+        let content = r#"
+- id: first_rule
+  when: alpha
+- id: second_rule
+  when: beta
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/rules.yaml", content, &ctx());
+        assert!(!out.parse_failed);
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+    }
+
+    #[test]
+    fn nested_indentless_actions_sequence_keeps_parent_item_scope() {
+        let content = r#"
+rules:
+- id: first_rule
+  when: alpha
+  actions:
+  - type: warn
+    message: first
+  - type: log
+    message: second
+- id: second_rule
+  when: beta
+  actions:
+  - type: block
+    message: third
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/srd_rete_rules.yaml", content, &ctx());
+        assert!(!out.parse_failed);
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+        assert!(!out.edges.is_empty());
+    }
+
+    #[test]
+    fn block_scalar_prompt_content_is_not_scanned_as_mapping_keys() {
+        let content = r#"
+prompt: |
+  {"action_type": "add_combatant", "target": "first"}
+  {"action_type": "send_notification", "target": "second"}
+  [RESOLVED: yes]
+  [RESOLVED: no]
+name: Waterman's Camp
+folded: >-
+  key: first
+  key: repeated prose is still scalar text
+version: 1
+"#;
+        assert!(!has_duplicate_keys_in_mapping(content));
+        let out = extract_yaml("config/watermans_camp.yaml", content, &ctx());
+        assert_eq!(out.skipped, 0);
+        assert!(edges_of(&out, "yaml_duplicate_key").is_empty());
+        assert!(!out.edges.is_empty());
     }
 
     // ─── unsafe tags ────────────────────────────────────────────────

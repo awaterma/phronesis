@@ -89,6 +89,7 @@ fn can_bind_success() {
         predicate: "greet".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     };
 
     let result = bindings.can_bind(&condition, &fact);
@@ -110,6 +111,7 @@ fn can_bind_predicate_mismatch() {
         predicate: "farewell".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     };
 
     let result = bindings.can_bind(&condition, &fact);
@@ -131,6 +133,7 @@ fn can_bind_variable_already_bound() {
         predicate: "greet".to_string(),
         args: vec!["bob".to_string()],
         timestamp: 0,
+        source: None,
     };
 
     let result = bindings.can_bind(&condition, &fact);
@@ -150,6 +153,7 @@ fn can_bind_constant_mismatch() {
         predicate: "greet".to_string(),
         args: vec!["bob".to_string()],
         timestamp: 0,
+        source: None,
     };
 
     let result = bindings.can_bind(&condition, &fact);
@@ -171,6 +175,7 @@ fn token_new_with_wme() {
         predicate: "greet".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     });
     let token = Token::new_with_wme(wme);
     assert_eq!(token.wmes.len(), 1);
@@ -183,6 +188,7 @@ fn token_new_with_bindings() {
         predicate: "greet".to_string(),
         args: vec!["alice".to_string()],
         timestamp: 0,
+        source: None,
     })];
     let mut bindings = Bindings::new();
     bindings.add_binding("?who", "alice").unwrap();
@@ -203,6 +209,7 @@ fn token_extend_with_binding() {
             predicate: "greet".to_string(),
             args: vec!["alice".to_string()],
             timestamp: 0,
+            source: None,
         })],
         {
             let mut b = Bindings::new();
@@ -216,6 +223,7 @@ fn token_extend_with_binding() {
         predicate: "farewell".to_string(),
         args: vec!["bob".to_string()],
         timestamp: 0,
+        source: None,
     });
 
     let mut additional_bindings = Bindings::new();

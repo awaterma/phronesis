@@ -157,9 +157,11 @@ impl Sensor<'_> {
 
         // pytest collects `test_*` functions, at module level or as methods
         // of a `Test*` class. Those are coverage sources, not subjects — a
-        // test that is itself "untested" is noise, and a helper in a test
+        // test that is itself "no_direct_test" is noise, and a helper in a test
         // file is not evidence that anything was verified.
         if name.starts_with("test_") {
+            let file_path = self.file_path.to_string();
+            self.emit("defines_test", &[&file_path, &qualified]);
             for callee in self.called_names(body) {
                 self.emit("tested_by", &[&callee, &qualified]);
             }
@@ -529,6 +531,12 @@ mod tests {
                 "python:pyside::tests::test_utils::test_load".to_string()
             ]]
         );
+    }
+
+    #[test]
+    fn a_pytest_with_no_calls_still_has_an_independent_identity() {
+        let out = run("tests/test_api.py", "def test_exists():\n    assert True\n");
+        assert_eq!(edges_of(&out, "defines_test").len(), 1);
     }
 
     #[test]

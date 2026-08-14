@@ -2146,7 +2146,7 @@ fn structural_rules() -> Value {
                         {"calls_api": ["?func", "todo"]},
                         {"calls_api": ["?func", "unimplemented"]}
                     ]},
-                    {"untested": ["?func"]}
+                    {"no_direct_test": ["?func"]}
                 ],
                 "then": {"warn": "`?func` (in ?file) calls a panicking API from the unwrap/expect/panic/todo/unimplemented family, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged."}
             },
@@ -2172,9 +2172,32 @@ fn structural_rules() -> Value {
                     {"file_type": ["?file", "production"]},
                     {"defines_fn": ["?file", "?func"]},
                     {"calls_api": ["?func", "non_null_assertion"]},
-                    {"untested": ["?func"]}
+                    {"no_direct_test": ["?func"]}
                 ],
                 "then": {"warn": "`?func` uses a non-null assertion (`!`) and has no direct test. `!` tells the compiler a value cannot be null and produces no runtime check, so when the assumption is wrong the failure surfaces later and elsewhere, usually as a TypeError. Add a test that exercises the null case, or narrow the type so the assertion is unnecessary."}
+            },
+            {
+                "id": "warn-unconsumed-config-key",
+                "phase": "pre",
+                "priority": 20,
+                "audit": true,
+                "when": [
+                    {"edited_file": "?file"},
+                    {"declares_module": ["?file", "?artifact"]},
+                    {"unconsumed_data_key": ["?artifact", "?pointer", "?consumer"]}
+                ],
+                "then": {"warn": "Generated configuration key `?pointer` in ?artifact has no accepted field on ?consumer and may be silently dropped. Rename or alias the field, remove the key, or make intentional extra-field handling explicit."}
+            },
+            {
+                "id": "warn-generated-artifact-diagnostic",
+                "phase": "pre",
+                "priority": 20,
+                "audit": true,
+                "when": [
+                    {"edited_file": ".phronesis/graph.toml"},
+                    {"generated_artifact_diagnostic": ["?kind", "?reference"]}
+                ],
+                "then": {"warn": "Generated-artifact binding has diagnostic `?kind` for `?reference`; no cross-language seam was guessed. Correct the exact producer, artifact, or consumer reference."}
             }
         ]
     })
@@ -2438,10 +2461,24 @@ fn lua_rules() -> Value {
 ///
 /// Low-noise starter set (spec §Starter pack). CUE is a constraint language;
 /// graph claims must use its semantics rather than force it into an imperative
-/// language shape. Currently ships no rules because import resolution requires
-/// repo chart index and the other diagnostic predicates are deferred.
+/// language shape. Import diagnostics are emitted only after repository-wide
+/// package indexing and never invent a dependency edge.
 fn cue_rules() -> Value {
-    json!({"rules": []})
+    json!({
+        "rules": [
+            {
+                "id": "warn-cue-import-diagnostic",
+                "phase": "pre",
+                "priority": 10,
+                "audit": true,
+                "when": [
+                    {"edited_file": "?file"},
+                    {"cue_import_diagnostic": ["?file", "?import", "?kind"]}
+                ],
+                "then": {"warn": "CUE import `?import` in ?file is `?kind`; no repository-local dependency edge was guessed. Add a package qualifier or correct the module/package path."}
+            }
+        ]
+    })
 }
 
 /// JSON language pack rules.
@@ -2609,7 +2646,10 @@ mod tests {
         assert!(graph.exists(), "init must leave a usable graph behind");
         let body = std::fs::read_to_string(&graph).expect("read graph");
         assert!(body.contains("defines_fn"), "graph should hold real edges");
-        assert!(body.contains("untested"), "derived facts must be present");
+        assert!(
+            body.contains("no_direct_test"),
+            "derived facts must be present"
+        );
     }
 
     #[test]

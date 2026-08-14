@@ -102,6 +102,8 @@ impl EpistemeMcp {
         let edges = store::load(&graph_path).map_err(|e| Self::err(e.to_string()))?;
         let base_edges = edges.iter().filter(|edge| !edge.d).count();
         let derived_edges = edges.len().saturating_sub(base_edges);
+        let deprecated_rule_predicates =
+            sync::deprecated_graph_rule_predicates(root).map_err(|e| Self::err(e.to_string()))?;
 
         let (status, drifted_files, outdated_format) = if !available {
             ("missing", Vec::new(), false)
@@ -141,6 +143,7 @@ impl EpistemeMcp {
             "drifted_files": drifted_files,
             "base_edges": base_edges,
             "derived_edges": derived_edges,
+            "rule_predicate_drift": deprecated_rule_predicates,
             "bindings": {
                 "available": bindings_available,
                 "bound": bound,
@@ -460,6 +463,7 @@ impl EpistemeMcp {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs(),
+            source: Some(params.source.unwrap_or_else(|| "mcp".to_string())),
         };
         network.assert_fact(fact).await.map_err(Self::err)?;
         Self::ok_text(format!("Fact '{}' asserted", params.id))
@@ -570,11 +574,9 @@ impl EpistemeMcp {
     )]
     async fn get_agenda(&self) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
-        let agenda = network
-            .agenda
-            .lock()
+        let items = network
+            .agenda_snapshot()
             .map_err(|e| Self::err(e.to_string()))?;
-        let items = agenda.get_all_items();
         let summaries: Vec<_> = items
             .iter()
             .map(|item| {
@@ -809,6 +811,7 @@ impl EpistemeMcp {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs(),
+                source: Some("context".to_string()),
             })
             .await
             .map_err(Self::err)?;
@@ -1094,7 +1097,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of the codebase built by the PostToolUse sensor. Answers questions about code structure without reading source files. Relations: `defines_fn` [file, function], `tested_by` [function, test] (a test that calls it *directly*), `untested` [function], `calls_api` [function, api] (risky-API watchlist, language-specific: Rust — unwrap/expect/panic/todo/unimplemented; TypeScript — non_null_assertion (the `!` operator); there is no defensible Python equivalent), `imports` [module, module], `in_cycle` [module, cycle_id], `file_type` [file, production|test|example|build], `declares_module` [file, module]. Use `\"*\"` for an unconstrained position. Worked examples: which tests cover a function -> relation `tested_by`, args `[\"my_fn\", \"*\"]` (use this to pick which tests to run after a change); what depends on a module -> relation `imports`, args `[\"*\", \"rust:phronesis::wme\"]`; untested functions in a file -> relation `defines_fn`, args `[\"src/x.rs\", \"*\"]` then cross-check `untested`. Omit `relation` to list the vocabulary. Rust, Python, and TypeScript are all extracted. Entities are named `<lang>:<package>[#<target>]::<module path>` — e.g. `rust:phronesis::wme`, `python:my-dist::pkg::mod`, `typescript:myapp::src::billing::charge` — so query with that form, not a bare module path. `tested_by` is a direct-call heuristic, so transitively-covered code can still appear untested. Call `rebuild_code_graph` if the graph has never been built or `get_code_graph_status` reports stale or outdated state."
+        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` to list the vocabulary. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
     )]
     async fn query_code_graph(
         &self,
@@ -1189,6 +1192,10 @@ impl EpistemeMcp {
             "skipped_items".to_string(),
             serde_json::json!(outcome.skipped),
         );
+        object.insert(
+            "migrated_rules".to_string(),
+            serde_json::json!(outcome.migrated_rules),
+        );
 
         Self::log_event("rebuild_code_graph", |entry| {
             entry
@@ -1197,6 +1204,7 @@ impl EpistemeMcp {
                 .with("base_edges", outcome.base as u64)
                 .with("derived_edges", outcome.derived as u64)
                 .with("skipped_items", outcome.skipped as u64)
+                .with("migrated_rules", outcome.migrated_rules as u64)
         });
         Self::ok_json(status)
     }
@@ -1622,6 +1630,7 @@ mod list_facts_query_tests {
             predicate: predicate.into(),
             args: args.iter().map(|s| s.to_string()).collect(),
             timestamp: 0,
+            source: None,
         }
     }
 

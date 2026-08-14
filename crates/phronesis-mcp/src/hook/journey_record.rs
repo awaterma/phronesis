@@ -181,6 +181,7 @@ fn tagger_facts(
         predicate: "file_path".to_string(),
         args: vec![file_path.to_string()],
         timestamp: 0,
+        source: Some("hook".to_string()),
     });
     for part in file_path.split('/') {
         if !part.is_empty() {
@@ -189,6 +190,7 @@ fn tagger_facts(
                 predicate: "file_path_matches".to_string(),
                 args: vec![part.to_string()],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             });
         }
     }
@@ -201,6 +203,7 @@ fn tagger_facts(
             predicate: "file_extension_is".to_string(),
             args: vec![ext],
             timestamp: 0,
+            source: Some("hook".to_string()),
         });
     }
     if let Some(content) = super::extract_new_content(payload, tool_name) {
@@ -209,6 +212,7 @@ fn tagger_facts(
             predicate: "new_content".to_string(),
             args: vec![content.clone()],
             timestamp: 0,
+            source: Some("hook".to_string()),
         });
         // For command tools, walk the tagger config's `when` clauses (and
         // nested `or` clauses) collecting every `bash_command_matches`
@@ -234,6 +238,7 @@ fn tagger_facts(
                         predicate: "bash_command_matches".to_string(),
                         args: vec![pattern],
                         timestamp: 0,
+                        source: Some("hook".to_string()),
                     });
                 }
             }

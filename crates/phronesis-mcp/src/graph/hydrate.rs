@@ -16,13 +16,50 @@ use std::path::{Path, PathBuf};
 /// graph load at all.
 pub const GRAPH_RELATIONS: &[&str] = &[
     "file_type",
+    "build_member",
     "defines_fn",
+    "defines_method",
+    "defines_test",
     "declares_module",
     "calls_api",
     "imports",
+    "includes_file",
+    "reexports",
     "tested_by",
-    "untested",
+    "test_reaches",
+    "no_direct_test",
+    "exposes",
+    "calls",
+    "loads_rhai_script",
+    "resolves_to",
+    "runtime_reachable",
+    "rhai_binding_diagnostic",
+    "rhai_callable_backing",
+    "rhai_emits_predicate",
+    "rule_uses_predicate",
+    "rhai_implements_predicate",
     "in_cycle",
+    "generates",
+    "consumes_data",
+    "deserializes",
+    "data_flows_to",
+    "data_key",
+    "serde_field",
+    "emits_key",
+    "maps_data_key",
+    "unconsumed_data_key",
+    "generated_without_consumer",
+    "consumed_without_producer",
+    "generated_artifact_diagnostic",
+    // ADR-to-rule traceability. These are graph predicates, not merely
+    // query metadata: projects may govern on missing or stale decision links.
+    "graph_decision",
+    "decision_enforces",
+    "rule_governed_by",
+    "decision_missing_rule",
+    "proposed_decision_enforces",
+    "superseded_decision_enforces",
+    "rule_without_decision",
     // Graph-format-5 relations: multilingual dialects, entity-level
     // definitions, and file/module membership.
     "graph_definition",
@@ -41,7 +78,8 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     //
     // Lua diagnostics
     "lua_dynamic_code_load",
-    // CUE diagnostics — none currently (import resolution needs repo chart index)
+    // CUE diagnostics
+    "cue_import_diagnostic",
     // JSON diagnostics
     "json_schema_unknown_dialect",
     // YAML diagnostics
@@ -191,6 +229,7 @@ pub fn hydrate(root: &Path, rules: &[Rule], edited_file: Option<&str>) -> Hydrat
             predicate: EDITED_FILE.to_string(),
             args: vec![rel],
             timestamp: 0,
+            source: Some("graph:context".to_string()),
         });
     }
 
@@ -224,6 +263,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn decision_relations_are_available_to_rete_rules() {
+        for predicate in [
+            "graph_decision",
+            "decision_enforces",
+            "rule_governed_by",
+            "decision_missing_rule",
+            "proposed_decision_enforces",
+            "superseded_decision_enforces",
+            "rule_without_decision",
+        ] {
+            assert!(
+                GRAPH_RELATIONS.contains(&predicate),
+                "{predicate} must be hydratable when a rule consumes it"
+            );
+            assert!(needed_relations(&[rule_using(predicate)]).contains(predicate));
+        }
+    }
+
     fn project_with_graph() -> TempDir {
         let d = TempDir::new().expect("tempdir");
         std::fs::create_dir_all(d.path().join("src")).expect("mkdir");
@@ -239,8 +297,8 @@ mod tests {
 
     #[test]
     fn a_rule_mentioning_a_relation_requests_it() {
-        let needed = needed_relations(&[rule_using("untested")]);
-        assert!(needed.contains("untested"));
+        let needed = needed_relations(&[rule_using("no_direct_test")]);
+        assert!(needed.contains("no_direct_test"));
     }
 
     #[test]
@@ -343,9 +401,9 @@ mod tests {
 
     #[test]
     fn rules_reading_the_graph_are_identified_for_downgrade() {
-        let ids = graph_rule_ids(&[rule_using("untested"), rule_using("file_path")]);
+        let ids = graph_rule_ids(&[rule_using("no_direct_test"), rule_using("file_path")]);
         assert_eq!(ids.len(), 1);
-        assert!(ids.contains(&"uses-untested".into()));
+        assert!(ids.contains(&"uses-no_direct_test".into()));
     }
 
     #[test]

@@ -31,6 +31,8 @@ fn sample_rule_firing() -> Consequence {
             rule_id: "score.points_changed".into(),
             bound_facts: vec!["fact-42".to_string(), "fact-7".to_string()],
             bindings: Default::default(),
+            fact_sources: Default::default(),
+            decisions: Default::default(),
         },
     }
 }
@@ -97,6 +99,8 @@ fn provenance_tag_is_stable_across_variants() {
         rule_id: "r".into(),
         bound_facts: vec![],
         bindings: Default::default(),
+        fact_sources: Default::default(),
+        decisions: Default::default(),
     })
     .unwrap();
     let lu = serde_json::to_value(Provenance::Lookup {

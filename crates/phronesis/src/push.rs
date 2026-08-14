@@ -17,6 +17,7 @@
 //! This module does not own side-effect execution — that's
 //! deliberately left to the host. It owns only the typed-wire
 //! translation.
+
 //!
 //! # Pattern
 //!
@@ -40,6 +41,8 @@
 //! assert_eq!(consequences[0].predicate, "wave");
 //! ```
 
+use std::collections::BTreeMap;
+
 use crate::consequence::{Consequence, ConsequenceKind, Provenance};
 use crate::engine_types::Action;
 
@@ -61,15 +64,27 @@ pub fn rule_firing_to_consequences(
     kind: ConsequenceKind,
     actions: Vec<Action>,
 ) -> Vec<Consequence> {
+    rule_firing_to_consequences_with_sources(rule_id, bound_facts, &BTreeMap::new(), kind, actions)
+}
+
+/// Wrap fired actions while retaining source labels for their bound facts.
+pub fn rule_firing_to_consequences_with_sources(
+    rule_id: &str,
+    bound_facts: &[String],
+    fact_sources: &BTreeMap<String, String>,
+    kind: ConsequenceKind,
+    actions: Vec<Action>,
+) -> Vec<Consequence> {
     actions
         .into_iter()
-        .map(|a| action_to_consequence(rule_id, bound_facts, kind, a))
+        .map(|a| action_to_consequence(rule_id, bound_facts, fact_sources, kind, a))
         .collect()
 }
 
 fn action_to_consequence(
     rule_id: &str,
     bound_facts: &[String],
+    fact_sources: &BTreeMap<String, String>,
     kind: ConsequenceKind,
     action: Action,
 ) -> Consequence {
@@ -84,6 +99,8 @@ fn action_to_consequence(
             rule_id: rule_id.into(),
             bound_facts: bound_facts.to_vec(),
             bindings: Default::default(),
+            fact_sources: fact_sources.clone(),
+            decisions: Default::default(),
         },
     }
 }

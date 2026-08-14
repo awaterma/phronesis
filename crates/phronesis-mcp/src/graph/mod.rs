@@ -11,6 +11,8 @@
 pub mod audit;
 pub mod bindings;
 pub mod cue;
+pub mod data_contracts;
+pub mod decisions;
 pub mod derive;
 pub mod extract;
 pub mod helm3;
@@ -21,6 +23,7 @@ pub mod model;
 pub mod python;
 pub mod query;
 pub mod resolve;
+pub mod rhai;
 pub mod store;
 pub mod sync;
 pub mod typescript;

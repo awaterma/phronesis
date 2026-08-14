@@ -220,7 +220,8 @@ fn evaluate_network(
         eprintln!("phronesis: WARNING — rule execution failed: {}", error);
         process::exit(1);
     });
-    let (logged, violations, warnings) = super::collect_logged(&consequences);
+    let (logged, violations, warnings) =
+        super::collect_logged(&consequences, &security::project_root());
     let command_exit = matches!(tool_name, "Bash" | "run_shell_command")
         .then(|| super::journey_record::payload_command_exit(payload))
         .flatten();
@@ -294,6 +295,7 @@ async fn assert_post_content_facts(
                 predicate: "file_content".to_string(),
                 args: vec![content.to_string()],
                 timestamp: 0,
+                source: Some("hook".to_string()),
             })
             .await
             .map_err(|e| {

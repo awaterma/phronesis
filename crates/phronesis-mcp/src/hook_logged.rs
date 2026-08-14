@@ -21,6 +21,8 @@ pub(crate) struct LoggedConsequence {
     pub message: String,
     #[serde(default)]
     pub bindings: HashMap<String, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<String>,
 }
 
 impl LoggedConsequence {
@@ -29,10 +31,13 @@ impl LoggedConsequence {
     /// (Lookup, RuleDrivenLookup, Asserted) which the hook doesn't
     /// currently emit.
     pub(crate) fn from_consequence(c: &Consequence) -> Option<Self> {
-        let (rule_id, bindings) = match &c.provenance {
+        let (rule_id, bindings, decisions) = match &c.provenance {
             Provenance::RuleFiring {
-                rule_id, bindings, ..
-            } => (rule_id.clone(), bindings.clone()),
+                rule_id,
+                bindings,
+                decisions,
+                ..
+            } => (rule_id.clone(), bindings.clone(), decisions.clone()),
             _ => return None,
         };
         let action_type = c
@@ -52,6 +57,7 @@ impl LoggedConsequence {
             action_type,
             message,
             bindings,
+            decisions,
         })
     }
 }
@@ -110,6 +116,7 @@ mod demote_tests {
             action_type: action_type.to_string(),
             message: format!("from {rule_id}"),
             bindings: HashMap::new(),
+            decisions: Vec::new(),
         }
     }
 

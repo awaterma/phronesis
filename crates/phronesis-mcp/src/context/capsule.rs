@@ -679,6 +679,7 @@ async fn hydrate_confidence_band(
             predicate: "context_confidence_band".to_string(),
             args: vec![report.band.as_str().to_string()],
             timestamp: now_ts,
+            source: Some("context".to_string()),
         })
         .await
         .err()

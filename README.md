@@ -43,7 +43,7 @@ still belongs in rules.
 **Journey facts** ([SPEC-journey-facts](docs/specs/SPEC-journey-facts.md)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
 
 **Structural code graph** parses Rust, Python, and TypeScript into queryable
-relations such as `defines_fn`, `calls_api`, `tested_by`, and `untested`.
+relations such as `defines_fn`, `calls_api`, `tested_by`, and `no_direct_test`.
 Rules can bind to concrete code referents, structural packs can reason over
 relationships, and clients can inspect freshness or rebuild derived state over
 MCP.
@@ -90,7 +90,16 @@ phr-mcp install
 
 # 3. Initialize Phronesis in your project
 cd /your/project && phr-mcp init --packs rust
+
+# Inspect local state and remove only rebuildable graph caches
+phr-mcp state
+phr-mcp clean --cache
 ```
+
+`state` distinguishes authored configuration from caches, history, runtime
+state, backups, and potentially sensitive payload captures. `clean --cache`
+removes only `graph.jsonl`, `graph.index`, and `bindings.json`; rebuild them
+with `phr-mcp graph rebuild`.
 
 Codex uses the generated project-local `.codex/hooks.json` and
 `.codex/config.toml`. Review new or changed hooks with `/hooks`; Phronesis does

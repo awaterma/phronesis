@@ -127,6 +127,7 @@ async fn assert_facts_table(world: &mut World, step: &cucumber::gherkin::Step) {
                 predicate: row[1].clone(),
                 args: vec![row[2].clone()],
                 timestamp: 0,
+                source: None,
             };
             world.network.assert_fact(fact).await.unwrap();
         }
@@ -151,6 +152,7 @@ async fn given_content_fact(world: &mut World, content: String) {
         predicate: "new_content_contains".to_string(),
         args: vec![content],
         timestamp: 0,
+        source: None,
     };
     world.network.assert_fact(fact).await.unwrap();
 }
@@ -257,6 +259,7 @@ async fn given_fact_with_two_args(world: &mut World, predicate: String, a1: Stri
         predicate,
         args: vec![a1, a2],
         timestamp: 0,
+        source: None,
     };
     world.network.assert_fact(fact).await.unwrap();
 }
@@ -400,6 +403,7 @@ async fn when_assert_fact(world: &mut World, id: String, predicate: String, args
         predicate,
         args: vec![args],
         timestamp: 0,
+        source: None,
     };
     world.network.assert_fact(fact).await.unwrap();
 }
@@ -456,8 +460,7 @@ async fn when_fire_rules(world: &mut World) {
 #[when("I peek at the agenda")]
 async fn when_get_agenda(world: &mut World) {
     world.network.update_agenda().await.ok();
-    let agenda = world.network.agenda.lock().unwrap();
-    let items = agenda.get_all_items();
+    let items = world.network.agenda_snapshot().unwrap();
     let summaries: Vec<_> = items
         .iter()
         .map(|item| {
@@ -500,6 +503,7 @@ async fn when_set_section_context(world: &mut World, file: String, section: Stri
         predicate: "markdown_rule".to_string(),
         args: vec![file, section],
         timestamp: 0,
+        source: None,
     };
     world.network.assert_fact(fact).await.unwrap();
 }
@@ -511,6 +515,7 @@ async fn when_assert_content_fact_with_id(world: &mut World, content: String, id
         predicate: "new_content_contains".to_string(),
         args: vec![content],
         timestamp: 0,
+        source: None,
     };
     world.network.assert_fact(fact).await.unwrap();
 }

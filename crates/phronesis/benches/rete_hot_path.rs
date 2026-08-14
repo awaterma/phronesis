@@ -218,6 +218,7 @@ fn build_facts(n: usize) -> Vec<Fact> {
             predicate: pred,
             args,
             timestamp: 0,
+            source: None,
         });
     }
     facts
@@ -272,6 +273,7 @@ fn bench_assert_one(c: &mut Criterion) {
                     predicate: "predicate_b_0".to_string(),
                     args: vec!["crates/probe/src/lib.rs".to_string()],
                     timestamp: 0,
+                    source: None,
                 };
                 b.iter_batched(
                     || {

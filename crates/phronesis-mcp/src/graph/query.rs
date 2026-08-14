@@ -22,6 +22,34 @@ pub struct Pattern {
     pub args: Vec<Option<String>>,
 }
 
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let value = value.as_bytes();
+    let (mut p, mut v) = (0, 0);
+    let (mut star, mut retry) = (None, 0);
+
+    while v < value.len() {
+        if p < pattern.len() && (pattern[p] == b'?' || pattern[p] == value[v]) {
+            p += 1;
+            v += 1;
+        } else if p < pattern.len() && pattern[p] == b'*' {
+            star = Some(p);
+            p += 1;
+            retry = v;
+        } else if let Some(star_pos) = star {
+            p = star_pos + 1;
+            retry += 1;
+            v = retry;
+        } else {
+            return false;
+        }
+    }
+    while p < pattern.len() && pattern[p] == b'*' {
+        p += 1;
+    }
+    p == pattern.len()
+}
+
 impl Pattern {
     /// Parse CLI-style tokens: the first is the relation, the rest are
     /// arguments. `*` (or `?`) in any position means "anything".
@@ -43,14 +71,14 @@ impl Pattern {
 
     fn matches(&self, e: &Edge) -> bool {
         if let Some(r) = &self.relation
-            && &e.p != r
+            && !glob_matches(r, &e.p)
         {
             return false;
         }
         for (i, want) in self.args.iter().enumerate() {
             let Some(want) = want else { continue };
             match e.a.get(i) {
-                Some(got) if got == want => {}
+                Some(got) if glob_matches(want, got) => {}
                 _ => return false,
             }
         }
@@ -100,7 +128,7 @@ mod tests {
             Edge::base("tested_by", &["f", "t::one"], "tests/t.rs"),
             Edge::base("tested_by", &["f", "t::two"], "tests/t.rs"),
             Edge::base("imports", &["crate::a", "crate::b"], "src/a.rs"),
-            Edge::derived("untested", &["crate::b::g"]),
+            Edge::derived("no_direct_test", &["crate::b::g"]),
         ]
     }
 
@@ -141,6 +169,31 @@ mod tests {
     }
 
     #[test]
+    fn embedded_globs_match_relations_and_arguments() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["defines_*", "src/?.rs", "*::g"]));
+        let got = query(&g, &p, 0);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].a[0], "src/b.rs");
+        assert_eq!(count(&g, &p), 1);
+    }
+
+    #[test]
+    fn ordinary_tokens_still_match_exactly() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["defines", "src/a.rs"]));
+        assert!(query(&g, &p, 0).is_empty());
+    }
+
+    #[test]
+    fn standalone_question_mark_remains_a_whole_position_wildcard() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["tested_by", "f", "?"]));
+        assert_eq!(query(&g, &p, 1).len(), 1);
+        assert_eq!(count(&g, &p), 2);
+    }
+
+    #[test]
     fn a_later_position_can_be_constrained_alone() {
         let g = graph();
         // "what imports crate::b?" — the reverse-dependency question.
@@ -167,7 +220,7 @@ mod tests {
     #[test]
     fn derived_edges_are_queryable_like_any_other() {
         let g = graph();
-        let p = Pattern::parse(&toks(&["untested"]));
+        let p = Pattern::parse(&toks(&["no_direct_test"]));
         assert_eq!(query(&g, &p, 0).len(), 1);
     }
 
@@ -199,6 +252,6 @@ mod tests {
         let g = graph();
         let s = relation_summary(&g);
         assert_eq!(s[0], ("defines_fn".to_string(), 2));
-        assert!(s.iter().any(|(r, _)| r == "untested"));
+        assert!(s.iter().any(|(r, _)| r == "no_direct_test"));
     }
 }

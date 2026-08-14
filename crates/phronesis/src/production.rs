@@ -235,6 +235,21 @@ impl ProductionNetwork {
             }
         };
 
+        let bound_facts = agenda_item
+            .wme_list
+            .iter()
+            .map(|wme| wme.id.clone())
+            .collect::<Vec<_>>();
+        let fact_sources: std::collections::BTreeMap<String, String> = agenda_item
+            .wme_list
+            .iter()
+            .filter_map(|wme| {
+                wme.fact
+                    .source
+                    .clone()
+                    .map(|source| (wme.id.clone(), source))
+            })
+            .collect();
         let mut out = Vec::new();
         for action in &state.rule.actions {
             let substituted: Vec<String> = action
@@ -271,8 +286,10 @@ impl ProductionNetwork {
                 payload,
                 provenance: Provenance::RuleFiring {
                     rule_id: state.rule.id.clone().into(),
-                    bound_facts: Vec::new(),
+                    bound_facts: bound_facts.clone(),
                     bindings: agenda_item.bindings.bindings.clone(),
+                    fact_sources: fact_sources.clone(),
+                    decisions: Default::default(),
                 },
             });
         }
@@ -397,6 +414,7 @@ mod fire_agenda_item_tests {
     use crate::consequence::{ConsequenceKind, Provenance};
     use crate::engine_types::{Action as RuleAction, Condition, Rule};
     use crate::variable_binding::Bindings;
+    use crate::wme::WorkingMemoryElement;
 
     fn build_rule() -> Rule {
         Rule {
@@ -466,6 +484,37 @@ mod fire_agenda_item_tests {
                 );
             }
             other => panic!("expected RuleFiring provenance, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn fire_agenda_item_attaches_bound_fact_sources() {
+        let mut net = ProductionNetwork::new();
+        let rule = build_rule();
+        net.add_rule(rule.clone(), 0);
+        let mut item = build_agenda(rule);
+        item.wme_list = vec![WorkingMemoryElement::new(crate::Fact {
+            id: "fact-1".to_string(),
+            predicate: "function_returns_result_string".to_string(),
+            args: vec!["src/lib.rs".to_string(), "bad".to_string()],
+            timestamp: 0,
+            source: Some("ast:rs".to_string()),
+        })];
+
+        let consequences = net.fire_agenda_item(&item).unwrap();
+        match &consequences[0].provenance {
+            Provenance::RuleFiring {
+                bound_facts,
+                fact_sources,
+                ..
+            } => {
+                assert_eq!(bound_facts, &["fact-1"]);
+                assert_eq!(
+                    fact_sources.get("fact-1").map(String::as_str),
+                    Some("ast:rs")
+                );
+            }
+            other => panic!("expected rule-firing provenance, got {other:?}"),
         }
     }
 

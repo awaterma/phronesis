@@ -2,7 +2,7 @@
 
 **Status:** Phase One implemented on `feat/structural-graph-facts`; measurements in §2.3 and §10
 **Target release:** 0.23.0
-**Revision:** 7 — multilingual nodes, generic definitions, and ownership arbitration specified
+**Revision:** 8 — glob queries and explicit cross-language data contracts specified
 
 > **Revision 7 (2026-08-11)** generalizes `imports` from an intra-crate edge to
 > a static build/evaluation dependency between language-qualified graph nodes,
@@ -69,10 +69,23 @@ This works in the engine **today, unmodified**. It reuses the predicate index fo
 | `defines` | `[file, definition]` | Links a physical file to a named non-callable definition it declares (§9.1) |
 | `element_in_file` | `[element, file]` | Exact containment used to scope any element kind to a file (§9.1) |
 | `element_in_module` | `[element, module]` | Exact containment used to roll function/test evidence up to a module (§9.1) |
+| `generates` | `[producer, artifact_module]` | An exact producer graph element generates a uniquely indexed tracked artifact. Structured key analysis is limited to JSON/YAML. |
+| `consumes_data` | `[consumer, artifact_module]` | An exact indexed consumer reads a configured or narrowly inferred artifact. Explicit bindings support every indexed language pack. |
+| `deserializes` | `[consumer_type, artifact_module]` | Stronger Rust/Serde-specific evidence that a `Deserialize` type consumes the artifact. |
+| `data_flows_to` | `[artifact_module, consumer]` | Derived inverse of `consumes_data` (and compatibility `deserializes` evidence), providing forward Config → consumer navigation across languages. |
+| `data_key` | `[artifact_module, pointer]` | A bound JSON/YAML artifact's top-level key, encoded as a JSON pointer. |
+| `serde_field` | `[type, field, wire_name]` | A `Deserialize` field and one accepted wire name. |
+| `emits_key` | `[producer, artifact_module, pointer]` | A producer definition supplies a bound artifact key. |
+| `maps_data_key` | `[artifact_module, pointer, rust_field]` | An artifact key maps to an accepted Rust field. |
+| `unconsumed_data_key` | `[artifact_module, pointer, consumer_type]` | A bound key has no accepted field and can be silently dropped. |
+| `cue_import_diagnostic` | `[file, import_path, kind]` | A repository-local CUE import was `unresolved` or `ambiguous`; no dependency edge is guessed. Built-ins are not diagnostics. |
+| `generated_artifact_diagnostic` | `[kind, reference]` | A configured generated-artifact reference is missing, malformed, invalid, or ambiguous; no seam edge is guessed. |
+| `generated_without_consumer` | `[artifact_module]` | Derived closed-world evidence that a generated artifact has no indexed consumer. Policy is project-specific. |
+| `consumed_without_producer` | `[artifact_module]` | Derived closed-world evidence that a consumed artifact has no indexed producer. Policy is project-specific. |
 
 Provenance is **not** a relation. It is the `src` field on every stored edge (§2.1), and is never asserted into working memory.
 
-The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user. Revision 7's `graph_definition` and `defines` additions therefore require graph format 5: an unchanged worktree built by an older binary otherwise appears fresh while lacking the newly promised definition facts.
+The set is deliberately closed. Adding a relation is a spec change, not an extractor implementation detail, because each relation is a promise the enforcement layer makes to the user. Revision 8's data-contract relations, corrected CUE package identities, forward Config → consumer navigation, and lifecycle-gap evidence require graph format 8: an unchanged worktree built by an older binary otherwise appears fresh while lacking the promised seams or retaining obsolete identities.
 
 ---
 
@@ -236,6 +249,7 @@ identity scheme it was built under, as a `# format <n>` header:
 | 0 | pre-versioning; bare `crate::…` |
 | 4 | `<lang>:<package>[#<target>]::<module path>` |
 | 5 | format 4 identities plus revision 7 multilingual `imports`, multi-module files, `graph_definition`, and `defines` contracts |
+| 6 | format 5 plus package-shaped CUE identities, glob queries, and generated-artifact data seams |
 
 A non-empty index whose format differs from the running binary's is reported
 as `Outdated` — distinct from `Stale`, because no file drifted and only a
@@ -282,7 +296,7 @@ file no manifest claims falls back to `python:project` — its own language's
 word for an unnamed root, never Rust's `crate`.
 
 Segments join with `::`, not `.`, even though Python source writes dots. The
-separator belongs to the graph's data model: `derive::untested` bridges
+separator belongs to the graph's data model: `derive::no_direct_test` bridges
 `tested_by`'s bare callee names to `defines_fn`'s qualified ones by splitting
 on it, so a dotted identity would make every tested Python function report as
 untested.
@@ -352,7 +366,7 @@ Design:
 
 ### 4.5 Two-tier extraction: parse one file, derive over the whole graph
 
-Derived facts (`untested`, `in_cycle`) need whole-repo knowledge on every save. That does **not** mean reparsing the repo on every save. The two costs are separable, and conflating them is what makes "full scan on each save" sound unaffordable:
+Derived facts (`no_direct_test`, `in_cycle`) need whole-repo knowledge on every save. That does **not** mean reparsing the repo on every save. The two costs are separable, and conflating them is what makes "full scan on each save" sound unaffordable:
 
 | Tier | Scope | Input | Cost at 1k files / 15k edges |
 |---|---|---|---|
@@ -364,13 +378,13 @@ On every `PostToolUse` save:
 1. **Parse** the edited file only, producing its base edges (`defines_fn`, `calls_api`, `imports`, `tested_by`).
 2. **Compact** by provenance (§3.2), yielding the complete current base-edge set.
 3. **Derive** over that whole set, unconditionally:
-   * `untested(F)` = every `F` in `defines_fn` with no `tested_by(F, _)` — a set difference over ~10k functions.
+   * `no_direct_test(F)` = every `F` in `defines_fn` with no `tested_by(F, _)` — a set difference over ~10k functions.
    * `in_cycle(M, C)` = Tarjan's SCC over the `imports` edges — linear in edges.
 4. **Write** base edges plus derived edges atomically.
 
 Derived edges are marked in the file (`"d": true`) so compaction discards and regenerates them wholesale rather than trying to attribute them to a source file — they are a function of the entire graph, not of any one file.
 
-The result is that `untested` and `in_cycle` are correct after **every** save, not only after a full rebuild, so rules keyed on them are not gated on a rare rebuild. Full reparse of every file is still needed when the staleness check fails (§3.4), i.e. after `git checkout` and friends — but that is the exceptional path, not the per-save path.
+The result is that `no_direct_test` and `in_cycle` are correct after **every** save, not only after a full rebuild, so rules keyed on them are not gated on a rare rebuild. Full reparse of every file is still needed when the staleness check fails (§3.4), i.e. after `git checkout` and friends — but that is the exceptional path, not the per-save path.
 
 Both derivations are pure functions of the edge set, so they are also the cheapest part of the pipeline to test.
 
@@ -404,7 +418,7 @@ Rules are ordinary Phronesis rules over the relations in §1.2 — no new syntax
         { "predicate": "file_type",  "args": ["?file", "production"] },
         { "predicate": "defines_fn", "args": ["?file", "?func"] },
         { "predicate": "calls_api",  "args": ["?func", "std::unwrap"] },
-        { "predicate": "untested",   "args": ["?func"] }
+        { "predicate": "no_direct_test",   "args": ["?func"] }
       ],
       "then": {
         "action_type": "warn",
@@ -466,7 +480,7 @@ This was found by running the shipped pack against a real project, not by readin
 { "when": [
     { "edited_file": "?file" },
     { "defines_fn": ["?file", "?func"] },
-    { "untested": ["?func"] }
+    { "no_direct_test": ["?func"] }
 ] }
 ```
 
@@ -579,9 +593,9 @@ Structural rules therefore set `audit: true`. Findings carry no line number (the
 2. **Staleness index:** per-file content hashes in `.phronesis/graph.index`; freshness check on hydrate; `phr-mcp graph rebuild` for full scan.
 3. **Rust extractor:** `tree-sitter-rust` over the closed relation set (§1.2), with the watched-API list, test mapping, Tarjan SCC, and skip-and-count on ambiguity.
 4. **Hydration:** load graph lines as `Fact { predicate, args }` at PreToolUse. No engine changes.
-5. **Derivation pass:** `untested` by set difference and `in_cycle` by Tarjan SCC over the full edge set, run on every save (§4.5), with derived edges flagged and regenerated wholesale.
+5. **Derivation pass:** `no_direct_test` by set difference and `in_cycle` by Tarjan SCC over the full edge set, run on every save (§4.5), with derived edges flagged and regenerated wholesale.
 6. **Benchmark:** measure (a) hydrate latency at 15k edges against the PreToolUse budget and (b) the per-save parse+compact+derive round trip against the PostToolUse budget. Acceptance gates, not assumptions.
-7. **False-positive measurement:** run the extractor over this repo and at least one additional Rust codebase of comparable size; report `untested` and `in_cycle` precision by hand-audit. Gates any future promotion from warn to block. **First corpus measured — see §10.**
+7. **False-positive measurement:** run the extractor over this repo and at least one additional Rust codebase of comparable size; report `no_direct_test` and `in_cycle` precision by hand-audit. Gates any future promotion from warn to block. **First corpus measured — see §10.**
 8. **Integration tests:** cycle detection and untested-call detection fire deterministically, without LLM invocation; stale graph downgrades to warn.
 
 ---
@@ -662,7 +676,7 @@ defines four classes with distinct persistence:
 | Class | Examples | Authority | Persistence |
 |---|---|---|---|
 | Extracted structure | `graph_function`, `tested_by`, `element_in_file` | AST sensor | `graph.jsonl`, provenance-keyed |
-| Graph-derived structure | `untested`, `in_cycle` | Pure computation over the complete graph | Regenerated in `graph.jsonl`, `d: true` |
+| Graph-derived structure | `no_direct_test`, `in_cycle` | Pure computation over the complete graph | Regenerated in `graph.jsonl`, `d: true` |
 | Observed evidence | `test_executed`, `test_result`, `run_state` | Post-hook outcome adapter parsing an executed command | Journey journal |
 | Evaluation-local inference | `introduced_element`, `verified_at_state`, `verification_missing` | Host derivation over graph + baseline + evidence + current state | Fresh network only |
 
@@ -674,7 +688,7 @@ Neither the presence of `graph_test(T)` nor the structural edge
 RETE RHS actions continue to emit consequences; they do not persist inferred
 graph edges and do not forward-chain. Conclusions needed by an LHS are
 precomputed by a pure host derivation before `update_agenda`, just as
-`untested`, `in_cycle`, journey aggregators, and confidence signals are today.
+`no_direct_test`, `in_cycle`, journey aggregators, and confidence signals are today.
 
 ### 9.3 Incremental save lifecycle
 
@@ -954,22 +968,30 @@ Acceptance tests must prove:
 | `tested_by` | 5,577 | direct-call edges from test bodies |
 | `calls_api` | 167 | watchlist: unwrap/expect/panic/todo/unimplemented |
 | `imports` | 98 | intra-crate only |
-| `untested` | 695 | 61% of functions |
+| `no_direct_test` | 695 | 61% of functions |
 | `in_cycle` | 4 | 2 cycles of 2 modules each |
 
 **`in_cycle`: 2/2 genuine.** `crate::hook` ↔ `crate::hook_facts` and `crate::variable_binding` ↔ `crate::wme` are both real mutual imports, confirmed by reading the `use` statements.
 
-**`untested` alone is too noisy to be a rule.** At 61% of all functions it mostly reports "covered only transitively", which is true but not actionable — the direct-call heuristic is working as specified, and the specification is what makes it noisy.
+**`no_direct_test` alone is too noisy to be a rule.** At 61% of all functions it mostly reports "covered only transitively", which is true but not actionable — the direct-call heuristic is working as specified, and the specification is what makes it noisy.
 
-**The composed rule is the usable signal.** `untested` ∧ `calls_api` ∧ `file_type=production` fires **6 times across the whole repository**. Spot-audit of `crate::init::install_one_target`: contains `.unwrap()` at `init.rs:220` and `:236`, and its only caller is production code at `:359` — no direct test. True positive.
+**The composed rule is the usable signal.** `no_direct_test` ∧ `calls_api` ∧ `file_type=production` fires **6 times across the whole repository**. Spot-audit of `crate::init::install_one_target`: contains `.unwrap()` at `init.rs:220` and `:236`, and its only caller is production code at `:359` — no direct test. True positive.
 
-**Conclusion:** `in_cycle` and the composed untested-risky-call rule are precise enough to ship as `warn`. Bare `untested` should not be given a rule of its own. Promotion of anything to `block` still awaits a second corpus (§8 task 7).
+**Conclusion:** `in_cycle` and the composed untested-risky-call rule are precise enough to ship as `warn`. Bare `no_direct_test` should not be given a rule of its own. Promotion of anything to `block` still awaits a second corpus (§8 task 7).
 
 ---
 
 ## 10.1 Query surface
 
-`phr-mcp graph query <relation> [arg...]` and the `query_code_graph` MCP tool expose the graph directly. The pattern language mirrors the fact shape — relation plus positional arguments, `*` for a wildcard — rather than inventing a vocabulary of named questions: one concept to learn, and it composes with any relation added later instead of needing a new verb per question.
+`phr-mcp graph query <relation> [arg...]` and the `query_code_graph` MCP tool expose the graph directly. The pattern language mirrors the fact shape — relation plus positional arguments — rather than inventing a vocabulary of named questions: one concept to learn, and it composes with any relation added later instead of needing a new verb per question.
+
+Ordinary tokens match exactly. A token consisting solely of `*` or `?`
+remains a whole-position wildcard for compatibility. Within any relation or
+argument token, `*` matches zero or more characters and `?` matches exactly
+one character; all other characters are literal. CLI and MCP use the same
+matcher, limit, and unlimited-count semantics. Thus
+`defines '*' '*rete_rules*'` keeps the first argument unconstrained while
+selecting definition identities containing `rete_rules`.
 
 Both always report the unlimited total alongside a truncated result set. A capped list that reported only its own length would read as a complete answer.
 
@@ -978,6 +1000,14 @@ Omitting the relation returns the relation inventory with edge counts, so the vo
 ---
 
 ## 11. Revision History
+
+**Revision 8** — corrected CUE identities and added data seams:
+
+* Required graph format 8 for package-shaped CUE nodes, the shared
+  generated-artifact relation set, forward Config → consumer navigation, and
+  lifecycle-gap evidence.
+* Specified exact `.phronesis/graph.toml` bindings and bounded inference.
+* Added compatible embedded-glob query semantics shared by CLI and MCP.
 
 **Revision 7** — added the TypeScript extractor:
 
@@ -1025,7 +1055,7 @@ Omitting the relation returns the relation inventory with edge counts, so the vo
 * Recorded measured latency for both hook paths and made hydration demand-gated (§2.3, §5.5).
 * Corrected §4.4's error-direction claim: short-name matching over-approximates coverage, so the heuristic errs toward silence, not toward false accusation. The earlier text claimed the opposite.
 * Kept machinery health out of working memory: staleness is returned to the harness, which demotes affected rules' violations to warnings. An intermediate draft asserted a `graph_fresh` fact and was rejected — the fact base models the codebase, not the tool's self-diagnostics (§5.4).
-* Measured the first corpus; `untested` alone is too noisy for a rule of its own (§10).
+* Measured the first corpus; `no_direct_test` alone is too noisy for a rule of its own (§10).
 * Added `edited_file` + `declares_module` and required every structural rule to scope to the edited file. Found by running the shipped pack, not by review: the §5.1/§5.2 rules as written matched repo-wide state and fired on every tool call (§5.7).
 * Shipped the `structural` pack (`phr-mcp init --packs structural`) with both measured rules, warn-only, and made them auditable — `phr-mcp audit` sweeps the whole tree by asserting every file as the edited file and firing the real network once (§5.9). `init` builds the graph itself: without it the pack installs silent, and a rule that cannot fire is indistinguishable from one that found nothing. The build is non-fatal — writing config is what `init` is for, and a missing graph is recoverable with `graph rebuild` while a failed `init` leaves no enforcement at all.
 * Fixed `use super::`/`self::` resolution — 40% of intra-crate imports were being dropped, leaving cycle detection blind to any cycle formed through a relative import (§4.7).
@@ -1038,7 +1068,7 @@ Omitting the relation returns the relation inventory with edge counts, so the vo
 * Added mandatory `src` provenance; compaction keyed on it rather than on subject (§3.2).
 * Promoted the sensor to the centerpiece: language scope, entity naming, watched-API list, test mapping, failure behavior (§4).
 * Moved cycle detection and negation into the extractor, since neither is expressible in a flat, non-recursive `when` (§4.5).
-* Split extraction into parse (edited file only) and derive (whole graph) tiers, so `untested` and `in_cycle` are recomputed on every save without reparsing the repo (§4.5).
+* Split extraction into parse (edited file only) and derive (whole graph) tiers, so `no_direct_test` and `in_cycle` are recomputed on every save without reparsing the repo (§4.5).
 * Added a staleness/resync story for edits outside the hook path (§3.4).
 * Resolved the goals-vs-§2 contradiction: `graph.jsonl` is gitignored derived state; the auditability claim now applies only to `rules.json`.
 * Renamed "LSM compaction" to "rewrite compaction" (§3.3).

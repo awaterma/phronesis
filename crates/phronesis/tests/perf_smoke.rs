@@ -73,6 +73,7 @@ fn build_facts(n: usize) -> Vec<Fact> {
                 predicate: pred,
                 args,
                 timestamp: 0,
+                source: None,
             }
         })
         .collect()
@@ -120,6 +121,7 @@ async fn single_assert_within_budget() {
         predicate: "pred_b_0".to_string(),
         args: vec!["crates/probe/src/lib.rs".to_string()],
         timestamp: 0,
+        source: None,
     };
 
     let net = ReteNetwork::new();
