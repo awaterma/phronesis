@@ -18,7 +18,35 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
     let definitions = base_edges(base, "defines_fn")
         .filter_map(|edge| edge.a.get(1).cloned())
         .collect::<BTreeSet<_>>();
+    let production_files = base_edges(base, "file_type")
+        .filter_map(|edge| {
+            (edge.a.get(1).map(String::as_str) == Some("production"))
+                .then(|| edge.a.first().cloned())
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    let mut production_definitions = base_edges(base, "defines_fn")
+        .filter(|edge| {
+            edge.a
+                .first()
+                .is_some_and(|file| production_files.contains(file))
+        })
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
+    if production_files.is_empty() {
+        production_definitions = definitions.clone();
+    }
     let by_leaf = definitions.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, definition| {
+            let leaf = definition.rsplit("::").next().unwrap_or(definition);
+            map.entry(leaf.to_string())
+                .or_default()
+                .insert(definition.clone());
+            map
+        },
+    );
+    let production_by_leaf = production_definitions.iter().fold(
         BTreeMap::<String, BTreeSet<String>>::new(),
         |mut map, definition| {
             let leaf = definition.rsplit("::").next().unwrap_or(definition);
@@ -33,6 +61,19 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
         |mut map, edge| {
             if let (Some(from), Some(to)) = (edge.a.first(), edge.a.get(1)) {
                 map.entry(from.clone()).or_default().insert(to.clone());
+            }
+            map
+        },
+    );
+    let reexports = base_edges(base, "reexports").fold(
+        BTreeMap::<(String, String), BTreeSet<String>>::new(),
+        |mut map, edge| {
+            if let (Some(module), Some(target), Some(item)) =
+                (edge.a.first(), edge.a.get(1), edge.a.get(2))
+            {
+                map.entry((module.clone(), item.clone()))
+                    .or_default()
+                    .insert(target.clone());
             }
             map
         },
@@ -53,12 +94,17 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
             continue;
         };
         let callee = &edge.a[callee_index];
-        if definitions.contains(callee) {
+        let (eligible, candidates_by_leaf) = if edge.p == "tested_by" {
+            (&production_definitions, &production_by_leaf)
+        } else {
+            (&definitions, &by_leaf)
+        };
+        if eligible.contains(callee) {
             normalized.push(edge);
             continue;
         }
         let caller_module = caller.rsplit_once("::").map(|(module, _)| module);
-        let Some(candidates) = by_leaf.get(callee) else {
+        let Some(candidates) = candidates_by_leaf.get(callee) else {
             continue;
         };
         let resolved = candidates
@@ -74,7 +120,14 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
                             .is_some_and(|suffix| suffix.starts_with("::"))
                 }) || caller_module
                     .and_then(|caller_module| imports.get(caller_module))
-                    .is_some_and(|targets| targets.contains(module))
+                    .is_some_and(|targets| {
+                        targets.contains(module)
+                            || targets.iter().any(|imported| {
+                                reexports
+                                    .get(&(imported.clone(), callee.clone()))
+                                    .is_some_and(|modules| modules.contains(module))
+                            })
+                    })
             })
             .collect::<Vec<_>>();
         if resolved.len() == 1 {

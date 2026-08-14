@@ -10,11 +10,11 @@
 //! and downgrades enforcement to warn.
 
 use super::derive::{canonicalize_function_edges, derive_all};
-use super::extract::{DEFAULT_WATCHLIST, extract_rust};
+use super::extract::{DEFAULT_WATCHLIST, extract_rust_at_module, module_path};
 use super::helm3;
 use super::model::Edge;
 use super::store;
-use super::unit::UnitMap;
+use super::unit::{UnitContext, UnitMap};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
@@ -33,7 +33,7 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// `graph_file` and multilingual dialect support; format 4 remains the
 /// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 15;
+pub const GRAPH_FORMAT: u32 = 16;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -332,6 +332,98 @@ fn tracked_files(root: &Path) -> Vec<String> {
     out
 }
 
+#[derive(Clone)]
+struct IncludedRustModule {
+    module: String,
+    unit: UnitContext,
+    owner: String,
+}
+
+/// Resolve external `#[path = "…"] mod name;` files to the module identity
+/// Rust actually compiles them under. Only parser-confirmed module items and
+/// existing in-repository files participate; conflicting inclusions are
+/// omitted rather than assigned an arbitrary owner.
+fn rust_path_inclusions(
+    root: &Path,
+    files: &[String],
+    units: &UnitMap,
+) -> BTreeMap<String, IncludedRustModule> {
+    use crate::syntax::parsed::ParsedFile;
+
+    let mut candidates: BTreeMap<String, Vec<IncludedRustModule>> = BTreeMap::new();
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    for owner in files.iter().filter(|file| file.ends_with(".rs")) {
+        let Ok(content) = std::fs::read_to_string(root.join(owner)) else {
+            continue;
+        };
+        let Some(ParsedFile::Rust { tree, source }) = ParsedFile::parse_rust(&content) else {
+            continue;
+        };
+        let unit = units.context_for(owner);
+        let owner_module = module_path(owner, &unit);
+        let mut cursor = tree.root_node().walk();
+        for node in tree.root_node().named_children(&mut cursor) {
+            if node.kind() != "mod_item" {
+                continue;
+            }
+            let mut attributes = node
+                .prev_named_sibling()
+                .filter(|n| n.kind() == "attribute_item")
+                .into_iter()
+                .collect::<Vec<_>>();
+            let mut children = node.walk();
+            attributes.extend(
+                node.named_children(&mut children)
+                    .filter(|child| child.kind() == "attribute_item"),
+            );
+            let path_literal = attributes.iter().find_map(|attribute| {
+                attribute
+                    .utf8_text(source.as_bytes())
+                    .ok()?
+                    .strip_prefix("#[path")?
+                    .split_once('=')
+                    .map(|(_, value)| value)?
+                    .trim()
+                    .strip_suffix(']')?
+                    .trim()
+                    .strip_prefix('"')?
+                    .strip_suffix('"')
+            });
+            let Some(path_literal) = path_literal else {
+                continue;
+            };
+            let Some(name) = node
+                .child_by_field_name("name")
+                .and_then(|name| name.utf8_text(source.as_bytes()).ok())
+            else {
+                continue;
+            };
+            let owner_dir = root.join(owner).parent().unwrap_or(root).to_path_buf();
+            let Ok(target) = owner_dir.join(path_literal).canonicalize() else {
+                continue;
+            };
+            let Ok(relative) = target.strip_prefix(&canonical_root) else {
+                continue;
+            };
+            let Some(relative) = relative.to_str() else {
+                continue;
+            };
+            candidates
+                .entry(relative.replace('\\', "/"))
+                .or_default()
+                .push(IncludedRustModule {
+                    module: format!("{owner_module}::{name}"),
+                    unit: unit.clone(),
+                    owner: owner.clone(),
+                });
+        }
+    }
+    candidates
+        .into_iter()
+        .filter_map(|(path, mut owners)| (owners.len() == 1).then(|| (path, owners.remove(0))))
+        .collect()
+}
+
 fn decision_input_files(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     if root.join(".phronesis/rules.json").is_file() {
@@ -453,8 +545,12 @@ fn extract_one(
     content: &str,
     units: &UnitMap,
     cue_index: Option<&super::cue::PackageIndex>,
+    rust_inclusions: &BTreeMap<String, IncludedRustModule>,
 ) -> super::extract::Extracted {
-    let unit = units.context_for(rel);
+    let inclusion = rust_inclusions.get(rel);
+    let unit = inclusion
+        .map(|included| included.unit.clone())
+        .unwrap_or_else(|| units.context_for(rel));
     // Helm owns templated YAML beneath a chart's templates/ tree. Extension
     // alone is insufficient: routing such a file through generic YAML first
     // would either misparse Go actions or silently discard the file.
@@ -516,7 +612,13 @@ fn extract_one(
             yaml_unit.files = tracked_files(root);
             super::yaml::extract_yaml(rel, content, &yaml_unit)
         }
-        _ => extract_rust(rel, content, DEFAULT_WATCHLIST, &unit),
+        _ => extract_rust_at_module(
+            rel,
+            content,
+            DEFAULT_WATCHLIST,
+            &unit,
+            inclusion.map(|included| included.module.as_str()),
+        ),
     }
 }
 
@@ -603,6 +705,13 @@ fn reconcile_bindings_best_effort(root: &Path, generation: u64) {
 /// Only the edited file is parsed; derivation runs over the full edge set
 /// already on disk. That is what makes whole-repo facts affordable per save.
 pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<SaveOutcome> {
+    let path_module_owner = file_path.ends_with(".rs")
+        && (content.contains("#[path")
+            || store::load(&store::graph_path(root))?.iter().any(|edge| {
+                !edge.d
+                    && edge.p == "includes_file"
+                    && edge.a.first().is_some_and(|owner| owner == file_path)
+            }));
     let data_contract_input = root.join(".phronesis/graph.toml").is_file()
         && matches!(
             Path::new(file_path)
@@ -611,6 +720,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             Some("rs" | "json" | "yaml" | "yml")
         );
     if file_path.ends_with(".cue")
+        || path_module_owner
         || file_path == ".phronesis/graph.toml"
         || file_path == ".phronesis/rules.json"
         || file_path.starts_with(".phronesis/wiki/decisions/")
@@ -638,7 +748,9 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     }
 
     let units = UnitMap::discover(root);
-    let extracted = extract_one(root, file_path, content, &units, None);
+    let files = tracked_files(root);
+    let rust_inclusions = rust_path_inclusions(root, &files, &units);
+    let extracted = extract_one(root, file_path, content, &units, None, &rust_inclusions);
     let existing = store::load(&store::graph_path(root))?;
     if extracted.parse_failed {
         // Leave the graph and the index exactly as they were. Compacting the
@@ -780,12 +892,21 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     let mut skipped = 0;
     let units = UnitMap::discover(root);
     let cue_index = super::cue::build_package_index(root);
+    let files = tracked_files(root);
+    let rust_inclusions = rust_path_inclusions(root, &files, &units);
 
-    for rel in tracked_files(root) {
+    for rel in files {
         let Ok(content) = std::fs::read_to_string(root.join(&rel)) else {
             continue;
         };
-        let extracted = extract_one(root, &rel, &content, &units, Some(&cue_index));
+        let extracted = extract_one(
+            root,
+            &rel,
+            &content,
+            &units,
+            Some(&cue_index),
+            &rust_inclusions,
+        );
         skipped += extracted.skipped;
         if extracted.parse_failed {
             // A complete rebuild has observed this exact content and
@@ -798,6 +919,9 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
         base.extend(extracted.edges);
         index.entries.insert(rel, hash_content(&content));
     }
+    base.extend(rust_inclusions.iter().map(|(file, included)| {
+        Edge::base("includes_file", &[&included.owner, file], &included.owner)
+    }));
 
     super::data_contracts::augment(root, &mut base);
     base.extend(rule_predicate_edges(root)?);
@@ -846,6 +970,47 @@ mod tests {
 
     fn edges(root: &Path) -> Vec<Edge> {
         store::load(&store::graph_path(root)).expect("load")
+    }
+
+    #[test]
+    fn path_included_tests_use_the_compiled_module_identity_and_resolve_super_globs() {
+        let dir = project();
+        write(dir.path(), "src/lib.rs", "mod foo;");
+        write(
+            dir.path(),
+            "src/foo.rs",
+            "pub mod implementation { pub fn production() {} }\npub use implementation::{production};\n#[cfg(test)]\n#[path = \"../tests/unit/foo_tests.rs\"]\nmod tests;\n",
+        );
+        write(
+            dir.path(),
+            "tests/unit/foo_tests.rs",
+            "use super::*;\nfn helper() {}\n#[test]\nfn works() { production(); helper(); }\n",
+        );
+
+        rebuild(dir.path()).expect("rebuild");
+        let graph = edges(dir.path());
+        let test = "rust:crate::foo::tests::works";
+        assert!(
+            graph.iter().any(|edge| {
+                edge.p == "defines_test" && edge.a.get(1).map(String::as_str) == Some(test)
+            }),
+            "defines_test: {:?}",
+            graph
+                .iter()
+                .filter(|edge| edge.p == "defines_test")
+                .map(|edge| &edge.a)
+                .collect::<Vec<_>>()
+        );
+        assert!(graph.iter().any(|edge| {
+            edge.p == "tested_by" && edge.a == ["rust:crate::foo::implementation::production", test]
+        }));
+        assert!(!graph.iter().any(|edge| {
+            edge.p == "tested_by"
+                && edge
+                    .a
+                    .first()
+                    .is_some_and(|target| target.ends_with("::helper"))
+        }));
     }
 
     fn has(root: &Path, p: &str) -> bool {

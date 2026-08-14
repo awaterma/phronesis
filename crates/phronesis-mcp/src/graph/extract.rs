@@ -474,6 +474,12 @@ impl Sensor<'_> {
             return;
         };
         let raw = text(arg, self.source);
+        if node
+            .named_child(0)
+            .is_some_and(|child| child.kind() == "visibility_modifier")
+        {
+            self.visit_reexport(raw, scope);
+        }
         // Take the path prefix before any brace group or glob.
         let head = raw.split(['{', '*']).next().unwrap_or("").trim();
         let mut segments: Vec<&str> = head
@@ -539,6 +545,43 @@ impl Sensor<'_> {
         let from = self.self_module.clone();
         self.emit("imports", &[&from, &target]);
     }
+
+    /// Record bounded public re-exports so a test's `use super::*` can resolve
+    /// names that the parent module deliberately places in its public scope.
+    fn visit_reexport(&mut self, raw: &str, scope: &Scope) {
+        let Some((prefix, group)) = raw.split_once("::{") else {
+            return;
+        };
+        let Some(group) = group.strip_suffix('}') else {
+            return;
+        };
+        let mut target = match prefix.split("::").next() {
+            Some("crate") => vec![self.unit.id.clone()],
+            Some("self") => scope.path.clone(),
+            Some("super") => {
+                let mut path = scope.path.clone();
+                if path.len() <= 1 {
+                    return;
+                }
+                path.pop();
+                path
+            }
+            Some(_) => scope.path.clone(),
+            None => return,
+        };
+        let mut parts = prefix
+            .split("::")
+            .filter(|part| !part.is_empty() && !matches!(*part, "crate" | "self" | "super"));
+        target.extend(parts.by_ref().map(str::to_string));
+        let target = target.join("::");
+        let from = self.self_module.clone();
+        for item in group.split(',') {
+            let item = item.split_whitespace().next().unwrap_or("");
+            if !item.is_empty() && item != "*" && !item.contains("::") {
+                self.emit("reexports", &[&from, &target, item]);
+            }
+        }
+    }
 }
 
 /// Extract every base relation from one Rust file.
@@ -547,6 +590,16 @@ pub fn extract_rust(
     content: &str,
     watchlist: &[&str],
     unit: &UnitContext,
+) -> Extracted {
+    extract_rust_at_module(file_path, content, watchlist, unit, None)
+}
+
+pub fn extract_rust_at_module(
+    file_path: &str,
+    content: &str,
+    watchlist: &[&str],
+    unit: &UnitContext,
+    module_override: Option<&str>,
 ) -> Extracted {
     if !file_path.ends_with(".rs") {
         return Extracted::default();
@@ -567,7 +620,9 @@ pub fn extract_rust(
         return Extracted::unparseable();
     }
 
-    let self_module = module_path(file_path, unit);
+    let self_module = module_override
+        .map(str::to_string)
+        .unwrap_or_else(|| module_path(file_path, unit));
     let mut sensor = Sensor {
         file_path,
         source: source.as_bytes(),
