@@ -40,6 +40,52 @@ static ANCHOR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"\*([_a-zA-Z][_a-zA-Z0-9-]*)").expect("static regex compiles")
 });
 
+/// Preserve byte offsets while hiding quoted scalar content and comments.
+/// YAML aliases and anchors are syntax only outside quoted scalars.
+fn mask_quoted_yaml(content: &str) -> String {
+    let bytes = content.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut quote = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'\n' {
+            quote = None;
+            out.push(byte);
+            i += 1;
+            continue;
+        }
+        if let Some(active) = quote {
+            if active == b'\'' && byte == b'\'' && bytes.get(i + 1) == Some(&b'\'') {
+                out.extend_from_slice(b"  ");
+                i += 2;
+                continue;
+            }
+            if byte == active {
+                quote = None;
+            }
+            out.push(b' ');
+            i += 1;
+            continue;
+        }
+        if byte == b'#' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                out.push(b' ');
+                i += 1;
+            }
+            continue;
+        }
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+            out.push(b' ');
+        } else {
+            out.push(byte);
+        }
+        i += 1;
+    }
+    String::from_utf8(out).expect("mask preserves UTF-8 byte boundaries")
+}
+
 /// Regex matching JSON Schema `$anchor` values.
 static SCHEMA_ANCHOR_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r#"\$anchor\s*:\s*['"]?([_a-zA-Z][_a-zA-Z0-9-]*)['"]?"#)
@@ -445,15 +491,24 @@ fn extract_yaml_document(
     );
 
     // Extract anchor names (definitions and references).
-    let anchor_defs = extract_anchor_defs(content);
+    let syntax = mask_quoted_yaml(content);
+    let anchor_defs = extract_anchor_defs(&syntax);
     let undefined_aliases: BTreeSet<String> = ANCHOR_RE
-        .captures_iter(content)
+        .captures_iter(&syntax)
         .filter_map(|alias| {
             let name = alias.get(1)?.as_str();
             let alias_offset = alias.get(0)?.start();
+            let remainder = &syntax[alias.get(0)?.end()..];
+            let scalar_tail = remainder
+                .split(['\n', ',', ']', '}', '#'])
+                .next()
+                .unwrap_or("");
+            if scalar_tail.contains('*') {
+                return None;
+            }
             let defined_earlier =
                 ANCHOR_DEF_RE
-                    .captures_iter(&content[..alias_offset])
+                    .captures_iter(&syntax[..alias_offset])
                     .any(|anchor| {
                         anchor
                             .get(2)
@@ -802,6 +857,37 @@ override: *defaults
         let invalid = edges_of(&out, "yaml_undefined_alias");
         assert_eq!(invalid.len(), 1);
         assert_eq!(invalid[0][2], "later");
+    }
+
+    #[test]
+    fn markdown_emphasis_inside_quoted_scalars_is_not_a_yaml_alias() {
+        let content = "categories:\n  - - '*Ale*'\n    - \"*Ammunition*\"\n";
+        let out = extract_yaml("config/manifest.yaml", content, &ctx());
+        assert!(edges_of(&out, "yaml_undefined_alias").is_empty());
+    }
+
+    #[test]
+    fn markdown_emphasis_inside_plain_scalars_is_not_a_yaml_alias() {
+        let content = "items:\n  - *Ioun stone*\n  - *beads of force*\n";
+        let out = extract_yaml("config/manifest.yaml", content, &ctx());
+        assert!(edges_of(&out, "yaml_undefined_alias").is_empty());
+    }
+
+    #[test]
+    fn a_real_unquoted_alias_is_still_reported() {
+        let out = extract_yaml(
+            "config/manifest.yaml",
+            "value: *later\nlater: &later 1\n",
+            &ctx(),
+        );
+        assert_eq!(
+            edges_of(&out, "yaml_undefined_alias"),
+            vec![vec![
+                "config/manifest.yaml".to_string(),
+                "yaml:project::config::manifest::doc:0".to_string(),
+                "later".to_string()
+            ]]
+        );
     }
 
     // ─── Helm template exclusion ────────────────────────────────────

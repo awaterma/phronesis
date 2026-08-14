@@ -222,6 +222,13 @@ fn function_chunks(content: &str) -> impl Iterator<Item = &str> {
         .into_iter()
 }
 
+fn function_name(chunk: &str) -> Option<&str> {
+    let rest = chunk.strip_prefix("fn ")?;
+    rest.split(|character: char| !(character.is_ascii_alphanumeric() || character == '_'))
+        .next()
+        .filter(|name| !name.is_empty())
+}
+
 fn literal_paths(chunk: &str, suffixes: &[&str]) -> BTreeSet<String> {
     let is_path = |value: &str| {
         !value.chars().any(char::is_whitespace)
@@ -311,14 +318,12 @@ fn infer_bindings(
                         && let Some(modules) = cue_modules.get(cue_path.as_str())
                         && modules.len() == 1
                     {
-                        inferred.insert(
-                            artifact.clone(),
-                            Binding {
-                                producer: (*modules.iter().next().expect("one module")).to_string(),
-                                artifact: artifact.clone(),
-                                consumer: None,
-                            },
-                        );
+                        let binding = inferred.entry(artifact.clone()).or_insert_with(|| Binding {
+                            artifact: artifact.clone(),
+                            ..Binding::default()
+                        });
+                        binding.producer =
+                            (*modules.iter().next().expect("one module")).to_string();
                     }
                 }
             }
@@ -333,16 +338,34 @@ fn infer_bindings(
                     .captures(chunk)
                     .or_else(|| LET_TYPE_RE.captures(chunk))
                     .and_then(|capture| capture.get(1).map(|value| value.as_str()));
-                if artifacts.len() == 1
-                    && let Some(target) = target
-                {
-                    let simple = target.rsplit("::").next().unwrap_or(target);
-                    let matches = serde_types
-                        .keys()
-                        .filter(|type_id| type_id.ends_with(&format!("::{simple}")))
-                        .cloned()
-                        .collect::<Vec<_>>();
-                    if matches.len() == 1 {
+                if artifacts.len() == 1 {
+                    let typed_consumer = target.and_then(|target| {
+                        let simple = target.rsplit("::").next().unwrap_or(target);
+                        let matches = serde_types
+                            .keys()
+                            .filter(|type_id| type_id.ends_with(&format!("::{simple}")))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        (matches.len() == 1).then(|| matches[0].clone())
+                    });
+                    let function_consumer = function_name(chunk).and_then(|name| {
+                        let source = path.strip_prefix(root).ok()?.to_str()?.replace('\\', "/");
+                        let matches = base
+                            .iter()
+                            .filter(|edge| {
+                                edge.p == "defines_fn"
+                                    && edge.src == source
+                                    && edge.a.get(1).is_some_and(|identity| {
+                                        identity.rsplit("::").next() == Some(name)
+                                    })
+                            })
+                            .filter_map(|edge| edge.a.get(1).cloned())
+                            .collect::<BTreeSet<_>>();
+                        (matches.len() == 1)
+                            .then(|| matches.into_iter().next())
+                            .flatten()
+                    });
+                    if let Some(consumer) = typed_consumer.or(function_consumer) {
                         let artifact = artifacts.iter().next().expect("one artifact");
                         inferred
                             .entry(artifact.clone())
@@ -350,7 +373,7 @@ fn infer_bindings(
                                 artifact: artifact.clone(),
                                 ..Binding::default()
                             })
-                            .consumer = matches.into_iter().next();
+                            .consumer = Some(consumer);
                     }
                 }
             }
@@ -405,6 +428,7 @@ pub fn augment(root: &Path, base: &mut Vec<Edge>) {
         .iter()
         .filter_map(|edge| match edge.p.as_str() {
             "graph_definition" | "graph_function" | "graph_module" => edge.a.first().cloned(),
+            "defines_fn" => edge.a.get(1).cloned(),
             "declares_module" => edge.a.get(1).cloned(),
             _ => None,
         })
@@ -754,6 +778,66 @@ fn load() {
         assert!(edges.iter().any(|edge| edge.p == "generates"));
         assert!(edges.iter().any(|edge| edge.p == "deserializes"));
         assert!(edges.iter().any(|edge| edge.p == "maps_data_key"));
+    }
+
+    #[test]
+    fn generic_serde_value_deserialization_uses_the_unique_enclosing_function_as_consumer() {
+        let d = tempfile::tempdir().expect("tempdir");
+        write(
+            d.path(),
+            "cue/export/parser.cue",
+            "package export\n#Parser: {}\n",
+        );
+        write(d.path(), "config/parser_tables.yaml", "intents: []\n");
+        write(
+            d.path(),
+            "build.rs",
+            r#"
+fn generate_intent_tables() {
+    let source = std::fs::read_to_string("config/parser_tables.yaml")?;
+    let yaml: serde_yaml::Value = serde_yaml::from_str(&source)?;
+}
+fn export_parser_tables() {
+    Command::new("cue").arg("export").arg("cue/export/parser.cue").arg("--out=yaml");
+    std::fs::write("config/parser_tables.yaml", output.stdout)?;
+}
+"#,
+        );
+        let mut edges = vec![
+            Edge::base(
+                "declares_module",
+                &["cue/export/parser.cue", "cue:game::cue::export::export"],
+                "cue/export/parser.cue",
+            ),
+            Edge::base(
+                "graph_module",
+                &["cue:game::cue::export::export"],
+                "cue/export/parser.cue",
+            ),
+            Edge::base(
+                "defines_fn",
+                &["build.rs", "rust:game#build::generate_intent_tables"],
+                "build.rs",
+            ),
+            Edge::base(
+                "declares_module",
+                &[
+                    "config/parser_tables.yaml",
+                    "yaml:project::config::parser_tables::doc:0",
+                ],
+                "config/parser_tables.yaml",
+            ),
+        ];
+        augment(d.path(), &mut edges);
+        assert!(edges.iter().any(|edge| {
+            edge.p == "consumes_data"
+                && edge.a
+                    == [
+                        "rust:game#build::generate_intent_tables",
+                        "yaml:project::config::parser_tables::doc:0",
+                    ]
+        }));
+        assert!(!edges.iter().any(|edge| edge.p == "deserializes"));
     }
 
     #[test]

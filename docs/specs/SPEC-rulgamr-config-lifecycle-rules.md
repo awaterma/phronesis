@@ -1,11 +1,11 @@
 # Rulgamr Configuration Lifecycle Rules
 
-Status: handoff specification for the agent working in `rulgamr`.
+Status: deferred handoff specification; query-only pending precision validation.
 
 ## Objective
 
-Add project-local audit warnings for configuration lifecycle gaps without
-shipping those opinions in Phronesis starter packs:
+Investigate project-local configuration lifecycle gaps without shipping those
+opinions in Phronesis starter packs or enabling audit warnings prematurely:
 
 - a generated artifact has no indexed consumer;
 - a consumed artifact has no indexed producer.
@@ -34,10 +34,18 @@ will remain dormant until Phronesis obtains consumer evidence independently
 consumer-only binding. Do not invent a producer or consumer to make the rule
 fire.
 
-## Project-local rules
+## Project-local rules (deferred)
 
-Merge the following rules into rulgamr's `.phronesis/rules.json`; do not add
-them to a distributed Phronesis starter pack.
+Do not enable the rules below yet. Both generated-artifact findings observed in
+rulgamr were false positives caused by missing consumer evidence. Phronesis
+therefore classifies these relations as query-only: rules that depend on them
+are excluded from whole-tree audit until reviewed corpus measurements justify
+promotion. Preserve these examples as the intended policy once that gate is
+met.
+
+After promotion, merge the following rules into rulgamr's
+`.phronesis/rules.json`; do not add them to a distributed Phronesis starter
+pack.
 
 ```json
 {
@@ -89,17 +97,19 @@ gap from being re-reported on unrelated edits.
    phr-mcp graph query consumed_without_producer '*' --json --limit 0
    ```
 
-4. Review every result and document legitimate deployment or hand-authored
-   exceptions before enabling the rules.
-5. Run `phr-mcp audit` and confirm the findings agree with the direct graph
-   queries.
+4. Review every result and record confirmed/false-positive counts. Require a
+   reviewed, non-zero true-positive rate before removing either relation from
+   Phronesis's query-only audit gate.
+5. Only after promotion, run `phr-mcp audit` and confirm the findings agree
+   with the direct graph queries.
 6. Run the rulgamr build and test gates required by that repository.
 7. Confirm the final status contains only the intended rules change and no
    generated graph, cache, or build output.
 
 ## Acceptance criteria
 
-- Both rules remain project-local and audit-only.
+- Both rules remain project-local, disabled until promotion, and audit-only
+  after promotion.
 - Findings name exact language-qualified artifact modules.
 - No producer or consumer edge is guessed.
 - Legitimate external/deployment flows are documented rather than hidden by

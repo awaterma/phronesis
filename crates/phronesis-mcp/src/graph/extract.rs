@@ -541,12 +541,111 @@ pub fn extract_rust(
     // Links a file to its module, so a rule matching on module-keyed
     // relations (`in_cycle`) can be scoped to the file being edited.
     sensor.emit("declares_module", &[file_path, &self_module]);
+    if unit.id != "rust:crate" || !unit.module_base.is_empty() {
+        sensor.emit("build_member", &[file_path, &unit.id]);
+    }
 
     let root_scope = Scope {
         path: self_module.split("::").map(str::to_string).collect(),
         impl_type: None,
     };
     sensor.walk(tree.root_node(), &root_scope);
+
+    // Rhai's host API is string-dispatched. Record only bounded literal
+    // registrations and literal script paths; dynamic names remain unknown.
+    // Restrict regexes to syntax nodes so examples in comments and string
+    // fixtures cannot masquerade as executable registrations.
+    let mut boundary_nodes = Vec::new();
+    let mut pending = vec![tree.root_node()];
+    while let Some(node) = pending.pop() {
+        if node.kind() == "call_expression"
+            && let Some(function) = node.child_by_field_name("function")
+            && let Ok(function_name) = function.utf8_text(source.as_bytes())
+            && matches!(
+                function_name
+                    .rsplit(['.', ':'])
+                    .find(|part| !part.is_empty()),
+                Some("register_fn" | "compile_file" | "compile" | "eval_file")
+            )
+            && let Ok(text) = node.utf8_text(source.as_bytes())
+        {
+            boundary_nodes.push(text.to_string());
+        } else if node.kind() == "macro_invocation"
+            && let Ok(text) = node.utf8_text(source.as_bytes())
+            && text.trim_start().starts_with("register_state_proxy!")
+        {
+            boundary_nodes.push(text.to_string());
+        }
+        let mut cursor = node.walk();
+        pending.extend(node.children(&mut cursor));
+    }
+    let boundary_source = boundary_nodes.join("\n");
+    let registration = regex::Regex::new(r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,"#)
+        .expect("static Rhai registration regex");
+    for captures in registration.captures_iter(&boundary_source) {
+        let Some(name) = captures.get(1).map(|value| value.as_str()) else {
+            continue;
+        };
+        sensor.emit(
+            "exposes",
+            &[&self_module, &format!("rhai:callable::{name}")],
+        );
+    }
+    let named_registration = regex::Regex::new(
+        r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9:]*)\s*\)"#,
+    )
+    .expect("static named Rhai registration regex");
+    for captures in named_registration.captures_iter(&boundary_source) {
+        let (Some(name), Some(backing)) = (
+            captures.get(1).map(|value| value.as_str()),
+            captures.get(2).map(|value| value.as_str()),
+        ) else {
+            continue;
+        };
+        sensor.emit(
+            "rhai_callable_backing",
+            &[
+                &format!("rhai:callable::{name}"),
+                backing.rsplit("::").next().unwrap_or(backing),
+            ],
+        );
+    }
+    let proxy_registration =
+        regex::Regex::new(r#"register_state_proxy!\s*\([^,]+,[^,]+,\s*"([_A-Za-z][_A-Za-z0-9]*)""#)
+            .expect("static Rhai proxy registration regex");
+    for captures in proxy_registration.captures_iter(&boundary_source) {
+        if let Some(name) = captures.get(1).map(|value| value.as_str()) {
+            sensor.emit(
+                "exposes",
+                &[&self_module, &format!("rhai:callable::{name}")],
+            );
+        }
+    }
+    let proxy_backing = regex::Regex::new(
+        r#"register_state_proxy!\s*\([^,]+,[^,]+,\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9]*)"#,
+    )
+    .expect("static Rhai proxy backing regex");
+    for captures in proxy_backing.captures_iter(&boundary_source) {
+        let (Some(name), Some(backing)) = (
+            captures.get(1).map(|value| value.as_str()),
+            captures.get(2).map(|value| value.as_str()),
+        ) else {
+            continue;
+        };
+        sensor.emit(
+            "rhai_callable_backing",
+            &[&format!("rhai:callable::{name}"), backing],
+        );
+    }
+    let loader = regex::Regex::new(
+        r#"(?:compile_file|compile|eval_file)\s*\(\s*(?:PathBuf::from\s*\(\s*)?"([^"\r\n]+\.rhai)""#,
+    )
+    .expect("static Rhai loader regex");
+    for captures in loader.captures_iter(&boundary_source) {
+        if let Some(path) = captures.get(1).map(|value| value.as_str()) {
+            sensor.emit("loads_rhai_script", &[&self_module, path]);
+        }
+    }
 
     let edges = sensor
         .out
@@ -581,6 +680,84 @@ mod tests {
 
     fn run(path: &str, src: &str) -> Extracted {
         extract_rust(path, src, DEFAULT_WATCHLIST, &UnitContext::default())
+    }
+
+    #[test]
+    fn literal_rhai_registration_and_loader_are_graph_evidence() {
+        let out = run(
+            "src/bridge.rs",
+            r#"
+            fn state_attempt_stunning_strike() {}
+            fn install(engine: &mut Engine) {
+                engine.register_fn("state_attempt_stunning_strike", state_attempt_stunning_strike);
+                engine.compile_file("scripts/combat.rhai");
+            }
+            "#,
+        );
+        assert_eq!(
+            edges_of(&out, "exposes"),
+            vec![vec![
+                "rust:crate::bridge".to_string(),
+                "rhai:callable::state_attempt_stunning_strike".to_string()
+            ]]
+        );
+        assert_eq!(
+            edges_of(&out, "loads_rhai_script")[0][1],
+            "scripts/combat.rhai"
+        );
+        assert_eq!(
+            edges_of(&out, "rhai_callable_backing"),
+            vec![vec![
+                "rhai:callable::state_attempt_stunning_strike".to_string(),
+                "state_attempt_stunning_strike".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn closure_and_proxy_macro_registrations_are_exposed_rhai_names() {
+        let out = run(
+            "src/bridge.rs",
+            r#"
+            fn install(engine: &mut Engine) {
+                engine.register_fn("ability_modifier", |score: i64| score - 10);
+                register_state_proxy!(engine, state, "state_get_hp", get_hp);
+            }
+            "#,
+        );
+        let exposed = edges_of(&out, "exposes");
+        assert!(
+            exposed
+                .iter()
+                .any(|args| args[1] == "rhai:callable::ability_modifier")
+        );
+        assert!(
+            exposed
+                .iter()
+                .any(|args| args[1] == "rhai:callable::state_get_hp")
+        );
+        assert_eq!(
+            edges_of(&out, "rhai_callable_backing"),
+            vec![vec![
+                "rhai:callable::state_get_hp".to_string(),
+                "get_hp".to_string()
+            ]]
+        );
+    }
+
+    #[test]
+    fn rhai_boundary_examples_in_rust_comments_and_strings_are_not_evidence() {
+        let out = run(
+            "src/docs.rs",
+            r##"
+            fn example() {
+                // engine.register_fn("comment_only", comment_only);
+                let fixture = r#"engine.register_fn("fixture_only", fixture_only);"#;
+            }
+            "##,
+        );
+        assert!(edges_of(&out, "exposes").is_empty());
+        assert!(edges_of(&out, "rhai_callable_backing").is_empty());
     }
 
     // ─── module naming ──────────────────────────────────────────────

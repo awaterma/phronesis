@@ -33,7 +33,7 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// `graph_file` and multilingual dialect support; format 4 remains the
 /// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 10;
+pub const GRAPH_FORMAT: u32 = 12;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -79,7 +79,12 @@ pub struct SaveOutcome {
     pub migrated_rules: usize,
 }
 
-const GRAPH_PREDICATE_MIGRATIONS: &[(&str, &str)] = &[("untested", "no_direct_test")];
+const GRAPH_PREDICATE_MIGRATIONS: &[(&str, &str)] = &[
+    ("untested", "no_direct_test"),
+    ("rhai_exposes_fn", "exposes"),
+    ("calls_rhai_fn", "calls"),
+];
+const MANUAL_GRAPH_PREDICATE_MIGRATIONS: &[&str] = &["rhai_call_resolves_to"];
 
 fn migrate_clause_predicates(clause: &mut crate::rules_file::WhenClause) -> bool {
     match clause {
@@ -90,7 +95,16 @@ fn migrate_clause_predicates(clause: &mut crate::rules_file::WhenClause) -> bool
             else {
                 return false;
             };
+            let deprecated = condition.predicate.clone();
             condition.predicate = (*replacement).to_string();
+            if matches!(deprecated.as_str(), "rhai_exposes_fn" | "calls_rhai_fn")
+                && let Some(callable) = condition.args.get_mut(1)
+                && callable != "*"
+                && !callable.starts_with('?')
+                && !callable.starts_with("rhai:callable::")
+            {
+                *callable = format!("rhai:callable::{callable}");
+            }
             true
         }
         crate::rules_file::WhenClause::Or(alternatives) => {
@@ -112,6 +126,7 @@ fn collect_deprecated_predicates(
             if GRAPH_PREDICATE_MIGRATIONS
                 .iter()
                 .any(|(deprecated, _)| condition.predicate == *deprecated)
+                || MANUAL_GRAPH_PREDICATE_MIGRATIONS.contains(&condition.predicate.as_str())
             {
                 found.insert(condition.predicate.clone());
             }
@@ -143,6 +158,19 @@ pub fn deprecated_graph_rule_predicates(root: &Path) -> std::io::Result<Vec<Stri
 fn migrate_graph_rule_predicates(root: &Path) -> std::io::Result<usize> {
     let path = crate::rules_file::default_path(root);
     let mut rules = crate::rules_file::read_source(&path).map_err(std::io::Error::other)?;
+    let mut manual = BTreeSet::new();
+    for rule in &rules {
+        for clause in &rule.when {
+            collect_deprecated_predicates(clause, &mut manual);
+        }
+    }
+    manual.retain(|predicate| MANUAL_GRAPH_PREDICATE_MIGRATIONS.contains(&predicate.as_str()));
+    if !manual.is_empty() {
+        return Err(std::io::Error::other(format!(
+            "graph rebuild requires manual rule migration for changed relation semantics: {}",
+            manual.into_iter().collect::<Vec<_>>().join(", ")
+        )));
+    }
     let migrated = rules
         .iter_mut()
         .map(|rule| {
@@ -157,6 +185,32 @@ fn migrate_graph_rule_predicates(root: &Path) -> std::io::Result<usize> {
         crate::rules_file::write_source(&path, &rules).map_err(std::io::Error::other)?;
     }
     Ok(migrated)
+}
+
+fn rule_predicate_edges(root: &Path) -> std::io::Result<Vec<Edge>> {
+    fn visit(rule: &str, clause: &crate::rules_file::WhenClause, out: &mut Vec<Edge>) {
+        match clause {
+            crate::rules_file::WhenClause::Leaf(condition) => out.push(Edge::base(
+                "rule_uses_predicate",
+                &[rule, &condition.predicate],
+                ".phronesis/rules.json",
+            )),
+            crate::rules_file::WhenClause::Or(alternatives) => {
+                for alternative in alternatives {
+                    visit(rule, alternative, out);
+                }
+            }
+        }
+    }
+    let rules = crate::rules_file::read_source(&crate::rules_file::default_path(root))
+        .map_err(std::io::Error::other)?;
+    let mut out = Vec::new();
+    for rule in &rules {
+        for clause in &rule.when {
+            visit(&rule.id, clause, &mut out);
+        }
+    }
+    Ok(out)
 }
 
 /// Deterministic content hash (FNV-1a, 64-bit).
@@ -259,6 +313,7 @@ fn tracked_files(root: &Path) -> Vec<String> {
                 | "mts"
                 | "cts"
                 | "lua"
+                | "rhai"
                 | "cue"
                 | "json"
                 | "yaml"
@@ -352,7 +407,8 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
 /// Covers Rust, Python, TypeScript (and siblings), Lua, CUE, JSON, YAML,
 /// and Helm3 template files.
 pub const TRACKED_EXTENSIONS: &[&str] = &[
-    ".rs", ".py", ".ts", ".tsx", ".mts", ".cts", ".lua", ".cue", ".json", ".yaml", ".yml", ".tpl",
+    ".rs", ".py", ".ts", ".tsx", ".mts", ".cts", ".lua", ".rhai", ".cue", ".json", ".yaml", ".yml",
+    ".tpl",
 ];
 
 /// Whether `on_save`/`record_from_disk` should index this file.
@@ -426,6 +482,7 @@ fn extract_one(
             lua_unit.lua_files = tracked_files(root);
             super::lua::extract_lua(rel, content, &lua_unit)
         }
+        Some(super::unit::LANG_RHAI) => super::rhai::extract_rhai(rel, content, &unit),
         Some(super::unit::LANG_CUE) => {
             if let Some(index) = cue_index {
                 let mut cue_unit = super::unit::UnitContext::unnamed_for(super::unit::LANG_CUE);
@@ -469,7 +526,16 @@ fn persist(root: &Path, base: Vec<Edge>) -> std::io::Result<(usize, usize)> {
     let (n_base, n_derived) = (base.len(), derived.len());
     let mut all = base;
     all.extend(derived);
-    store::write_atomic(&store::graph_path(root), &all)?;
+    let path = store::graph_path(root);
+    store::write_atomic(&path, &all)?;
+    let persisted = store::load(&path)?;
+    let persisted_base = persisted.iter().filter(|edge| !edge.d).count();
+    let persisted_derived = persisted.len().saturating_sub(persisted_base);
+    if (persisted_base, persisted_derived) != (n_base, n_derived) {
+        return Err(std::io::Error::other(format!(
+            "graph persistence verification failed: wrote {n_base} base/{n_derived} derived, read {persisted_base} base/{persisted_derived} derived"
+        )));
+    }
     Ok((n_base, n_derived))
 }
 
@@ -715,6 +781,7 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     }
 
     super::data_contracts::augment(root, &mut base);
+    base.extend(rule_predicate_edges(root)?);
     base.extend(super::decisions::extract(root));
     if let Ok(content) = std::fs::read_to_string(root.join(".phronesis/graph.toml")) {
         index
@@ -967,6 +1034,39 @@ mod tests {
 
         let second = rebuild(d.path()).expect("idempotent rebuild");
         assert_eq!(second.migrated_rules, 0);
+    }
+
+    #[test]
+    fn rebuild_migrates_dynamic_boundary_relations_and_literal_callable_ids() {
+        let d = project();
+        write(
+            d.path(),
+            ".phronesis/rules.json",
+            r#"{"rules":[{"id":"legacy-rhai","phase":"audit","when":[{"rhai_exposes_fn":["?host","state_get_hp"]},{"calls_rhai_fn":["?script","state_*"]}],"then":{"warn":"legacy"}}]}"#,
+        );
+        let outcome = rebuild(d.path()).expect("rebuild");
+        assert_eq!(outcome.migrated_rules, 1);
+        let migrated = std::fs::read_to_string(d.path().join(".phronesis/rules.json"))
+            .expect("migrated rules");
+        assert!(migrated.contains("\"exposes\""));
+        assert!(migrated.contains("\"calls\""));
+        assert!(migrated.contains("rhai:callable::state_get_hp"));
+        assert!(migrated.contains("rhai:callable::state_*"));
+    }
+
+    #[test]
+    fn rebuild_refuses_a_non_equivalent_resolution_rule_migration() {
+        let d = project();
+        write(
+            d.path(),
+            ".phronesis/rules.json",
+            r#"{"rules":[{"id":"legacy-resolution","phase":"audit","when":[{"rhai_call_resolves_to":["?script","?target"]}],"then":{"warn":"legacy"}}]}"#,
+        );
+        let error = rebuild(d.path()).expect_err("manual migration required");
+        assert!(error.to_string().contains("manual rule migration"));
+        let unchanged = std::fs::read_to_string(d.path().join(".phronesis/rules.json"))
+            .expect("rules remain readable");
+        assert!(unchanged.contains("rhai_call_resolves_to"));
     }
 
     #[test]
@@ -1669,6 +1769,24 @@ mod tests {
         rebuild(d.path()).expect("rebuild");
         let idx = load_index(&index_path(d.path())).expect("load index");
         assert_eq!(check_freshness(d.path(), &idx), Freshness::Fresh);
+    }
+
+    #[test]
+    fn rebuild_tracks_and_indexes_rhai_scripts() {
+        let d = project();
+        write(
+            d.path(),
+            "scripts/combat.rhai",
+            "state_attempt_stunning_strike(actor, target);\n",
+        );
+        rebuild(d.path()).expect("rebuild");
+        assert!(
+            edges(d.path())
+                .iter()
+                .any(|edge| { edge.p == "calls" && edge.src == "scripts/combat.rhai" })
+        );
+        let index = load_index(&index_path(d.path())).expect("index");
+        assert!(index.entries.contains_key("scripts/combat.rhai"));
     }
 
     #[test]

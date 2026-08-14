@@ -147,8 +147,16 @@ fn resolve_indexed_import(path: &str, index: &PackageIndex) -> ImportResolution 
         return ImportResolution::Builtin;
     }
     let mut candidates = BTreeSet::new();
+    let default_package = base
+        .rsplit('/')
+        .next()
+        .unwrap_or(base)
+        .split('@')
+        .next()
+        .unwrap_or(base);
     for ((import_path, package), ids) in &index.by_import {
-        if import_path == base && qualifier.is_none_or(|wanted| wanted == package) {
+        let wanted = qualifier.unwrap_or(default_package);
+        if import_path == base && wanted == package {
             candidates.extend(ids.iter().cloned());
         }
     }
@@ -626,17 +634,45 @@ common.Schema
     fn unqualified_ambiguous_imports_emit_diagnostics_not_edges() {
         let mut index = PackageIndex::default();
         index.by_import.insert(
-            ("example.test/common".to_string(), "one".to_string()),
-            BTreeSet::from(["cue:example.test::common::one".to_string()]),
-        );
-        index.by_import.insert(
-            ("example.test/common".to_string(), "two".to_string()),
-            BTreeSet::from(["cue:example.test::common::two".to_string()]),
+            ("example.test/common".to_string(), "common".to_string()),
+            BTreeSet::from([
+                "cue:example.test::common::one".to_string(),
+                "cue:example.test::common::two".to_string(),
+            ]),
         );
         let source = "package app\nimport \"example.test/common\"\n";
         let out = extract_cue_with_index("app.cue", source, &ctx(), Some(&index));
         assert!(edges_of(&out, "imports").is_empty());
         assert_eq!(edges_of(&out, "cue_import_diagnostic")[0][2], "ambiguous");
+    }
+
+    #[test]
+    fn unqualified_import_selects_package_named_by_final_path_segment() {
+        let mut index = PackageIndex::default();
+        index.by_import.insert(
+            (
+                "rulgamr.game/cue/schemas".to_string(),
+                "schemas".to_string(),
+            ),
+            BTreeSet::from(["cue:rulgamr.game::cue::schemas::schemas".to_string()]),
+        );
+        index.by_import.insert(
+            (
+                "rulgamr.game/cue/schemas".to_string(),
+                "helpers".to_string(),
+            ),
+            BTreeSet::from(["cue:rulgamr.game::cue::schemas::helpers".to_string()]),
+        );
+        let source = "package export\nimport \"rulgamr.game/cue/schemas\"\n";
+        let out = extract_cue_with_index("cue/export/a.cue", source, &ctx(), Some(&index));
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "cue:my-module::cue::export::export".to_string(),
+                "cue:rulgamr.game::cue::schemas::schemas".to_string()
+            ]]
+        );
+        assert!(edges_of(&out, "cue_import_diagnostic").is_empty());
     }
 
     #[test]

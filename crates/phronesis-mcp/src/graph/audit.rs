@@ -19,6 +19,22 @@ use phr::{Fact, Rule};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// Relations whose findings are useful for investigation but have not yet
+/// earned enforcement trust across representative repositories.
+///
+/// Keeping this list explicit prevents a heuristic diagnostic from becoming
+/// an audit headline merely because a project wrote a rule over it. Promotion
+/// requires reviewed corpus results; graph queries remain available meanwhile.
+const QUERY_ONLY_RELATIONS: &[&str] = &[
+    "cue_import_diagnostic",
+    "generated_artifact_diagnostic",
+    "generated_without_consumer",
+    "consumed_without_producer",
+    "rhai_binding_diagnostic",
+    "yaml_duplicate_key",
+    "yaml_undefined_alias",
+];
+
 /// One structural finding: a rule that matched, and the file it bound.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphHit {
@@ -43,6 +59,15 @@ pub fn is_graph_rule(rule: &Rule) -> bool {
     rule.conditions
         .iter()
         .any(|c| GRAPH_RELATIONS.contains(&c.predicate.as_str()))
+}
+
+/// Whether a structural rule may participate in whole-tree audit output.
+pub fn is_audit_eligible_graph_rule(rule: &Rule) -> bool {
+    is_graph_rule(rule)
+        && !rule
+            .conditions
+            .iter()
+            .any(|condition| QUERY_ONLY_RELATIONS.contains(&condition.predicate.as_str()))
 }
 
 /// Render the bindings other than `file` as a compact ` · `-joined label.
@@ -79,7 +104,10 @@ fn files_in_graph(edges: &[Edge]) -> BTreeSet<String> {
 /// has not been built — an audit reports what it can see, and a missing
 /// derived artifact is not a failure worth propagating.
 pub async fn audit_graph_rules(root: &Path, rules: &[Rule]) -> Vec<GraphHit> {
-    let graph_rules: Vec<&Rule> = rules.iter().filter(|r| is_graph_rule(r)).collect();
+    let graph_rules: Vec<&Rule> = rules
+        .iter()
+        .filter(|r| is_audit_eligible_graph_rule(r))
+        .collect();
     if graph_rules.is_empty() {
         return Vec::new();
     }
@@ -192,6 +220,15 @@ mod tests {
         }
     }
 
+    fn query_only_diagnostic_rule() -> Rule {
+        Rule {
+            id: "unvalidated-lifecycle-gap".into(),
+            priority: 1,
+            conditions: vec![cond("generated_without_consumer", &["?artifact"])],
+            actions: vec![],
+        }
+    }
+
     /// Two flaggable files plus one clean, so a whole-tree sweep has to find
     /// more than the single file a hook would look at.
     fn project() -> TempDir {
@@ -220,6 +257,13 @@ mod tests {
     #[test]
     fn a_content_rule_is_not_a_graph_rule() {
         assert!(!is_graph_rule(&content_rule()));
+    }
+
+    #[test]
+    fn unvalidated_diagnostics_are_queryable_but_not_audit_eligible() {
+        let rule = query_only_diagnostic_rule();
+        assert!(is_graph_rule(&rule));
+        assert!(!is_audit_eligible_graph_rule(&rule));
     }
 
     #[tokio::test]

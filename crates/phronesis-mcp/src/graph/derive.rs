@@ -15,9 +15,105 @@ pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
     let mut out = inventory(base);
     out.extend(data_flows_to(base));
     out.extend(configuration_lifecycle_gaps(base));
+    out.extend(rhai_reachability(base));
+    out.extend(rhai_predicate_flow(base));
     out.extend(no_direct_test(base));
     out.extend(in_cycle(base));
     out
+}
+
+pub fn rhai_predicate_flow(base: &[Edge]) -> Vec<Edge> {
+    let emitted: BTreeMap<&str, BTreeSet<&str>> = base_edges(base, "rhai_emits_predicate")
+        .filter_map(|edge| Some((edge.a.get(1)?.as_str(), edge.a.first()?.as_str())))
+        .fold(BTreeMap::new(), |mut map, (predicate, script)| {
+            map.entry(predicate).or_default().insert(script);
+            map
+        });
+    let mut out = BTreeSet::new();
+    for edge in base_edges(base, "rule_uses_predicate") {
+        let (Some(rule), Some(predicate)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        if let Some(scripts) = emitted.get(predicate.as_str()) {
+            for script in scripts {
+                out.insert((script.to_string(), predicate.clone(), rule.clone()));
+            }
+        }
+    }
+    out.into_iter()
+        .map(|(script, predicate, rule)| {
+            Edge::derived("rhai_implements_predicate", &[&script, &predicate, &rule])
+        })
+        .collect()
+}
+
+pub fn rhai_reachability(base: &[Edge]) -> Vec<Edge> {
+    let mut registered_names = BTreeSet::new();
+    for edge in base_edges(base, "exposes") {
+        if let Some(callable) = edge.a.get(1)
+            && callable.starts_with("rhai:callable::")
+        {
+            registered_names.insert(callable.as_str());
+        }
+    }
+    let mut definitions: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+    for edge in base_edges(base, "defines_fn") {
+        if let Some(function) = edge.a.get(1) {
+            let name = function.rsplit("::").next().unwrap_or(function);
+            definitions.entry(name).or_default().insert(function);
+        }
+    }
+    let backing_names: BTreeMap<&str, BTreeSet<&str>> = base_edges(base, "rhai_callable_backing")
+        .filter_map(|edge| Some((edge.a.first()?.as_str(), edge.a.get(1)?.as_str())))
+        .fold(BTreeMap::new(), |mut map, (callable, backing)| {
+            map.entry(callable).or_default().insert(backing);
+            map
+        });
+    let mut out = BTreeSet::new();
+    for edge in base_edges(base, "calls") {
+        let (Some(script), Some(callable)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        if !callable.starts_with("rhai:callable::") || !registered_names.contains(callable.as_str())
+        {
+            continue;
+        }
+        let exposed_name = callable
+            .strip_prefix("rhai:callable::")
+            .expect("checked Rhai callable prefix");
+        let candidates = match backing_names.get(callable.as_str()) {
+            Some(names) if names.len() == 1 => *names.first().expect("one backing name"),
+            Some(_) => {
+                out.insert((
+                    "rhai_binding_diagnostic",
+                    vec![script.as_str(), callable.as_str(), "ambiguous_backing"],
+                ));
+                continue;
+            }
+            None => exposed_name,
+        };
+        match definitions.get(candidates) {
+            Some(functions) if functions.len() == 1 => {
+                let function = *functions.first().expect("one registration");
+                out.insert(("resolves_to", vec![callable.as_str(), function]));
+                out.insert(("runtime_reachable", vec![function, script.as_str()]));
+            }
+            Some(_) => {
+                out.insert((
+                    "rhai_binding_diagnostic",
+                    vec![script.as_str(), callable.as_str(), "ambiguous"],
+                ));
+            }
+            None => {
+                // Registration proves that the script call is bound, but a
+                // closure or differently named host implementation prevents
+                // a sound Rust-function identity.
+            }
+        }
+    }
+    out.into_iter()
+        .map(|(predicate, args)| Edge::derived(predicate, &args))
+        .collect()
 }
 
 /// Closed-world lifecycle evidence for project-specific policy. These facts
@@ -308,6 +404,85 @@ mod tests {
     }
     fn imports(from: &str, to: &str) -> Edge {
         Edge::base("imports", &[from, to], from)
+    }
+
+    #[test]
+    fn unique_rhai_registration_makes_the_rust_proxy_runtime_reachable() {
+        let base = vec![
+            defines("src/bridge.rs", "rust:game::state_attempt_stunning_strike"),
+            Edge::base(
+                "exposes",
+                &["rust:game::bridge", "rhai:callable::stunning_strike"],
+                "src/bridge.rs",
+            ),
+            Edge::base(
+                "rhai_callable_backing",
+                &[
+                    "rhai:callable::stunning_strike",
+                    "state_attempt_stunning_strike",
+                ],
+                "src/bridge.rs",
+            ),
+            Edge::base(
+                "calls",
+                &["rhai:game::combat", "rhai:callable::stunning_strike"],
+                "scripts/combat.rhai",
+            ),
+        ];
+        let out = rhai_reachability(&base);
+        assert!(out.iter().any(|edge| {
+            edge.p == "runtime_reachable"
+                && edge.a
+                    == [
+                        "rust:game::state_attempt_stunning_strike",
+                        "rhai:game::combat",
+                    ]
+        }));
+        assert!(out.iter().any(|edge| edge.p == "resolves_to"));
+    }
+
+    #[test]
+    fn ambiguous_rhai_registration_is_diagnostic_not_reachability() {
+        let base = vec![
+            defines("src/a.rs", "rust:game::a::proxy"),
+            defines("src/b.rs", "rust:game::b::proxy"),
+            Edge::base(
+                "exposes",
+                &["rust:game::bridge", "rhai:callable::proxy"],
+                "src/a.rs",
+            ),
+            Edge::base("calls", &["rhai:script", "rhai:callable::proxy"], "x.rhai"),
+        ];
+        let out = rhai_reachability(&base);
+        assert!(!out.iter().any(|edge| edge.p == "runtime_reachable"));
+        assert!(
+            out.iter()
+                .any(|edge| { edge.p == "rhai_binding_diagnostic" && edge.a[2] == "ambiguous" })
+        );
+    }
+
+    #[test]
+    fn rhai_provider_predicate_connects_to_the_rule_that_consumes_it() {
+        let base = vec![
+            Edge::base(
+                "rhai_emits_predicate",
+                &["rhai:project::change_set", "production_without_test"],
+                ".phronesis/predicates/change_set.rhai",
+            ),
+            Edge::base(
+                "rule_uses_predicate",
+                &["require-tests", "production_without_test"],
+                ".phronesis/rules.json",
+            ),
+        ];
+        assert_eq!(
+            rhai_predicate_flow(&base)[0].a,
+            [
+                "rhai:project::change_set",
+                "production_without_test",
+                "require-tests"
+            ]
+        );
     }
 
     #[test]
