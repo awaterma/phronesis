@@ -341,6 +341,8 @@ impl Sensor<'_> {
 
         if has_test_attribute(node, self.source) {
             // Test functions are coverage sources, not coverage subjects.
+            let file_path = self.file_path.to_string();
+            self.emit("defines_test", &[&file_path, &qualified]);
             for callee in self.called_names(body) {
                 self.emit("tested_by", &[&callee, &qualified]);
             }
@@ -1255,6 +1257,16 @@ mod tests {
         let e = edges_of(&out, "tested_by");
         assert_eq!(e.len(), 1);
         assert_eq!(e[0][0], "fire");
+        assert_eq!(edges_of(&out, "defines_test").len(), 1);
+    }
+
+    #[test]
+    fn a_test_with_no_calls_still_has_an_independent_identity() {
+        let out = run("tests/net.rs", "#[test]\nfn exists() { assert!(true); }");
+        assert_eq!(
+            edges_of(&out, "defines_test")[0][1],
+            "rust:crate::net::exists"
+        );
     }
 
     #[test]

@@ -257,21 +257,16 @@ pub fn inventory(base: &[Edge]) -> Vec<Edge> {
             }
         }
     }
-    for edge in base_edges(base, "tested_by") {
-        if let Some(test) = edge.a.get(1) {
+    for edge in base_edges(base, "defines_test") {
+        if let (Some(file), Some(test)) = (edge.a.first(), edge.a.get(1)) {
             out.insert(("graph_function".into(), vec![test.clone()]));
             out.insert(("graph_test".into(), vec![test.clone()]));
-            if !edge.src.is_empty() {
+            out.insert(("element_in_file".into(), vec![test.clone(), file.clone()]));
+            for module in modules_by_file.get(file.as_str()).into_iter().flatten() {
                 out.insert((
-                    "element_in_file".into(),
-                    vec![test.clone(), edge.src.clone()],
+                    "element_in_module".into(),
+                    vec![test.clone(), (*module).to_string()],
                 ));
-                for module in modules_by_file.get(edge.src.as_str()).into_iter().flatten() {
-                    out.insert((
-                        "element_in_module".into(),
-                        vec![test.clone(), (*module).to_string()],
-                    ));
-                }
             }
         }
     }
@@ -562,7 +557,11 @@ mod tests {
                 &["tests/run.rs", "rust:app#test:run"],
                 "tests/run.rs",
             ),
-            tested("rust:app::run", "rust:app#test:run::works"),
+            Edge::base(
+                "defines_test",
+                &["tests/run.rs", "rust:app#test:run::works"],
+                "tests/run.rs",
+            ),
         ];
 
         let out = inventory(&base);

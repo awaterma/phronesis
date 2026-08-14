@@ -260,6 +260,8 @@ impl Sensor<'_> {
             "call_expression" => {
                 if let Some(title) = self.test_title(node) {
                     let qualified = format!("{}::{title}", self.self_module);
+                    let file = self.file_path.to_string();
+                    self.emit("defines_test", &[&file, &qualified]);
                     if let Some(callback) = self.test_callback(node) {
                         for callee in self.called_names(callback) {
                             self.emit("tested_by", &[&callee, &qualified]);
@@ -820,6 +822,16 @@ mod tests {
     }
 
     // ─── tested_by ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_test_callback_with_no_calls_still_has_an_independent_identity() {
+        let out = extract_typescript(
+            "tests/api.test.ts",
+            "it('exists', () => { expect(true); });",
+            &ctx(&["tests/api.test.ts"]),
+        );
+        assert_eq!(edges_of(&out, "defines_test").len(), 1);
+    }
 
     #[test]
     fn a_test_callback_records_what_it_calls() {
