@@ -33,7 +33,7 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// `graph_file` and multilingual dialect support; format 4 remains the
 /// same scheme without those relation names).
 /// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 16;
+pub const GRAPH_FORMAT: u32 = 17;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";

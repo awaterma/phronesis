@@ -351,6 +351,9 @@ impl Sensor<'_> {
 
         let file_path = self.file_path.to_string();
         self.emit("defines_fn", &[&file_path, &qualified]);
+        if scope.impl_type.is_some() {
+            self.emit("defines_method", &[&file_path, &qualified]);
+        }
         for callee in self.called_names(body) {
             self.emit("calls", &[&qualified, &callee]);
         }
@@ -363,6 +366,36 @@ impl Sensor<'_> {
     /// against canonical definitions using same-module/import evidence.
     fn called_names(&self, body: Node) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
+        let mut receiver_types = std::collections::BTreeMap::new();
+        let mut declarations = vec![body];
+        while let Some(node) = declarations.pop() {
+            if node.kind() == "let_declaration"
+                && let Some(pattern) = node.child_by_field_name("pattern")
+                && pattern.kind() == "identifier"
+            {
+                let inferred = node
+                    .child_by_field_name("type")
+                    .map(|ty| text(ty, self.source).to_string())
+                    .or_else(|| {
+                        let value = node.child_by_field_name("value")?;
+                        if value.kind() == "call_expression" {
+                            let function = value.child_by_field_name("function")?;
+                            if function.kind() == "scoped_identifier" {
+                                return function
+                                    .child_by_field_name("path")
+                                    .map(|path| text(path, self.source).to_string());
+                            }
+                        }
+                        None
+                    })
+                    .and_then(|ty| ty.rsplit("::").next().map(str::to_string));
+                if let Some(inferred) = inferred {
+                    receiver_types.insert(text(pattern, self.source).to_string(), inferred);
+                }
+            }
+            let mut cursor = node.walk();
+            declarations.extend(node.children(&mut cursor));
+        }
         let mut stack = vec![body];
         while let Some(n) = stack.pop() {
             if n.kind() == "call_expression"
@@ -370,10 +403,25 @@ impl Sensor<'_> {
             {
                 let name = match f.kind() {
                     "identifier" => text(f, self.source).to_string(),
-                    "scoped_identifier" | "field_expression" => f
+                    "scoped_identifier" => f
                         .child_by_field_name("name")
-                        .or_else(|| f.child_by_field_name("field"))
                         .map(|x| text(x, self.source).to_string())
+                        .unwrap_or_default(),
+                    "field_expression" => f
+                        .child_by_field_name("field")
+                        .map(|x| {
+                            let method = text(x, self.source);
+                            let receiver_type = f
+                                .child_by_field_name("value")
+                                .filter(|receiver| receiver.kind() == "identifier")
+                                .and_then(|receiver| {
+                                    receiver_types.get(text(receiver, self.source))
+                                });
+                            receiver_type.map_or_else(
+                                || format!("@method:{method}"),
+                                |ty| format!("@method:{ty}:{method}"),
+                            )
+                        })
                         .unwrap_or_default(),
                     _ => String::new(),
                 };
@@ -1331,6 +1379,20 @@ mod tests {
     fn production_functions_emit_raw_calls_for_whole_graph_resolution() {
         let out = run("src/net.rs", "fn entry() { helper(); } fn helper() {}");
         assert_eq!(edges_of(&out, "calls")[0][1], "helper");
+    }
+
+    #[test]
+    fn inherent_methods_and_receiver_calls_keep_method_evidence() {
+        let out = run(
+            "src/state.rs",
+            "struct State; impl State { fn apply(&mut self) {} } fn use_it(state: &mut State) { state.apply(); }",
+        );
+        assert_eq!(edges_of(&out, "defines_method").len(), 1);
+        assert!(
+            edges_of(&out, "calls")
+                .iter()
+                .any(|args| args[1] == "@method:apply")
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     "file_type",
     "build_member",
     "defines_fn",
+    "defines_method",
     "defines_test",
     "declares_module",
     "calls_api",

@@ -18,6 +18,9 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
     let definitions = base_edges(base, "defines_fn")
         .filter_map(|edge| edge.a.get(1).cloned())
         .collect::<BTreeSet<_>>();
+    let methods = base_edges(base, "defines_method")
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
     let production_files = base_edges(base, "file_type")
         .filter_map(|edge| {
             (edge.a.get(1).map(String::as_str) == Some("production"))
@@ -36,6 +39,16 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
     if production_files.is_empty() {
         production_definitions = definitions.clone();
     }
+    let production_methods = base_edges(base, "defines_method")
+        .filter(|edge| {
+            production_files.is_empty()
+                || edge
+                    .a
+                    .first()
+                    .is_some_and(|file| production_files.contains(file))
+        })
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
     let by_leaf = definitions.iter().fold(
         BTreeMap::<String, BTreeSet<String>>::new(),
         |mut map, definition| {
@@ -47,6 +60,26 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
         },
     );
     let production_by_leaf = production_definitions.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, definition| {
+            let leaf = definition.rsplit("::").next().unwrap_or(definition);
+            map.entry(leaf.to_string())
+                .or_default()
+                .insert(definition.clone());
+            map
+        },
+    );
+    let method_by_leaf = methods.iter().fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, definition| {
+            let leaf = definition.rsplit("::").next().unwrap_or(definition);
+            map.entry(leaf.to_string())
+                .or_default()
+                .insert(definition.clone());
+            map
+        },
+    );
+    let production_method_by_leaf = production_methods.iter().fold(
         BTreeMap::<String, BTreeSet<String>>::new(),
         |mut map, definition| {
             let leaf = definition.rsplit("::").next().unwrap_or(definition);
@@ -93,8 +126,18 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
             normalized.push(edge);
             continue;
         };
-        let callee = &edge.a[callee_index];
-        let (eligible, candidates_by_leaf) = if edge.p == "tested_by" {
+        let raw_callee = &edge.a[callee_index];
+        let method_hint = raw_callee.strip_prefix("@method:");
+        let (receiver_type, callee) = method_hint.map_or((None, raw_callee.as_str()), |hint| {
+            hint.split_once(':')
+                .map_or((None, hint), |(ty, method)| (Some(ty), method))
+        });
+        let method_call = method_hint.is_some();
+        let (eligible, candidates_by_leaf) = if edge.p == "tested_by" && method_call {
+            (&production_methods, &production_method_by_leaf)
+        } else if method_call {
+            (&methods, &method_by_leaf)
+        } else if edge.p == "tested_by" {
             (&production_definitions, &production_by_leaf)
         } else {
             (&definitions, &by_leaf)
@@ -113,21 +156,43 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
                 let Some((module, _)) = candidate.rsplit_once("::") else {
                     return false;
                 };
+                let method_scope = method_call.then(|| module.rsplit_once("::")).flatten();
+                if receiver_type
+                    .is_some_and(|receiver| module.rsplit("::").next() != Some(receiver))
+                {
+                    return false;
+                }
+                let visible_imports = caller_module.into_iter().flat_map(|caller| {
+                    imports.iter().filter_map(move |(module, targets)| {
+                        (caller == module
+                            || caller
+                                .strip_prefix(module)
+                                .is_some_and(|suffix| suffix.starts_with("::")))
+                        .then_some(targets)
+                    })
+                });
                 caller_module.is_some_and(|caller_module| {
                     caller_module == module
                         || caller_module
                             .strip_prefix(module)
                             .is_some_and(|suffix| suffix.starts_with("::"))
-                }) || caller_module
-                    .and_then(|caller_module| imports.get(caller_module))
-                    .is_some_and(|targets| {
-                        targets.contains(module)
-                            || targets.iter().any(|imported| {
-                                reexports
-                                    .get(&(imported.clone(), callee.clone()))
-                                    .is_some_and(|modules| modules.contains(module))
-                            })
-                    })
+                }) || visible_imports.into_iter().any(|targets| {
+                    targets.contains(module)
+                        || (method_call
+                            && targets.iter().any(|imported| {
+                                method_scope.is_some_and(|(parent, ty)| {
+                                    imported == parent
+                                        || reexports
+                                            .get(&(imported.clone(), ty.to_string()))
+                                            .is_some_and(|modules| modules.contains(parent))
+                                })
+                            }))
+                        || targets.iter().any(|imported| {
+                            reexports
+                                .get(&(imported.clone(), callee.to_string()))
+                                .is_some_and(|modules| modules.contains(module))
+                        })
+                }) || receiver_type.is_some()
             })
             .collect::<Vec<_>>();
         if resolved.len() == 1 {
@@ -779,6 +844,49 @@ mod tests {
         assert!(base.iter().any(|edge| {
             edge.p == "calls" && edge.a == ["rust:app::a::entry", "rust:app::a::helper"]
         }));
+    }
+
+    #[test]
+    fn imported_unique_inherent_method_is_attributed_to_its_test() {
+        let method = "rust:app::state::GameState::apply_damage";
+        let test = "rust:app::state::tests::damage_works";
+        let mut base = vec![
+            defines("src/state.rs", method),
+            Edge::base("defines_method", &["src/state.rs", method], "src/state.rs"),
+            Edge::base("file_type", &["src/state.rs", "production"], "src/state.rs"),
+            Edge::base("file_type", &["tests/state.rs", "test"], "tests/state.rs"),
+            imports("rust:app::state::tests", "rust:app::state"),
+            tested("@method:apply_damage", test),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(
+            base.iter()
+                .any(|edge| { edge.p == "tested_by" && edge.a == [method, test] })
+        );
+    }
+
+    #[test]
+    fn ambiguous_inherent_method_names_are_not_guessed() {
+        let mut base = vec![
+            defines("src/a.rs", "rust:app::state::A::refresh"),
+            defines("src/b.rs", "rust:app::state::B::refresh"),
+            Edge::base(
+                "defines_method",
+                &["src/a.rs", "rust:app::state::A::refresh"],
+                "src/a.rs",
+            ),
+            Edge::base(
+                "defines_method",
+                &["src/b.rs", "rust:app::state::B::refresh"],
+                "src/b.rs",
+            ),
+            Edge::base("file_type", &["src/a.rs", "production"], "src/a.rs"),
+            Edge::base("file_type", &["src/b.rs", "production"], "src/b.rs"),
+            imports("rust:app::state::tests", "rust:app::state"),
+            tested("@method:refresh", "rust:app::state::tests::works"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(args_of(&base, "tested_by").is_empty());
     }
 
     #[test]
