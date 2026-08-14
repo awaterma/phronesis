@@ -6,8 +6,44 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Release-ready multilingual structural graph.** CUE packages now use
+  canonical package identities with complete import resolution; Lua, JSON,
+  YAML, Helm 3, Rhai, Python, TypeScript, and Rust extractors preserve
+  repository-local closure and reject ambiguous references. Query arguments
+  support embedded `*` and `?` globs consistently in the CLI and MCP tool.
+- **Cross-language configuration contracts.** Explicit
+  `.phronesis/graph.toml` bindings and bounded inference connect CUE producers
+  through tracked YAML/JSON artifacts to deserializing Rust types, including
+  wire-key mappings and conservative unconsumed-key evidence.
+- **Static test reachability.** Canonical `tested_by` edges record direct
+  production-function evidence, while `test_reaches(test, function)` follows
+  resolved calls transitively. External `#[path]` unit tests, public
+  re-exports, and bounded inherent-method calls participate without guessing
+  ambiguous names.
+- **Fact and decision provenance.** Consequences retain asserted and derived
+  fact origins, and graph-backed rule findings can link their evidence to
+  architectural decision records.
+- **Local-state housekeeping.** `phr-mcp state` classifies authored, cache,
+  history, runtime, backup, and sensitive `.phronesis` state;
+  `phr-mcp clean --cache` removes only rebuildable graph artifacts.
+
 ### Fixed
 
+- **Graph diagnostics no longer erase valid configuration structure.** YAML
+  duplicate-key detection respects sequence-item scope, indentless sequences,
+  quoted scalars, and block scalars; CUE built-ins and unresolved imports no
+  longer create dangling repository edges.
+- **Graph evidence uses one canonical identity space.** Direct test evidence,
+  generated artifacts, dynamic-language boundaries, renamed predicates, and
+  graph rebuild invalidation now reconcile before derived rules run.
+- **ADR graph relations are available to rules.** Decision-to-rule links and
+  their lifecycle diagnostics now hydrate into RETE when a project rule names
+  them, matching the relations already exposed by graph queries.
+- **RETE maintenance paths expose conflicts and stable APIs.** Binding
+  conflicts are handled explicitly, profiling uses the public engine surface,
+  and internal network state is accessed through supported query methods.
 - **Guidance drift discovers project and package instructions.** Consolidated
   `get_drift(source="claude_md")` and `phr-mcp drift --source claude_md` now
   scan root and package-level `CLAUDE.md` and `AGENTS.md` files with bounded,

@@ -51,6 +51,15 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     "generated_without_consumer",
     "consumed_without_producer",
     "generated_artifact_diagnostic",
+    // ADR-to-rule traceability. These are graph predicates, not merely
+    // query metadata: projects may govern on missing or stale decision links.
+    "graph_decision",
+    "decision_enforces",
+    "rule_governed_by",
+    "decision_missing_rule",
+    "proposed_decision_enforces",
+    "superseded_decision_enforces",
+    "rule_without_decision",
     // Graph-format-5 relations: multilingual dialects, entity-level
     // definitions, and file/module membership.
     "graph_definition",
@@ -251,6 +260,25 @@ mod tests {
                 script: None,
             }],
             actions: vec![],
+        }
+    }
+
+    #[test]
+    fn decision_relations_are_available_to_rete_rules() {
+        for predicate in [
+            "graph_decision",
+            "decision_enforces",
+            "rule_governed_by",
+            "decision_missing_rule",
+            "proposed_decision_enforces",
+            "superseded_decision_enforces",
+            "rule_without_decision",
+        ] {
+            assert!(
+                GRAPH_RELATIONS.contains(&predicate),
+                "{predicate} must be hydratable when a rule consumes it"
+            );
+            assert!(needed_relations(&[rule_using(predicate)]).contains(predicate));
         }
     }
 
