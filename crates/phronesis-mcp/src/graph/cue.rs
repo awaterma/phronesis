@@ -651,25 +651,25 @@ common.Schema
         let mut index = PackageIndex::default();
         index.by_import.insert(
             (
-                "rulgamr.game/cue/schemas".to_string(),
+                "example.game/cue/schemas".to_string(),
                 "schemas".to_string(),
             ),
-            BTreeSet::from(["cue:rulgamr.game::cue::schemas::schemas".to_string()]),
+            BTreeSet::from(["cue:example.game::cue::schemas::schemas".to_string()]),
         );
         index.by_import.insert(
             (
-                "rulgamr.game/cue/schemas".to_string(),
+                "example.game/cue/schemas".to_string(),
                 "helpers".to_string(),
             ),
-            BTreeSet::from(["cue:rulgamr.game::cue::schemas::helpers".to_string()]),
+            BTreeSet::from(["cue:example.game::cue::schemas::helpers".to_string()]),
         );
-        let source = "package export\nimport \"rulgamr.game/cue/schemas\"\n";
+        let source = "package export\nimport \"example.game/cue/schemas\"\n";
         let out = extract_cue_with_index("cue/export/a.cue", source, &ctx(), Some(&index));
         assert_eq!(
             edges_of(&out, "imports"),
             vec![vec![
                 "cue:my-module::cue::export::export".to_string(),
-                "cue:rulgamr.game::cue::schemas::schemas".to_string()
+                "cue:example.game::cue::schemas::schemas".to_string()
             ]]
         );
         assert!(edges_of(&out, "cue_import_diagnostic").is_empty());
@@ -801,7 +801,7 @@ import (
         std::fs::create_dir_all(temp.path().join("schemas")).expect("schemas dir");
         std::fs::write(
             temp.path().join("cue.mod/module.cue"),
-            "module: \"rulgamr.game\"\n",
+            "module: \"example.game\"\n",
         )
         .expect("module");
         for name in ["a.cue", "b.cue"] {
@@ -827,7 +827,7 @@ import (
         );
         assert_eq!(
             edges_of(&a, "declares_module")[0][1],
-            "cue:rulgamr.game::schemas::manifest"
+            "cue:example.game::schemas::manifest"
         );
     }
 

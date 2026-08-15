@@ -197,9 +197,9 @@ not create edges. Two safe mechanisms are allowed:
 
 ```toml
 [[generated_artifacts]]
-producer = "cue:rulgamr.game::cue::export::export"
+producer = "cue:example.game::cue::export::export"
 artifact = "config/manifest.yaml"
-consumer = "rust:rulgamr-simple::config::manifest_types::GameManifest"
+consumer = "rust:example-app::config::manifest_types::GameManifest"
 ```
 
 `producer` and `consumer` are exact existing graph IDs; `consumer` is
@@ -296,7 +296,7 @@ include it. Module metadata participates in freshness despite living below
   package/definition totals, timings, and manual cycle inspection.
 - Official CUE checks on fixtures where available plus workspace format,
   tests, clippy, and diff checks.
-- Field-test a temporary copy of rulgamr while excluding `.git`, `.phronesis`,
+- Field-test a temporary copy of the downstream consumer while excluding `.git`, `.phronesis`,
   and build output. Record the source worktree status before and after. The CUE
   base-edge count must fall by at least 50% from 19,161; every emitted local
   import must target a real package node; block imports must appear; `cue:list`

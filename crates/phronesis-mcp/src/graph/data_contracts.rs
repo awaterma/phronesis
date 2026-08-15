@@ -590,7 +590,7 @@ mod tests {
         vec![
             Edge::base(
                 "graph_definition",
-                &["cue:rulgamr.game::cue::export::export::#Manifest"],
+                &["cue:example.game::cue::export::export::#Manifest"],
                 "cue/export/manifest.cue",
             ),
             Edge::base(
@@ -600,7 +600,7 @@ mod tests {
             ),
             Edge::base(
                 "declares_module",
-                &["src/config.rs", "rust:rulgamr-simple::config"],
+                &["src/config.rs", "rust:example-app::config"],
                 "src/config.rs",
             ),
         ]
@@ -630,9 +630,9 @@ pub struct GameManifest {
             temp.path(),
             ".phronesis/graph.toml",
             r#"[[generated_artifacts]]
-producer = "cue:rulgamr.game::cue::export::export::#Manifest"
+producer = "cue:example.game::cue::export::export::#Manifest"
 artifact = "config/manifest.yaml"
-consumer = "rust:rulgamr-simple::config::GameManifest"
+consumer = "rust:example-app::config::GameManifest"
 "#,
         );
         let mut edges = base();
@@ -674,7 +674,7 @@ consumer = "rust:rulgamr-simple::config::GameManifest"
             write(
                 temp.path(),
                 ".phronesis/graph.toml",
-                "[[generated_artifacts]]\nproducer = \"cue:rulgamr.game::cue::export::export::#Manifest\"\nartifact = \"config/manifest.json\"\nconsumer = \"rust:rulgamr-simple::config::GameManifest\"\n",
+                "[[generated_artifacts]]\nproducer = \"cue:example.game::cue::export::export::#Manifest\"\nartifact = \"config/manifest.json\"\nconsumer = \"rust:example-app::config::GameManifest\"\n",
             );
             let mut edges = base();
             edges.retain(|edge| {
@@ -719,7 +719,7 @@ consumer = "rust:rulgamr-simple::config::GameManifest"
             "#[derive(Deserialize)]\nstruct Private<T> { value: T }\n",
         );
         let (edges, types) = extract_serde_types(temp.path(), &base());
-        assert!(types.contains_key("rust:rulgamr-simple::config::Private"));
+        assert!(types.contains_key("rust:example-app::config::Private"));
         assert!(edges.iter().any(|edge| edge.p == "serde_field"));
     }
 
@@ -770,7 +770,7 @@ fn load() {
             "declares_module",
             &[
                 "cue/export/manifest.cue",
-                "cue:rulgamr.game::cue::export::export",
+                "cue:example.game::cue::export::export",
             ],
             "cue/export/manifest.cue",
         );
@@ -873,7 +873,7 @@ fn load() {
             "declares_module",
             &[
                 "cue/export/manifest.cue",
-                "cue:rulgamr.game::cue::export::export",
+                "cue:example.game::cue::export::export",
             ],
             "cue/export/manifest.cue",
         );
@@ -956,7 +956,7 @@ fn load() {
                 temp.path(),
                 ".phronesis/graph.toml",
                 &format!(
-                    "[[generated_artifacts]]\nproducer = \"cue:rulgamr.game::cue::export::export::#Manifest\"\nartifact = \"config/manifest.json\"\nconsumer = \"{consumer}\"\n"
+                    "[[generated_artifacts]]\nproducer = \"cue:example.game::cue::export::export::#Manifest\"\nartifact = \"config/manifest.json\"\nconsumer = \"{consumer}\"\n"
                 ),
             );
             let mut edges = base();

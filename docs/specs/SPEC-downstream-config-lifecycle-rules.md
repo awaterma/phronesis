@@ -1,4 +1,4 @@
-# Rulgamr Configuration Lifecycle Rules
+# Downstream Configuration Lifecycle Rules
 
 Status: deferred handoff specification; query-only pending precision validation.
 
@@ -37,19 +37,19 @@ fire.
 ## Project-local rules (deferred)
 
 Do not enable the rules below yet. Both generated-artifact findings observed in
-rulgamr were false positives caused by missing consumer evidence. Phronesis
+the downstream consumer were false positives caused by missing consumer evidence. Phronesis
 therefore classifies these relations as query-only: rules that depend on them
 are excluded from whole-tree audit until reviewed corpus measurements justify
 promotion. Preserve these examples as the intended policy once that gate is
 met.
 
-After promotion, merge the following rules into rulgamr's
+After promotion, merge the following rules into the downstream consumer's
 `.phronesis/rules.json`; do not add them to a distributed Phronesis starter
 pack.
 
 ```json
 {
-  "id": "rulgamr-generated-config-without-consumer",
+  "id": "downstream-generated-config-without-consumer",
   "phase": "audit",
   "priority": 5,
   "audit": true,
@@ -66,7 +66,7 @@ pack.
 
 ```json
 {
-  "id": "rulgamr-consumed-config-without-producer",
+  "id": "downstream-consumed-config-without-producer",
   "phase": "audit",
   "priority": 5,
   "audit": true,
@@ -102,7 +102,7 @@ gap from being re-reported on unrelated edits.
    Phronesis's query-only audit gate.
 5. Only after promotion, run `phr-mcp audit` and confirm the findings agree
    with the direct graph queries.
-6. Run the rulgamr build and test gates required by that repository.
+6. Run the downstream consumer's build and test gates required by that repository.
 7. Confirm the final status contains only the intended rules change and no
    generated graph, cache, or build output.
 
