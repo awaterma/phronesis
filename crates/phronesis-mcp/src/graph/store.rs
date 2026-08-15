@@ -33,6 +33,14 @@ pub fn load(path: &Path) -> std::io::Result<Vec<Edge>> {
 /// Returns the new base-edge set. Compaction keys on provenance, never on the
 /// edge's subject: most subjects are functions, so subject-keyed compaction
 /// would orphan edges when a function is renamed or deleted (spec §3.1).
+///
+/// `fresh` must contain only base edges. A `d: true` edge supplied as fresh is
+/// dropped here deliberately, and quietly — see
+/// `compaction_refuses_to_persist_derived_edges_supplied_as_fresh`. The `d`
+/// flag means "regenerable by `derive_all` from the base set alone", so any
+/// relation an extractor computes from a syntax tree belongs in the base tier;
+/// putting it in the derived tier makes it vanish on the next incremental save
+/// rather than raise an error.
 pub fn compact(existing: Vec<Edge>, src: &str, fresh: Vec<Edge>) -> Vec<Edge> {
     let mut out: Vec<Edge> = existing
         .into_iter()

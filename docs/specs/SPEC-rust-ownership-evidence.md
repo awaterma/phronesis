@@ -198,7 +198,12 @@ status: available | partial | unavailable | failed
 `reason` is a stable machine value such as `async_lowering`, `tool_missing`,
 `project_load_failed`, or `provider_error`, never free-form stderr.
 
-### 6.2 Derived structural relations
+### 6.2 Relations derived during extraction
+
+These are computed by the extractor from the syntax tree and stored as
+ordinary base edges carrying their source file. "Derived" here describes how
+they are *computed*, not the graph's `d` storage tier, which is reserved for
+edges regenerable from the edge set alone. See decision D12.
 
 | Relation | Arguments | Derivation |
 |---|---|---|
