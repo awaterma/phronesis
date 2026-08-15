@@ -295,3 +295,13 @@ precision report over Phronesis and a second real-world corpus, named
 false-positive classes (this document), and a warning message that states their
 evidence limit. MIR-unavailable or partial evidence cannot satisfy a rule condition
 that claims MIR confirmation.
+
+## Credit
+
+The design follows Christian Schott's master's thesis, *Visualizing Ownership
+and Borrowing in Rust Programs* (Julius-Maximilians-Universität Würzburg,
+2024), and its tool [BORIS](https://christianschott.github.io/boris-viewer/):
+ownership is place-sensitive dataflow rather than something you can count,
+strong claims need MIR-level analysis, and an explanation must carry its own
+provenance. The implementation here is independent — a tree-sitter extractor,
+where BORIS works through rust-analyzer.

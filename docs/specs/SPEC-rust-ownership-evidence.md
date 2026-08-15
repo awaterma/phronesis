@@ -3,7 +3,9 @@
 **Status:** Draft for implementation
 **Audience:** Fable and Phronesis maintainers
 **Target release:** Unscheduled; query-only incubation before any rule ships
-**Research basis:** a private research note held outside this repository (it records downstream-consumer internals and is deliberately not published here).
+**Research basis:** Schott, *Visualizing Ownership and Borrowing in Rust
+Programs* (Würzburg, 2024); see Attribution. Supporting analysis is kept in a
+private note outside this repository.
 
 ## Summary
 
@@ -514,6 +516,17 @@ The query-only feature is ready when:
 - What measured precision permits any relation to become audit-eligible.
 - Whether a future ADR should govern ownership rules after the query surface
   has demonstrated value.
+
+## Attribution
+
+The framing of ownership as place-sensitive dataflow rather than something that
+can be counted, the requirement that strong claims rest on MIR rather than
+syntax, and the emphasis on provenance alongside classification are due to
+Schott [1]. The limitations recorded in §2 around async lowering, macros, and
+lifetime handling follow his Section 6.1.
+
+[1] Christian Schott. *Visualizing Ownership and Borrowing in Rust Programs*.
+Master's thesis, Julius-Maximilians-Universität Würzburg, 2024.
 
 ## 17. Rejected alternatives
 
