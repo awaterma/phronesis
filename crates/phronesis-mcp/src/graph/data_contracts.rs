@@ -69,7 +69,18 @@ fn load_bindings(root: &Path) -> Vec<Binding> {
         if line.starts_with('#') {
             continue;
         }
-        if line == "[[generated_artifacts]]" {
+        // Section-aware: any header ends the binding in progress. Without
+        // this, every `key = value` line after a `[[generated_artifacts]]`
+        // block is absorbed into that block no matter what table intervenes,
+        // so adding an unrelated section — `[ownership.rust]`, say — to a file
+        // that already has bindings silently rewrites them.
+        if line.starts_with('[') {
+            if line != "[[generated_artifacts]]" {
+                if let Some(binding) = current.take() {
+                    bindings.push(binding);
+                }
+                continue;
+            }
             if let Some(binding) = current.take() {
                 bindings.push(binding);
             }
@@ -89,6 +100,20 @@ fn load_bindings(root: &Path) -> Vec<Binding> {
         bindings.push(binding);
     }
     bindings
+}
+
+/// Whether `.phronesis/graph.toml` explicitly names `file_path` as a
+/// generated artifact.
+///
+/// The save pipeline uses this to decide whether an edit invalidates the
+/// data-contract edges, which are attributed to `graph.toml` rather than to
+/// the artifact and so survive provenance-keyed compaction untouched. Asking
+/// the bindings is what keeps that decision from degenerating into "the config
+/// file exists, so rebuild everything" (decision D17).
+pub(crate) fn declares_artifact(root: &Path, file_path: &str) -> bool {
+    load_bindings(root)
+        .iter()
+        .any(|binding| binding.artifact == file_path)
 }
 
 fn serde_option(attrs: &str, name: &str) -> Option<String> {
@@ -735,6 +760,57 @@ consumer = "rust:example-app::config::GameManifest"
         assert_eq!(bindings.len(), 1);
         assert_eq!(bindings[0].producer, "cue:module::#Value");
         assert_eq!(bindings[0].artifact, "config/value.json");
+    }
+
+    // Pins the section-awareness fix. The scanner used to absorb every later
+    // `key = value` line into the last `[[generated_artifacts]]` block it saw,
+    // so adding any new table to a graph.toml that already had bindings
+    // silently rewrote the binding's fields — with no diagnostic, because a
+    // rewritten-but-well-formed binding looks exactly like an authored one.
+    #[test]
+    fn an_unrelated_section_terminates_the_binding_instead_of_absorbing_its_keys() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write(
+            temp.path(),
+            ".phronesis/graph.toml",
+            r#"[[generated_artifacts]]
+producer = "cue:example.game::cue::export::export::#Manifest"
+artifact = "config/manifest.yaml"
+
+[ownership.rust]
+enabled = true
+provider = "ast"
+include = ["src/**/*.rs"]
+artifact = "not/a/binding.yaml"
+consumer = "rust:not::a::consumer"
+"#,
+        );
+        let bindings = load_bindings(temp.path());
+        assert_eq!(bindings.len(), 1, "the ownership table is not a binding");
+        assert_eq!(
+            bindings[0].artifact, "config/manifest.yaml",
+            "a key in a later section must not overwrite the binding"
+        );
+        assert_eq!(
+            bindings[0].consumer, None,
+            "a key in a later section must not add a consumer"
+        );
+        let ownership = super::super::ownership::config::load(temp.path())
+            .expect("the ownership section parses alongside bindings");
+        assert!(ownership.enabled, "the ownership section still parses");
+        assert_eq!(
+            ownership.include,
+            vec!["src/**/*.rs".to_string()],
+            "the ownership include list still parses"
+        );
+        assert!(
+            declares_artifact(temp.path(), "config/manifest.yaml"),
+            "the declared artifact is still recognised"
+        );
+        assert!(
+            !declares_artifact(temp.path(), "not/a/binding.yaml"),
+            "a path in another section is not a declared artifact"
+        );
     }
 
     #[test]

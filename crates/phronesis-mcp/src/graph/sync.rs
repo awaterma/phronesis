@@ -10,9 +10,15 @@
 //! and downgrades enforcement to warn.
 
 use super::derive::{canonicalize_function_edges, derive_all};
-use super::extract::{DEFAULT_WATCHLIST, extract_rust_at_module, module_path};
+use super::extract::{DEFAULT_WATCHLIST, extract_rust_at_module_with_ownership, module_path};
 use super::helm3;
 use super::model::Edge;
+use super::ownership;
+use super::ownership::config::OwnershipConfig;
+use super::ownership::provider::{
+    AnalysisTrigger, OwnershipEvidenceProvider, OwnershipFunction, RustAnalyzerProvider,
+    failure_report, incremental_stale_report,
+};
 use super::store;
 use super::unit::{UnitContext, UnitMap};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,19 +27,30 @@ use std::path::{Path, PathBuf};
 /// Location of the staleness index, relative to project root.
 pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 
-/// Identity scheme the extractor writes. Bumped whenever entity naming
-/// changes, because such a change invalidates every edge already on disk
-/// while leaving file contents — and therefore content hashes — untouched.
-/// Without it, an upgrade silently yields a graph half in the old naming and
-/// half in the new, whose `imports` never join to its `declares_module`.
+/// Version of what the extractor writes. Bumped whenever entity naming *or*
+/// the closed relation set changes, because either invalidates edges already
+/// on disk while leaving file contents — and therefore content hashes —
+/// untouched. Without it, an upgrade silently yields a graph half in the old
+/// vocabulary and half in the new, whose `imports` never join to its
+/// `declares_module`, and whose missing relations read as clean results.
 ///
-/// 5 — `<lang>:<package>[#<target>]::<module path>` (unchanged by rev 5,
-/// which added `graph_definition`, `defines`, `element_in_file`,
-/// `element_in_module`, `graph_module`, `graph_function`, `graph_test`,
-/// `graph_file` and multilingual dialect support; format 4 remains the
-/// same scheme without those relation names).
-/// Anything earlier is recorded as 0: pre-versioning, bare `crate::…`.
-pub const GRAPH_FORMAT: u32 = 17;
+/// A graph whose index records a different number is `Freshness::Outdated`,
+/// which only `rebuild` resolves; content hashes prove nothing there.
+///
+/// Identity scheme since format 5: `<lang>:<package>[#<target>]::<module
+/// path>`. Format 5 also introduced `graph_definition`, `defines`,
+/// `element_in_file`, `element_in_module`, `graph_module`, `graph_function`,
+/// `graph_test`, `graph_file` and multilingual dialect support; format 4 is
+/// the same scheme without those relation names. Anything earlier is recorded
+/// as 0: pre-versioning, bare `crate::…`.
+///
+/// 18 — adds the opt-in Rust ownership evidence relations
+/// (`graph::ownership::OWNERSHIP_RELATIONS`, see
+/// `docs/specs/SPEC-rust-ownership-evidence.md` §6). A format-17 graph lacks
+/// the whole set, and absence of ownership evidence must never be readable as
+/// absence of an ownership concern, so those graphs rebuild rather than mix
+/// generations.
+pub const GRAPH_FORMAT: u32 = 18;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -77,6 +94,16 @@ pub struct SaveOutcome {
     pub skipped: usize,
     /// Rules whose deprecated graph predicates were migrated during rebuild.
     pub migrated_rules: usize,
+    /// Stable machine strings naming analysis this run did **not** perform.
+    ///
+    /// Spec §8.2 requires the compiler provider to record that build scripts
+    /// and procedural macros were disabled rather than let a caller assume the
+    /// analysis was macro-complete. They are run properties, not graph edges:
+    /// encoding them per function would either contradict that function's real
+    /// capability status or multiply edges by the function count. Empty on
+    /// every path that runs no provider, which is every path except an
+    /// explicit rebuild with `provider = "rust-analyzer"`.
+    pub diagnostics: Vec<String>,
 }
 
 const GRAPH_PREDICATE_MIGRATIONS: &[(&str, &str)] = &[
@@ -539,6 +566,11 @@ fn chart_for(root: &Path, rel: &str) -> Option<(String, String)> {
 }
 
 /// Route one file to the extractor for its language.
+///
+/// `ownership` is loaded **once per pass** by the caller, never per file: it is
+/// one read of `.phronesis/graph.toml`, and re-reading it for every tracked
+/// file would turn a rebuild into thousands of redundant stats and reads. Only
+/// the Rust arm consumes it — the enrichment is Rust-only in Phase One.
 fn extract_one(
     root: &Path,
     rel: &str,
@@ -546,6 +578,7 @@ fn extract_one(
     units: &UnitMap,
     cue_index: Option<&super::cue::PackageIndex>,
     rust_inclusions: &BTreeMap<String, IncludedRustModule>,
+    ownership: &OwnershipConfig,
 ) -> super::extract::Extracted {
     let inclusion = rust_inclusions.get(rel);
     let unit = inclusion
@@ -612,14 +645,93 @@ fn extract_one(
             yaml_unit.files = tracked_files(root);
             super::yaml::extract_yaml(rel, content, &yaml_unit)
         }
-        _ => extract_rust_at_module(
+        // Ownership enrichment rides the tree this call already parses (§7.1,
+        // D13) and is gated inside the extractor on `enabled` plus
+        // `matches(rel)`. `rel` comes from `tracked_files`, so include/exclude
+        // filter that walk rather than performing one of their own (D16) — an
+        // independent walk would index files the freshness check can never
+        // match, which is drift nothing heals.
+        _ => extract_rust_at_module_with_ownership(
             rel,
             content,
             DEFAULT_WATCHLIST,
             &unit,
             inclusion.map(|included| included.module.as_str()),
+            ownership,
         ),
     }
+}
+
+/// The functions a compiler-aware provider would be asked about.
+///
+/// Read back off the freshly extracted base set rather than recomputed, so the
+/// ids are byte-identical to the ones `ownership_site_in_function` embeds and
+/// `defines_fn` declares — reconstructing them here would be the second
+/// identity scheme §5.1 forbids. Only site-bearing functions are included:
+/// a status edge for a function the query surface never groups is invisible
+/// evidence, and the volume would otherwise scale with the whole repository.
+fn ownership_subjects(base: &[Edge]) -> Vec<OwnershipFunction> {
+    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut out = Vec::new();
+    for edge in base
+        .iter()
+        .filter(|edge| !edge.d && edge.p == ownership::OWNERSHIP_SITE_IN_FUNCTION)
+    {
+        let Some(function) = edge.a.get(1) else {
+            continue;
+        };
+        if seen.insert((function.clone(), edge.src.clone())) {
+            out.push(OwnershipFunction::new(function, &edge.src));
+        }
+    }
+    out
+}
+
+/// Run the compiler-aware provider, if this run may have one at all.
+///
+/// Returns the status edges to append and the run's diagnostics. A provider
+/// failure is turned into explicit `failed` observations rather than an error:
+/// §8.1 requires the AST extractor to stay usable with no working provider,
+/// and a rebuild that aborted on a missing optional tool would make opting in
+/// strictly worse than staying out.
+fn compiler_evidence(
+    root: &Path,
+    ownership: &OwnershipConfig,
+    base: &[Edge],
+) -> (Vec<Edge>, Vec<String>) {
+    // `for_rebuild` yields `None` for every trigger but this one, so the hook,
+    // hydration, and incremental paths have no provider value to call at all
+    // (§8.2). Naming the trigger here is the whole enforcement mechanism.
+    let Some(provider) =
+        RustAnalyzerProvider::for_rebuild(ownership, AnalysisTrigger::ExplicitRebuild)
+    else {
+        return (Vec::new(), Vec::new());
+    };
+    let functions = ownership_subjects(base);
+    let report = match provider.analyze(root, &functions) {
+        Ok(report) => report,
+        Err(error) => {
+            tracing::warn!("ownership provider failed, recording explicit status: {error}");
+            failure_report(&functions, &error)
+        }
+    };
+    (report.to_edges(), report.diagnostics())
+}
+
+/// D9: mark this file's compiler evidence stale after an incremental edit.
+///
+/// The AST edges for the file are re-extracted normally by the same save; only
+/// the compiler generation is invalidated, because no provider may run on this
+/// path (§8.2) and carrying the previous rebuild's conclusions forward would
+/// present them as describing bytes they never saw.
+///
+/// The edges are appended *after* compaction and carry the file as `src`, so
+/// they replace whatever compiler status the last rebuild left for it.
+fn incremental_compiler_staleness(ownership: &OwnershipConfig, file_path: &str) -> Vec<Edge> {
+    if !file_path.ends_with(".rs") || !ownership.enabled || !ownership.matches(file_path) {
+        return Vec::new();
+    }
+    incremental_stale_report(file_path).to_edges()
 }
 
 /// Recompute derived edges over `base` and persist both sets.
@@ -699,6 +811,26 @@ fn reconcile_bindings_best_effort(root: &Path, generation: u64) {
     }
 }
 
+/// Whether editing `file_path` invalidates the data-contract edges.
+///
+/// Those edges are attributed to `.phronesis/graph.toml`, not to the artifact,
+/// so provenance-keyed compaction leaves them untouched by an ordinary save;
+/// only a rebuild recomputes them. The trigger is therefore that the config
+/// **names this file** as a generated artifact.
+///
+/// It deliberately is not "graph.toml exists and this is a `.rs`/`.json`/
+/// `.yaml` file", which is what it used to be. Under that rule the mere
+/// presence of the config turned every Rust save into a whole-repo rebuild —
+/// and since opting into ownership enrichment means creating that file,
+/// enabling the feature would silently blow the hook latency budget for every
+/// edit in the repository (decision D17).
+///
+/// The cost of the narrowing: a `.rs` edit no longer refreshes *inferred*
+/// bindings, which are heuristics recomputed at the next rebuild.
+fn declared_artifact(root: &Path, file_path: &str) -> bool {
+    super::data_contracts::declares_artifact(root, file_path)
+}
+
 /// Apply one save: parse the edited file, compact by provenance, re-derive
 /// over the whole graph, and write atomically.
 ///
@@ -712,13 +844,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
                     && edge.p == "includes_file"
                     && edge.a.first().is_some_and(|owner| owner == file_path)
             }));
-    let data_contract_input = root.join(".phronesis/graph.toml").is_file()
-        && matches!(
-            Path::new(file_path)
-                .extension()
-                .and_then(|value| value.to_str()),
-            Some("rs" | "json" | "yaml" | "yml")
-        );
+    let data_contract_input = declared_artifact(root, file_path);
     if file_path.ends_with(".cue")
         || path_module_owner
         || file_path == ".phronesis/graph.toml"
@@ -734,6 +860,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             derived: 0,
             skipped: 0,
             migrated_rules: 0,
+            diagnostics: Vec::new(),
         });
     }
     let ipath = index_path(root);
@@ -750,7 +877,17 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     let units = UnitMap::discover(root);
     let files = tracked_files(root);
     let rust_inclusions = rust_path_inclusions(root, &files, &units);
-    let extracted = extract_one(root, file_path, content, &units, None, &rust_inclusions);
+    // One read of `.phronesis/graph.toml` for the save, not one per file.
+    let ownership = ownership::config::load_or_disabled(root);
+    let extracted = extract_one(
+        root,
+        file_path,
+        content,
+        &units,
+        None,
+        &rust_inclusions,
+        &ownership,
+    );
     let existing = store::load(&store::graph_path(root))?;
     if extracted.parse_failed {
         // Leave the graph and the index exactly as they were. Compacting the
@@ -765,9 +902,13 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             derived: existing.len() - base,
             skipped: extracted.skipped,
             migrated_rules: 0,
+            diagnostics: Vec::new(),
         });
     }
-    let base = store::compact(existing, file_path, extracted.edges);
+    let mut base = store::compact(existing, file_path, extracted.edges);
+    // After compaction, so these supersede the previous rebuild's compiler
+    // status for this file instead of being deleted alongside it (D9, D12).
+    base.extend(incremental_compiler_staleness(&ownership, file_path));
     let (n_base, n_derived) = persist(root, base)?;
 
     index.generation = index.generation.saturating_add(1);
@@ -782,6 +923,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
         derived: n_derived,
         skipped: extracted.skipped,
         migrated_rules: 0,
+        diagnostics: Vec::new(),
     })
 }
 
@@ -844,13 +986,7 @@ pub fn record_from_disk(root: &Path, file_path: &str) {
 /// hash recorded against a path that no longer exists is stale evidence that
 /// `check_freshness` reports as drift forever.
 fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
-    let data_contract_input = root.join(".phronesis/graph.toml").is_file()
-        && matches!(
-            Path::new(file_path)
-                .extension()
-                .and_then(|value| value.to_str()),
-            Some("rs" | "json" | "yaml" | "yml")
-        );
+    let data_contract_input = declared_artifact(root, file_path);
     if file_path.ends_with(".cue")
         || file_path == ".phronesis/graph.toml"
         || file_path == ".phronesis/rules.json"
@@ -894,6 +1030,10 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     let cue_index = super::cue::build_package_index(root);
     let files = tracked_files(root);
     let rust_inclusions = rust_path_inclusions(root, &files, &units);
+    // Loaded once for the whole rebuild. `.phronesis/graph.toml` is a single
+    // file read; doing it per tracked file would repeat it thousands of times
+    // to reach the same answer.
+    let ownership = ownership::config::load_or_disabled(root);
 
     for rel in files {
         let Ok(content) = std::fs::read_to_string(root.join(&rel)) else {
@@ -906,6 +1046,7 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
             &units,
             Some(&cue_index),
             &rust_inclusions,
+            &ownership,
         );
         skipped += extracted.skipped;
         if extracted.parse_failed {
@@ -924,6 +1065,11 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     }));
 
     super::data_contracts::augment(root, &mut base);
+    // Compiler enrichment is rebuild-only (§8.2) and runs after AST extraction
+    // because its subject list is read back off the extracted edges — the ids
+    // must be the ones already in the graph, not a second reconstruction.
+    let (compiler_edges, diagnostics) = compiler_evidence(root, &ownership, &base);
+    base.extend(compiler_edges);
     base.extend(rule_predicate_edges(root)?);
     base.extend(super::decisions::extract(root));
     if let Ok(content) = std::fs::read_to_string(root.join(".phronesis/graph.toml")) {
@@ -940,11 +1086,15 @@ pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
     let (n_base, n_derived) = persist(root, base)?;
     save_index(&index_path(root), &index)?;
     reconcile_bindings_best_effort(root, index.generation);
+    for diagnostic in &diagnostics {
+        tracing::info!("ownership provider limitation: {diagnostic}");
+    }
     Ok(SaveOutcome {
         base: n_base,
         derived: n_derived,
         skipped,
         migrated_rules,
+        diagnostics,
     })
 }
 
@@ -1140,6 +1290,65 @@ mod tests {
         let p = index_path(d.path());
         save_index(&p, &Index::default()).expect("save");
         assert_eq!(load_index(&p).expect("load").format, GRAPH_FORMAT);
+    }
+
+    // Pins decision D17. `.phronesis/graph.toml` exists in every project that
+    // opts into data contracts *or* ownership enrichment; if its mere presence
+    // routes a Rust save into `rebuild`, enabling either feature converts every
+    // edit in the repository into a whole-repo rescan. The unindexed sibling
+    // file is the probe: only a full rebuild would pick it up.
+    #[test]
+    fn a_rust_save_with_graph_toml_present_takes_the_incremental_path() {
+        let d = project();
+        write(d.path(), "src/a.rs", "pub fn a() {}\n");
+        write(
+            d.path(),
+            ".phronesis/graph.toml",
+            "[[generated_artifacts]]\nproducer = \"rust:app::build::emit\"\nartifact = \"config/out.json\"\n\n[ownership.rust]\nenabled = true\nprovider = \"ast\"\n",
+        );
+        rebuild(d.path()).expect("rebuild");
+
+        write(d.path(), "src/b.rs", "pub fn b() {}\n");
+        let body = "pub fn a() -> u8 { 1 }\n";
+        write(d.path(), "src/a.rs", body);
+        on_save(d.path(), "src/a.rs", body).expect("save");
+
+        let index = load_index(&index_path(d.path())).expect("index");
+        assert!(
+            !index.entries.contains_key("src/b.rs"),
+            "a .rs save must not rescan the repository merely because graph.toml exists"
+        );
+        assert!(
+            index.entries.contains_key("src/a.rs"),
+            "the edited file is still recorded"
+        );
+    }
+
+    // The companion to the test above: narrowing the trigger must not stop a
+    // declared artifact's own edit from recomputing the data-contract edges,
+    // which are attributed to graph.toml and so survive compaction unchanged.
+    #[test]
+    fn editing_a_declared_artifact_still_forces_a_full_rebuild() {
+        let d = project();
+        write(d.path(), "src/a.rs", "pub fn a() {}\n");
+        write(d.path(), "config/out.json", "{\"name\": \"demo\"}");
+        write(
+            d.path(),
+            ".phronesis/graph.toml",
+            "[[generated_artifacts]]\nproducer = \"rust:app::build::emit\"\nartifact = \"config/out.json\"\n",
+        );
+        rebuild(d.path()).expect("rebuild");
+
+        write(d.path(), "src/b.rs", "pub fn b() {}\n");
+        let body = "{\"name\": \"demo\", \"extra\": 1}";
+        write(d.path(), "config/out.json", body);
+        on_save(d.path(), "config/out.json", body).expect("save");
+
+        let index = load_index(&index_path(d.path())).expect("index");
+        assert!(
+            index.entries.contains_key("src/b.rs"),
+            "editing a declared artifact must still rebuild the whole graph"
+        );
     }
 
     #[test]

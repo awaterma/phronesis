@@ -6,6 +6,7 @@
 //! hook latency is a shared budget.
 
 use super::model::Edge;
+use super::ownership;
 use super::store;
 use super::sync::{Freshness, check_freshness, index_path, load_index};
 use phr::{Fact, Rule, RuleId};
@@ -89,6 +90,26 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     // Helm3 diagnostics
     "helm3_dynamic_tpl",
     "helm3_cluster_lookup",
+    // Graph-format-18 relations: opt-in Rust ownership evidence
+    // (SPEC-rust-ownership-evidence). Query-only in Phase One — see
+    // `audit::QUERY_ONLY_RELATIONS` — but listed here so a project-authored
+    // rule can join them, which is what Goal 7 requires. Listing costs
+    // nothing while no rule mentions them: `needed_relations` short-circuits.
+    ownership::OWNERSHIP_SITE,
+    ownership::OWNERSHIP_SITE_IN_FUNCTION,
+    ownership::OWNERSHIP_SITE_SPAN,
+    ownership::CLONE_SITE,
+    ownership::FILTER_SITE,
+    ownership::AWAIT_SITE,
+    ownership::MUTATION_SITE,
+    ownership::SYNC_LOCK_SITE,
+    ownership::OWNERSHIP_EVIDENCE,
+    ownership::OWNERSHIP_ANALYSIS_STATUS,
+    ownership::RESOLVED_TYPE,
+    ownership::FILTER_BEFORE_CLONE,
+    ownership::CLONE_BEFORE_AWAIT,
+    ownership::READ_BEFORE_MUTATION,
+    ownership::LOCK_SCOPE_ENDS_BEFORE_AWAIT,
 ];
 
 /// The file the current tool call is touching, expressed in the graph's

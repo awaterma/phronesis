@@ -22,7 +22,10 @@ pub struct Pattern {
     pub args: Vec<Option<String>>,
 }
 
-fn glob_matches(pattern: &str, value: &str) -> bool {
+/// Single-level `*`/`?` glob match, the semantics every graph query already
+/// has. `pub(crate)` so the ownership explanation query can select functions
+/// with the same rules rather than growing a second, subtly different matcher.
+pub(crate) fn glob_matches(pattern: &str, value: &str) -> bool {
     let pattern = pattern.as_bytes();
     let value = value.as_bytes();
     let (mut p, mut v) = (0, 0);
