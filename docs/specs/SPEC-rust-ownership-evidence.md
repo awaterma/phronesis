@@ -531,7 +531,8 @@ Schott [1]. The limitations recorded in §2 around async lowering, macros, and
 lifetime handling follow his Section 6.1.
 
 [1] Christian Schott. *Visualizing Ownership and Borrowing in Rust Programs*.
-Master's thesis, Julius-Maximilians-Universität Würzburg, 2024.
+Master's thesis, Julius-Maximilians-Universität Würzburg, 7 May 2024.
+Thesis and the accompanying BORIS tool: https://github.com/ChristianSchott/boris
 
 ## 17. Rejected alternatives
 
