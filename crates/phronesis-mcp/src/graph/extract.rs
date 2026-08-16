@@ -389,9 +389,12 @@ impl Sensor<'_> {
         // receives the identical `Scope::qualify` output — reconstructing that
         // id independently diverges on generic impls and `#[path]` modules —
         // and it never runs for a function the graph has no `defines_fn` for.
-        let in_test_module = within_test_module(node, self.source);
-        if let Some(collector) = self.ownership.as_mut()
-            && !in_test_module
+        // `is_some` first: `within_test_module` walks the ancestor chain, and
+        // with ownership disabled that walk buys nothing, on every function in
+        // the repository.
+        if self.ownership.is_some()
+            && !within_test_module(node, self.source)
+            && let Some(collector) = self.ownership.as_mut()
         {
             collector.visit_function(&qualified, body);
         }

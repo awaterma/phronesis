@@ -6,6 +6,17 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **A `.rs`/`.json`/`.yaml` save no longer forces a full graph rebuild merely
+  because `.phronesis/graph.toml` exists.** The rebuild now triggers when the
+  edited file is itself *declared* as a generated artifact. Previously the
+  config file's mere presence made every save a whole-repo rebuild, which would
+  have made opting into ownership enrichment silently expensive. Projects using
+  data contracts should know the trade: an unrelated `.rs` edit no longer
+  refreshes *inferred* bindings, which are heuristics recomputed at the next
+  rebuild. Explicitly declared bindings are unaffected.
+
 ### Added
 
 - **Opt-in Rust ownership evidence (query-only).** The structural graph can
