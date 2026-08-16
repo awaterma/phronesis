@@ -8,6 +8,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Changed
 
+- **Breaking (library API): `graph::sync::SaveOutcome` gained a `diagnostics`
+  field and is now `#[non_exhaustive]`.** Rebuild diagnostics record analysis a
+  run did *not* perform — spec §8.2 requires the compiler provider to say that
+  build scripts and procedural macros were disabled rather than let a caller
+  assume the analysis was macro-complete. The struct is a return value from
+  `rebuild`/`on_save`, so this affects only code that constructed it with a
+  struct literal. `#[non_exhaustive]` makes future additions non-breaking.
+  *Migration:* read the fields you need from the returned value; do not
+  construct `SaveOutcome` yourself.
+
 - **A `.rs`/`.json`/`.yaml` save no longer forces a full graph rebuild merely
   because `.phronesis/graph.toml` exists.** The rebuild now triggers when the
   edited file is itself *declared* as a generated artifact. Previously the
