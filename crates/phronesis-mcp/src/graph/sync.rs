@@ -85,6 +85,11 @@ pub enum Freshness {
 
 /// Outcome of a single-file save.
 #[derive(Debug, PartialEq, Eq)]
+/// Additive-safe: callers receive this from `rebuild`/`on_save` rather than
+/// constructing it, so future counters can be added without another semver
+/// break. Marked after `diagnostics` triggered `constructible_struct_adds_field`
+/// in 0.29.0.
+#[non_exhaustive]
 pub struct SaveOutcome {
     /// Base edges for the whole project after compaction.
     pub base: usize,
