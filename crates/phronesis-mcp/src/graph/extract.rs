@@ -10,6 +10,8 @@
 //! `in_cycle`) are computed separately in `super::derive`.
 
 use super::model::Edge;
+use super::ownership::config::OwnershipConfig;
+use super::ownership::extract::FileOwnership;
 use super::unit::UnitContext;
 use crate::syntax::parsed::ParsedFile;
 use std::collections::BTreeSet;
@@ -226,6 +228,24 @@ fn split_top_level(args: &str) -> Vec<&str> {
     out
 }
 
+/// True when `node` is lexically inside a test-gated module.
+///
+/// `has_test_attribute` only looks at a node's own preceding attributes, so a
+/// plain helper inside `#[cfg(test)] mod tests` looks like production code to
+/// it. Ownership extraction needs the enclosing view (D14): a site in a test
+/// module is fixture text, and indexing it would let test modules dominate
+/// ownership edge volume.
+fn within_test_module(node: Node, source: &[u8]) -> bool {
+    let mut current = node.parent();
+    while let Some(ancestor) = current {
+        if ancestor.kind() == "mod_item" && has_test_attribute(ancestor, source) {
+            return true;
+        }
+        current = ancestor.parent();
+    }
+    false
+}
+
 /// True when a test-marker attribute is attached to `node`.
 fn has_test_attribute(node: Node, source: &[u8]) -> bool {
     let mut sib = node.prev_sibling();
@@ -274,6 +294,10 @@ struct Sensor<'a> {
     unit: &'a UnitContext,
     /// A set, so a function calling `.expect()` twice yields one edge.
     out: BTreeSet<(String, Vec<String>)>,
+    /// Present only when the project opted into ownership enrichment for this
+    /// file. It rides along inside this walk rather than re-parsing or
+    /// re-deriving function ids, per decision D13.
+    ownership: Option<FileOwnership<'a>>,
     skipped: usize,
 }
 
@@ -359,6 +383,20 @@ impl Sensor<'_> {
         }
         for api in self.watched_calls(body) {
             self.emit("calls_api", &[&qualified, &api]);
+        }
+
+        // The ownership hook (D13). It runs here, after `defines_fn`, so it
+        // receives the identical `Scope::qualify` output — reconstructing that
+        // id independently diverges on generic impls and `#[path]` modules —
+        // and it never runs for a function the graph has no `defines_fn` for.
+        // `is_some` first: `within_test_module` walks the ancestor chain, and
+        // with ownership disabled that walk buys nothing, on every function in
+        // the repository.
+        if self.ownership.is_some()
+            && !within_test_module(node, self.source)
+            && let Some(collector) = self.ownership.as_mut()
+        {
+            collector.visit_function(&qualified, body);
         }
     }
 
@@ -649,6 +687,30 @@ pub fn extract_rust_at_module(
     unit: &UnitContext,
     module_override: Option<&str>,
 ) -> Extracted {
+    extract_rust_at_module_with_ownership(
+        file_path,
+        content,
+        watchlist,
+        unit,
+        module_override,
+        &OwnershipConfig::disabled(),
+    )
+}
+
+/// Extract with the opt-in ownership enrichment applied.
+///
+/// Ownership is off unless a project's `[ownership.rust]` section turns it on,
+/// so the callers that do not pass a config keep exactly their current output
+/// (spec §4.2: the enrichment is an opt-in, never an unconditional expansion of
+/// the Rust language pack).
+pub fn extract_rust_at_module_with_ownership(
+    file_path: &str,
+    content: &str,
+    watchlist: &[&str],
+    unit: &UnitContext,
+    module_override: Option<&str>,
+    ownership: &OwnershipConfig,
+) -> Extracted {
     if !file_path.ends_with(".rs") {
         return Extracted::default();
     }
@@ -671,6 +733,11 @@ pub fn extract_rust_at_module(
     let self_module = module_override
         .map(str::to_string)
         .unwrap_or_else(|| module_path(file_path, unit));
+    // Include/exclude filter `sync::tracked_files`, never a directory walk of
+    // their own (D16); applying them here as well keeps a caller that forgot
+    // the filter from indexing an out-of-scope file.
+    let collector = (ownership.enabled && ownership.matches(file_path))
+        .then(|| FileOwnership::new(file_path, source.as_bytes(), ownership));
     let mut sensor = Sensor {
         file_path,
         source: source.as_bytes(),
@@ -678,6 +745,7 @@ pub fn extract_rust_at_module(
         self_module: self_module.clone(),
         unit,
         out: BTreeSet::new(),
+        ownership: collector,
         skipped: 0,
     };
     sensor.emit("file_type", &[file_path, file_type(file_path)]);
@@ -790,7 +858,7 @@ pub fn extract_rust_at_module(
         }
     }
 
-    let edges = sensor
+    let mut edges: Vec<Edge> = sensor
         .out
         .iter()
         .map(|(p, a)| Edge {
@@ -800,6 +868,12 @@ pub fn extract_rust_at_module(
             d: false,
         })
         .collect();
+    // `finish` appends the file's `ownership_analysis_status`, so it must run
+    // even for a file that produced no sites: "we looked and found nothing" is
+    // not the same claim as "we never looked" (spec §3, §10).
+    if let Some(collector) = sensor.ownership.take() {
+        edges.extend(collector.finish());
+    }
     Extracted {
         edges,
         skipped: sensor.skipped,

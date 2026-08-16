@@ -153,6 +153,25 @@ impl EpistemeMcp {
         }))
     }
 
+    /// Grouped ownership evidence for `function`, as the structured payload
+    /// the MCP tool returns.
+    ///
+    /// Split out from the `#[tool]` method for the same reason
+    /// [`Self::code_graph_status`] is: it takes an explicit root, so a test
+    /// can assert this payload is byte-identical to what the CLI prints
+    /// without mutating `PHRONESIS_PROJECT_ROOT` (§13.2). All shaping lives
+    /// in `graph::ownership::query`; nothing is added here.
+    fn ownership_evidence_payload(
+        root: &std::path::Path,
+        function: &str,
+        limit: usize,
+    ) -> Result<serde_json::Value, McpError> {
+        use crate::graph::ownership::query as ownership;
+        let report =
+            ownership::load(root, function, limit).map_err(|e| Self::err(e.to_string()))?;
+        serde_json::to_value(&report).map_err(|e| Self::err(e.to_string()))
+    }
+
     pub(crate) fn err(msg: impl ToString) -> McpError {
         McpError::new(ErrorCode(-1), msg.to_string(), None::<serde_json::Value>)
     }
@@ -1158,6 +1177,30 @@ impl EpistemeMcp {
     }
 
     #[tool(
+        description = "Explain the indexed Rust ownership evidence for a function, grouped by function and site. Returns, per function: every observed site (clone / filter / await / mutation / synchronous lock) with its source location and the literal operation observed; the derived structural relationships (`filter_before_clone`, `clone_before_await`, `read_before_mutation`, `lock_scope_ends_before_await`) each naming the sites that support it; the evidence level and provider behind every site; type-inference and MIR availability including `unavailable`, `partial`, `failed`, and `stale`; and the explicit limit of each claim. `function` is a canonical Rust function ID or a glob (`*` / `?`), matching `query_code_graph` semantics. This is evidence, not a verdict: an empty result means no indexed ownership evidence matched, never that the code has no ownership concern. Opt-in per project via `[ownership.rust]` in `.phronesis/graph.toml`; the project root is server-controlled and this tool takes no filesystem path."
+    )]
+    async fn query_ownership_evidence(
+        &self,
+        Parameters(params): Parameters<OwnershipEvidenceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::graph::ownership::query as ownership;
+
+        let root = security::project_root();
+        let limit = params.limit.unwrap_or(ownership::DEFAULT_FUNCTION_LIMIT);
+        let payload = Self::ownership_evidence_payload(&root, &params.function, limit)?;
+
+        Self::log_event("query_ownership_evidence", |e| {
+            e.with("function", params.function.clone()).with(
+                "matched_functions",
+                payload["matched_functions"].as_u64().unwrap_or(0),
+            )
+        });
+        // `ok_json` rejects a non-object, so the functions list stays under a
+        // key rather than being returned as a bare array.
+        Self::ok_json(payload)
+    }
+
+    #[tool(
         description = "Report whether the current project's derived code graph is missing, fresh, stale, or built with an outdated format. Returns generation, indexed-file and edge counts, drifted files, and rule-binding state as structured JSON."
     )]
     async fn get_code_graph_status(&self) -> Result<CallToolResult, McpError> {
@@ -1195,6 +1238,13 @@ impl EpistemeMcp {
         object.insert(
             "migrated_rules".to_string(),
             serde_json::json!(outcome.migrated_rules),
+        );
+        // Spec §8.2: analysis the compiler-aware provider did not perform must
+        // be recorded, not left for the caller to assume complete. Empty for
+        // every project that has not opted into `provider = "rust-analyzer"`.
+        object.insert(
+            "diagnostics".to_string(),
+            serde_json::json!(outcome.diagnostics),
         );
 
         Self::log_event("rebuild_code_graph", |entry| {
@@ -1793,6 +1843,171 @@ mod tool_registration_tests {
         assert!(
             mcp.tool_router.has_route("rebuild_code_graph"),
             "rebuild_code_graph must expose `phr-mcp graph rebuild` over MCP"
+        );
+    }
+
+    /// The `#[tool]` macro only registers methods inside the single
+    /// `#[tool_router] impl` block. A method placed in the other `impl
+    /// EpistemeMcp` block compiles cleanly and is silently absent from the
+    /// tool list — this is the assertion that catches it.
+    #[test]
+    fn ownership_evidence_tool_is_registered() {
+        let mcp = EpistemeMcp::new();
+        assert!(
+            mcp.tool_router.has_route("query_ownership_evidence"),
+            "query_ownership_evidence must be registered (matches `phr-mcp graph ownership` CLI). Registered tools: {:?}",
+            mcp.tool_router
+                .list_all()
+                .iter()
+                .map(|t| t.name.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(test)]
+mod ownership_evidence_tool_tests {
+    use super::*;
+    use crate::graph::model::Edge;
+    use crate::graph::ownership::query as ownership;
+    use crate::graph::{ownership as own, store};
+
+    const FUNCTION: &str = "rust:demo::llm::scheduler::Scheduler::acquire";
+    const LOCK: &str = "rust:demo::llm::scheduler::Scheduler::acquire#ownership:lock:12";
+    const AWAIT: &str = "rust:demo::llm::scheduler::Scheduler::acquire#ownership:await:80";
+
+    /// A project root with ownership enabled and a small graph on disk.
+    fn seed(root: &std::path::Path) {
+        let phr = root.join(".phronesis");
+        std::fs::create_dir_all(&phr).expect("create .phronesis");
+        std::fs::write(
+            phr.join("graph.toml"),
+            "[ownership.rust]\nenabled = true\ninclude = [\"src/**/*.rs\"]\n",
+        )
+        .expect("write graph.toml");
+        let edges = vec![
+            Edge::base(own::OWNERSHIP_SITE, &[LOCK], "src/scheduler.rs"),
+            Edge::base(
+                own::OWNERSHIP_SITE_IN_FUNCTION,
+                &[LOCK, FUNCTION],
+                "src/scheduler.rs",
+            ),
+            Edge::base(
+                own::OWNERSHIP_SITE_SPAN,
+                &[LOCK, "src/scheduler.rs", "12", "40"],
+                "src/scheduler.rs",
+            ),
+            Edge::base(
+                own::SYNC_LOCK_SITE,
+                &[LOCK, "lock", "guard"],
+                "src/scheduler.rs",
+            ),
+            Edge::base(
+                own::OWNERSHIP_EVIDENCE,
+                &[LOCK, "ast", own::PROVIDER_TREE_SITTER_RUST],
+                "src/scheduler.rs",
+            ),
+            Edge::base(own::OWNERSHIP_SITE, &[AWAIT], "src/scheduler.rs"),
+            Edge::base(
+                own::OWNERSHIP_SITE_IN_FUNCTION,
+                &[AWAIT, FUNCTION],
+                "src/scheduler.rs",
+            ),
+            Edge::base(
+                own::OWNERSHIP_SITE_SPAN,
+                &[AWAIT, "src/scheduler.rs", "80", "92"],
+                "src/scheduler.rs",
+            ),
+            Edge::base(own::AWAIT_SITE, &[AWAIT], "src/scheduler.rs"),
+            Edge::base(
+                own::OWNERSHIP_EVIDENCE,
+                &[AWAIT, "ast", own::PROVIDER_TREE_SITTER_RUST],
+                "src/scheduler.rs",
+            ),
+            Edge::base(
+                own::LOCK_SCOPE_ENDS_BEFORE_AWAIT,
+                &[FUNCTION, LOCK, AWAIT],
+                "src/scheduler.rs",
+            ),
+            Edge::base(
+                own::OWNERSHIP_ANALYSIS_STATUS,
+                &[FUNCTION, "mir_lowering", "unavailable", "async_lowering"],
+                "src/scheduler.rs",
+            ),
+        ];
+        store::write_atomic(&store::graph_path(root), &edges).expect("write graph");
+    }
+
+    /// §13.2: CLI and MCP must return identical grouped evidence. Today the
+    /// two graph-query surfaces already disagree about their JSON envelope
+    /// (`{total, returned, results}` vs. the same plus `truncated`), which is
+    /// exactly the drift this pins shut: the MCP payload must equal the
+    /// bytes the CLI prints under `--json`, field for field.
+    #[test]
+    fn the_mcp_payload_is_the_same_document_the_cli_prints() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        seed(dir.path());
+
+        let cli_report = ownership::load(dir.path(), FUNCTION, 20).expect("cli report");
+        let cli_json: serde_json::Value =
+            serde_json::from_str(&ownership::render_json(&cli_report)).expect("cli json parses");
+        let mcp_json =
+            EpistemeMcp::ownership_evidence_payload(dir.path(), FUNCTION, 20).expect("mcp payload");
+
+        assert_eq!(
+            mcp_json, cli_json,
+            "the MCP tool must not add, drop, or rename a field the CLI renders"
+        );
+        assert!(
+            mcp_json.is_object(),
+            "ok_json rejects a non-object payload at runtime"
+        );
+        assert_eq!(
+            mcp_json["functions"][0]["relationships"][0]["relation"],
+            own::LOCK_SCOPE_ENDS_BEFORE_AWAIT,
+            "the grouped evidence must survive the MCP envelope"
+        );
+    }
+
+    /// The three empty states must survive the MCP boundary as distinct
+    /// answers rather than collapsing into one empty list.
+    #[test]
+    fn the_mcp_payload_distinguishes_disabled_no_graph_and_no_match() {
+        let disabled = tempfile::TempDir::new().expect("tempdir");
+        let payload = EpistemeMcp::ownership_evidence_payload(disabled.path(), "*", 20)
+            .expect("disabled payload");
+        assert_eq!(
+            payload["state"], "disabled",
+            "a project without [ownership.rust] reports disabled, not empty"
+        );
+
+        let no_graph = tempfile::TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(no_graph.path().join(".phronesis")).expect("mkdir");
+        std::fs::write(
+            no_graph.path().join(".phronesis/graph.toml"),
+            "[ownership.rust]\nenabled = true\n",
+        )
+        .expect("write config");
+        let payload = EpistemeMcp::ownership_evidence_payload(no_graph.path(), "*", 20)
+            .expect("no-graph payload");
+        assert_eq!(
+            payload["state"], "no_graph",
+            "an unbuilt graph reports no_graph, not an empty match"
+        );
+
+        let seeded = tempfile::TempDir::new().expect("tempdir");
+        seed(seeded.path());
+        let payload = EpistemeMcp::ownership_evidence_payload(seeded.path(), "rust:other::*", 20)
+            .expect("no-match payload");
+        assert_eq!(
+            payload["state"], "no_match",
+            "a graph that matched nothing reports no_match"
+        );
+        assert!(
+            payload["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("not proof")),
+            "an empty match must never read as proof the code is clean: {payload}"
         );
     }
 }

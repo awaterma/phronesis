@@ -14,6 +14,7 @@
 
 use super::hydrate::{EDITED_FILE, GRAPH_RELATIONS};
 use super::model::Edge;
+use super::ownership;
 use super::store;
 use phr::{Fact, Rule};
 use std::collections::BTreeSet;
@@ -25,7 +26,7 @@ use std::path::Path;
 /// Keeping this list explicit prevents a heuristic diagnostic from becoming
 /// an audit headline merely because a project wrote a rule over it. Promotion
 /// requires reviewed corpus results; graph queries remain available meanwhile.
-const QUERY_ONLY_RELATIONS: &[&str] = &[
+pub(crate) const QUERY_ONLY_RELATIONS: &[&str] = &[
     "cue_import_diagnostic",
     "generated_artifact_diagnostic",
     "generated_without_consumer",
@@ -33,6 +34,26 @@ const QUERY_ONLY_RELATIONS: &[&str] = &[
     "rhai_binding_diagnostic",
     "yaml_duplicate_key",
     "yaml_undefined_alias",
+    // Ownership evidence is query-only for all of Phase One (spec §11): no
+    // packaged rule references it, and no audit finding may be created from
+    // it before precision is measured and its false-positive classes are
+    // named. Suppression here is audit-only — a project-authored rule can
+    // still fire, which Addendum A anticipates.
+    ownership::OWNERSHIP_SITE,
+    ownership::OWNERSHIP_SITE_IN_FUNCTION,
+    ownership::OWNERSHIP_SITE_SPAN,
+    ownership::CLONE_SITE,
+    ownership::FILTER_SITE,
+    ownership::AWAIT_SITE,
+    ownership::MUTATION_SITE,
+    ownership::SYNC_LOCK_SITE,
+    ownership::OWNERSHIP_EVIDENCE,
+    ownership::OWNERSHIP_ANALYSIS_STATUS,
+    ownership::RESOLVED_TYPE,
+    ownership::FILTER_BEFORE_CLONE,
+    ownership::CLONE_BEFORE_AWAIT,
+    ownership::READ_BEFORE_MUTATION,
+    ownership::LOCK_SCOPE_ENDS_BEFORE_AWAIT,
 ];
 
 /// One structural finding: a rule that matched, and the file it bound.

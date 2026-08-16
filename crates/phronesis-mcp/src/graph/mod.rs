@@ -20,6 +20,7 @@ pub mod hydrate;
 pub mod json_extractor;
 pub mod lua;
 pub mod model;
+pub mod ownership;
 pub mod python;
 pub mod query;
 pub mod resolve;

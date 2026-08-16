@@ -309,3 +309,19 @@ pub struct QueryCodeGraphParams {
     #[serde(default)]
     pub limit: Option<usize>,
 }
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct OwnershipEvidenceParams {
+    /// Canonical Rust function ID, e.g.
+    /// `rust:mycrate::llm::scheduler::Scheduler::acquire`, or a glob over
+    /// one (`rust:mycrate::llm::*`). Same `*` / `?` semantics as
+    /// `query_code_graph`.
+    pub function: String,
+    /// Maximum functions returned. Defaults to 20; `0` means no limit. The
+    /// response always reports the unlimited total so truncation is visible.
+    ///
+    /// There is deliberately no path field: the project root is
+    /// server-controlled, as it is for every other graph tool.
+    #[serde(default)]
+    pub limit: Option<usize>,
+}

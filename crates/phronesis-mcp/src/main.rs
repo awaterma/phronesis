@@ -438,6 +438,33 @@ enum GraphCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Explain the indexed Rust ownership evidence for a function, grouped by
+    /// function and site: source location, observed operation, structural
+    /// relationships, evidence level and provider, type/MIR availability, and
+    /// the limits of each claim.
+    ///
+    /// Opt-in via `[ownership.rust]` in `.phronesis/graph.toml`. An empty
+    /// result means no indexed evidence matched — never that the code is
+    /// clean.
+    ///
+    /// Examples:
+    ///   graph ownership 'rust:mycrate::llm::Scheduler::acquire'
+    ///   graph ownership 'rust:mycrate::llm::*'
+    Ownership {
+        /// Canonical function ID, or a glob over one. `*` matches any run of
+        /// characters and `?` any single one, exactly as `graph query` does.
+        #[arg(value_name = "FUNCTION")]
+        function: String,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Maximum functions to render. 0 means no limit.
+        #[arg(long, default_value_t = phronesis_mcp::graph::ownership::query::DEFAULT_FUNCTION_LIMIT)]
+        limit: usize,
+        /// Emit JSON instead of the grouped explanation.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -1276,6 +1303,7 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                         "derived_edges": out.derived,
                         "skipped_items": out.skipped,
                         "migrated_rules": out.migrated_rules,
+                        "diagnostics": out.diagnostics,
                     })
                 );
             } else {
@@ -1283,6 +1311,12 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                     "Rebuilt graph: {} base edges, {} derived, {} items skipped, {} rules migrated.",
                     out.base, out.derived, out.skipped, out.migrated_rules
                 );
+                // Analysis the run did not perform (spec §8.2). Printed only
+                // when a provider actually ran, so the ordinary rebuild line
+                // is unchanged for every project that has not opted in.
+                for diagnostic in &out.diagnostics {
+                    println!("  limitation: {diagnostic}");
+                }
             }
             Ok(())
         }
@@ -1393,6 +1427,25 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                     println!("  {f}");
                 }
                 println!("Run `phr-mcp graph rebuild` to resync.");
+            }
+            Ok(())
+        }
+        // Deliberately thin: every scrap of result shaping lives in the
+        // library so the MCP tool renders the same bytes (§13.2). `graph
+        // query` grew two divergent JSON envelopes precisely because each
+        // surface built its own.
+        GraphCmd::Ownership {
+            function,
+            path,
+            limit,
+            json,
+        } => {
+            use phronesis_mcp::graph::ownership::query as ownership;
+            let report = ownership::load(&path, &function, limit)?;
+            if json {
+                println!("{}", ownership::render_json(&report));
+            } else {
+                print!("{}", ownership::render_table(&report));
             }
             Ok(())
         }

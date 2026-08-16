@@ -6,7 +6,33 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **A `.rs`/`.json`/`.yaml` save no longer forces a full graph rebuild merely
+  because `.phronesis/graph.toml` exists.** The rebuild now triggers when the
+  edited file is itself *declared* as a generated artifact. Previously the
+  config file's mere presence made every save a whole-repo rebuild, which would
+  have made opting into ownership enrichment silently expensive. Projects using
+  data contracts should know the trade: an unrelated `.rs` edit no longer
+  refreshes *inferred* bindings, which are heuristics recomputed at the next
+  rebuild. Explicitly declared bindings are unaffected.
+
 ### Added
+
+- **Opt-in Rust ownership evidence (query-only).** The structural graph can
+  now record where Rust source clones, filters, awaits, mutates, and acquires
+  synchronous locks, plus four bounded relationships between those sites:
+  `filter_before_clone`, `clone_before_await`, `read_before_mutation`, and
+  `lock_scope_ends_before_await`. Every site carries a source span, an evidence
+  level, and a provider, and unavailable analysis is recorded explicitly rather
+  than read as a clean result. Enable per project with `[ownership.rust]` in
+  `.phronesis/graph.toml`; with it absent the graph is byte-identical to
+  before. Query with `phr-mcp graph ownership <function-id-or-glob>` or the
+  matching MCP tool. Findings are evidence with stated limits, not verdicts:
+  this ships no rule, creates no audit findings, and adds no catalogue entry.
+  Graph format 17 -> 18. Design after Schott, *Visualizing Ownership and
+  Borrowing in Rust Programs* (Wuerzburg, 2024); see
+  `docs/OWNERSHIP-EVIDENCE.md`.
 
 - **Release-ready multilingual structural graph.** CUE packages now use
   canonical package identities with complete import resolution; Lua, JSON,
