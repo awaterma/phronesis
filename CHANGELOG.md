@@ -6,6 +6,8 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.29.0] - 2026-08-16
+
 ### Changed
 
 - **Breaking (library API): `graph::sync::SaveOutcome` gained a `diagnostics`
