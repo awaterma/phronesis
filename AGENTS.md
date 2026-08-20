@@ -241,9 +241,9 @@ This repository's `change_set.rhai` provider emits
 | Pack | Contents |
 |------|----------|
 | `llm` | Deflection rules (blocks blame-shifting, unverified completion claims), `git commit -m` warning |
-| `rust` | `.unwrap()`/`todo!()`/`panic!()`/`unimplemented!()` in src/, `Result<_, String>`, `.execute_all_agenda_items().await` on sync, `#![deny(warnings)]`, public fn with `&String`/`&Vec<T>`/`&Box<T>`, 3+ `.clone()` calls, 5+ params, `impl Deref`, `#[test]` without assertions, `cargo build/test/check/clippy` without `--workspace`, `dbg!()` in src/, `.expect("")` empty message, god-file (>800 LOC), manual `=> return Err(...)`, `*_id: String`/`u64`, `None => {}`/`Err(_) => {}`, `Rc<RefCell<...>>` in src/, string concatenation with `+ &`, `#[allow(dead_code)]`, `env::set_var` |
+| `rust` | Existing panic/error/API/design rules plus synchronous lock guards across `.await`, unsafe blocks without `SAFETY:` rationale, and known blocking calls inside `async fn` |
 | `rhai` | `engine.eval(<string literal>)` (use `compile_file`), `print(` in `.rhai` scripts |
-| `python` | Bare `except:`, `print()` warning |
+| `python` | Bare `except:`, `print()`, mutable/call defaults, swallowed exceptions, import-time I/O, `is` with value literals, mutated module globals, and star imports |
 | `typescript` | `: any` warning, `console.log` warning |
 | `swift` | Force-unwrap warning, `try!` warning |
 

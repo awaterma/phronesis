@@ -1036,6 +1036,33 @@
     <div class="rule-body"><code>file_path_matches + function_let_mut_count_high</code></div>
   </div>
 </article>
+<article class="rule" data-level="warn" id="audit-rust-sync-lock-across-await">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-rust-sync-lock-across-await</h3>
+    <p class="rule-summary">`?fn` in ?file keeps std synchronization guard `?guard` in scope across `.await` — close the guard's lexical scope before awaiting. A synchronous Mutex/RwLock can block the executor and often makes the future non-Send.</p>
+    <div class="rule-body"><code>rust_sync_lock_guard_across_await</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-rust-unsafe-without-safety-comment">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">audit-rust-unsafe-without-safety-comment</h3>
+    <p class="rule-summary">Unsafe block in `?fn` (?file) has no nearby `SAFETY:` explanation — document the invariant that makes the operation sound so reviewers can verify it.</p>
+    <div class="rule-body"><code>rust_unsafe_without_safety_comment</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-rust-blocking-call-in-async">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-rust-blocking-call-in-async</h3>
+    <p class="rule-summary">Async function `?fn` in ?file calls blocking `?callee` directly — use the async runtime's equivalent or isolate the operation with `spawn_blocking`.</p>
+    <div class="rule-body"><code>rust_async_blocking_call</code></div>
+  </div>
+</article>
 </section>
 <section class="pack-section" id="pack-rhai">
 <h2 class="pack-name">rhai pack</h2>
@@ -1121,6 +1148,42 @@
     <h3 class="rule-id">audit-python-missing-docstring</h3>
     <p class="rule-summary">Public def ?fn in ?file has no docstring. Upstream: documentation best practice; audit-only because docstring policy is project-dependent.</p>
     <div class="rule-body"><code>python_function_missing_docstring</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-import-time-io">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python</span></div>
+    <h3 class="rule-id">warn-python-import-time-io</h3>
+    <p class="rule-summary">Import-time I/O via `?callee` in ?file makes importing the module expensive and fallible even when callers never use that feature. Defer it until first use unless this is a small packaged-data read.</p>
+    <div class="rule-body"><code>python_import_time_io</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-is-literal">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python</span></div>
+    <h3 class="rule-id">warn-python-is-literal</h3>
+    <p class="rule-summary">`?fn` in ?file compares a value literal by identity — use `==`/`!=`. Reserve `is` for None, booleans, Ellipsis, and unique sentinel objects.</p>
+    <div class="rule-body"><code>python_is_literal_comparison</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-mutated-module-global">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python</span></div>
+    <h3 class="rule-id">audit-python-mutated-module-global</h3>
+    <p class="rule-summary">`?fn` in ?file mutates module-level container `?global` — review the resulting cross-call/test coupling and prefer passing state explicitly when practical. This is syntactic evidence and may be a shadowed local.</p>
+    <div class="rule-body"><code>python_mutated_module_global</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-star-import">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python</span></div>
+    <h3 class="rule-id">audit-python-star-import</h3>
+    <p class="rule-summary">?file uses `from ?module import *`, obscuring dependencies and allowing silent name collisions. Import explicit names; package `__init__.py` re-export surfaces are an intentional exception.</p>
+    <div class="rule-body"><code>python_star_import</code></div>
   </div>
 </article>
 </section>

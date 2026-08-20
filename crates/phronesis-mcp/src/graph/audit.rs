@@ -220,6 +220,7 @@ mod tests {
             actions: vec![Action {
                 action_type: "constraint_warning".into(),
                 params: vec!["`?func` in ?file calls ?api untested".into()],
+                data: None,
             }],
         }
     }

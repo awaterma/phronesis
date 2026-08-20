@@ -558,6 +558,17 @@ impl DatabaseConnection {
 
 ## Concurrency
 
+### Runtime Hazard Checks
+
+Keep synchronous `std::sync::Mutex` and `RwLock` guards in a lexical scope
+that ends before `.await`. Direct blocking filesystem or thread operations in
+an `async fn` should use the runtime's asynchronous equivalent or be isolated
+with `spawn_blocking`.
+
+Every `unsafe` block should carry a nearby `SAFETY:` comment that states the
+invariant making the operation sound. The comment is reviewable evidence, not
+proof that the block is correct.
+
 ### 1. Async Error Handling
 
 **Pattern**: Proper error handling in async contexts.

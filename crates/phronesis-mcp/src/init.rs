@@ -2066,6 +2066,36 @@ fn rust_rules() -> Value {
                     {"function_let_mut_count_high": ["?file", "?fn", "?count"]}
                 ],
                 "then": {"warn": "`?fn` in ?file has ?count outer-scope `let mut` declarations — consider John Nunley's block pattern: wrap the mutation in `let x = { let mut tmp = ...; ...; tmp }` so the surrounding scope sees an immutable binding. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025). (Scoped to src/ — examples/benches/tests are not production code and are exempt.)"}
+            },
+            {
+                "id": "audit-rust-sync-lock-across-await",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"rust_sync_lock_guard_across_await": ["?file", "?fn", "?guard"]}
+                ],
+                "then": {"warn": "`?fn` in ?file keeps std synchronization guard `?guard` in scope across `.await` — close the guard's lexical scope before awaiting. A synchronous Mutex/RwLock can block the executor and often makes the future non-Send."}
+            },
+            {
+                "id": "audit-rust-unsafe-without-safety-comment",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"rust_unsafe_without_safety_comment": ["?file", "?fn"]}
+                ],
+                "then": {"warn": "Unsafe block in `?fn` (?file) has no nearby `SAFETY:` explanation — document the invariant that makes the operation sound so reviewers can verify it."}
+            },
+            {
+                "id": "warn-rust-blocking-call-in-async",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"rust_async_blocking_call": ["?file", "?fn", "?callee"]}
+                ],
+                "then": {"warn": "Async function `?fn` in ?file calls blocking `?callee` directly — use the async runtime's equivalent or isolate the operation with `spawn_blocking`."}
             }
         ]
     })
@@ -2276,6 +2306,46 @@ fn python_rules() -> Value {
                     {"python_function_missing_docstring": ["?file", "?fn"]}
                 ],
                 "then": {"warn": "Public def ?fn in ?file has no docstring. Upstream: documentation best practice; audit-only because docstring policy is project-dependent."}
+            },
+            {
+                "id": "warn-python-import-time-io",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_import_time_io": ["?file", "?callee"]}
+                ],
+                "then": {"warn": "Import-time I/O via `?callee` in ?file makes importing the module expensive and fallible even when callers never use that feature. Defer it until first use unless this is a small packaged-data read."}
+            },
+            {
+                "id": "warn-python-is-literal",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_is_literal_comparison": ["?file", "?fn"]}
+                ],
+                "then": {"warn": "`?fn` in ?file compares a value literal by identity — use `==`/`!=`. Reserve `is` for None, booleans, Ellipsis, and unique sentinel objects."}
+            },
+            {
+                "id": "audit-python-mutated-module-global",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"python_mutated_module_global": ["?file", "?fn", "?global"]}
+                ],
+                "then": {"warn": "`?fn` in ?file mutates module-level container `?global` — review the resulting cross-call/test coupling and prefer passing state explicitly when practical. This is syntactic evidence and may be a shadowed local."}
+            },
+            {
+                "id": "audit-python-star-import",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"python_star_import": ["?file", "?module"]}
+                ],
+                "then": {"warn": "?file uses `from ?module import *`, obscuring dependencies and allowing silent name collisions. Import explicit names; package `__init__.py` re-export surfaces are an intentional exception."}
             }
         ]
     })
@@ -3117,6 +3187,43 @@ mod tests {
     }
 
     #[test]
+    fn rust_pack_includes_runtime_hazard_rules() {
+        let rules = rust_rules();
+        let ids: Vec<&str> = rules["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rule| rule["id"].as_str().unwrap())
+            .collect();
+        for id in [
+            "audit-rust-sync-lock-across-await",
+            "audit-rust-unsafe-without-safety-comment",
+            "warn-rust-blocking-call-in-async",
+        ] {
+            assert!(ids.contains(&id), "rust pack must include {id}");
+        }
+    }
+
+    #[test]
+    fn python_pack_includes_patterns_guide_rules() {
+        let rules = python_rules();
+        let ids: Vec<&str> = rules["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|rule| rule["id"].as_str().unwrap())
+            .collect();
+        for id in [
+            "warn-python-import-time-io",
+            "warn-python-is-literal",
+            "audit-python-mutated-module-global",
+            "audit-python-star-import",
+        ] {
+            assert!(ids.contains(&id), "python pack must include {id}");
+        }
+    }
+
+    #[test]
     fn compose_packs_dedupes_by_rule_id() {
         // Composing the same pack twice doesn't duplicate rules.
         let v = compose_packs(&[Pack::Llm, Pack::Llm]);
@@ -3375,6 +3482,17 @@ mod tests {
     #[test]
     fn base_expands_to_every_language_agnostic_pack() {
         assert_eq!(parse_packs("base").expect("parse"), BASE_PACKS.to_vec());
+        assert_eq!(
+            BASE_PACKS,
+            &[
+                Pack::Llm,
+                Pack::Confidence,
+                Pack::Journey,
+                Pack::Structural,
+                Pack::Context,
+            ],
+            "base must enumerate every language-neutral capability, including graph"
+        );
     }
 
     #[test]
@@ -3388,6 +3506,11 @@ mod tests {
             Pack::Python,
             Pack::TypeScript,
             Pack::Swift,
+            Pack::Lua,
+            Pack::Cue,
+            Pack::Json,
+            Pack::Yaml,
+            Pack::Helm3,
         ] {
             assert!(
                 !BASE_PACKS.contains(&language),

@@ -1294,6 +1294,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: action.to_string(),
                 params: vec![format!("{} fired", id)],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1561,6 +1562,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec!["too big".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1620,6 +1622,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec!["too big".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1674,6 +1677,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec!["too big".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1731,6 +1735,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec!["too big".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1818,6 +1823,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_violation".to_string(),
                 params: vec!["no unwrap".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1865,6 +1871,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_violation".to_string(),
                 params: vec!["no print in rhai".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1913,6 +1920,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_violation".to_string(),
                 params: vec!["nope".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1949,6 +1957,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec!["`?fn` in ?file has ?count outer-scope `let` bindings.".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -1974,6 +1983,7 @@ mod tests {
                 params: vec![
                     "`?fn` in ?file has ?count outer-scope `let mut` declarations.".to_string(),
                 ],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -2009,6 +2019,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec![format!("{} hit in ?file", predicate)],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -2398,6 +2409,7 @@ fn mut_adopter() {
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec!["mixed rule fired".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
@@ -2484,6 +2496,7 @@ fn short() {
             actions: vec![DiskAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec!["no dbg".to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: Some(true),
