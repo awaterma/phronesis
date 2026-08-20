@@ -22,6 +22,7 @@ fn build_rules() -> Vec<Rule> {
             actions: vec![Action {
                 action_type: "constraint_violation".to_string(),
                 params: vec!["matched ?value".to_string()],
+                ..Default::default()
             }],
         })
         .collect()

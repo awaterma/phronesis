@@ -65,6 +65,7 @@ fn rule_firing_tool_action_produces_rule_driven_lookup_consequence() {
     let actions = vec![Action {
         action_type: "lookup_card".to_string(),
         params: vec!["ace_spades".to_string()],
+        ..Default::default()
     }];
 
     let (consequences, remaining) = invoke_rule_driven_lookups(
@@ -110,6 +111,7 @@ fn unregistered_action_passes_through() {
     let actions = vec![Action {
         action_type: "update_score".to_string(),
         params: vec!["actor".into(), "5".into()],
+        ..Default::default()
     }];
 
     let (consequences, remaining) =
@@ -129,14 +131,17 @@ fn mixed_actions_split_correctly() {
         Action {
             action_type: "log_event".to_string(),
             params: vec!["card_drawn".into()],
+            ..Default::default()
         },
         Action {
             action_type: "lookup_card".to_string(),
             params: vec!["king_hearts".into()],
+            ..Default::default()
         },
         Action {
             action_type: "play_sound".to_string(),
             params: vec!["growl.wav".into()],
+            ..Default::default()
         },
     ];
 
@@ -180,6 +185,7 @@ fn tool_returning_unavailable_still_produces_consequence() {
     let actions = vec![Action {
         action_type: "stub_tool".to_string(),
         params: vec![],
+        ..Default::default()
     }];
 
     let (consequences, remaining) = invoke_rule_driven_lookups("any_rule", &[], actions, &registry);
@@ -214,6 +220,7 @@ fn tool_erroring_falls_back_to_remaining() {
     let actions = vec![Action {
         action_type: "bad_tool".to_string(),
         params: vec!["anything".into()],
+        ..Default::default()
     }];
 
     let (consequences, remaining) = invoke_rule_driven_lookups("any_rule", &[], actions, &registry);
@@ -252,6 +259,7 @@ fn registry_supports_replacement_for_test_mocks() {
         vec![Action {
             action_type: "lookup_card".into(),
             params: vec![],
+            ..Default::default()
         }],
         &registry,
     );
@@ -274,6 +282,7 @@ fn try_invoke_succeeds_when_all_tools_succeed() {
     let actions = vec![Action {
         action_type: "lookup_card".to_string(),
         params: vec!["ace_spades".to_string()],
+        ..Default::default()
     }];
 
     let (consequences, remaining) = try_invoke_rule_driven_lookups(
@@ -310,6 +319,7 @@ fn try_invoke_returns_error_when_tool_fails() {
     let action = Action {
         action_type: "bad_tool".to_string(),
         params: vec!["x".into()],
+        ..Default::default()
     };
     let err = try_invoke_rule_driven_lookups(
         "any_rule",
@@ -335,10 +345,12 @@ fn try_invoke_passes_through_unregistered_actions() {
         Action {
             action_type: "log_event".to_string(),
             params: vec!["card_drawn".into()],
+            ..Default::default()
         },
         Action {
             action_type: "lookup_card".to_string(),
             params: vec!["ace_spades".into()],
+            ..Default::default()
         },
     ];
 
@@ -414,14 +426,17 @@ fn try_invoke_aborts_on_first_failure() {
         Action {
             action_type: "ok_tool".to_string(),
             params: vec![],
+            ..Default::default()
         },
         Action {
             action_type: "err_tool".to_string(),
             params: vec![],
+            ..Default::default()
         },
         Action {
             action_type: "ok_tool".to_string(),
             params: vec![],
+            ..Default::default()
         },
     ];
 

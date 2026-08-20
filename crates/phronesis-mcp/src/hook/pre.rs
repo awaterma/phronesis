@@ -42,8 +42,8 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         _ => super::exit_ok(),
     };
 
-    let (rules, content_patterns, bash_command_patterns) = {
-        let rules = match super::load_rules("pre") {
+    let (rules, override_facts, content_patterns, bash_command_patterns) = {
+        let loaded = match super::load_rules("pre") {
             Ok(Some(r)) => r,
             Ok(None) => super::exit_ok(),
             Err(e) => {
@@ -51,9 +51,10 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                 process::exit(2);
             }
         };
+        let rules = loaded.rules;
         let cp = collect_content_patterns(&rules);
         let bcp = collect_bash_command_patterns(&rules);
-        (rules, cp, bcp)
+        (rules, loaded.override_facts, cp, bcp)
     };
 
     // Populated only when the structural graph has drifted; these rules'
@@ -78,6 +79,12 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         if let Err(e) = assert_common_facts(&net, &file_path, &tool_name, "pre").await {
             eprintln!("phronesis: BLOCKED — failed to assert facts: {}", e);
             process::exit(2);
+        }
+        for fact in override_facts {
+            if let Err(e) = net.assert_fact(fact).await {
+                eprintln!("phronesis: BLOCKED — failed to assert rule override provenance: {e}");
+                process::exit(2);
+            }
         }
         if let Err(e) = super::assert_journey_facts_into(
             &mut net,
@@ -172,6 +179,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             process::exit(2);
         }
     };
+    crate::capsule::capture_for_hook(&security::project_root(), &consequences);
 
     let (mut logged, violations, warnings) =
         super::collect_logged(&consequences, &security::project_root());

@@ -35,12 +35,16 @@ pub struct Condition {
 }
 
 /// An action to perform when a rule fires
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Action {
     /// Type of action to perform
     pub action_type: String,
     /// Parameters for the action
     pub params: Vec<String>,
+    /// Optional structured data for extended action types (e.g., emit_capsule)
+    /// Skipped during serialization if None for backward compatibility
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 /// A rule in the RETE engine

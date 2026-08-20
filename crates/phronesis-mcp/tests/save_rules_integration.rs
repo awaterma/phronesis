@@ -339,6 +339,50 @@ fn mcp_rule_and_fact_mutations_are_visible_through_collection_envelopes() {
 }
 
 #[test]
+fn mcp_fire_rules_preserves_capsule_provenance_and_management_is_idempotent() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut client = McpClient::spawn(dir.path());
+    client.tool(
+        "add_rule",
+        serde_json::json!({
+            "id":"mcp-capsule", "priority":5,
+            "conditions":[{"predicate":"status","args":["?state"]}],
+            "actions":[{"action_type":"emit_capsule","params":[],"data":{
+                "id":"from-mcp","body":"state=?state","lifecycle":"persistent","priority":50
+            }}]
+        }),
+    );
+    client.tool(
+        "assert_fact",
+        serde_json::json!({"id":"status-ready","predicate":"status","args":["ready"]}),
+    );
+    let fired = client.tool("fire_rules", serde_json::json!({}));
+    assert_eq!(fired["actions_fired"], 1);
+    assert_eq!(
+        fired["consequences"][0]["provenance"]["rule_id"],
+        "mcp-capsule"
+    );
+    assert_eq!(
+        fired["consequences"][0]["payload"]["data"]["body"],
+        "state=ready"
+    );
+    assert!(fired["capsule_diagnostics"].as_array().unwrap().is_empty());
+    let listed = client.tool("list_emitted_capsules", serde_json::json!({}));
+    assert_eq!(listed["capsules"][0]["id"], "from-mcp");
+    let first = client.tool(
+        "retract_emitted_capsule",
+        serde_json::json!({"id":"from-mcp"}),
+    );
+    let second = client.tool(
+        "retract_emitted_capsule",
+        serde_json::json!({"id":"from-mcp"}),
+    );
+    assert_eq!(first["removed"], true);
+    assert_eq!(second["removed"], false);
+    assert_eq!(second["success"], true);
+}
+
+#[test]
 fn mcp_manages_and_tests_rhai_predicate_providers() {
     let dir = tempfile::tempdir().unwrap();
     let mut client = McpClient::spawn_with_autopersist(dir.path());
@@ -784,6 +828,57 @@ fn autoload_plus_autosave_round_trips_added_rules() {
         "session 1's rule must survive across restarts"
     );
     assert_eq!(rules[0]["id"], "session1-rule");
+}
+
+#[test]
+fn layered_autosave_preserves_shadowed_project_rule_and_excludes_personal_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+    std::fs::write(
+        rules_path(dir.path()),
+        r#"{"rules":[{"id":"shared","phase":"pre","priority":1,
+            "when":[{"p":"project"}],"then":{"log":"project"}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("personal.json"),
+        r#"{"rules":[
+            {"id":"shared","phase":"pre","priority":9,
+             "when":[{"p":"personal"}],"then":{"log":"personal"}},
+            {"id":"personal-only","phase":"pre","priority":9,
+             "when":[{"p":"personal"}],"then":{"log":"personal"}}
+        ]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".phronesis/loader.json"),
+        r#"{"layers":[
+            {"name":"project","path":".phronesis/rules.json"},
+            {"name":"personal","path":"personal.json","decision":"ADR-personal"}
+        ]}"#,
+    )
+    .unwrap();
+
+    let mut c = McpClient::spawn_with_autopersist(dir.path());
+    let loaded = c.tool("list_rules", serde_json::json!({}));
+    assert_eq!(loaded["rules"].as_array().unwrap().len(), 2);
+    c.tool("add_rule", simple_rule("project-new", "p", "new"));
+
+    let disk = read_rules(dir.path());
+    let rules = disk["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 2);
+    let shared = rules.iter().find(|rule| rule["id"] == "shared").unwrap();
+    assert_eq!(shared["priority"], 1, "shadowed project source changed");
+    assert!(rules.iter().any(|rule| rule["id"] == "project-new"));
+    assert!(!rules.iter().any(|rule| rule["id"] == "personal-only"));
+
+    let facts = c.tool("list_facts", serde_json::json!({}));
+    assert!(facts["facts"].as_array().unwrap().iter().any(|fact| {
+        fact["predicate"] == "rule_overridden"
+            && fact["args"][0] == "shared"
+            && fact["args"][3] == "personal"
+            && fact["args"][5] == "ADR-personal"
+    }));
 }
 
 #[test]

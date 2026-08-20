@@ -27,6 +27,7 @@ fn build_rules() -> Vec<Rule> {
             actions: vec![Action {
                 action_type: "constraint_violation".to_string(),
                 params: vec![format!("hit {i}")],
+                ..Default::default()
             }],
         });
     }
@@ -49,6 +50,7 @@ fn build_rules() -> Vec<Rule> {
             actions: vec![Action {
                 action_type: "constraint_violation".to_string(),
                 params: vec![format!("hit two {i}")],
+                ..Default::default()
             }],
         });
     }

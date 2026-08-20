@@ -25,6 +25,7 @@ fn greet_rule() -> Rule {
         actions: vec![Action {
             action_type: "wave".to_string(),
             params: vec!["?who".to_string()],
+            ..Default::default()
         }],
     }
 }

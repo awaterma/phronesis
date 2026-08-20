@@ -32,6 +32,7 @@
 //! let actions = vec![Action {
 //!     action_type: "wave".to_string(),
 //!     params: vec!["alice".to_string()],
+//!     data: None,
 //! }];
 //!
 //! let consequences: Vec<Consequence> =
@@ -94,6 +95,7 @@ fn action_to_consequence(
         payload: serde_json::json!({
             "action_type": action.action_type,
             "params": action.params,
+            "data": action.data,
         }),
         provenance: Provenance::RuleFiring {
             rule_id: rule_id.into(),

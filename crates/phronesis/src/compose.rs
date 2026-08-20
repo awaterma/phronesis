@@ -271,6 +271,7 @@ pub fn invoke_rule_driven_lookups_with_sources(
 ///
 /// Pass-through for unregistered `action_type`s is unchanged from the
 /// lenient variant: only tool *invocation* errors abort.
+#[allow(clippy::result_large_err)] // Public error preserves the failed Action for fallback routing.
 pub fn try_invoke_rule_driven_lookups(
     rule_id: &str,
     bound_facts: &[String],
@@ -287,6 +288,7 @@ pub fn try_invoke_rule_driven_lookups(
 }
 
 /// Strict rule-driven lookup routing with bound-fact source provenance.
+#[allow(clippy::result_large_err)] // See the compatibility rationale on the wrapper above.
 pub fn try_invoke_rule_driven_lookups_with_sources(
     rule_id: &str,
     bound_facts: &[String],

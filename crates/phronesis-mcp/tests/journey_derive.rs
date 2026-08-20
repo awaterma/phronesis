@@ -322,6 +322,7 @@ async fn absence_via_zero_count_fires() {
         actions: vec![phr::Action {
             action_type: "constraint_warning".to_string(),
             params: vec!["edit auth without tests".to_string()],
+            ..Default::default()
         }],
     };
 

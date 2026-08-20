@@ -101,6 +101,7 @@ fn build_rules() -> Vec<Rule> {
         actions: vec![Action {
             action_type: "log".into(),
             params: vec!["hit".into()],
+            ..Default::default()
         }],
     };
     vec![

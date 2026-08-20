@@ -53,6 +53,9 @@ pub struct ConditionInput {
 pub struct ActionInput {
     pub action_type: String,
     pub params: Vec<String>,
+    /// Optional structured action payload, used by `emit_capsule`.
+    #[serde(default)]
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -324,4 +327,13 @@ pub struct OwnershipEvidenceParams {
     /// server-controlled, as it is for every other graph tool.
     #[serde(default)]
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct EmittedCapsuleIdParam {
+    /// User-visible emitted capsule ID. Static capsule files are unaffected.
+    pub id: String,
+    /// Optional lease token returned by interaction delivery selection.
+    #[serde(default)]
+    pub lease_token: Option<String>,
 }

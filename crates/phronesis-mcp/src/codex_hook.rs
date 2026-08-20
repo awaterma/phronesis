@@ -203,7 +203,7 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     }
 
     // --- Bash ---
-    let rules = match load_rules("pre") {
+    let loaded = match load_rules("pre") {
         Ok(Some(r)) => r,
         Ok(None) => return empty_decision(),
         Err(e) => {
@@ -216,8 +216,10 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
             };
         }
     };
+    let rules = loaded.rules;
 
-    let (network, stale_graph_rules) = build_pre_network(&rules, &file_path, root).await;
+    let (network, stale_graph_rules) =
+        build_pre_network(&rules, &loaded.override_facts, &file_path, root).await;
     let command = extract_bash_command(payload);
 
     // Assert content fact
@@ -280,6 +282,7 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
             };
         }
     };
+    crate::capsule::capture_for_hook(root, &consequences);
 
     let (mut logged, mut block_msgs, mut warn_msgs) =
         hook::collect_logged(&consequences, &security::project_root());
@@ -382,7 +385,7 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
         }
     }
 
-    let rules = match load_rules("pre") {
+    let loaded = match load_rules("pre") {
         Ok(Some(r)) => r,
         Ok(None) => {
             return CodexDecision {
@@ -403,6 +406,7 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             };
         }
     };
+    let rules = loaded.rules;
 
     // Evaluate each file with its own network, mirroring the single-file
     // contract of the Claude hook: file_path facts (and their per-segment
@@ -414,7 +418,13 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
     // Providers get one batch-level view before the existing per-file views.
     // Keeping `file_path` empty and `files` populated makes the two contexts
     // unambiguous and prevents existing per-file providers from double-firing.
-    let (batch_network, _) = build_pre_network(&rules, "", &security::project_root()).await;
+    let (batch_network, _) = build_pre_network(
+        &rules,
+        &loaded.override_facts,
+        "",
+        &security::project_root(),
+    )
+    .await;
     let mut batch_event = codex_provider_event(payload, "apply_patch", "", "pre", "");
     batch_event.files = files.iter().map(|file| file.path.clone()).collect();
     if let Err(error) = crate::predicate_provider::assert_facts(
@@ -445,6 +455,7 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             };
         }
     };
+    crate::capsule::capture_for_hook(&security::project_root(), &batch_consequences);
     let (batch_logged, batch_blocks, batch_warns) =
         hook::collect_logged(&batch_consequences, &security::project_root());
     logged.extend(batch_logged);
@@ -463,8 +474,13 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
             pf.added.clone()
         };
 
-        let (network, stale_graph_rules) =
-            build_pre_network(&rules, &pf.path, &security::project_root()).await;
+        let (network, stale_graph_rules) = build_pre_network(
+            &rules,
+            &loaded.override_facts,
+            &pf.path,
+            &security::project_root(),
+        )
+        .await;
         if !content.is_empty() {
             let fact_id = format!("new_content_{}", pf.path.replace('/', "_"));
             if let Err(error) = assert_new_content(&network, &fact_id, &content).await {
@@ -538,6 +554,7 @@ async fn handle_pre_patch(payload: &CodexPayload, _file_path: &str) -> CodexDeci
                 };
             }
         };
+        crate::capsule::capture_for_hook(&security::project_root(), &consequences);
 
         let (mut file_logged, file_blocks, file_warns) =
             hook::collect_logged(&consequences, &security::project_root());
@@ -613,7 +630,7 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
         crate::graph::sync::record_from_disk(root, &file_path);
     }
 
-    let rules = match load_rules("post") {
+    let loaded = match load_rules("post") {
         Ok(Some(r)) => r,
         Ok(None) => {
             log_event("post", payload, tool_name, &file_path, 0, &[]);
@@ -631,8 +648,9 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
             };
         }
     };
+    let rules = loaded.rules;
 
-    let network = build_post_network(&rules, &file_path, root).await;
+    let network = build_post_network(&rules, &loaded.override_facts, &file_path, root).await;
 
     // Command pattern check on already-executed command
     if tool_name == "Bash" {
@@ -684,6 +702,7 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
             };
         }
     };
+    crate::capsule::capture_for_hook(root, &consequences);
 
     let (logged, block_msgs, warn_msgs) =
         hook::collect_logged(&consequences, &security::project_root());
@@ -784,6 +803,7 @@ async fn build_context_body(root: &Path, kind: ContextKind) -> String {
 /// and the pack produced zero warnings while appearing installed.
 async fn build_pre_network(
     rules: &[phr::Rule],
+    override_facts: &[phr::Fact],
     file_path: &str,
     root: &Path,
 ) -> (phr::ReteNetwork, std::collections::BTreeSet<phr::RuleId>) {
@@ -792,6 +812,9 @@ async fn build_pre_network(
         let _ = net.add_rule(rule.clone()).await;
     }
     let _ = crate::hook_facts::assert_common_facts(&net, file_path, "Bash", "pre").await;
+    for fact in override_facts {
+        let _ = net.assert_fact(fact.clone()).await;
+    }
     let _ = assert_journey_facts_into(&mut net, root, rules).await;
     crate::hook::assert_pack_marker_facts(&net, root).await;
     crate::hook::assert_confidence_signals(&net).await;
@@ -828,12 +851,20 @@ async fn build_pre_network(
     (net, stale_graph_rules)
 }
 
-async fn build_post_network(rules: &[phr::Rule], file_path: &str, root: &Path) -> phr::ReteNetwork {
+async fn build_post_network(
+    rules: &[phr::Rule],
+    override_facts: &[phr::Fact],
+    file_path: &str,
+    root: &Path,
+) -> phr::ReteNetwork {
     let mut net = crate::net::build_network();
     for rule in rules {
         let _ = net.add_rule(rule.clone()).await;
     }
     let _ = crate::hook_facts::assert_common_facts(&net, file_path, "Bash", "post").await;
+    for fact in override_facts {
+        let _ = net.assert_fact(fact.clone()).await;
+    }
     let _ = assert_journey_facts_into(&mut net, root, rules).await;
     crate::hook::assert_pack_marker_facts(&net, root).await;
     net
@@ -880,13 +911,21 @@ async fn assert_journey_facts_into(
 // Rules loading
 // ---------------------------------------------------------------------------
 
-fn load_rules(phase: &str) -> Result<Option<Vec<phr::Rule>>, String> {
-    let path_buf = crate::rules_file::default_path(&security::project_root());
-    if !path_buf.exists() {
+struct LoadedRules {
+    rules: Vec<phr::Rule>,
+    override_facts: Vec<phr::Fact>,
+}
+
+fn load_rules(phase: &str) -> Result<Option<LoadedRules>, String> {
+    let root = security::project_root();
+    let project_path = crate::rules_file::default_path(&root);
+    let loader_path = crate::rule_layers::config_path(&root);
+    if !project_path.exists() && !loader_path.exists() {
         return Ok(None);
     }
-    let rules_file = crate::rules_file::read(&path_buf).map_err(|e| e.to_string())?;
-    let rules: Vec<phr::Rule> = rules_file
+    let resolved = crate::rule_layers::resolve(&root).map_err(|e| e.to_string())?;
+    let override_facts = crate::rule_layers::override_facts(&resolved.overrides);
+    let rules: Vec<phr::Rule> = resolved
         .rules
         .into_iter()
         .filter(|r| r.phase == phase)
@@ -895,7 +934,10 @@ fn load_rules(phase: &str) -> Result<Option<Vec<phr::Rule>>, String> {
     if rules.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(rules))
+        Ok(Some(LoadedRules {
+            rules,
+            override_facts,
+        }))
     }
 }
 

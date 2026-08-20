@@ -1151,6 +1151,7 @@ mod fire_all_consequences_tests {
             actions: vec![RuleAction {
                 action_type: "constraint_violation".to_string(),
                 params: vec!["x=?x".to_string()],
+                data: None,
             }],
         };
         net.add_rule(rule).await.unwrap();
@@ -1216,6 +1217,7 @@ mod fire_all_consequences_tests {
             actions: vec![RuleAction {
                 action_type: "constraint_warning".to_string(),
                 params: vec!["x=?x".to_string()],
+                data: None,
             }],
         };
         net.add_rule(rule).await.unwrap();

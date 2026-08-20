@@ -119,10 +119,6 @@ fn parse_then_action(value: &serde_json::Value) -> anyhow::Result<DiskAction> {
         return Err(anyhow!("then must have exactly one verb key"));
     }
     let (verb, msg_val) = obj.iter().next().expect("len==1");
-    let msg = msg_val
-        .as_str()
-        .ok_or_else(|| anyhow!("then message must be a string"))?
-        .to_string();
     let action_type = match verb.as_str() {
         "block" => "constraint_violation",
         "warn" => "constraint_warning",
@@ -130,10 +126,35 @@ fn parse_then_action(value: &serde_json::Value) -> anyhow::Result<DiskAction> {
         other => other,
     }
     .to_string();
-    Ok(DiskAction {
-        action_type,
-        params: vec![msg],
-    })
+    if verb == "emit_capsule" {
+        if !msg_val.is_object() {
+            anyhow::bail!("emit_capsule must be an object");
+        }
+        crate::capsule::build_capsule_from_action(
+            msg_val,
+            "validation",
+            "validation",
+            0,
+            &[],
+            &HashMap::new(),
+        )
+        .map_err(|error| anyhow!(error.to_string()))?;
+    }
+    // String-valued verbs (block/warn/log) keep their message as a param;
+    // object-valued verbs (emit_capsule) carry the object as structured data.
+    if let Some(s) = msg_val.as_str() {
+        Ok(DiskAction {
+            action_type,
+            params: vec![s.to_string()],
+            ..Default::default()
+        })
+    } else {
+        Ok(DiskAction {
+            action_type,
+            params: Vec::new(),
+            data: Some(msg_val.clone()),
+        })
+    }
 }
 
 /// Inverse of `parse_then_action`: internal action → v2 verb object.
@@ -144,8 +165,13 @@ fn action_to_then(action: &DiskAction) -> serde_json::Value {
         "log" => "log",
         other => other,
     };
-    let msg = action.params.first().cloned().unwrap_or_default();
-    serde_json::json!({ verb: msg })
+    match &action.data {
+        Some(data) => serde_json::json!({ verb: data }),
+        None => {
+            let msg = action.params.first().cloned().unwrap_or_default();
+            serde_json::json!({ verb: msg })
+        }
+    }
 }
 
 impl SourceRule {
@@ -178,6 +204,7 @@ impl SourceRule {
             then: DiskAction {
                 action_type: "tag".to_string(),
                 params: vec![tag.to_string()],
+                ..Default::default()
             },
             silent: None,
             audit: None,
@@ -264,6 +291,7 @@ fn parse_then_field(
         Ok(DiskAction {
             action_type,
             params,
+            ..Default::default()
         })
     } else {
         anyhow::bail!("rule has neither `then` nor `actions`")
@@ -402,10 +430,13 @@ pub struct DiskCondition {
     pub script: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DiskAction {
     pub action_type: String,
     pub params: Vec<String>,
+    /// Structured payload for verbs whose value is a JSON object (e.g.
+    /// `emit_capsule`). `None` for string-valued verbs (block/warn/log).
+    pub data: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -681,6 +712,7 @@ fn diskrule_to_source(d: &DiskRule) -> SourceRule {
         then: d.actions.first().cloned().unwrap_or(DiskAction {
             action_type: "log".to_string(),
             params: vec![String::new()],
+            data: None,
         }),
         silent: d.silent,
         audit: d.audit,
@@ -710,6 +742,7 @@ pub fn rule_to_disk(rule: &Rule, phase: &str) -> DiskRule {
             .map(|a| DiskAction {
                 action_type: a.action_type.clone(),
                 params: a.params.clone(),
+                data: a.data.clone(),
             })
             .collect(),
         silent: None,
@@ -738,6 +771,7 @@ pub fn rule_from_disk(disk: &DiskRule) -> (Rule, String) {
             .map(|a| Action {
                 action_type: a.action_type.clone(),
                 params: a.params.clone(),
+                data: a.data.clone(),
             })
             .collect(),
     };
@@ -845,6 +879,7 @@ mod tests {
             actions: vec![Action {
                 action_type: "log".to_string(),
                 params: vec!["y".to_string()],
+                data: None,
             }],
         }
     }
@@ -979,6 +1014,7 @@ mod tests {
                 actions: vec![DiskAction {
                     action_type: "log".into(),
                     params: vec!["m".into()],
+                    ..Default::default()
                 }],
                 silent: Some(true),
                 audit: None,
@@ -1003,6 +1039,7 @@ mod tests {
                 actions: vec![DiskAction {
                     action_type: "log".into(),
                     params: vec!["m".into()],
+                    ..Default::default()
                 }],
                 silent: None,
                 audit: None,
@@ -1031,6 +1068,7 @@ mod tests {
                 actions: vec![DiskAction {
                     action_type: "log".into(),
                     params: vec!["m".into()],
+                    ..Default::default()
                 }],
                 silent: None,
                 audit: Some(true),
@@ -1083,6 +1121,7 @@ mod tests {
                 actions: vec![DiskAction {
                     action_type: "log".into(),
                     params: vec!["m".into()],
+                    ..Default::default()
                 }],
                 silent: None,
                 audit: None,
@@ -1195,6 +1234,30 @@ mod tests {
         assert_eq!(w.action_type, "constraint_warning");
         let l = parse_then_action(&serde_json::from_str(r#"{ "log": "m" }"#).unwrap()).unwrap();
         assert_eq!(l.action_type, "log");
+    }
+
+    #[test]
+    fn emit_capsule_structured_action_round_trips_canonically() {
+        let value = serde_json::json!({"emit_capsule": {
+            "id": "review-layering", "body": "why: ?reason", "lifecycle": "session",
+            "priority": 50, "max_bytes": 512, "expires_after": "7d"
+        }});
+        let action = parse_then_action(&value).unwrap();
+        assert!(action.params.is_empty());
+        assert_eq!(action.data.as_ref().unwrap()["body"], "why: ?reason");
+        assert_eq!(action_to_then(&action), value);
+    }
+
+    #[test]
+    fn emit_capsule_rejects_invalid_contract_values() {
+        for value in [
+            serde_json::json!({"emit_capsule":{"id":"?dynamic","body":"x","lifecycle":"session"}}),
+            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"forever"}}),
+            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"persistent","expires_after":"0d"}}),
+            serde_json::json!({"emit_capsule":{"id":"x","body":"x","lifecycle":"session","unknown":true}}),
+        ] {
+            assert!(parse_then_action(&value).is_err(), "accepted {value}");
+        }
     }
 
     #[test]
@@ -1324,6 +1387,7 @@ mod tests {
                 actions: vec![DiskAction {
                     action_type: "constraint_violation".into(),
                     params: vec!["no unwrap".into()],
+                    ..Default::default()
                 }],
                 silent: None,
                 audit: Some(true),
@@ -1354,6 +1418,7 @@ mod tests {
             then: DiskAction {
                 action_type: "log".into(),
                 params: vec!["m".into()],
+                ..Default::default()
             },
             silent: None,
             audit: None,
@@ -1452,6 +1517,7 @@ mod tests {
                 actions: vec![DiskAction {
                     action_type: "constraint_warning".into(),
                     params: vec!["m".into()],
+                    ..Default::default()
                 }],
                 silent: None,
                 audit: None,

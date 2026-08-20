@@ -41,6 +41,7 @@ fn build_rules() -> Vec<Rule> {
             actions: vec![Action {
                 action_type: "constraint_violation".to_string(),
                 params: vec![format!("hit single {i}: x=?x")],
+                ..Default::default()
             }],
         });
     }
@@ -65,6 +66,7 @@ fn build_rules() -> Vec<Rule> {
             actions: vec![Action {
                 action_type: "constraint_violation".to_string(),
                 params: vec![format!("hit two {i}: file=?file detail=?detail")],
+                ..Default::default()
             }],
         });
     }
@@ -94,6 +96,7 @@ fn build_rules() -> Vec<Rule> {
             actions: vec![Action {
                 action_type: "constraint_violation".to_string(),
                 params: vec![format!("hit three {i}: file=?file kind=?kind owner=?owner")],
+                ..Default::default()
             }],
         });
     }
@@ -125,6 +128,7 @@ fn build_rules_scaled(n: usize) -> Vec<Rule> {
             actions: vec![Action {
                 action_type: "constraint_violation".to_string(),
                 params: vec![format!("scale single {i}: x=?x")],
+                ..Default::default()
             }],
         });
     }
@@ -148,6 +152,7 @@ fn build_rules_scaled(n: usize) -> Vec<Rule> {
             actions: vec![Action {
                 action_type: "constraint_violation".to_string(),
                 params: vec![format!("scale two {i}: file=?file detail=?detail")],
+                ..Default::default()
             }],
         });
     }
@@ -179,6 +184,7 @@ fn build_rules_scaled(n: usize) -> Vec<Rule> {
                 params: vec![format!(
                     "scale three {i}: file=?file kind=?kind owner=?owner"
                 )],
+                ..Default::default()
             }],
         });
     }

@@ -132,17 +132,25 @@ fn unix_secs_now() -> u64 {
 /// The path is resolved against the project root (`PHRONESIS_PROJECT_ROOT` or
 /// CWD) rather than the bare CWD, so the hook reads the *project's* rules
 /// regardless of where it was invoked from. This closes security finding #10.
-fn load_rules(phase: &str) -> Result<Option<Vec<Rule>>, RulesLoadError> {
-    let path_buf = crate::rules_file::default_path(&security::project_root());
-    if !path_buf.exists() {
+struct LoadedRules {
+    rules: Vec<Rule>,
+    override_facts: Vec<phr::Fact>,
+}
+
+fn load_rules(phase: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
+    let root = security::project_root();
+    let project_path = crate::rules_file::default_path(&root);
+    let loader_path = crate::rule_layers::config_path(&root);
+    if !project_path.exists() && !loader_path.exists() {
         return Ok(None);
     }
-    let rules_file = crate::rules_file::read(&path_buf).map_err(|e| RulesLoadError::Load {
-        path: path_buf.display().to_string(),
+    let resolved = crate::rule_layers::resolve(&root).map_err(|e| RulesLoadError::Load {
+        path: loader_path.display().to_string(),
         message: e.to_string(),
     })?;
 
-    let rules: Vec<Rule> = rules_file
+    let override_facts = crate::rule_layers::override_facts(&resolved.overrides);
+    let rules: Vec<Rule> = resolved
         .rules
         .into_iter()
         .filter(|r| r.phase == phase)
@@ -152,7 +160,10 @@ fn load_rules(phase: &str) -> Result<Option<Vec<Rule>>, RulesLoadError> {
     if rules.is_empty() {
         Ok(None)
     } else {
-        Ok(Some(rules))
+        Ok(Some(LoadedRules {
+            rules,
+            override_facts,
+        }))
     }
 }
 
@@ -482,6 +493,7 @@ mod tests {
                 actions: vec![Action {
                     action_type: "constraint_warning".into(),
                     params: vec!["dynamic ?loader in ?file".into()],
+                    data: None,
                 }],
             })
             .await
@@ -516,6 +528,7 @@ mod tests {
                 actions: vec![Action {
                     action_type: "constraint_warning".into(),
                     params: vec!["duplicate ?key in ?file".into()],
+                    data: None,
                 }],
             })
             .await
