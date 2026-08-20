@@ -11,12 +11,11 @@
 //!
 //! phronesis-allow: audit-file-loc-high (coherent MCP tool surface)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use phr::{
     Action, Condition, Consequence, ConsequenceKind, Fact, LookupRegistry, ReteNetwork, Rule,
-    rule_firing_to_consequences,
 };
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -45,6 +44,12 @@ pub struct EpistemeMcp {
     /// rules are added or loaded; consulted on save so the round-trip is
     /// lossless. The phronesis `Rule` struct itself has no phase concept.
     pub(crate) phase_map: Arc<Mutex<HashMap<String, String>>>,
+    /// IDs whose winning definition belongs to the project rules file. Rules
+    /// from team/personal layers are deliberately excluded from autosave.
+    pub(crate) persistent_rule_ids: Arc<Mutex<HashSet<String>>>,
+    /// Project definitions currently shadowed by a later layer. They remain
+    /// on disk unchanged even though their winner is the external definition.
+    pub(crate) shadowed_project_rules: Arc<Mutex<HashMap<String, rules_file::DiskRule>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -61,6 +66,8 @@ impl EpistemeMcp {
             registry: Arc::new(Mutex::new(LookupRegistry::new())),
             consequences: Arc::new(Mutex::new(Vec::new())),
             phase_map: Arc::new(Mutex::new(HashMap::new())),
+            persistent_rule_ids: Arc::new(Mutex::new(HashSet::new())),
+            shadowed_project_rules: Arc::new(Mutex::new(HashMap::new())),
             tool_router: Self::tool_router(),
         }
     }
@@ -250,6 +257,23 @@ impl EpistemeMcp {
         Parameters(params): Parameters<AddRuleParams>,
     ) -> Result<CallToolResult, McpError> {
         Self::validate_rule_params(&params).map_err(|e| Self::err(e.to_string()))?;
+        for action in &params.actions {
+            if action.action_type == "emit_capsule" {
+                let data = action
+                    .data
+                    .as_ref()
+                    .ok_or_else(|| Self::err("emit_capsule requires structured data"))?;
+                crate::capsule::build_capsule_from_action(
+                    data,
+                    &params.id,
+                    "validation",
+                    0,
+                    &[],
+                    &HashMap::new(),
+                )
+                .map_err(Self::err)?;
+            }
+        }
 
         // Only record a phase when the caller explicitly set one. Leaving the
         // entry absent lets `save_rules`'s `phase` argument supply the default.
@@ -291,6 +315,7 @@ impl EpistemeMcp {
                 .map(|a| Action {
                     action_type: a.action_type,
                     params: a.params,
+                    data: a.data,
                 })
                 .collect(),
         };
@@ -301,6 +326,10 @@ impl EpistemeMcp {
         if let Some(phase) = explicit_phase {
             self.phase_map.lock().await.insert(params.id.clone(), phase);
         }
+        self.persistent_rule_ids
+            .lock()
+            .await
+            .insert(params.id.clone());
         self.autosave().await?;
         Self::log_event("add_rule", |e| {
             e.with("rule_id", params.id.clone())
@@ -349,6 +378,10 @@ impl EpistemeMcp {
             .map_err(Self::err)?;
         drop(network);
         self.phase_map.lock().await.remove(params.rule_id.as_str());
+        self.persistent_rule_ids
+            .lock()
+            .await
+            .remove(params.rule_id.as_str());
         self.autosave().await?;
         Self::log_event("remove_rule", |e| {
             e.with("rule_id", params.rule_id.as_str().to_string())
@@ -533,19 +566,89 @@ impl EpistemeMcp {
         }
     }
 
+    #[tool(description = "List rule-emitted durable context capsules")]
+    async fn list_emitted_capsules(&self) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        let capsules = crate::capsule::read_snapshot(&root).map_err(Self::err)?;
+        Self::ok_collection("capsules", capsules)
+    }
+
+    #[tool(description = "Acknowledge delivery of a next_interaction emitted capsule; idempotent")]
+    async fn acknowledge_emitted_capsule(
+        &self,
+        Parameters(params): Parameters<EmittedCapsuleIdParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        let removed = crate::capsule::transaction(&root, |storage| {
+            let matches_token = storage.get_capsule(&params.id).is_some_and(|capsule| {
+                capsule.lifecycle == crate::capsule::CapsuleLifecycle::NextInteraction
+                    && params
+                        .lease_token
+                        .as_deref()
+                        .is_none_or(|token| capsule.lease_token.as_deref() == Some(token))
+            });
+            Ok(matches_token
+                .then(|| storage.retract(&params.id))
+                .flatten()
+                .is_some())
+        })
+        .map_err(Self::err)?;
+        Self::log_event("acknowledge_emitted_capsule", |entry| {
+            entry.with("id", params.id.clone()).with("removed", removed)
+        });
+        Self::ok_json(serde_json::json!({"success": true, "removed": removed, "id": params.id}))
+    }
+
+    #[tool(description = "Retract a rule-emitted durable context capsule; idempotent")]
+    async fn retract_emitted_capsule(
+        &self,
+        Parameters(params): Parameters<EmittedCapsuleIdParam>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        let removed =
+            crate::capsule::transaction(&root, |storage| Ok(storage.retract(&params.id).is_some()))
+                .map_err(Self::err)?;
+        Self::log_event("retract_emitted_capsule", |entry| {
+            entry.with("id", params.id.clone()).with("removed", removed)
+        });
+        Self::ok_json(serde_json::json!({"success": true, "removed": removed, "id": params.id}))
+    }
+
     // ── Execution ──
 
     #[tool(
         description = "Execute all pending agenda items, returning fired actions and generated consequences"
     )]
     async fn fire_rules(&self) -> Result<CallToolResult, McpError> {
-        let actions = {
+        let new_consequences = {
             let network = self.network.lock().await;
-            network.execute_all_agenda_items().map_err(Self::err)?
+            network.fire_all_consequences().map_err(Self::err)?
         };
-
-        let new_consequences =
-            rule_firing_to_consequences("fire_rules", &[], ConsequenceKind::Event, actions.clone());
+        let actions = new_consequences
+            .iter()
+            .map(|consequence| Action {
+                action_type: consequence.payload["action_type"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+                params: consequence.payload["params"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|value| value.as_str().map(str::to_string))
+                    .collect(),
+                data: consequence
+                    .payload
+                    .get("data")
+                    .filter(|value| !value.is_null())
+                    .cloned(),
+            })
+            .collect::<Vec<_>>();
+        let root = security::project_root();
+        let session_id = crate::journey::current_sid(&root);
+        let now = crate::capsule::unix_secs_now();
+        let capsule_diagnostics =
+            crate::capsule::capture_consequences(&root, &new_consequences, &session_id, now);
 
         // Extend the shared consequence store and FIFO-evict against the cap.
         {
@@ -578,6 +681,7 @@ impl EpistemeMcp {
             "actions": actions,
             "consequences_generated": consequences_generated,
             "consequences": new_consequences,
+            "capsule_diagnostics": capsule_diagnostics,
         });
         let json = serde_json::to_string_pretty(&result).map_err(|e| Self::err(e.to_string()))?;
         Self::log_event("fire_rules", |e| {
@@ -703,6 +807,10 @@ impl EpistemeMcp {
             network.add_rule(rule.clone()).await.map_err(Self::err)?;
         }
         drop(network);
+        self.persistent_rule_ids
+            .lock()
+            .await
+            .extend(rules.iter().map(|rule| rule.id.clone()));
         // Extracted rules have no inherent phase; autosave defaults to "pre".
         self.autosave().await?;
         Self::log_event("extract_rules", |e| {
@@ -771,11 +879,15 @@ impl EpistemeMcp {
         &self,
         Parameters(_): Parameters<LoadRulesFileParams>,
     ) -> Result<CallToolResult, McpError> {
-        let path = {
-            let root = security::project_root();
-            rules_file::default_path(&root)
+        let root = security::project_root();
+        let loader_path = crate::rule_layers::config_path(&root);
+        let project_path = rules_file::default_path(&root);
+        let path = if loader_path.exists() {
+            loader_path
+        } else {
+            project_path.clone()
         };
-        let file = rules_file::read(&path).map_err(|e| Self::err(e.to_string()))?;
+        let resolved = crate::rule_layers::resolve(&root).map_err(|e| Self::err(e.to_string()))?;
 
         let (loaded, skipped) = {
             let network = self.network.lock().await;
@@ -786,20 +898,42 @@ impl EpistemeMcp {
                 .map(|r| r.id)
                 .collect();
             let mut phase_map = self.phase_map.lock().await;
-            crate::server_persistence::hydrate_rules(
+            let (loaded, skipped) = crate::server_persistence::hydrate_rules(
                 &network,
                 &mut phase_map,
-                &file.rules,
+                &resolved.rules,
                 &existing_ids,
             )
             .await
-            .map_err(Self::err)?
+            .map_err(Self::err)?;
+            for fact in crate::rule_layers::override_facts(&resolved.overrides) {
+                network.assert_fact(fact).await.map_err(Self::err)?;
+            }
+            (loaded, skipped)
         };
+
+        let project_ids = resolved
+            .origins
+            .iter()
+            .filter_map(|(id, origin)| (origin.path == project_path).then_some(id.clone()));
+        self.persistent_rule_ids.lock().await.extend(project_ids);
+        let project_file = rules_file::read(&project_path).map_err(|e| Self::err(e.to_string()))?;
+        let shadowed = project_file.rules.into_iter().filter(|rule| {
+            resolved
+                .origins
+                .get(&rule.id)
+                .is_some_and(|origin| origin.path != project_path)
+        });
+        self.shadowed_project_rules
+            .lock()
+            .await
+            .extend(shadowed.map(|rule| (rule.id.clone(), rule)));
 
         let summary = serde_json::json!({
             "path": path.display().to_string(),
             "loaded": loaded,
             "skipped_duplicate_ids": skipped,
+            "overrides": resolved.overrides.len(),
         });
         let json = serde_json::to_string_pretty(&summary).map_err(|e| Self::err(e.to_string()))?;
         Self::ok_text(json)
@@ -947,13 +1081,14 @@ impl EpistemeMcp {
         Parameters(params): Parameters<AuditCodebaseParams>,
     ) -> Result<CallToolResult, McpError> {
         use crate::audit::{AuditOpts, render_json, render_table, run};
-        use crate::rules_file;
+        use crate::rules_file::RulesFile;
 
         let project_root = crate::security::project_root();
         let rules = {
-            let rules_path = rules_file::default_path(&project_root);
-            match rules_file::read(&rules_path) {
-                Ok(r) => r,
+            match crate::rule_layers::resolve(&project_root) {
+                Ok(resolved) => RulesFile {
+                    rules: resolved.rules,
+                },
                 Err(e) => {
                     return Self::ok_text(format!("phronesis: cannot read rules file: {}", e));
                 }
@@ -1529,6 +1664,7 @@ fn make_rule(input: ExtractedRuleInput<'_>) -> Rule {
         actions: vec![Action {
             action_type: "constraint_warning".to_string(),
             params: vec![input.text.to_string()],
+            data: None,
         }],
     }
 }

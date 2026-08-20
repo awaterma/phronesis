@@ -6,6 +6,7 @@ mod counts;
 mod derives;
 mod docs;
 mod eval;
+mod hazards;
 mod signatures;
 mod walk;
 
@@ -41,6 +42,9 @@ pub fn extract(content: &str) -> SyntaxFacts {
         tests_without_assertion: assertions::extract_tests_without_assertion(&parsed),
         struct_derives: derives::extract_struct_derives(&parsed),
         engine_eval_string_literals: eval::extract_engine_eval_string_literals(&parsed),
+        unsafe_blocks_without_safety_comment: hazards::extract_unsafe_without_safety(&parsed),
+        async_blocking_calls: hazards::extract_async_blocking_calls(&parsed),
+        sync_lock_guards_across_await: hazards::extract_sync_lock_guards_across_await(&parsed),
         ..SyntaxFacts::default()
     }
 }

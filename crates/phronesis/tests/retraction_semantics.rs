@@ -21,6 +21,7 @@ fn rule(id: &str, priority: i32, conditions: &[(&str, &[&str])]) -> Rule {
         actions: vec![Action {
             action_type: "log".into(),
             params: vec![format!("{id} fired with ?x")],
+            ..Default::default()
         }],
     }
 }

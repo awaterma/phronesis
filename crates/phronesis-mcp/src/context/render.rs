@@ -115,6 +115,13 @@ pub struct RenderResult {
     pub matched_capsules: Vec<String>,
     /// Why a demanded fact could not be produced, when that happened.
     pub hydration_diagnostics: Vec<String>,
+    pub emitted_loaded: Vec<String>,
+    pub emitted_eligible: Vec<String>,
+    pub emitted_leased: Vec<String>,
+    pub emitted_selected: Vec<String>,
+    pub emitted_expired: Vec<String>,
+    pub emitted_conflicted: Vec<String>,
+    pub emitted_invalid: Vec<String>,
     pub latency: Duration,
 }
 
@@ -188,6 +195,13 @@ pub struct InspectReport {
     pub matched_capsules: Vec<String>,
     pub capsule_diagnostics: Vec<String>,
     pub hydration_diagnostics: Vec<String>,
+    pub emitted_loaded: Vec<String>,
+    pub emitted_eligible: Vec<String>,
+    pub emitted_leased: Vec<String>,
+    pub emitted_selected: Vec<String>,
+    pub emitted_expired: Vec<String>,
+    pub emitted_conflicted: Vec<String>,
+    pub emitted_invalid: Vec<String>,
     pub latency_micros: u64,
     pub body: String,
 }
@@ -208,6 +222,13 @@ impl RenderResult {
             matched_capsules: self.matched_capsules.clone(),
             capsule_diagnostics: self.capsule_diagnostics.clone(),
             hydration_diagnostics: self.hydration_diagnostics.clone(),
+            emitted_loaded: self.emitted_loaded.clone(),
+            emitted_eligible: self.emitted_eligible.clone(),
+            emitted_leased: self.emitted_leased.clone(),
+            emitted_selected: self.emitted_selected.clone(),
+            emitted_expired: self.emitted_expired.clone(),
+            emitted_conflicted: self.emitted_conflicted.clone(),
+            emitted_invalid: self.emitted_invalid.clone(),
             latency_micros: u64::try_from(self.latency.as_micros()).unwrap_or(u64::MAX),
             body: self.packed.body.clone(),
         }
@@ -385,6 +406,13 @@ pub async fn render(root: &Path, event: ContextEvent, last_n: usize) -> Option<R
         capsule_diagnostics: branch.capsules.load_diagnostics,
         matched_capsules: branch.capsules.matched,
         hydration_diagnostics: branch.capsules.hydration_diagnostics,
+        emitted_loaded: branch.capsules.emitted_loaded,
+        emitted_eligible: branch.capsules.emitted_eligible,
+        emitted_leased: branch.capsules.emitted_leased,
+        emitted_selected: branch.capsules.emitted_selected,
+        emitted_expired: branch.capsules.emitted_expired,
+        emitted_conflicted: Vec::new(),
+        emitted_invalid: branch.capsules.emitted_invalid,
         latency: started.elapsed(),
     })
 }
@@ -406,6 +434,12 @@ struct CapsuleReport {
     load_diagnostics: Vec<String>,
     matched: Vec<String>,
     hydration_diagnostics: Vec<String>,
+    emitted_loaded: Vec<String>,
+    emitted_eligible: Vec<String>,
+    emitted_selected: Vec<String>,
+    emitted_leased: Vec<String>,
+    emitted_expired: Vec<String>,
+    emitted_invalid: Vec<String>,
 }
 
 /// Session / post-compact packing: state, kernel, charter, rules, orientation.
@@ -454,26 +488,91 @@ async fn pack_turn(
     // below (`validate_selectors` names the rule and the selector), so there
     // is no separate pre-check to duplicate it here.
     let outcome = capsule::matched(root, &loaded.capsules, now).await;
-    let nudges = {
+    let mut nudges = {
         let mut items = outcome.items;
         for item in &mut items {
             item.stable_id = StableId::new(format!("nudge:{}", item.stable_id));
         }
         items
     };
+    let session_id = crate::journey::current_sid(root);
+    let (emitted, emitted_invalid) = match crate::capsule::read_snapshot(root) {
+        Ok(records) => (records, Vec::new()),
+        Err(error) => (Vec::new(), vec![error.to_string()]),
+    };
+    let emitted_loaded = emitted
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<Vec<_>>();
+    let emitted_leased = emitted
+        .iter()
+        .filter(|record| {
+            record.lifecycle == crate::capsule::CapsuleLifecycle::NextInteraction
+                && record.lease_until.is_some_and(|until| now < until)
+        })
+        .map(|record| record.id.clone())
+        .collect::<Vec<_>>();
+    let emitted_expired = emitted
+        .iter()
+        .filter(|record| record.expires_at.is_some_and(|expiry| now >= expiry))
+        .map(|record| record.id.clone())
+        .collect::<Vec<_>>();
+    let mut eligible = emitted
+        .into_iter()
+        .filter(|record| {
+            !emitted_expired.contains(&record.id)
+                && match record.lifecycle {
+                    crate::capsule::CapsuleLifecycle::Session => record.session_id == session_id,
+                    crate::capsule::CapsuleLifecycle::Persistent => true,
+                    crate::capsule::CapsuleLifecycle::NextInteraction => {
+                        record.lease_until.is_none_or(|until| now >= until)
+                    }
+                }
+        })
+        .collect::<Vec<_>>();
+    eligible.sort_by(|a, b| {
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.emitted_at.cmp(&b.emitted_at))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    let emitted_eligible = eligible
+        .iter()
+        .map(|record| record.id.clone())
+        .collect::<Vec<_>>();
+    nudges.extend(eligible.iter().map(|record| ContextItem {
+        kind: ItemKind::Nudge,
+        stable_id: StableId::new(format!("emitted:{}", record.id)),
+        priority: record.priority,
+        severity: Severity::None,
+        body: record.body.clone(),
+        max_bytes: None,
+    }));
     let offered = {
         let mut offered: Vec<Candidate> = activity.iter().map(Candidate::from).collect();
         offered.extend(nudges.iter().map(Candidate::from));
         offered
     };
+    let packed = packing::pack_interaction(config, &activity, kernel, &nudges);
+    let emitted_selected = packed
+        .selected
+        .iter()
+        .filter_map(|id| id.as_ref().strip_prefix("emitted:").map(str::to_string))
+        .collect();
     BranchRender {
-        packed: packing::pack_interaction(config, &activity, kernel, &nudges),
+        packed,
         offered,
         capsules: CapsuleReport {
             loaded: loaded.capsules.iter().map(|c| c.id.clone()).collect(),
             load_diagnostics: loaded.diagnostics,
             matched: outcome.matched_ids,
             hydration_diagnostics: outcome.diagnostics,
+            emitted_loaded,
+            emitted_eligible,
+            emitted_selected,
+            emitted_leased,
+            emitted_expired,
+            emitted_invalid,
         },
     }
 }
@@ -1127,6 +1226,48 @@ mod tests {
             .expect("opted in");
         assert_eq!(interaction.matched_capsules, ["x"]);
         assert!(interaction.packed.body.contains("nudge body"));
+    }
+
+    #[tokio::test]
+    async fn emitted_capsules_use_a_distinct_namespace_and_never_render_at_session_start() {
+        let d = tempfile::tempdir().expect("tempdir");
+        opted_in(d.path());
+        let session_id = crate::journey::current_sid(d.path());
+        crate::capsule::transaction(d.path(), |storage| {
+            storage.emit(crate::capsule::EmittedCapsule {
+                id: "same-id".into(),
+                body: "emitted guidance".into(),
+                lifecycle: crate::capsule::CapsuleLifecycle::Session,
+                priority: 50,
+                expires_at: None,
+                emitted_by: "rule".into(),
+                emitted_at: unix_now(),
+                session_id,
+                bound_facts: Vec::new(),
+                bindings: Default::default(),
+                fact_sources: Vec::new(),
+                decisions: Vec::new(),
+                lease_until: None,
+                acknowledged: None,
+                lease_token: None,
+            })
+        })
+        .unwrap();
+        let interaction = render(d.path(), ContextEvent::Interaction, 5)
+            .await
+            .unwrap();
+        assert!(interaction.emitted_loaded.contains(&"same-id".to_string()));
+        assert!(
+            interaction
+                .packed
+                .selected
+                .iter()
+                .any(|id| id.as_ref() == "emitted:same-id")
+        );
+        assert!(interaction.packed.body.contains("emitted guidance"));
+        let session = render(d.path(), ContextEvent::Session, 5).await.unwrap();
+        assert!(session.emitted_loaded.is_empty());
+        assert!(!session.packed.body.contains("emitted guidance"));
     }
 
     #[tokio::test]

@@ -52,6 +52,13 @@ pub struct SyntaxFacts {
     /// Functions that call `engine.eval(...)` or `engine.eval::<T>(...)` with
     /// a string literal as the first argument. Args: (fn_name,).
     pub engine_eval_string_literals: Vec<String>,
+    /// Enclosing function per `unsafe` block without a nearby `SAFETY:` note.
+    pub unsafe_blocks_without_safety_comment: Vec<String>,
+    /// (fn_name, callee) for known blocking calls made directly by `async fn`.
+    pub async_blocking_calls: Vec<(String, String)>,
+    /// (fn_name, guard_name) for std synchronization guards whose lexical
+    /// scope continues across an await point.
+    pub sync_lock_guards_across_await: Vec<(String, String)>,
     /// Functions with 8 or more *outer-scope* `let` declarations.
     /// Bindings inside child `block_expression` and `closure_expression`
     /// nodes are NOT counted, so functions that already adopted the
@@ -96,6 +103,14 @@ pub struct SyntaxFacts {
     /// only `pass`, comments, or ellipsis (`...`). Typed handlers only;
     /// bare handlers are excluded because the bare-except rule catches them.
     pub python_exception_handler_passes: Vec<(String, String)>,
+    /// Callee names for obvious I/O performed at module import time.
+    pub python_import_time_io: Vec<String>,
+    /// Enclosing function per identity comparison against a value literal.
+    pub python_is_literal_comparisons: Vec<String>,
+    /// (fn_name, global_name) for mutations of module-level containers.
+    pub python_mutated_module_globals: Vec<(String, String)>,
+    /// Module names used by `from module import *`.
+    pub python_star_imports: Vec<String>,
 
     // ─── TypeScript ─────────────────────────────────────────────────
     /// (fn_name or `<module>`, count) of explicit `any` type annotations.
@@ -107,6 +122,18 @@ pub struct SyntaxFacts {
     pub ts_suppression_comment_count: usize,
     /// (fn_name, count) for functions with 5+ parameters.
     pub ts_function_param_counts_high: Vec<(String, usize)>,
+}
+
+/// A `tests/` or `benches/` target is test code in its entirety, with no
+/// `#[cfg(test)]` or `#[test]` marker for the AST walk to key on — the
+/// harness supplies that framing. The hazard predicates describe production
+/// latency and soundness defects, so they say nothing useful there.
+fn is_test_target(file_path: &str) -> bool {
+    let path = file_path.replace('\\', "/");
+    path.starts_with("tests/")
+        || path.starts_with("benches/")
+        || path.contains("/tests/")
+        || path.contains("/benches/")
 }
 
 impl SyntaxFacts {
@@ -131,6 +158,9 @@ impl SyntaxFacts {
         "function_is_async",
         "struct_derives",
         "engine_eval_string_literal",
+        "rust_unsafe_without_safety_comment",
+        "rust_async_blocking_call",
+        "rust_sync_lock_guard_across_await",
         // Swift
         "function_uses_force_unwrap",
         "function_throws",
@@ -144,6 +174,10 @@ impl SyntaxFacts {
         "python_print_call",
         "python_call_in_default_arg",
         "python_exception_handler_passes",
+        "python_import_time_io",
+        "python_is_literal_comparison",
+        "python_mutated_module_global",
+        "python_star_import",
         // TypeScript
         "ts_explicit_any",
         "ts_non_null_assertion",
@@ -310,6 +344,49 @@ impl SyntaxFacts {
             });
         }
 
+        for (i, fn_name) in self.unsafe_blocks_without_safety_comment.iter().enumerate() {
+            out.push(Fact {
+                id: format!("rust_unsafe_without_safety_comment_{}_{}", fn_name, i),
+                predicate: "rust_unsafe_without_safety_comment".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (fn_name, callee)) in self
+            .async_blocking_calls
+            .iter()
+            .filter(|_| !is_test_target(file_path))
+            .enumerate()
+        {
+            out.push(Fact {
+                id: format!("rust_async_blocking_call_{}_{}_{}", fn_name, callee, i),
+                predicate: "rust_async_blocking_call".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), callee.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (fn_name, guard)) in self
+            .sync_lock_guards_across_await
+            .iter()
+            .filter(|_| !is_test_target(file_path))
+            .enumerate()
+        {
+            out.push(Fact {
+                id: format!(
+                    "rust_sync_lock_guard_across_await_{}_{}_{}",
+                    fn_name, guard, i
+                ),
+                predicate: "rust_sync_lock_guard_across_await".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), guard.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
         for (i, (fn_name, count)) in self.swift_force_unwraps.iter().enumerate() {
             out.push(Fact {
                 id: format!("function_uses_force_unwrap_{}_{}", fn_name, i),
@@ -413,6 +490,46 @@ impl SyntaxFacts {
                 id: format!("python_exception_handler_passes_{}_{}_{}", fn_name, exc, i),
                 predicate: "python_exception_handler_passes".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), exc.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, callee) in self.python_import_time_io.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_import_time_io_{}_{}", callee, i),
+                predicate: "python_import_time_io".to_string(),
+                args: vec![file_path.to_string(), callee.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, fn_name) in self.python_is_literal_comparisons.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_is_literal_comparison_{}_{}", fn_name, i),
+                predicate: "python_is_literal_comparison".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (fn_name, global)) in self.python_mutated_module_globals.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_mutated_module_global_{}_{}_{}", fn_name, global, i),
+                predicate: "python_mutated_module_global".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), global.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, module) in self.python_star_imports.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_star_import_{}_{}", module, i),
+                predicate: "python_star_import".to_string(),
+                args: vec![file_path.to_string(), module.clone()],
                 timestamp: 0,
                 source: source.clone(),
             });
@@ -544,6 +661,9 @@ mod tests {
             async_functions: vec!["a".to_string()],
             struct_derives: vec![("S".to_string(), "Debug".to_string())],
             engine_eval_string_literals: vec!["a".to_string()],
+            unsafe_blocks_without_safety_comment: vec!["a".to_string()],
+            async_blocking_calls: vec![("a".to_string(), "b".to_string())],
+            sync_lock_guards_across_await: vec![("a".to_string(), "b".to_string())],
             swift_force_unwraps: vec![("a".to_string(), 1)],
             swift_throwing_functions: vec!["a".to_string()],
             swift_async_functions: vec!["a".to_string()],
@@ -554,6 +674,10 @@ mod tests {
             python_print_calls: vec!["a".to_string()],
             python_call_in_default_args: vec![("a".to_string(), "b".to_string(), "c".to_string())],
             python_exception_handler_passes: vec![("a".to_string(), "b".to_string())],
+            python_import_time_io: vec!["a".to_string()],
+            python_is_literal_comparisons: vec!["a".to_string()],
+            python_mutated_module_globals: vec![("a".to_string(), "b".to_string())],
+            python_star_imports: vec!["a".to_string()],
             ts_explicit_anys: vec![("a".to_string(), 1)],
             ts_non_null_assertions: vec![("a".to_string(), 1)],
             ts_suppression_comment_count: 1,

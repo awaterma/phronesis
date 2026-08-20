@@ -55,12 +55,10 @@ impl EpistemeMcp {
         if Self::autopersist_disabled() {
             return;
         }
-        let path = {
-            let root = security::project_root();
-            rules_file::default_path(&root)
-        };
-        let file = match rules_file::read(&path) {
-            Ok(f) => f,
+        let root = security::project_root();
+        let project_path = rules_file::default_path(&root);
+        let resolved = match crate::rule_layers::resolve(&root) {
+            Ok(resolved) => resolved,
             Err(_) => return,
         };
         let network = self.network.lock().await;
@@ -68,7 +66,39 @@ impl EpistemeMcp {
         // Best-effort: bail on the first add_rule error and discard it;
         // rules before the failure stay loaded. (Unreachable in practice —
         // save_rules dedups ids before writing.)
-        let _ = hydrate_rules(&network, &mut phase_map, &file.rules, &HashSet::new()).await;
+        if hydrate_rules(&network, &mut phase_map, &resolved.rules, &HashSet::new())
+            .await
+            .is_err()
+        {
+            return;
+        }
+        for fact in crate::rule_layers::override_facts(&resolved.overrides) {
+            if network.assert_fact(fact).await.is_err() {
+                return;
+            }
+        }
+        drop(phase_map);
+        drop(network);
+        let project_ids = resolved
+            .origins
+            .iter()
+            .filter_map(|(id, origin)| (origin.path == project_path).then_some(id.clone()))
+            .collect();
+        *self.persistent_rule_ids.lock().await = project_ids;
+        let project_file =
+            rules_file::read(&project_path).unwrap_or(rules_file::RulesFile { rules: Vec::new() });
+        let shadowed = project_file
+            .rules
+            .into_iter()
+            .filter(|rule| {
+                resolved
+                    .origins
+                    .get(&rule.id)
+                    .is_some_and(|origin| origin.path != project_path)
+            })
+            .map(|rule| (rule.id.clone(), rule))
+            .collect();
+        *self.shadowed_project_rules.lock().await = shadowed;
     }
 
     /// Persist the current in-memory rules to `.phronesis/rules.json` as
@@ -96,16 +126,27 @@ impl EpistemeMcp {
         drop(network);
 
         let phase_map = self.phase_map.lock().await.clone();
-        let disk_rules: Vec<rules_file::DiskRule> = in_memory
-            .iter()
-            .map(|rule| {
-                let phase = phase_map
-                    .get(&rule.id)
-                    .cloned()
-                    .unwrap_or_else(|| "pre".to_string());
-                rules_file::rule_to_disk(rule, &phase)
-            })
+        let persistent_rule_ids = self.persistent_rule_ids.lock().await.clone();
+        let mut disk_rules: Vec<rules_file::DiskRule> = self
+            .shadowed_project_rules
+            .lock()
+            .await
+            .values()
+            .cloned()
             .collect();
+        disk_rules.sort_by(|left, right| left.id.cmp(&right.id));
+        disk_rules.extend(
+            in_memory
+                .iter()
+                .filter(|rule| persistent_rule_ids.contains(&rule.id))
+                .map(|rule| {
+                    let phase = phase_map
+                        .get(&rule.id)
+                        .cloned()
+                        .unwrap_or_else(|| "pre".to_string());
+                    rules_file::rule_to_disk(rule, &phase)
+                }),
+        );
 
         rules_file::write_atomic(&path, &rules_file::RulesFile { rules: disk_rules })
             .map_err(|e| Self::err(e.to_string()))?;

@@ -47,6 +47,7 @@ fn wave_rule() -> Rule {
         actions: vec![Action {
             action_type: "wave_at".to_string(),
             params: vec!["?who".to_string()],
+            ..Default::default()
         }],
     }
 }
@@ -93,6 +94,7 @@ async fn push_consequences_carry_provenance_with_bound_facts() {
     let actions = vec![Action {
         action_type: "wave_at".to_string(),
         params: vec!["alice".to_string()],
+        ..Default::default()
     }];
 
     let consequences = rule_firing_to_consequences(
@@ -124,6 +126,7 @@ async fn payload_preserves_action_type_and_params() {
     let actions = vec![Action {
         action_type: "play_card".to_string(),
         params: vec!["ace_spades".to_string(), "face_up".to_string()],
+        ..Default::default()
     }];
 
     let consequences =
@@ -133,6 +136,24 @@ async fn payload_preserves_action_type_and_params() {
     assert_eq!(payload["action_type"], "play_card");
     assert_eq!(payload["params"][0], "ace_spades");
     assert_eq!(payload["params"][1], "face_up");
+}
+
+#[tokio::test]
+async fn payload_preserves_structured_action_data() {
+    let actions = vec![Action {
+        action_type: "emit_capsule".to_string(),
+        data: Some(serde_json::json!({
+            "id": "review",
+            "body": "Review this change",
+            "lifecycle": "session"
+        })),
+        ..Default::default()
+    }];
+
+    let consequences =
+        rule_firing_to_consequences("capsule_rule", &[], ConsequenceKind::Event, actions);
+    assert_eq!(consequences[0].payload["action_type"], "emit_capsule");
+    assert_eq!(consequences[0].payload["data"]["id"], "review");
 }
 
 #[tokio::test]
@@ -147,6 +168,7 @@ async fn push_honors_caller_supplied_kind() {
     let actions = vec![Action {
         action_type: "offer_choice".to_string(),
         params: vec!["draw".into(), "discard".into()],
+        ..Default::default()
     }];
 
     // A rule that fires to *offer* choices to the actor should emit

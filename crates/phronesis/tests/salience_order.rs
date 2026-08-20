@@ -18,6 +18,7 @@ fn rule(id: &str, priority: i32, predicate: &str) -> Rule {
         actions: vec![Action {
             action_type: "log".into(),
             params: vec![id.to_string()],
+            ..Default::default()
         }],
     }
 }

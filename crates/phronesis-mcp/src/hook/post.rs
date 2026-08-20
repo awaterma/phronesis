@@ -63,8 +63,8 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         crate::graph::sync::record_from_disk(&security::project_root(), &file_path);
     }
 
-    let (rules, content_patterns, bash_command_patterns, missing_patterns) = {
-        let rules = match super::load_rules("post") {
+    let (rules, override_facts, content_patterns, bash_command_patterns, missing_patterns) = {
+        let loaded = match super::load_rules("post") {
             Ok(Some(r)) => r,
             Ok(None) => {
                 // No post rules — still journal the executed call so future
@@ -81,10 +81,11 @@ pub async fn run_post_check() -> anyhow::Result<()> {
                 process::exit(1);
             }
         };
+        let rules = loaded.rules;
         let cp = collect_content_patterns(&rules);
         let bcp = collect_bash_command_patterns(&rules);
         let mp = collect_missing_patterns(&rules);
-        (rules, cp, bcp, mp)
+        (rules, loaded.override_facts, cp, bcp, mp)
     };
 
     let network = {
@@ -99,6 +100,12 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         if let Err(e) = assert_common_facts(&net, &file_path, &tool_name, "post").await {
             eprintln!("phronesis: WARNING — failed to assert facts: {}", e);
             process::exit(1);
+        }
+        for fact in override_facts {
+            if let Err(e) = net.assert_fact(fact).await {
+                eprintln!("phronesis: WARNING — failed to assert rule override provenance: {e}");
+                process::exit(1);
+            }
         }
         // Journey facts: recomputed every invocation from the durable journal,
         // before update_agenda. Fail-open on transient I/O; surface config
@@ -220,6 +227,7 @@ fn evaluate_network(
         eprintln!("phronesis: WARNING — rule execution failed: {}", error);
         process::exit(1);
     });
+    crate::capsule::capture_for_hook(&security::project_root(), &consequences);
     let (logged, violations, warnings) =
         super::collect_logged(&consequences, &security::project_root());
     let command_exit = matches!(tool_name, "Bash" | "run_shell_command")

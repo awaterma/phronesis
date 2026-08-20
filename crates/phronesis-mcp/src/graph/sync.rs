@@ -932,12 +932,14 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     })
 }
 
-/// Hook entry point: record the file's current on-disk content.
+/// Hook entry point: regenerate the graph after a document save.
 ///
 /// Best-effort and infallible by design. The sensor runs in `PostToolUse`,
 /// after the edit has already happened; a graph write that fails must not
-/// turn into a hook error that interrupts the user's work. Failures leave the
-/// file's hash stale, which the freshness check will catch and report.
+/// turn into a hook error that interrupts the user's work. A complete rebuild
+/// is the default so edits outside the immediately reported file are folded in
+/// at the next hooked save. Failures leave hashes stale, which the freshness
+/// check will catch and report.
 pub fn record_from_disk(root: &Path, file_path: &str) {
     // Only maintain a graph the project actually opted into. The sensor runs
     // before rules are loaded — it has to, since the structural pack ships
@@ -963,56 +965,9 @@ pub fn record_from_disk(root: &Path, file_path: &str) {
     if rel.contains("..") || Path::new(&rel).is_absolute() {
         return;
     }
-    let file_path = rel.as_str();
-    let content = match std::fs::read_to_string(root.join(file_path)) {
-        Ok(content) => content,
-        // The file is gone — a `Delete File` patch block, or a delete routed
-        // through the hook. Leaving its edges and its index entry behind
-        // makes the very next freshness check report drift, which demotes
-        // every structural rule to a warning until someone rebuilds by hand.
-        // An empty extraction lets provenance-keyed compaction drop them.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            if let Err(e) = on_delete(root, file_path) {
-                tracing::debug!("graph sensor could not record deletion of {file_path}: {e}");
-            }
-            return;
-        }
-        Err(_) => return,
-    };
-    if let Err(e) = on_save(root, file_path, &content) {
-        tracing::debug!("graph sensor skipped {file_path}: {e}");
+    if let Err(e) = rebuild(root) {
+        tracing::debug!("graph sensor could not rebuild after saving {rel}: {e}");
     }
-}
-
-/// Drop a vanished file from both the graph and the staleness index.
-///
-/// Compaction is keyed on provenance, so replacing the file's edge set with
-/// nothing removes exactly its contribution. The index entry must go too: a
-/// hash recorded against a path that no longer exists is stale evidence that
-/// `check_freshness` reports as drift forever.
-fn on_delete(root: &Path, file_path: &str) -> std::io::Result<()> {
-    let data_contract_input = declared_artifact(root, file_path);
-    if file_path.ends_with(".cue")
-        || file_path == ".phronesis/graph.toml"
-        || file_path == ".phronesis/rules.json"
-        || file_path.starts_with(".phronesis/wiki/decisions/")
-        || data_contract_input
-    {
-        rebuild(root)?;
-        return Ok(());
-    }
-    let existing = store::load(&store::graph_path(root))?;
-    let base = store::compact(existing, file_path, Vec::new());
-    persist(root, base)?;
-
-    let ipath = index_path(root);
-    let mut index = load_index(&ipath)?;
-    if index.entries.remove(file_path).is_some() {
-        index.generation = index.generation.saturating_add(1);
-        save_index(&ipath, &index)?;
-        reconcile_bindings_best_effort(root, index.generation);
-    }
-    Ok(())
 }
 
 /// Full rescan of every tracked file (Rust, Python, TypeScript), pruning
@@ -1326,6 +1281,24 @@ mod tests {
         assert!(
             index.entries.contains_key("src/a.rs"),
             "the edited file is still recorded"
+        );
+    }
+
+    #[test]
+    fn hook_sensor_rebuilds_the_complete_graph_on_every_save() {
+        let d = project();
+        write(d.path(), "src/a.rs", "pub fn alpha() {}\n");
+        write(d.path(), "src/b.rs", "pub fn beta() {}\n");
+        rebuild(d.path()).expect("initial rebuild");
+
+        write(d.path(), "src/b.rs", "pub fn beta_changed() {}\n");
+        record_from_disk(d.path(), "README.md");
+
+        let index = load_index(&index_path(d.path())).expect("index");
+        assert_eq!(
+            index.entries.get("src/b.rs"),
+            Some(&hash_content("pub fn beta_changed() {}\n")),
+            "the save-triggered full rebuild must refresh sibling files"
         );
     }
 

@@ -41,8 +41,9 @@ phr-mcp init --packs rust
 - **Extensible predicates** — Rhai providers derive project vocabulary from
   normalized events. Codex `apply_patch` supplies a batch `files` change set
   before the existing per-file `file_path` evaluation.
-- **Starter packs** ship rules for Rust, Python, TypeScript, Swift, Rhai,
-  and LLM-behavior (deflection, unverified claims).
+- **Starter packs** ship rules for Rust (including async/unsafe hazards),
+  Python (including import-time I/O, identity comparisons, mutable globals,
+  and star imports), TypeScript, Swift, Rhai, and LLM behavior.
 - **Journey facts** — durable per-call journal + project-defined taggers
   in `.phronesis/journey.json` let rules match cross-call temporal
   patterns (`auth-churn-without-tests`, `build-staleness`, recent SQL)
@@ -52,8 +53,9 @@ phr-mcp init --packs rust
   generic parser that turns build / test / known-bug outcomes into grounded
   signals; gate rules block or warn a `git commit` by confidence band.
   Enabled by default through `.phronesis/confidence.json`.
-- **Structural graph, compact durable context, journey facts, confidence, and
-  LLM rules are defaults.** Language packs are additive; `--packs none` is the
+- **Structural graph and graph rules, compact durable context, journey facts,
+  confidence, and LLM rules are defaults.** Every language-neutral capability
+  belongs to `base`; language packs are additive. `--packs none` is the
   only way to initialize without the default platform.
 - **Rule staleness** records conservative bindings from unqualified
   function-call patterns such as `legacy_call(` to graph definitions. If every
@@ -95,6 +97,30 @@ specialized or hosted tool paths may not traverse local lifecycle hooks.
 Codex observes unified shell execution as `Bash`, file edits as `apply_patch`,
 and can expose other local or MCP tools. Phronesis v0.26 governs only `Bash` and
 `apply_patch`; unsupported tools are safe no-ops.
+
+## Rule-emitted context capsules
+
+Rules may use an object-valued `emit_capsule` action with a static `id`, a
+binding-substituted `body`, and a `next_interaction`, `session`, or `persistent`
+lifecycle. Emitted records are stored in `.phronesis/emitted-capsules.json` and
+are merged with static `.phronesis/nudges/*.md` only for interaction context.
+`next_interaction` delivery is at least once: selection creates a five-minute
+lease, and the host acknowledges successful delivery with
+`phr-mcp context acknowledge <id> [--lease-token <token>]` (or the matching MCP
+tool). Failed delivery retries after lease expiry. `context inspect` is
+read-only.
+
+Storage permits at most 128 records, 8 KiB per final body/record, and 256 KiB
+aggregate. Only 96 records may have priority below 50; the remaining 32 slots
+are reserved for governance capsules at priority 50 or above. Persistence is
+advisory: an invalid, conflicting, or unwritable capsule is diagnosed but does
+not change a hook's allow/block result. IDs use an `emitted:` packing namespace,
+distinct from static `nudge:` IDs.
+
+Manage emitted records with `phr-mcp context list [--json]`, `context
+acknowledge`, and `context retract`; equivalent MCP tools are
+`list_emitted_capsules`, `acknowledge_emitted_capsule`, and
+`retract_emitted_capsule`.
 
 ## Documentation
 

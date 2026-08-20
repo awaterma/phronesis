@@ -88,6 +88,7 @@ fn simple_rule(spec: RuleSpec<'_>) -> Rule {
         actions: vec![Action {
             action_type: spec.action.0.to_string(),
             params: vec![spec.action.1.to_string()],
+            ..Default::default()
         }],
     }
 }
@@ -247,6 +248,7 @@ async fn given_tdd_rule(world: &mut World) {
             params: vec![
                 "Write a failing test for `?fn` before implementing it in ?file".to_string(),
             ],
+            ..Default::default()
         }],
     };
     world.network.add_rule(rule).await.unwrap();
@@ -286,6 +288,7 @@ async fn given_markdown_rule(world: &mut World, id: String, file: String, sectio
         actions: vec![Action {
             action_type: "constraint_violation".to_string(),
             params: vec!["section reminder".to_string()],
+            ..Default::default()
         }],
     };
     world.network.add_rule(rule).await.unwrap();
@@ -360,6 +363,7 @@ async fn when_rule_has_actions(world: &mut World, step: &cucumber::gherkin::Step
             actions.push(Action {
                 action_type: row[0].clone(),
                 params: vec![row[1].clone()],
+                ..Default::default()
             });
         }
     }

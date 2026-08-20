@@ -603,6 +603,7 @@ fn rules(capsules: &[Capsule]) -> Result<Vec<Rule>, CapsuleError> {
                 actions: vec![Action {
                     action_type: "context_nudge".to_string(),
                     params: vec![capsule.id.clone()],
+                    data: None,
                 }],
             });
         }

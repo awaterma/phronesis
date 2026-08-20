@@ -138,6 +138,61 @@ fn python_phase_one_predicates_fire_through_hook() {
 }
 
 #[test]
+fn python_patterns_guide_predicates_fire_through_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/service.py"), "VALUE = 1\n").unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[
+            {"id":"import-io","phase":"pre","priority":5,"when":[{"python_import_time_io":["?file","?callee"]}],"then":{"warn":"import io"}},
+            {"id":"is-literal","phase":"pre","priority":5,"when":[{"python_is_literal_comparison":["?file","?fn"]}],"then":{"warn":"is literal"}},
+            {"id":"mutable-global","phase":"pre","priority":5,"when":[{"python_mutated_module_global":["?file","?fn","?global"]}],"then":{"warn":"mutable global"}},
+            {"id":"star-import","phase":"pre","priority":5,"when":[{"python_star_import":["?file","?module"]}],"then":{"warn":"star import"}}
+        ]}"#,
+    );
+    let payload = r#"{
+        "tool_name":"Write",
+        "tool_input":{
+            "file_path":"src/service.py",
+            "content":"from tools import *\nCACHE = {}\nCONFIG = open('config.json')\ndef remember(x):\n    CACHE.update({x: True})\n    return x is 'ready'\n"
+        }
+    }"#;
+    let (code, stderr) = run_hook_with_root(payload, dir.path());
+    assert_eq!(code, 1, "warning rules should return one: {stderr}");
+    for message in ["import io", "is literal", "mutable global", "star import"] {
+        assert!(stderr.contains(message), "missing {message}: {stderr}");
+    }
+}
+
+#[test]
+fn rust_runtime_hazard_predicates_fire_through_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/lib.rs"), "fn existing() {}\n").unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[
+            {"id":"lock-await","phase":"pre","priority":5,"when":[{"rust_sync_lock_guard_across_await":["?file","?fn","?guard"]}],"then":{"warn":"lock await"}},
+            {"id":"unsafe-doc","phase":"pre","priority":5,"when":[{"rust_unsafe_without_safety_comment":["?file","?fn"]}],"then":{"warn":"unsafe doc"}},
+            {"id":"blocking-async","phase":"pre","priority":5,"when":[{"rust_async_blocking_call":["?file","?fn","?callee"]}],"then":{"warn":"blocking async"}}
+        ]}"#,
+    );
+    let payload = r#"{
+        "tool_name":"Write",
+        "tool_input":{
+            "file_path":"src/lib.rs",
+            "content":"use std::sync::Mutex;\nasync fn update(m: &Mutex<u8>, p: *const u8) {\n    let guard = m.lock().expect(\"lock\");\n    let _ = std::fs::read(\"x\");\n    work().await;\n    unsafe { let _ = *p; }\n    drop(guard);\n}\n"
+        }
+    }"#;
+    let (code, stderr) = run_hook_with_root(payload, dir.path());
+    assert_eq!(code, 1, "warning rules should return one: {stderr}");
+    for message in ["lock await", "unsafe doc", "blocking async"] {
+        assert!(stderr.contains(message), "missing {message}: {stderr}");
+    }
+}
+
+#[test]
 fn result_string_rule_ignores_test_blocks() {
     // Regression test: a Result<_, String> function inside #[cfg(test)] mod
     // tests must NOT trigger the production rule. The hook strips test blocks

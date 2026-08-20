@@ -561,6 +561,7 @@ Some intro.
             actions: vec![DiskAction {
                 action_type: "constraint_violation".to_string(),
                 params: vec![message.to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: None,

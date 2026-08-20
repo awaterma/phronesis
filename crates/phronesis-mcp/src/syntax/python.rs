@@ -29,6 +29,10 @@ pub fn extract(content: &str) -> SyntaxFacts {
         python_print_calls: extract_print_calls(root, src),
         python_call_in_default_args: extract_call_in_default_args(root, src),
         python_exception_handler_passes: extract_handler_passes(root, src),
+        python_import_time_io: extract_import_time_io(root, src),
+        python_is_literal_comparisons: extract_is_literal_comparisons(root, src),
+        python_mutated_module_globals: extract_mutated_module_globals(root, src),
+        python_star_imports: extract_star_imports(root, src),
         ..SyntaxFacts::default()
     }
 }
@@ -297,6 +301,201 @@ fn extract_handler_passes(root: Node, src: &[u8]) -> Vec<(String, String)> {
                 .unwrap_or("?");
             out.push((enclosing_function_name(node, src), exc_type.to_string()));
         }
+    });
+    out
+}
+
+fn is_deferred_scope(node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if matches!(
+            parent.kind(),
+            "function_definition" | "class_definition" | "lambda"
+        ) {
+            return true;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+/// Obvious file, network, database, or process I/O executed while a module is
+/// imported. This deliberately uses a narrow callee allowlist: the rule is a
+/// review lead, not a claim that every arbitrary constructor performs I/O.
+fn extract_import_time_io(root: Node, src: &[u8]) -> Vec<String> {
+    const EXACT: &[&str] = &[
+        "open",
+        "socket.socket",
+        "socket.create_connection",
+        "sqlite3.connect",
+        "requests.get",
+        "requests.post",
+        "requests.put",
+        "requests.delete",
+        "urllib.request.urlopen",
+        "subprocess.run",
+        "subprocess.call",
+        "subprocess.check_call",
+        "subprocess.check_output",
+        "os.system",
+    ];
+    const SUFFIXES: &[&str] = &[
+        ".read_text",
+        ".read_bytes",
+        ".write_text",
+        ".write_bytes",
+        ".open",
+        ".connect",
+    ];
+
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "call" || is_deferred_scope(node) {
+            return;
+        }
+        let Some(function) = node.child_by_field_name("function") else {
+            return;
+        };
+        let Ok(callee) = function.utf8_text(src) else {
+            return;
+        };
+        if EXACT.contains(&callee) || SUFFIXES.iter().any(|suffix| callee.ends_with(suffix)) {
+            out.push(callee.to_string());
+        }
+    });
+    out
+}
+
+fn is_identity_literal(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "string" | "concatenated_string" | "integer" | "float" | "list" | "dictionary" | "set"
+    )
+}
+
+/// Identity comparisons against value literals. `None`, booleans, ellipsis,
+/// and named sentinel objects are intentionally absent from the literal set.
+fn extract_is_literal_comparisons(root: Node, src: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "comparison_operator" {
+            return;
+        }
+        let Ok(text) = node.utf8_text(src) else {
+            return;
+        };
+        if !(text.contains(" is ") || text.contains(" is not ")) {
+            return;
+        }
+        let mut cursor = node.walk();
+        if node.named_children(&mut cursor).any(is_identity_literal) {
+            out.push(enclosing_function_name(node, src));
+        }
+    });
+    out
+}
+
+fn module_mutable_names(root: Node, src: &[u8]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cursor = root.walk();
+    for statement in root.named_children(&mut cursor) {
+        if !matches!(statement.kind(), "expression_statement") {
+            continue;
+        }
+        let Some(assignment) = statement.named_child(0) else {
+            continue;
+        };
+        if assignment.kind() != "assignment" {
+            continue;
+        }
+        let (Some(left), Some(right)) = (
+            assignment.child_by_field_name("left"),
+            assignment.child_by_field_name("right"),
+        ) else {
+            continue;
+        };
+        let mutable = matches!(right.kind(), "list" | "dictionary" | "set")
+            || (right.kind() == "call"
+                && right
+                    .child_by_field_name("function")
+                    .and_then(|function| function.utf8_text(src).ok())
+                    .is_some_and(|callee| matches!(callee, "list" | "dict" | "set")));
+        if mutable
+            && left.kind() == "identifier"
+            && let Ok(name) = left.utf8_text(src)
+        {
+            names.push(name.to_string());
+        }
+    }
+    names
+}
+
+/// Module-level mutable containers that are later mutated from a function.
+/// This is audit-only evidence: Python name shadowing can make a syntactic
+/// match refer to a local with the same name.
+fn extract_mutated_module_globals(root: Node, src: &[u8]) -> Vec<(String, String)> {
+    const MUTATORS: &[&str] = &[
+        "append",
+        "extend",
+        "insert",
+        "remove",
+        "pop",
+        "clear",
+        "sort",
+        "reverse",
+        "add",
+        "discard",
+        "update",
+        "setdefault",
+    ];
+    let globals = module_mutable_names(root, src);
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "call" || enclosing_function_name(node, src) == "<module>" {
+            return;
+        }
+        let Some(function) = node.child_by_field_name("function") else {
+            return;
+        };
+        if function.kind() != "attribute" {
+            return;
+        }
+        let (Some(object), Some(attribute)) = (
+            function.child_by_field_name("object"),
+            function.child_by_field_name("attribute"),
+        ) else {
+            return;
+        };
+        let (Ok(name), Ok(method)) = (object.utf8_text(src), attribute.utf8_text(src)) else {
+            return;
+        };
+        if globals.iter().any(|global| global == name) && MUTATORS.contains(&method) {
+            out.push((enclosing_function_name(node, src), name.to_string()));
+        }
+    });
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn extract_star_imports(root: Node, src: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "import_from_statement" {
+            return;
+        }
+        let Ok(text) = node.utf8_text(src) else {
+            return;
+        };
+        if !text.trim_end().ends_with("import *") {
+            return;
+        }
+        let module = text
+            .strip_prefix("from ")
+            .and_then(|rest| rest.split_once(" import "))
+            .map(|(module, _)| module)
+            .unwrap_or("?");
+        out.push(module.to_string());
     });
     out
 }
@@ -609,5 +808,54 @@ mod tests {
             facts.python_function_param_counts_high,
             vec![("m".to_string(), 6)]
         );
+    }
+
+    #[test]
+    fn import_time_io_reports_module_calls_but_not_function_bodies() {
+        let facts =
+            extract("CONFIG = open('config.json')\n\ndef later():\n    return open('later.txt')\n");
+        assert_eq!(facts.python_import_time_io, vec!["open"]);
+    }
+
+    #[test]
+    fn import_time_io_recognizes_path_and_network_calls() {
+        let facts = extract(
+            "TEXT = Path('x').read_text()\nRESPONSE = requests.get('https://example.test')\n",
+        );
+        assert_eq!(
+            facts.python_import_time_io,
+            vec!["Path('x').read_text", "requests.get"]
+        );
+    }
+
+    #[test]
+    fn identity_literal_flags_values_but_allows_none_and_sentinels() {
+        let facts = extract(
+            "def f(x):\n    return x is 'ready'\n\ndef g(x):\n    return x is None or x is MISSING\n",
+        );
+        assert_eq!(facts.python_is_literal_comparisons, vec!["f"]);
+    }
+
+    #[test]
+    fn mutated_module_global_reports_mutator_calls() {
+        let facts = extract(
+            "CACHE = {}\nCONSTANT = ()\n\ndef remember(key, value):\n    CACHE.update({key: value})\n",
+        );
+        assert_eq!(
+            facts.python_mutated_module_globals,
+            vec![("remember".to_string(), "CACHE".to_string())]
+        );
+    }
+
+    #[test]
+    fn immutable_or_unmodified_module_values_are_accepted() {
+        let facts = extract("CACHE = {}\nNAMES = ()\n\ndef read():\n    return CACHE.get('x')\n");
+        assert!(facts.python_mutated_module_globals.is_empty());
+    }
+
+    #[test]
+    fn star_import_reports_source_module() {
+        let facts = extract("from package.tools import *\nfrom package.safe import thing\n");
+        assert_eq!(facts.python_star_imports, vec!["package.tools"]);
     }
 }

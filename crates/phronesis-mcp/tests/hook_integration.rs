@@ -47,6 +47,106 @@ fn write_predicate_provider(dir: &Path, name: &str, script: &str) {
 }
 
 #[test]
+fn later_rule_layer_wins_and_override_provenance_is_matchable() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"policy","phase":"pre","priority":1,
+            "when":[{"file_path_matches":"src/"}],
+            "then":{"block":"project policy"}}]}"#,
+    );
+    std::fs::write(
+        dir.path().join("personal.json"),
+        r#"{"rules":[{"id":"policy","phase":"pre","priority":10,
+            "when":[{"rule_overridden":["policy","project","?old_path","personal","?new_path","ADR-personal"]}],
+            "then":{"block":"personal policy with override provenance"}}]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".phronesis/loader.json"),
+        r#"{"version":1,"layers":[
+            {"name":"project","path":".phronesis/rules.json"},
+            {"name":"personal","path":"personal.json","decision":"ADR-personal"}
+        ]}"#,
+    )
+    .unwrap();
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"old","new_string":"new"}}"#;
+
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2, "layered rules should block: {stderr}");
+    assert!(
+        stderr.contains("personal policy with override provenance"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("project policy"), "{stderr}");
+}
+
+#[test]
+fn rules_can_govern_a_three_override_chain() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[
+            {"id":"policy","phase":"pre","priority":1,
+             "when":[{"file_path_matches":"src/"}],"then":{"log":"project"}},
+            {"id":"too-many-policy-overrides","phase":"pre","priority":20,
+             "when":[{"__script__":"facts_count('rule_overridden', ['policy','*','*','*','*','*']) >= 3"}],
+             "then":{"block":"policy was overridden at least three times"}}
+        ]}"#,
+    );
+    for (file, priority) in [("team.json", 2), ("org.json", 3), ("personal.json", 4)] {
+        std::fs::write(
+            dir.path().join(file),
+            format!(
+                r#"{{"rules":[{{"id":"policy","phase":"pre","priority":{priority},
+                    "when":[{{"file_path_matches":"src/"}}],"then":{{"log":"layer"}}}}]}}"#
+            ),
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        dir.path().join(".phronesis/loader.json"),
+        r#"{"layers":[
+            {"name":"project","path":".phronesis/rules.json"},
+            {"name":"team","path":"team.json","decision":"ADR-team"},
+            {"name":"org","path":"org.json","decision":"ADR-org"},
+            {"name":"personal","path":"personal.json","decision":"ADR-personal"}
+        ]}"#,
+    )
+    .unwrap();
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"old","new_string":"new"}}"#;
+
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2, "override-count rule must block: {stderr}");
+    assert!(
+        stderr.contains("policy was overridden at least three times"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn pre_hook_persists_emit_capsule_with_rule_provenance_and_bound_body() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"capsule-rule","phase":"pre","priority":5,
+            "when":[{"file_path_matches":["?path"]}],
+            "then":{"emit_capsule":{"id":"review-edit","body":"Review ?path","lifecycle":"session","priority":50}}}]}"#,
+    );
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"old","new_string":"new"}}"#;
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 0, "{stderr}");
+    let value: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".phronesis/emitted-capsules.json")).unwrap(),
+    )
+    .unwrap();
+    let record = &value["capsules"]["review-edit"];
+    assert_eq!(record["body"], "Review lib.rs");
+    assert_eq!(record["emitted_by"], "capsule-rule");
+    assert_eq!(record["bindings"]["?path"], "lib.rs");
+}
+
+#[test]
 fn rhai_provider_extends_the_pre_hook_lhs() {
     let dir = tempfile::tempdir().unwrap();
     write_rules_file(

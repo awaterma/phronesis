@@ -14,6 +14,7 @@ pub struct StateEntry {
 }
 
 const ENTRIES: &[(&str, &str, bool)] = &[
+    ("loader.json", "authored", false),
     ("rules.json", "authored", false),
     ("wiki", "authored", false),
     ("predicates", "authored", false),

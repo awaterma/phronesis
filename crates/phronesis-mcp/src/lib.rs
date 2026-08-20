@@ -1,5 +1,6 @@
 pub mod action_log;
 pub mod audit;
+pub mod capsule;
 pub mod catalogue;
 pub mod claude_md_drift;
 pub mod clock_facts;
@@ -21,6 +22,7 @@ pub mod net;
 pub mod outcomes;
 pub mod payload_scrub;
 pub mod predicate_provider;
+pub mod rule_layers;
 pub mod rules_file;
 pub mod scrub_payload;
 pub mod security;

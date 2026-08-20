@@ -48,6 +48,11 @@ Rules can bind to concrete code referents, structural packs can reason over
 relationships, and clients can inspect freshness or rebuild derived state over
 MCP.
 
+The default `base` is intentionally language-neutral: it includes LLM,
+confidence, journey, structural-graph, and durable-context capabilities.
+Selecting a language pack adds only that language's syntax and rules; graph
+construction and the other shared subsystems are already present.
+
 ![Source code becomes typed structural relations, rule bindings, freshness evidence, and recoverable MCP graph state.](docs/assets/code-graph.svg)
 
 `get_code_graph_status` reports freshness, generation, and binding state;

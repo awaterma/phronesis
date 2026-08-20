@@ -74,6 +74,7 @@ fn card_drawn_rule() -> Rule {
             // action_type = tool name → the compose layer routes this.
             action_type: "lookup_card".to_string(),
             params: vec!["?card_id".to_string()],
+            ..Default::default()
         }],
     }
 }

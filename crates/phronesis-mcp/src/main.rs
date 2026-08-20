@@ -469,6 +469,27 @@ enum GraphCmd {
 
 #[derive(clap::Subcommand, Debug)]
 enum ContextCmd {
+    /// List rule-emitted capsules without leasing or changing delivery state.
+    List {
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Acknowledge a delivered next-interaction capsule.
+    Acknowledge {
+        id: String,
+        #[arg(long)]
+        lease_token: Option<String>,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Retract an emitted capsule (never a static capsule file).
+    Retract {
+        id: String,
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
     /// Render and explain the configured context payload for one event.
     Inspect {
         #[arg(long, value_parser = ["interaction", "session"], default_value = "interaction")]
@@ -798,14 +819,15 @@ async fn handle_audit(
     fail_on: Option<String>,
 ) -> anyhow::Result<()> {
     use phronesis_mcp::audit::{AuditOpts, Level, render_json, render_table, run};
-    use phronesis_mcp::rules_file;
+    use phronesis_mcp::rules_file::{self, RulesFile};
 
     let project_root = phronesis_mcp::security::project_root();
 
     let rules = {
-        let rules_path = rules_file::default_path(&project_root);
-        match rules_file::read(&rules_path) {
-            Ok(r) => r,
+        match phronesis_mcp::rule_layers::resolve(&project_root) {
+            Ok(resolved) => RulesFile {
+                rules: resolved.rules,
+            },
             Err(e) => {
                 eprintln!("phronesis: cannot read rules file: {}", e);
                 return Ok(());
@@ -1508,6 +1530,67 @@ async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {
     use phronesis_mcp::context;
 
     match cmd {
+        ContextCmd::List { path, json } => {
+            let root = std::fs::canonicalize(path)?;
+            let mut capsules = phronesis_mcp::capsule::read_snapshot(&root)?;
+            capsules.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({"capsules": capsules}))?
+                );
+            } else {
+                println!("ID\tLIFECYCLE\tPRIORITY\tEMITTED BY");
+                for capsule in capsules {
+                    println!(
+                        "{}\t{}\t{}\t{}",
+                        capsule.id, capsule.lifecycle, capsule.priority, capsule.emitted_by
+                    );
+                }
+            }
+        }
+        ContextCmd::Acknowledge {
+            id,
+            lease_token,
+            path,
+        } => {
+            let root = std::fs::canonicalize(path)?;
+            let removed = phronesis_mcp::capsule::transaction(&root, |storage| {
+                let eligible = storage.get_capsule(&id).is_some_and(|capsule| {
+                    capsule.lifecycle == phronesis_mcp::capsule::CapsuleLifecycle::NextInteraction
+                        && lease_token
+                            .as_deref()
+                            .is_none_or(|token| capsule.lease_token.as_deref() == Some(token))
+                });
+                Ok(eligible.then(|| storage.retract(&id)).flatten().is_some())
+            })?;
+            let _ = phronesis_mcp::action_log::append(
+                &phronesis_mcp::action_log::default_path(&root),
+                &phronesis_mcp::action_log::LogEntry::new("cli", "acknowledge_emitted_capsule")
+                    .with("id", id.clone())
+                    .with("removed", removed),
+            );
+            println!(
+                "{}",
+                serde_json::json!({"success": true, "removed": removed, "id": id})
+            );
+        }
+        ContextCmd::Retract { id, path } => {
+            let root = std::fs::canonicalize(path)?;
+            let removed = phronesis_mcp::capsule::transaction(&root, |storage| {
+                Ok(storage.retract(&id).is_some())
+            })?;
+            let _ = phronesis_mcp::action_log::append(
+                &phronesis_mcp::action_log::default_path(&root),
+                &phronesis_mcp::action_log::LogEntry::new("cli", "retract_emitted_capsule")
+                    .with("id", id.clone())
+                    .with("removed", removed),
+            );
+            println!(
+                "{}",
+                serde_json::json!({"success": true, "removed": removed, "id": id})
+            );
+        }
         ContextCmd::Predicates { json } => {
             if json {
                 println!(

@@ -26,6 +26,7 @@ fn warn(msg: &str) -> Action {
     Action {
         action_type: "constraint_warning".to_string(),
         params: vec![msg.to_string()],
+        ..Default::default()
     }
 }
 

@@ -64,6 +64,7 @@ impl ProductionState {
                     .iter()
                     .map(|param| apply_bindings(param, &bindings))
                     .collect(),
+                data: None,
             })
             .collect())
     }
@@ -203,6 +204,7 @@ impl ProductionNetwork {
                     substituted_actions.push(Action {
                         action_type: action.action_type.clone(),
                         params: substituted_params,
+                        data: substituted_action_data(action, &agenda_item.bindings),
                     });
                 }
 
@@ -274,10 +276,12 @@ impl ProductionNetwork {
             };
 
             let message = substituted.join(" ");
+            let data = substituted_action_data(action, &agenda_item.bindings);
             let payload = json!({
                 "action_type": action.action_type,
                 "message": message,
                 "params": substituted,
+                "data": data,
             });
 
             out.push(Consequence {
@@ -309,6 +313,43 @@ pub(crate) fn apply_bindings(param: &str, bindings: &Bindings) -> String {
         out = out.replace(var, value);
     }
     out
+}
+
+/// Apply RETE bindings to string leaves in structured action data without
+/// serializing the value. Object keys are deliberately static.
+fn apply_bindings_to_json(value: &serde_json::Value, bindings: &Bindings) -> serde_json::Value {
+    match value {
+        serde_json::Value::String(value) => {
+            serde_json::Value::String(apply_bindings(value, bindings))
+        }
+        serde_json::Value::Array(values) => serde_json::Value::Array(
+            values
+                .iter()
+                .map(|value| apply_bindings_to_json(value, bindings))
+                .collect(),
+        ),
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .map(|(key, value)| (key.clone(), apply_bindings_to_json(value, bindings)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+fn substituted_action_data(action: &Action, bindings: &Bindings) -> Option<serde_json::Value> {
+    let data = action.data.as_ref()?;
+    if action.action_type != "emit_capsule" {
+        return Some(apply_bindings_to_json(data, bindings));
+    }
+    let mut data = data.clone();
+    if let Some(body) = data.get_mut("body")
+        && let serde_json::Value::String(body_text) = body
+    {
+        *body_text = apply_bindings(body_text, bindings);
+    }
+    Some(data)
 }
 
 #[cfg(test)]
@@ -377,6 +418,7 @@ mod execute_agenda_item_substitution_tests {
             actions: vec![RuleAction {
                 action_type: "constraint_violation".to_string(),
                 params: vec!["Function `?fn` is bad".to_string()],
+                data: None,
             }],
         }
     }
@@ -405,6 +447,37 @@ mod execute_agenda_item_substitution_tests {
             vec!["Function `greet` is bad".to_string()]
         );
     }
+
+    #[test]
+    fn emit_capsule_substitutes_only_body_without_json_round_trip() {
+        let mut net = ProductionNetwork::new();
+        let mut rule = rule_with_mixed_param();
+        rule.actions[0].action_type = "emit_capsule".into();
+        rule.actions[0].data = Some(serde_json::json!({
+            "id": "static-id",
+            "body": "value=?fn",
+            "nested": ["?fn", {"literal-key": "line\n?fn\\end"}]
+        }));
+        net.add_rule(rule.clone(), 0);
+        let value = "quote=\" slash=\\ newline=\n unicode=雪";
+        let mut bindings = Bindings::new();
+        bindings.add_binding("?fn", value).unwrap();
+        let agenda_item = AgendaItem {
+            rule,
+            wme_list: vec![],
+            bindings,
+            salience: 0,
+            id: "ai-data".into(),
+            seq: 0,
+        };
+
+        let actions = net.execute_agenda_item(&agenda_item).unwrap();
+        let data = actions[0].data.as_ref().unwrap();
+        assert_eq!(data["id"], "static-id");
+        assert_eq!(data["body"], format!("value={value}"));
+        assert_eq!(data["nested"][0], "?fn");
+        assert!(serde_json::to_string(data).is_ok());
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +503,7 @@ mod fire_agenda_item_tests {
                 params: vec![
                     "`?fn` in ?file returns Result<_, String>. Use thiserror.".to_string(),
                 ],
+                ..Default::default()
             }],
         }
     }

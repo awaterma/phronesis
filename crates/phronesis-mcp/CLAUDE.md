@@ -272,7 +272,10 @@ The packs are composable and **independent**:
   (block-pattern candidate: erasure of mutability via
   `let x = { let mut tmp = ...; tmp }`), functions with 8+
   outer-scope `let` bindings (block-pattern candidate: scope
-  intermediate temporaries into a block). The rust-unofficial/patterns
+  intermediate temporaries into a block), synchronous lock guards whose
+  lexical scope crosses `.await`, unsafe blocks without a nearby `SAFETY:`
+  explanation, and known blocking filesystem/thread calls made directly
+  inside `async fn` (warning at hook time). The rust-unofficial/patterns
   book is the upstream source for
   the borrow-types, deny-warnings, and string-concat rules; the
   Rc/RefCell rule is a more general Rust-idiom observation.
@@ -282,9 +285,13 @@ The packs are composable and **independent**:
   `print(` in `.rhai` scripts (use the host-registered output channel,
   whatever your `Engine` exposes via `register_fn`). Generic messages
   — layer project-specific guidance into your own `.phronesis/rules.json`.
-- `python` — bare-except blocked, `print()` warning, mutable-default-arg
-  warning, plus tree-sitter AST audits (bare-`except:` by enclosing
-  function, public `def`s missing a docstring)
+- `python` — bare-except blocked; warnings for `print()`, mutable default
+  arguments, import-time I/O, and identity comparisons against value
+  literals; audits for function calls in defaults, swallowed typed
+  exceptions, high parameter counts, missing public docstrings, mutated
+  module-level containers, and star imports. The last two remain audit-only
+  because name shadowing and package `__init__.py` re-exports can be
+  intentional.
 - `typescript` — `: any` and `console.log` warnings, plus tree-sitter AST
   rules (explicit `any`, `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`
   suppressions, non-null `!` assertions)
@@ -312,7 +319,10 @@ The packs are composable and **independent**:
   `init` builds `.phronesis/graph.jsonl` for you; the `PostToolUse` sensor
   keeps it current thereafter. Edits that bypass the hook (`git checkout`,
   rebase, shell edits) mark the graph stale, which downgrades these rules to
-  warnings until `phr-mcp graph rebuild`. Rust, Python, and TypeScript produce
+  warnings until `phr-mcp graph rebuild`. Every hooked document save triggers
+  a complete graph rebuild; `on_save` remains available as a lower-level
+  incremental API for explicit callers and performance comparisons. Rust,
+  Python, and TypeScript produce
   graph facts. Rust's risky-call watchlist covers panic-at-call-site APIs;
   TypeScript's narrower `!` watchlist means "unchecked type assumption," not
   that failure occurs at the assertion site. Both structural rules can fire
@@ -333,7 +343,8 @@ The packs are composable and **independent**:
 - `none` — empty rules array (hooks still wired)
 
 `base` is shorthand for every language-agnostic pack —
-`llm,confidence,journey,structural,context`. It is included automatically for
+`llm,confidence,journey,structural,context`. This includes graph construction,
+graph-derived rules, and every other language-neutral subsystem. It is included automatically for
 every selection except `none`, so name only the language additions:
 
 ```
@@ -450,6 +461,67 @@ Rules are stored in `.phronesis/rules.json`. The current (v2) shape uses readabl
 `when`/`then`/predicate-as-key syntax. Both v1 and v2 files are parsed on load;
 only v2 is written. Existing v1 files continue to work — run `migrate-rules` to
 convert them.
+
+### Layered rule loading
+
+Projects can opt into layered rules with `.phronesis/loader.json`. Layers are
+processed in declaration order. When two layers contain the same rule ID, the
+later definition wins. Without `loader.json`, Phronesis retains the legacy
+behavior and reads only `.phronesis/rules.json`.
+
+```json
+{
+  "version": 1,
+  "layers": [
+    { "name": "project", "path": ".phronesis/rules.json" },
+    {
+      "name": "team",
+      "path": ".phronesis/team-rules.json",
+      "decision": ".phronesis/wiki/decisions/ADR-team-policy.md",
+      "optional": true
+    },
+    {
+      "name": "personal",
+      "path": "~/.config/phronesis/rules.json",
+      "decision": "~/.config/phronesis/decisions/ADR-personal-policy.md",
+      "optional": true
+    }
+  ]
+}
+```
+
+Paths relative to the project root, absolute paths, and `~/` paths are
+supported. `optional: true` skips an absent layer; malformed files still fail
+closed. An override asserts this working-memory fact:
+
+```text
+rule_overridden(rule_id, old_layer, old_path, new_layer, new_path, decision)
+```
+
+The fact's source is `rule_layers`. A third override records another fact, so
+the full resolution chain remains visible. The winning layer's `decision`
+supplies the ADR provenance (or an empty final argument when omitted).
+
+MCP autosave remains project-scoped: it never copies winning team or personal
+rules into `.phronesis/rules.json`.
+
+Override facts are ordinary RETE facts, so rules can govern the layering
+process itself. This example fires once `policy` has been replaced by three
+successive layers:
+
+```json
+{
+  "id": "too-many-policy-overrides",
+  "phase": "pre",
+  "priority": 20,
+  "when": [
+    {
+      "__script__": "facts_count('rule_overridden', ['policy','*','*','*','*','*']) >= 3"
+    }
+  ],
+  "then": { "warn": "policy has been overridden at least three times" }
+}
+```
 
 ### Condition shape — `when`
 
@@ -610,7 +682,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/rules_file.rs` — Disk format for rules.json: v2 `SourceRule`/`WhenClause` types, v1+v2 deserialization, `unfold_or` (DNF expansion), `read`/`write_atomic`/`read_source`/`write_source`
 - `src/security.rs` — Path canonicalization, size caps, input validators
 - `src/diff_extract.rs` — Regex-based diff facts (function_added, import_added, etc.)
-- `src/syntax/` — Tree-sitter AST predicates for Rust, Swift, Python, and TypeScript (e.g. function_returns_result_string, python_bare_except, ts_explicit_any). The Rust analyzer is split across `src/syntax/rust/{mod,walk,derives,counts,signatures,docs,assertions,eval}.rs`.
+- `src/syntax/` — Tree-sitter AST predicates for Rust, Swift, Python, and TypeScript (e.g. function_returns_result_string, python_bare_except, ts_explicit_any). The Rust analyzer is split across `src/syntax/rust/{mod,walk,derives,counts,signatures,docs,assertions,eval,hazards}.rs`.
 - `src/outcomes/` — Confidence scoring (SPEC-confidence-scoring). Grounded
   `build_outcome`/`test_outcome`/`bug_check_outcome` facts behind declarative
   toolchain defs (built-in cargo def + `.phronesis/toolchains.json`, one
@@ -634,3 +706,13 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
   `get_journey` MCP tool.
 - `docs/RUST-PATTERNS-GUIDE.md` — Rust coding standards (source for `extract_rules`)
 - `docs/PATTERNS-WORKFLOW.md` — End-user workflow guide
+
+### Emitted capsule lifecycle
+
+`then.emit_capsule` is structured action data, never JSON embedded in an action
+parameter. Its `id` is static; only string leaves such as `body` receive RETE
+binding substitution. Interaction rendering packs emitted IDs as `emitted:<id>`
+beside static `nudge:<id>` items. SessionStart never renders emitted capsules.
+For `next_interaction`, selection leases rather than consumes the record;
+acknowledgement removes it, and an unacknowledged five-minute lease retries.
+Use `phr-mcp context list|acknowledge|retract` or the corresponding MCP tools.

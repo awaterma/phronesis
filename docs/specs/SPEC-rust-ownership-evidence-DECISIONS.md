@@ -464,6 +464,11 @@ check can never match, producing permanent un-self-healing drift.
 
 ## D17. Do not let enabling ownership turn every save into a full rebuild
 
+**Superseded 2026-08-18.** Hooked document saves now trigger a full rebuild by
+default. The incremental `on_save` path remains available for explicit callers
+and measurement, but freshness is prioritized until observed hook costs justify
+revisiting this choice.
+
 **Problem.** Today, if `.phronesis/graph.toml` merely **exists**, the
 `data_contract_input` clause in `sync.rs` makes every save of a `.rs`/`.json`/
 `.yaml` file trigger a full `rebuild(root)`. Since enabling ownership means

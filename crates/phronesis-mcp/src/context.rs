@@ -100,7 +100,6 @@ fn truncate_with_elision(s: &str, max_bytes: usize) -> String {
     format!("{}{}", &s[..cut], MARKER)
 }
 
-use crate::rules_file;
 use std::path::Path;
 
 /// Default filename for the user-curated "durable directives" file. The
@@ -234,6 +233,15 @@ pub fn emit(project_root: &Path, result: &RenderResult) -> String {
         eprintln!("phronesis context: {diagnostic}");
     }
     metrics::record(project_root, result);
+    if result.event == ContextEvent::Interaction
+        && let Err(error) = crate::capsule::lease_selected(
+            project_root,
+            &result.emitted_selected,
+            crate::capsule::unix_secs_now(),
+        )
+    {
+        eprintln!("phronesis context: emitted capsule lease failed: {error}");
+    }
     result.envelope()
 }
 
@@ -256,9 +264,12 @@ pub fn run_session_context(project_root: &Path, max_bytes: usize) -> String {
     // `journey::current_sid` — see SPEC-journey-facts §sid.
     let _ = crate::journey::current_sid(project_root);
 
-    let path = rules_file::default_path(project_root);
-    let rules_body = rules_file::read(&path)
-        .map(|rules| build_session_body(&rules))
+    let rules_body = crate::rule_layers::resolve(project_root)
+        .map(|resolved| {
+            build_session_body(&RulesFile {
+                rules: resolved.rules,
+            })
+        })
         .unwrap_or_default();
 
     let durable = build_durable_section(&read_durable_directives(project_root));
@@ -322,6 +333,15 @@ pub async fn run_body_configured(
                 eprintln!("phronesis context: {diagnostic}");
             }
             metrics::record(project_root, &result);
+            if event == ContextEvent::Interaction
+                && let Err(error) = crate::capsule::lease_selected(
+                    project_root,
+                    &result.emitted_selected,
+                    crate::capsule::unix_secs_now(),
+                )
+            {
+                eprintln!("phronesis context: emitted capsule lease failed: {error}");
+            }
             result.packed.body.clone()
         }
         None => {
@@ -511,6 +531,7 @@ mod tests {
             actions: vec![DiskAction {
                 action_type: action_type.to_string(),
                 params: vec![message.to_string()],
+                ..Default::default()
             }],
             silent: None,
             audit: None,
