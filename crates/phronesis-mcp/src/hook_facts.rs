@@ -198,10 +198,12 @@ pub(crate) async fn assert_test_facts(
         return Ok(());
     }
     let candidates = test_candidate_paths(project_root, file_path);
-    let test_bodies: Vec<String> = candidates
-        .iter()
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .collect();
+    let mut test_bodies: Vec<String> = Vec::with_capacity(candidates.len());
+    for p in &candidates {
+        if let Ok(body) = tokio::fs::read_to_string(p).await {
+            test_bodies.push(body);
+        }
+    }
 
     for (i, name) in function_names.iter().enumerate() {
         let has_test = test_bodies.iter().any(|body| body.contains(name.as_str()));

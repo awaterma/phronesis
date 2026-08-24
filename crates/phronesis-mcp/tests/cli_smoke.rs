@@ -121,6 +121,49 @@ fn audit_exits_zero_and_emits_audit_output() {
     );
 }
 
+/// `audit --rule X` where X names a rule stored as `X#or0`/`X#or1` (an `or`
+/// clause in `when`) must select those expansions; an unmatched filter must
+/// say so rather than blame `.gitignore` for "walked 0 files".
+#[test]
+fn audit_rule_filter_matches_or_expansions_and_reports_unmatched_filter() {
+    let dir = tempfile::tempdir().unwrap();
+    let ph = dir.path().join(".phronesis");
+    std::fs::create_dir_all(&ph).unwrap();
+    std::fs::write(
+        ph.join("rules.json"),
+        r#"{"rules":[{
+            "id":"risky-call",
+            "phase":"pre",
+            "audit":true,
+            "when":[{"or":[{"new_content_contains":".unwrap()"},{"new_content_contains":"panic!("}]}],
+            "then":{"constraint_warning":"risky"}
+        }]}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn f() { x.unwrap(); }\n").unwrap();
+
+    let out = run_bin(&["audit", "--rule", "risky-call", "--json"], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stdout.contains("risky-call#or0"),
+        "expected the #or0 expansion to be audited; stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(!stderr.contains("walked 0 files"), "stderr: {stderr}");
+
+    let out = run_bin(&["audit", "--rule", "risky"], dir.path());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no opted-in rule matches `risky`"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("risky-call"),
+        "near-miss hint missing: {stderr}"
+    );
+    assert!(!stderr.contains("walked 0 files"), "stderr: {stderr}");
+}
+
 #[test]
 fn stats_exits_zero_on_empty_log() {
     let dir = tempfile::tempdir().unwrap();

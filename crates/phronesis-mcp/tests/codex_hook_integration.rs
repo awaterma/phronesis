@@ -73,6 +73,14 @@ fn warning_rule() -> Value {
     }]})
 }
 
+fn post_warning_rule() -> Value {
+    json!({"version": 2, "rules": [{
+        "id": "warn-post-cargo", "phase": "post", "priority": 10,
+        "when": [{"bash_command_matches": "cargo test"}],
+        "then": {"warn": "post-run test advisory"}
+    }]})
+}
+
 fn write_predicate_provider(root: &std::path::Path, name: &str, script: &str) {
     let predicates = root.join(".phronesis/predicates");
     fs::create_dir_all(&predicates).expect("predicate provider dir");
@@ -129,9 +137,55 @@ fn codex_hook_cli_decodes_current_pretooluse_and_denies() {
     ));
 
     let output = run_hook(project.path(), &payload);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "Codex consumes the structured deny response; process exit stays zero"
+    );
     let body = response(&output);
     assert_eq!(body["hookSpecificOutput"]["hookEventName"], "PreToolUse");
     assert_eq!(body["hookSpecificOutput"]["permissionDecision"], "deny");
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl"))
+        .expect("logical verdict log");
+    let entry: Value =
+        serde_json::from_str(log.lines().last().expect("log line")).expect("log JSON");
+    assert_eq!(
+        entry["exit"], 2,
+        "action log preserves the logical block code"
+    );
+}
+
+#[test]
+fn codex_post_advisory_uses_json_with_zero_process_exit_and_logs_logical_one() {
+    let project = tempfile::tempdir().expect("temp project");
+    write_rules(project.path(), post_warning_rule());
+    let payload = json!({
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "session_id": "post-advisory",
+        "turn_id": "t",
+        "tool_use_id": "u",
+        "tool_input": {"command": "cargo test --workspace"},
+        "tool_response": {"stdout": "ok", "stderr": "", "exit_code": 0}
+    });
+
+    let output = run_hook(project.path(), &payload);
+    assert_eq!(output.status.code(), Some(0));
+    let body = response(&output);
+    assert!(
+        body["systemMessage"]
+            .as_str()
+            .is_some_and(|message| message.contains("post-run test advisory")),
+        "post warnings must be represented in structured JSON: {body}"
+    );
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl"))
+        .expect("logical verdict log");
+    let entry: Value =
+        serde_json::from_str(log.lines().last().expect("log line")).expect("log JSON");
+    assert_eq!(
+        entry["exit"], 1,
+        "action log preserves the logical advisory code"
+    );
 }
 
 #[test]

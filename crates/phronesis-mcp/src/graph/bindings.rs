@@ -104,20 +104,24 @@ fn extract_call_candidates(literal: &str, out: &mut BTreeSet<String>) {
         }
 
         let qualified = start > 0 && matches!(bytes[start - 1], b'.' | b':' | b'[');
-        let mut next = end;
-        while next < bytes.len() && bytes[next].is_ascii_whitespace() {
-            next += 1;
-        }
-        // Regex-authored rules may escape the opening parenthesis.
-        if next < bytes.len() && bytes[next] == b'\\' {
-            next += 1;
-        }
-        let call_shaped = next < bytes.len() && bytes[next] == b'(';
-        if !qualified && call_shaped {
+        if !qualified && call_follows(bytes, end) {
             out.insert(literal[start..end].to_string());
         }
         start = end;
     }
+}
+
+/// Whether an opening parenthesis follows `from`, past whitespace and an
+/// optional regex escape (regex-authored rules may escape the parenthesis).
+fn call_follows(bytes: &[u8], from: usize) -> bool {
+    let mut next = from;
+    while next < bytes.len() && bytes[next].is_ascii_whitespace() {
+        next += 1;
+    }
+    if next < bytes.len() && bytes[next] == b'\\' {
+        next += 1;
+    }
+    next < bytes.len() && bytes[next] == b'('
 }
 
 /// Stable hash of the canonical serialized rule form.
@@ -138,13 +142,33 @@ fn definitions(edges: &[Edge]) -> BTreeMap<String, BTreeSet<String>> {
     out
 }
 
+/// Identity of one reconciliation pass: the graph generation it binds
+/// against and the wall-clock time it records.
+#[derive(Debug, Clone, Copy)]
+pub struct ReconcileStamp {
+    pub generation: u64,
+    pub now: i64,
+}
+
 /// Reconcile prior binding history with the current rules and graph.
+///
+/// Thin shim over [`reconcile_with`] kept for existing callers.
 pub fn reconcile(
     persisted: &BindingSet,
     rules: &[SourceRule],
     edges: &[Edge],
     generation: u64,
     now: i64,
+) -> BindingSet {
+    reconcile_with(persisted, rules, edges, ReconcileStamp { generation, now })
+}
+
+/// Reconcile prior binding history with the current rules and graph.
+pub fn reconcile_with(
+    persisted: &BindingSet,
+    rules: &[SourceRule],
+    edges: &[Edge],
+    stamp: ReconcileStamp,
 ) -> BindingSet {
     let defs = definitions(edges);
     let rule_data: BTreeMap<_, _> = rules
@@ -164,33 +188,15 @@ pub fn reconcile(
         if hash != &prior.rule_hash || !candidates.contains(&prior.symbol) {
             continue;
         }
-        let current = defs.get(&prior.symbol).cloned().unwrap_or_default();
-        let original: BTreeSet<_> = prior.bound_to.iter().cloned().collect();
-        let surviving: Vec<_> = original.intersection(&current).cloned().collect();
-        let relocated: Vec<_> = current.difference(&original).cloned().collect();
-        let state = if !surviving.is_empty() {
-            BindingState::Bound
-        } else if !relocated.is_empty() {
-            BindingState::Moved
-        } else {
-            BindingState::Stale
-        };
-        let stale_at = match state {
-            BindingState::Stale => prior.stale_at.or(Some(now)),
-            BindingState::Bound | BindingState::Moved => None,
-        };
         existing_keys.insert((prior.rule.clone(), prior.symbol.clone()));
-        bindings.push(Binding {
-            surviving,
-            relocated,
-            state,
-            stale_at,
-            ..prior.clone()
-        });
+        bindings.push(carry_forward(prior, &defs, stamp.now));
     }
 
-    for rule in rules {
-        let hash = rule_hash(rule);
+    for (rule, hash) in rules.iter().map(|rule| (rule, rule_hash(rule))) {
+        let key = RuleKey {
+            id: &rule.id,
+            hash: &hash,
+        };
         for symbol in extract(rule) {
             if existing_keys.contains(&(rule.id.clone(), symbol.clone())) {
                 continue;
@@ -198,25 +204,63 @@ pub fn reconcile(
             let Some(paths) = defs.get(&symbol).filter(|paths| !paths.is_empty()) else {
                 continue;
             };
-            let bound_to: Vec<_> = paths.iter().cloned().collect();
-            bindings.push(Binding {
-                rule: rule.id.clone(),
-                rule_hash: hash.clone(),
-                symbol,
-                surviving: bound_to.clone(),
-                bound_to,
-                relocated: Vec::new(),
-                bound_at: now,
-                stale_at: None,
-                state: BindingState::Bound,
-            });
+            bindings.push(fresh_binding(key, symbol, paths, stamp.now));
         }
     }
     bindings.sort_by(|a, b| (&a.rule, &a.symbol).cmp(&(&b.rule, &b.symbol)));
     BindingSet {
         version: BINDINGS_VERSION,
-        generation,
+        generation: stamp.generation,
         bindings,
+    }
+}
+
+/// Re-evaluate a prior binding against the current definitions.
+fn carry_forward(prior: &Binding, defs: &BTreeMap<String, BTreeSet<String>>, now: i64) -> Binding {
+    let current = defs.get(&prior.symbol).cloned().unwrap_or_default();
+    let original: BTreeSet<_> = prior.bound_to.iter().cloned().collect();
+    let surviving: Vec<_> = original.intersection(&current).cloned().collect();
+    let relocated: Vec<_> = current.difference(&original).cloned().collect();
+    let state = if !surviving.is_empty() {
+        BindingState::Bound
+    } else if !relocated.is_empty() {
+        BindingState::Moved
+    } else {
+        BindingState::Stale
+    };
+    let stale_at = match state {
+        BindingState::Stale => prior.stale_at.or(Some(now)),
+        BindingState::Bound | BindingState::Moved => None,
+    };
+    Binding {
+        surviving,
+        relocated,
+        state,
+        stale_at,
+        ..prior.clone()
+    }
+}
+
+/// A rule's id and content hash, as recorded on its bindings.
+#[derive(Clone, Copy)]
+struct RuleKey<'a> {
+    id: &'a str,
+    hash: &'a str,
+}
+
+/// A binding for a symbol the graph defines and no prior binding covers.
+fn fresh_binding(rule: RuleKey<'_>, symbol: String, paths: &BTreeSet<String>, now: i64) -> Binding {
+    let bound_to: Vec<_> = paths.iter().cloned().collect();
+    Binding {
+        rule: rule.id.to_string(),
+        rule_hash: rule.hash.to_string(),
+        symbol,
+        surviving: bound_to.clone(),
+        bound_to,
+        relocated: Vec::new(),
+        bound_at: now,
+        stale_at: None,
+        state: BindingState::Bound,
     }
 }
 
@@ -235,9 +279,8 @@ pub fn load(path: &Path) -> std::io::Result<Option<BindingSet>> {
 /// rebuilding it. Hook-time callers use [`load`] and remain read-only.
 pub fn load_recovering(path: &Path) -> std::io::Result<Option<BindingSet>> {
     let body = match std::fs::read_to_string(path) {
-        Ok(body) => body,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error),
+        result => result?,
     };
     match serde_json::from_str::<BindingSet>(&body) {
         Ok(set) if set.version == BINDINGS_VERSION => Ok(Some(set)),
@@ -431,6 +474,44 @@ mod tests {
         assert_eq!(recovered.bindings[0].state, BindingState::Bound);
         assert_eq!(recovered.bindings[0].stale_at, None);
         assert_eq!(recovered.bindings[0].bound_at, 10);
+    }
+
+    #[test]
+    fn pre_reconcile_stamp_v1_fixture_remains_idempotent_and_marks_stale_once() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = bindings_path(dir.path());
+        std::fs::create_dir_all(path.parent().expect("bindings parent")).expect("mkdir");
+        std::fs::write(
+            &path,
+            include_str!("../../tests/fixtures/graph/bindings-v1.json"),
+        )
+        .expect("legacy fixture");
+
+        let persisted = load_recovering(&path)
+            .expect("load legacy bindings")
+            .expect("supported v1 fixture");
+        let rules = [rule("legacy-call", "legacy_call(")];
+        assert_eq!(persisted.bindings[0].rule_hash, rule_hash(&rules[0]));
+
+        let unchanged = reconcile(
+            &persisted,
+            &rules,
+            &[defined("crate::old::legacy_call")],
+            7,
+            200,
+        );
+        assert_eq!(
+            unchanged, persisted,
+            "same graph must be an idempotent load/reconcile"
+        );
+
+        let stale = reconcile(&unchanged, &rules, &[], 8, 300);
+        assert_eq!(stale.bindings[0].state, BindingState::Stale);
+        assert_eq!(stale.bindings[0].stale_at, Some(300));
+        assert_eq!(stale.bindings[0].bound_to, ["crate::old::legacy_call"]);
+
+        let still_stale = reconcile(&stale, &rules, &[], 9, 400);
+        assert_eq!(still_stale.bindings[0].stale_at, Some(300));
     }
 
     #[test]

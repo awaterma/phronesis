@@ -14,8 +14,114 @@ pub fn extract(content: &str) -> SyntaxFacts {
         swift_throwing_functions: extract_throwing_functions(&parsed),
         swift_async_functions: extract_async_functions(&parsed),
         swift_force_unwraps: extract_force_unwraps(&parsed),
+        swift_governed_constructs: extract_governed_constructs(&parsed),
         ..SyntaxFacts::default()
     }
+}
+
+fn extract_governed_constructs(parsed: &ParsedFile) -> Vec<(String, String)> {
+    let ParsedFile::Swift { tree, source } = parsed else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cursor = tree.walk();
+    walk_governed_constructs(&mut cursor, source.as_bytes(), None, &mut out);
+    out
+}
+
+fn walk_governed_constructs(
+    cursor: &mut tree_sitter::TreeCursor,
+    source: &[u8],
+    enclosing_fn: Option<String>,
+    out: &mut Vec<(String, String)>,
+) {
+    let node = cursor.node();
+    let enclosing_fn = if node.kind() == "function_declaration" {
+        node.child_by_field_name("name")
+            .and_then(|name| name.utf8_text(source).ok())
+            .map(str::to_string)
+            .or(enclosing_fn)
+    } else {
+        enclosing_fn
+    };
+    if let Some(construct) = classify_governed_construct(node, source) {
+        out.push((
+            enclosing_fn
+                .clone()
+                .unwrap_or_else(|| "<module>".to_string()),
+            construct.to_string(),
+        ));
+    }
+    if cursor.goto_first_child() {
+        loop {
+            walk_governed_constructs(cursor, source, enclosing_fn.clone(), out);
+            if !cursor.goto_next_sibling() {
+                break;
+            }
+        }
+        cursor.goto_parent();
+    }
+}
+
+fn classify_governed_construct(node: Node, source: &[u8]) -> Option<&'static str> {
+    match node.kind() {
+        "try_expression" => {
+            let mut cursor = node.walk();
+            node.children(&mut cursor)
+                .find(|child| child.kind() == "try_operator")
+                .and_then(|operator| operator.utf8_text(source).ok())
+                .filter(|operator| operator.split_whitespace().collect::<String>() == "try!")
+                .map(|_| "try_force")
+        }
+        "as_expression" => {
+            let mut cursor = node.walk();
+            node.children(&mut cursor)
+                .find(|child| child.kind() == "as_operator")
+                .and_then(|operator| operator.utf8_text(source).ok())
+                .filter(|operator| operator.split_whitespace().collect::<String>() == "as!")
+                .map(|_| "force_cast")
+        }
+        "call_expression" => classify_call(node, source),
+        "property_declaration" => {
+            is_static_shared_property(node, source).then_some("mutable_singleton")
+        }
+        _ => None,
+    }
+}
+
+fn classify_call(node: Node, source: &[u8]) -> Option<&'static str> {
+    let callee = node.named_child(0)?.utf8_text(source).ok()?;
+    match callee {
+        "fatalError" => Some("fatal_error"),
+        "CGRectMake" | "CGSizeMake" | "CGPointMake" | "CGVectorMake" | "UIEdgeInsetsMake"
+        | "NSMakeRect" | "NSMakeSize" | "NSMakePoint" | "NSMakeRange" => Some("legacy_constructor"),
+        "arc4random" | "arc4random_uniform" | "drand48" => Some("legacy_random"),
+        _ => None,
+    }
+}
+
+fn is_static_shared_property(node: Node, source: &[u8]) -> bool {
+    let Some(name) = node.child_by_field_name("name") else {
+        return false;
+    };
+    if name.utf8_text(source) != Ok("shared") {
+        return false;
+    }
+    let mut cursor = node.walk();
+    let children: Vec<_> = node.children(&mut cursor).collect();
+    let is_variable = children.iter().any(|child| {
+        child.kind() == "value_binding_pattern"
+            && child
+                .utf8_text(source)
+                .is_ok_and(|text| text.split_whitespace().next() == Some("var"))
+    });
+    is_variable
+        && children.iter().any(|child| {
+            child.kind() == "modifiers"
+                && child
+                    .utf8_text(source)
+                    .is_ok_and(|text| text.split_whitespace().any(|token| token == "static"))
+        })
 }
 
 /// Walk every Swift function and count force-unwrap (`!`) postfix expressions
@@ -155,6 +261,32 @@ pub(super) fn walk_swift_functions<F: FnMut(Node, &str)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extracts_governed_constructs_from_parser_nodes() {
+        let facts = extract(
+            "func f(x: Any) { let a = try! load(); let b = x as! String; fatalError(\"x\"); CGRectMake(0,0,1,1); arc4random() }\nfinal class S { static var shared = S() }",
+        );
+        assert_eq!(
+            facts.swift_governed_constructs,
+            vec![
+                ("f".to_string(), "try_force".to_string()),
+                ("f".to_string(), "force_cast".to_string()),
+                ("f".to_string(), "fatal_error".to_string()),
+                ("f".to_string(), "legacy_constructor".to_string()),
+                ("f".to_string(), "legacy_random".to_string()),
+                ("<module>".to_string(), "mutable_singleton".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn governed_constructs_ignore_comments_strings_and_neighbors() {
+        let facts = extract(
+            "// try! as! fatalError( CGRectMake( arc4random( static var shared\nlet note = \"fatalError( try!\"\nfunc safe() { logFatalError(); console.fatalError() }\nfinal class S { static let shared = S() }",
+        );
+        assert!(facts.swift_governed_constructs.is_empty());
+    }
 
     #[test]
     fn empty_input_yields_no_facts() {

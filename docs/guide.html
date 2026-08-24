@@ -665,7 +665,7 @@
   <div>
     <div class="meta">
       <span class="bar"></span>
-      <span>Phronesis documentation · v0.26.0</span>
+      <span>Phronesis documentation · v0.30.0</span>
       <span class="bar"></span>
     </div>
     <h1 id="title">Loop<br>Programming<br><span class="it">Guide.</span></h1>
@@ -879,19 +879,21 @@ diff). That is the headline capability for loop programming.</p>
 (ending the loop)</h3>
 <p>A loop’s most dangerous moment is when it decides it’s <em>done</em>.
 The model is optimistic; the build may be red. The
-<code>confidence</code> pack gates <code>git commit</code> on
+<code>confidence</code> pack surfaces Git mutations against
 <strong>grounded signals</strong> — actual build, test, and known-bug
-outcomes read through declarative toolchain definitions (built-in Cargo
-plus project definitions in <code>.phronesis/toolchains.json</code>) and
-one generic parser — not on syntactic proxies:</p>
+outcomes read through declarative toolchain definitions (built-in Cargo,
+<code>xcodebuild</code>, and SwiftPM plus project definitions in
+<code>.phronesis/toolchains.json</code>) and one generic parser — not on
+syntactic proxies:</p>
 <ul class="keys">
-<li><strong>low</strong> confidence → blocks the commit</li>
+<li><strong>low</strong> confidence → warns with incomplete/failing evidence</li>
 <li><strong>medium</strong> → warns</li>
 <li><strong>high</strong> → passes clean</li>
 </ul>
-<p>Pair it with the <code>llm</code> pack’s “unverified completion
-claim” rule and you have a loop that physically cannot declare victory
-before the work compiles and passes. The default platform writes
+<p>Pair it with the <code>llm</code> pack’s blocking “unverified completion
+claim” rule and you have an advisory operational signal backed by a separate
+guard against claiming unverified success. Confidence itself does not refuse
+the Git command. The default platform writes
 <code>.phronesis/confidence.json</code>; inspect the current band with
 <code>phr-mcp confidence</code>. (Full design: <a
 href="./explainer.html#confidence">SPEC-confidence-scoring</a>.)</p>
@@ -920,7 +922,7 @@ with <code>/hooks</code>; Phronesis does not bypass that trust
 boundary.</p>
 <p>You can sanity-check the install at any time:</p>
 <div class="sourceCode" id="cb3"><pre class="sourceCode sh"><code class="sourceCode bash"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="ex">$</span> phr-mcp <span class="at">--version</span></span>
-<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">phr-mcp</span> 0.26.0</span></code></pre></div>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="ex">phr-mcp</span> 0.30.0</span></code></pre></div>
 <p>Everything in the rest of this guide is drawn from the actual state
 of this repository at the time of writing — the configs, rules, stats,
 and confidence band shown below are what <code>phr-mcp</code> reports on
@@ -1137,8 +1139,9 @@ call.</p>
 <h2>Watching the loop</h2>
 </div>
 <p>Phronesis gives you read-only surfaces to see what the loop is doing
-and tune your rules. The outputs below are real captures from this
-repository at the time of writing.</p>
+and tune your rules. The outputs below are historical captures from this
+repository. They predate the 0.30 policy change that made low confidence
+advisory; the legacy rule ID remains stable even though it now warns.</p>
 <p><strong><code>phr-mcp stats --since 7d</code></strong> — per-rule
 activity over the last week. This is where you discover which rules are
 pulling their weight and which are dead code:</p>
@@ -1161,11 +1164,10 @@ Total: 14 blocked, 389 warned across 11 rules (window: 1w)</code></pre>
 <li><strong><code>build-staleness</code> is the workhorse</strong> (125
 warns). The single tagger in §4 is doing real work — the loop genuinely
 does forget to rebuild.</li>
-<li><strong><code>confidence-low-blocks-commit</code> actually blocked
-12 commits.</strong> Layer 3 is not theoretical; it intercepted closure
-12 times this week alone — the most recent of those, three minutes
-before this capture, was the commit that landed this very guide (see
-§8).</li>
+<li><strong><code>confidence-low-blocks-commit</code> blocked 12 commits
+under the historical policy.</strong> The stable rule ID now emits a warning
+instead; this capture is evidence of earlier behavior, not the current
+contract.</li>
 <li>The <code>#or0..#or4</code> siblings under
 <code>build-staleness</code> are the per-branch fire counts for the
 <code>or</code> clause from §5 — useful when debugging which arm of a
@@ -1174,7 +1176,7 @@ multi-branch rule is doing the matching.</li>
 <p><strong><code>phr-mcp confidence</code></strong> — current band and
 grounded signals. Three real captures from this session, in temporal
 order:</p>
-<pre><code>$ phr-mcp confidence --json   # build was stale; commit attempt would block
+<pre><code>$ phr-mcp confidence --json   # build was stale; current policy would warn
 { &quot;band&quot;: &quot;low&quot;,    &quot;signals&quot;: [&quot;compile&quot;],          &quot;subject&quot;: &quot;unit-…&quot; }
 
 $ phr-mcp confidence --json   # after cargo check + cargo test refreshed signals
@@ -1317,8 +1319,8 @@ call was an edit. Each fire was a quiet course-correct: “rebuild before
 you write more.” <code>warn-rust-function-param-count-high</code> chimed
 in 106 times on the syntactic side, but the <em>temporal</em> warning
 was the one preventing late-loop collapse.</p>
-<p><strong>Layer 3 (closure)</strong> intercepted closure 12 separate
-times. <code>confidence-low-blocks-commit</code> blocked
+<p><strong>Layer 3 (closure), under the pre-0.30 policy,</strong> intercepted
+closure 12 separate times. <code>confidence-low-blocks-commit</code> blocked
 <code>git commit</code> because the build-or-test signal in
 <code>.phronesis/outcomes/</code> was red. The companion
 <code>confidence-medium-warns-commit</code> warned 22 more times —
@@ -1326,7 +1328,7 @@ yellow band, “commit if you mean to, but the signal is unstable.” Across
 the same window <code>nudge-verify-before-commit</code> fired 57 times
 reminding the loop to actually run the verification before reaching for
 the commit verb.</p>
-<p>The cleanest illustration is the most recent one of those 12 blocks,
+<p>The cleanest historical illustration is the most recent one of those 12 blocks,
 three minutes before the stats capture above: <strong>the commit that
 landed this very guide.</strong> The loop tried <code>git commit</code>
 with a stale red compile signal in <code>.phronesis/outcomes/</code>,
@@ -1339,7 +1341,7 @@ before committing.</code></pre>
 <code>cargo test -p phronesis-mcp</code>, which stamped
 <code>outcome:compile_ok</code> and <code>outcome:test_pass</code>
 against the open subject. The band rose to <code>medium</code>, the
-block fell back to a warn, and the commit landed:</p>
+historical block fell back to a warn, and the commit landed:</p>
 <pre><code>$ git log --oneline -1
 5f5e84c docs(loop-guide): rewrite with real captures from this repo</code></pre>
 <p>None of this fired from a <code>CLAUDE.md</code> paragraph that might
@@ -1347,8 +1349,9 @@ have been compacted away. It fired from disk, from outside the context
 window, against the recorded exit status of the last
 <code>cargo check</code>. The same mechanism would fire identically at
 turn 12 or at turn 1,200.</p>
-<p>That is the entire premise of the guide, captured live — the guide
-demonstrates itself.</p>
+<p>That historical capture demonstrates the evidence loop. Current releases
+keep the same observability but warn at both low and medium confidence; CI or
+an explicit project rule must provide any desired refusal.</p>
 </section>
 <div class="dingbat">⁘ ⁘ ⁘</div>
 <section class="chunk" id="inner-loop-vs.-outer-loop">
@@ -1471,7 +1474,7 @@ Catalogue</a> — visual reference of starter rules</li>
 </main>
 <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
   <a href="./index.html">Home</a> &middot; <a href="./explainer.html">Explainer</a> &middot; <a href="./catalogue.html">Catalogue</a> &middot; <span class="doc-web-here">Guide</span> &middot; <a href="./changelog.html">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-  <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.26.0</span>
+  <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.30.0</span>
 </nav>
 <footer>
   <div>
@@ -1484,7 +1487,7 @@ Catalogue</a> — visual reference of starter rules</li>
   </div>
   <div class="folio">
     ⁂
-    <small>End · Vol. 0.26.0</small>
+    <small>End · Vol. 0.30.0</small>
   </div>
 </footer>
 </div>

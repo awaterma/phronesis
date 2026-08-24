@@ -195,8 +195,7 @@ impl Sensor<'_> {
                     found.insert(name);
                 }
             }
-            let mut cursor = n.walk();
-            stack.extend(n.children(&mut cursor));
+            stack.extend(n.children(&mut n.walk()));
         }
         found
     }
@@ -269,16 +268,9 @@ impl Sensor<'_> {
     /// level. `from . import x` names submodule `x` of that package; `from
     /// .x import y` names module `x` within it.
     fn relative(&self, statement: Node, module: Node) -> Vec<Vec<String>> {
-        let prefix = module
-            .children(&mut module.walk())
-            .find(|c| c.kind() == "import_prefix")
-            .map(|c| text(c, self.source).chars().filter(|c| *c == '.').count())
-            .unwrap_or(1);
-        let climb = prefix.saturating_sub(1);
-        if climb > self.package.len() {
+        let Some(base) = self.relative_base(module) else {
             return Vec::new();
-        }
-        let base = self.package[..self.package.len() - climb].to_vec();
+        };
 
         // `from .helpers import Thing` — the dotted name after the dots.
         if let Some(tail) = module
@@ -291,9 +283,31 @@ impl Sensor<'_> {
         }
 
         // `from . import a, b` — each imported name is a submodule.
+        self.relative_names(statement, module, &base)
+    }
+
+    /// Package segments a relative import's leading dots resolve to, or
+    /// `None` when the dots climb above the top-level package.
+    fn relative_base(&self, module: Node) -> Option<Vec<String>> {
+        let prefix = module
+            .children(&mut module.walk())
+            .find(|c| c.kind() == "import_prefix")
+            .map(|c| text(c, self.source).chars().filter(|c| *c == '.').count())
+            .unwrap_or(1);
+        let climb = prefix.saturating_sub(1);
+        if climb > self.package.len() {
+            return None;
+        }
+        Some(self.package[..self.package.len() - climb].to_vec())
+    }
+
+    /// `from . import a, b` — each imported name is a submodule of `base`.
+    fn relative_names(&self, statement: Node, module: Node, base: &[String]) -> Vec<Vec<String>> {
         let mut out = Vec::new();
-        let mut cursor = statement.walk();
-        for child in statement.children(&mut cursor).collect::<Vec<_>>() {
+        for child in statement
+            .children(&mut statement.walk())
+            .collect::<Vec<_>>()
+        {
             let named = match child.kind() {
                 "dotted_name" => child,
                 "aliased_import" => match child.child_by_field_name("name") {
@@ -306,7 +320,7 @@ impl Sensor<'_> {
             if named.id() == module.id() {
                 continue;
             }
-            let mut segs = base.clone();
+            let mut segs = base.to_vec();
             segs.push(text(named, self.source).to_string());
             out.push(segs);
         }
@@ -332,17 +346,20 @@ pub fn extract_python(file_path: &str, content: &str, unit: &UnitContext) -> Ext
     }
 
     let self_module = module_path(file_path, unit);
-    let segments: Vec<String> = self_module
-        .strip_prefix(unit.id.as_str())
-        .and_then(|rest| rest.strip_prefix("::"))
-        .map(|rest| rest.split("::").map(str::to_string).collect())
-        .unwrap_or_default();
-    // `__init__.py` *is* its package; any other module sits inside one.
-    let is_package = file_path.ends_with("__init__.py");
-    let package = if is_package || segments.is_empty() {
-        segments.clone()
-    } else {
-        segments[..segments.len() - 1].to_vec()
+    let (segments, package) = {
+        let segments: Vec<String> = self_module
+            .strip_prefix(unit.id.as_str())
+            .and_then(|rest| rest.strip_prefix("::"))
+            .map(|rest| rest.split("::").map(str::to_string).collect())
+            .unwrap_or_default();
+        // `__init__.py` *is* its package; any other module sits inside one.
+        let is_package = file_path.ends_with("__init__.py");
+        let package = if is_package || segments.is_empty() {
+            segments.clone()
+        } else {
+            segments[..segments.len() - 1].to_vec()
+        };
+        (segments, package)
     };
 
     let mut sensor = Sensor {
@@ -389,6 +406,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         }
     }
 
@@ -611,6 +629,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         };
         let out = extract_python(
             "libs/app/src/app/__init__.py",
@@ -630,6 +649,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         };
         let out = extract_python(
             "libs/app/src/app/__init__.py",

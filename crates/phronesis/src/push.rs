@@ -76,21 +76,29 @@ pub fn rule_firing_to_consequences_with_sources(
     kind: ConsequenceKind,
     actions: Vec<Action>,
 ) -> Vec<Consequence> {
+    let firing = FiringContext {
+        rule_id,
+        bound_facts,
+        fact_sources,
+        kind,
+    };
     actions
         .into_iter()
-        .map(|a| action_to_consequence(rule_id, bound_facts, fact_sources, kind, a))
+        .map(|a| action_to_consequence(&firing, a))
         .collect()
 }
 
-fn action_to_consequence(
-    rule_id: &str,
-    bound_facts: &[String],
-    fact_sources: &BTreeMap<String, String>,
+/// Rule-firing context shared by every consequence produced from one firing.
+struct FiringContext<'a> {
+    rule_id: &'a str,
+    bound_facts: &'a [String],
+    fact_sources: &'a BTreeMap<String, String>,
     kind: ConsequenceKind,
-    action: Action,
-) -> Consequence {
+}
+
+fn action_to_consequence(firing: &FiringContext<'_>, action: Action) -> Consequence {
     Consequence {
-        kind,
+        kind: firing.kind,
         predicate: action.action_type.clone(),
         payload: serde_json::json!({
             "action_type": action.action_type,
@@ -98,10 +106,10 @@ fn action_to_consequence(
             "data": action.data,
         }),
         provenance: Provenance::RuleFiring {
-            rule_id: rule_id.into(),
-            bound_facts: bound_facts.to_vec(),
+            rule_id: firing.rule_id.into(),
+            bound_facts: firing.bound_facts.to_vec(),
             bindings: Default::default(),
-            fact_sources: fact_sources.clone(),
+            fact_sources: firing.fact_sources.clone(),
             decisions: Default::default(),
         },
     }

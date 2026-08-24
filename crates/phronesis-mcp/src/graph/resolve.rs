@@ -274,6 +274,7 @@ mod tests {
             files: files.iter().map(|f| (*f).to_string()).collect(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         }
     }
 

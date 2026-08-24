@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Phronesis — Durable Rules for LLM-Assisted Work</title>
-<meta name="description" content="A RETE rules engine that enforces project conventions from disk, outside the LLM context window. Trajectory predicates over a durable journal + a confidence gate that demands compile, tests, and known-bug catch before a commit lands. Rules fire the same in token 900k as in token 800.">
+<meta name="description" content="A RETE rules engine that enforces project conventions from disk, outside the LLM context window. Trajectory predicates use a durable journal, while advisory confidence rules ground Git mutations in compile, test, and known-bug evidence. Rules fire the same in token 900k as in token 800.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght;500;600;700;800&family=JetBrains+Mono:ital,wght,400;0,500;0,700;1,400&display=swap" rel="stylesheet">
@@ -374,9 +374,9 @@
         in token nine hundred thousand as they do in token eight
         hundred. Now with <span class="it">trajectory predicates</span>
         that watch the long run of a session, and a
-        <span class="it">confidence gate</span> that demands the
-        build, the tests, and the known-bug catch all be green
-        before a commit lands.
+        <span class="it">confidence evidence</span> that warns when
+        the build, tests, or known-bug catch are not grounded before
+        a Git mutation.
       </p>
     </div>
 
@@ -391,7 +391,7 @@
         <text font-family="Manrope, serif" font-size="9" font-weight="600"
               letter-spacing="3" fill="#0F766E">
           <textPath xlink:href="#circle-text" startOffset="0">
-            PHRONESIS · RULES ENGINE · v 0.26 · MCP HOSTED · A DURABLE INSTRUMENT ·
+            PHRONESIS · RULES ENGINE · v 0.30 · MCP HOSTED · A DURABLE INSTRUMENT ·
           </textPath>
         </text>
         <g stroke="#102A2E" stroke-width="1" fill="#F4F8F7">
@@ -417,7 +417,7 @@
   <!-- ─── STATS ─── -->
   <div class="stats">
     <div class="stat">
-      <span class="num">64</span>
+      <span class="num">95</span>
       <span class="desc">Rules catalogued</span>
     </div>
     <div class="stat">
@@ -498,7 +498,7 @@
         <h2>Structural graph</h2>
         <span class="role">query · freshness · rebuild</span>
         <p>
-          Rust, Python, and TypeScript structure becomes a durable graph.
+          Rust, Python, TypeScript, and Swift structure becomes a durable graph.
           MCP clients can query relations, inspect generation and drift,
           and rebuild server-rooted graph and binding state without shell
           access.
@@ -521,12 +521,12 @@
         <span class="role">compile · test · catch-the-bug</span>
         <p>
           Declarative toolchain definitions feed one generic parser:
-          Cargo ships as a built-in, while project definitions can
-          extend or override it. Matched command outcomes become
-          neutral <code>signal_pass</code> facts;
-          gate rules block or warn a <code>git commit</code> by
-          confidence band. Three grounded signals say "this is
-          real," not three syntactic checks.
+          Cargo, <code>xcodebuild</code>, and SwiftPM ship as built-ins,
+          while project definitions can extend or override them. Matched
+          command outcomes become neutral <code>signal_pass</code> facts;
+          advisory gate rules warn on Git mutations when evidence is
+          incomplete or failing. Three grounded signals say "this is real,"
+          not three syntactic checks.
         </p>
       </article>
     </div>
@@ -605,7 +605,7 @@
   <!-- ─── FOOTER ─── -->
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
     <span class="doc-web-here">Home</span> &middot; <a href="./explainer.html">Explainer</a> &middot; <a href="./catalogue.html">Catalogue</a> &middot; <a href="./guide.html">Guide</a> &middot; <a href="./changelog.html">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.26.0</span>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.30.0</span>
   </nav>
   <footer>
     <div>
@@ -614,12 +614,12 @@
       <em>JetBrains Mono</em> for code.<br>
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
       with the open-source agent community.<br>
-      v 0.26.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
+      v 0.30.0 &nbsp;&middot;&nbsp; 2026 &nbsp;&middot;&nbsp;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">
       ⁂
-      <small>Phronesis · v 0.26.0</small>
+      <small>Phronesis · v 0.30.0</small>
     </div>
   </footer>
 

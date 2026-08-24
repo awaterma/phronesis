@@ -25,6 +25,8 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+      - name: Audit repository rules (blocking findings fail CI)
+        run: cargo run -p phronesis-mcp -- audit --fail-on block
       # Feature configs must not bit-rot: the embedding-host gate on the
       # engine and the Rhai evaluator path in the MCP each get their own
       # clippy + test pass.

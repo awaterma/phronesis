@@ -44,8 +44,8 @@ fn toolchains_json_includes_project_def() {
         .iter()
         .filter_map(|e| e.get("id").and_then(|i| i.as_str()))
         .collect();
-    assert_eq!(ids, vec!["cargo", "pytest"]);
-    assert_eq!(v[1]["source"], "project");
+    assert_eq!(ids, vec!["cargo", "xcodebuild", "swift", "pytest"]);
+    assert_eq!(v[3]["source"], "project");
 }
 
 #[test]

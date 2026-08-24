@@ -83,6 +83,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Record a confidence signal explicitly for the open work unit — the
+    /// escape hatch when a test runner has no toolchain definition (see
+    /// `phr-mcp toolchains`) or ran outside the hook. Journals the same
+    /// outcome the post-check hook would have, so `confidence` and the
+    /// commit gate see it identically. Requires the `confidence` pack.
+    Signal {
+        /// Which signal: `compile` or `tests`.
+        name: String,
+        /// The outcome: `pass` or `fail`.
+        #[arg(value_parser = ["pass", "fail"])]
+        outcome: String,
+    },
     /// List active toolchain definitions (built-in + project).
     /// Shows ID, source, match patterns, and active signal refinements.
     Toolchains {
@@ -540,6 +552,7 @@ async fn main() -> anyhow::Result<()> {
         Command::InteractionContext { last } => handle_interaction_context(last).await,
         Command::Stats { since, rule, json } => handle_stats(since, rule, json),
         Command::Confidence { subject, json } => handle_confidence(subject, json),
+        Command::Signal { name, outcome } => handle_signal(&name, outcome == "pass"),
         Command::Toolchains { json } => handle_toolchains(json),
         Command::Journey { json, explain } => handle_journey(json, explain).await,
         Command::Audit {
@@ -730,10 +743,20 @@ fn handle_confidence(subject: Option<String>, json: bool) -> anyhow::Result<()> 
             if json {
                 println!("{}", serde_json::json!({ "subject": null }));
             } else {
-                println!("No open work unit. Run a build/test under the hook first.");
+                println!(
+                    "No open work unit. Run a build/test under the hook first, or record one with `phr-mcp signal tests pass`."
+                );
             }
         }
     }
+    Ok(())
+}
+
+fn handle_signal(name: &str, passed: bool) -> anyhow::Result<()> {
+    let root = phronesis_mcp::security::project_root();
+    let subject = phronesis_mcp::outcomes::record_signal(&root, name, passed)?;
+    let outcome = if passed { "pass" } else { "fail" };
+    println!("recorded {name}: {outcome} for subject {subject}");
     Ok(())
 }
 
@@ -874,10 +897,10 @@ async fn handle_audit(
             );
         }
         let report = report;
-        let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
         let diag = phronesis_mcp::audit::empty_result_diagnostic(
             &report,
-            audit_tagged_count,
+            &rules,
+            rule.as_deref(),
             &opts.scan_root,
         );
         (report, diag)
@@ -1531,7 +1554,7 @@ async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {
 
     match cmd {
         ContextCmd::List { path, json } => {
-            let root = std::fs::canonicalize(path)?;
+            let root = tokio::fs::canonicalize(path).await?;
             let mut capsules = phronesis_mcp::capsule::read_snapshot(&root)?;
             capsules.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
             if json {
@@ -1554,7 +1577,7 @@ async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {
             lease_token,
             path,
         } => {
-            let root = std::fs::canonicalize(path)?;
+            let root = tokio::fs::canonicalize(path).await?;
             let removed = phronesis_mcp::capsule::transaction(&root, |storage| {
                 let eligible = storage.get_capsule(&id).is_some_and(|capsule| {
                     capsule.lifecycle == phronesis_mcp::capsule::CapsuleLifecycle::NextInteraction
@@ -1576,7 +1599,7 @@ async fn handle_context(cmd: ContextCmd) -> anyhow::Result<()> {
             );
         }
         ContextCmd::Retract { id, path } => {
-            let root = std::fs::canonicalize(path)?;
+            let root = tokio::fs::canonicalize(path).await?;
             let removed = phronesis_mcp::capsule::transaction(&root, |storage| {
                 Ok(storage.retract(&id).is_some())
             })?;

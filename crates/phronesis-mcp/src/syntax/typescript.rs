@@ -29,8 +29,32 @@ pub fn extract(content: &str, tsx: bool) -> SyntaxFacts {
         }),
         ts_suppression_comment_count: count_suppression_comments(root, src),
         ts_function_param_counts_high: extract_param_counts_high(root, src),
+        ts_console_log_calls: count_per_function(root, src, &mut |node| {
+            is_console_log_call(node, src)
+        }),
         ..SyntaxFacts::default()
     }
+}
+
+fn is_console_log_call(node: Node, src: &[u8]) -> bool {
+    if node.kind() != "call_expression" {
+        return false;
+    }
+    let Some(function) = node.child_by_field_name("function") else {
+        return false;
+    };
+    if function.kind() != "member_expression" {
+        return false;
+    }
+    let Some(object) = function.child_by_field_name("object") else {
+        return false;
+    };
+    let Some(property) = function.child_by_field_name("property") else {
+        return false;
+    };
+    object.kind() == "identifier"
+        && object.utf8_text(src) == Ok("console")
+        && property.utf8_text(src) == Ok("log")
 }
 
 fn walk<'a>(root: Node<'a>, f: &mut dyn FnMut(Node<'a>)) {
@@ -205,5 +229,23 @@ mod tests {
             true,
         );
         assert_eq!(facts.ts_explicit_anys, vec![("App".to_string(), 1)]);
+    }
+
+    #[test]
+    fn console_log_calls_are_counted_structurally() {
+        let facts = extract(
+            r#"
+function run() {
+  console.log("one");
+  console . log ("two");
+  logger.console.log("not global console");
+  console.warn("not log");
+  const text = "console.log(fake)";
+  // console.log("comment");
+}
+"#,
+            false,
+        );
+        assert_eq!(facts.ts_console_log_calls, vec![("run".to_string(), 2)]);
     }
 }

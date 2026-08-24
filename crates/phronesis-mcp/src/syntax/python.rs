@@ -33,8 +33,553 @@ pub fn extract(content: &str) -> SyntaxFacts {
         python_is_literal_comparisons: extract_is_literal_comparisons(root, src),
         python_mutated_module_globals: extract_mutated_module_globals(root, src),
         python_star_imports: extract_star_imports(root, src),
+        python_global_statements: extract_global_statements(root, src),
+        python_globals_subscript_assignments: extract_globals_subscript_assignments(root, src),
+        python_dynamic_class_creations: extract_dynamic_class_creations(root, src),
+        python_new_overrides: extract_new_overrides(root, src),
+        python_isinstance_chains: extract_isinstance_chains(root, src),
+        python_containers_own_iterator: extract_containers_own_iterator(root, src),
+        python_multiple_inheritance: extract_multiple_inheritance(root, src),
+        python_inheritance_depths: extract_inheritance_depths(root, src),
+        python_mixins_with_init: extract_mixins_with_init(root, src),
+        python_static_delegation_wrappers: extract_static_delegation_wrappers(root, src),
+        python_mutable_class_attributes: extract_mutable_class_attributes(root, src),
+        python_equality_with_none: extract_equality_with_none(root, src),
         ..SyntaxFacts::default()
     }
+}
+
+// ─── python-patterns.guide predicates ───────────────────────────────────
+//
+// These feed the opt-in `python-patterns` pack. Each is a syntactic
+// heuristic for a shape the guide argues against; the rule messages in
+// `init.rs` carry the guide URL and the limits of each heuristic.
+
+fn text<'a>(node: Node, src: &'a [u8]) -> &'a str {
+    node.utf8_text(src).unwrap_or("")
+}
+
+/// Every `class_definition` with its name, in source order.
+fn classes<'a>(root: Node<'a>, src: &[u8]) -> Vec<(String, Node<'a>)> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() == "class_definition"
+            && let Some(name) = node.child_by_field_name("name")
+        {
+            out.push((text(name, src).to_string(), node));
+        }
+    });
+    out
+}
+
+/// Direct methods of a class body, unwrapping `decorated_definition`.
+fn class_methods<'a>(class: Node<'a>, src: &[u8]) -> Vec<(String, Node<'a>)> {
+    let Some(body) = class.child_by_field_name("body") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut cursor = body.walk();
+    for stmt in body.named_children(&mut cursor) {
+        let def = match stmt.kind() {
+            "function_definition" => Some(stmt),
+            "decorated_definition" => stmt.child_by_field_name("definition"),
+            _ => None,
+        };
+        if let Some(def) = def
+            && def.kind() == "function_definition"
+            && let Some(name) = def.child_by_field_name("name")
+        {
+            out.push((text(name, src).to_string(), def));
+        }
+    }
+    out
+}
+
+/// Base-class expressions of a class (positional entries of the
+/// `superclasses` argument list; `metaclass=` keywords are skipped).
+fn class_bases<'a>(class: Node<'a>) -> Vec<Node<'a>> {
+    let Some(supers) = class.child_by_field_name("superclasses") else {
+        return Vec::new();
+    };
+    let mut cursor = supers.walk();
+    supers
+        .named_children(&mut cursor)
+        .filter(|c| !matches!(c.kind(), "keyword_argument" | "comment"))
+        .collect()
+}
+
+/// Guide: Prebound Methods / Global Object — a function that rebinds a
+/// module global with `global` is the shape the guide replaces with an
+/// instance plus explicitly prebound methods.
+fn extract_global_statements(root: Node, src: &[u8]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "global_statement" {
+            return;
+        }
+        let fn_name = enclosing_function_name(node, src);
+        if fn_name == "<module>" {
+            return;
+        }
+        let mut cursor = node.walk();
+        for name in node.named_children(&mut cursor) {
+            if name.kind() == "identifier" {
+                out.push((fn_name.clone(), text(name, src).to_string()));
+            }
+        }
+    });
+    out
+}
+
+/// Guide: Prebound Methods — `globals()[name] = ...` introspection loops.
+fn extract_globals_subscript_assignments(root: Node, src: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if !matches!(node.kind(), "assignment" | "augmented_assignment") {
+            return;
+        }
+        let Some(left) = node.child_by_field_name("left") else {
+            return;
+        };
+        if left.kind() != "subscript" {
+            return;
+        }
+        let is_globals_call = left
+            .child_by_field_name("value")
+            .filter(|v| v.kind() == "call")
+            .and_then(|v| v.child_by_field_name("function"))
+            .is_some_and(|f| f.kind() == "identifier" && text(f, src) == "globals");
+        if is_globals_call {
+            out.push(enclosing_function_name(node, src));
+        }
+    });
+    out
+}
+
+/// Guide: Composition Over Inheritance — `type(name, bases, ns)` builds
+/// classes at runtime, which the guide calls undebuggable.
+fn extract_dynamic_class_creations(root: Node, src: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "call" {
+            return;
+        }
+        let Some(func) = node.child_by_field_name("function") else {
+            return;
+        };
+        if func.kind() != "identifier" || text(func, src) != "type" {
+            return;
+        }
+        let Some(args) = node.child_by_field_name("arguments") else {
+            return;
+        };
+        let mut cursor = args.walk();
+        let positional = args
+            .named_children(&mut cursor)
+            .filter(|a| !matches!(a.kind(), "keyword_argument" | "comment"))
+            .count();
+        if positional == 3 {
+            out.push(enclosing_function_name(node, src));
+        }
+    });
+    out
+}
+
+/// Guide: Singleton / Flyweight — `__new__` overrides. A body that touches
+/// an `_instance`-style attribute is classified `singleton`; any other
+/// `__new__` (e.g. a flyweight cache keyed by argument) is `custom`.
+fn extract_new_overrides(root: Node, src: &[u8]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (class_name, class) in classes(root, src) {
+        for (method, def) in class_methods(class, src) {
+            if method != "__new__" {
+                continue;
+            }
+            let mut singleton = false;
+            walk(def, &mut |n| {
+                if n.kind() == "attribute"
+                    && let Some(attr) = n.child_by_field_name("attribute")
+                {
+                    let name = text(attr, src).trim_start_matches('_');
+                    if matches!(name, "instance" | "instances" | "singleton") {
+                        singleton = true;
+                    }
+                }
+            });
+            let shape = if singleton { "singleton" } else { "custom" };
+            out.push((class_name.clone(), shape.to_string()));
+        }
+    }
+    out
+}
+
+/// Guide: Composite — `if isinstance(x, A)` / `elif isinstance(x, B)` chains
+/// that dispatch on the same value's domain type instead of relying on a
+/// symmetric interface. Independent guards, negative validation, and checks
+/// against built-in scalar/container types are deliberately excluded.
+fn extract_isinstance_chains(root: Node, src: &[u8]) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "function_definition" {
+            return;
+        }
+        let Some(name) = node.child_by_field_name("name") else {
+            return;
+        };
+        let function_name = text(name, src);
+        walk(node, &mut |n| {
+            if n.kind() != "if_statement" {
+                return;
+            }
+            // Count conditions belonging to this def, not nested defs.
+            if enclosing_function_name(n, src) != function_name {
+                return;
+            }
+
+            let Some((subject, _)) = n
+                .child_by_field_name("condition")
+                .and_then(|condition| isinstance_domain_check(condition, src))
+            else {
+                return;
+            };
+
+            let mut count = 1usize;
+            let mut cursor = n.walk();
+            for alternative in n.named_children(&mut cursor) {
+                if alternative.kind() != "elif_clause" {
+                    continue;
+                }
+                if alternative
+                    .child_by_field_name("condition")
+                    .and_then(|condition| isinstance_domain_check(condition, src))
+                    .is_some_and(|(alternative_subject, _)| alternative_subject == subject)
+                {
+                    count += 1;
+                }
+            }
+
+            if count >= 2 {
+                out.push((function_name.to_string(), count));
+            }
+        });
+    });
+    out
+}
+
+fn isinstance_domain_check(condition: Node, src: &[u8]) -> Option<(String, String)> {
+    if condition.kind() != "call"
+        || !condition
+            .child_by_field_name("function")
+            .is_some_and(|function| {
+                function.kind() == "identifier" && text(function, src) == "isinstance"
+            })
+    {
+        return None;
+    }
+
+    let arguments = condition.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    let positional: Vec<Node> = arguments
+        .named_children(&mut cursor)
+        .filter(|argument| argument.kind() != "keyword_argument")
+        .collect();
+    if positional.len() != 2 || !is_domain_type_expression(positional[1], src) {
+        return None;
+    }
+
+    Some((
+        text(positional[0], src).trim().to_string(),
+        text(positional[1], src).trim().to_string(),
+    ))
+}
+
+fn is_domain_type_expression(node: Node, src: &[u8]) -> bool {
+    match node.kind() {
+        "identifier" => !is_builtin_validation_type(text(node, src)),
+        "attribute" => true,
+        "tuple" => {
+            let mut cursor = node.walk();
+            let types: Vec<Node> = node.named_children(&mut cursor).collect();
+            !types.is_empty()
+                && types
+                    .into_iter()
+                    .all(|candidate| is_domain_type_expression(candidate, src))
+        }
+        _ => false,
+    }
+}
+
+fn is_builtin_validation_type(name: &str) -> bool {
+    matches!(
+        name,
+        "bool"
+            | "bytes"
+            | "bytearray"
+            | "complex"
+            | "dict"
+            | "float"
+            | "frozenset"
+            | "int"
+            | "list"
+            | "memoryview"
+            | "object"
+            | "range"
+            | "set"
+            | "str"
+            | "tuple"
+            | "type"
+    )
+}
+
+fn returns_only_self(def: Node, src: &[u8]) -> bool {
+    let Some(body) = def.child_by_field_name("body") else {
+        return false;
+    };
+    let mut cursor = body.walk();
+    let stmts: Vec<Node> = body
+        .named_children(&mut cursor)
+        .filter(|s| s.kind() != "comment")
+        .filter(|s| {
+            !(s.kind() == "expression_statement"
+                && s.child(0).is_some_and(|c| c.kind() == "string"))
+        })
+        .collect();
+    stmts.len() == 1
+        && stmts[0].kind() == "return_statement"
+        && stmts[0]
+            .named_child(0)
+            .is_some_and(|v| v.kind() == "identifier" && text(v, src) == "self")
+}
+
+/// Guide: Iterator — a container whose `__iter__` returns `self` can only
+/// support one traversal at a time. A class counts as a container when it
+/// also implements `__len__`, `__getitem__`, or `__contains__`; pure
+/// iterator classes (which legitimately return `self`) are excluded.
+fn extract_containers_own_iterator(root: Node, src: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (class_name, class) in classes(root, src) {
+        let methods = class_methods(class, src);
+        let has = |n: &str| methods.iter().any(|(m, _)| m == n);
+        let iter_self = methods
+            .iter()
+            .any(|(m, def)| m == "__iter__" && returns_only_self(*def, src));
+        let container = has("__len__") || has("__getitem__") || has("__contains__");
+        if iter_self && has("__next__") && container {
+            out.push(class_name);
+        }
+    }
+    out
+}
+
+fn base_is_concrete(base: Node, src: &[u8]) -> bool {
+    let base_text = text(base, src);
+    // `typing.Generic[T]` -> `Generic`; `abc.ABC` -> `ABC`.
+    let head = base_text.split('[').next().unwrap_or(base_text);
+    let leaf = head.rsplit('.').next().unwrap_or(head);
+    if leaf.ends_with("Mixin") || leaf.ends_with("ABC") || leaf == "object" {
+        return false;
+    }
+    !matches!(
+        leaf,
+        "Protocol" | "Generic" | "ABCMeta" | "NamedTuple" | "TypedDict" | "Enum"
+    )
+}
+
+/// Guide: Composition Over Inheritance — combining two or more concrete
+/// classes by multiple inheritance. Mixins, ABCs, Protocols, Generic, and
+/// `metaclass=` keywords are not counted.
+fn extract_multiple_inheritance(root: Node, src: &[u8]) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    for (class_name, class) in classes(root, src) {
+        let concrete = class_bases(class)
+            .into_iter()
+            .filter(|b| base_is_concrete(*b, src))
+            .count();
+        if concrete >= 2 {
+            out.push((class_name, concrete));
+        }
+    }
+    out
+}
+
+/// File-local inheritance depth: a class with no known local base has
+/// depth one. Bases defined in other modules are invisible, so this
+/// understates depth and never overstates it.
+fn extract_inheritance_depths(root: Node, src: &[u8]) -> Vec<(String, usize)> {
+    const DEPTH_THRESHOLD: usize = 3;
+    let all = classes(root, src);
+    let mut depth: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for (class_name, class) in &all {
+        let d = class_bases(*class)
+            .into_iter()
+            .filter_map(|b| depth.get(text(b, src)).copied())
+            .max()
+            .unwrap_or(0)
+            + 1;
+        depth.insert(class_name.clone(), d);
+    }
+    all.into_iter()
+        .filter_map(|(name, _)| {
+            let d = depth.get(&name).copied().unwrap_or(1);
+            (d >= DEPTH_THRESHOLD).then_some((name, d))
+        })
+        .collect()
+}
+
+/// Guide: Composition Over Inheritance — a mixin with `__init__` makes
+/// cooperative construction order-dependent and fragile.
+fn extract_mixins_with_init(root: Node, src: &[u8]) -> Vec<String> {
+    classes(root, src)
+        .into_iter()
+        .filter(|(name, class)| {
+            name.ends_with("Mixin")
+                && class_methods(*class, src)
+                    .iter()
+                    .any(|(m, _)| m == "__init__")
+        })
+        .map(|(name, _)| name)
+        .collect()
+}
+
+/// If `def` is `def name(self, ...): return self.<attr>.name(...)`, return
+/// `attr`.
+fn pure_delegation_target<'a>(method: &str, def: Node, src: &'a [u8]) -> Option<&'a str> {
+    let body = def.child_by_field_name("body")?;
+    let mut cursor = body.walk();
+    let stmts: Vec<Node> = body
+        .named_children(&mut cursor)
+        .filter(|s| s.kind() != "comment")
+        .collect();
+    if stmts.len() != 1 || stmts[0].kind() != "return_statement" {
+        return None;
+    }
+    let call = stmts[0].named_child(0)?;
+    if call.kind() != "call" {
+        return None;
+    }
+    let func = call.child_by_field_name("function")?;
+    if func.kind() != "attribute" {
+        return None;
+    }
+    if text(func.child_by_field_name("attribute")?, src) != method {
+        return None;
+    }
+    let inner = func.child_by_field_name("object")?;
+    if inner.kind() != "attribute" {
+        return None;
+    }
+    let receiver = inner.child_by_field_name("object")?;
+    if receiver.kind() != "identifier" || text(receiver, src) != "self" {
+        return None;
+    }
+    Some(text(inner.child_by_field_name("attribute")?, src))
+}
+
+/// Guide: Decorator Pattern — a static wrapper that re-declares every
+/// method just to forward it. Counts pure `return self.<attr>.m(...)`
+/// methods; classes that already define `__getattr__` are dynamic wrappers
+/// and are excluded.
+fn extract_static_delegation_wrappers(root: Node, src: &[u8]) -> Vec<(String, String, usize)> {
+    const DELEGATION_THRESHOLD: usize = 4;
+    let mut out = Vec::new();
+    for (class_name, class) in classes(root, src) {
+        let methods = class_methods(class, src);
+        if methods.iter().any(|(m, _)| m == "__getattr__") {
+            continue;
+        }
+        let mut per_attr: std::collections::BTreeMap<&str, usize> = Default::default();
+        for (method, def) in &methods {
+            if let Some(attr) = pure_delegation_target(method, *def, src) {
+                *per_attr.entry(attr).or_insert(0) += 1;
+            }
+        }
+        if let Some((attr, count)) = per_attr.into_iter().max_by_key(|(_, c)| *c)
+            && count >= DELEGATION_THRESHOLD
+        {
+            out.push((class_name, attr.to_string(), count));
+        }
+    }
+    out
+}
+
+fn is_mutable_container_expr(value: Node, src: &[u8]) -> bool {
+    match value.kind() {
+        "list"
+        | "dictionary"
+        | "set"
+        | "list_comprehension"
+        | "dictionary_comprehension"
+        | "set_comprehension" => true,
+        "call" => value.child_by_field_name("function").is_some_and(|f| {
+            matches!(
+                text(f, src),
+                "list" | "dict" | "set" | "defaultdict" | "OrderedDict" | "deque" | "bytearray"
+            )
+        }),
+        _ => false,
+    }
+}
+
+/// Guide: Global Object — a mutable container assigned in a class body is
+/// one object shared by every instance, which is the same coupling hazard
+/// as a mutable module global. Dunder names (`__slots__`) are skipped.
+fn extract_mutable_class_attributes(root: Node, src: &[u8]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for (class_name, class) in classes(root, src) {
+        let Some(body) = class.child_by_field_name("body") else {
+            continue;
+        };
+        let mut cursor = body.walk();
+        for stmt in body.named_children(&mut cursor) {
+            if stmt.kind() != "expression_statement" {
+                continue;
+            }
+            let Some(assign) = stmt.named_child(0) else {
+                continue;
+            };
+            if assign.kind() != "assignment" {
+                continue;
+            }
+            let (Some(left), Some(right)) = (
+                assign.child_by_field_name("left"),
+                assign.child_by_field_name("right"),
+            ) else {
+                continue;
+            };
+            let name = text(left, src);
+            if left.kind() == "identifier"
+                && !name.starts_with("__")
+                && is_mutable_container_expr(right, src)
+            {
+                out.push((class_name.clone(), name.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Guide: Sentinel Object — `None` is a sentinel and must be compared by
+/// identity; `== None` invokes `__eq__` and can be overridden.
+fn extract_equality_with_none(root: Node, src: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    walk(root, &mut |node| {
+        if node.kind() != "comparison_operator" {
+            return;
+        }
+        let mut cursor = node.walk();
+        let has_none = node.named_children(&mut cursor).any(|c| c.kind() == "none");
+        if !has_none {
+            return;
+        }
+        let mut cursor = node.walk();
+        let has_eq = node
+            .children(&mut cursor)
+            .any(|c| matches!(c.kind(), "==" | "!="));
+        if has_eq {
+            out.push(enclosing_function_name(node, src));
+        }
+    });
+    out
 }
 
 /// Name of the nearest enclosing `function_definition`, or `<module>`.
@@ -778,9 +1323,10 @@ mod tests {
     fn malformed_source_partial_except_not_crashed() {
         // tree-sitter is resilient; this shouldn't panic
         let facts = extract("def foo():\n    try:\n        pass\n    except\n");
-        // May extract partial facts or empty; should not panic
-        let _ = facts.python_bare_excepts;
-        let _ = facts.python_print_calls;
+        // May extract partial facts or empty; must not panic and must not
+        // invent a print call that is not there.
+        assert!(facts.python_print_calls.is_empty());
+        assert!(facts.python_bare_excepts.len() <= 1);
     }
 
     #[test]
@@ -857,5 +1403,190 @@ mod tests {
     fn star_import_reports_source_module() {
         let facts = extract("from package.tools import *\nfrom package.safe import thing\n");
         assert_eq!(facts.python_star_imports, vec!["package.tools"]);
+    }
+
+    // ─── python-patterns.guide predicates ──────────────────────────
+
+    #[test]
+    fn global_statement_reports_each_name_per_function() {
+        let facts = extract(
+            "_seed = 42\n\ndef set_seed(v):\n    global _seed, other\n    _seed = v\n\ndef read():\n    return _seed\n",
+        );
+        assert_eq!(
+            facts.python_global_statements,
+            vec![
+                ("set_seed".to_string(), "_seed".to_string()),
+                ("set_seed".to_string(), "other".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn global_statement_ignores_module_level_and_nonlocal() {
+        let facts = extract(
+            "global X\n\ndef outer():\n    x = 1\n    def inner():\n        nonlocal x\n        x = 2\n",
+        );
+        assert!(facts.python_global_statements.is_empty());
+    }
+
+    #[test]
+    fn globals_subscript_assignment_is_flagged() {
+        let facts = extract(
+            "for name in dir(_instance):\n    globals()[name] = getattr(_instance, name)\n\ndef fine():\n    table = globals()\n    return table['x']\n",
+        );
+        assert_eq!(
+            facts.python_globals_subscript_assignments,
+            vec!["<module>".to_string()]
+        );
+    }
+
+    #[test]
+    fn dynamic_class_creation_requires_three_arg_type_call() {
+        let facts = extract(
+            "def build(name, a, b):\n    return type(name, (a, b), {})\n\ndef fine(x):\n    return type(x) is int\n",
+        );
+        assert_eq!(
+            facts.python_dynamic_class_creations,
+            vec!["build".to_string()]
+        );
+    }
+
+    #[test]
+    fn new_override_classifies_singleton_and_custom() {
+        let facts = extract(
+            "class Logger:\n    _instance = None\n    def __new__(cls):\n        if cls._instance is None:\n            cls._instance = super().__new__(cls)\n        return cls._instance\n\nclass Grade:\n    def __new__(cls, percent):\n        return super().__new__(cls)\n\nclass Plain:\n    def __init__(self):\n        pass\n",
+        );
+        assert_eq!(
+            facts.python_new_overrides,
+            vec![
+                ("Logger".to_string(), "singleton".to_string()),
+                ("Grade".to_string(), "custom".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn isinstance_chain_counts_if_and_elif_conditions() {
+        let facts = extract(
+            "def render(w):\n    if isinstance(w, Frame):\n        return 1\n    elif isinstance(w, Label):\n        return 2\n    return 0\n\ndef single(w):\n    if isinstance(w, Frame):\n        return 1\n    x = isinstance(w, Label)\n    return x\n",
+        );
+        assert_eq!(
+            facts.python_isinstance_chains,
+            vec![("render".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn isinstance_chain_requires_same_subject_domain_dispatch() {
+        let facts = extract(
+            "def render(w, other):\n    if isinstance(w, Frame):\n        return 1\n    elif isinstance(other, Label):\n        return 2\n\ndef independent(w):\n    if isinstance(w, Frame):\n        return 1\n    if isinstance(w, Label):\n        return 2\n",
+        );
+        assert!(facts.python_isinstance_chains.is_empty());
+    }
+
+    #[test]
+    fn isinstance_chain_excludes_validation_and_negative_guards() {
+        let facts = extract(
+            "def validate(value):\n    if isinstance(value, str):\n        return 1\n    elif isinstance(value, bytes):\n        return 2\n\ndef guarded(value):\n    if not isinstance(value, Frame):\n        return 1\n    elif isinstance(value, Label):\n        return 2\n",
+        );
+        assert!(facts.python_isinstance_chains.is_empty());
+    }
+
+    #[test]
+    fn isinstance_chain_accepts_qualified_domain_types() {
+        let facts = extract(
+            "def render(node):\n    if isinstance(node, model.Frame):\n        return 1\n    elif isinstance(node, (model.Label, model.Button)):\n        return 2\n",
+        );
+        assert_eq!(
+            facts.python_isinstance_chains,
+            vec![("render".to_string(), 2)]
+        );
+    }
+
+    #[test]
+    fn container_is_own_iterator_needs_container_protocol() {
+        let facts = extract(
+            "class Bad:\n    def __len__(self):\n        return 3\n    def __iter__(self):\n        return self\n    def __next__(self):\n        raise StopIteration\n\nclass PureIterator:\n    def __iter__(self):\n        return self\n    def __next__(self):\n        raise StopIteration\n\nclass Good:\n    def __len__(self):\n        return 3\n    def __iter__(self):\n        return PureIterator()\n",
+        );
+        assert_eq!(
+            facts.python_containers_own_iterator,
+            vec!["Bad".to_string()]
+        );
+    }
+
+    #[test]
+    fn multiple_inheritance_excludes_mixins_abcs_and_keywords() {
+        let facts = extract(
+            "class A(FilteredLogger, SocketLogger):\n    pass\n\nclass B(FilterMixin, FileLogger):\n    pass\n\nclass C(ABC, Generic[T], Protocol, Base, metaclass=Meta):\n    pass\n\nclass D(X, Y, Z):\n    pass\n",
+        );
+        assert_eq!(
+            facts.python_multiple_inheritance,
+            vec![("A".to_string(), 2), ("D".to_string(), 3)]
+        );
+    }
+
+    #[test]
+    fn inheritance_depth_is_file_local() {
+        let facts = extract(
+            "class A:\n    pass\n\nclass B(A):\n    pass\n\nclass C(B):\n    pass\n\nclass D(C):\n    pass\n\nclass E(Unknown):\n    pass\n",
+        );
+        assert_eq!(
+            facts.python_inheritance_depths,
+            vec![("C".to_string(), 3), ("D".to_string(), 4)]
+        );
+    }
+
+    #[test]
+    fn mixin_with_init_is_flagged_by_name_suffix() {
+        let facts = extract(
+            "class FilterMixin:\n    def __init__(self):\n        self.pattern = ''\n\nclass PlainMixin:\n    def log(self):\n        pass\n\nclass Base:\n    def __init__(self):\n        pass\n",
+        );
+        assert_eq!(
+            facts.python_mixins_with_init,
+            vec!["FilterMixin".to_string()]
+        );
+    }
+
+    #[test]
+    fn static_delegation_wrapper_counts_pure_forwarding_methods() {
+        let src = "class W:\n    def __init__(self, f):\n        self._file = f\n    def read(self, n):\n        return self._file.read(n)\n    def close(self):\n        return self._file.close()\n    def flush(self):\n        return self._file.flush()\n    def seek(self, p):\n        return self._file.seek(p)\n    def write(self, s):\n        log(s)\n        return self._file.write(s)\n";
+        let facts = extract(src);
+        assert_eq!(
+            facts.python_static_delegation_wrappers,
+            vec![("W".to_string(), "_file".to_string(), 4)]
+        );
+        let dynamic = extract(&format!(
+            "{src}    def __getattr__(self, name):\n        return getattr(self._file, name)\n"
+        ));
+        assert!(dynamic.python_static_delegation_wrappers.is_empty());
+        let few = extract(
+            "class W:\n    def read(self, n):\n        return self._file.read(n)\n    def close(self):\n        return self._file.close()\n",
+        );
+        assert!(few.python_static_delegation_wrappers.is_empty());
+    }
+
+    #[test]
+    fn mutable_class_attribute_skips_dunders_and_immutables() {
+        let facts = extract(
+            "class Registry:\n    items = []\n    index = dict()\n    __slots__ = []\n    NAME = 'x'\n    pairs = ()\n    def method(self):\n        local = []\n        return local\n",
+        );
+        assert_eq!(
+            facts.python_mutable_class_attributes,
+            vec![
+                ("Registry".to_string(), "items".to_string()),
+                ("Registry".to_string(), "index".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn equality_with_none_flags_eq_and_ne_only() {
+        let facts = extract(
+            "def f(x):\n    return x == None\n\ndef g(x):\n    return None != x\n\ndef h(x):\n    return x is None or x is not None\n",
+        );
+        assert_eq!(
+            facts.python_equality_with_none,
+            vec!["f".to_string(), "g".to_string()]
+        );
     }
 }

@@ -1,5 +1,5 @@
 use super::super::parsed::ParsedFile;
-use super::walk::{function_name, is_test_fn, walk_function_items};
+use super::walk::{function_name, in_test_code, walk_function_items};
 use tree_sitter::Node;
 
 pub fn extract_unsafe_without_safety(parsed: &ParsedFile) -> Vec<String> {
@@ -126,7 +126,7 @@ pub fn extract_sync_lock_guards_across_await(parsed: &ParsedFile) -> Vec<(String
             // Without these the rule flags code that demonstrably releases the
             // lock first — both Phronesis ownership fixtures for those shapes
             // were reported as hazards.
-            let released_at = explicit_drop_byte(function, guard, src, node.end_byte(), scope_end)
+            let released_at = explicit_drop_byte(function, guard, src, node.end_byte()..scope_end)
                 .unwrap_or(scope_end);
             if awaits_between(function, node.end_byte(), released_at) {
                 out.push((name.to_string(), guard.to_string()));
@@ -134,45 +134,6 @@ pub fn extract_sync_lock_guards_across_await(parsed: &ParsedFile) -> Vec<(String
         });
     });
     out
-}
-
-/// True when `node` sits in test code: inside a `#[test]`/`#[tokio::test]`
-/// function, or anywhere under a `#[cfg(test)]` module.
-///
-/// Dogfooding these rules on Phronesis produced 34 of 39 blocking-call hits in
-/// test bodies. Blocking I/O in a test is not a latency defect, and the noise
-/// buries the real findings — four production `async fn`s on the hook path.
-/// The ownership extractor excludes test bodies for the same reason (D14).
-fn in_test_code(node: Node, source: &[u8]) -> bool {
-    let mut current = Some(node);
-    while let Some(candidate) = current {
-        match candidate.kind() {
-            "function_item" if is_test_fn(candidate, source) => return true,
-            "mod_item" if has_cfg_test_attribute(candidate, source) => return true,
-            _ => {}
-        }
-        current = candidate.parent();
-    }
-    false
-}
-
-/// True if a preceding-sibling attribute on `node` is `#[cfg(test)]`.
-fn has_cfg_test_attribute(node: Node, source: &[u8]) -> bool {
-    let mut prev = node.prev_sibling();
-    while let Some(sibling) = prev {
-        match sibling.kind() {
-            "attribute_item" => {
-                let text = sibling.utf8_text(source).unwrap_or("");
-                if text.replace(char::is_whitespace, "").contains("cfg(test)") {
-                    return true;
-                }
-                prev = sibling.prev_sibling();
-            }
-            "line_comment" | "block_comment" => prev = sibling.prev_sibling(),
-            _ => return false,
-        }
-    }
-    false
 }
 
 /// True when this `let` initializer is *itself* a synchronous lock
@@ -242,7 +203,7 @@ fn awaits_between(function: Node, after: usize, before: usize) -> bool {
     false
 }
 
-/// Byte offset of an explicit `drop(<guard>)` between `after` and `before`.
+/// Byte offset of an explicit `drop(<guard>)` strictly inside `window`.
 ///
 /// Mirrors the ownership extractor's D6 case 2 without sharing its code: the
 /// two subsystems make different claims and must stay independent (D11).
@@ -252,14 +213,13 @@ fn explicit_drop_byte(
     function: Node,
     guard: &str,
     source: &[u8],
-    after: usize,
-    before: usize,
+    window: std::ops::Range<usize>,
 ) -> Option<usize> {
     let mut pending = vec![function];
     while let Some(node) = pending.pop() {
         if node.kind() == "call_expression"
-            && node.start_byte() > after
-            && node.start_byte() < before
+            && node.start_byte() > window.start
+            && node.start_byte() < window.end
             && node
                 .child_by_field_name("function")
                 .and_then(|callee| callee.utf8_text(source).ok())

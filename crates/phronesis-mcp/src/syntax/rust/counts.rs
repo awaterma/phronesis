@@ -1,5 +1,5 @@
 use super::super::parsed::ParsedFile;
-use super::walk::walk_function_items;
+use super::walk::{in_test_code, walk_function_items};
 
 /// (fn_name, count) — number of `.clone()` MethodCall invocations in the
 /// function's body (and inside closures within it). Only emits a fact when
@@ -136,6 +136,8 @@ fn count_outer_scope_let_declarations<F>(
 
 /// Functions with 8 or more outer-scope `let` declarations.
 /// See `count_outer_scope_let_declarations` for scoping semantics.
+/// Test code (`#[test]` fns, anything under `#[cfg(test)]`) is exempt —
+/// a test that sets up eight fixtures is not a block-pattern candidate.
 pub(super) fn extract_function_let_binding_counts_high(
     parsed: &ParsedFile,
 ) -> Vec<(String, usize)> {
@@ -146,6 +148,9 @@ pub(super) fn extract_function_let_binding_counts_high(
     let mut out = Vec::new();
     let mut walker = tree.walk();
     walk_function_items(&mut walker, source.as_bytes(), &mut |fn_node, name| {
+        if in_test_code(fn_node, source.as_bytes()) {
+            return;
+        }
         let Some(body) = fn_node.child_by_field_name("body") else {
             return;
         };
@@ -176,6 +181,7 @@ fn has_mut_keyword(node: tree_sitter::Node, _source: &[u8]) -> bool {
 
 /// Functions with 3 or more outer-scope `let mut` declarations.
 /// See `count_outer_scope_let_declarations` for scoping semantics.
+/// Test code is exempt, as for `extract_function_let_binding_counts_high`.
 pub(super) fn extract_function_let_mut_counts_high(parsed: &ParsedFile) -> Vec<(String, usize)> {
     const LET_MUT_THRESHOLD: usize = 3;
     let ParsedFile::Rust { tree, source } = parsed else {
@@ -184,6 +190,9 @@ pub(super) fn extract_function_let_mut_counts_high(parsed: &ParsedFile) -> Vec<(
     let mut out = Vec::new();
     let mut walker = tree.walk();
     walk_function_items(&mut walker, source.as_bytes(), &mut |fn_node, name| {
+        if in_test_code(fn_node, source.as_bytes()) {
+            return;
+        }
         let Some(body) = fn_node.child_by_field_name("body") else {
             return;
         };
@@ -477,6 +486,54 @@ fn outer(x: &String) {
         assert_eq!(
             facts.function_let_binding_counts_high,
             vec![("branch_flow".to_string(), 8)]
+        );
+    }
+
+    /// Regression: `phr-mcp audit` reported `#[test]` fns inside
+    /// `#[cfg(test)] mod tests` for the let-binding / let-mut counts even
+    /// though the rules document test code as exempt. Both the `#[test]`
+    /// attribute and the enclosing `#[cfg(test)]` module must exclude
+    /// the function (a plain helper in the test module has neither marker
+    /// on itself, so the module check is load-bearing).
+    #[test]
+    fn let_counts_skip_functions_in_cfg_test_module_and_test_fns() {
+        let code = "\
+#[cfg(test)]
+mod tests {
+    fn helper() {
+        let mut a = 1; let mut b = 2; let mut c = 3;
+        let _d = 4; let _e = 5; let _f = 6; let _g = 7; let _h = 8;
+        a += b; b += c; c += a;
+    }
+    #[test]
+    fn big() {
+        let mut a = 1; let mut b = 2; let mut c = 3;
+        let _d = 4; let _e = 5; let _f = 6; let _g = 7; let _h = 8;
+        a += b; b += c; c += a;
+    }
+}
+#[tokio::test]
+async fn top_level_test() {
+    let mut a = 1; let mut b = 2; let mut c = 3;
+    let _d = 4; let _e = 5; let _f = 6; let _g = 7; let _h = 8;
+    a += b; b += c; c += a;
+}
+fn production() {
+    let mut a = 1; let mut b = 2; let mut c = 3;
+    let _d = 4; let _e = 5; let _f = 6; let _g = 7; let _h = 8;
+    a += b; b += c; c += a;
+}
+";
+        let facts = extract(code);
+        assert_eq!(
+            facts.function_let_binding_counts_high,
+            vec![("production".to_string(), 8)],
+            "only the production fn should be reported"
+        );
+        assert_eq!(
+            facts.function_let_mut_counts_high,
+            vec![("production".to_string(), 3)],
+            "only the production fn should be reported"
         );
     }
 }

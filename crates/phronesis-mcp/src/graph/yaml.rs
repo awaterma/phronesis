@@ -17,7 +17,6 @@
 use super::extract::Extracted;
 use super::model::Edge;
 use super::unit::UnitContext;
-use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::sync::LazyLock;
 
@@ -385,6 +384,31 @@ fn has_schema_keywords(content: &str) -> bool {
 /// Extract schema entity names from YAML content using regex.
 ///
 /// Collect stable JSON Schema resources hosted in YAML.
+/// Deserialize every document in a multi-document stream, one result per
+/// document. Returns `None` when the parser panics instead of erroring:
+/// serde_norway 0.9 panics with "unexpected end of mapping" when an undefined
+/// alias is the value of a mapping's final key, and a hook must degrade that
+/// to "unparseable" rather than abort.
+///
+/// Do not collect `serde_norway::Deserializer` directly. For some malformed
+/// inputs its document iterator repeatedly yields the same error without
+/// advancing, so `collect()` never returns. Splitting the stream ourselves and
+/// invoking the single-document parser gives each input a finite amount of
+/// parser work and preserves the same per-document result contract.
+fn parse_documents(content: &str) -> Option<Vec<Result<serde_norway::Value, String>>> {
+    std::panic::catch_unwind(|| {
+        split_yaml_documents(content)
+            .into_iter()
+            .filter(|document| !document.trim().is_empty())
+            .map(|document| {
+                serde_norway::from_str::<serde_norway::Value>(document)
+                    .map_err(|error| error.to_string())
+            })
+            .collect()
+    })
+    .ok()
+}
+
 fn extract_schema_entities(content: &str) -> BTreeSet<String> {
     let mut entities = BTreeSet::new();
 
@@ -411,10 +435,8 @@ fn extract_schema_entities(content: &str) -> BTreeSet<String> {
         }
     }
 
-    for document in serde_norway::Deserializer::from_str(content) {
-        if let Ok(value) = serde_norway::Value::deserialize(document) {
-            collect(&value, &mut entities);
-        }
+    for value in parse_documents(content).into_iter().flatten().flatten() {
+        collect(&value, &mut entities);
     }
 
     // $anchor values
@@ -524,15 +546,19 @@ fn extract_yaml_document(
     // Reject malformed YAML before asserting structural evidence. Duplicate
     // mappings are handled below so they can retain their dedicated
     // diagnostic fact rather than collapsing into a generic parse failure.
-    if dup_count == 0 {
-        for document in serde_norway::Deserializer::from_str(content) {
-            if let Err(error) = serde_norway::Value::deserialize(document) {
-                // An unknown/forward anchor has a dedicated diagnostic below;
-                // retain that evidence instead of collapsing it into a generic
-                // parse failure.
-                if !error.to_string().to_ascii_lowercase().contains("anchor") {
-                    return Extracted::unparseable();
-                }
+    // Likewise, an undefined alias already has its dedicated diagnostic
+    // (and trips the serde_norway panic when it is a trailing value), so the
+    // validation pass is skipped when the alias scan found one.
+    if dup_count == 0 && undefined_aliases.is_empty() {
+        let Some(documents) = parse_documents(content) else {
+            return Extracted::unparseable();
+        };
+        for error in documents.into_iter().filter_map(Result::err) {
+            // An unknown/forward anchor has a dedicated diagnostic below;
+            // retain that evidence instead of collapsing it into a generic
+            // parse failure.
+            if !error.to_ascii_lowercase().contains("anchor") {
+                return Extracted::unparseable();
             }
         }
     }
@@ -1121,5 +1147,177 @@ use: *a
         let defs = edges_of(&out, "defines");
         let a_defs: Vec<_> = defs.iter().filter(|a| a[1].contains("a")).collect();
         assert_eq!(a_defs.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod yaml_document_tests {
+    use super::*;
+    use crate::graph::unit::{LANG_YAML, UnitContext};
+
+    fn ctx() -> UnitContext {
+        UnitContext::unnamed_for(LANG_YAML)
+    }
+
+    fn preds(x: &Extracted, p: &str) -> Vec<Vec<String>> {
+        x.edges
+            .iter()
+            .filter(|e| e.p == p)
+            .map(|e| e.a.clone())
+            .collect()
+    }
+
+    // ── mask_quoted_yaml ──────────────────────────────────────────────
+
+    #[test]
+    fn mask_quoted_yaml_preserves_length_and_plain_syntax() {
+        let input = "a: &anchor 1\nb: *anchor\n";
+        let out = mask_quoted_yaml(input);
+        assert_eq!(out.len(), input.len());
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn mask_quoted_yaml_blanks_double_and_single_quoted_scalars() {
+        let out = mask_quoted_yaml("a: \"*not-alias\"\nb: '&not-anchor'\n");
+        assert!(!out.contains('*'));
+        assert!(!out.contains('&'));
+        assert!(!out.contains('"'));
+        assert!(!out.contains('\''));
+        assert_eq!(out.len(), "a: \"*not-alias\"\nb: '&not-anchor'\n".len());
+        assert!(out.starts_with("a: "));
+    }
+
+    #[test]
+    fn mask_quoted_yaml_handles_escaped_single_quote_inside_single_quotes() {
+        // 'it''s *x' — the doubled quote does not terminate the scalar.
+        let input = "k: 'it''s *x' *after\n";
+        let out = mask_quoted_yaml(input);
+        assert_eq!(out.len(), input.len());
+        assert!(!out.contains("*x"), "inner alias should be masked");
+        assert!(out.contains("*after"), "alias after the scalar survives");
+    }
+
+    #[test]
+    fn mask_quoted_yaml_blanks_comments_to_end_of_line() {
+        let input = "a: 1 # *alias &anchor\nb: *real\n";
+        let out = mask_quoted_yaml(input);
+        assert_eq!(out.len(), input.len());
+        assert!(!out.contains('#'));
+        assert!(!out.contains("&anchor"));
+        assert!(out.contains("*real"));
+    }
+
+    #[test]
+    fn mask_quoted_yaml_unterminated_quote_resets_at_newline() {
+        let input = "a: \"open\nb: *alias\n";
+        let out = mask_quoted_yaml(input);
+        assert_eq!(out.len(), input.len());
+        assert!(out.contains("*alias"));
+    }
+
+    #[test]
+    fn mask_quoted_yaml_keeps_multibyte_utf8_intact() {
+        let input = "name: \"héllo ☃\"\nx: *é\n";
+        let out = mask_quoted_yaml(input);
+        assert_eq!(out.len(), input.len());
+        assert!(out.contains("x: *é"));
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn mask_quoted_yaml_empty_input() {
+        assert_eq!(mask_quoted_yaml(""), "");
+    }
+
+    // ── extract_yaml_document ─────────────────────────────────────────
+
+    #[test]
+    fn extract_yaml_document_emits_file_type_and_ordinal_module() {
+        let out = extract_yaml_document("config/app.yaml", "a: 1\n", &ctx(), 2);
+        assert!(!out.parse_failed);
+        let modules = preds(&out, "declares_module");
+        assert_eq!(modules.len(), 1);
+        assert_eq!(modules[0][0], "config/app.yaml");
+        assert!(
+            modules[0][1].ends_with("::config::app::doc:2"),
+            "{:?}",
+            modules[0]
+        );
+        assert!(!preds(&out, "file_type").is_empty());
+    }
+
+    #[test]
+    fn extract_yaml_document_defines_anchors_and_flags_undefined_aliases() {
+        let content = "base: &base\n  x: 1\nuse: *base\nbad: *missing\n";
+        let out = extract_yaml_document("a.yaml", content, &ctx(), 0);
+        let defs = preds(&out, "graph_definition");
+        assert!(defs.iter().any(|d| d[0].ends_with(".base")), "{defs:?}");
+        let undefined = preds(&out, "yaml_undefined_alias");
+        assert_eq!(undefined.len(), 1, "{undefined:?}");
+        assert!(undefined[0].iter().any(|v| v == "missing"));
+    }
+
+    #[test]
+    fn extract_yaml_document_ignores_aliases_inside_quotes_and_comments() {
+        let content = "a: \"*quoted\"\nb: 1 # *commented\n";
+        let out = extract_yaml_document("a.yaml", content, &ctx(), 0);
+        assert!(!out.parse_failed);
+        assert!(preds(&out, "yaml_undefined_alias").is_empty());
+    }
+
+    #[test]
+    fn extract_yaml_document_malformed_is_unparseable() {
+        let out = extract_yaml_document("a.yaml", "a: [1, 2\nb: }\n", &ctx(), 0);
+        assert!(out.parse_failed);
+        assert!(out.edges.is_empty());
+    }
+
+    #[test]
+    fn extract_yaml_document_forward_alias_keeps_diagnostic_instead_of_parse_failure() {
+        // serde parses this as an unknown-anchor error; we retain the
+        // undefined-alias diagnostic rather than collapsing to unparseable.
+        let content = "use: *later\nlater: &later 1\n";
+        let out = extract_yaml_document("a.yaml", content, &ctx(), 0);
+        assert!(!out.parse_failed);
+        let undefined = preds(&out, "yaml_undefined_alias");
+        assert!(
+            undefined.iter().any(|u| u.iter().any(|v| v == "later")),
+            "{undefined:?}"
+        );
+    }
+
+    #[test]
+    fn extract_yaml_document_duplicate_keys_keep_only_their_diagnostic() {
+        let content = "a: 1\na: 2\n";
+        let out = extract_yaml_document("a.yaml", content, &ctx(), 0);
+        assert!(
+            !out.parse_failed,
+            "dup keys keep their dedicated diagnostic"
+        );
+        assert_eq!(out.skipped, 1);
+        let dups = preds(&out, "yaml_duplicate_key");
+        assert_eq!(dups.len(), 1, "{dups:?}");
+        assert_eq!(dups[0][1], "a");
+        assert!(out.edges.iter().all(|e| e.p == "yaml_duplicate_key"));
+    }
+
+    /// Regression: serde_norway 0.9 panics when an undefined alias is the
+    /// value of a mapping's last key. The extractor must not propagate that.
+    #[test]
+    fn extract_yaml_document_trailing_undefined_alias_does_not_panic() {
+        for content in [
+            "bad: *missing\n",
+            "x: 1\nbad: *missing\n",
+            "base: &base 1\nbad: *missing\n",
+        ] {
+            let out = extract_yaml_document("a.yaml", content, &ctx(), 0);
+            assert!(!out.parse_failed, "{content:?}");
+            let undefined = preds(&out, "yaml_undefined_alias");
+            assert!(
+                undefined.iter().any(|u| u.iter().any(|v| v == "missing")),
+                "{content:?}: {undefined:?}"
+            );
+        }
     }
 }

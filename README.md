@@ -38,11 +38,11 @@ subsystems that extend enforcement past pattern-matching on edits.
 boundaries. It preserves the smallest high-value instructions; enforcement
 still belongs in rules.
 
-**Confidence scoring** ([SPEC-confidence-scoring](docs/specs/SPEC-confidence-scoring.md)) reads build, test, and known-bug signals through declarative toolchain definitions: Cargo ships as a built-in, while `.phronesis/toolchains.json` can extend or override the registry for other toolchains. A generic parser turns matched command outcomes into neutral signals and gates `git commit` by confidence band — three grounded signals say "this is real," not three syntactic checks. The default platform writes `.phronesis/confidence.json`; `phr-mcp confidence` reports the current band.
+**Confidence scoring** ([SPEC-confidence-scoring](docs/specs/SPEC-confidence-scoring.md)) reads build, test, and known-bug signals through declarative toolchain definitions: Cargo, `xcodebuild`, and SwiftPM ship as built-ins, while `.phronesis/toolchains.json` can extend or override the registry for other toolchains. A generic parser turns matched command outcomes into neutral signals and warns on Git mutations when confidence evidence is incomplete or failing — three grounded signals say "this is real," not three syntactic checks. The default platform writes `.phronesis/confidence.json`; `phr-mcp confidence` reports the current band.
 
 **Journey facts** ([SPEC-journey-facts](docs/specs/SPEC-journey-facts.md)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
 
-**Structural code graph** parses Rust, Python, and TypeScript into queryable
+**Structural code graph** parses Rust, Python, TypeScript, and Swift into queryable
 relations such as `defines_fn`, `calls_api`, `tested_by`, and `no_direct_test`.
 Rules can bind to concrete code referents, structural packs can reason over
 relationships, and clients can inspect freshness or rebuild derived state over
@@ -80,7 +80,7 @@ Rendered on GitHub Pages: **[awaterma.github.io/phronesis](https://awaterma.gith
 
 - [**Loop-Based Agent Programming**](docs/loop-programming-guide.md) — A guide to governing the iterative propose/act/observe loop so it doesn't drift across long sessions.
 - [**The Explainer**](https://awaterma.github.io/phronesis/explainer.html) — A long-form technical essay on the engine, the RETE algorithm, and the design intent. ([source](docs/explainer.html))
-- [**The Catalogue**](https://awaterma.github.io/phronesis/catalogue.html) — A visual reference of starter rules (Rust, LLM behavior, security) with rationale and examples. ([source](docs/catalogue.html))
+- [**The Catalogue**](https://awaterma.github.io/phronesis/catalogue.html) — A generated visual reference of all 95 starter rules across the language, structural, confidence, and agent-governance packs. ([source](docs/catalogue.html))
 - [**Command Reference**](crates/phronesis-mcp/CLAUDE.md) — The full CLI surface and hook wiring details.
 - [**Specs**](docs/specs/) — Architectural roadmaps and technical debt management plans.
 

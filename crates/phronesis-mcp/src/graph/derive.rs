@@ -89,15 +89,19 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
             map
         },
     );
-    let imports = base_edges(base, "imports").fold(
-        BTreeMap::<String, BTreeSet<String>>::new(),
-        |mut map, edge| {
-            if let (Some(from), Some(to)) = (edge.a.first(), edge.a.get(1)) {
-                map.entry(from.clone()).or_default().insert(to.clone());
-            }
-            map
-        },
-    );
+    // `test_imports` (a `use` under `#[cfg(test)]`) counts for resolving what a
+    // test can see, but never for `in_cycle`, which reads `imports` alone.
+    let imports = base_edges(base, "imports")
+        .chain(base_edges(base, "test_imports"))
+        .fold(
+            BTreeMap::<String, BTreeSet<String>>::new(),
+            |mut map, edge| {
+                if let (Some(from), Some(to)) = (edge.a.first(), edge.a.get(1)) {
+                    map.entry(from.clone()).or_default().insert(to.clone());
+                }
+                map
+            },
+        );
     let reexports = base_edges(base, "reexports").fold(
         BTreeMap::<(String, String), BTreeSet<String>>::new(),
         |mut map, edge| {
@@ -120,7 +124,7 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
         }
         let (callee_index, caller) = if edge.p == "tested_by" {
             (0, edge.a[1].as_str())
-        } else if edge.a[0].starts_with("rust:") {
+        } else if canonicalizes_calls(&edge.a[0]) {
             (1, edge.a[0].as_str())
         } else {
             normalized.push(edge);
@@ -178,6 +182,9 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
                             .is_some_and(|suffix| suffix.starts_with("::"))
                 }) || visible_imports.into_iter().any(|targets| {
                     targets.contains(module)
+                        || targets
+                            .iter()
+                            .any(|imported| unit_contains(imported, module))
                         || (method_call
                             && targets.iter().any(|imported| {
                                 method_scope.is_some_and(|(parent, ty)| {
@@ -203,6 +210,24 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
     *base = normalized;
 }
 
+/// Whether a function identity belongs to a language whose extractor emits
+/// bare-callee `calls` edges for resolution here. Rust resolves by module and
+/// `use` evidence; Swift by the unit-wide `imports` every file states.
+fn canonicalizes_calls(function: &str) -> bool {
+    function.starts_with("rust:") || function.starts_with("swift:")
+}
+
+/// Whether `imported` names a whole unit (`swift:project`, `rust:app` — a
+/// language tag and unit name with no module path) that `module` belongs to.
+/// Importing a unit, rather than a module inside it, is how a language with
+/// target-wide namespaces states that a file sees everything in its target.
+fn unit_contains(imported: &str, module: &str) -> bool {
+    !imported.contains("::")
+        && module
+            .strip_prefix(imported)
+            .is_some_and(|rest| rest.starts_with("::"))
+}
+
 /// Compute all derived edges over a complete base-edge set.
 pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
     let mut out = inventory(base);
@@ -225,7 +250,7 @@ pub fn test_reachability(base: &[Edge]) -> Vec<Edge> {
         let (Some(caller), Some(callee)) = (edge.a.first(), edge.a.get(1)) else {
             continue;
         };
-        if caller.starts_with("rust:") && callee.starts_with("rust:") {
+        if canonicalizes_calls(caller) && canonicalizes_calls(callee) {
             calls.entry(caller).or_default().insert(callee);
         }
     }
@@ -486,8 +511,10 @@ pub fn no_direct_test(base: &[Edge]) -> Vec<Edge> {
 ///
 /// Stability matters: the cycle id lands in user-visible rule output, so it
 /// must not churn as unrelated edges are added or reordered. Naming the cycle
-/// after its lexicographically smallest member makes the id a function of the
-/// cycle's contents alone.
+/// after its sorted members (`cycle:a+b+c`) makes the id a function of the
+/// cycle's contents alone, and also makes it self-describing: an id named after
+/// only the smallest member read as "module `a` is in cycle `a`", which looked
+/// like a self-import when `a` was the module being reported.
 pub fn in_cycle(base: &[Edge]) -> Vec<Edge> {
     // Adjacency over sorted collections, so traversal order — and therefore
     // the SCC grouping — does not depend on edge insertion order.
@@ -508,7 +535,11 @@ pub fn in_cycle(base: &[Edge]) -> Vec<Edge> {
         if !is_cycle {
             continue;
         }
-        let cycle_id = format!("cycle:{first}");
+        let members: BTreeSet<&str> = scc.iter().copied().collect();
+        let cycle_id = format!(
+            "cycle:{}",
+            members.iter().copied().collect::<Vec<_>>().join("+")
+        );
         for m in scc {
             out.push(Edge::derived("in_cycle", &[m, &cycle_id]));
         }
@@ -821,6 +852,23 @@ mod tests {
     }
 
     #[test]
+    fn a_whole_unit_import_makes_every_module_in_the_unit_visible() {
+        // Swift files see their entire target without naming a module, so
+        // the extractor imports the unit itself rather than a module in it.
+        let mut base = vec![
+            defines("App/A.swift", "swift:project::App::A::Overlay::tap"),
+            imports("swift:project::AppTests::ATests", "swift:project"),
+            tested("tap", "swift:project::AppTests::ATests::ATests::testTap"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert_eq!(
+            args_of(&base, "tested_by")[0][0],
+            "swift:project::App::A::Overlay::tap"
+        );
+        assert!(no_direct_test(&base).is_empty());
+    }
+
+    #[test]
     fn an_ambiguous_bare_test_call_is_not_guessed() {
         let mut base = vec![
             defines("a.rs", "rust:app::a::fire"),
@@ -844,6 +892,24 @@ mod tests {
         assert!(base.iter().any(|edge| {
             edge.p == "calls" && edge.a == ["rust:app::a::entry", "rust:app::a::helper"]
         }));
+    }
+
+    #[test]
+    fn swift_calls_are_canonicalized_through_unit_wide_visibility() {
+        let caller = "swift:project::App::A::Overlay::tap";
+        let helper = "swift:project::App::B::helper";
+        let mut base = vec![
+            defines("App/A.swift", caller),
+            defines("App/B.swift", helper),
+            imports("swift:project::App::A", "swift:project"),
+            Edge::base("calls", &[caller, "helper"], "App/A.swift"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(
+            base.iter()
+                .any(|edge| edge.p == "calls" && edge.a == [caller, helper]),
+            "{base:?}"
+        );
     }
 
     #[test]
@@ -997,7 +1063,28 @@ mod tests {
 
     #[test]
     fn a_self_import_is_a_cycle() {
-        assert_eq!(in_cycle(&[imports("a", "a")]).len(), 1);
+        let out = in_cycle(&[imports("a", "a")]);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].a[1], "cycle:a");
+    }
+
+    /// Regression: a two-module cycle used to be named after its smallest
+    /// member only (`cycle:a`), so the `a` row of the audit read as
+    /// "a is in cycle a" — indistinguishable from a self-import. The id now
+    /// enumerates every member, sorted, regardless of edge order.
+    #[test]
+    fn cycle_id_names_every_member_not_just_the_smallest() {
+        let base = vec![imports("wme", "binding"), imports("binding", "wme")];
+        let out = in_cycle(&base);
+        assert_eq!(out.len(), 2);
+        for e in &out {
+            assert_eq!(e.a[1], "cycle:binding+wme", "edge {:?}", e.a);
+            assert_ne!(
+                format!("cycle:{}", e.a[0]),
+                e.a[1],
+                "id must not equal a lone member"
+            );
+        }
     }
 
     #[test]

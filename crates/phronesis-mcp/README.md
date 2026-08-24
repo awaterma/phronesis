@@ -20,6 +20,9 @@ phr-mcp install
 # Initialize in your project
 cd /your/project
 phr-mcp init --packs rust
+
+# Python correctness plus opt-in design-pattern advisories
+phr-mcp init --packs python,python-patterns
 ```
 
 ## What it does
@@ -43,15 +46,20 @@ phr-mcp init --packs rust
   before the existing per-file `file_path` evaluation.
 - **Starter packs** ship rules for Rust (including async/unsafe hazards),
   Python (including import-time I/O, identity comparisons, mutable globals,
-  and star imports), TypeScript, Swift, Rhai, and LLM behavior.
+  and star imports), TypeScript, Swift, Rhai, and LLM behavior. The separate
+  opt-in `python-patterns` pack adds 13 parser-backed design advisories; its
+  Composite check only recognizes positive same-subject `if`/`elif`
+  dispatch across non-builtin domain types.
 - **Journey facts** — durable per-call journal + project-defined taggers
   in `.phronesis/journey.json` let rules match cross-call temporal
   patterns (`auth-churn-without-tests`, `build-staleness`, recent SQL)
   without any in-memory accumulation.
-- **Confidence scoring** — declarative toolchain definitions (built-in
-  Cargo plus project definitions in `.phronesis/toolchains.json`) feed one
+- **Confidence scoring** — declarative toolchain definitions (built-in Cargo,
+  `xcodebuild`, and SwiftPM plus project definitions in
+  `.phronesis/toolchains.json`) feed one
   generic parser that turns build / test / known-bug outcomes into grounded
-  signals; gate rules block or warn a `git commit` by confidence band.
+  signals; advisory gate rules warn on Git mutations when evidence is
+  incomplete or failing.
   Enabled by default through `.phronesis/confidence.json`.
 - **Structural graph and graph rules, compact durable context, journey facts,
   confidence, and LLM rules are defaults.** Every language-neutral capability
@@ -95,8 +103,16 @@ hooks are deterministic guardrails, not a complete security boundary: some
 specialized or hosted tool paths may not traverse local lifecycle hooks.
 
 Codex observes unified shell execution as `Bash`, file edits as `apply_patch`,
-and can expose other local or MCP tools. Phronesis v0.26 governs only `Bash` and
+and can expose other local or MCP tools. Phronesis v0.30 governs only `Bash` and
 `apply_patch`; unsupported tools are safe no-ops.
+
+The Codex adapter always exits 0 after producing valid JSON. A pre-tool block
+is represented by `hookSpecificOutput.permissionDecision = "deny"`; an
+advisory is represented by `additionalContext` or `systemMessage`. This keeps
+Codex's structured response authoritative. The Claude-compatible `pre-check`
+and `post-check` commands retain their process contract: clean is 0, advisory
+is 1, and a pre-tool block is 2. Action-log entries record those logical
+0/1/2 verdicts for both hosts even though the Codex adapter process exits 0.
 
 ## Rule-emitted context capsules
 

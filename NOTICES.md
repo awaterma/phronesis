@@ -69,6 +69,44 @@ scratch using phronesis predicates (`new_content_contains` + `or`
 clauses); no SwiftLint source code or rule descriptions are copied.
 The ADRs link to SwiftLint's hosted rule documentation.
 
+## Python packs — `phr-mcp init --packs python,python-patterns`
+
+**[brandon-rhodes/python-patterns](https://github.com/brandon-rhodes/python-patterns)**
+— no license declared (effectively "all rights reserved")
+
+The `python-patterns` pack (13 design-pattern advisories: Singleton,
+Flyweight, Composite, Iterator, Decorator, Composition over Inheritance,
+Prebound Methods, Global Object, Sentinel Object, and related) draws on
+design-pattern concepts originally discussed in the
+[`python-patterns.guide`](https://python-patterns.guide/) site, authored by
+Brandon Rhodes (© 2018–2020). The upstream repository declares no license,
+so its content defaults to full copyright under default-copyright rules.
+
+The 13 tree-sitter predicates in `syntax/python.rs` are written from
+scratch — no code is copied. The rule messages describe each pattern and its
+heuristic limit in our own voice and link to the relevant guide page for
+attribution and further reading. The predicates detect syntactic shapes (e.g.
+an `__new__` override with an `_instance` attribute, positive same-subject
+`if`/`elif` dispatch across non-builtin domain types, and
+`type(name, bases, ns)` calls) that are standard Python constructs recognized
+across the ecosystem; the patterns themselves (Gang-of-Four, prebound
+methods, etc.) are public knowledge documented in many sources.
+
+The base `python` pack (11 correctness rules: bare-except, mutable default
+args, swallowed exceptions, print-in-src, etc.) is sourced from Ruff's
+public rule catalogue, Python documentation, and standard PEPs — all
+permissively licensed or public-domain. No license concern applies to the
+base pack.
+
+Maintainer policy: if the upstream project changes its licensing, or its
+author requests removal, disable distribution of the optional pack while the
+request is assessed; preserve the independently implemented predicates only
+if counsel/maintainers confirm they are unaffected; replace any disputed
+message or link with generic Python terminology; and record the resolution in
+this notice and the changelog. If that cannot be done promptly, remove the
+pack in the next patch release. No upstream prose or source should be copied
+into future rules without an explicit compatible license.
+
 ---
 
 If you contributed prior art that you'd like to see acknowledged here

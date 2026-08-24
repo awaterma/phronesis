@@ -104,9 +104,8 @@
   <a href="./changelog.html">Changelog</a>
 </nav>
 <header>
-  <div class="web-kicker">Phronesis documentation · v0.26.0</div>
+  <div class="web-kicker">Phronesis documentation · v0.30.0</div>
 </header>
-<main>
 <header id="title-block-header">
 <h1 class="title">Phronesis — Changelog</h1>
 </header>
@@ -114,47 +113,141 @@
 <ul>
 <li><a href="#changelog" id="toc-changelog">Changelog</a>
 <ul>
-<li><a href="#section" id="toc-section">[0.26.0] - 2026-08-09</a></li>
-<li><a href="#section-1" id="toc-section-1">[0.25.0] -
-2026-08-01</a></li>
-<li><a href="#section-2" id="toc-section-2">[0.24.0] -
-2026-07-31</a></li>
-<li><a href="#section-3" id="toc-section-3">[0.23.1] -
-2026-07-30</a></li>
-<li><a href="#section-4" id="toc-section-4">[0.23.0] -
-2026-07-30</a></li>
-<li><a href="#section-5" id="toc-section-5">[0.22.0] -
-2026-07-25</a></li>
-<li><a href="#section-6" id="toc-section-6">[0.20.0] -
-2026-07-13</a></li>
-<li><a href="#section-7" id="toc-section-7">[0.19.0] -
-2026-07-12</a></li>
-<li><a href="#section-8" id="toc-section-8">[0.18.0] -
-2026-07-11</a></li>
-<li><a href="#section-9" id="toc-section-9">[0.17.1] -
-2026-07-06</a></li>
-<li><a href="#section-10" id="toc-section-10">0.17.0 -
-2026-07-04</a></li>
-<li><a href="#section-11" id="toc-section-11">0.16.2 -
-2026-07-03</a></li>
-<li><a href="#section-12" id="toc-section-12">[0.16.1] -
-2026-07-03</a></li>
-<li><a href="#section-13" id="toc-section-13">[0.16.0] -
-2026-07-03</a></li>
-<li><a href="#section-14" id="toc-section-14">[0.15.0] -
-2026-06-24</a></li>
-<li><a href="#section-15" id="toc-section-15">0.14.0 -
-2026-06-21</a></li>
-<li><a href="#section-16" id="toc-section-16">0.13.2 -
-2026-06-20</a></li>
-<li><a href="#section-17" id="toc-section-17">0.13.1 -
-2026-06-20</a></li>
-<li><a href="#section-18" id="toc-section-18">0.13.0 -
-2026-06-20</a></li>
-<li><a href="#section-19" id="toc-section-19">0.12.0 -
-2026-06-19</a></li>
-<li><a href="#section-20" id="toc-section-20">0.11.0 -
-2026-06-13</a></li>
+<li><a href="#unreleased" id="toc-unreleased">[Unreleased]</a>
+<ul>
+<li><a href="#added" id="toc-added">Added</a></li>
+<li><a href="#changed" id="toc-changed">Changed</a></li>
+</ul></li>
+<li><a href="#section" id="toc-section">[0.29.0] - 2026-08-16</a>
+<ul>
+<li><a href="#changed-1" id="toc-changed-1">Changed</a></li>
+<li><a href="#added-1" id="toc-added-1">Added</a></li>
+<li><a href="#fixed" id="toc-fixed">Fixed</a></li>
+</ul></li>
+<li><a href="#section-1" id="toc-section-1">[0.26.0] - 2026-08-09</a>
+<ul>
+<li><a href="#added-2" id="toc-added-2">Added</a></li>
+<li><a href="#changed-2" id="toc-changed-2">Changed</a></li>
+<li><a href="#safety" id="toc-safety">Safety</a></li>
+</ul></li>
+<li><a href="#section-2" id="toc-section-2">[0.25.0] - 2026-08-01</a>
+<ul>
+<li><a href="#changed-3" id="toc-changed-3">Changed</a></li>
+<li><a href="#added-3" id="toc-added-3">Added</a></li>
+<li><a href="#changed-4" id="toc-changed-4">Changed</a></li>
+<li><a href="#fixed-1" id="toc-fixed-1">Fixed</a></li>
+<li><a href="#compatibility"
+id="toc-compatibility">Compatibility</a></li>
+<li><a href="#measurements" id="toc-measurements">Measurements</a></li>
+<li><a href="#limitations" id="toc-limitations">Limitations</a></li>
+</ul></li>
+<li><a href="#section-3" id="toc-section-3">[0.24.0] - 2026-07-31</a>
+<ul>
+<li><a href="#added-4" id="toc-added-4">Added</a></li>
+<li><a href="#limitations-1" id="toc-limitations-1">Limitations</a></li>
+</ul></li>
+<li><a href="#section-4" id="toc-section-4">[0.23.1] - 2026-07-30</a>
+<ul>
+<li><a href="#fixed-2" id="toc-fixed-2">Fixed</a></li>
+</ul></li>
+<li><a href="#section-5" id="toc-section-5">[0.23.0] - 2026-07-30</a>
+<ul>
+<li><a href="#added-5" id="toc-added-5">Added</a></li>
+<li><a href="#changed-5" id="toc-changed-5">Changed</a></li>
+<li><a href="#fixed-3" id="toc-fixed-3">Fixed</a></li>
+<li><a href="#known-limits" id="toc-known-limits">Known limits</a></li>
+<li><a href="#migration" id="toc-migration">Migration</a></li>
+</ul></li>
+<li><a href="#section-6" id="toc-section-6">[0.22.0] - 2026-07-25</a>
+<ul>
+<li><a href="#added-6" id="toc-added-6">Added</a></li>
+<li><a href="#changed-6" id="toc-changed-6">Changed</a></li>
+<li><a href="#fixed-4" id="toc-fixed-4">Fixed</a></li>
+</ul></li>
+<li><a href="#section-7" id="toc-section-7">[0.20.0] - 2026-07-13</a>
+<ul>
+<li><a href="#changed-7" id="toc-changed-7">Changed</a></li>
+<li><a href="#fixed-5" id="toc-fixed-5">Fixed</a></li>
+<li><a href="#migration-1" id="toc-migration-1">Migration</a></li>
+</ul></li>
+<li><a href="#section-8" id="toc-section-8">[0.19.0] - 2026-07-12</a>
+<ul>
+<li><a href="#added-7" id="toc-added-7">Added</a></li>
+</ul></li>
+<li><a href="#section-9" id="toc-section-9">[0.18.0] - 2026-07-11</a>
+<ul>
+<li><a href="#added-8" id="toc-added-8">Added</a></li>
+<li><a href="#removed" id="toc-removed">Removed</a></li>
+</ul></li>
+<li><a href="#section-10" id="toc-section-10">[0.17.1] - 2026-07-06</a>
+<ul>
+<li><a href="#fixed-6" id="toc-fixed-6">Fixed</a></li>
+</ul></li>
+<li><a href="#section-11" id="toc-section-11">0.17.0 - 2026-07-04</a>
+<ul>
+<li><a href="#changed-8" id="toc-changed-8">Changed</a></li>
+</ul></li>
+<li><a href="#section-12" id="toc-section-12">0.16.2 - 2026-07-03</a>
+<ul>
+<li><a href="#added-9" id="toc-added-9">Added</a></li>
+</ul></li>
+<li><a href="#section-13" id="toc-section-13">[0.16.1] - 2026-07-03</a>
+<ul>
+<li><a href="#added-10" id="toc-added-10">Added</a></li>
+<li><a href="#changed-9" id="toc-changed-9">Changed</a></li>
+<li><a href="#security" id="toc-security">Security</a></li>
+<li><a href="#fixed-7" id="toc-fixed-7">Fixed</a></li>
+</ul></li>
+<li><a href="#section-14" id="toc-section-14">[0.16.0] - 2026-07-03</a>
+<ul>
+<li><a href="#added-11" id="toc-added-11">Added</a></li>
+<li><a href="#changed-10" id="toc-changed-10">Changed</a></li>
+<li><a href="#removed-1" id="toc-removed-1">Removed</a></li>
+</ul></li>
+<li><a href="#section-15" id="toc-section-15">[0.15.0] - 2026-06-24</a>
+<ul>
+<li><a href="#added-12" id="toc-added-12">Added</a></li>
+<li><a href="#fixed-8" id="toc-fixed-8">Fixed</a></li>
+</ul></li>
+<li><a href="#section-16" id="toc-section-16">0.14.0 - 2026-06-21</a>
+<ul>
+<li><a href="#added-13" id="toc-added-13">Added</a></li>
+<li><a href="#changed-11" id="toc-changed-11">Changed</a></li>
+<li><a href="#migration-2" id="toc-migration-2">Migration</a></li>
+<li><a href="#deferred-intentional-with-specs-on-disk-for-future-work"
+id="toc-deferred-intentional-with-specs-on-disk-for-future-work">Deferred
+(intentional, with specs on disk for future work)</a></li>
+<li><a href="#notes" id="toc-notes">Notes</a></li>
+</ul></li>
+<li><a href="#section-17" id="toc-section-17">0.13.2 - 2026-06-20</a>
+<ul>
+<li><a href="#fixed-9" id="toc-fixed-9">Fixed</a></li>
+</ul></li>
+<li><a href="#section-18" id="toc-section-18">0.13.1 - 2026-06-20</a>
+<ul>
+<li><a href="#fixed-10" id="toc-fixed-10">Fixed</a></li>
+<li><a href="#changed-12" id="toc-changed-12">Changed</a></li>
+<li><a href="#fixed-engine" id="toc-fixed-engine">Fixed
+(engine)</a></li>
+</ul></li>
+<li><a href="#section-19" id="toc-section-19">0.13.0 - 2026-06-20</a>
+<ul>
+<li><a href="#added-14" id="toc-added-14">Added</a></li>
+<li><a href="#changed-13" id="toc-changed-13">Changed</a></li>
+<li><a href="#notes-1" id="toc-notes-1">Notes</a></li>
+</ul></li>
+<li><a href="#section-20" id="toc-section-20">0.12.0 - 2026-06-19</a>
+<ul>
+<li><a href="#added-15" id="toc-added-15">Added</a></li>
+</ul></li>
+<li><a href="#section-21" id="toc-section-21">0.11.0 - 2026-06-13</a>
+<ul>
+<li><a href="#added-16" id="toc-added-16">Added</a></li>
+<li><a href="#changed-breaking" id="toc-changed-breaking">Changed
+(breaking)</a></li>
+<li><a href="#deprecated" id="toc-deprecated">Deprecated</a></li>
+<li><a href="#fixed-11" id="toc-fixed-11">Fixed</a></li>
+</ul></li>
 <li><a href="#known-follow-ups-specs-landed-implementation-deferred"
 id="toc-known-follow-ups-specs-landed-implementation-deferred">Known
 follow-ups (specs landed, implementation deferred)</a></li>
@@ -168,8 +261,325 @@ releases</a></li>
 follows <a href="https://keepachangelog.com/en/1.1.0/">Keep a
 Changelog</a>. This project is pre-1.0: while <code>0.x</code>, MINOR
 versions may carry breaking changes.</p>
-<h2 id="section">[0.26.0] - 2026-08-09</h2>
+<h2 id="unreleased">[Unreleased]</h2>
 <h3 id="added">Added</h3>
+<ul>
+<li><p><strong>New opt-in <code>python-patterns</code> pack</strong>
+(<code>phr-mcp init --packs python,python-patterns</code>; alias
+<code>py-patterns</code>). Thirteen advisories derived from <a
+href="https://python-patterns.guide/"
+class="uri">https://python-patterns.guide/</a>, every one backed by a
+new tree-sitter predicate in <code>syntax/python.rs</code> — no
+substring or regex conditions anywhere in either Python pack. Warns:
+<code>global</code> rebinding (<code>python_global_statement</code>),
+<code>globals()[...] = ...</code> introspection assignment
+(<code>python_globals_subscript_assignment</code>), three-argument
+<code>type(...)</code> dynamic classes
+(<code>python_dynamic_class_creation</code>), <code>__new__</code>-based
+singletons (<code>python_new_override</code> shape
+<code>singleton</code>), containers whose <code>__iter__</code> returns
+<code>self</code> (<code>python_container_is_own_iterator</code>),
+multiple inheritance of concrete classes
+(<code>python_multiple_inheritance</code>), <code>*Mixin</code> classes
+with <code>__init__</code> (<code>python_mixin_with_init</code>), static
+delegation wrappers of 4+ forwarding methods without
+<code>__getattr__</code>
+(<code>python_static_delegation_wrapper</code>), mutable containers
+assigned in a class body (<code>python_mutable_class_attribute</code>),
+and <code>== None</code> / <code>!= None</code>
+(<code>python_equality_with_none</code>). Audit-only: other
+<code>__new__</code> overrides (Flyweight), <code>isinstance</code>
+dispatch chains (<code>python_isinstance_chain</code>), and file-local
+inheritance depth of 3+ (<code>python_inheritance_depth</code>). The
+<code>isinstance</code> advisory requires a positive
+<code>if</code>/<code>elif</code> chain dispatching on the same value
+across non-builtin domain types, excluding independent input guards and
+primitive/container validation. Each message cites the guide page and
+states the limit of its heuristic. The base <code>python</code> pack is
+unchanged; the guide remains a secondary source there (see the Deviation
+note in <code>SPEC-python-pack-expansion.md</code>).</p></li>
+<li><p><strong><code>xcodebuild</code> and <code>swift build|test</code>
+are built-in toolchains for confidence scoring.</strong> A Swift project
+running <code>xcodebuild test</code> through the Bash tool saw “tests
+never registered”: cargo was the only built-in def, so nothing
+recognized the command and the
+<code>Executed 55 tests, with 0 failures</code> result never reached the
+journal, leaving the subject at <code>low</code> under
+<code>confidence-low-blocks-commit</code>. Both defs parse XCTest
+summaries and Swift Testing’s
+<code>Test run with N tests … passed/failed</code> line, treat
+<code>** BUILD FAILED **</code> and <code>file:line:col: error:</code>
+as build failures (an XCTest assertion’s <code>file:line: error:</code>
+is a test failure, not a broken build), and accept
+<code>** BUILD SUCCEEDED **</code> / <code>** TEST SUCCEEDED **</code> /
+<code>Build complete!</code> as compile evidence when no exit code was
+captured. <code>phr-mcp toolchains</code> lists them.</p></li>
+<li><p><strong><code>phr-mcp signal &lt;compile|tests&gt; &lt;pass|fail&gt;</code></strong>
+records a confidence signal explicitly for the open work unit — the
+escape hatch for a test runner with no toolchain def, or a run that
+happened outside the hook. It journals the same <code>outcome:*</code>
+tag the post-check hook stamps, so <code>phr-mcp confidence</code> and
+the commit gate see it identically. Requires the <code>confidence</code>
+pack.</p></li>
+<li><p><strong>Swift sources enter the code graph.</strong>
+<code>rebuild_code_graph</code> now indexes <code>.swift</code> files
+(<code>crates/phronesis-mcp/src/graph/swift.rs</code>), emitting
+<code>file_type</code>, <code>declares_module</code>,
+<code>defines_fn</code> (methods qualified by their type or extension
+target), <code>defines_test</code>/<code>tested_by</code> for XCTest
+<code>test*</code> methods and Swift Testing <code>@Test</code>
+functions, and one <code>imports</code> edge from each file to its whole
+unit. Because every file in a Swift target sees the target’s entire
+namespace, <code>tested_by</code> resolution now accepts a whole-unit
+import as visibility for every module in that unit. Previously Swift was
+audit-only: <code>syntax/swift.rs</code> fed the
+<code>audit-swift-*</code> rules, but <code>query_code_graph</code> for
+<code>file_type * swift</code> or any Swift <code>defines_fn</code>
+returned nothing, so <code>no_direct_test</code> could never vouch for
+Swift code. <code>GRAPH_FORMAT</code> bumps to 19 so existing graphs
+rebuild on next use.</p>
+<ul>
+<li>Swift production functions also emit
+<code>calls(caller, callee)</code> edges, canonicalized through the
+unit-wide import the same way <code>tested_by</code> is (so
+<code>test_reachability</code> follows Swift calls), and
+<code>calls_api(function, api)</code> edges for a small risky-API
+watchlist (<code>SWIFT_WATCHLIST</code>: <code>fatalError</code>,
+<code>preconditionFailure</code>, <code>exit</code>,
+<code>unsafeBitCast</code>, the <code>Unsafe*Pointer</code>
+initializers/static members, <code>Thread.sleep</code>, and
+semaphore/group <code>wait</code>). The structural panicking-API rule
+can now fire for Swift.</li>
+<li><code>Package.swift</code> targets are units. Discovery parses
+<code>.target</code>, <code>.executableTarget</code>,
+<code>.testTarget</code> (and <code>.macro</code>) declarations —
+honouring an explicit <code>path:</code> and SwiftPM’s
+<code>Sources/&lt;Name&gt;</code> / <code>Tests/&lt;Name&gt;</code>
+defaults otherwise — so a file under <code>Sources/App</code> is
+<code>swift:App::…</code> rather than
+<code>swift:project::Sources::App::…</code>, and every file in a
+<code>.testTarget</code> is <code>file_type test</code> whatever it is
+called (<code>UnitContext::test_target</code>). <code>import Foo</code>
+/ <code>@testable import Foo</code> naming another target in the
+repository emits a whole-unit <code>imports(module, swift:Foo)</code>
+edge, so <code>tested_by</code> and <code>calls</code> from a test
+target into its production target canonicalize; imports of Foundation,
+XCTest, or any module the repository does not define emit nothing. Xcode
+<code>.xcodeproj</code> projects have no parseable manifest and stay on
+the <code>swift:project</code> fallback with the filename/directory test
+heuristic.</li>
+</ul></li>
+</ul>
+<h3 id="changed">Changed</h3>
+<ul>
+<li><p><strong>Review hardening makes integration contracts
+explicit.</strong> CI now runs the blocking Phronesis audit in addition
+to formatting, clippy, and workspace tests. Codex documentation and
+integration coverage pin its structured-JSON decision contract (process
+exit 0, with logical 0/1/2 verdicts retained in the action log), and a
+checked-in v1 bindings fixture proves reconciliation remains idempotent
+before becoming stale. JSON Schema <code>$ref</code> resolution now
+rejects repository-root escapes and absolute/drive paths while
+normalizing Windows separators consistently.</p></li>
+<li><p><strong>Rust panic/debug starter rules now use syntax-tree
+facts.</strong> The existing unwrap, empty-message expect,
+<code>todo!</code>, <code>panic!</code>, <code>unimplemented!</code>,
+and <code>dbg!</code> rule IDs now consume
+<code>rust_governed_invocation</code> instead of source substrings.
+Formatting and macro arguments no longer evade the rules, while
+comments, strings, similarly named methods/macros, and non-empty
+<code>expect</code> messages no longer cause false positives. Hook and
+whole-tree audit paths share the same producer. The
+<code>&amp;Box&lt;T&gt;</code> parameter rule likewise uses the derived
+<code>function_param_is_box_ref</code> fact and accepts whitespace
+variants without matching strings or comments. The audit-only
+environment-mutation rule now recognizes written
+<code>env::set_var</code> and <code>std::env::set_var</code> calls
+structurally; arbitrary import aliases remain outside syntax-only
+evidence. The <code>deny(warnings)</code> crate-attribute blocker now
+uses <code>rust_governed_attribute</code>, accepting whitespace variants
+without matching comments or string literals. <code>impl Deref</code>
+detection now consumes <code>rust_trait_impl</code>, recognizing
+qualified trait paths and generic implementing types without matching
+prose. The three match-arm audit rules now consume
+<code>rust_governed_match_arm</code>, so multiline/whitespace variants
+of empty <code>None</code>/<code>Err(_)</code> arms and
+<code>return Err(...)</code> are recognized without matching comments or
+strings. Two non-portable blockers for Phronesis-internal sync method
+names were removed from the public Rust pack; downstream Rust projects
+should not receive rules for this repository’s private refactor history.
+The <code>*_id: u64</code> and <code>Rc&lt;RefCell&lt;_&gt;&gt;</code>
+audit rules now use parsed field/type evidence, including whitespace
+variants and excluding prose. The String-ID twin intentionally remains
+line-oriented so its <code>///</code> field exemption keeps
+working.</p></li>
+<li><p><strong>TypeScript <code>any</code> enforcement is
+structural-only.</strong> The TypeScript starter pack retires the older
+<code>warn-any-in-src</code> substring rule and keeps
+<code>warn-ts-explicit-any-ast</code> as the canonical parser-backed
+rule. Real <code>any</code> annotations still warn with function/count
+evidence; comments and string literals containing <code>: any</code> no
+longer produce duplicate or false-positive warnings. This intentionally
+retires the legacy rule ID to avoid emitting two consequences for the
+same annotation. The <code>console.log</code> warning also uses the
+parser-backed <code>ts_console_log_call</code> fact, recognizing
+whitespace variants while ignoring comments, strings, other logging
+methods, and nested <code>logger.console.log</code>
+expressions.</p></li>
+<li><p><strong>Swift crash/legacy rules now use syntax-tree
+facts.</strong> <code>try!</code>, <code>as!</code>,
+<code>fatalError</code>, mutable <code>static var shared</code>, legacy
+geometry constructors, and legacy random APIs now consume
+<code>swift_governed_construct</code>. Comments, strings, and
+neighboring member calls stay silent; the hook and whole-tree audit
+paths honor the fact’s construct discriminator.</p></li>
+<li><p><strong>Whole-tree AST audits honor literal fact
+arguments.</strong> Audit evaluation now applies the same
+constant-argument filtering as hook-time RETE matching, so rules sharing
+a structural predicate report only their intended construct.</p></li>
+<li><p><strong>The verify-before-commit nudge is
+command-scoped.</strong> It now uses <code>bash_command_matches</code>
+instead of generic content matching, so only a Bash command containing
+<code>git commit -m</code> can trigger it. This remains lexical command
+recognition, not a language-AST rule.</p></li>
+<li><p><strong>Low-confidence Git gate downgraded from
+<code>block</code> to <code>warn</code>.</strong> The
+<code>confidence-low-blocks-commit</code> starter rule (id unchanged) no
+longer exits 2 on
+<code>git (commit|merge|rebase|cherry-pick|revert|pull)</code> when
+build/test/ known-bug evidence is missing or failing — it now warns
+(exit 1), same as the medium band. Incomplete confidence evidence is
+observability, not enforcement: a low-confidence Git mutation now always
+proceeds. High confidence (3/3 signals) still passes clean, and
+unrelated <code>block</code> rules still exit 2. See
+<code>docs/specs/SPEC-structural-rule-migration.md</code> §“Confidence
+gate severity” and the migration inventory at
+<code>docs/specs/INVENTORY-structural-rule-migration.md</code>. Projects
+that already ran <code>phr-mcp init --packs confidence</code> keep the
+old blocking rule on disk until they re-run
+<code>phr-mcp init --rules-only --force --packs confidence</code>
+(existing project rule files are not rewritten automatically).</p></li>
+</ul>
+<h2 id="section">[0.29.0] - 2026-08-16</h2>
+<h3 id="changed-1">Changed</h3>
+<ul>
+<li><p><strong>Breaking (library API):
+<code>graph::sync::SaveOutcome</code> gained a <code>diagnostics</code>
+field and is now <code>#[non_exhaustive]</code>.</strong> Rebuild
+diagnostics record analysis a run did <em>not</em> perform — spec §8.2
+requires the compiler provider to say that build scripts and procedural
+macros were disabled rather than let a caller assume the analysis was
+macro-complete. The struct is a return value from
+<code>rebuild</code>/<code>on_save</code>, so this affects only code
+that constructed it with a struct literal.
+<code>#[non_exhaustive]</code> makes future additions non-breaking.
+<em>Migration:</em> read the fields you need from the returned value; do
+not construct <code>SaveOutcome</code> yourself.</p></li>
+<li><p><strong>A <code>.rs</code>/<code>.json</code>/<code>.yaml</code>
+save no longer forces a full graph rebuild merely because
+<code>.phronesis/graph.toml</code> exists.</strong> The rebuild now
+triggers when the edited file is itself <em>declared</em> as a generated
+artifact. Previously the config file’s mere presence made every save a
+whole-repo rebuild, which would have made opting into ownership
+enrichment silently expensive. Projects using data contracts should know
+the trade: an unrelated <code>.rs</code> edit no longer refreshes
+<em>inferred</em> bindings, which are heuristics recomputed at the next
+rebuild. Explicitly declared bindings are unaffected.</p></li>
+</ul>
+<h3 id="added-1">Added</h3>
+<ul>
+<li><p><strong>Opt-in Rust ownership evidence (query-only).</strong> The
+structural graph can now record where Rust source clones, filters,
+awaits, mutates, and acquires synchronous locks, plus four bounded
+relationships between those sites: <code>filter_before_clone</code>,
+<code>clone_before_await</code>, <code>read_before_mutation</code>, and
+<code>lock_scope_ends_before_await</code>. Every site carries a source
+span, an evidence level, and a provider, and unavailable analysis is
+recorded explicitly rather than read as a clean result. Enable per
+project with <code>[ownership.rust]</code> in
+<code>.phronesis/graph.toml</code>; with it absent the graph is
+byte-identical to before. Query with
+<code>phr-mcp graph ownership &lt;function-id-or-glob&gt;</code> or the
+matching MCP tool. Findings are evidence with stated limits, not
+verdicts: this ships no rule, creates no audit findings, and adds no
+catalogue entry. Graph format 17 -&gt; 18. Design after Schott,
+<em>Visualizing Ownership and Borrowing in Rust Programs</em>
+(Wuerzburg, 2024); see <code>docs/OWNERSHIP-EVIDENCE.md</code>.</p></li>
+<li><p><strong>Release-ready multilingual structural graph.</strong> CUE
+packages now use canonical package identities with complete import
+resolution; Lua, JSON, YAML, Helm 3, Rhai, Python, TypeScript, and Rust
+extractors preserve repository-local closure and reject ambiguous
+references. Query arguments support embedded <code>*</code> and
+<code>?</code> globs consistently in the CLI and MCP tool.</p></li>
+<li><p><strong>Cross-language configuration contracts.</strong> Explicit
+<code>.phronesis/graph.toml</code> bindings and bounded inference
+connect CUE producers through tracked YAML/JSON artifacts to
+deserializing Rust types, including wire-key mappings and conservative
+unconsumed-key evidence.</p></li>
+<li><p><strong>Static test reachability.</strong> Canonical
+<code>tested_by</code> edges record direct production-function evidence,
+while <code>test_reaches(test, function)</code> follows resolved calls
+transitively. External <code>#[path]</code> unit tests, public
+re-exports, and bounded inherent-method calls participate without
+guessing ambiguous names.</p></li>
+<li><p><strong>Fact and decision provenance.</strong> Consequences
+retain asserted and derived fact origins, and graph-backed rule findings
+can link their evidence to architectural decision records.</p></li>
+<li><p><strong>Local-state housekeeping.</strong>
+<code>phr-mcp state</code> classifies authored, cache, history, runtime,
+backup, and sensitive <code>.phronesis</code> state;
+<code>phr-mcp clean --cache</code> removes only rebuildable graph
+artifacts.</p></li>
+</ul>
+<h3 id="fixed">Fixed</h3>
+<ul>
+<li><strong>Graph diagnostics no longer erase valid configuration
+structure.</strong> YAML duplicate-key detection respects sequence-item
+scope, indentless sequences, quoted scalars, and block scalars; CUE
+built-ins and unresolved imports no longer create dangling repository
+edges.</li>
+<li><strong>Graph evidence uses one canonical identity space.</strong>
+Direct test evidence, generated artifacts, dynamic-language boundaries,
+renamed predicates, and graph rebuild invalidation now reconcile before
+derived rules run.</li>
+<li><strong>ADR graph relations are available to rules.</strong>
+Decision-to-rule links and their lifecycle diagnostics now hydrate into
+RETE when a project rule names them, matching the relations already
+exposed by graph queries.</li>
+<li><strong>RETE maintenance paths expose conflicts and stable
+APIs.</strong> Binding conflicts are handled explicitly, profiling uses
+the public engine surface, and internal network state is accessed
+through supported query methods.</li>
+<li><strong>Guidance drift discovers project and package
+instructions.</strong> Consolidated
+<code>get_drift(source="claude_md")</code> and
+<code>phr-mcp drift --source claude_md</code> now scan root and
+package-level <code>CLAUDE.md</code> and <code>AGENTS.md</code> files
+with bounded, exclusion-aware traversal, deduplicate repeated
+imperatives, and identify every source file on each finding. The frozen
+<code>phr-mcp claude-md-drift</code> compatibility command remains
+root-<code>CLAUDE.md</code>-only.</li>
+<li><strong>Scoped audits no longer report out-of-scope debt.</strong>
+<code>phr-mcp audit --path &lt;dir&gt;</code> and
+<code>audit_codebase(path)</code> folded in graph-rule findings from the
+whole project, so an audit scoped to one module returned violations from
+unrelated files while <code>files_scanned</code> reflected the narrow
+scope. Graph rules still evaluate against the entire graph — a covering
+test may live anywhere — but reported findings are now filtered to the
+requested path on segment boundaries.</li>
+<li><strong><code>use crate::&lt;module&gt;;</code> no longer collapses
+onto the crate root.</strong> A <code>use</code> naming a module
+directly had its last segment dropped as though it were an item, erasing
+the real dependency and emitting a crate-to-crate self-edge.
+Sibling-crate imports (<code>use phr::Rule;</code>) still resolve to the
+crate root, where that is the correct target.</li>
+<li><strong>Function-local <code>use</code> now produces
+<code>imports</code> edges.</strong> The Rust extractor never walked
+function bodies, so a file whose source visibly imported a module could
+show no edge to it — understating fan-in and hiding import cycles.</li>
+</ul>
+<h2 id="section-1">[0.26.0] - 2026-08-09</h2>
+<h3 id="added-2">Added</h3>
 <ul>
 <li><strong>Rule-to-code staleness bindings.</strong> Conservative,
 unqualified call-shaped literals in rules bind to locally defined
@@ -189,11 +599,11 @@ outdated graph state with generation, edge, file, and binding counts.
 reconciles bindings, and records the generation transition in the action
 log.</li>
 <li><strong>GitHub release binaries.</strong> Release automation builds
-and attaches <code>phr-mcp</code> archives for Linux x86-64, macOS
-x86-64, macOS Apple Silicon, and Windows x86-64 after release-plz
-creates the matching package release.</li>
+and attaches <code>phr-mcp</code> archives for Linux x86-64, macOS Apple
+Silicon, and Windows x86-64 after release-plz creates the matching
+package release.</li>
 </ul>
-<h3 id="changed">Changed</h3>
+<h3 id="changed-2">Changed</h3>
 <ul>
 <li><strong>The complete language-agnostic platform is now the
 default.</strong> <code>init</code> and every non-<code>none</code> pack
@@ -227,8 +637,8 @@ evidence never demotes a block. Direct rule-file edits and MCP rule
 mutations reconcile bindings without advancing the graph
 generation.</li>
 </ul>
-<h2 id="section-1">[0.25.0] - 2026-08-01</h2>
-<h3 id="changed-1">Changed</h3>
+<h2 id="section-2">[0.25.0] - 2026-08-01</h2>
+<h3 id="changed-3">Changed</h3>
 <ul>
 <li><p><strong><code>init::Pack</code> is
 <code>#[non_exhaustive]</code>.</strong> Adding a pack is this crate’s
@@ -246,7 +656,7 @@ Nothing inside the workspace changes, since
 <code>#[non_exhaustive]</code> does not constrain the defining
 crate.</p></li>
 </ul>
-<h3 id="added-1">Added</h3>
+<h3 id="added-3">Added</h3>
 <ul>
 <li><strong>Token-aware durable context (opt-in).</strong> A project
 that creates <code>.phronesis/context.json</code> gets deterministic,
@@ -290,7 +700,7 @@ bytes, estimated tokens, per-kind omission counts, capsule ids, latency,
 and a raw-truncation flag — no bodies, fact arguments, or user content,
 and no claim about whether the model read or followed anything.</li>
 </ul>
-<h3 id="changed-2">Changed</h3>
+<h3 id="changed-4">Changed</h3>
 <ul>
 <li><strong>Context packing splits Markdown on <code>##</code> sections,
 not blank lines.</strong> The section — heading, lead-in, and the list
@@ -306,7 +716,7 @@ is the one place opt-out behavior differs from before: a
 <code>durable.md</code> over 64 KiB now yields no context where it
 previously yielded a 4 KiB truncation.</li>
 </ul>
-<h3 id="fixed">Fixed</h3>
+<h3 id="fixed-1">Fixed</h3>
 <ul>
 <li><strong>cargo-nextest runs grounded no test signal.</strong> The
 cargo toolchain def accepted <code>cargo nextest</code>, but its only
@@ -389,8 +799,8 @@ charter reports graph freshness as a state line only.</li>
 <li><code>per_test</code> extraction remains libtest-only, so the
 known-bug registry does not see cargo-nextest per-test results.</li>
 </ul>
-<h2 id="section-2">[0.24.0] - 2026-07-31</h2>
-<h3 id="added-2">Added</h3>
+<h2 id="section-3">[0.24.0] - 2026-07-31</h2>
+<h3 id="added-4">Added</h3>
 <ul>
 <li><strong>TypeScript structural code graphs.</strong> The graph now
 discovers npm package units and extracts <code>.ts</code>,
@@ -415,8 +825,8 @@ treated as a clean graph.</li>
 edges, 54 derived edges, 105 resolved imports, and zero skipped items
 across 47 files.</li>
 </ul>
-<h2 id="section-3">[0.23.1] - 2026-07-30</h2>
-<h3 id="fixed-1">Fixed</h3>
+<h2 id="section-4">[0.23.1] - 2026-07-30</h2>
+<h3 id="fixed-2">Fixed</h3>
 <ul>
 <li><strong><code>query_code_graph</code> advertised “Rust only” and a
 stale identity form.</strong> The MCP tool description is what a model
@@ -433,8 +843,8 @@ than a malformed query. The description now names both languages, gives
 the current identity form with an example per language, and marks
 <code>calls_api</code> as the Rust-only relation it is.</li>
 </ul>
-<h2 id="section-4">[0.23.0] - 2026-07-30</h2>
-<h3 id="added-3">Added</h3>
+<h2 id="section-5">[0.23.0] - 2026-07-30</h2>
+<h3 id="added-5">Added</h3>
 <ul>
 <li><strong>Structural code-graph facts</strong>
 (<code>structural</code> pack, alias <code>graph</code>). A durable,
@@ -463,7 +873,7 @@ providers</strong> — the edited path in the repo-relative form the graph
 keys files by, so provider-emitted facts can join graph facts on a path.
 <code>event.file_path</code> remains the host’s absolute path.</li>
 </ul>
-<h3 id="changed-3">Changed</h3>
+<h3 id="changed-5">Changed</h3>
 <ul>
 <li><strong>Graph identity carries an explicit format stamp.</strong>
 <code>.phronesis/graph.index</code> records the identity scheme it was
@@ -472,7 +882,7 @@ rather than fresh, and the next save rebuilds it — content hashes cannot
 detect an identity change, because the files themselves do not
 change.</li>
 </ul>
-<h3 id="fixed-2">Fixed</h3>
+<h3 id="fixed-3">Fixed</h3>
 <ul>
 <li><strong>The <code>PostToolUse</code> graph sensor never ran through
 a real hook.</strong> A traversal guard rejected absolute paths, which
@@ -528,8 +938,8 @@ to be committed or hand-edited. An existing graph is detected as
 outdated and rebuilt automatically on the next save, or on demand with
 <code>phr-mcp graph rebuild</code>.</li>
 </ul>
-<h2 id="section-5">[0.22.0] - 2026-07-25</h2>
-<h3 id="added-4">Added</h3>
+<h2 id="section-6">[0.22.0] - 2026-07-25</h2>
+<h3 id="added-6">Added</h3>
 <ul>
 <li><strong>Codex lifecycle integration.</strong>
 <code>phr-mcp codex-hook</code> now implements the current
@@ -547,7 +957,7 @@ rules. Multi-file operations expose a once-per-operation
 repository includes a dogfood <code>change_set.rhai</code>
 classifier.</li>
 </ul>
-<h3 id="changed-4">Changed</h3>
+<h3 id="changed-6">Changed</h3>
 <ul>
 <li><strong>Interaction context terminology.</strong> The per-prompt
 context command is now <code>interaction-context</code>;
@@ -555,7 +965,7 @@ context command is now <code>interaction-context</code>;
 Rust helpers remain deprecated wrappers. The unrelated markdown
 <code>set_section_context</code> MCP workflow is unchanged.</li>
 </ul>
-<h3 id="fixed-3">Fixed</h3>
+<h3 id="fixed-4">Fixed</h3>
 <ul>
 <li><strong>Contract-grounded hook behavior.</strong> Current snake-case
 payload fields and PascalCase event names are decoded, pre-action
@@ -566,8 +976,8 @@ action-log, journey, and grounded outcome data.</li>
 labeled <code>authored</code> and use the payload-corpus envelope
 instead of claiming unverified runtime capture provenance.</li>
 </ul>
-<h2 id="section-6">[0.20.0] - 2026-07-13</h2>
-<h3 id="changed-5">Changed</h3>
+<h2 id="section-7">[0.20.0] - 2026-07-13</h2>
+<h3 id="changed-7">Changed</h3>
 <ul>
 <li><strong>Context-struct API migration.</strong> Four call surfaces
 now group related arguments into explicit input types:
@@ -586,7 +996,7 @@ instead of combining same-named methods, and high-complexity paths
 across the engine, hook, journey, and outcome layers use focused helpers
 and input types.</li>
 </ul>
-<h3 id="fixed-4">Fixed</h3>
+<h3 id="fixed-5">Fixed</h3>
 <ul>
 <li><strong>Honest payload scrubbing.</strong> Scrubber construction
 rejects empty, relative, and filesystem-root scrub roots. Scrubbing
@@ -636,8 +1046,8 @@ class="sourceCode rust"><code class="sourceCode rust"><span id="cb1-1"><a href="
 <span id="cb1-33"><a href="#cb1-33" aria-hidden="true" tabindex="-1"></a>    output<span class="op">,</span></span>
 <span id="cb1-34"><a href="#cb1-34" aria-hidden="true" tabindex="-1"></a>    command_exit<span class="op">,</span></span>
 <span id="cb1-35"><a href="#cb1-35" aria-hidden="true" tabindex="-1"></a><span class="op">}</span>)<span class="op">;</span></span></code></pre></div>
-<h2 id="section-7">[0.19.0] - 2026-07-12</h2>
-<h3 id="added-5">Added</h3>
+<h2 id="section-8">[0.19.0] - 2026-07-12</h2>
+<h3 id="added-7">Added</h3>
 <ul>
 <li><strong><code>PHRONESIS_CAPTURE_DIR</code></strong> — when set,
 pre-check/post-check tee the raw stdin payload to
@@ -668,8 +1078,8 @@ test suite pins <code>init</code>’s hook wiring to event names that
 actually exist on each host CLI, including a regression pin on the
 0.17.1 <code>BeforeModelRequest</code> incident.</li>
 </ul>
-<h2 id="section-8">[0.18.0] - 2026-07-11</h2>
-<h3 id="added-6">Added</h3>
+<h2 id="section-9">[0.18.0] - 2026-07-11</h2>
+<h3 id="added-8">Added</h3>
 <ul>
 <li><strong>Neutral toolchain outcomes.</strong> Build/test grading is
 no longer cargo-specific: declarative <code>ToolchainDef</code>s
@@ -700,8 +1110,8 @@ file.</li>
 <li><code>CargoAdapter</code> — cargo grading now flows through the same
 toolchain-def registry as every other toolchain.</li>
 </ul>
-<h2 id="section-9">[0.17.1] - 2026-07-06</h2>
-<h3 id="fixed-5">Fixed</h3>
+<h2 id="section-10">[0.17.1] - 2026-07-06</h2>
+<h3 id="fixed-6">Fixed</h3>
 <ul>
 <li><strong>Gemini CLI turn-context hook never fired.</strong>
 <code>init</code> wired the turn-context hook into
@@ -717,7 +1127,7 @@ under <code>BeforeAgent</code>, the per-prompt analogue of Claude Code’s
 both CLIs: Claude Code validates the field, Gemini reads only
 <code>additionalContext</code> and ignores the echo.</li>
 </ul>
-<h2 id="section-10"><a
+<h2 id="section-11"><a
 href="https://github.com/awaterma/phronesis/releases/tag/v0.17.0">0.17.0</a>
 - 2026-07-04</h2>
 <p>phr-mcp, phr, and phronesis-rhai all release as
@@ -726,7 +1136,7 @@ href="https://github.com/awaterma/phronesis/releases/tag/v0.17.0">0.17.0</a>
 covers all three crates. (Previous: phr-mcp 0.16.2, phr 0.14.0,
 phronesis-rhai 0.1.0; the jumps are version-line unification, not
 breaking changes.)</p>
-<h3 id="changed-6">Changed</h3>
+<h3 id="changed-8">Changed</h3>
 <ul>
 <li><strong>MCP-crate decomposition.</strong> <code>hook.rs</code> (1764
 LOC) and <code>syntax/rust.rs</code> (1622 LOC) split into focused
@@ -738,10 +1148,10 @@ core-engine functions deferred to the embedded-consumer-gated engine
 spec. Behavior-preserving; no public API changes. Implements
 <code>docs/superpowers/specs/2026-06-28-mcp-crate-decomposition-design.md</code>.</li>
 </ul>
-<h2 id="section-11"><a
+<h2 id="section-12"><a
 href="https://github.com/awaterma/phronesis/releases/tag/v0.16.2">0.16.2</a>
 - 2026-07-03</h2>
-<h3 id="added-7">Added</h3>
+<h3 id="added-9">Added</h3>
 <ul>
 <li><strong><code>phr-mcp migrate-extracted-rules &lt;path&gt; [--dry-run]</code></strong>
 — the salvage command deferred from 0.14.0. Rewrites pre-0.14.0
@@ -758,8 +1168,8 @@ thiserror). Extracted rules are detected by their
 touched. Idempotent. Implements the salvage path in
 <code>docs/specs/SPEC-extract-rules-defaults.md</code>.</li>
 </ul>
-<h2 id="section-12">[0.16.1] - 2026-07-03</h2>
-<h3 id="added-8">Added</h3>
+<h2 id="section-13">[0.16.1] - 2026-07-03</h2>
+<h3 id="added-10">Added</h3>
 <ul>
 <li><strong>Named function detail on AST-predicate audit hits.</strong>
 The audit table/JSON previously rendered whole-function hits
@@ -769,7 +1179,7 @@ placeholder line number. <code>FileAudit</code> gains a
 <code>audit.rs — run (26 let bindings), run_profiled (32 let bindings)</code>
 in both output formats.</li>
 </ul>
-<h3 id="changed-7">Changed</h3>
+<h3 id="changed-9">Changed</h3>
 <ul>
 <li><strong>Rust pack: audit let-rules scope to
 <code>src/</code>.</strong>
@@ -793,7 +1203,7 @@ its <code>libyml</code> backend are archived and flagged unsound
 frontmatter parsing) changes crate path only. Removes
 <code>libyml</code> from the dependency tree entirely.</li>
 </ul>
-<h3 id="fixed-6">Fixed</h3>
+<h3 id="fixed-7">Fixed</h3>
 <ul>
 <li><strong>Wiki frontmatter closing fence must be exactly
 <code>---</code> on its own line.</strong> The parser previously
@@ -805,7 +1215,7 @@ skips lookalikes; a page with no true fence reports “missing closing
 five new parser tests (lookalike lines, fence at EOF, CRLF
 endings).</li>
 </ul>
-<h2 id="section-13">[0.16.0] - 2026-07-03</h2>
+<h2 id="section-14">[0.16.0] - 2026-07-03</h2>
 <p>phr-mcp 0.16.0; phr library bumps to 0.14.0 (engine changes this
 round — new scripting trait, a removed method, and a new feature gate);
 new <code>phronesis-rhai</code> 0.1.0.</p>
@@ -813,7 +1223,7 @@ new <code>phronesis-rhai</code> 0.1.0.</p>
 of a 1.0 line: an expressive scripting layer, removal of the last
 consumer-specific engine API, and a feature gate that makes the default
 public surface equal what the bundled MCP consumes.</p>
-<h3 id="added-9">Added</h3>
+<h3 id="added-11">Added</h3>
 <ul>
 <li><strong><code>phronesis-rhai</code> crate + <code>ScriptEval</code>
 trait.</strong> The core <code>__script__</code> evaluator now lives
@@ -850,7 +1260,7 @@ bundled MCP consumes, so the compiler enforces the symmetry. CI
 exercises the feature config. Implements
 <code>docs/superpowers/specs/2026-06-13-embedding-host-feature-gate-design.md</code>.</li>
 </ul>
-<h3 id="changed-8">Changed</h3>
+<h3 id="changed-10">Changed</h3>
 <ul>
 <li><strong><code>ScriptEvaluator</code> renamed to
 <code>BuiltinScriptEvaluator</code></strong> (implements
@@ -872,8 +1282,8 @@ is neutralized. <code>restore_persistent_facts*</code> stay (generic
 bulk-assert; now behind <code>embedding-host</code>). Implements
 <code>docs/superpowers/specs/2026-06-13-domain-neutral-persistent-facts-design.md</code>.</li>
 </ul>
-<h2 id="section-14">[0.15.0] - 2026-06-24</h2>
-<h3 id="added-10">Added</h3>
+<h2 id="section-15">[0.15.0] - 2026-06-24</h2>
+<h3 id="added-12">Added</h3>
 <ul>
 <li><strong>Loop-based agent programming guide</strong>
 (<code>docs/loop-programming-guide.md</code>) — writing recurring
@@ -882,7 +1292,7 @@ sessions in this repo.</li>
 <li><strong><code>journey_derive</code> scaling bench</strong> plus an
 ADR recording the scaling behavior of journey fact derivation.</li>
 </ul>
-<h3 id="fixed-7">Fixed</h3>
+<h3 id="fixed-8">Fixed</h3>
 <ul>
 <li><strong>Journey rules with undefined selectors fail closed.</strong>
 A rule referencing a tag absent from
@@ -896,14 +1306,14 @@ id and missing selector — while transient journal I/O errors stay
 fail-open. See the decision page
 <code>2026-06-23-undefined-selector-rejection.md</code>.</li>
 </ul>
-<h2 id="section-15"><a
+<h2 id="section-16"><a
 href="https://github.com/awaterma/phronesis/releases/tag/v0.14.0">0.14.0</a>
 - 2026-06-21</h2>
 <p>Dogfooding-driven polish. The 0.13.x patch line was driven by
 playtest bugs visible only after install; 0.14.0 closes the four
 next-deepest friction points the same playtests surfaced. Compiled under
 <code>docs/specs/SPEC-0.14.0-dogfooding-polish.md</code>.</p>
-<h3 id="added-11">Added</h3>
+<h3 id="added-13">Added</h3>
 <ul>
 <li><strong><code>journey_filtered_since_ge(target, counted, k)</code>
 aggregator</strong> — the existing <code>journey_since_ge</code> counts
@@ -927,7 +1337,7 @@ Generalizable: future packs can ship <code>journey_enabled</code>,
 <code>wiki_present</code>, etc. using the same shape. See
 <code>docs/specs/SPEC-pack-opt-in-facts.md</code>.</li>
 </ul>
-<h3 id="changed-9">Changed</h3>
+<h3 id="changed-11">Changed</h3>
 <ul>
 <li><strong>Confidence gate broadens to all commit-producing porcelain
 commands.</strong> <code>confidence-low-blocks-commit</code> and
@@ -1001,10 +1411,10 @@ four implementations, up from the post-0.13.x baseline of 85.94%.</li>
 <code>phr-mcp</code> bumps. <code>phr-mcp</code>’s <code>phr</code> dep
 stays pinned at <code>0.13.3</code>.</li>
 </ul>
-<h2 id="section-16"><a
+<h2 id="section-17"><a
 href="https://github.com/awaterma/phronesis/releases/tag/v0.13.2">0.13.2</a>
 - 2026-06-20</h2>
-<h3 id="fixed-8">Fixed</h3>
+<h3 id="fixed-9">Fixed</h3>
 <ul>
 <li><strong><code>bash_command_matches</code> taggers actually
 fire.</strong> <code>journey::tagger::tagger_facts</code> built only
@@ -1037,10 +1447,10 @@ fixtures all passed because they synthesized payloads under
 <code>tool_output</code>; only a live hook payload surfaced it. Backward
 compatible with Gemini and existing fixtures.</li>
 </ul>
-<h2 id="section-17"><a
+<h2 id="section-18"><a
 href="https://github.com/awaterma/phronesis/releases/tag/v0.13.1">0.13.1</a>
 - 2026-06-20</h2>
-<h3 id="fixed-9">Fixed</h3>
+<h3 id="fixed-10">Fixed</h3>
 <ul>
 <li><strong>Same-day sid fallback collision.</strong> When
 <code>.phronesis/journey/session</code> was missing, the journey
@@ -1056,7 +1466,7 @@ consolidated.</strong> Three independent implementations (in
 <code>journey::current_sid(project_root)</code> helper. Same semantics,
 one source of truth.</li>
 </ul>
-<h3 id="changed-10">Changed</h3>
+<h3 id="changed-12">Changed</h3>
 <ul>
 <li><strong>CLAUDE.md packs list now includes
 <code>confidence</code></strong> alongside <code>journey</code>. The
@@ -1090,10 +1500,10 @@ unchanged. Surfaced by the journey-facts SPEC’s headline
 AND <code>facts_count(...) == 0</code>). The <code>journey_seen</code>
 anchor leaf added as a workaround is no longer required.</li>
 </ul>
-<h2 id="section-18"><a
+<h2 id="section-19"><a
 href="https://github.com/awaterma/phronesis/releases/tag/v0.13.0">0.13.0</a>
 - 2026-06-20</h2>
-<h3 id="added-12">Added</h3>
+<h3 id="added-14">Added</h3>
 <ul>
 <li><strong>Journey facts (new fact family + new hook stage)</strong> —
 call-window and session-scale predicates that summarise
@@ -1145,7 +1555,7 @@ mid-conversation.</li>
 starter <code>journey.json</code> and ensures it is tracked.</li>
 </ul></li>
 </ul>
-<h3 id="changed-11">Changed</h3>
+<h3 id="changed-13">Changed</h3>
 <ul>
 <li><strong>Workspace bumps to 0.13.0.</strong> <code>phr</code> and
 <code>phr-mcp</code> move together; <code>phr-mcp</code>’s
@@ -1157,10 +1567,10 @@ starter <code>journey.json</code> and ensures it is tracked.</li>
 above the pre-feature baseline of 85.4% lines across the journey-facts
 merges; the journal and tagger modules sit near ~90%.</li>
 </ul>
-<h2 id="section-19"><a
+<h2 id="section-20"><a
 href="https://github.com/awaterma/phronesis/releases/tag/v0.12.0">0.12.0</a>
 - 2026-06-19</h2>
-<h3 id="added-13">Added</h3>
+<h3 id="added-15">Added</h3>
 <ul>
 <li><strong>Confidence scoring (first milestone)</strong> — gate LLM
 output on three grounded outcomes before a <code>git commit</code>: does
@@ -1195,10 +1605,10 @@ translation, and accrue signals to it).</li>
 projects that haven’t enabled it are unaffected.</li>
 </ul></li>
 </ul>
-<h2 id="section-20"><a
+<h2 id="section-21"><a
 href="https://github.com/awaterma/phronesis/releases/tag/v0.11.0">0.11.0</a>
 - 2026-06-13</h2>
-<h3 id="added-14">Added</h3>
+<h3 id="added-16">Added</h3>
 <ul>
 <li><strong>Public fact-query API</strong> on <code>ReteNetwork</code> —
 <code>facts_snapshot</code>, <code>facts_matching_predicate</code>,
@@ -1264,7 +1674,7 @@ domain-neutral engine. Define your own predicate set and call
 <code>facts_matching_predicates(&amp;YOUR_SET)</code>. Slated for
 removal in 0.12.</li>
 </ul>
-<h3 id="fixed-10">Fixed</h3>
+<h3 id="fixed-11">Fixed</h3>
 <ul>
 <li><strong>Retraction purges stale agenda items</strong> referencing
 the retracted fact, so a pending rule can no longer fire against a fact
@@ -1301,7 +1711,6 @@ and <code>confidence</code> packs. PATCH for 0.13.x.</li>
 <p>Pre-0.11 history (0.10.0 and earlier) is recorded in the git log and
 <code>docs/specs/</code>. Notably, 0.10.0 added wiki-drift, the
 block-pattern rules, and the v2 rule schema.</p>
-</main>
-<footer class="web-footer">Phronesis · durable governance for LLM-assisted work · v0.26.0</footer>
+<footer class="web-footer">Phronesis · durable governance for LLM-assisted work · v0.30.0</footer>
 </body>
 </html>

@@ -320,7 +320,7 @@ async fn assert_pre_content_facts(
     let old_disk_content = if !file_path.is_empty() {
         let root = security::project_root();
         match security::resolve_safe_path(file_path, &root) {
-            Ok(safe) => std::fs::read_to_string(&safe).ok(),
+            Ok(safe) => tokio::fs::read_to_string(&safe).await.ok(),
             Err(_) => None,
         }
     } else {

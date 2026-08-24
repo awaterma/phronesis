@@ -530,6 +530,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         }
     }
 
@@ -872,5 +873,124 @@ Name: string
         assert!(defs.iter().any(|a| a[1].ends_with("::Number")));
         assert!(defs.iter().any(|a| a[1].ends_with("::Count")));
         assert!(defs.iter().any(|a| a[1].ends_with("::Name")));
+    }
+}
+
+#[cfg(test)]
+mod resolve_indexed_import_tests {
+    use super::*;
+
+    fn index_with(entries: &[(&str, &str, &[&str])]) -> PackageIndex {
+        let mut index = PackageIndex::default();
+        for (import_path, package, ids) in entries {
+            index
+                .by_import
+                .entry((import_path.to_string(), package.to_string()))
+                .or_default()
+                .extend(ids.iter().map(|id| id.to_string()));
+        }
+        index
+    }
+
+    #[test]
+    fn resolve_indexed_import_recognises_builtins_without_slash() {
+        let index = PackageIndex::default();
+        for builtin in ["strings", "list", "math", "tool", "encoding"] {
+            assert!(
+                matches!(
+                    resolve_indexed_import(builtin, &index),
+                    ImportResolution::Builtin
+                ),
+                "{builtin} should be builtin"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_indexed_import_qualified_builtin_prefix_is_not_builtin() {
+        // "encoding/json" has a slash, so it is looked up in the index, not
+        // treated as a bare builtin — and with an empty index is unresolved.
+        let index = PackageIndex::default();
+        assert!(matches!(
+            resolve_indexed_import("encoding/json", &index),
+            ImportResolution::Unresolved
+        ));
+        // The builtin check looks at the base only, so a qualifier on a
+        // builtin name is still classified as builtin.
+        assert!(matches!(
+            resolve_indexed_import("strings:foo", &index),
+            ImportResolution::Builtin
+        ));
+    }
+
+    #[test]
+    fn resolve_indexed_import_uses_last_segment_as_default_package() {
+        let index = index_with(&[("example.com/m/schema", "schema", &["cue:m::schema::schema"])]);
+        match resolve_indexed_import("example.com/m/schema", &index) {
+            ImportResolution::Resolved(id) => assert_eq!(id, "cue:m::schema::schema"),
+            _ => panic!("expected resolved"),
+        }
+    }
+
+    #[test]
+    fn resolve_indexed_import_strips_version_suffix_from_default_package() {
+        let index = index_with(&[("example.com/m/schema@v1", "schema", &["cue:m::schema::v1"])]);
+        match resolve_indexed_import("example.com/m/schema@v1", &index) {
+            ImportResolution::Resolved(id) => assert_eq!(id, "cue:m::schema::v1"),
+            _ => panic!("expected resolved"),
+        }
+    }
+
+    #[test]
+    fn resolve_indexed_import_honours_explicit_qualifier() {
+        let index = index_with(&[
+            ("example.com/m/schema", "schema", &["cue:m::schema::schema"]),
+            ("example.com/m/schema", "alt", &["cue:m::schema::alt"]),
+        ]);
+        match resolve_indexed_import("example.com/m/schema:alt", &index) {
+            ImportResolution::Resolved(id) => assert_eq!(id, "cue:m::schema::alt"),
+            _ => panic!("expected resolved alt"),
+        }
+        // Without the qualifier the default package wins, not the alt.
+        match resolve_indexed_import("example.com/m/schema", &index) {
+            ImportResolution::Resolved(id) => assert_eq!(id, "cue:m::schema::schema"),
+            _ => panic!("expected resolved default"),
+        }
+    }
+
+    #[test]
+    fn resolve_indexed_import_reports_ambiguous_when_multiple_ids_match() {
+        let index = index_with(&[(
+            "example.com/m/schema",
+            "schema",
+            &["cue:m::a::schema", "cue:m::b::schema"],
+        )]);
+        assert!(matches!(
+            resolve_indexed_import("example.com/m/schema", &index),
+            ImportResolution::Ambiguous
+        ));
+    }
+
+    #[test]
+    fn resolve_indexed_import_unresolved_on_package_mismatch_or_empty_path() {
+        let index = index_with(&[("example.com/m/schema", "schema", &["cue:m::schema::schema"])]);
+        assert!(matches!(
+            resolve_indexed_import("example.com/m/schema:nope", &index),
+            ImportResolution::Unresolved
+        ));
+        assert!(matches!(
+            resolve_indexed_import("example.com/m/other", &index),
+            ImportResolution::Unresolved
+        ));
+        assert!(matches!(
+            resolve_indexed_import("", &index),
+            ImportResolution::Unresolved
+        ));
+        // A trailing colon is not a qualifier (empty package) — treated as
+        // part of the path and therefore unresolved rather than panicking.
+        assert!(matches!(
+            resolve_indexed_import("example.com/m/schema:", &index),
+            ImportResolution::Unresolved
+        ));
     }
 }

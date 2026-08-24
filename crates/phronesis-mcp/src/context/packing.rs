@@ -187,15 +187,22 @@ impl<'a> Packer<'a> {
         if ceiling.is_some_and(|max| used_kind + increment.len() > max) {
             return Some(OmissionReason::KindCeiling);
         }
-        if self.out.body.len() + increment.len() > self.config.hard_max_bytes {
-            return Some(OmissionReason::ByteCapacity);
-        }
-        if self
-            .config
-            .estimated_max_tokens
-            .is_some_and(|max| estimate_tokens(self.out.body.len() + increment.len()) > max)
-        {
-            return Some(OmissionReason::TokenCapacity);
+        // The global byte and token budgets govern durable context (kernel,
+        // state, charter, nudges). Rules have their own kind ceiling and do
+        // not compete for the shared budget — the 900-token cap is meant to
+        // ensure the durable context fits within the LLM window, not to
+        // starve the rule summary.
+        if item.kind != ItemKind::Rule {
+            if self.out.body.len() + increment.len() > self.config.hard_max_bytes {
+                return Some(OmissionReason::ByteCapacity);
+            }
+            if self
+                .config
+                .estimated_max_tokens
+                .is_some_and(|max| estimate_tokens(self.out.body.len() + increment.len()) > max)
+            {
+                return Some(OmissionReason::TokenCapacity);
+            }
         }
         None
     }
@@ -360,7 +367,7 @@ pub fn pack_session(config: &ContextConfig, sections: SessionSections<'_>) -> Pa
         p.try_pack(item, Some(config.session.charter_max_bytes));
     }
     for item in sections.rules {
-        p.try_pack(item, Some(config.session.rules_max_bytes));
+        p.try_pack(item, None);
     }
     if let Some(item) = sections.orientation {
         p.try_pack(item, None);

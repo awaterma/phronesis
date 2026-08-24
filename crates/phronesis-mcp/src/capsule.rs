@@ -417,7 +417,39 @@ impl CapsuleStorage {
     }
 }
 
+/// Provenance attached to a capsule built from an `emit_capsule` action.
+#[derive(Debug, Clone, Copy)]
+pub struct CapsuleOrigin<'a> {
+    /// Rule ID (or "validation") that emitted the capsule.
+    pub emitted_by: &'a str,
+    /// Session the capsule belongs to.
+    pub session_id: &'a str,
+    /// Emission timestamp (unix seconds).
+    pub now: u64,
+    /// Facts bound when the rule fired.
+    pub bound_facts: &'a [String],
+    /// Variable bindings when the rule fired.
+    pub bindings: &'a HashMap<String, String>,
+}
+
+impl<'a> CapsuleOrigin<'a> {
+    /// Origin used when only validating a spec (no real session/provenance).
+    pub fn validation(emitted_by: &'a str) -> Self {
+        static EMPTY_BINDINGS: std::sync::LazyLock<HashMap<String, String>> =
+            std::sync::LazyLock::new(HashMap::new);
+        Self {
+            emitted_by,
+            session_id: "validation",
+            now: 0,
+            bound_facts: &[],
+            bindings: &EMPTY_BINDINGS,
+        }
+    }
+}
+
 /// Build an EmittedCapsule from an action's data field.
+///
+/// Thin shim over [`build_capsule`] kept for existing callers.
 pub fn build_capsule_from_action(
     action_data: &serde_json::Value,
     emitted_by: &str,
@@ -426,6 +458,30 @@ pub fn build_capsule_from_action(
     bound_facts: &[String],
     bindings: &HashMap<String, String>,
 ) -> CapsuleResult<EmittedCapsule> {
+    build_capsule(
+        action_data,
+        &CapsuleOrigin {
+            emitted_by,
+            session_id,
+            now,
+            bound_facts,
+            bindings,
+        },
+    )
+}
+
+/// Build an EmittedCapsule from an action's data field and its origin.
+pub fn build_capsule(
+    action_data: &serde_json::Value,
+    origin: &CapsuleOrigin<'_>,
+) -> CapsuleResult<EmittedCapsule> {
+    let CapsuleOrigin {
+        emitted_by,
+        session_id,
+        now,
+        bound_facts,
+        bindings,
+    } = *origin;
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct CapsuleSpec {
@@ -649,13 +705,15 @@ pub fn capture_consequences(
             .take(MAX_PROVENANCE_ITEMS)
             .map(|(key, value)| (bounded(key), bounded(value)))
             .collect::<HashMap<_, _>>();
-        let mut capsule = match build_capsule_from_action(
+        let mut capsule = match build_capsule(
             data,
-            rule_id.as_ref(),
-            session_id,
-            now,
-            &bounded_facts,
-            &bounded_bindings,
+            &CapsuleOrigin {
+                emitted_by: rule_id.as_ref(),
+                session_id,
+                now,
+                bound_facts: &bounded_facts,
+                bindings: &bounded_bindings,
+            },
         ) {
             Ok(capsule) => capsule,
             Err(error) => {
