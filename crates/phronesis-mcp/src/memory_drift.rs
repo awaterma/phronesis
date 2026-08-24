@@ -1127,3 +1127,74 @@ initiative order, encumbrance tables, and the moon phase calendar.\n\n"
         assert!(parsed["items"].is_array());
     }
 }
+
+#[cfg(test)]
+mod predicate_shaped_trigger_tests {
+    use super::has_predicate_shaped_trigger;
+
+    #[test]
+    fn has_predicate_shaped_trigger_accepts_command_shapes() {
+        assert!(has_predicate_shaped_trigger("Never run git add -A"));
+        assert!(has_predicate_shaped_trigger(
+            "Use cargo clippy before committing"
+        ));
+        assert!(has_predicate_shaped_trigger("don't PKILL cargo"));
+        assert!(has_predicate_shaped_trigger("prefer gh pr create"));
+    }
+
+    #[test]
+    fn has_predicate_shaped_trigger_rejects_prose_near_command_words() {
+        // "kill a rustc": an article between verb and target is not a
+        // command shape (the token must be >= 2 chars).
+        assert!(!has_predicate_shaped_trigger("don't kill a rustc"));
+        assert!(!has_predicate_shaped_trigger("ask before you git"));
+        assert!(!has_predicate_shaped_trigger("cargo: a crate tool"));
+    }
+
+    #[test]
+    fn has_predicate_shaped_trigger_accepts_file_shapes() {
+        assert!(has_predicate_shaped_trigger(
+            "keep modules under src/ small"
+        ));
+        assert!(has_predicate_shaped_trigger(
+            "never edit docs/specs directly"
+        ));
+        assert!(has_predicate_shaped_trigger(
+            "avoid .unwrap() in production"
+        ));
+        assert!(has_predicate_shaped_trigger("no dbg!( left behind"));
+        assert!(has_predicate_shaped_trigger("all .rs files need headers"));
+        assert!(has_predicate_shaped_trigger("put fixtures in tests/"));
+    }
+
+    #[test]
+    fn has_predicate_shaped_trigger_accepts_function_plus_shape_word() {
+        assert!(has_predicate_shaped_trigger("every public fn needs docs"));
+        assert!(has_predicate_shaped_trigger(
+            "functions should have few parameters"
+        ));
+        assert!(has_predicate_shaped_trigger("methods must have tests"));
+    }
+
+    #[test]
+    fn has_predicate_shaped_trigger_rejects_function_word_without_shape_word() {
+        assert!(!has_predicate_shaped_trigger("functions are fun"));
+        assert!(!has_predicate_shaped_trigger("the method of madness"));
+    }
+
+    #[test]
+    fn has_predicate_shaped_trigger_rejects_plain_prose_and_empty() {
+        assert!(!has_predicate_shaped_trigger(""));
+        assert!(!has_predicate_shaped_trigger("be kind to reviewers"));
+        assert!(!has_predicate_shaped_trigger("I/O is slow"));
+        assert!(!has_predicate_shaped_trigger(
+            "Andrew prefers short replies"
+        ));
+    }
+
+    #[test]
+    fn has_predicate_shaped_trigger_is_case_insensitive() {
+        assert!(has_predicate_shaped_trigger("CARGO TEST must pass"));
+        assert!(has_predicate_shaped_trigger("Public FN need DOCS"));
+    }
+}

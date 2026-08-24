@@ -26,6 +26,7 @@ pub mod query;
 pub mod resolve;
 pub mod rhai;
 pub mod store;
+pub mod swift;
 pub mod sync;
 pub mod typescript;
 pub mod unit;

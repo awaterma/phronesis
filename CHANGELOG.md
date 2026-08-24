@@ -6,6 +6,157 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **New opt-in `python-patterns` pack** (`phr-mcp init --packs
+  python,python-patterns`; alias `py-patterns`). Thirteen advisories derived
+  from <https://python-patterns.guide/>, every one backed by a new
+  tree-sitter predicate in `syntax/python.rs` — no substring or regex
+  conditions anywhere in either Python pack. Warns: `global` rebinding
+  (`python_global_statement`), `globals()[...] = ...` introspection
+  assignment (`python_globals_subscript_assignment`), three-argument
+  `type(...)` dynamic classes (`python_dynamic_class_creation`),
+  `__new__`-based singletons (`python_new_override` shape `singleton`),
+  containers whose `__iter__` returns `self`
+  (`python_container_is_own_iterator`), multiple inheritance of concrete
+  classes (`python_multiple_inheritance`), `*Mixin` classes with `__init__`
+  (`python_mixin_with_init`), static delegation wrappers of 4+ forwarding
+  methods without `__getattr__` (`python_static_delegation_wrapper`),
+  mutable containers assigned in a class body
+  (`python_mutable_class_attribute`), and `== None` / `!= None`
+  (`python_equality_with_none`). Audit-only: other `__new__` overrides
+  (Flyweight), `isinstance` dispatch chains (`python_isinstance_chain`),
+  and file-local inheritance depth of 3+ (`python_inheritance_depth`). The
+  `isinstance` advisory requires a positive `if`/`elif` chain dispatching on
+  the same value across non-builtin domain types, excluding independent input
+  guards and primitive/container validation.
+  Each message cites the guide page and states the limit of its heuristic.
+  The base `python` pack is unchanged; the guide remains a secondary source
+  there (see the Deviation note in `SPEC-python-pack-expansion.md`).
+- **`xcodebuild` and `swift build|test` are built-in toolchains for
+  confidence scoring.** A Swift project running `xcodebuild test` through the
+  Bash tool saw "tests never registered": cargo was the only built-in def, so
+  nothing recognized the command and the `Executed 55 tests, with 0
+  failures` result never reached the journal, leaving the subject at `low`
+  under `confidence-low-blocks-commit`. Both defs parse XCTest summaries and
+  Swift Testing's `Test run with N tests … passed/failed` line, treat
+  `** BUILD FAILED **` and `file:line:col: error:` as build failures (an
+  XCTest assertion's `file:line: error:` is a test failure, not a broken
+  build), and accept `** BUILD SUCCEEDED **` / `** TEST SUCCEEDED **` /
+  `Build complete!` as compile evidence when no exit code was captured.
+  `phr-mcp toolchains` lists them.
+- **`phr-mcp signal <compile|tests> <pass|fail>`** records a confidence
+  signal explicitly for the open work unit — the escape hatch for a test
+  runner with no toolchain def, or a run that happened outside the hook. It
+  journals the same `outcome:*` tag the post-check hook stamps, so
+  `phr-mcp confidence` and the commit gate see it identically. Requires the
+  `confidence` pack.
+
+- **Swift sources enter the code graph.** `rebuild_code_graph` now indexes
+  `.swift` files (`crates/phronesis-mcp/src/graph/swift.rs`), emitting
+  `file_type`, `declares_module`, `defines_fn` (methods qualified by their
+  type or extension target), `defines_test`/`tested_by` for XCTest `test*`
+  methods and Swift Testing `@Test` functions, and one `imports` edge from
+  each file to its whole unit. Because every file in a Swift target sees the
+  target's entire namespace, `tested_by` resolution now accepts a whole-unit
+  import as visibility for every module in that unit. Previously Swift
+  was audit-only: `syntax/swift.rs` fed the `audit-swift-*` rules, but
+  `query_code_graph` for `file_type * swift` or any Swift `defines_fn`
+  returned nothing, so `no_direct_test` could never vouch for Swift code.
+  `GRAPH_FORMAT` bumps to 19 so existing graphs rebuild on next use.
+  - Swift production functions also emit `calls(caller, callee)` edges,
+    canonicalized through the unit-wide import the same way `tested_by` is
+    (so `test_reachability` follows Swift calls), and
+    `calls_api(function, api)` edges for a small risky-API watchlist
+    (`SWIFT_WATCHLIST`: `fatalError`, `preconditionFailure`, `exit`,
+    `unsafeBitCast`, the `Unsafe*Pointer` initializers/static members,
+    `Thread.sleep`, and semaphore/group `wait`). The structural
+    panicking-API rule can now fire for Swift.
+  - `Package.swift` targets are units. Discovery parses `.target`,
+    `.executableTarget`, `.testTarget` (and `.macro`) declarations —
+    honouring an explicit `path:` and SwiftPM's `Sources/<Name>` /
+    `Tests/<Name>` defaults otherwise — so a file under `Sources/App`
+    is `swift:App::…` rather than `swift:project::Sources::App::…`, and
+    every file in a `.testTarget` is `file_type test` whatever it is
+    called (`UnitContext::test_target`). `import Foo` / `@testable import
+    Foo` naming another target in the repository emits a whole-unit
+    `imports(module, swift:Foo)` edge, so `tested_by` and `calls` from a
+    test target into its production target canonicalize; imports of
+    Foundation, XCTest, or any module the repository does not define emit
+    nothing. Xcode `.xcodeproj` projects have no parseable manifest and
+    stay on the `swift:project` fallback with the filename/directory test
+    heuristic.
+
+### Changed
+
+- **Rust panic/debug starter rules now use syntax-tree facts.** The existing
+  unwrap, empty-message expect, `todo!`, `panic!`, `unimplemented!`, and
+  `dbg!` rule IDs now consume `rust_governed_invocation` instead of source
+  substrings. Formatting and macro arguments no longer evade the rules, while
+  comments, strings, similarly named methods/macros, and non-empty `expect`
+  messages no longer cause false positives. Hook and whole-tree audit paths
+  share the same producer. The `&Box<T>` parameter rule likewise uses the
+  derived `function_param_is_box_ref` fact and accepts whitespace variants
+  without matching strings or comments. The audit-only environment-mutation
+  rule now recognizes written `env::set_var` and `std::env::set_var` calls
+  structurally; arbitrary import aliases remain outside syntax-only evidence.
+  The `deny(warnings)` crate-attribute blocker now uses
+  `rust_governed_attribute`, accepting whitespace variants without matching
+  comments or string literals.
+  `impl Deref` detection now consumes `rust_trait_impl`, recognizing qualified
+  trait paths and generic implementing types without matching prose.
+  The three match-arm audit rules now consume `rust_governed_match_arm`, so
+  multiline/whitespace variants of empty `None`/`Err(_)` arms and
+  `return Err(...)` are recognized without matching comments or strings.
+  Two non-portable blockers for Phronesis-internal sync method names were
+  removed from the public Rust pack; downstream Rust projects should not
+  receive rules for this repository's private refactor history.
+  The `*_id: u64` and `Rc<RefCell<_>>` audit rules now use parsed field/type
+  evidence, including whitespace variants and excluding prose. The String-ID
+  twin intentionally remains line-oriented so its `///` field exemption keeps
+  working.
+
+- **TypeScript `any` enforcement is structural-only.** The TypeScript starter
+  pack retires the older `warn-any-in-src` substring rule and keeps
+  `warn-ts-explicit-any-ast` as the canonical parser-backed rule. Real `any`
+  annotations still warn with function/count evidence; comments and string
+  literals containing `: any` no longer produce duplicate or false-positive
+  warnings. This intentionally retires the legacy rule ID to avoid emitting
+  two consequences for the same annotation.
+  The `console.log` warning also uses the parser-backed
+  `ts_console_log_call` fact, recognizing whitespace variants while ignoring
+  comments, strings, other logging methods, and nested `logger.console.log`
+  expressions.
+
+- **Swift crash/legacy rules now use syntax-tree facts.** `try!`, `as!`,
+  `fatalError`, mutable `static var shared`, legacy geometry constructors,
+  and legacy random APIs now consume `swift_governed_construct`. Comments,
+  strings, and neighboring member calls stay silent; the hook and whole-tree
+  audit paths honor the fact's construct discriminator.
+
+- **Whole-tree AST audits honor literal fact arguments.** Audit evaluation now
+  applies the same constant-argument filtering as hook-time RETE matching, so
+  rules sharing a structural predicate report only their intended construct.
+
+- **The verify-before-commit nudge is command-scoped.** It now uses
+  `bash_command_matches` instead of generic content matching, so only a Bash
+  command containing `git commit -m` can trigger it. This remains lexical
+  command recognition, not a language-AST rule.
+
+- **Low-confidence Git gate downgraded from `block` to `warn`.** The
+  `confidence-low-blocks-commit` starter rule (id unchanged) no longer exits
+  2 on `git (commit|merge|rebase|cherry-pick|revert|pull)` when build/test/
+  known-bug evidence is missing or failing — it now warns (exit 1), same as
+  the medium band. Incomplete confidence evidence is observability, not
+  enforcement: a low-confidence Git mutation now always proceeds. High
+  confidence (3/3 signals) still passes clean, and unrelated `block` rules
+  still exit 2. See `docs/specs/SPEC-structural-rule-migration.md`
+  §"Confidence gate severity" and the migration inventory at
+  `docs/specs/INVENTORY-structural-rule-migration.md`. Projects that already
+  ran `phr-mcp init --packs confidence` keep the old blocking rule on disk
+  until they re-run `phr-mcp init --rules-only --force --packs confidence`
+  (existing project rule files are not rewritten automatically).
+
 ## [0.29.0] - 2026-08-16
 
 ### Changed

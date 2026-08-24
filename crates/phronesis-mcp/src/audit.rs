@@ -341,13 +341,31 @@ fn line_preceded_by_doc_comment(lines: &[&str], i: usize) -> bool {
     false
 }
 
+/// True if `id` is selected by `--rule <filter>`. Matches the id exactly,
+/// or any `or`-branch expansion of it (`<filter>#or0`, `<filter>#or1`,
+/// `<filter>#or0-or1`, ...) — a rule whose `when` carries an `or` clause is
+/// stored on disk as one rule per branch (see `rules_file::unfold_or`), and
+/// users name the rule, not the branch.
+pub fn rule_matches_filter(id: &str, filter: &str) -> bool {
+    if id == filter {
+        return true;
+    }
+    let Some(rest) = id.strip_prefix(filter).and_then(|r| r.strip_prefix('#')) else {
+        return false;
+    };
+    rest.split('-').all(|seg| {
+        seg.strip_prefix("or")
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
 /// Filter `rules` to those opted into the audit, honoring `rule_filter`.
 fn filter_audit_rules<'a>(rules: &'a RulesFile, rule_filter: Option<&str>) -> Vec<&'a DiskRule> {
     rules
         .rules
         .iter()
         .filter(|r| r.audit == Some(true))
-        .filter(|r| rule_filter.is_none_or(|f| r.id == f))
+        .filter(|r| rule_filter.is_none_or(|f| rule_matches_filter(&r.id, f)))
         .collect()
 }
 
@@ -367,7 +385,22 @@ fn eval_ast_rule(
         if !is_ast_predicate(&cond.predicate) {
             continue;
         }
-        for fact in facts.iter().filter(|f| f.predicate == cond.predicate) {
+        let matching_facts: Vec<&Fact> = facts
+            .iter()
+            .filter(|fact| {
+                fact.predicate == cond.predicate
+                    && fact.args.len() == cond.args.len()
+                    && cond
+                        .args
+                        .iter()
+                        .zip(&fact.args)
+                        .all(|(wanted, got)| wanted.starts_with('?') || wanted == got)
+            })
+            .collect();
+        if matching_facts.is_empty() {
+            return None;
+        }
+        for fact in matching_facts {
             // Per-fact line spans aren't tracked yet; line 1 is the
             // placeholder. The fact's args carry the function name (and
             // count, for count predicates), which `ast_hit_detail` renders
@@ -782,6 +815,10 @@ pub fn discover_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
 ///    over-broad `.gitignore` / `.phronesisignore` or a misrouted `path`
 ///    argument.
 ///
+/// 3. `rule_filter` names a rule no opted-in rule matches (exactly or via
+///    an `#orN` expansion) — the walker never starts because the rule set
+///    is empty, which would otherwise be misreported as case 2.
+///
 /// Returns `None` when the report has hits, or when zero hits is the
 /// honest answer (rules opted in, files scanned, nothing matched).
 ///
@@ -789,11 +826,34 @@ pub fn discover_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
 /// body (MCP). Audit's structured shape stays unchanged.
 pub fn empty_result_diagnostic(
     report: &AuditReport,
-    audit_tagged_count: usize,
+    rules: &RulesFile,
+    rule_filter: Option<&str>,
     scan_root: &Path,
 ) -> Option<String> {
     if !report.per_rule.is_empty() {
         return None;
+    }
+    let opted_in: Vec<&str> = rules
+        .rules
+        .iter()
+        .filter(|r| r.audit == Some(true))
+        .map(|r| r.id.as_str())
+        .collect();
+    let audit_tagged_count = opted_in.len();
+    if let Some(filter) = rule_filter
+        && audit_tagged_count > 0
+        && !opted_in.iter().any(|id| rule_matches_filter(id, filter))
+    {
+        let near: Vec<String> = near_miss_rule_ids(&opted_in, filter);
+        let hint = if near.is_empty() {
+            String::new()
+        } else {
+            format!(" Did you mean: {}?", near.join(", "))
+        };
+        return Some(format!(
+            "phronesis: no opted-in rule matches `{filter}` ({audit_tagged_count} rule(s) \
+             carry `audit: true`).{hint}"
+        ));
     }
     if audit_tagged_count == 0 {
         return Some(
@@ -814,6 +874,24 @@ pub fn empty_result_diagnostic(
         ));
     }
     None
+}
+
+/// Cheap near-miss suggestions for an unmatched `--rule` filter: opted-in
+/// ids (with any `#orN` suffix stripped, deduplicated) where one of the
+/// two strings contains the other, case-insensitively. Capped at five.
+fn near_miss_rule_ids(opted_in: &[&str], filter: &str) -> Vec<String> {
+    let needle = filter.to_ascii_lowercase();
+    let mut out: Vec<String> = Vec::new();
+    for id in opted_in {
+        let base = id.split_once("#or").map_or(*id, |(b, _)| b);
+        let hay = base.to_ascii_lowercase();
+        if (hay.contains(&needle) || needle.contains(&hay)) && !out.iter().any(|o| o == base) {
+            out.push(base.to_string());
+        }
+    }
+    out.sort();
+    out.truncate(5);
+    out
 }
 
 // ── Trend types and compute_trend ───────────────────────────────────────────
@@ -1367,6 +1445,110 @@ mod tests {
         );
         assert_eq!(report.per_rule.len(), 1);
         assert_eq!(report.per_rule[0].rule_id, "no-panic");
+    }
+
+    #[test]
+    fn rule_filter_matches_or_expansions() {
+        assert!(rule_matches_filter(
+            "warn-untested-risky-call",
+            "warn-untested-risky-call"
+        ));
+        assert!(rule_matches_filter(
+            "warn-untested-risky-call#or0",
+            "warn-untested-risky-call"
+        ));
+        assert!(rule_matches_filter(
+            "warn-untested-risky-call#or12",
+            "warn-untested-risky-call"
+        ));
+        assert!(rule_matches_filter(
+            "warn-untested-risky-call#or0-or1",
+            "warn-untested-risky-call"
+        ));
+        assert!(!rule_matches_filter(
+            "warn-untested-risky-call#or0-",
+            "warn-untested-risky-call"
+        ));
+        assert!(!rule_matches_filter(
+            "warn-untested-risky-call#or",
+            "warn-untested-risky-call"
+        ));
+        assert!(!rule_matches_filter(
+            "warn-untested-risky-call-v2",
+            "warn-untested-risky-call"
+        ));
+        assert!(!rule_matches_filter(
+            "warn-untested",
+            "warn-untested-risky-call"
+        ));
+    }
+
+    #[test]
+    fn run_rule_filter_selects_all_or_branches() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), ".unwrap() panic!()").unwrap();
+        let rules = RulesFile {
+            rules: vec![
+                rule("risky#or0", ".unwrap()", "constraint_violation"),
+                rule("risky#or1", "panic!(", "constraint_violation"),
+                rule("other", "panic!(", "constraint_violation"),
+            ],
+        };
+        let report = run(
+            &rules,
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: Some("risky".to_string()),
+            },
+        );
+        let mut ids: Vec<&str> = report.per_rule.iter().map(|r| r.rule_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["risky#or0", "risky#or1"]);
+    }
+
+    #[test]
+    fn empty_diagnostic_names_unmatched_rule_filter() {
+        let rules = RulesFile {
+            rules: vec![
+                rule("warn-untested-risky-call#or0", "x", "warning"),
+                rule("warn-untested-risky-call#or1", "x", "warning"),
+                rule("no-unwrap", "x", "warning"),
+            ],
+        };
+        let report = AuditReport {
+            generated_at: 0,
+            scan_duration_ms: 0,
+            files_scanned: 0,
+            per_rule: vec![],
+        };
+        let diag = empty_result_diagnostic(
+            &report,
+            &rules,
+            Some("warn-untested-risky"),
+            Path::new("/src"),
+        )
+        .expect("diagnostic");
+        assert!(
+            diag.contains("no opted-in rule matches `warn-untested-risky`"),
+            "{diag}"
+        );
+        assert!(
+            diag.contains("Did you mean: warn-untested-risky-call?"),
+            "{diag}"
+        );
+        assert!(!diag.contains("walked 0 files"), "{diag}");
+
+        // A matching filter (via #orN) with zero files scanned still reports
+        // the walker diagnostic, not the unmatched-rule one.
+        let diag = empty_result_diagnostic(
+            &report,
+            &rules,
+            Some("warn-untested-risky-call"),
+            Path::new("/src"),
+        )
+        .expect("diagnostic");
+        assert!(diag.contains("walked 0 files"), "{diag}");
     }
 
     #[test]
@@ -3078,13 +3260,22 @@ fn short() {
     #[test]
     fn empty_diagnostic_returns_none_when_report_has_hits() {
         let r = report_with_hits();
-        assert!(empty_result_diagnostic(&r, 5, Path::new("/proj")).is_none());
+        assert!(empty_result_diagnostic(&r, &opted_in(5), None, Path::new("/proj")).is_none());
+    }
+
+    /// A rules file with `n` opted-in rules.
+    fn opted_in(n: usize) -> RulesFile {
+        RulesFile {
+            rules: (0..n)
+                .map(|i| rule(&format!("r{i}"), "x", "warning"))
+                .collect(),
+        }
     }
 
     #[test]
     fn empty_diagnostic_flags_zero_audit_tagged_rules() {
         let r = empty_report();
-        let msg = empty_result_diagnostic(&r, 0, Path::new("/proj"))
+        let msg = empty_result_diagnostic(&r, &opted_in(0), None, Path::new("/proj"))
             .expect("zero audit-tagged rules must produce a diagnostic");
         assert!(
             msg.contains("audit: true"),
@@ -3095,7 +3286,7 @@ fn short() {
     #[test]
     fn empty_diagnostic_flags_walker_zero_files_when_rules_opted_in() {
         let r = empty_report();
-        let msg = empty_result_diagnostic(&r, 5, Path::new("/proj/src"))
+        let msg = empty_result_diagnostic(&r, &opted_in(5), None, Path::new("/proj/src"))
             .expect("opted-in rules but zero scanned files must produce a diagnostic");
         assert!(
             msg.contains("0 files") && msg.contains("/proj/src"),
@@ -3116,7 +3307,7 @@ fn short() {
             files_scanned: 50,
             ..empty_report()
         };
-        assert!(empty_result_diagnostic(&r, 3, Path::new("/proj")).is_none());
+        assert!(empty_result_diagnostic(&r, &opted_in(3), None, Path::new("/proj")).is_none());
     }
 
     #[test]
@@ -3214,7 +3405,7 @@ pub fn merge_graph_hits(
     let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
     for hit in hits {
         if let Some(want) = rule_filter
-            && hit.rule_id != want
+            && !rule_matches_filter(&hit.rule_id, want)
         {
             continue;
         }
@@ -3276,6 +3467,36 @@ mod graph_merge_tests {
         );
         assert_eq!(r.per_rule.len(), 1);
         assert_eq!(r.per_rule[0].hits, 1);
+    }
+
+    #[test]
+    fn graph_hit_rule_filter_matches_or_expansions() {
+        let mut r = empty_report();
+        merge_graph_hits(
+            &mut r,
+            &[
+                hit(
+                    "warn-untested-risky-call#or0",
+                    "src/a.rs",
+                    "constraint_warning",
+                ),
+                hit(
+                    "warn-untested-risky-call#or1",
+                    "src/b.rs",
+                    "constraint_warning",
+                ),
+                hit("warn-import-cycle", "src/c.rs", "constraint_warning"),
+            ],
+            Some("warn-untested-risky-call"),
+            None,
+        );
+        let ids: Vec<&str> = r.per_rule.iter().map(|p| p.rule_id.as_str()).collect();
+        assert_eq!(ids.len(), 2, "{ids:?}");
+        assert!(
+            ids.iter()
+                .all(|id| id.starts_with("warn-untested-risky-call#or")),
+            "{ids:?}"
+        );
     }
 
     #[test]

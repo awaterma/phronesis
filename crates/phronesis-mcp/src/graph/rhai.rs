@@ -38,62 +38,72 @@ fn module_path(file_path: &str, unit: &UnitContext) -> String {
         .join("::")
 }
 
+/// Scanner state for `code_shape`: the output buffer plus the lexical
+/// mode (inside a quoted string, after a backslash, inside a block comment).
+#[derive(Default)]
+struct Shape {
+    out: String,
+    quote: Option<char>,
+    escaped: bool,
+    block_comment: bool,
+}
+
 fn code_shape(content: &str) -> String {
-    let mut out = String::with_capacity(content.len());
-    let mut quote = None;
-    let mut escaped = false;
-    let mut block_comment = false;
+    let mut shape = Shape {
+        out: String::with_capacity(content.len()),
+        ..Shape::default()
+    };
     let mut characters = content.chars().peekable();
     while let Some(character) = characters.next() {
-        if block_comment {
+        if shape.block_comment {
             if character == '*' && characters.peek() == Some(&'/') {
-                out.push_str("  ");
+                shape.out.push_str("  ");
                 characters.next();
-                block_comment = false;
+                shape.block_comment = false;
             } else if character == '\n' {
-                out.push('\n');
+                shape.out.push('\n');
             } else {
-                out.push(' ');
+                shape.out.push(' ');
             }
             continue;
         }
-        if quote.is_none() && character == '/' && characters.peek() == Some(&'/') {
-            out.push_str("  ");
+        if shape.quote.is_none() && character == '/' && characters.peek() == Some(&'/') {
+            shape.out.push_str("  ");
             characters.next();
             for comment in characters.by_ref() {
                 if comment == '\n' {
-                    out.push('\n');
+                    shape.out.push('\n');
                     break;
                 }
-                out.push(' ');
+                shape.out.push(' ');
             }
             continue;
         }
-        if quote.is_none() && character == '/' && characters.peek() == Some(&'*') {
-            out.push_str("  ");
+        if shape.quote.is_none() && character == '/' && characters.peek() == Some(&'*') {
+            shape.out.push_str("  ");
             characters.next();
-            block_comment = true;
+            shape.block_comment = true;
             continue;
         }
         {
-            if let Some(active) = quote {
-                if escaped {
-                    escaped = false;
+            if let Some(active) = shape.quote {
+                if shape.escaped {
+                    shape.escaped = false;
                 } else if character == '\\' {
-                    escaped = true;
+                    shape.escaped = true;
                 } else if character == active {
-                    quote = None;
+                    shape.quote = None;
                 }
-                out.push(' ');
+                shape.out.push(' ');
             } else if character == '\'' || character == '"' || character == '`' {
-                quote = Some(character);
-                out.push(' ');
+                shape.quote = Some(character);
+                shape.out.push(' ');
             } else {
-                out.push(character);
+                shape.out.push(character);
             }
         }
     }
-    out
+    shape.out
 }
 
 pub fn extract_rhai(file_path: &str, content: &str, unit: &UnitContext) -> Extracted {

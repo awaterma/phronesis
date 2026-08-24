@@ -20,6 +20,9 @@ phr-mcp install
 # Initialize in your project
 cd /your/project
 phr-mcp init --packs rust
+
+# Python correctness plus opt-in design-pattern advisories
+phr-mcp init --packs python,python-patterns
 ```
 
 ## What it does
@@ -43,15 +46,20 @@ phr-mcp init --packs rust
   before the existing per-file `file_path` evaluation.
 - **Starter packs** ship rules for Rust (including async/unsafe hazards),
   Python (including import-time I/O, identity comparisons, mutable globals,
-  and star imports), TypeScript, Swift, Rhai, and LLM behavior.
+  and star imports), TypeScript, Swift, Rhai, and LLM behavior. The separate
+  opt-in `python-patterns` pack adds 13 parser-backed design advisories; its
+  Composite check only recognizes positive same-subject `if`/`elif`
+  dispatch across non-builtin domain types.
 - **Journey facts** — durable per-call journal + project-defined taggers
   in `.phronesis/journey.json` let rules match cross-call temporal
   patterns (`auth-churn-without-tests`, `build-staleness`, recent SQL)
   without any in-memory accumulation.
-- **Confidence scoring** — declarative toolchain definitions (built-in
-  Cargo plus project definitions in `.phronesis/toolchains.json`) feed one
+- **Confidence scoring** — declarative toolchain definitions (built-in Cargo,
+  `xcodebuild`, and SwiftPM plus project definitions in
+  `.phronesis/toolchains.json`) feed one
   generic parser that turns build / test / known-bug outcomes into grounded
-  signals; gate rules block or warn a `git commit` by confidence band.
+  signals; advisory gate rules warn on Git mutations when evidence is
+  incomplete or failing.
   Enabled by default through `.phronesis/confidence.json`.
 - **Structural graph and graph rules, compact durable context, journey facts,
   confidence, and LLM rules are defaults.** Every language-neutral capability

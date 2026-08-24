@@ -29,6 +29,349 @@ fn run_hook_with_root(payload: &str, root: &Path) -> (i32, String) {
     )
 }
 
+fn init_pack(root: &Path, pack: &str) {
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["init", "--packs", pack])
+        .current_dir(root)
+        .output()
+        .expect("spawn init");
+    assert!(
+        out.status.success(),
+        "init stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn edit_payload(path: &str, new_content: &str) -> String {
+    serde_json::json!({
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": path,
+            "content": new_content,
+        }
+    })
+    .to_string()
+}
+
+#[test]
+fn generated_typescript_pack_warns_once_for_a_real_explicit_any() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "typescript");
+
+    let payload = edit_payload(
+        "src/service.ts",
+        "export const load = (value: any) => value;\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+
+    assert_eq!(code, 1, "explicit any should warn: {stderr}");
+    assert!(
+        stderr.contains("explicit `any` annotation"),
+        "stderr: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("explicit `any` annotation").count(),
+        1,
+        "the retired lexical rule must not duplicate the structural warning: {stderr}"
+    );
+}
+
+#[test]
+fn generated_typescript_pack_ignores_any_text_in_comments_and_strings() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "typescript");
+    let payload = edit_payload(
+        "src/service.ts",
+        "// example annotation: any\nexport const note = \": any\";\n",
+    );
+
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+
+    assert_eq!(code, 0, "lexical lookalikes must not warn: {stderr}");
+}
+
+#[test]
+fn generated_typescript_pack_matches_console_log_structurally() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "typescript");
+    let payload = edit_payload(
+        "src/service.ts",
+        "export function run() { console . log (\"ready\"); }\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 1, "console.log should warn: {stderr}");
+    assert!(stderr.contains("console.log"), "stderr: {stderr}");
+
+    let payload = edit_payload(
+        "src/service.ts",
+        "// console.log(\"comment\")\nconst note = \"console.log(fake)\";\nlogger.console.log(\"nested\");\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 0, "lookalikes must not warn: {stderr}");
+}
+
+#[test]
+fn generated_swift_pack_matches_precheck_constructs_structurally() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "swift");
+    let payload = edit_payload(
+        "Sources/App.swift",
+        "func load(value: Any) { let _ = try! fetch(); let _ = value as! String }\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 1, "Swift force operations should warn: {stderr}");
+    assert!(stderr.contains("try!"), "stderr: {stderr}");
+    assert!(stderr.contains("as!"), "stderr: {stderr}");
+
+    let payload = edit_payload(
+        "Sources/App.swift",
+        "// try! as!\nlet note = \"fatalError( CGRectMake( arc4random(\"\nfunc safe() {}\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 0, "Swift lexical lookalikes must not warn: {stderr}");
+}
+
+#[test]
+fn generated_swift_structural_rules_participate_in_whole_tree_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "swift");
+    std::fs::create_dir_all(dir.path().join("Sources")).unwrap();
+    std::fs::write(
+        dir.path().join("Sources/App.swift"),
+        r#"
+func load(value: Any) {
+    let _ = try! fetch()
+    let _ = value as! String
+    fatalError("unreachable")
+    CGRectMake(0, 0, 1, 1)
+    arc4random_uniform(10)
+}
+final class Service { static var shared = Service() }
+"#,
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["audit", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn audit");
+    assert!(
+        out.status.success(),
+        "audit stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    for rule_id in [
+        "audit-swift-fatal-error",
+        "audit-swift-mutable-singleton",
+        "audit-swift-legacy-constructor",
+        "audit-swift-legacy-random",
+    ] {
+        assert!(stdout.contains(rule_id), "missing {rule_id}: {stdout}");
+        let rule = report["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["rule_id"] == rule_id)
+            .unwrap();
+        assert_eq!(
+            rule["hits"], 1,
+            "literal construct arguments must filter sibling facts: {rule}"
+        );
+    }
+}
+
+#[test]
+fn generated_rust_pack_matches_structural_invocation_variants_through_hook() {
+    let cases = [
+        ("Some(1).unwrap ( )", "Avoid .unwrap()"),
+        ("todo!(\"later\")", "Don't ship todo!()"),
+        ("std::panic!(\"boom\")", "Avoid panic!()"),
+        ("unimplemented! { \"later\" }", "Avoid unimplemented!()"),
+        ("dbg!(1)", "dbg!() in src/"),
+        ("Some(1).expect(\"\")", ".expect(\"\")"),
+    ];
+
+    for (expression, expected_message) in cases {
+        let dir = tempfile::tempdir().unwrap();
+        init_pack(dir.path(), "rust");
+        let payload = edit_payload(
+            "src/lib.rs",
+            &format!("fn demo() {{ let _ = {expression}; }}\n"),
+        );
+        let (code, stderr) = run_hook_with_root(&payload, dir.path());
+        assert_ne!(code, 0, "{expression} should fire a rule: {stderr}");
+        assert!(
+            stderr.contains(expected_message),
+            "{expression} should produce its packaged message: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn generated_rust_pack_ignores_invocation_text_in_comments_and_strings() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "rust");
+    let payload = edit_payload(
+        "src/lib.rs",
+        r#"
+fn safe(value: Option<u8>) {
+    // value.unwrap(); todo!(); panic!("x"); unimplemented!(); dbg!(value);
+    let _ = ".unwrap() todo!() panic!( unimplemented!() dbg!( .expect(\"\")";
+    let _ = value.expect("documented invariant");
+}
+"#,
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 0, "lexical lookalikes must not fire: {stderr}");
+}
+
+#[test]
+fn generated_rust_structural_rules_participate_in_whole_tree_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "rust");
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        r#"
+#![deny(warnings)]
+fn demo(value: Option<u8>) {
+    let _ = value.unwrap();
+    todo!("later");
+    panic!("boom");
+    unimplemented!("later");
+    dbg!(value);
+    let _ = value.expect("");
+    std::env::set_var("KEY", "value");
+    match value { None => { }, Some(_) => {} }
+    let result: Result<u8, E> = todo!();
+    match result { Err(_) => { }, Ok(_) => {} }
+    match result { Err(error) => return Err(error), Ok(_) => {} }
+}
+impl std::ops::Deref for Wrapper {
+    type Target = u8;
+    fn deref(&self) -> &u8 { &0 }
+}
+struct Stored { user_id: u64, shared: Rc < RefCell <u8> > }
+"#,
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["audit", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn audit");
+    assert!(
+        out.status.success(),
+        "audit stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    for rule_id in [
+        "enforce-no-unwrap-in-src",
+        "enforce-no-todo-in-src",
+        "enforce-no-panic-in-src",
+        "enforce-no-unimplemented-in-src",
+        "warn-dbg-in-src",
+        "warn-expect-with-empty-message",
+        "audit-env-set-var-in-src",
+        "block-deny-warnings-attribute",
+        "warn-deref-for-non-pointer-type",
+        "audit-manual-err-return",
+        "audit-if-let-opportunity-none-empty",
+        "audit-if-let-opportunity-err-empty",
+        "audit-newtype-id-u64",
+        "audit-rc-refcell-in-src",
+    ] {
+        assert!(stdout.contains(rule_id), "missing {rule_id}: {stdout}");
+    }
+}
+
+#[test]
+fn generated_rust_pack_matches_box_ref_parameter_structurally() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "rust");
+    let payload = edit_payload("src/lib.rs", "fn consume(value: & Box <u8>) {}\n");
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 1, "&Box<T> should warn: {stderr}");
+    assert!(stderr.contains("&Box<T>"), "stderr: {stderr}");
+
+    let payload = edit_payload(
+        "src/lib.rs",
+        "fn safe(value: &u8) { let _ = \": &Box<Fake>\"; }\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 0, "string lookalike must not warn: {stderr}");
+}
+
+#[test]
+fn generated_rust_pack_matches_deny_warnings_attribute_structurally() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "rust");
+    let payload = edit_payload("src/lib.rs", "#![ deny ( warnings ) ]\nfn safe() {}\n");
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 2, "deny(warnings) should block: {stderr}");
+    assert!(stderr.contains("deny(warnings)"), "stderr: {stderr}");
+
+    let payload = edit_payload(
+        "src/lib.rs",
+        "// #![deny(warnings)]\nconst NOTE: &str = \"#![deny(warnings)]\";\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 0, "lexical lookalikes must not block: {stderr}");
+}
+
+#[test]
+fn generated_rust_pack_blocks_panic_in_drop_impl_through_hook() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "rust");
+    // `.expect("")` is only a warn outside a Drop impl, so exit 2 here can
+    // only come from the Drop-specific block rule.
+    let payload = edit_payload(
+        "src/lib.rs",
+        "struct Conn;\nimpl Drop for Conn { fn drop(&mut self) { self.close().expect(\"\"); } }\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(
+        code, 2,
+        "panic construct in Drop::drop should block: {stderr}"
+    );
+    assert!(
+        stderr.contains("aborts the whole process"),
+        "stderr: {stderr}"
+    );
+
+    let payload = edit_payload(
+        "src/lib.rs",
+        "// impl Drop for Fake { fn drop(&mut self) { panic!(\"x\") } }\nconst NOTE: &str = \"impl Drop for Fake\";\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 0, "lexical lookalikes must not block: {stderr}");
+}
+
+#[test]
+fn generated_rust_pack_matches_deref_impl_structurally() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "rust");
+    let payload = edit_payload(
+        "src/lib.rs",
+        "impl std::ops::Deref for Wrapper { type Target = u8; fn deref(&self) -> &u8 { &0 } }\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 1, "Deref impl should warn: {stderr}");
+    assert!(stderr.contains("Deref polymorphism"), "stderr: {stderr}");
+
+    let payload = edit_payload(
+        "src/lib.rs",
+        "// impl Deref for Fake {}\nconst NOTE: &str = \"impl Deref for Fake\";\n",
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 0, "lexical lookalikes must not warn: {stderr}");
+}
+
 #[test]
 fn result_string_rule_blocks_offending_function() {
     let dir = tempfile::tempdir().unwrap();
@@ -163,6 +506,229 @@ fn python_patterns_guide_predicates_fire_through_hook() {
     for message in ["import io", "is literal", "mutable global", "star import"] {
         assert!(stderr.contains(message), "missing {message}: {stderr}");
     }
+}
+
+const PYTHON_PATTERNS_FIXTURE: &str = r#"
+_seed = 42
+
+def set_seed(v):
+    global _seed
+    _seed = v
+
+for name in dir(_seed):
+    globals()[name] = getattr(_seed, name)
+
+def build(name, a, b):
+    return type(name, (a, b), {})
+
+class Logger:
+    _instance = None
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+class Grade:
+    def __new__(cls, percent):
+        return super().__new__(cls)
+
+def render(w):
+    if isinstance(w, Frame):
+        return 1
+    elif isinstance(w, Label):
+        return 2
+    return 0
+
+class Bag:
+    items = []
+    def __len__(self):
+        return 0
+    def __iter__(self):
+        return self
+    def __next__(self):
+        raise StopIteration
+
+class FilteredSocketLogger(FilteredLogger, SocketLogger):
+    pass
+
+class A:
+    pass
+class B(A):
+    pass
+class C(B):
+    pass
+
+class FilterMixin:
+    def __init__(self):
+        self.pattern = ''
+
+class Wrapper:
+    def read(self, n):
+        return self._file.read(n)
+    def write(self, s):
+        return self._file.write(s)
+    def close(self):
+        return self._file.close()
+    def flush(self):
+        return self._file.flush()
+
+def check(x):
+    return x == None
+"#;
+
+const PYTHON_PATTERNS_RULE_IDS: &[&str] = &[
+    "warn-python-global-statement",
+    "warn-python-globals-introspection-assignment",
+    "warn-python-dynamic-class-creation",
+    "warn-python-singleton-new",
+    "audit-python-custom-new",
+    "audit-python-isinstance-dispatch",
+    "warn-python-container-is-own-iterator",
+    "warn-python-multiple-inheritance",
+    "audit-python-deep-inheritance",
+    "warn-python-mixin-with-init",
+    "warn-python-static-delegation-wrapper",
+    "warn-python-mutable-class-attribute",
+    "warn-python-equality-with-none",
+];
+
+#[test]
+fn generated_python_patterns_pack_loads_and_fires_through_hook_and_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "python,python-patterns");
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r["id"].as_str())
+        .collect();
+    for id in PYTHON_PATTERNS_RULE_IDS {
+        assert!(ids.contains(id), "rules.json missing {id}");
+    }
+    // Hard constraint: no substring/regex conditions anywhere in the Python packs.
+    for rule in rules["rules"].as_array().unwrap() {
+        let id = rule["id"].as_str().unwrap_or("");
+        if !id.contains("python") {
+            continue;
+        }
+        for cond in rule["when"].as_array().unwrap() {
+            for key in cond.as_object().unwrap().keys() {
+                assert!(
+                    key.starts_with("python_") || key == "file_path_matches",
+                    "{id} uses non-structural condition {key}"
+                );
+            }
+        }
+    }
+
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    // One distinctive fragment per `warn` (pre-phase) rule; the hook prints
+    // messages, not rule IDs.
+    let pre_fragments = [
+        "rebinds module global `_seed`",
+        "assigns through `globals()[...]`",
+        "`build` in src/patterns.py builds a class at runtime",
+        "Class `Logger` in src/patterns.py implements the Singleton Pattern",
+        "Container class `Bag`",
+        "`FilteredSocketLogger` in src/patterns.py inherits from 2 concrete classes",
+        "Mixin `FilterMixin`",
+        "`Wrapper` in src/patterns.py re-declares 4 methods",
+        "assigns mutable container `items`",
+        "`check` in src/patterns.py compares against `None`",
+    ];
+    let payload = edit_payload("src/patterns.py", PYTHON_PATTERNS_FIXTURE);
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 1, "warn rules should return one: {stderr}");
+    assert!(
+        stderr.contains("https://python-patterns.guide/"),
+        "messages cite the guide: {stderr}"
+    );
+    for fragment in pre_fragments {
+        assert!(
+            stderr.contains(fragment),
+            "hook missing {fragment}: {stderr}"
+        );
+    }
+    // Bindings substituted: the delegation wrapper names its attribute.
+    assert!(
+        stderr.contains("self._file"),
+        "?attr binding not substituted: {stderr}"
+    );
+
+    std::fs::write(dir.path().join("src/patterns.py"), PYTHON_PATTERNS_FIXTURE).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["audit", "--json"])
+        .current_dir(dir.path())
+        .output()
+        .expect("spawn audit");
+    assert!(
+        out.status.success(),
+        "audit stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    for rule_id in PYTHON_PATTERNS_RULE_IDS {
+        let rule = report["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|rule| rule["rule_id"] == *rule_id)
+            .unwrap_or_else(|| panic!("audit missing {rule_id}: {}", report));
+        assert!(
+            rule["hits"].as_u64().unwrap_or(0) >= 1,
+            "{rule_id} should hit the fixture: {rule}"
+        );
+    }
+}
+
+#[test]
+fn generated_python_patterns_pack_is_silent_on_idiomatic_code() {
+    let dir = tempfile::tempdir().unwrap();
+    init_pack(dir.path(), "python-patterns");
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    let clean = r#"
+class Random8:
+    def __init__(self):
+        self.seed = 42
+    def random(self):
+        return self.seed
+
+_instance = Random8()
+random = _instance.random
+
+class OddIterator:
+    def __init__(self, maximum):
+        self.maximum = maximum
+        self.n = -1
+    def __iter__(self):
+        return self
+    def __next__(self):
+        self.n += 2
+        if self.n > self.maximum:
+            raise StopIteration
+        return self.n
+
+class FilteredLogger(FilterMixin, Logger):
+    pass
+
+class Wrapper:
+    def __init__(self, f):
+        self._file = f
+    def __getattr__(self, name):
+        return getattr(self._file, name)
+    def write(self, s):
+        return self._file.write(s.upper())
+
+def check(x):
+    return x is None
+"#;
+    let payload = edit_payload("src/clean.py", clean);
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
+    assert_eq!(code, 0, "idiomatic code must not warn: {stderr}");
 }
 
 #[test]
@@ -565,17 +1131,23 @@ fn block_await_on_sync_execute_all_agenda_items_blocks_edit() {
     std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
     write_rules_file(
         dir.path(),
-        r#"{"rules":[{
+        &format!(
+            r#"{{"rules":[{{
             "id":"block-await-on-sync-execute-all-agenda-items","phase":"pre","priority":10,
             "when":[
-                {"new_content_contains":"execute_all_agenda_items().await"},
-                {"file_extension_is":"rs"}
+                {{"new_content_contains":"{call}"}},
+                {{"file_extension_is":"rs"}}
             ],
-            "then":{"block":"execute_all_agenda_items is sync"}
-        }]}"#,
+            "then":{{"block":"execute_all_agenda_items is sync"}}
+        }}]}}"#,
+            call = concat!("execute_all_agenda_items()", ".await"),
+        ),
     );
-    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"","new_string":"let _ = network.execute_all_agenda_items().await;"}}"#;
-    let (code, stderr) = run_hook_with_root(payload, dir.path());
+    let payload = format!(
+        r#"{{"tool_name":"Edit","tool_input":{{"file_path":"src/lib.rs","old_string":"","new_string":"let _ = network.{call};"}}}}"#,
+        call = concat!("execute_all_agenda_items()", ".await"),
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
     assert_eq!(code, 2, "block must exit 2");
     assert!(stderr.contains("is sync"), "stderr: {stderr}");
 }
@@ -587,17 +1159,23 @@ fn block_await_on_sync_fire_all_consequences_blocks_edit() {
     std::fs::write(dir.path().join("src/lib.rs"), "").unwrap();
     write_rules_file(
         dir.path(),
-        r#"{"rules":[{
+        &format!(
+            r#"{{"rules":[{{
             "id":"block-await-on-sync-fire-all-consequences","phase":"pre","priority":10,
             "when":[
-                {"new_content_contains":"fire_all_consequences().await"},
-                {"file_extension_is":"rs"}
+                {{"new_content_contains":"{call}"}},
+                {{"file_extension_is":"rs"}}
             ],
-            "then":{"block":"fire_all_consequences is sync"}
-        }]}"#,
+            "then":{{"block":"fire_all_consequences is sync"}}
+        }}]}}"#,
+            call = concat!("fire_all_consequences()", ".await"),
+        ),
     );
-    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"","new_string":"let _ = network.fire_all_consequences().await;"}}"#;
-    let (code, stderr) = run_hook_with_root(payload, dir.path());
+    let payload = format!(
+        r#"{{"tool_name":"Edit","tool_input":{{"file_path":"src/lib.rs","old_string":"","new_string":"let _ = network.{call};"}}}}"#,
+        call = concat!("fire_all_consequences()", ".await"),
+    );
+    let (code, stderr) = run_hook_with_root(&payload, dir.path());
     assert_eq!(code, 2);
     assert!(stderr.contains("is sync"));
 }

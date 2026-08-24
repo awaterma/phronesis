@@ -324,13 +324,12 @@ impl InspectReport {
         let _ = writeln!(
             out,
             "\nkind ceilings: kernel={} activity_reserve={} nudges={} \
-             state_reserve={} charter={} rules={}",
+             state_reserve={} charter={} rules=∞",
             self.config.interaction.kernel_max_bytes,
             self.config.interaction.activity_reserve_bytes,
             self.config.interaction.nudges_max_bytes,
             self.config.session.state_reserve_bytes,
             self.config.session.charter_max_bytes,
-            self.config.session.rules_max_bytes,
         );
     }
 

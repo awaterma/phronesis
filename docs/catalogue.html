@@ -569,7 +569,7 @@
   <header class="colophon" role="banner">
     <div class="left"><a href="./explainer.html">← The Explainer</a></div>
     <div class="center">⚯ A Catalogue of Default Rules ⚯</div>
-    <div class="right">Vol. 0.26.0 — Edition IV</div>
+    <div class="right">Vol. 0.30.0 — Edition IV</div>
   </header>
 
   <!-- ─── COVER ─── -->
@@ -603,16 +603,16 @@
     </div>
     <div class="values">
       <dl>
-        <dt>Default packs</dt>
-        <dd><span class="num">8</span></dd>
-        <dt>Rules shipped</dt>
-        <dd><span class="num">59</span><span style="font-size: 0.8em; color: var(--mute);">±</span></dd>
-        <dt>Blocks (pre)</dt>
+        <dt>Packs catalogued</dt>
         <dd><span class="num">14</span></dd>
-        <dt>Warnings (pre/post)</dt>
-        <dd><span class="num">12</span></dd>
+        <dt>Rules shipped</dt>
+        <dd><span class="num">95</span></dd>
+        <dt>Blocks (pre)</dt>
+        <dd><span class="num">15</span></dd>
+        <dt>Hook warnings</dt>
+        <dd><span class="num">50</span></dd>
         <dt>Audit-only</dt>
-        <dd><span class="num">10</span></dd>
+        <dd><span class="num">30</span></dd>
         <dt>Field examples</dt>
         <dd><span class="num">24</span></dd>
       </dl>
@@ -681,6 +681,7 @@
       <div class="pack-head">Other packs</div>
       <ol>
         <li><a href="#pack-python">Python</a></li>
+        <li><a href="#pack-python-patterns">Python patterns (opt-in)</a></li>
         <li><a href="#pack-typescript">TypeScript</a></li>
         <li><a href="#pack-swift">Swift</a></li>
       </ol>
@@ -688,7 +689,7 @@
   </section>
 
 <!-- BEGIN GENERATED RULES -->
-<p class="catalogue-stamp">documents the default packs as of v0.27.0</p>
+<p class="catalogue-stamp">documents the default packs as of v0.30.0</p>
 <section class="pack-section" id="pack-llm">
 <h2 class="pack-name">llm pack</h2>
 <article class="rule" data-level="block" id="enforce-no-pre-existing-issue">
@@ -742,7 +743,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">llm</span></div>
     <h3 class="rule-id">nudge-verify-before-commit</h3>
     <p class="rule-summary">About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode.</p>
-    <div class="rule-body"><code>new_content_contains + __script__</code></div>
+    <div class="rule-body"><code>bash_command_matches + __script__</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="llm-warn-git-add-all">
@@ -772,7 +773,7 @@
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">enforce-no-unwrap-in-src</h3>
     <p class="rule-summary">Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_governed_invocation + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="enforce-no-todo-in-src">
@@ -781,7 +782,7 @@
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">enforce-no-todo-in-src</h3>
     <p class="rule-summary">Don't ship todo!() in src/ — finish the implementation or split it into a tracked task.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_governed_invocation + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="enforce-no-panic-in-src">
@@ -790,7 +791,7 @@
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">enforce-no-panic-in-src</h3>
     <p class="rule-summary">Avoid panic!() in src/ — return a Result and let the caller decide.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_governed_invocation + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="enforce-no-unimplemented-in-src">
@@ -799,7 +800,7 @@
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">enforce-no-unimplemented-in-src</h3>
     <p class="rule-summary">Avoid unimplemented!() in src/ — implement the path or remove it.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_governed_invocation + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="enforce-no-result-string-error">
@@ -817,7 +818,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">warn-dbg-in-src</h3>
     <p class="rule-summary">dbg!() in src/ — remove before committing, or use tracing::debug!() for diagnostics that stay.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_governed_invocation + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="warn-rust-public-fn-takes-string-ref">
@@ -865,24 +866,6 @@
     <div class="rule-body"><code>cargo_command_lacks_workspace</code></div>
   </div>
 </article>
-<article class="rule" data-level="block" id="block-await-on-sync-execute-all-agenda-items">
-  <div class="rule-mark" aria-hidden="true">!</div>
-  <div class="rule-content">
-    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
-    <h3 class="rule-id">block-await-on-sync-execute-all-agenda-items</h3>
-    <p class="rule-summary">`execute_all_agenda_items()` is sync as of the 039 refactor — drop the `.await`. Cargo will reject the call site as `Result&lt;Vec&lt;Action&gt;, String&gt; is not a future`.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
-  </div>
-</article>
-<article class="rule" data-level="block" id="block-await-on-sync-fire-all-consequences">
-  <div class="rule-mark" aria-hidden="true">!</div>
-  <div class="rule-content">
-    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
-    <h3 class="rule-id">block-await-on-sync-fire-all-consequences</h3>
-    <p class="rule-summary">`fire_all_consequences()` is sync — drop the `.await`. Cargo will reject as `Result&lt;Vec&lt;Consequence&gt;, ReteError&gt; is not a future`.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
-  </div>
-</article>
 <article class="rule" data-level="warn" id="warn-clone-heavy">
   <div class="rule-mark" aria-hidden="true">!</div>
   <div class="rule-content">
@@ -890,6 +873,15 @@
     <h3 class="rule-id">warn-clone-heavy</h3>
     <p class="rule-summary">`?fn` in ?file calls .clone() ?count times — review whether references or borrowed slices would work.</p>
     <div class="rule-body"><code>function_clone_count_high</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-pub-fn-missing-doc">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">warn-pub-fn-missing-doc</h3>
+    <p class="rule-summary">Public fn `?fn` in ?file has no doc comment — public items should carry a `///` doc comment explaining what they do (Rust API Guidelines C-DOC).</p>
+    <div class="rule-body"><code>pub_fn_without_doc_comment + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="warn-empty-test">
@@ -907,7 +899,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">warn-deref-for-non-pointer-type</h3>
     <p class="rule-summary">`impl Deref for` — Deref polymorphism is an anti-pattern for non-pointer types. Reserve Deref for smart-pointer wrappers (Box/Arc/Rc); for other types, prefer explicit delegation methods so the API surface is intentional.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>rust_trait_impl + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-manual-err-return">
@@ -916,7 +908,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
     <h3 class="rule-id">audit-manual-err-return</h3>
     <p class="rule-summary">Manual `=&gt; return Err(...)` in a match arm — the `?` operator usually replaces this whole shape. Surface during one-time audit sweeps; deliberately silent at hook time so in-progress refactors aren't blocked.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>rust_governed_match_arm + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-newtype-id-string">
@@ -934,7 +926,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
     <h3 class="rule-id">audit-newtype-id-u64</h3>
     <p class="rule-summary">Field named `*_id: u64` — consider a newtype like `UserId(u64)` to prevent mixing different ID types. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_primitive_id_field + file_extension_is + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-if-let-opportunity-none-empty">
@@ -943,7 +935,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
     <h3 class="rule-id">audit-if-let-opportunity-none-empty</h3>
     <p class="rule-summary">`match` with a `None =&gt; {}` arm — `if let Some(x) = ...` is usually clearer. From the patterns guide §Idioms 2.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>rust_governed_match_arm + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-if-let-opportunity-err-empty">
@@ -952,7 +944,16 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
     <h3 class="rule-id">audit-if-let-opportunity-err-empty</h3>
     <p class="rule-summary">`match` arm `Err(_) =&gt; {}` silently swallows errors. Either handle the error (log/return) or use `if let Ok(x) = ...` to make the intent explicit.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>rust_governed_match_arm + file_extension_is</code></div>
+  </div>
+</article>
+<article class="rule" data-level="block" id="block-panic-in-drop-impl">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
+    <h3 class="rule-id">block-panic-in-drop-impl</h3>
+    <p class="rule-summary">Panicking construct (?construct) inside `Drop::drop` for `?type` — a panic that occurs during unwind inside Drop::drop aborts the whole process (std::process::abort) rather than failing gracefully. Log and swallow the error in drop() instead of panicking.</p>
+    <div class="rule-body"><code>rust_panic_in_drop + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="block-deny-warnings-attribute">
@@ -961,7 +962,7 @@
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">block-deny-warnings-attribute</h3>
     <p class="rule-summary">`#![deny(warnings)]` breaks builds on toolchain upgrades, since each rustc release introduces new warnings. Move the policy to CI with `RUSTFLAGS=&quot;-D warnings&quot;` instead. From the patterns guide §Anti-patterns (deny-warnings).</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>rust_governed_attribute + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="warn-public-fn-takes-box-ref">
@@ -970,7 +971,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">warn-public-fn-takes-box-ref</h3>
     <p class="rule-summary">Parameter type `&amp;Box&lt;T&gt;` adds a useless layer of indirection — prefer `&amp;T` directly. From the patterns guide §Idioms (borrowed-types-for-arguments).</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>function_param_is_box_ref + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="warn-expect-with-empty-message">
@@ -979,7 +980,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">rust</span></div>
     <h3 class="rule-id">warn-expect-with-empty-message</h3>
     <p class="rule-summary">`.expect(&quot;&quot;)` is strictly worse than `.unwrap()` — same panic, no explanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_governed_invocation + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-rc-refcell-in-src">
@@ -988,7 +989,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
     <h3 class="rule-id">audit-rc-refcell-in-src</h3>
     <p class="rule-summary">`Rc&lt;RefCell&lt;T&gt;&gt;` is the textbook 'fighting the borrow checker' shape — often a signal that an arena, index-based references, or a redesigned ownership model would be a better fit. Confirm intent.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_rc_refcell_type + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-string-concat-with-plus">
@@ -1015,7 +1016,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">rust</span></div>
     <h3 class="rule-id">audit-env-set-var-in-src</h3>
     <p class="rule-summary">`env::set_var(` in src/ — mutating process environment variables is unsound under concurrent reads (which is why edition 2024 marks the call unsafe). Verify the call site is genuinely single-threaded, or refactor to pass configuration explicitly through function arguments / a context struct. Tests where you control the thread count are usually fine; library code almost never is.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>rust_governed_invocation + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-rust-let-binding-count-high">
@@ -1187,24 +1188,135 @@
   </div>
 </article>
 </section>
-<section class="pack-section" id="pack-typescript">
-<h2 class="pack-name">typescript pack</h2>
-<article class="rule" data-level="warn" id="warn-any-in-src">
+<section class="pack-section" id="pack-python-patterns">
+<h2 class="pack-name">python-patterns pack</h2>
+<article class="rule" data-level="warn" id="warn-python-global-statement">
   <div class="rule-mark" aria-hidden="true">!</div>
   <div class="rule-content">
-    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">typescript</span></div>
-    <h3 class="rule-id">warn-any-in-src</h3>
-    <p class="rule-summary">: any in src/ — narrow the type. Use `unknown` if you really don't know, then refine with type guards.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-global-statement</h3>
+    <p class="rule-summary">`?fn` in ?file rebinds module global `?name` with `global`. Shared mutable module state couples callers and tests and cannot be instantiated twice. Move the state onto a class and bind its methods to module names explicitly (Prebound Methods: https://python-patterns.guide/python/prebound-methods/; Global Object: https://python-patterns.guide/python/module-globals/). Heuristic limit: syntax only — a `global` used once for lazy initialization of an immutable value is also flagged.</p>
+    <div class="rule-body"><code>python_global_statement</code></div>
   </div>
 </article>
+<article class="rule" data-level="warn" id="warn-python-globals-introspection-assignment">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-globals-introspection-assignment</h3>
+    <p class="rule-summary">`?fn` in ?file assigns through `globals()[...]`. Binding module names by introspection hides them from readers, linters, and IDEs; assign each prebound method explicitly (`random = _instance.random`). See https://python-patterns.guide/python/prebound-methods/. Heuristic limit: any `globals()[...] = ...` store is flagged, including deliberate plugin registries.</p>
+    <div class="rule-body"><code>python_globals_subscript_assignment</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-dynamic-class-creation">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-dynamic-class-creation</h3>
+    <p class="rule-summary">`?fn` in ?file builds a class at runtime with `type(name, bases, ns)`. Generated classes are hard to debug, navigate, and type-check; compose independent objects instead. See https://python-patterns.guide/gang-of-four/composition-over-inheritance/. Heuristic limit: flags every three-argument `type(...)` call, including metaclass-style library code that needs it.</p>
+    <div class="rule-body"><code>python_dynamic_class_creation</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-singleton-new">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-singleton-new</h3>
+    <p class="rule-summary">Class `?class` in ?file implements the Singleton Pattern by overriding `__new__` around a cached `_instance`. `?class()` then reads like construction but is not, and tests cannot get a fresh instance. Prefer a module-level instance (The Global Object Pattern): https://python-patterns.guide/gang-of-four/singleton/. Heuristic limit: detection keys on an `_instance`/`_instances`/`_singleton` attribute inside `__new__`.</p>
+    <div class="rule-body"><code>python_new_override</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-custom-new">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">audit-python-custom-new</h3>
+    <p class="rule-summary">Class `?class` in ?file overrides `__new__`. If this is a Flyweight cache (`Grade(95)` returning a shared object), the guide prefers a plain factory function whose behaviour matches its spelling: https://python-patterns.guide/gang-of-four/flyweight/. Heuristic limit: `__new__` is also the right tool for immutable subclasses (`int`, `tuple`), which this audit cannot distinguish — review, do not rewrite blindly.</p>
+    <div class="rule-body"><code>python_new_override</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-isinstance-dispatch">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">audit-python-isinstance-dispatch</h3>
+    <p class="rule-summary">`?fn` in ?file dispatches on the same value across ?count `isinstance(...)` branches. Type dispatch in the caller is what the Composite Pattern removes: give every object in the hierarchy the same method (leaf objects return an empty result) so callers treat them symmetrically. See https://python-patterns.guide/gang-of-four/composite/. Heuristic limit: only positive `if`/`elif` chains over non-builtin domain types are counted; framework boundary dispatch and functools.singledispatch fallbacks can still match.</p>
+    <div class="rule-body"><code>python_isinstance_chain</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-container-is-own-iterator">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-container-is-own-iterator</h3>
+    <p class="rule-summary">Container class `?class` in ?file returns `self` from `__iter__` and implements `__next__`, so only one traversal can be in flight at a time (nested `for` loops over the same object break). Return a separate iterator object or write `__iter__` as a generator. See https://python-patterns.guide/gang-of-four/iterator/. Heuristic limit: 'container' means the class also defines `__len__`, `__getitem__`, or `__contains__`; file-like stream objects that intentionally share state are not excluded.</p>
+    <div class="rule-body"><code>python_container_is_own_iterator</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-multiple-inheritance">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-multiple-inheritance</h3>
+    <p class="rule-summary">Class `?class` in ?file inherits from ?count concrete classes. Combining features by multiple inheritance is order-dependent, risks attribute collisions, and needs m×n combination tests; compose the pieces as attributes instead. See https://python-patterns.guide/gang-of-four/composition-over-inheritance/. Heuristic limit: bases named `*Mixin`/`*ABC`, `Protocol`, `Generic`, `NamedTuple`, `TypedDict`, `Enum`, and `metaclass=` are not counted; other abstract bases are.</p>
+    <div class="rule-body"><code>python_multiple_inheritance</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="audit-python-deep-inheritance">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">audit-python-deep-inheritance</h3>
+    <p class="rule-summary">Class `?class` in ?file sits ?depth levels deep in an inheritance chain defined in this file. Deep hierarchies are the 'subclass explosion' the guide warns about; prefer composing small independent classes. See https://python-patterns.guide/gang-of-four/composition-over-inheritance/. Heuristic limit: depth is computed from classes in the same file only, so it understates real depth and says nothing about framework base classes.</p>
+    <div class="rule-body"><code>python_inheritance_depth</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-mixin-with-init">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-mixin-with-init</h3>
+    <p class="rule-summary">Mixin `?class` in ?file defines `__init__`. A mixin with its own constructor makes cooperative `super().__init__` chains order-dependent and fragile; give the mixin class attributes with defaults, or compose the behaviour as a separate object. See https://python-patterns.guide/gang-of-four/composition-over-inheritance/. Heuristic limit: a mixin is recognised by the `Mixin` name suffix only.</p>
+    <div class="rule-body"><code>python_mixin_with_init</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-static-delegation-wrapper">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-static-delegation-wrapper</h3>
+    <p class="rule-summary">Class `?class` in ?file re-declares ?count methods that only forward to `self.?attr`. This static Decorator-pattern wrapper must be maintained whenever the wrapped class changes and silently misses methods it never listed. Prefer a dynamic wrapper: `def __getattr__(self, name): return getattr(self.?attr, name)`, overriding only the methods you change. See https://python-patterns.guide/gang-of-four/decorator-pattern/. Heuristic limit: counts single-statement `return self.?attr.&lt;same name&gt;(...)` methods; an adapter that renames methods is not detected.</p>
+    <div class="rule-body"><code>python_static_delegation_wrapper</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-mutable-class-attribute">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-mutable-class-attribute</h3>
+    <p class="rule-summary">Class `?class` in ?file assigns mutable container `?attr` in the class body, so every instance shares one object — the same coupling hazard as a mutable module global. Create it in `__init__` (or use a dataclass `field(default_factory=...)`) unless it is a deliberate class-wide registry. See https://python-patterns.guide/python/module-globals/. Heuristic limit: dunder names are skipped; intentional class-level caches are still flagged.</p>
+    <div class="rule-body"><code>python_mutable_class_attribute</code></div>
+  </div>
+</article>
+<article class="rule" data-level="warn" id="warn-python-equality-with-none">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">python-patterns</span></div>
+    <h3 class="rule-id">warn-python-equality-with-none</h3>
+    <p class="rule-summary">`?fn` in ?file compares against `None` with `==`/`!=`. `None` is a sentinel and must be tested by identity (`is None` / `is not None`); `==` dispatches to `__eq__`, which NumPy arrays, ORMs, and mocks override. See https://python-patterns.guide/python/sentinel-object/. Upstream: pycodestyle E711.</p>
+    <div class="rule-body"><code>python_equality_with_none</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-typescript">
+<h2 class="pack-name">typescript pack</h2>
 <article class="rule" data-level="warn" id="warn-console-log-in-src">
   <div class="rule-mark" aria-hidden="true">!</div>
   <div class="rule-content">
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">typescript</span></div>
     <h3 class="rule-id">warn-console-log-in-src</h3>
     <p class="rule-summary">console.log in src/ — remove before committing, or use a proper logger.</p>
-    <div class="rule-body"><code>new_content_contains + file_path_matches</code></div>
+    <div class="rule-body"><code>ts_console_log_call + file_path_matches</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="warn-ts-explicit-any-ast">
@@ -1234,6 +1346,15 @@
     <div class="rule-body"><code>ts_non_null_assertion</code></div>
   </div>
 </article>
+<article class="rule" data-level="warn" id="warn-ts-function-param-count-high">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">typescript</span></div>
+    <h3 class="rule-id">warn-ts-function-param-count-high</h3>
+    <p class="rule-summary">Function `?fn` in ?file has ?count parameters. Consider grouping related params into an options object or splitting the function — long signatures correlate with God-function debt.</p>
+    <div class="rule-body"><code>ts_function_param_count_high</code></div>
+  </div>
+</article>
 </section>
 <section class="pack-section" id="pack-swift">
 <h2 class="pack-name">swift pack</h2>
@@ -1246,13 +1367,22 @@
     <div class="rule-body"><code>function_uses_force_unwrap</code></div>
   </div>
 </article>
+<article class="rule" data-level="warn" id="warn-swift-throws-with-force-unwrap">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">swift</span></div>
+    <h3 class="rule-id">warn-swift-throws-with-force-unwrap</h3>
+    <p class="rule-summary">`?fn` in ?file is declared `throws` yet force-unwraps ?count time(s). Since the function can already propagate failure, replace the `!` with `guard let ... else { throw ... }` so callers get an error instead of a crash.</p>
+    <div class="rule-body"><code>function_throws + function_uses_force_unwrap</code></div>
+  </div>
+</article>
 <article class="rule" data-level="warn" id="warn-swift-try-bang">
   <div class="rule-mark" aria-hidden="true">!</div>
   <div class="rule-content">
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">swift</span></div>
     <h3 class="rule-id">warn-swift-try-bang</h3>
     <p class="rule-summary">try! crashes on error — prefer try with do/catch, or try? when an Optional result is acceptable.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>swift_governed_construct + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="warn-swift-force-cast">
@@ -1261,7 +1391,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">swift</span></div>
     <h3 class="rule-id">warn-swift-force-cast</h3>
     <p class="rule-summary">Force-cast `as!` crashes on type mismatch — prefer `as?` with `if let`/`guard let`. Completes the force-bang trio with `!` and `try!`.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>swift_governed_construct + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-swift-fatal-error">
@@ -1270,7 +1400,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">swift</span></div>
     <h3 class="rule-id">audit-swift-fatal-error</h3>
     <p class="rule-summary">`fatalError(` aborts the process — for recoverable conditions prefer a `throws` API and let the caller decide. Reserve `fatalError` for genuinely unreachable invariants (and prefer `precondition`/`assertionFailure` when the intent is a debug-only trap).</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>swift_governed_construct + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-swift-mutable-singleton">
@@ -1279,7 +1409,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">swift</span></div>
     <h3 class="rule-id">audit-swift-mutable-singleton</h3>
     <p class="rule-summary">`static var shared` is a mutable global — the Singleton pattern (eleev/swift-design-patterns §Creational/Singleton) uses `static let shared` so the instance can't be swapped at runtime. If mutability is intentional, add a comment or move state inside the instance.</p>
-    <div class="rule-body"><code>new_content_contains + file_extension_is</code></div>
+    <div class="rule-body"><code>swift_governed_construct + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-swift-legacy-constructor">
@@ -1288,7 +1418,7 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">swift</span></div>
     <h3 class="rule-id">audit-swift-legacy-constructor</h3>
     <p class="rule-summary">Legacy C-style constructor — prefer the modern Swift initializer (e.g. `CGRect(x:y:width:height:)`, `UIEdgeInsets(top:left:bottom:right:)`). Mirrors SwiftLint's `legacy_constructor` rule.</p>
-    <div class="rule-body"><code>(new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains | new_content_contains) + file_extension_is</code></div>
+    <div class="rule-body"><code>swift_governed_construct + file_extension_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="warn" id="audit-swift-legacy-random">
@@ -1297,18 +1427,18 @@
     <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">audit</span><span class="tag">swift</span></div>
     <h3 class="rule-id">audit-swift-legacy-random</h3>
     <p class="rule-summary">Legacy random API — Swift 4.2+ ships `Int.random(in:)`, `Double.random(in:)`, and `Collection.randomElement()`, which work on all platforms (not just Darwin) and are uniformly distributed without modulo bias. Mirrors SwiftLint's `legacy_random` rule.</p>
-    <div class="rule-body"><code>(new_content_contains | new_content_contains | new_content_contains) + file_extension_is</code></div>
+    <div class="rule-body"><code>swift_governed_construct + file_extension_is</code></div>
   </div>
 </article>
 </section>
 <section class="pack-section" id="pack-confidence">
 <h2 class="pack-name">confidence pack</h2>
-<article class="rule" data-level="block" id="confidence-low-blocks-commit">
+<article class="rule" data-level="warn" id="confidence-low-blocks-commit">
   <div class="rule-mark" aria-hidden="true">!</div>
   <div class="rule-content">
-    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">confidence</span></div>
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">confidence</span></div>
     <h3 class="rule-id">confidence-low-blocks-commit</h3>
-    <p class="rule-summary">Low confidence — compile/tests/known-bug not all green. Run the build and tests and resolve failing signals before committing.</p>
+    <p class="rule-summary">Low confidence — compile/tests/known-bug evidence is incomplete or failing. Run `phr-mcp confidence` for the per-signal report before presenting this as done.</p>
     <div class="rule-body"><code>bash_command_matches + __script__</code></div>
   </div>
 </article>
@@ -1460,7 +1590,7 @@
 <!-- END GENERATED RULES -->
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
     <a href="./index.html">Home</a> &middot; <a href="./explainer.html">Explainer</a> &middot; <span class="doc-web-here">Catalogue</span> &middot; <a href="./guide.html">Guide</a> &middot; <a href="./changelog.html">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.26.0</span>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.30.0</span>
   </nav>
   <footer>
     <div>
@@ -1470,7 +1600,7 @@
       By <a href="mailto:andrew@waterman.dev">Andrew Waterman</a>,
       with the open-source agent community.<br>
       Pairs with <a href="./explainer.html">the explainer</a> &middot;
-      v 0.26.0 &middot; 2026 &middot;
+      v 0.30.0 &middot; 2026 &middot;
       <a href="https://github.com/awaterma/phronesis">github.com/awaterma/phronesis</a>
     </div>
     <div class="folio">

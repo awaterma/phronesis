@@ -291,20 +291,26 @@ pub async fn assert_facts(
         };
         let mut asserted = 0;
         for path in paths {
-            let metadata = std::fs::metadata(&path).map_err(|error| ProviderError::Read {
-                path: path.display().to_string(),
-                message: error.to_string(),
-            })?;
+            let metadata =
+                tokio::fs::metadata(&path)
+                    .await
+                    .map_err(|error| ProviderError::Read {
+                        path: path.display().to_string(),
+                        message: error.to_string(),
+                    })?;
             if metadata.len() > MAX_PROVIDER_BYTES {
                 return Err(ProviderError::Read {
                     path: path.display().to_string(),
                     message: format!("file exceeds {MAX_PROVIDER_BYTES} bytes"),
                 });
             }
-            let script = std::fs::read_to_string(&path).map_err(|error| ProviderError::Read {
-                path: path.display().to_string(),
-                message: error.to_string(),
-            })?;
+            let script =
+                tokio::fs::read_to_string(&path)
+                    .await
+                    .map_err(|error| ProviderError::Read {
+                        path: path.display().to_string(),
+                        message: error.to_string(),
+                    })?;
             let emitted = evaluator.evaluate(&script, &event).map_err(|message| {
                 ProviderError::Evaluation {
                     path: path.display().to_string(),

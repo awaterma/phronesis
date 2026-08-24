@@ -263,13 +263,9 @@ impl EpistemeMcp {
                     .data
                     .as_ref()
                     .ok_or_else(|| Self::err("emit_capsule requires structured data"))?;
-                crate::capsule::build_capsule_from_action(
+                crate::capsule::build_capsule(
                     data,
-                    &params.id,
-                    "validation",
-                    0,
-                    &[],
-                    &HashMap::new(),
+                    &crate::capsule::CapsuleOrigin::validation(&params.id),
                 )
                 .map_err(Self::err)?;
             }
@@ -1130,9 +1126,12 @@ impl EpistemeMcp {
                 );
             }
             let report = report;
-            let audit_tagged_count = rules.rules.iter().filter(|r| r.audit == Some(true)).count();
-            let diag =
-                crate::audit::empty_result_diagnostic(&report, audit_tagged_count, &opts.scan_root);
+            let diag = crate::audit::empty_result_diagnostic(
+                &report,
+                &rules,
+                params.rule.as_deref(),
+                &opts.scan_root,
+            );
             (report, diag)
         };
 
@@ -1251,7 +1250,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` to list the vocabulary. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
+        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `test_imports` (a `use` under `#[cfg(test)]`; excluded from `in_cycle`), `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` to list the vocabulary. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
     )]
     async fn query_code_graph(
         &self,

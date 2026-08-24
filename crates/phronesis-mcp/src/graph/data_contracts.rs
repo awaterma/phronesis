@@ -1104,3 +1104,183 @@ fn load() {
         assert!(!edges.iter().any(|edge| edge.p == "data_key"));
     }
 }
+
+#[cfg(test)]
+mod infer_bindings_tests {
+    use super::*;
+
+    fn write(root: &Path, path: &str, content: &str) {
+        let full = root.join(path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("parent");
+        }
+        std::fs::write(full, content).expect("write fixture");
+    }
+
+    const PRODUCER_SRC: &str = r#"
+fn build() {
+    let output = Command::new("cue")
+        .args(["export", "cue/export/manifest.cue", "--out", "yaml"])
+        .output()?;
+    std::fs::write("config/manifest.yaml", output.stdout)?;
+}
+"#;
+
+    fn cue_module_edge() -> Edge {
+        Edge::base(
+            "declares_module",
+            &[
+                "cue/export/manifest.cue",
+                "cue:example::cue::export::export",
+            ],
+            "cue/export/manifest.cue",
+        )
+    }
+
+    fn scaffold(root: &Path, rust_src: &str) {
+        write(
+            root,
+            "cue/export/manifest.cue",
+            "package export\nvalue: 1\n",
+        );
+        write(root, "config/manifest.yaml", "value: 1\n");
+        write(root, "build.rs", rust_src);
+    }
+
+    #[test]
+    fn infer_bindings_returns_nothing_for_empty_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let out = infer_bindings(temp.path(), &[], &BTreeMap::new());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn infer_bindings_returns_nothing_for_missing_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let missing = temp.path().join("does-not-exist");
+        let out = infer_bindings(&missing, &[cue_module_edge()], &BTreeMap::new());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn infer_bindings_finds_producer_from_cue_export_shape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        scaffold(temp.path(), PRODUCER_SRC);
+        let out = infer_bindings(temp.path(), &[cue_module_edge()], &BTreeMap::new());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].artifact, "config/manifest.yaml");
+        assert_eq!(out[0].producer, "cue:example::cue::export::export");
+        assert!(out[0].consumer.is_none());
+    }
+
+    #[test]
+    fn infer_bindings_requires_both_files_to_exist_on_disk() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        scaffold(temp.path(), PRODUCER_SRC);
+        std::fs::remove_file(temp.path().join("config/manifest.yaml")).expect("rm");
+        let out = infer_bindings(temp.path(), &[cue_module_edge()], &BTreeMap::new());
+        assert!(out.is_empty(), "artifact missing on disk must not bind");
+    }
+
+    #[test]
+    fn infer_bindings_requires_cue_module_edge_for_producer() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        scaffold(temp.path(), PRODUCER_SRC);
+        // No declares_module edge for the .cue file → no producer → dropped.
+        let out = infer_bindings(temp.path(), &[], &BTreeMap::new());
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn infer_bindings_ignores_ambiguous_literal_paths() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ambiguous = r#"
+fn build() {
+    let output = Command::new("cue")
+        .args(["export", "cue/export/manifest.cue", "cue/export/other.cue", "--out", "yaml"])
+        .output()?;
+    std::fs::write("config/manifest.yaml", output.stdout)?;
+}
+"#;
+        scaffold(temp.path(), ambiguous);
+        let out = infer_bindings(temp.path(), &[cue_module_edge()], &BTreeMap::new());
+        assert!(out.is_empty(), "two cue paths in one chunk is ambiguous");
+    }
+
+    #[test]
+    fn infer_bindings_attaches_typed_consumer_when_serde_type_is_unique() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src = format!(
+            "{PRODUCER_SRC}\nfn load() {{\n    let text = std::fs::read_to_string(\"config/manifest.yaml\")?;\n    let m: GameManifest = serde_yaml::from_str(&text)?;\n}}\n"
+        );
+        scaffold(temp.path(), &src);
+        let mut serde_types = BTreeMap::new();
+        serde_types.insert(
+            "rust:app::config::GameManifest".to_string(),
+            SerdeType::default(),
+        );
+        let out = infer_bindings(temp.path(), &[cue_module_edge()], &serde_types);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].consumer.as_deref(),
+            Some("rust:app::config::GameManifest")
+        );
+    }
+
+    #[test]
+    fn infer_bindings_ambiguous_serde_type_falls_back_to_unique_function() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let src = format!(
+            "{PRODUCER_SRC}\nfn load() {{\n    let text = std::fs::read_to_string(\"config/manifest.yaml\")?;\n    let m: GameManifest = serde_yaml::from_str(&text)?;\n}}\n"
+        );
+        scaffold(temp.path(), &src);
+        let mut serde_types = BTreeMap::new();
+        serde_types.insert(
+            "rust:app::a::GameManifest".to_string(),
+            SerdeType::default(),
+        );
+        serde_types.insert(
+            "rust:app::b::GameManifest".to_string(),
+            SerdeType::default(),
+        );
+        let edges = vec![
+            cue_module_edge(),
+            Edge::base(
+                "defines_fn",
+                &["build.rs", "rust:app::build::load"],
+                "build.rs",
+            ),
+        ];
+        let out = infer_bindings(temp.path(), &edges, &serde_types);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].consumer.as_deref(), Some("rust:app::build::load"));
+    }
+
+    #[test]
+    fn infer_bindings_consumer_without_producer_is_dropped() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write(temp.path(), "config/manifest.yaml", "value: 1\n");
+        write(
+            temp.path(),
+            "src/load.rs",
+            "fn load() {\n    let m: GameManifest = serde_yaml::from_str(\"config/manifest.yaml\")?;\n}\n",
+        );
+        let mut serde_types = BTreeMap::new();
+        serde_types.insert("rust:app::GameManifest".to_string(), SerdeType::default());
+        let out = infer_bindings(temp.path(), &[], &serde_types);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn infer_bindings_skips_unreadable_and_non_rust_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        scaffold(temp.path(), PRODUCER_SRC);
+        // Same producer shape in a non-.rs file must be ignored.
+        write(temp.path(), "notes.txt", PRODUCER_SRC);
+        // Invalid UTF-8 in a .rs file must be skipped, not panic.
+        write(temp.path(), "src/bad.rs", "");
+        std::fs::write(temp.path().join("src/bad.rs"), [0xff, 0xfe, 0xfd]).expect("bytes");
+        let out = infer_bindings(temp.path(), &[cue_module_edge()], &BTreeMap::new());
+        assert_eq!(out.len(), 1);
+    }
+}

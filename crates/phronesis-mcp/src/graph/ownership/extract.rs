@@ -402,7 +402,7 @@ impl<'a> FileOwnership<'a> {
             for (await_at, await_id) in &awaits {
                 let ends_before = block.end_byte() < *await_at;
                 let dropped = !ends_before
-                    && dropped_between(block, name, binding.end_byte(), *await_at, self.source);
+                    && dropped_between(block, name, binding.end_byte()..*await_at, self.source);
                 if ends_before || dropped {
                     pairs.push((lock.id.clone(), await_id.clone()));
                 }
@@ -738,7 +738,7 @@ fn enclosing_statement(node: Node<'_>) -> Option<Node<'_>> {
 }
 
 /// D6 case 2: `drop(guard)` between the binding and the await, in the guard's
-/// own block.
+/// own block. `window` is the exclusive byte range (binding end, await start).
 ///
 /// This assumes `drop` resolves to the prelude function; a locally shadowed
 /// `drop` makes it wrong, which is a named false-positive class (D8) and
@@ -746,15 +746,14 @@ fn enclosing_statement(node: Node<'_>) -> Option<Node<'_>> {
 fn dropped_between(
     block: Node<'_>,
     guard: &str,
-    after: usize,
-    before: usize,
+    window: std::ops::Range<usize>,
     source: &[u8],
 ) -> bool {
     let mut pending = vec![block];
     while let Some(node) = pending.pop() {
         if node.kind() == "call_expression"
-            && node.start_byte() > after
-            && node.start_byte() < before
+            && node.start_byte() > window.start
+            && node.start_byte() < window.end
             && node
                 .child_by_field_name("function")
                 .is_some_and(|function| {
@@ -898,7 +897,7 @@ fn sha256(data: &[u8]) -> [u8; 32] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::graph::extract::{DEFAULT_WATCHLIST, extract_rust_at_module_with_ownership};
+    use crate::graph::extract::{DEFAULT_WATCHLIST, RustExtractOptions, extract_rust_file};
     use crate::graph::ownership::{ANALYSIS_CAPABILITIES, ANALYSIS_STATUSES, EVIDENCE_LEVELS};
     use crate::graph::unit::UnitContext;
     use std::collections::BTreeSet;
@@ -913,13 +912,15 @@ mod tests {
     }
 
     fn run_with(path: &str, source: &str, config: &OwnershipConfig) -> Vec<Edge> {
-        extract_rust_at_module_with_ownership(
+        extract_rust_file(
             path,
             source,
-            DEFAULT_WATCHLIST,
-            &UnitContext::default(),
-            None,
-            config,
+            &RustExtractOptions {
+                watchlist: DEFAULT_WATCHLIST,
+                unit: &UnitContext::default(),
+                module_override: None,
+                ownership: config,
+            },
         )
         .edges
     }
@@ -1021,13 +1022,15 @@ mod tests {
     // file path, so the extractor must take the id the walk already computed.
     #[test]
     fn a_path_included_module_keeps_the_walks_module_override() {
-        let edges = extract_rust_at_module_with_ownership(
+        let edges = extract_rust_file(
             "src/other/place.rs",
             "fn f(v: &V) { let _ = v.clone(); }",
-            DEFAULT_WATCHLIST,
-            &UnitContext::default(),
-            Some("rust:crate::declared::name"),
-            &enabled(),
+            &RustExtractOptions {
+                watchlist: DEFAULT_WATCHLIST,
+                unit: &UnitContext::default(),
+                module_override: Some("rust:crate::declared::name"),
+                ownership: &enabled(),
+            },
         )
         .edges;
         assert_eq!(

@@ -22,6 +22,7 @@ docs/specs/PLAN-v0.11-hardening.md
 .claude/
 .crush/
 .gemini/
+.qwen/
 .obsidian/
 .vscode/
 .mcp.json

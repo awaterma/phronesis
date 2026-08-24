@@ -122,17 +122,20 @@ rule can **block the current action based on the trajectory that led to it** —
 ### Layer 3 — honest closure (ending the loop)
 
 A loop's most dangerous moment is when it decides it's *done*. The model is
-optimistic; the build may be red. The `confidence` pack gates `git commit` on
+optimistic; the build may be red. The `confidence` pack surfaces Git mutations
+against
 **grounded signals** — actual build, test, and known-bug outcomes read through
-declarative toolchain definitions (built-in Cargo plus project definitions in
-`.phronesis/toolchains.json`) and one generic parser — not on syntactic proxies:
+declarative toolchain definitions (built-in Cargo, `xcodebuild`, and SwiftPM
+plus project definitions in `.phronesis/toolchains.json`) and one generic
+parser — not on syntactic proxies:
 
-- **low** confidence → blocks the commit
+- **low** confidence → warns with incomplete/failing evidence
 - **medium** → warns
 - **high** → passes clean
 
-Pair it with the `llm` pack's "unverified completion claim" rule and you have a
-loop that physically cannot declare victory before the work compiles and passes.
+Pair it with the `llm` pack's blocking "unverified completion claim" rule and
+you have an advisory operational signal backed by a separate guard against
+claiming unverified success. Confidence itself does not refuse the Git command.
 The default platform writes `.phronesis/confidence.json`; inspect the current
 band with `phr-mcp confidence`. (Full design:
 [SPEC-confidence-scoring](specs/SPEC-confidence-scoring.md).)
@@ -352,8 +355,9 @@ clause tells you *this* is the call where intervention helps.
 ## 6. Watching the loop
 
 Phronesis gives you read-only surfaces to see what the loop is doing and tune
-your rules. The outputs below are real captures from this repository at the
-time of writing.
+your rules. The outputs below are historical captures from this repository.
+They predate the 0.30 policy change that made low confidence advisory; the
+legacy rule ID remains stable even though it now warns.
 
 **`phr-mcp stats --since 7d`** — per-rule activity over the last week. This is
 where you discover which rules are pulling their weight and which are dead
@@ -380,10 +384,9 @@ Three things to read from that table:
 
 1. **`build-staleness` is the workhorse** (125 warns). The single tagger in
    §4 is doing real work — the loop genuinely does forget to rebuild.
-2. **`confidence-low-blocks-commit` actually blocked 12 commits.** Layer 3 is
-   not theoretical; it intercepted closure 12 times this week alone — the
-   most recent of those, three minutes before this capture, was the commit
-   that landed this very guide (see §8).
+2. **`confidence-low-blocks-commit` blocked 12 commits under the historical
+   policy.** The stable rule ID now emits a warning instead; this capture is
+   evidence of earlier behavior, not the current contract.
 3. The `#or0..#or4` siblings under `build-staleness` are the per-branch fire
    counts for the `or` clause from §5 — useful when debugging which arm of a
    multi-branch rule is doing the matching.
@@ -392,7 +395,7 @@ Three things to read from that table:
 captures from this session, in temporal order:
 
 ```
-$ phr-mcp confidence --json   # build was stale; commit attempt would block
+$ phr-mcp confidence --json   # build was stale; current policy would warn
 { "band": "low",    "signals": ["compile"],          "subject": "unit-…" }
 
 $ phr-mcp confidence --json   # after cargo check + cargo test refreshed signals
@@ -527,7 +530,8 @@ more." `warn-rust-function-param-count-high` chimed in 106 times on the
 syntactic side, but the *temporal* warning was the one preventing late-loop
 collapse.
 
-**Layer 3 (closure)** intercepted closure 12 separate times.
+**Layer 3 (closure), under the pre-0.30 policy,** intercepted closure 12
+separate times.
 `confidence-low-blocks-commit` blocked `git commit` because the
 build-or-test signal in `.phronesis/outcomes/` was red. The companion
 `confidence-medium-warns-commit` warned 22 more times — yellow band, "commit
@@ -535,7 +539,7 @@ if you mean to, but the signal is unstable." Across the same window
 `nudge-verify-before-commit` fired 57 times reminding the loop to actually
 run the verification before reaching for the commit verb.
 
-The cleanest illustration is the most recent one of those 12 blocks, three
+The cleanest historical illustration is the most recent one of those 12 blocks, three
 minutes before the stats capture above: **the commit that landed this very
 guide.** The loop tried `git commit` with a stale red compile signal in
 `.phronesis/outcomes/`, and `confidence-low-blocks-commit` refused:
@@ -549,7 +553,8 @@ before committing.
 The agent (running this session) refreshed the signals with `cargo check
 --workspace` and `cargo test -p phronesis-mcp`, which stamped
 `outcome:compile_ok` and `outcome:test_pass` against the open subject. The
-band rose to `medium`, the block fell back to a warn, and the commit landed:
+band rose to `medium`, the historical block fell back to a warn, and the
+commit landed:
 
 ```
 $ git log --oneline -1
@@ -561,8 +566,9 @@ compacted away. It fired from disk, from outside the context window, against
 the recorded exit status of the last `cargo check`. The same mechanism would
 fire identically at turn 12 or at turn 1,200.
 
-That is the entire premise of the guide, captured live — the guide demonstrates
-itself.
+That historical capture demonstrates the evidence loop. Current releases keep
+the same observability but warn at both low and medium confidence; CI or an
+explicit project rule must provide any desired refusal.
 
 ---
 

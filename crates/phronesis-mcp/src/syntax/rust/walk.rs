@@ -87,6 +87,45 @@ pub fn is_test_fn(state: Node, source: &[u8]) -> bool {
     false
 }
 
+/// True when `node` sits in test code: inside a `#[test]`/`#[tokio::test]`
+/// function, or anywhere under a `#[cfg(test)]` module.
+///
+/// Dogfooding these rules on Phronesis produced 34 of 39 blocking-call hits in
+/// test bodies. Blocking I/O in a test is not a latency defect, and the noise
+/// buries the real findings — four production `async fn`s on the hook path.
+/// The ownership extractor excludes test bodies for the same reason (D14).
+pub fn in_test_code(node: Node, source: &[u8]) -> bool {
+    let mut current = Some(node);
+    while let Some(candidate) = current {
+        match candidate.kind() {
+            "function_item" if is_test_fn(candidate, source) => return true,
+            "mod_item" if has_cfg_test_attribute(candidate, source) => return true,
+            _ => {}
+        }
+        current = candidate.parent();
+    }
+    false
+}
+
+/// True if a preceding-sibling attribute on `node` is `#[cfg(test)]`.
+fn has_cfg_test_attribute(node: Node, source: &[u8]) -> bool {
+    let mut prev = node.prev_sibling();
+    while let Some(sibling) = prev {
+        match sibling.kind() {
+            "attribute_item" => {
+                let text = sibling.utf8_text(source).unwrap_or("");
+                if text.replace(char::is_whitespace, "").contains("cfg(test)") {
+                    return true;
+                }
+                prev = sibling.prev_sibling();
+            }
+            "line_comment" | "block_comment" => prev = sibling.prev_sibling(),
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// True if `state` is a `function_item` whose visibility_modifier is exactly
 /// `pub` (not `pub(crate)`, `pub(super)`, etc.). Mirrors `extract_public_functions`.
 pub fn is_pub_fn_node(state: Node, source: &[u8]) -> bool {

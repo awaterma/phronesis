@@ -1532,3 +1532,145 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod when_clause_deserialize_tests {
+    use super::*;
+
+    fn parse(json: &str) -> Result<WhenClause, serde_json::Error> {
+        serde_json::from_str::<WhenClause>(json)
+    }
+
+    fn leaf(clause: &WhenClause) -> &DiskCondition {
+        match clause {
+            WhenClause::Leaf(c) => c,
+            WhenClause::Or(_) => panic!("expected leaf"),
+        }
+    }
+
+    #[test]
+    fn when_clause_deserialize_string_is_single_arg() {
+        let c = parse(r#"{"new_content_contains": ".unwrap()"}"#).expect("parse");
+        let l = leaf(&c);
+        assert_eq!(l.predicate, "new_content_contains");
+        assert_eq!(l.args, vec![".unwrap()"]);
+        assert!(l.script.is_none());
+    }
+
+    #[test]
+    fn when_clause_deserialize_array_is_multi_arg() {
+        let c = parse(r#"{"function_param_count_high": ["?file", "?fn", "?n"]}"#).expect("parse");
+        assert_eq!(leaf(&c).args, vec!["?file", "?fn", "?n"]);
+    }
+
+    #[test]
+    fn when_clause_deserialize_bool_is_zero_arg() {
+        for v in ["true", "false"] {
+            let c = parse(&format!(r#"{{"flag": {v}}}"#)).expect("parse");
+            assert!(leaf(&c).args.is_empty());
+            assert_eq!(leaf(&c).predicate, "flag");
+        }
+    }
+
+    #[test]
+    fn when_clause_deserialize_script() {
+        let c = parse(r#"{"__script__": "rank > 5"}"#).expect("parse");
+        let l = leaf(&c);
+        assert_eq!(l.predicate, "__script__");
+        assert!(l.args.is_empty());
+        assert_eq!(l.script.as_deref(), Some("rank > 5"));
+    }
+
+    #[test]
+    fn when_clause_deserialize_script_must_be_string() {
+        let err = parse(r#"{"__script__": 5}"#).unwrap_err();
+        assert!(err.to_string().contains("__script__"), "{err}");
+    }
+
+    #[test]
+    fn when_clause_deserialize_or_nested() {
+        let c = parse(r#"{"or": [{"a": "1"}, {"or": [{"b": true}, {"c": ["x","y"]}]}]}"#)
+            .expect("parse");
+        let WhenClause::Or(alts) = c else {
+            panic!("expected or")
+        };
+        assert_eq!(alts.len(), 2);
+        assert_eq!(leaf(&alts[0]).predicate, "a");
+        let WhenClause::Or(inner) = &alts[1] else {
+            panic!("expected nested or")
+        };
+        assert_eq!(inner.len(), 2);
+        assert_eq!(leaf(&inner[1]).args, vec!["x", "y"]);
+    }
+
+    #[test]
+    fn when_clause_deserialize_rejects_non_object() {
+        for bad in ["\"str\"", "5", "[]", "null", "true"] {
+            let err = parse(bad).unwrap_err();
+            assert!(err.to_string().contains("JSON object"), "{bad}: {err}");
+        }
+    }
+
+    #[test]
+    fn when_clause_deserialize_rejects_zero_or_multiple_keys() {
+        assert!(
+            parse("{}")
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one key")
+        );
+        assert!(
+            parse(r#"{"a": "1", "b": "2"}"#)
+                .unwrap_err()
+                .to_string()
+                .contains("exactly one key")
+        );
+    }
+
+    #[test]
+    fn when_clause_deserialize_rejects_bad_arg_types() {
+        let err = parse(r#"{"p": 5}"#).unwrap_err();
+        assert!(err.to_string().contains("string, array, or bool"), "{err}");
+        let err = parse(r#"{"p": {"x": 1}}"#).unwrap_err();
+        assert!(err.to_string().contains("string, array, or bool"), "{err}");
+        let err = parse(r#"{"p": ["ok", 1]}"#).unwrap_err();
+        assert!(err.to_string().contains("must contain strings"), "{err}");
+        let err = parse(r#"{"p": null}"#).unwrap_err();
+        assert!(err.to_string().contains("string, array, or bool"), "{err}");
+    }
+
+    #[test]
+    fn when_clause_deserialize_rejects_bad_or_shapes() {
+        let err = parse(r#"{"or": "not-an-array"}"#).unwrap_err();
+        assert!(err.to_string().contains("array of clauses"), "{err}");
+        // Error inside a nested alternative surfaces through the outer error.
+        let err = parse(r#"{"or": [{"a": "1"}, 5]}"#).unwrap_err();
+        assert!(err.to_string().contains("JSON object"), "{err}");
+    }
+
+    #[test]
+    fn when_clause_deserialize_malformed_json_is_an_error() {
+        assert!(parse(r#"{"a": "#).is_err());
+        assert!(parse("").is_err());
+    }
+
+    #[test]
+    fn when_clause_deserialize_round_trips_through_serialize() {
+        for src in [
+            r#"{"a":"1"}"#,
+            r#"{"b":["x","y"]}"#,
+            r#"{"c":true}"#,
+            r#"{"__script__":"x > 1"}"#,
+            r#"{"or":[{"a":"1"},{"or":[{"b":true},{"__script__":"y"}]}]}"#,
+        ] {
+            let clause = parse(src).expect("parse");
+            let out = serde_json::to_string(&clause).expect("serialize");
+            let back = parse(&out).expect("reparse");
+            let again = serde_json::to_string(&back).expect("reserialize");
+            assert_eq!(out, again, "round trip unstable for {src}");
+            let v1: serde_json::Value = serde_json::from_str(src).unwrap();
+            let v2: serde_json::Value = serde_json::from_str(&out).unwrap();
+            assert_eq!(v1, v2, "semantic drift for {src}");
+        }
+    }
+}

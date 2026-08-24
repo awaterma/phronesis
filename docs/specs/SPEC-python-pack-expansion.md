@@ -33,6 +33,42 @@ select rules where its hook timing, project facts, diff awareness, cross-file
 knowledge, consequence severity, and durable explanations provide value beyond
 running Ruff, a type checker, or a security scanner.
 
+## Deviation (2026-08-23): opt-in `python-patterns` pack
+
+The Source policy below keeps `python-patterns.guide` secondary and
+non-normative for the base `python` pack. That still holds. At the user's
+explicit request, guide-derived rules now ship anyway — but in a separate
+opt-in pack, `python-patterns` (alias `py-patterns`), so the base pack stays
+the conservative correctness set this specification describes.
+
+Constraints applied to the new pack:
+
+- every rule consumes a dedicated tree-sitter predicate from
+  `syntax/python.rs`; no `new_content_contains`, regex, or other substring
+  condition is used in either Python pack;
+- every message names the guide page it derives from and states the limit of
+  the syntactic heuristic;
+- opinionated shapes whose legitimate uses are common (`__new__` for
+  immutable subclasses, same-subject domain-type `isinstance` dispatch, deep
+  framework hierarchies) are audit-only; the rest are `warn`, never `block`.
+  The Composite predicate requires a positive `if`/`elif` chain over the same
+  subject and excludes independent guards, negative checks, and built-in
+  scalar/container validation.
+
+Guide material judged not enforceable by syntax and therefore skipped:
+Factory Method / Abstract Factory / Builder / Prototype class hierarchies
+(a `*Factory` or `*Builder` class name is not evidence of the anti-pattern),
+the "if-statement forest" (indistinguishable from ordinary option handling),
+`== sentinel` comparisons (a sentinel cannot be identified without
+resolution), `-1`-style in-band sentinel returns, and tactical wrappers that
+implement "only the methods observed in use" (requires knowing the wrapped
+type's full surface).
+
+The base-pack Motivation items about substring matching are historical:
+`warn-print-in-src` and `enforce-no-bare-except` already consume
+`python_print_call` and `python_bare_except`, and the duplicate audit rule
+was removed.
+
 ## Motivation
 
 The current Python pack is small and uneven:

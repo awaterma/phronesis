@@ -4,7 +4,7 @@ use streaming_iterator::StreamingIterator;
 use tree_sitter::{Query, QueryCursor, QueryMatch};
 
 use super::super::parsed::ParsedFile;
-use super::walk::walk_function_items;
+use super::walk::{in_test_code, walk_function_items};
 
 static PUB_FN_QUERY: LazyLock<Query> = LazyLock::new(|| {
     Query::new(
@@ -90,6 +90,11 @@ pub(super) fn extract_function_param_counts_high(
     let mut out = Vec::new();
     let mut walker = tree.walk();
     walk_function_items(&mut walker, source.as_bytes(), &mut |fn_node, name| {
+        // Test code is exempt: a fixture-builder with many params is not
+        // an API-design smell.
+        if in_test_code(fn_node, source.as_bytes()) {
+            return;
+        }
         let Some(params) = fn_node.child_by_field_name("parameters") else {
             return;
         };
@@ -442,6 +447,27 @@ fn safe() -> Result<u32, MyError> { Ok(0) }
     }
 
     #[test]
+    fn function_param_counts_high_skips_test_code() {
+        let code = "\
+#[cfg(test)]
+mod tests {
+    fn helper(a: u8, b: u8, c: u8, d: u8, e: u8) {}
+    #[test]
+    fn t() {}
+}
+#[test]
+fn wide_test(a: u8, b: u8, c: u8, d: u8, e: u8) {}
+fn production(a: u8, b: u8, c: u8, d: u8, e: u8) {}
+";
+        let facts = extract(code);
+        assert_eq!(
+            facts.function_param_counts_high,
+            vec![("production".to_string(), 5)],
+            "only the production fn should be reported, not test-module or #[test] fns"
+        );
+    }
+
+    #[test]
     fn vec_ref_params_flagged_for_shared_and_mut_refs() {
         let code = "fn a(xs: &Vec<u8>) {} fn b(ys: &mut Vec<String>) {} fn c(zs: Vec<i32>) {} fn d(ws: &[u8]) {}";
         let facts = extract(code);
@@ -452,6 +478,17 @@ fn safe() -> Result<u32, MyError> { Ok(0) }
                 ("b".to_string(), "ys".to_string()),
             ],
             "only &Vec<T> and &mut Vec<T> should be flagged; owned Vec<T> and &[T] should be left alone"
+        );
+    }
+
+    #[test]
+    fn box_ref_params_flag_shared_box_refs_only() {
+        let code = "fn a(x: & Box <u8>) {} fn b(y: &mut Box<String>) {} fn c(z: Box<i32>) {} fn d(w: &i32) {}";
+        let facts = extract(code);
+        assert_eq!(
+            facts.box_ref_params,
+            vec![("a".to_string(), "x".to_string())],
+            "preserve the legacy shared-&Box scope while accepting whitespace variants"
         );
     }
 

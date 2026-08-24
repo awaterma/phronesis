@@ -363,8 +363,12 @@ impl Sensor<'_> {
             return;
         };
 
-        if has_test_attribute(node, self.source) {
-            // Test functions are coverage sources, not coverage subjects.
+        // A `#[test]` function is a coverage source, not a coverage subject.
+        // So is a plain helper inside `#[cfg(test)] mod tests`: it only ever
+        // runs under test, so emitting `defines_fn` + `calls_api` for it would
+        // let `warn-untested-risky-call` flag fixture code, while recording
+        // its callees as `tested_by` keeps test reachability honest.
+        if has_test_attribute(node, self.source) || within_test_module(node, self.source) {
             let file_path = self.file_path.to_string();
             self.emit("defines_test", &[&file_path, &qualified]);
             for callee in self.called_names(body) {
@@ -404,6 +408,27 @@ impl Sensor<'_> {
     /// against canonical definitions using same-module/import evidence.
     fn called_names(&self, body: Node) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
+        let receiver_types = self.receiver_types(body);
+        let mut stack = vec![body];
+        while let Some(n) = stack.pop() {
+            if n.kind() == "call_expression"
+                && let Some(f) = n.child_by_field_name("function")
+            {
+                let name = self.call_name(f, &receiver_types);
+                if !name.is_empty() {
+                    found.insert(name);
+                }
+            } else if n.kind() == "macro_invocation" {
+                found.extend(self.called_names_in_macro(n));
+            }
+            push_children(n, &mut stack);
+        }
+        found
+    }
+
+    /// Local variable name → last segment of its declared or constructed
+    /// type, for every `let` in `body` whose type can be read off syntax.
+    fn receiver_types(&self, body: Node) -> std::collections::BTreeMap<String, String> {
         let mut receiver_types = std::collections::BTreeMap::new();
         let mut declarations = vec![body];
         while let Some(node) = declarations.pop() {
@@ -431,48 +456,40 @@ impl Sensor<'_> {
                     receiver_types.insert(text(pattern, self.source).to_string(), inferred);
                 }
             }
-            let mut cursor = node.walk();
-            declarations.extend(node.children(&mut cursor));
+            push_children(node, &mut declarations);
         }
-        let mut stack = vec![body];
-        while let Some(n) = stack.pop() {
-            if n.kind() == "call_expression"
-                && let Some(f) = n.child_by_field_name("function")
-            {
-                let name = match f.kind() {
-                    "identifier" => text(f, self.source).to_string(),
-                    "scoped_identifier" => f
-                        .child_by_field_name("name")
-                        .map(|x| text(x, self.source).to_string())
-                        .unwrap_or_default(),
-                    "field_expression" => f
-                        .child_by_field_name("field")
-                        .map(|x| {
-                            let method = text(x, self.source);
-                            let receiver_type = f
-                                .child_by_field_name("value")
-                                .filter(|receiver| receiver.kind() == "identifier")
-                                .and_then(|receiver| {
-                                    receiver_types.get(text(receiver, self.source))
-                                });
-                            receiver_type.map_or_else(
-                                || format!("@method:{method}"),
-                                |ty| format!("@method:{ty}:{method}"),
-                            )
-                        })
-                        .unwrap_or_default(),
-                    _ => String::new(),
-                };
-                if !name.is_empty() {
-                    found.insert(name);
-                }
-            } else if n.kind() == "macro_invocation" {
-                found.extend(self.called_names_in_macro(n));
-            }
-            let mut cursor = n.walk();
-            stack.extend(n.children(&mut cursor));
+        receiver_types
+    }
+
+    /// The name a call's `function` node contributes, or empty for shapes
+    /// that name nothing resolvable.
+    fn call_name(
+        &self,
+        f: Node,
+        receiver_types: &std::collections::BTreeMap<String, String>,
+    ) -> String {
+        match f.kind() {
+            "identifier" => text(f, self.source).to_string(),
+            "scoped_identifier" => f
+                .child_by_field_name("name")
+                .map(|x| text(x, self.source).to_string())
+                .unwrap_or_default(),
+            "field_expression" => f
+                .child_by_field_name("field")
+                .map(|x| {
+                    let method = text(x, self.source);
+                    let receiver_type = f
+                        .child_by_field_name("value")
+                        .filter(|receiver| receiver.kind() == "identifier")
+                        .and_then(|receiver| receiver_types.get(text(receiver, self.source)));
+                    receiver_type.map_or_else(
+                        || format!("@method:{method}"),
+                        |ty| format!("@method:{ty}:{method}"),
+                    )
+                })
+                .unwrap_or_default(),
+            _ => String::new(),
         }
-        found
     }
 
     /// Calls nested in a Rust macro token tree are opaque to tree-sitter's
@@ -480,9 +497,18 @@ impl Sensor<'_> {
     /// masking its parsed string/comment descendants; whole-file regexes are
     /// deliberately avoided.
     fn called_names_in_macro(&self, macro_node: Node) -> BTreeSet<String> {
+        let shaped = String::from_utf8_lossy(&self.masked_macro_source(macro_node)).into_owned();
+        MACRO_CALL_RE
+            .captures_iter(&shaped)
+            .filter_map(|captures| captures.get(1).map(|name| name.as_str().to_string()))
+            .collect()
+    }
+
+    /// The macro's source bytes with parsed string/comment descendants
+    /// blanked out.
+    fn masked_macro_source(&self, macro_node: Node) -> Vec<u8> {
         let start = macro_node.start_byte();
-        let end = macro_node.end_byte();
-        let mut shaped = self.source[start..end].to_vec();
+        let mut shaped = self.source[start..macro_node.end_byte()].to_vec();
         let mut pending = vec![macro_node];
         while let Some(node) = pending.pop() {
             if node != macro_node
@@ -493,14 +519,9 @@ impl Sensor<'_> {
                 shaped[from..to].fill(b' ');
                 continue;
             }
-            let mut cursor = node.walk();
-            pending.extend(node.children(&mut cursor));
+            push_children(node, &mut pending);
         }
-        let shaped = String::from_utf8_lossy(&shaped);
-        MACRO_CALL_RE
-            .captures_iter(&shaped)
-            .filter_map(|captures| captures.get(1).map(|name| name.as_str().to_string()))
-            .collect()
+        shaped
     }
 
     /// Watched method calls and macro invocations within a body.
@@ -524,8 +545,7 @@ impl Sensor<'_> {
             {
                 found.insert(name);
             }
-            let mut cursor = n.walk();
-            stack.extend(n.children(&mut cursor));
+            push_children(n, &mut stack);
         }
         found
     }
@@ -568,7 +588,32 @@ impl Sensor<'_> {
         }
         // Take the path prefix before any brace group or glob.
         let head = raw.split(['{', '*']).next().unwrap_or("").trim();
-        let mut segments: Vec<&str> = head
+        let Some(target) = self.resolve_use_path(head, scope) else {
+            return;
+        };
+        if target.is_empty() || target == self.self_module {
+            return;
+        }
+        let from = self.self_module.clone();
+        // A `use` gated by `#[cfg(test)]` — on the statement or an enclosing
+        // module — is compiled only under test, so it cannot form a production
+        // import cycle. It is kept as `test_imports` because `tested_by`
+        // resolution still needs to know what a test brings into scope.
+        let relation =
+            if has_test_attribute(node, self.source) || within_test_module(node, self.source) {
+                "test_imports"
+            } else {
+                "imports"
+            };
+        self.emit(relation, &[&from, &target]);
+    }
+
+    /// Resolve a `use` path head to the absolute module it imports, or
+    /// `None` when the statement contributes no intra-crate edge.
+    ///
+    /// Relative anchors (`super::`, `self::`) resolve against `scope`.
+    fn resolve_use_path(&self, head: &str, scope: &Scope) -> Option<String> {
+        let segments: Vec<&str> = head
             .split("::")
             .map(str::trim)
             .filter(|s| !s.is_empty())
@@ -583,53 +628,41 @@ impl Sensor<'_> {
         // that `in_cycle` reports as a cycle. For a sibling crate the root is
         // a legitimate target: `use phr::Rule;` depends on `phr`, not on a
         // module named `Rule`.
-        let mut floor = 2usize;
-        let mut resolved: Vec<String> = match segments.first() {
-            Some(&"crate") => {
-                segments.remove(0);
-                vec![self.unit.id.clone()]
-            }
-            Some(&"self") => {
-                segments.remove(0);
-                scope.path.clone()
-            }
+        let (base, floor, rest): (Vec<String>, usize, &[&str]) = match segments.first() {
+            Some(&"crate") => (vec![self.unit.id.clone()], 2, &segments[1..]),
+            Some(&"self") => (scope.path.clone(), 2, &segments[1..]),
             Some(&"super") => {
-                let mut base = scope.path.clone();
-                while segments.first() == Some(&"super") {
-                    segments.remove(0);
-                    // `crate` is the root; climbing past it is not a path we
-                    // can name, so the statement contributes no edge.
-                    if base.len() <= 1 {
-                        return;
-                    }
-                    base.pop();
+                let supers = segments
+                    .iter()
+                    .take_while(|segment| **segment == "super")
+                    .count();
+                // `crate` is the root; climbing past it is not a path we
+                // can name, so the statement contributes no edge.
+                if scope.path.len() <= supers {
+                    return None;
                 }
-                base
+                (
+                    scope.path[..scope.path.len() - supers].to_vec(),
+                    2,
+                    &segments[supers..],
+                )
             }
             Some(alias) => {
-                let Some(target) = self.unit.siblings.get(*alias) else {
-                    // An external crate, or a bare item already in scope.
-                    return;
-                };
-                segments.remove(0);
-                floor = 1;
-                vec![target.clone()]
+                // An external crate, or a bare item already in scope.
+                let target = self.unit.siblings.get(*alias)?;
+                (vec![target.clone()], 1, &segments[1..])
             }
-            None => return,
+            None => return None,
         };
-        resolved.extend(segments.iter().map(|s| (*s).to_string()));
+        let mut resolved = base;
+        resolved.extend(rest.iter().map(|s| (*s).to_string()));
 
         // Drop the imported item, leaving its module. A trailing `::` means a
         // brace group or glob followed, so we are already at the module.
         if !head.ends_with("::") && resolved.len() > floor {
             resolved.pop();
         }
-        let target = resolved.join("::");
-        if target.is_empty() || target == self.self_module {
-            return;
-        }
-        let from = self.self_module.clone();
-        self.emit("imports", &[&from, &target]);
+        Some(resolved.join("::"))
     }
 
     /// Record bounded public re-exports so a test's `use super::*` can resolve
@@ -645,20 +678,20 @@ impl Sensor<'_> {
             Some("crate") => vec![self.unit.id.clone()],
             Some("self") => scope.path.clone(),
             Some("super") => {
-                let mut path = scope.path.clone();
-                if path.len() <= 1 {
+                if scope.path.len() <= 1 {
                     return;
                 }
-                path.pop();
-                path
+                scope.path[..scope.path.len() - 1].to_vec()
             }
             Some(_) => scope.path.clone(),
             None => return,
         };
-        let mut parts = prefix
-            .split("::")
-            .filter(|part| !part.is_empty() && !matches!(*part, "crate" | "self" | "super"));
-        target.extend(parts.by_ref().map(str::to_string));
+        target.extend(
+            prefix
+                .split("::")
+                .filter(|part| !part.is_empty() && !matches!(*part, "crate" | "self" | "super"))
+                .map(str::to_string),
+        );
         let target = target.join("::");
         let from = self.self_module.clone();
         for item in group.split(',') {
@@ -670,6 +703,12 @@ impl Sensor<'_> {
     }
 }
 
+/// Push every child of `node` onto a depth-first work stack.
+fn push_children<'t>(node: Node<'t>, pending: &mut Vec<Node<'t>>) {
+    let mut cursor = node.walk();
+    pending.extend(node.children(&mut cursor));
+}
+
 /// Extract every base relation from one Rust file.
 pub fn extract_rust(
     file_path: &str,
@@ -677,24 +716,26 @@ pub fn extract_rust(
     watchlist: &[&str],
     unit: &UnitContext,
 ) -> Extracted {
-    extract_rust_at_module(file_path, content, watchlist, unit, None)
-}
-
-pub fn extract_rust_at_module(
-    file_path: &str,
-    content: &str,
-    watchlist: &[&str],
-    unit: &UnitContext,
-    module_override: Option<&str>,
-) -> Extracted {
-    extract_rust_at_module_with_ownership(
+    extract_rust_file(
         file_path,
         content,
-        watchlist,
-        unit,
-        module_override,
-        &OwnershipConfig::disabled(),
+        &RustExtractOptions {
+            watchlist,
+            unit,
+            module_override: None,
+            ownership: &OwnershipConfig::disabled(),
+        },
     )
+}
+
+/// Knobs for one Rust extraction.
+#[derive(Clone, Copy)]
+pub struct RustExtractOptions<'a> {
+    pub watchlist: &'a [&'a str],
+    pub unit: &'a UnitContext,
+    /// Module id the walk already computed for a `#[path]`-included file.
+    pub module_override: Option<&'a str>,
+    pub ownership: &'a OwnershipConfig,
 }
 
 /// Extract with the opt-in ownership enrichment applied.
@@ -703,6 +744,8 @@ pub fn extract_rust_at_module(
 /// so the callers that do not pass a config keep exactly their current output
 /// (spec §4.2: the enrichment is an opt-in, never an unconditional expansion of
 /// the Rust language pack).
+///
+/// Thin shim over [`extract_rust_file`] kept for existing callers.
 pub fn extract_rust_at_module_with_ownership(
     file_path: &str,
     content: &str,
@@ -710,6 +753,24 @@ pub fn extract_rust_at_module_with_ownership(
     unit: &UnitContext,
     module_override: Option<&str>,
     ownership: &OwnershipConfig,
+) -> Extracted {
+    extract_rust_file(
+        file_path,
+        content,
+        &RustExtractOptions {
+            watchlist,
+            unit,
+            module_override,
+            ownership,
+        },
+    )
+}
+
+/// Extract every base relation from one Rust file.
+pub fn extract_rust_file(
+    file_path: &str,
+    content: &str,
+    opts: &RustExtractOptions<'_>,
 ) -> Extracted {
     if !file_path.ends_with(".rs") {
         return Extracted::default();
@@ -730,6 +791,12 @@ pub fn extract_rust_at_module_with_ownership(
         return Extracted::unparseable();
     }
 
+    let RustExtractOptions {
+        watchlist,
+        unit,
+        module_override,
+        ownership,
+    } = *opts;
     let self_module = module_override
         .map(str::to_string)
         .unwrap_or_else(|| module_path(file_path, unit));
@@ -762,101 +829,7 @@ pub fn extract_rust_at_module_with_ownership(
     };
     sensor.walk(tree.root_node(), &root_scope);
 
-    // Rhai's host API is string-dispatched. Record only bounded literal
-    // registrations and literal script paths; dynamic names remain unknown.
-    // Restrict regexes to syntax nodes so examples in comments and string
-    // fixtures cannot masquerade as executable registrations.
-    let mut boundary_nodes = Vec::new();
-    let mut pending = vec![tree.root_node()];
-    while let Some(node) = pending.pop() {
-        if node.kind() == "call_expression"
-            && let Some(function) = node.child_by_field_name("function")
-            && let Ok(function_name) = function.utf8_text(source.as_bytes())
-            && matches!(
-                function_name
-                    .rsplit(['.', ':'])
-                    .find(|part| !part.is_empty()),
-                Some("register_fn" | "compile_file" | "compile" | "eval_file")
-            )
-            && let Ok(text) = node.utf8_text(source.as_bytes())
-        {
-            boundary_nodes.push(text.to_string());
-        } else if node.kind() == "macro_invocation"
-            && let Ok(text) = node.utf8_text(source.as_bytes())
-            && text.trim_start().starts_with("register_state_proxy!")
-        {
-            boundary_nodes.push(text.to_string());
-        }
-        let mut cursor = node.walk();
-        pending.extend(node.children(&mut cursor));
-    }
-    let boundary_source = boundary_nodes.join("\n");
-    let registration = regex::Regex::new(r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,"#)
-        .expect("static Rhai registration regex");
-    for captures in registration.captures_iter(&boundary_source) {
-        let Some(name) = captures.get(1).map(|value| value.as_str()) else {
-            continue;
-        };
-        sensor.emit(
-            "exposes",
-            &[&self_module, &format!("rhai:callable::{name}")],
-        );
-    }
-    let named_registration = regex::Regex::new(
-        r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9:]*)\s*\)"#,
-    )
-    .expect("static named Rhai registration regex");
-    for captures in named_registration.captures_iter(&boundary_source) {
-        let (Some(name), Some(backing)) = (
-            captures.get(1).map(|value| value.as_str()),
-            captures.get(2).map(|value| value.as_str()),
-        ) else {
-            continue;
-        };
-        sensor.emit(
-            "rhai_callable_backing",
-            &[
-                &format!("rhai:callable::{name}"),
-                backing.rsplit("::").next().unwrap_or(backing),
-            ],
-        );
-    }
-    let proxy_registration =
-        regex::Regex::new(r#"register_state_proxy!\s*\([^,]+,[^,]+,\s*"([_A-Za-z][_A-Za-z0-9]*)""#)
-            .expect("static Rhai proxy registration regex");
-    for captures in proxy_registration.captures_iter(&boundary_source) {
-        if let Some(name) = captures.get(1).map(|value| value.as_str()) {
-            sensor.emit(
-                "exposes",
-                &[&self_module, &format!("rhai:callable::{name}")],
-            );
-        }
-    }
-    let proxy_backing = regex::Regex::new(
-        r#"register_state_proxy!\s*\([^,]+,[^,]+,\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9]*)"#,
-    )
-    .expect("static Rhai proxy backing regex");
-    for captures in proxy_backing.captures_iter(&boundary_source) {
-        let (Some(name), Some(backing)) = (
-            captures.get(1).map(|value| value.as_str()),
-            captures.get(2).map(|value| value.as_str()),
-        ) else {
-            continue;
-        };
-        sensor.emit(
-            "rhai_callable_backing",
-            &[&format!("rhai:callable::{name}"), backing],
-        );
-    }
-    let loader = regex::Regex::new(
-        r#"(?:compile_file|compile|eval_file)\s*\(\s*(?:PathBuf::from\s*\(\s*)?"([^"\r\n]+\.rhai)""#,
-    )
-    .expect("static Rhai loader regex");
-    for captures in loader.captures_iter(&boundary_source) {
-        if let Some(path) = captures.get(1).map(|value| value.as_str()) {
-            sensor.emit("loads_rhai_script", &[&self_module, path]);
-        }
-    }
+    emit_rhai_boundary(&mut sensor, tree.root_node(), source);
 
     let mut edges: Vec<Edge> = sensor
         .out
@@ -878,6 +851,117 @@ pub fn extract_rust_at_module_with_ownership(
         edges,
         skipped: sensor.skipped,
         parse_failed: false,
+    }
+}
+
+/// Rhai's host API is string-dispatched. Record only bounded literal
+/// registrations and literal script paths; dynamic names remain unknown.
+/// Restrict regexes to syntax nodes so examples in comments and string
+/// fixtures cannot masquerade as executable registrations.
+fn emit_rhai_boundary(sensor: &mut Sensor<'_>, root: Node, source: &str) {
+    let self_module = sensor.self_module.clone();
+    let boundary_source = rhai_boundary_nodes(root, source).join("\n");
+    emit_rhai_registrations(sensor, &self_module, &boundary_source);
+    emit_rhai_proxies_and_loaders(sensor, &self_module, &boundary_source);
+}
+
+/// Source text of every call/macro node that can register or load Rhai.
+fn rhai_boundary_nodes(root: Node, source: &str) -> Vec<String> {
+    let mut boundary_nodes = Vec::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if node.kind() == "call_expression"
+            && let Some(function) = node.child_by_field_name("function")
+            && let Ok(function_name) = function.utf8_text(source.as_bytes())
+            && matches!(
+                function_name
+                    .rsplit(['.', ':'])
+                    .find(|part| !part.is_empty()),
+                Some("register_fn" | "compile_file" | "compile" | "eval_file")
+            )
+            && let Ok(text) = node.utf8_text(source.as_bytes())
+        {
+            boundary_nodes.push(text.to_string());
+        } else if node.kind() == "macro_invocation"
+            && let Ok(text) = node.utf8_text(source.as_bytes())
+            && text.trim_start().starts_with("register_state_proxy!")
+        {
+            boundary_nodes.push(text.to_string());
+        }
+        push_children(node, &mut pending);
+    }
+    boundary_nodes
+}
+
+/// `register_fn("name", backing)` exposures and their backing functions.
+fn emit_rhai_registrations(sensor: &mut Sensor<'_>, self_module: &str, boundary_source: &str) {
+    let registration = regex::Regex::new(r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,"#)
+        .expect("static Rhai registration regex");
+    for captures in registration.captures_iter(boundary_source) {
+        let Some(name) = captures.get(1).map(|value| value.as_str()) else {
+            continue;
+        };
+        sensor.emit("exposes", &[self_module, &format!("rhai:callable::{name}")]);
+    }
+    let named_registration = regex::Regex::new(
+        r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9:]*)\s*\)"#,
+    )
+    .expect("static named Rhai registration regex");
+    for captures in named_registration.captures_iter(boundary_source) {
+        let (Some(name), Some(backing)) = (
+            captures.get(1).map(|value| value.as_str()),
+            captures.get(2).map(|value| value.as_str()),
+        ) else {
+            continue;
+        };
+        sensor.emit(
+            "rhai_callable_backing",
+            &[
+                &format!("rhai:callable::{name}"),
+                backing.rsplit("::").next().unwrap_or(backing),
+            ],
+        );
+    }
+}
+
+/// `register_state_proxy!` exposures/backings and literal `.rhai` loads.
+fn emit_rhai_proxies_and_loaders(
+    sensor: &mut Sensor<'_>,
+    self_module: &str,
+    boundary_source: &str,
+) {
+    let proxy_registration =
+        regex::Regex::new(r#"register_state_proxy!\s*\([^,]+,[^,]+,\s*"([_A-Za-z][_A-Za-z0-9]*)""#)
+            .expect("static Rhai proxy registration regex");
+    for captures in proxy_registration.captures_iter(boundary_source) {
+        if let Some(name) = captures.get(1).map(|value| value.as_str()) {
+            sensor.emit("exposes", &[self_module, &format!("rhai:callable::{name}")]);
+        }
+    }
+    let proxy_backing = regex::Regex::new(
+        r#"register_state_proxy!\s*\([^,]+,[^,]+,\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9]*)"#,
+    )
+    .expect("static Rhai proxy backing regex");
+    for captures in proxy_backing.captures_iter(boundary_source) {
+        let (Some(name), Some(backing)) = (
+            captures.get(1).map(|value| value.as_str()),
+            captures.get(2).map(|value| value.as_str()),
+        ) else {
+            continue;
+        };
+        sensor.emit(
+            "rhai_callable_backing",
+            &[&format!("rhai:callable::{name}"), backing],
+        );
+    }
+    let loader = regex::Regex::new(
+        r#"(?:compile_file|compile|eval_file)\s*\(\s*(?:PathBuf::from\s*\(\s*)?"([^"\r\n]+\.rhai)""#,
+    )
+    .expect("static Rhai loader regex");
+    for captures in loader.captures_iter(boundary_source) {
+        if let Some(path) = captures.get(1).map(|value| value.as_str()) {
+            sensor.emit("loads_rhai_script", &[self_module, path]);
+        }
     }
 }
 
@@ -1025,6 +1109,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         };
         assert_eq!(
             module_path("crates/app/benches/sync.rs", &unit),
@@ -1044,6 +1129,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         };
         assert_eq!(
             module_path("crates/app/tests/helper.rs", &unit),
@@ -1061,6 +1147,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         };
         assert_eq!(module_path("crates/app/src/lib.rs", &unit), "rust:app");
         assert_eq!(
@@ -1321,6 +1408,45 @@ mod tests {
     }
 
     #[test]
+    fn a_use_inside_a_cfg_test_module_is_not_a_production_import() {
+        // Test-only imports must not feed `warn-import-cycle`: a test module
+        // importing a sibling that imports this file is not a production
+        // cycle. They are kept as `test_imports` so `tested_by` resolution
+        // can still see what a test brings into scope.
+        let out = run(
+            "src/hook/mod.rs",
+            "use crate::rules_file;\n#[cfg(test)]\nmod tests {\n use crate::hook_facts::Thing;\n fn t() { use crate::audit::run; }\n}",
+        );
+        assert_eq!(
+            edges_of(&out, "imports"),
+            vec![vec![
+                "rust:crate::hook".to_string(),
+                "rust:crate::rules_file".to_string()
+            ]],
+        );
+        assert_eq!(
+            edges_of(&out, "test_imports"),
+            vec![
+                vec![
+                    "rust:crate::hook".to_string(),
+                    "rust:crate::audit".to_string()
+                ],
+                vec![
+                    "rust:crate::hook".to_string(),
+                    "rust:crate::hook_facts".to_string()
+                ],
+            ],
+        );
+    }
+
+    #[test]
+    fn a_cfg_test_gated_use_item_is_not_a_production_import() {
+        let out = run("src/a.rs", "#[cfg(test)]\nuse crate::fixtures::Thing;");
+        assert!(edges_of(&out, "imports").is_empty());
+        assert_eq!(edges_of(&out, "test_imports").len(), 1);
+    }
+
+    #[test]
     fn a_self_import_resolves_to_the_current_module() {
         let out = run("src/syntax/rust/signatures.rs", "use self::inner::Thing;");
         assert_eq!(
@@ -1352,6 +1478,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         };
         let out = extract_rust(
             "crates/app/src/a.rs",
@@ -1528,6 +1655,30 @@ fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
         let src = "#[tokio::test]\nasync fn t() { fire(); }";
         let out = run("tests/a.rs", src);
         assert!(!edges_of(&out, "tested_by").is_empty());
+    }
+
+    #[test]
+    fn a_helper_inside_a_cfg_test_module_is_test_code_not_a_risky_production_fn() {
+        // A plain helper in `#[cfg(test)] mod tests` only runs under test. It
+        // must not be a `defines_fn` / `calls_api` subject (which would make
+        // `warn-untested-risky-call` flag fixture code), but its callees are
+        // direct test evidence.
+        let src = "#[cfg(test)]\nmod tests {\n fn write() { fire().unwrap(); }\n}";
+        let out = run("src/a.rs", src);
+        assert!(edges_of(&out, "defines_fn").is_empty(), "{:?}", out.edges);
+        assert!(edges_of(&out, "calls_api").is_empty(), "{:?}", out.edges);
+        assert_eq!(
+            edges_of(&out, "defines_test"),
+            vec![vec![
+                "src/a.rs".to_string(),
+                "rust:crate::a::tests::write".to_string()
+            ]]
+        );
+        assert!(
+            edges_of(&out, "tested_by")
+                .iter()
+                .any(|e| e[0] == "fire" && e[1] == "rust:crate::a::tests::write")
+        );
     }
 
     // ─── provenance & failure ───────────────────────────────────────

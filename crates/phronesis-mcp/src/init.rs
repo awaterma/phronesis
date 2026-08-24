@@ -44,6 +44,8 @@ pub enum Pack {
     Rust,
     Rhai,
     Python,
+    /// Opinionated, opt-in rules derived from <https://python-patterns.guide/>.
+    PythonPatterns,
     TypeScript,
     Swift,
     Confidence,
@@ -70,6 +72,7 @@ impl Pack {
         Self::Rust,
         Self::Rhai,
         Self::Python,
+        Self::PythonPatterns,
         Self::TypeScript,
         Self::Swift,
         Self::Confidence,
@@ -91,6 +94,7 @@ impl Pack {
             "rust" | "rs" => Ok(Self::Rust),
             "rhai" => Ok(Self::Rhai),
             "python" | "py" => Ok(Self::Python),
+            "python-patterns" | "py-patterns" => Ok(Self::PythonPatterns),
             "typescript" | "ts" | "javascript" | "js" => Ok(Self::TypeScript),
             "swift" => Ok(Self::Swift),
             "lua" => Ok(Self::Lua),
@@ -114,6 +118,7 @@ impl Pack {
             Self::Rust => rust_rules(),
             Self::Rhai => rhai_rules(),
             Self::Python => python_rules(),
+            Self::PythonPatterns => python_patterns_rules(),
             Self::TypeScript => typescript_rules(),
             Self::Swift => swift_rules(),
             Self::Confidence => confidence_rules(),
@@ -138,6 +143,7 @@ impl Pack {
             Self::Rust => "rust",
             Self::Rhai => "rhai",
             Self::Python => "python",
+            Self::PythonPatterns => "python-patterns",
             Self::TypeScript => "typescript",
             Self::Swift => "swift",
             Self::Lua => "lua",
@@ -244,7 +250,7 @@ pub fn compose_packs(packs: &[Pack]) -> Value {
 #[derive(Debug, Error)]
 pub enum InitError {
     #[error(
-        "unknown pack `{0}`; valid: base, llm, rust, rhai, python, typescript, swift, lua, cue, json, yaml, helm3, confidence, journey, context, structural, none"
+        "unknown pack `{0}`; valid: base, llm, rust, rhai, python, python-patterns, typescript, swift, lua, cue, json, yaml, helm3, confidence, journey, context, structural, none"
     )]
     UnknownPack(String),
     #[error("invalid pack selection: {0}")]
@@ -1625,11 +1631,20 @@ fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Value) {
 // Starter packs
 // ─────────────────────────────────────────────────────────────────────
 
-/// Confidence-scoring gate rules (SPEC-confidence-scoring §3, approach A).
+/// Confidence-scoring gate rules (SPEC-confidence-scoring §3, approach A;
+/// severity per SPEC-structural-rule-migration §"Confidence gate severity").
 /// They count the open work unit's passed `signal_pass` facts (asserted by the
-/// pre-check hook) and gate a `git commit` by band: ≤1 signal blocks, exactly 2
-/// warns, 3 passes clean. Paired with the `.phronesis/confidence.json`
-/// marker + `.phronesis/bugs.json` registry written by `write_confidence_scaffold`.
+/// pre-check hook) and advise on a governed Git mutation by band: ≤1 signal
+/// warns (missing/failing evidence), exactly 2 warns (one grounded signal
+/// missing), 3 passes clean. Neither band blocks — incomplete or failing
+/// confidence evidence is observability, not enforcement, so the Git command
+/// always proceeds. Paired with the `.phronesis/confidence.json` marker +
+/// `.phronesis/bugs.json` registry written by `write_confidence_scaffold`.
+///
+/// The aggregate `signal_pass` count cannot distinguish "never ran" from "ran
+/// and failed" (both are absent facts), so neither message names a specific
+/// missing or failing signal — that would claim more than the asserted facts
+/// prove. Run `phr-mcp confidence` for the itemized per-signal report.
 fn confidence_rules() -> Value {
     json!({
         "rules": [
@@ -1641,7 +1656,7 @@ fn confidence_rules() -> Value {
                     {"bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)"},
                     {"__script__": "facts_count('signal_pass', ['*','*']) <= 1"}
                 ],
-                "then": {"block": "Low confidence — compile/tests/known-bug not all green. Run the build and tests and resolve failing signals before committing."}
+                "then": {"warn": "Low confidence — compile/tests/known-bug evidence is incomplete or failing. Run `phr-mcp confidence` for the per-signal report before presenting this as done."}
             },
             {
                 "id": "confidence-medium-warns-commit",
@@ -1710,7 +1725,7 @@ fn deflection_rules() -> Value {
                 "phase": "pre",
                 "priority": 5,
                 "when": [
-                    {"new_content_contains": "git commit -m"},
+                    {"bash_command_matches": "git commit -m"},
                     {"__script__": "facts_count('confidence_enabled', []) == 0"}
                 ],
                 "then": {"warn": "About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode."}
@@ -1746,7 +1761,7 @@ fn rust_rules() -> Value {
                 "priority": 10,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": ".unwrap()"},
+                    {"rust_governed_invocation": ["?file", "?fn", "unwrap"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"block": "Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable."}
@@ -1757,7 +1772,7 @@ fn rust_rules() -> Value {
                 "priority": 10,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "todo!()"},
+                    {"rust_governed_invocation": ["?file", "?fn", "todo"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"block": "Don't ship todo!() in src/ — finish the implementation or split it into a tracked task."}
@@ -1768,7 +1783,7 @@ fn rust_rules() -> Value {
                 "priority": 10,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "panic!("},
+                    {"rust_governed_invocation": ["?file", "?fn", "panic"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"block": "Avoid panic!() in src/ — return a Result and let the caller decide."}
@@ -1779,7 +1794,7 @@ fn rust_rules() -> Value {
                 "priority": 10,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "unimplemented!()"},
+                    {"rust_governed_invocation": ["?file", "?fn", "unimplemented"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"block": "Avoid unimplemented!() in src/ — implement the path or remove it."}
@@ -1799,7 +1814,7 @@ fn rust_rules() -> Value {
                 "priority": 5,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "dbg!("},
+                    {"rust_governed_invocation": ["?file", "?fn", "dbg"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"warn": "dbg!() in src/ — remove before committing, or use tracing::debug!() for diagnostics that stay."}
@@ -1857,28 +1872,6 @@ fn rust_rules() -> Value {
                 "then": {"warn": "Running `?cmd` without `--workspace` only checks part of the workspace. Use `cargo <subcommand> --workspace --tests --examples` to catch sibling-crate breakage, or pass `-p <crate>` if scope was intentional."}
             },
             {
-                "id": "block-await-on-sync-execute-all-agenda-items",
-                "phase": "pre",
-                "priority": 10,
-                "audit": true,
-                "when": [
-                    {"new_content_contains": "execute_all_agenda_items().await"},
-                    {"file_extension_is": "rs"}
-                ],
-                "then": {"block": "`execute_all_agenda_items()` is sync as of the 039 refactor — drop the `.await`. Cargo will reject the call site as `Result<Vec<Action>, String> is not a future`."}
-            },
-            {
-                "id": "block-await-on-sync-fire-all-consequences",
-                "phase": "pre",
-                "priority": 10,
-                "audit": true,
-                "when": [
-                    {"new_content_contains": "fire_all_consequences().await"},
-                    {"file_extension_is": "rs"}
-                ],
-                "then": {"block": "`fire_all_consequences()` is sync — drop the `.await`. Cargo will reject as `Result<Vec<Consequence>, ReteError> is not a future`."}
-            },
-            {
                 "id": "warn-clone-heavy",
                 "phase": "pre",
                 "priority": 5,
@@ -1886,6 +1879,17 @@ fn rust_rules() -> Value {
                     {"function_clone_count_high": ["?file", "?fn", "?count"]}
                 ],
                 "then": {"warn": "`?fn` in ?file calls .clone() ?count times — review whether references or borrowed slices would work."}
+            },
+            {
+                "id": "warn-pub-fn-missing-doc",
+                "phase": "post",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"pub_fn_without_doc_comment": ["?file", "?fn"]},
+                    {"file_path_matches": "src"}
+                ],
+                "then": {"warn": "Public fn `?fn` in ?file has no doc comment — public items should carry a `///` doc comment explaining what they do (Rust API Guidelines C-DOC)."}
             },
             {
                 "id": "warn-empty-test",
@@ -1902,7 +1906,7 @@ fn rust_rules() -> Value {
                 "priority": 5,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "impl Deref for"},
+                    {"rust_trait_impl": ["?file", "?type", "Deref"]},
                     {"file_extension_is": "rs"}
                 ],
                 "then": {"warn": "`impl Deref for` — Deref polymorphism is an anti-pattern for non-pointer types. Reserve Deref for smart-pointer wrappers (Box/Arc/Rc); for other types, prefer explicit delegation methods so the API surface is intentional."}
@@ -1913,12 +1917,14 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "=> return Err("},
+                    {"rust_governed_match_arm": ["?file", "?fn", "return_err"]},
                     {"file_extension_is": "rs"}
                 ],
                 "then": {"warn": "Manual `=> return Err(...)` in a match arm — the `?` operator usually replaces this whole shape. Surface during one-time audit sweeps; deliberately silent at hook time so in-progress refactors aren't blocked."}
             },
             {
+                // Intentionally line-oriented: audit's `doc_excepted` contract
+                // needs the match location to recognize a field-level `///`.
                 "id": "audit-newtype-id-string",
                 "phase": "audit",
                 "priority": 3,
@@ -1937,7 +1943,7 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "_id: u64"},
+                    {"rust_primitive_id_field": ["?file", "?field", "u64"]},
                     {"file_extension_is": "rs"},
                     {"file_path_matches": "src"}
                 ],
@@ -1949,7 +1955,7 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "None => {}"},
+                    {"rust_governed_match_arm": ["?file", "?fn", "none_empty"]},
                     {"file_extension_is": "rs"}
                 ],
                 "then": {"warn": "`match` with a `None => {}` arm — `if let Some(x) = ...` is usually clearer. From the patterns guide §Idioms 2."}
@@ -1960,10 +1966,21 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "Err(_) => {}"},
+                    {"rust_governed_match_arm": ["?file", "?fn", "err_empty"]},
                     {"file_extension_is": "rs"}
                 ],
                 "then": {"warn": "`match` arm `Err(_) => {}` silently swallows errors. Either handle the error (log/return) or use `if let Ok(x) = ...` to make the intent explicit."}
+            },
+            {
+                "id": "block-panic-in-drop-impl",
+                "phase": "pre",
+                "priority": 10,
+                "audit": true,
+                "when": [
+                    {"rust_panic_in_drop": ["?file", "?type", "?construct"]},
+                    {"file_extension_is": "rs"}
+                ],
+                "then": {"block": "Panicking construct (?construct) inside `Drop::drop` for `?type` — a panic that occurs during unwind inside Drop::drop aborts the whole process (std::process::abort) rather than failing gracefully. Log and swallow the error in drop() instead of panicking."}
             },
             {
                 "id": "block-deny-warnings-attribute",
@@ -1971,7 +1988,7 @@ fn rust_rules() -> Value {
                 "priority": 10,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "#![deny(warnings)]"},
+                    {"rust_governed_attribute": ["?file", "deny_warnings"]},
                     {"file_extension_is": "rs"}
                 ],
                 "then": {"block": "`#![deny(warnings)]` breaks builds on toolchain upgrades, since each rustc release introduces new warnings. Move the policy to CI with `RUSTFLAGS=\"-D warnings\"` instead. From the patterns guide §Anti-patterns (deny-warnings)."}
@@ -1982,7 +1999,7 @@ fn rust_rules() -> Value {
                 "priority": 5,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": ": &Box<"},
+                    {"function_param_is_box_ref": ["?file", "?fn", "?param"]},
                     {"file_extension_is": "rs"}
                 ],
                 "then": {"warn": "Parameter type `&Box<T>` adds a useless layer of indirection — prefer `&T` directly. From the patterns guide §Idioms (borrowed-types-for-arguments)."}
@@ -1993,7 +2010,7 @@ fn rust_rules() -> Value {
                 "priority": 5,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": ".expect(\"\")"},
+                    {"rust_governed_invocation": ["?file", "?fn", "expect_empty"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"warn": "`.expect(\"\")` is strictly worse than `.unwrap()` — same panic, no explanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it."}
@@ -2004,12 +2021,14 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "Rc<RefCell<"},
+                    {"rust_rc_refcell_type": ["?file", "?count"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"warn": "`Rc<RefCell<T>>` is the textbook 'fighting the borrow checker' shape — often a signal that an arena, index-based references, or a redesigned ownership model would be a better fit. Confirm intent."}
             },
             {
+                // Intentionally lexical: Rust syntax alone cannot prove the
+                // operands have the String/&str types this policy describes.
                 "id": "audit-string-concat-with-plus",
                 "phase": "audit",
                 "priority": 3,
@@ -2021,6 +2040,8 @@ fn rust_rules() -> Value {
                 "then": {"warn": "String concatenation with `\" + &` — prefer `format!(\"{}{}\", a, b)` for readability and to avoid intermediate allocations. From the patterns guide §Idioms (concat-format)."}
             },
             {
+                // Intentionally line-oriented until AST facts carry spans:
+                // `doc_excepted` must inspect the item's preceding `///`.
                 "id": "audit-allow-dead-code-in-src",
                 "phase": "audit",
                 "priority": 3,
@@ -2038,7 +2059,7 @@ fn rust_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "env::set_var("},
+                    {"rust_governed_invocation": ["?file", "?fn", "env_set_var"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"warn": "`env::set_var(` in src/ — mutating process environment variables is unsound under concurrent reads (which is why edition 2024 marks the call unsafe). Verify the call site is genuinely single-threaded, or refactor to pass configuration explicitly through function arguments / a context struct. Tests where you control the thread count are usually fine; library code almost never is."}
@@ -2120,6 +2141,8 @@ fn rhai_rules() -> Value {
                 "then": {"block": "`?fn` in ?file calls `engine.eval(<string literal>)`. Inline string-eval can't be tested independently of the surrounding Rust code and bypasses any script registry. Move the script to a `.rhai` file and load it via `engine.compile_file(...)` (or `compile(...)` on `include_str!`-ed content) so the AST can be cached, values-checked at build time, and exercised in isolation."}
             },
             {
+                // Intentionally lexical until a Rhai parser-backed producer
+                // exists; adding one solely for this rule is out of scope.
                 "id": "block-rhai-print-in-script",
                 "phase": "pre",
                 "priority": 10,
@@ -2351,25 +2374,157 @@ fn python_rules() -> Value {
     })
 }
 
-fn typescript_rules() -> Value {
+/// Opt-in `python-patterns` pack: design-pattern advisories derived from
+/// <https://python-patterns.guide/>. Every rule consumes a tree-sitter
+/// predicate from `syntax/python.rs`; none uses substring matching. These
+/// are opinionated, so most ship as `warn` or audit-only and every message
+/// names the guide page and the limit of the heuristic.
+fn python_patterns_rules() -> Value {
     json!({
         "rules": [
             {
-                "id": "warn-any-in-src",
+                "id": "warn-python-global-statement",
                 "phase": "pre",
                 "priority": 5,
+                "audit": true,
                 "when": [
-                    {"new_content_contains": ": any"},
-                    {"file_path_matches": "src"}
+                    {"python_global_statement": ["?file", "?fn", "?name"]}
                 ],
-                "then": {"warn": ": any in src/ — narrow the type. Use `unknown` if you really don't know, then refine with type guards."}
+                "then": {"warn": "`?fn` in ?file rebinds module global `?name` with `global`. Shared mutable module state couples callers and tests and cannot be instantiated twice. Move the state onto a class and bind its methods to module names explicitly (Prebound Methods: https://python-patterns.guide/python/prebound-methods/; Global Object: https://python-patterns.guide/python/module-globals/). Heuristic limit: syntax only — a `global` used once for lazy initialization of an immutable value is also flagged."}
             },
+            {
+                "id": "warn-python-globals-introspection-assignment",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_globals_subscript_assignment": ["?file", "?fn"]}
+                ],
+                "then": {"warn": "`?fn` in ?file assigns through `globals()[...]`. Binding module names by introspection hides them from readers, linters, and IDEs; assign each prebound method explicitly (`random = _instance.random`). See https://python-patterns.guide/python/prebound-methods/. Heuristic limit: any `globals()[...] = ...` store is flagged, including deliberate plugin registries."}
+            },
+            {
+                "id": "warn-python-dynamic-class-creation",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_dynamic_class_creation": ["?file", "?fn"]}
+                ],
+                "then": {"warn": "`?fn` in ?file builds a class at runtime with `type(name, bases, ns)`. Generated classes are hard to debug, navigate, and type-check; compose independent objects instead. See https://python-patterns.guide/gang-of-four/composition-over-inheritance/. Heuristic limit: flags every three-argument `type(...)` call, including metaclass-style library code that needs it."}
+            },
+            {
+                "id": "warn-python-singleton-new",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_new_override": ["?file", "?class", "singleton"]}
+                ],
+                "then": {"warn": "Class `?class` in ?file implements the Singleton Pattern by overriding `__new__` around a cached `_instance`. `?class()` then reads like construction but is not, and tests cannot get a fresh instance. Prefer a module-level instance (The Global Object Pattern): https://python-patterns.guide/gang-of-four/singleton/. Heuristic limit: detection keys on an `_instance`/`_instances`/`_singleton` attribute inside `__new__`."}
+            },
+            {
+                "id": "audit-python-custom-new",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"python_new_override": ["?file", "?class", "custom"]}
+                ],
+                "then": {"warn": "Class `?class` in ?file overrides `__new__`. If this is a Flyweight cache (`Grade(95)` returning a shared object), the guide prefers a plain factory function whose behaviour matches its spelling: https://python-patterns.guide/gang-of-four/flyweight/. Heuristic limit: `__new__` is also the right tool for immutable subclasses (`int`, `tuple`), which this audit cannot distinguish — review, do not rewrite blindly."}
+            },
+            {
+                "id": "audit-python-isinstance-dispatch",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"python_isinstance_chain": ["?file", "?fn", "?count"]}
+                ],
+                "then": {"warn": "`?fn` in ?file dispatches on the same value across ?count `isinstance(...)` branches. Type dispatch in the caller is what the Composite Pattern removes: give every object in the hierarchy the same method (leaf objects return an empty result) so callers treat them symmetrically. See https://python-patterns.guide/gang-of-four/composite/. Heuristic limit: only positive `if`/`elif` chains over non-builtin domain types are counted; framework boundary dispatch and functools.singledispatch fallbacks can still match."}
+            },
+            {
+                "id": "warn-python-container-is-own-iterator",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_container_is_own_iterator": ["?file", "?class"]}
+                ],
+                "then": {"warn": "Container class `?class` in ?file returns `self` from `__iter__` and implements `__next__`, so only one traversal can be in flight at a time (nested `for` loops over the same object break). Return a separate iterator object or write `__iter__` as a generator. See https://python-patterns.guide/gang-of-four/iterator/. Heuristic limit: 'container' means the class also defines `__len__`, `__getitem__`, or `__contains__`; file-like stream objects that intentionally share state are not excluded."}
+            },
+            {
+                "id": "warn-python-multiple-inheritance",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_multiple_inheritance": ["?file", "?class", "?count"]}
+                ],
+                "then": {"warn": "Class `?class` in ?file inherits from ?count concrete classes. Combining features by multiple inheritance is order-dependent, risks attribute collisions, and needs m×n combination tests; compose the pieces as attributes instead. See https://python-patterns.guide/gang-of-four/composition-over-inheritance/. Heuristic limit: bases named `*Mixin`/`*ABC`, `Protocol`, `Generic`, `NamedTuple`, `TypedDict`, `Enum`, and `metaclass=` are not counted; other abstract bases are."}
+            },
+            {
+                "id": "audit-python-deep-inheritance",
+                "phase": "audit",
+                "priority": 3,
+                "audit": true,
+                "when": [
+                    {"python_inheritance_depth": ["?file", "?class", "?depth"]}
+                ],
+                "then": {"warn": "Class `?class` in ?file sits ?depth levels deep in an inheritance chain defined in this file. Deep hierarchies are the 'subclass explosion' the guide warns about; prefer composing small independent classes. See https://python-patterns.guide/gang-of-four/composition-over-inheritance/. Heuristic limit: depth is computed from classes in the same file only, so it understates real depth and says nothing about framework base classes."}
+            },
+            {
+                "id": "warn-python-mixin-with-init",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_mixin_with_init": ["?file", "?class"]}
+                ],
+                "then": {"warn": "Mixin `?class` in ?file defines `__init__`. A mixin with its own constructor makes cooperative `super().__init__` chains order-dependent and fragile; give the mixin class attributes with defaults, or compose the behaviour as a separate object. See https://python-patterns.guide/gang-of-four/composition-over-inheritance/. Heuristic limit: a mixin is recognised by the `Mixin` name suffix only."}
+            },
+            {
+                "id": "warn-python-static-delegation-wrapper",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_static_delegation_wrapper": ["?file", "?class", "?attr", "?count"]}
+                ],
+                "then": {"warn": "Class `?class` in ?file re-declares ?count methods that only forward to `self.?attr`. This static Decorator-pattern wrapper must be maintained whenever the wrapped class changes and silently misses methods it never listed. Prefer a dynamic wrapper: `def __getattr__(self, name): return getattr(self.?attr, name)`, overriding only the methods you change. See https://python-patterns.guide/gang-of-four/decorator-pattern/. Heuristic limit: counts single-statement `return self.?attr.<same name>(...)` methods; an adapter that renames methods is not detected."}
+            },
+            {
+                "id": "warn-python-mutable-class-attribute",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_mutable_class_attribute": ["?file", "?class", "?attr"]}
+                ],
+                "then": {"warn": "Class `?class` in ?file assigns mutable container `?attr` in the class body, so every instance shares one object — the same coupling hazard as a mutable module global. Create it in `__init__` (or use a dataclass `field(default_factory=...)`) unless it is a deliberate class-wide registry. See https://python-patterns.guide/python/module-globals/. Heuristic limit: dunder names are skipped; intentional class-level caches are still flagged."}
+            },
+            {
+                "id": "warn-python-equality-with-none",
+                "phase": "pre",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"python_equality_with_none": ["?file", "?fn"]}
+                ],
+                "then": {"warn": "`?fn` in ?file compares against `None` with `==`/`!=`. `None` is a sentinel and must be tested by identity (`is None` / `is not None`); `==` dispatches to `__eq__`, which NumPy arrays, ORMs, and mocks override. See https://python-patterns.guide/python/sentinel-object/. Upstream: pycodestyle E711."}
+            }
+        ]
+    })
+}
+
+fn typescript_rules() -> Value {
+    json!({
+        "rules": [
             {
                 "id": "warn-console-log-in-src",
                 "phase": "pre",
                 "priority": 5,
                 "when": [
-                    {"new_content_contains": "console.log("},
+                    {"ts_console_log_call": ["?file", "?fn", "?count"]},
                     {"file_path_matches": "src"}
                 ],
                 "then": {"warn": "console.log in src/ — remove before committing, or use a proper logger."}
@@ -2403,6 +2558,16 @@ fn typescript_rules() -> Value {
                     {"ts_non_null_assertion": ["?file", "?fn", "?count"]}
                 ],
                 "then": {"warn": "?count non-null assertion(s) (`x!`) in ?fn (?file) — prefer explicit narrowing or optional chaining."}
+            },
+            {
+                "id": "warn-ts-function-param-count-high",
+                "phase": "post",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"ts_function_param_count_high": ["?file", "?fn", "?count"]}
+                ],
+                "then": {"warn": "Function `?fn` in ?file has ?count parameters. Consider grouping related params into an options object or splitting the function — long signatures correlate with God-function debt."}
             }
         ]
     })
@@ -2421,11 +2586,22 @@ fn swift_rules() -> Value {
                 "then": {"warn": "Function `?fn` in ?file uses ?count force-unwrap(s). Prefer guard let or if let; reserve ! for invariants you can document."}
             },
             {
+                "id": "warn-swift-throws-with-force-unwrap",
+                "phase": "post",
+                "priority": 5,
+                "audit": true,
+                "when": [
+                    {"function_throws": ["?file", "?fn"]},
+                    {"function_uses_force_unwrap": ["?file", "?fn", "?count"]}
+                ],
+                "then": {"warn": "`?fn` in ?file is declared `throws` yet force-unwraps ?count time(s). Since the function can already propagate failure, replace the `!` with `guard let ... else { throw ... }` so callers get an error instead of a crash."}
+            },
+            {
                 "id": "warn-swift-try-bang",
                 "phase": "pre",
                 "priority": 5,
                 "when": [
-                    {"new_content_contains": "try!"},
+                    {"swift_governed_construct": ["?file", "?fn", "try_force"]},
                     {"file_extension_is": "swift"}
                 ],
                 "then": {"warn": "try! crashes on error — prefer try with do/catch, or try? when an Optional result is acceptable."}
@@ -2435,7 +2611,7 @@ fn swift_rules() -> Value {
                 "phase": "pre",
                 "priority": 10,
                 "when": [
-                    {"new_content_contains": "as!"},
+                    {"swift_governed_construct": ["?file", "?fn", "force_cast"]},
                     {"file_extension_is": "swift"}
                 ],
                 "then": {"warn": "Force-cast `as!` crashes on type mismatch — prefer `as?` with `if let`/`guard let`. Completes the force-bang trio with `!` and `try!`."}
@@ -2446,7 +2622,7 @@ fn swift_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "fatalError("},
+                    {"swift_governed_construct": ["?file", "?fn", "fatal_error"]},
                     {"file_extension_is": "swift"}
                 ],
                 "then": {"warn": "`fatalError(` aborts the process — for recoverable conditions prefer a `throws` API and let the caller decide. Reserve `fatalError` for genuinely unreachable invariants (and prefer `precondition`/`assertionFailure` when the intent is a debug-only trap)."}
@@ -2457,7 +2633,7 @@ fn swift_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"new_content_contains": "static var shared"},
+                    {"swift_governed_construct": ["?file", "?fn", "mutable_singleton"]},
                     {"file_extension_is": "swift"}
                 ],
                 "then": {"warn": "`static var shared` is a mutable global — the Singleton pattern (eleev/swift-design-patterns §Creational/Singleton) uses `static let shared` so the instance can't be swapped at runtime. If mutability is intentional, add a comment or move state inside the instance."}
@@ -2468,17 +2644,7 @@ fn swift_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"or": [
-                        {"new_content_contains": "CGRectMake("},
-                        {"new_content_contains": "CGSizeMake("},
-                        {"new_content_contains": "CGPointMake("},
-                        {"new_content_contains": "CGVectorMake("},
-                        {"new_content_contains": "UIEdgeInsetsMake("},
-                        {"new_content_contains": "NSMakeRect("},
-                        {"new_content_contains": "NSMakeSize("},
-                        {"new_content_contains": "NSMakePoint("},
-                        {"new_content_contains": "NSMakeRange("}
-                    ]},
+                    {"swift_governed_construct": ["?file", "?fn", "legacy_constructor"]},
                     {"file_extension_is": "swift"}
                 ],
                 "then": {"warn": "Legacy C-style constructor — prefer the modern Swift initializer (e.g. `CGRect(x:y:width:height:)`, `UIEdgeInsets(top:left:bottom:right:)`). Mirrors SwiftLint's `legacy_constructor` rule."}
@@ -2489,11 +2655,7 @@ fn swift_rules() -> Value {
                 "priority": 3,
                 "audit": true,
                 "when": [
-                    {"or": [
-                        {"new_content_contains": "arc4random("},
-                        {"new_content_contains": "arc4random_uniform("},
-                        {"new_content_contains": "drand48("}
-                    ]},
+                    {"swift_governed_construct": ["?file", "?fn", "legacy_random"]},
                     {"file_extension_is": "swift"}
                 ],
                 "then": {"warn": "Legacy random API — Swift 4.2+ ships `Int.random(in:)`, `Double.random(in:)`, and `Collection.randomElement()`, which work on all platforms (not just Darwin) and are uniformly distributed without modulo bias. Mirrors SwiftLint's `legacy_random` rule."}
@@ -3155,8 +3317,6 @@ mod tests {
         let ids: Vec<&str> = arr.iter().map(|r| r["id"].as_str().unwrap()).collect();
         for required in &[
             "warn-cargo-build-without-workspace",
-            "block-await-on-sync-execute-all-agenda-items",
-            "block-await-on-sync-fire-all-consequences",
             "warn-clone-heavy",
             "warn-empty-test",
         ] {
@@ -3171,6 +3331,15 @@ mod tests {
             !ids.contains(&"warn-rust-clone-count"),
             "warn-rust-clone-count must be removed (replaced by warn-clone-heavy)"
         );
+        for retired in [
+            "block-await-on-sync-execute-all-agenda-items",
+            "block-await-on-sync-fire-all-consequences",
+        ] {
+            assert!(
+                !ids.contains(&retired),
+                "repository-specific rule {retired} must not ship in the public Rust pack"
+            );
+        }
     }
 
     #[test]
@@ -3205,6 +3374,21 @@ mod tests {
     }
 
     #[test]
+    fn rust_pack_includes_panic_in_drop_rule() {
+        let rules = rust_rules();
+        let arr = rules["rules"].as_array().unwrap();
+        let rule = arr
+            .iter()
+            .find(|r| r["id"] == "block-panic-in-drop-impl")
+            .expect("rust pack must include block-panic-in-drop-impl");
+        assert!(
+            rule["then"].get("block").is_some(),
+            "block-panic-in-drop-impl must use 'block' verb"
+        );
+        assert_eq!(rule["audit"], true, "block-panic-in-drop-impl must audit");
+    }
+
+    #[test]
     fn python_pack_includes_patterns_guide_rules() {
         let rules = python_rules();
         let ids: Vec<&str> = rules["rules"]
@@ -3221,6 +3405,54 @@ mod tests {
         ] {
             assert!(ids.contains(&id), "python pack must include {id}");
         }
+    }
+
+    #[test]
+    fn rust_pack_includes_pub_fn_doc_rule() {
+        let v = Pack::Rust.rules();
+        let ids: Vec<&str> = v["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"warn-pub-fn-missing-doc"),
+            "rust pack must include warn-pub-fn-missing-doc, got {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn swift_pack_includes_throws_force_unwrap_rule() {
+        let v = Pack::Swift.rules();
+        let ids: Vec<&str> = v["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"warn-swift-throws-with-force-unwrap"),
+            "swift pack must include warn-swift-throws-with-force-unwrap, got {:?}",
+            ids
+        );
+    }
+
+    #[test]
+    fn typescript_pack_includes_param_count_rule() {
+        let v = Pack::TypeScript.rules();
+        let ids: Vec<&str> = v["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_str().unwrap())
+            .collect();
+        assert!(
+            ids.contains(&"warn-ts-function-param-count-high"),
+            "typescript pack must include warn-ts-function-param-count-high, got {:?}",
+            ids
+        );
     }
 
     #[test]
@@ -4154,5 +4386,458 @@ mod tests {
             !report.steps.is_empty(),
             "dry run should still report planned steps"
         );
+    }
+}
+
+#[cfg(test)]
+mod risky_call_coverage_tests {
+    use super::*;
+
+    fn opts(root: &Path, dry_run: bool, force: bool) -> InitOpts {
+        InitOpts {
+            project_root: root.to_path_buf(),
+            packs: vec![Pack::Llm],
+            force,
+            dry_run,
+            rules_only: false,
+            hooks_only: false,
+        }
+    }
+
+    fn read_value(path: &Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).expect("read")).expect("json")
+    }
+
+    fn phronesis_entry() -> Value {
+        json!({"command": "phr-mcp", "args": ["serve"]})
+    }
+
+    // ── install_one_target ────────────────────────────────────────────
+
+    #[test]
+    fn install_one_target_creates_missing_file_and_parent() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("nested/dir/.claude.json");
+        let target = McpTarget {
+            path: path.clone(),
+            label: "~/.claude.json",
+        };
+        let mut report = InitReport::default();
+        install_one_target(&target, false, &mut report).unwrap();
+        let v = read_value(&path);
+        assert_eq!(v["mcpServers"]["phronesis"], phronesis_entry());
+        assert!(
+            !with_extension(&path, "bak").exists(),
+            "no backup for new file"
+        );
+        assert!(report.steps.iter().any(|s| s.starts_with("+ registered")));
+    }
+
+    #[test]
+    fn install_one_target_preserves_other_keys_and_backs_up() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".claude.json");
+        std::fs::write(
+            &path,
+            r#"{"theme":"dark","mcpServers":{"other":{"command":"x"}}}"#,
+        )
+        .unwrap();
+        let target = McpTarget {
+            path: path.clone(),
+            label: "~/.claude.json",
+        };
+        let mut report = InitReport::default();
+        install_one_target(&target, false, &mut report).unwrap();
+        let v = read_value(&path);
+        assert_eq!(v["theme"], "dark");
+        assert_eq!(v["mcpServers"]["other"]["command"], "x");
+        assert_eq!(v["mcpServers"]["phronesis"], phronesis_entry());
+        let bak = with_extension(&path, "bak");
+        assert!(bak.exists());
+        assert!(std::fs::read_to_string(bak).unwrap().contains("\"dark\""));
+    }
+
+    #[test]
+    fn install_one_target_is_idempotent() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".claude.json");
+        let target = McpTarget {
+            path: path.clone(),
+            label: "~/.claude.json",
+        };
+        let mut report = InitReport::default();
+        install_one_target(&target, false, &mut report).unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        let mut report = InitReport::default();
+        install_one_target(&target, false, &mut report).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+        assert!(report.steps.iter().any(|s| s.contains("already registers")));
+        assert!(
+            !with_extension(&path, "bak").exists(),
+            "no write → no backup"
+        );
+    }
+
+    #[test]
+    fn install_one_target_dry_run_writes_nothing() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".claude.json");
+        let target = McpTarget {
+            path: path.clone(),
+            label: "~/.claude.json",
+        };
+        let mut report = InitReport::default();
+        install_one_target(&target, true, &mut report).unwrap();
+        assert!(!path.exists());
+        assert!(report.steps.iter().any(|s| s.contains("would register")));
+    }
+
+    #[test]
+    fn install_one_target_replaces_non_object_shapes() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".claude.json");
+        // Top-level array and a non-object mcpServers both get normalized.
+        std::fs::write(&path, "[1,2,3]").unwrap();
+        let target = McpTarget {
+            path: path.clone(),
+            label: "~/.claude.json",
+        };
+        install_one_target(&target, false, &mut InitReport::default()).unwrap();
+        assert_eq!(
+            read_value(&path)["mcpServers"]["phronesis"],
+            phronesis_entry()
+        );
+
+        std::fs::write(&path, r#"{"mcpServers":"oops"}"#).unwrap();
+        install_one_target(&target, false, &mut InitReport::default()).unwrap();
+        assert_eq!(
+            read_value(&path)["mcpServers"]["phronesis"],
+            phronesis_entry()
+        );
+    }
+
+    #[test]
+    fn install_one_target_stale_entry_is_upgraded() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".claude.json");
+        std::fs::write(&path, r#"{"mcpServers":{"phronesis":{"command":"old"}}}"#).unwrap();
+        let target = McpTarget {
+            path: path.clone(),
+            label: "~/.claude.json",
+        };
+        install_one_target(&target, false, &mut InitReport::default()).unwrap();
+        assert_eq!(
+            read_value(&path)["mcpServers"]["phronesis"],
+            phronesis_entry()
+        );
+    }
+
+    #[test]
+    fn install_one_target_empty_file_is_treated_as_absent() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".claude.json");
+        std::fs::write(&path, "  \n").unwrap();
+        let target = McpTarget {
+            path: path.clone(),
+            label: "~/.claude.json",
+        };
+        install_one_target(&target, false, &mut InitReport::default()).unwrap();
+        assert_eq!(
+            read_value(&path)["mcpServers"]["phronesis"],
+            phronesis_entry()
+        );
+    }
+
+    #[test]
+    fn install_one_target_malformed_json_errors_without_clobbering() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".claude.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let target = McpTarget {
+            path: path.clone(),
+            label: "~/.claude.json",
+        };
+        let err = install_one_target(&target, false, &mut InitReport::default()).unwrap_err();
+        assert!(matches!(err, InitError::Json(_)), "{err}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{not json");
+    }
+
+    // ── write_mcp_json ────────────────────────────────────────────────
+
+    #[test]
+    fn write_mcp_json_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let o = opts(dir.path(), false, false);
+        let mut report = InitReport::default();
+        write_mcp_json(dir.path(), &o, &mut report).unwrap();
+        let v = read_value(&dir.path().join(".mcp.json"));
+        assert_eq!(v["mcpServers"]["phronesis"], phronesis_entry());
+        assert!(report.steps.iter().any(|s| s == "+ wrote .mcp.json"));
+    }
+
+    #[test]
+    fn write_mcp_json_merges_existing_servers_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".mcp.json");
+        std::fs::write(&path, r#"{"mcpServers":{"other":{"command":"o"}},"x":1}"#).unwrap();
+        let o = opts(dir.path(), false, false);
+        write_mcp_json(dir.path(), &o, &mut InitReport::default()).unwrap();
+        let v = read_value(&path);
+        assert_eq!(v["x"], 1);
+        assert_eq!(v["mcpServers"]["other"]["command"], "o");
+        assert_eq!(v["mcpServers"]["phronesis"], phronesis_entry());
+
+        let mut report = InitReport::default();
+        write_mcp_json(dir.path(), &o, &mut report).unwrap();
+        assert!(report.steps.iter().any(|s| s.contains("unchanged")));
+    }
+
+    #[test]
+    fn write_mcp_json_dry_run_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let o = opts(dir.path(), true, false);
+        let mut report = InitReport::default();
+        write_mcp_json(dir.path(), &o, &mut report).unwrap();
+        assert!(!dir.path().join(".mcp.json").exists());
+        assert!(report.steps.iter().any(|s| s.contains("would write")));
+    }
+
+    #[test]
+    fn write_mcp_json_normalizes_non_object_and_rejects_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".mcp.json");
+        let o = opts(dir.path(), false, false);
+        std::fs::write(&path, "42").unwrap();
+        write_mcp_json(dir.path(), &o, &mut InitReport::default()).unwrap();
+        assert_eq!(
+            read_value(&path)["mcpServers"]["phronesis"],
+            phronesis_entry()
+        );
+
+        std::fs::write(&path, r#"{"mcpServers": []}"#).unwrap();
+        write_mcp_json(dir.path(), &o, &mut InitReport::default()).unwrap();
+        assert_eq!(
+            read_value(&path)["mcpServers"]["phronesis"],
+            phronesis_entry()
+        );
+
+        std::fs::write(&path, "{").unwrap();
+        let err = write_mcp_json(dir.path(), &o, &mut InitReport::default()).unwrap_err();
+        assert!(matches!(err, InitError::Json(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{");
+    }
+
+    #[test]
+    fn write_mcp_json_force_backs_up_changed_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".mcp.json");
+        std::fs::write(&path, r#"{"mcpServers":{}}"#).unwrap();
+        let o = opts(dir.path(), false, true);
+        write_mcp_json(dir.path(), &o, &mut InitReport::default()).unwrap();
+        assert!(with_extension(&path, "bak").exists());
+    }
+
+    // ── write_gemini_settings ─────────────────────────────────────────
+
+    #[test]
+    fn write_gemini_settings_creates_full_wiring() {
+        let dir = tempfile::tempdir().unwrap();
+        let o = opts(dir.path(), false, false);
+        write_gemini_settings(dir.path(), &o, &mut InitReport::default()).unwrap();
+        let v = read_value(&dir.path().join(".gemini/settings.json"));
+        assert_eq!(v["mcpServers"]["phronesis"], phronesis_entry());
+        for (event, cmd) in [
+            ("BeforeTool", "phr-mcp pre-check"),
+            ("AfterTool", "phr-mcp post-check"),
+            ("SessionStart", "phr-mcp session-context"),
+            ("BeforeAgent", "phr-mcp interaction-context"),
+        ] {
+            let arr = v["hooks"][event]
+                .as_array()
+                .unwrap_or_else(|| panic!("{event}"));
+            assert_eq!(arr.len(), 1, "{event}");
+            assert_eq!(arr[0]["hooks"][0]["command"], cmd, "{event}");
+        }
+        assert_eq!(
+            v["hooks"]["BeforeTool"][0]["matcher"],
+            "replace|write_file|run_shell_command"
+        );
+        assert_eq!(v["hooks"]["SessionStart"][0]["matcher"], "");
+    }
+
+    #[test]
+    fn write_gemini_settings_preserves_user_hooks_and_drops_legacy_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gemini/settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            json!({
+                "theme": "x",
+                "mcpServers": {"other": {"command": "o"}},
+                "hooks": {
+                    "BeforeTool": [
+                        {"matcher": "custom", "hooks": [{"type": "command", "command": "mine"}]},
+                        {"matcher": "replace|write_file|run_shell_command", "hooks": [{"type": "command", "command": "stale"}]}
+                    ],
+                    "BeforeModelRequest": [{"matcher": "", "hooks": []}]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let o = opts(dir.path(), false, false);
+        write_gemini_settings(dir.path(), &o, &mut InitReport::default()).unwrap();
+        let v = read_value(&path);
+        assert_eq!(v["theme"], "x");
+        assert_eq!(v["mcpServers"]["other"]["command"], "o");
+        assert!(
+            v["hooks"].get("BeforeModelRequest").is_none(),
+            "legacy hook removed"
+        );
+        let before = v["hooks"]["BeforeTool"].as_array().unwrap();
+        assert_eq!(before.len(), 2);
+        assert!(before.iter().any(|e| e["hooks"][0]["command"] == "mine"));
+        assert!(
+            before
+                .iter()
+                .any(|e| e["hooks"][0]["command"] == "phr-mcp pre-check")
+        );
+        assert!(!before.iter().any(|e| e["hooks"][0]["command"] == "stale"));
+    }
+
+    #[test]
+    fn write_gemini_settings_is_idempotent_and_dry_run_safe() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gemini/settings.json");
+        let dry = opts(dir.path(), true, false);
+        let mut report = InitReport::default();
+        write_gemini_settings(dir.path(), &dry, &mut report).unwrap();
+        assert!(!path.exists());
+        assert!(report.steps.iter().any(|s| s.contains("would write")));
+
+        let o = opts(dir.path(), false, false);
+        write_gemini_settings(dir.path(), &o, &mut InitReport::default()).unwrap();
+        let first = std::fs::read_to_string(&path).unwrap();
+        let mut report = InitReport::default();
+        write_gemini_settings(dir.path(), &o, &mut report).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+        assert!(report.steps.iter().any(|s| s.contains("unchanged")));
+    }
+
+    #[test]
+    fn write_gemini_settings_normalizes_bad_shapes_and_rejects_malformed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".gemini/settings.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let o = opts(dir.path(), false, false);
+
+        std::fs::write(
+            &path,
+            r#"{"mcpServers": 5, "hooks": {"BeforeTool": "nope"}}"#,
+        )
+        .unwrap();
+        write_gemini_settings(dir.path(), &o, &mut InitReport::default()).unwrap();
+        let v = read_value(&path);
+        assert_eq!(v["mcpServers"]["phronesis"], phronesis_entry());
+        assert_eq!(v["hooks"]["BeforeTool"].as_array().unwrap().len(), 1);
+
+        std::fs::write(&path, "null").unwrap();
+        write_gemini_settings(dir.path(), &o, &mut InitReport::default()).unwrap();
+        assert_eq!(
+            read_value(&path)["mcpServers"]["phronesis"],
+            phronesis_entry()
+        );
+
+        std::fs::write(&path, "{\"a\":").unwrap();
+        let err = write_gemini_settings(dir.path(), &o, &mut InitReport::default()).unwrap_err();
+        assert!(matches!(err, InitError::Json(_)));
+    }
+
+    // ── upsert_codex_hook ─────────────────────────────────────────────
+
+    fn codex_entry(event: &str, matcher: &str) -> Value {
+        json!({
+            "matcher": matcher,
+            "hooks": [{"type": "command", "command": format!("phr-mcp codex-hook {event}")}]
+        })
+    }
+
+    #[test]
+    fn upsert_codex_hook_creates_hooks_and_event_arrays() {
+        let mut settings = json!({});
+        upsert_codex_hook(
+            &mut settings,
+            "PreToolUse",
+            codex_entry("PreToolUse", "Bash"),
+        );
+        let arr = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["matcher"], "Bash");
+    }
+
+    #[test]
+    fn upsert_codex_hook_replaces_our_entry_regardless_of_matcher() {
+        let mut settings = json!({"hooks": {"PreToolUse": [
+            codex_entry("PreToolUse", "old-matcher"),
+            {"matcher": "old-matcher", "hooks": [{"type": "command", "command": "user-cmd"}]}
+        ]}});
+        upsert_codex_hook(
+            &mut settings,
+            "PreToolUse",
+            codex_entry("PreToolUse", "new"),
+        );
+        let arr = settings["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(arr.len(), 2, "{arr:?}");
+        assert!(
+            arr.iter().any(|e| e["hooks"][0]["command"] == "user-cmd"),
+            "user hook kept"
+        );
+        let ours: Vec<_> = arr
+            .iter()
+            .filter(|e| e["hooks"][0]["command"] == "phr-mcp codex-hook PreToolUse")
+            .collect();
+        assert_eq!(ours.len(), 1);
+        assert_eq!(ours[0]["matcher"], "new");
+    }
+
+    #[test]
+    fn upsert_codex_hook_is_idempotent_and_scoped_to_event() {
+        let mut settings = json!({});
+        upsert_codex_hook(&mut settings, "PreToolUse", codex_entry("PreToolUse", "m"));
+        upsert_codex_hook(&mut settings, "PreToolUse", codex_entry("PreToolUse", "m"));
+        upsert_codex_hook(
+            &mut settings,
+            "PostToolUse",
+            codex_entry("PostToolUse", "m"),
+        );
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            settings["hooks"]["PostToolUse"].as_array().unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn upsert_codex_hook_repairs_non_array_event_and_tolerates_odd_entries() {
+        let mut settings = json!({"hooks": {"PreToolUse": {"bad": true}}});
+        upsert_codex_hook(&mut settings, "PreToolUse", codex_entry("PreToolUse", "m"));
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 1);
+
+        // Entries lacking a hooks array are not ours and must survive.
+        let mut settings = json!({"hooks": {"PreToolUse": [5, {"matcher": "x"}]}});
+        upsert_codex_hook(&mut settings, "PreToolUse", codex_entry("PreToolUse", "m"));
+        assert_eq!(settings["hooks"]["PreToolUse"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn upsert_codex_hook_no_ops_when_settings_or_hooks_not_objects() {
+        let mut settings = json!([]);
+        upsert_codex_hook(&mut settings, "PreToolUse", codex_entry("PreToolUse", "m"));
+        assert_eq!(settings, json!([]));
+
+        let mut settings = json!({"hooks": "string"});
+        upsert_codex_hook(&mut settings, "PreToolUse", codex_entry("PreToolUse", "m"));
+        assert_eq!(settings, json!({"hooks": "string"}));
     }
 }

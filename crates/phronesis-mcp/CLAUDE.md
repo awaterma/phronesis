@@ -212,6 +212,7 @@ phr-mcp init                          # complete language-agnostic platform
 phr-mcp init --packs rust             # defaults + Rust enforcement
 phr-mcp init --packs rust,rhai        # defaults + Rust and Rhai enforcement
 phr-mcp init --packs python           # defaults + Python enforcement
+phr-mcp init --packs python,python-patterns  # + opt-in python-patterns.guide advisories
 phr-mcp init --packs typescript       # defaults + TS/JS enforcement
 phr-mcp init --packs none             # no defaults or starter rules
 phr-mcp init --dry-run                # preview without writing
@@ -251,15 +252,17 @@ The packs are composable and **independent**:
   active even when CLAUDE.md content has been compressed out of context.
 - `rust` — Rust code-shape enforcement. Blocks: `.unwrap()` /
   `todo!()` / `panic!()` / `unimplemented!()` in src/,
-  `Result<_, String>` returns,
-  `.execute_all_agenda_items().await` / `.fire_all_consequences().await`
-  on now-sync methods, `#![deny(warnings)]` (breaks on toolchain
-  upgrade). Warns: public fn taking `&String`, `&Vec<T>`, or
+  `Result<_, String>` returns, `#![deny(warnings)]` (breaks on toolchain
+  upgrade), panicking constructs (unwrap / `.expect("")` / panic! /
+  todo! / unimplemented!) inside a `Drop::drop` body (a panic during
+  unwind there aborts the whole process — log and swallow instead).
+  Warns: public fn taking `&String`, `&Vec<T>`, or
   `&Box<T>`, functions with 3+ `.clone()` calls, functions with 5+
   parameters, `impl Deref for` (Deref polymorphism anti-pattern),
   `#[test]` functions with no assertions or `?` operator,
   `cargo build/test/check/clippy` without `--workspace`, `dbg!()` in
-  src/, `.expect("")` with an empty message in src/. Audit-only
+  src/, `.expect("")` with an empty message in src/, public fns in src/
+  without a `///` doc comment (API Guidelines C-DOC). Audit-only
   (silent at hook time, surfaced by `phr-mcp audit`): files exceeding
   800 lines (god-file signal), manual `=> return Err(...)` match arms
   (use `?`), `*_id: String` / `*_id: u64` fields (newtype
@@ -291,22 +294,43 @@ The packs are composable and **independent**:
   exceptions, high parameter counts, missing public docstrings, mutated
   module-level containers, and star imports. The last two remain audit-only
   because name shadowing and package `__init__.py` re-exports can be
-  intentional.
+  intentional. Every rule consumes a tree-sitter predicate; none matches
+  substrings.
+- `python-patterns` (alias `py-patterns`) — opt-in, opinionated advisories
+  derived from <https://python-patterns.guide/>, each backed by its own
+  tree-sitter predicate and citing the guide page plus the heuristic's
+  limit. Warns on `global` rebinding and `globals()[...]` introspection
+  assignment (Prebound Methods / Global Object), `type(name, bases, ns)`
+  dynamic classes, multiple inheritance of concrete classes, and `*Mixin`
+  classes with `__init__` (Composition Over Inheritance), `__new__`-based
+  singletons (Singleton), containers whose `__iter__` returns `self`
+  (Iterator), static delegation wrappers of 4+ forwarding methods without
+  `__getattr__` (Decorator), mutable class-body containers (shared state),
+  and `== None` (Sentinel Object). Audit-only: other `__new__` overrides
+  (Flyweight), positive same-subject `if`/`elif` dispatch across non-builtin
+  domain types (Composite), and file-local inheritance depth of 3+. The
+  Composite predicate excludes independent guards, negative checks, and
+  primitive/container validation. Not enabled by the plain `python` pack.
 - `typescript` — `: any` and `console.log` warnings, plus tree-sitter AST
   rules (explicit `any`, `@ts-ignore`/`@ts-expect-error`/`@ts-nocheck`
-  suppressions, non-null `!` assertions)
-- `swift` — Swift-specific advisories: force-unwrap warning, try! warning
+  suppressions, non-null `!` assertions, functions with 5+ parameters)
+- `swift` — Swift-specific advisories: force-unwrap warning, try! warning,
+  `throws` functions that force-unwrap instead of throwing
 - `confidence` — confidence-band gate (SPEC-confidence-scoring), enabled by default.
-  Writes `.phronesis/confidence.json` and ships three
-  commit-gate rules: low confidence blocks `git commit -m`, medium warns,
-  high passes clean. Pair with `.phronesis/bugs.json` (known-bug
+  Writes `.phronesis/confidence.json` and ships two advisory gate rules over
+  `git (commit|merge|rebase|cherry-pick|revert|pull)`: low confidence warns
+  that build/test/known-bug evidence is incomplete or failing, medium warns
+  that one grounded signal is missing, and high (3/3 signals) passes clean —
+  neither band blocks the Git command (SPEC-structural-rule-migration
+  §"Confidence gate severity"). Pair with `.phronesis/bugs.json` (known-bug
   registry) and `phr-mcp confidence` for the report surface. Also scaffolds
   `.phronesis/toolchains.json` (pytest/tsc example defs). Confidence signals
   are toolchain-neutral: any command matched by a toolchain def grounds a
   `build_outcome` from its exit code (`command_exit`, captured on every shell
   journal record), with optional per-toolchain regex refinement for test
-  counts and per-test results. Cargo ships as a built-in def; project defs
-  in `toolchains.json` extend or override it. (One behavior refinement
+  counts and per-test results. Cargo, `xcodebuild`, and SwiftPM ship as
+  built-in defs; project defs in `toolchains.json` extend or override them.
+  (One behavior refinement
   vs. pre-0.18: a build/test command that exits non-zero with no test
   summary and no compile-error text is now graded build-fail when the CLI
   supplies the exit code.) Journal growth is bounded by
@@ -553,7 +577,7 @@ Any other verb is passed through as its own `action_type` for forward compatibil
   "priority": 10,
   "audit": true,
   "when": [
-    { "new_content_contains": ".unwrap()" },
+    { "rust_governed_invocation": ["?file", "?fn", "unwrap"] },
     { "file_path_matches": "src" }
   ],
   "then": { "block": "Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable." }
@@ -603,7 +627,9 @@ Three transformations applied to every extracted rule:
   `[problem]`, `[directive]`) from the message.
 - Demote `block` actions to `warn`.
 - Demote to `log` any rule whose message matches a structural Rust-pack keyword
-  (`unwrap`, `clone`, `Deref`, `&String`, `&Vec`, `thiserror`).
+  (`unwrap`, `clone`, `Deref`, `&String`, `&Vec`, `thiserror`). Rust
+  panic/debug invocations are emitted as `rust_governed_invocation` facts so
+  comments and strings do not trigger those starter rules.
 
 Idempotent.
 
@@ -682,7 +708,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 - `src/rules_file.rs` — Disk format for rules.json: v2 `SourceRule`/`WhenClause` types, v1+v2 deserialization, `unfold_or` (DNF expansion), `read`/`write_atomic`/`read_source`/`write_source`
 - `src/security.rs` — Path canonicalization, size caps, input validators
 - `src/diff_extract.rs` — Regex-based diff facts (function_added, import_added, etc.)
-- `src/syntax/` — Tree-sitter AST predicates for Rust, Swift, Python, and TypeScript (e.g. function_returns_result_string, python_bare_except, ts_explicit_any). The Rust analyzer is split across `src/syntax/rust/{mod,walk,derives,counts,signatures,docs,assertions,eval,hazards}.rs`.
+- `src/syntax/` — Tree-sitter AST predicates for Rust, Swift, Python, and TypeScript (e.g. function_returns_result_string, rust_governed_invocation, rust_governed_attribute, rust_trait_impl, rust_governed_match_arm, rust_primitive_id_field, rust_rc_refcell_type, swift_governed_construct, python_bare_except, ts_explicit_any, ts_console_log_call). The Rust analyzer is split across `src/syntax/rust/{mod,walk,derives,counts,signatures,docs,assertions,eval,hazards,invocations,attributes,impls,match_arms,types}.rs`.
 - `src/outcomes/` — Confidence scoring (SPEC-confidence-scoring). Grounded
   `build_outcome`/`test_outcome`/`bug_check_outcome` facts behind declarative
   toolchain defs (built-in cargo def + `.phronesis/toolchains.json`, one

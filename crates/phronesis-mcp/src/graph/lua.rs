@@ -25,6 +25,11 @@ static FUNC_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
         .expect("static regex compiles")
 });
 
+/// Matches `require("mod")` / `require('mod')` calls; group 1 is the module path.
+static REQUIRE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r#"require\s*\(\s*['"]([^'"]+)['"]\s*\)"#).expect("static regex compiles")
+});
+
 /// Classify a `.lua` file as `test`, `build`, or `production`.
 fn file_type(file_path: &str) -> &'static str {
     if file_path.starts_with("test/")
@@ -71,9 +76,54 @@ fn resolve_require(
 ) -> String {
     // Relative require: resolve against the file's directory.
     if require_arg.starts_with('.') {
-        let dir = file_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        return resolve_relative_require(require_arg, file_path, unit, files);
+    }
 
-        // Walk `..` segments.
+    // Unit-relative: `@myproject.utils` → resolve within this unit.
+    if let Some(rest) = require_arg.strip_prefix('@') {
+        return resolve_unit_require(rest, unit, files);
+    }
+
+    // Standard module: look up in known files.
+    let dot_separated = require_arg.replace('.', "/");
+    let candidates = [
+        format!("{require_arg}.lua"),
+        format!("{dot_separated}.lua"),
+        format!("{require_arg}/init.lua"),
+        format!("{dot_separated}/init.lua"),
+    ];
+
+    for candidate in &candidates {
+        if let Some(file) = files.iter().find(|f| f.as_str() == candidate) {
+            return module_path(file, unit);
+        }
+    }
+
+    // Fallback: use the raw require arg as module path segments.
+    fallback_module_path(require_arg, unit)
+}
+
+/// Fallback module path: unit ID joined with the non-empty `/`-separated
+/// segments of `raw`.
+fn fallback_module_path(raw: &str, unit: &UnitContext) -> String {
+    let segments: Vec<&str> = raw.split('/').filter(|s| !s.is_empty()).collect();
+    std::iter::once(unit.id.as_str())
+        .chain(segments)
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Resolve a `.`-prefixed relative require against the file's directory.
+fn resolve_relative_require(
+    require_arg: &str,
+    file_path: &str,
+    unit: &UnitContext,
+    files: &[String],
+) -> String {
+    let dir = file_path.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+
+    // Walk `..` segments.
+    let path = {
         let mut path = dir.to_string();
         for component in require_arg.split('/') {
             match component {
@@ -93,63 +143,34 @@ fn resolve_require(
                 }
             }
         }
+        path
+    };
 
-        // Check exact match or init.lua variant.
-        for candidate in [&path, &format!("{path}/init.lua")] {
-            if let Some(file) = files.iter().find(|f| f.as_str() == candidate) {
-                return module_path(file, unit);
-            }
-        }
-
-        // Fallback: construct path from the resolved directory.
-        let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        return std::iter::once(unit.id.as_str())
-            .chain(segments)
-            .collect::<Vec<_>>()
-            .join("::");
-    }
-
-    // Unit-relative: `@myproject.utils` → resolve within this unit.
-    if let Some(rest) = require_arg.strip_prefix('@') {
-        let dot_separated = rest.replace('.', "/");
-        let candidate = format!("{rest}.lua");
-        let slash_separated = format!("{dot_separated}.lua");
-
-        if let Some(file) = files
-            .iter()
-            .find(|f| f.as_str() == candidate || f.as_str() == slash_separated)
-        {
-            return module_path(file, unit);
-        }
-        // Fallback to unit ID + module segments.
-        let segments: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
-        return std::iter::once(unit.id.as_str())
-            .chain(segments)
-            .collect::<Vec<_>>()
-            .join("::");
-    }
-
-    // Standard module: look up in known files.
-    let dot_separated = require_arg.replace('.', "/");
-    let candidates = [
-        format!("{require_arg}.lua"),
-        format!("{dot_separated}.lua"),
-        format!("{require_arg}/init.lua"),
-        format!("{dot_separated}/init.lua"),
-    ];
-
-    for candidate in &candidates {
+    // Check exact match or init.lua variant.
+    for candidate in [&path, &format!("{path}/init.lua")] {
         if let Some(file) = files.iter().find(|f| f.as_str() == candidate) {
             return module_path(file, unit);
         }
     }
 
-    // Fallback: use the raw require arg as module path segments.
-    let segments: Vec<&str> = require_arg.split('/').filter(|s| !s.is_empty()).collect();
-    std::iter::once(unit.id.as_str())
-        .chain(segments)
-        .collect::<Vec<_>>()
-        .join("::")
+    // Fallback: construct path from the resolved directory.
+    fallback_module_path(&path, unit)
+}
+
+/// Resolve a `@pkg.mod` unit-relative require (`rest` is the part after `@`).
+fn resolve_unit_require(rest: &str, unit: &UnitContext, files: &[String]) -> String {
+    let dot_separated = rest.replace('.', "/");
+    let candidate = format!("{rest}.lua");
+    let slash_separated = format!("{dot_separated}.lua");
+
+    if let Some(file) = files
+        .iter()
+        .find(|f| f.as_str() == candidate || f.as_str() == slash_separated)
+    {
+        return module_path(file, unit);
+    }
+    // Fallback to unit ID + module segments.
+    fallback_module_path(rest, unit)
 }
 
 /// Extract every base relation from one Lua file.
@@ -166,8 +187,6 @@ pub fn extract_lua(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
 
     let self_module = module_path(file_path, unit);
     let ft = file_type(file_path);
-    let files = &unit.lua_files;
-
     let mut out: BTreeSet<(String, Vec<String>)> = BTreeSet::new();
 
     // Always emit file_type and declares_module.
@@ -181,6 +200,42 @@ pub fn extract_lua(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
     ));
 
     // Extract function definitions.
+    insert_fn_defs(&mut out, content, file_path, &self_module);
+
+    // Extract require() calls and resolve to imports edges.
+    for cap in REQUIRE_RE.captures_iter(content) {
+        let arg = cap.get(1).map_or("", |m| m.as_str());
+        let resolved = resolve_require(arg, file_path, unit, &unit.lua_files);
+        out.insert(("imports".to_string(), vec![self_module.clone(), resolved]));
+    }
+
+    // Risk watchlist: calls to APIs that pose security concerns.
+    insert_watchlist_calls(&mut out, content, file_path, &self_module);
+
+    let edges = out
+        .into_iter()
+        .map(|(p, a)| Edge {
+            p,
+            a,
+            src: file_path.to_string(),
+            d: false,
+        })
+        .collect();
+
+    Extracted {
+        edges,
+        skipped: 0,
+        parse_failed: false,
+    }
+}
+
+/// Insert a `defines_fn` edge for every function definition in `content`.
+fn insert_fn_defs(
+    out: &mut BTreeSet<(String, Vec<String>)>,
+    content: &str,
+    file_path: &str,
+    self_module: &str,
+) {
     for cap in FUNC_RE.captures_iter(content) {
         // cap[2] is optional table prefix (M, self, etc.), cap[3] is func name.
         let prefix = cap.get(2).map_or("", |m| m.as_str());
@@ -202,17 +257,16 @@ pub fn extract_lua(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
             vec![file_path.to_string(), qualified],
         ));
     }
+}
 
-    // Extract require() calls and resolve to imports edges.
-    let require_re = regex::Regex::new(r#"require\s*\(\s*['"]([^'"]+)['"]\s*\)"#).unwrap();
-    for cap in require_re.captures_iter(content) {
-        let arg = cap.get(1).map_or("", |m| m.as_str());
-        let resolved = resolve_require(arg, file_path, unit, files);
-        out.insert(("imports".to_string(), vec![self_module.clone(), resolved]));
-    }
-
-    // Risk watchlist: calls to APIs that pose security concerns.
-    // Split into dynamic-code-load (high-signal) and general calls_api.
+/// Insert risk-watchlist edges: calls to APIs that pose security concerns.
+/// Split into dynamic-code-load (high-signal) and general calls_api.
+fn insert_watchlist_calls(
+    out: &mut BTreeSet<(String, Vec<String>)>,
+    content: &str,
+    file_path: &str,
+    self_module: &str,
+) {
     let dynamic_loaders = ["dofile", "load", "loadfile", "loadstring"];
     let general_watchlist = ["assert", "setfenv", "module"];
     for api in &dynamic_loaders {
@@ -222,7 +276,11 @@ pub fn extract_lua(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
         {
             out.insert((
                 "lua_dynamic_code_load".to_string(),
-                vec![file_path.to_string(), self_module.clone(), api.to_string()],
+                vec![
+                    file_path.to_string(),
+                    self_module.to_string(),
+                    api.to_string(),
+                ],
             ));
         }
     }
@@ -233,25 +291,9 @@ pub fn extract_lua(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
         {
             out.insert((
                 "calls_api".to_string(),
-                vec![self_module.clone(), api.to_string()],
+                vec![self_module.to_string(), api.to_string()],
             ));
         }
-    }
-
-    let edges = out
-        .into_iter()
-        .map(|(p, a)| Edge {
-            p,
-            a,
-            src: file_path.to_string(),
-            d: false,
-        })
-        .collect();
-
-    Extracted {
-        edges,
-        skipped: 0,
-        parse_failed: false,
     }
 }
 
@@ -268,6 +310,7 @@ mod tests {
             files: Vec::new(),
             lua_files: Vec::new(),
             cue_files: Vec::new(),
+            test_target: false,
         }
     }
 
@@ -433,6 +476,7 @@ function M.c() return 3 end
             files: Vec::new(),
             lua_files: files.clone(),
             cue_files: Vec::new(),
+            test_target: false,
         };
         let out = extract_lua("src/main.lua", "local m = require('./core')\n", &unit);
         let imps = edges_of(&out, "imports");

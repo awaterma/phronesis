@@ -244,6 +244,7 @@ This repository's `change_set.rhai` provider emits
 | `rust` | Existing panic/error/API/design rules plus synchronous lock guards across `.await`, unsafe blocks without `SAFETY:` rationale, and known blocking calls inside `async fn` |
 | `rhai` | `engine.eval(<string literal>)` (use `compile_file`), `print(` in `.rhai` scripts |
 | `python` | Bare `except:`, `print()`, mutable/call defaults, swallowed exceptions, import-time I/O, `is` with value literals, mutated module globals, and star imports |
+| `python-patterns` | Opt-in parser-backed design advisories. Includes same-subject domain-type `isinstance` dispatch, class-level mutable state, inheritance, iterator, decorator, Singleton/Flyweight, and sentinel patterns. |
 | `typescript` | `: any` warning, `console.log` warning |
 | `swift` | Force-unwrap warning, `try!` warning |
 

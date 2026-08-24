@@ -100,7 +100,9 @@ is the same gate-bypass we're trying to close.
 
 A real-world friction: merges typically come in bursts (cut a release,
 merge N branches). Each successful gated commit settles the subject. The
-next merge then sees "no open subject → 0 signals → low block."
+next merge then sees "no open subject → 0 signals → low confidence warning"
+(per `SPEC-structural-rule-migration.md` §"Confidence gate severity", low
+confidence warns rather than blocks).
 
 The expected workflow is:
 

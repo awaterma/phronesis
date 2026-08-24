@@ -24,6 +24,9 @@ pub struct SyntaxFacts {
     /// `function_param_type` predicate can't express because it requires
     /// exact string match and `&Vec<...>` has variable contents.
     pub vec_ref_params: Vec<(String, String)>,
+    /// (fn_name, param_name) for parameters whose normalized type starts with
+    /// `&Box<`. Derived from `function_param_types`.
+    pub box_ref_params: Vec<(String, String)>,
     /// (fn_name, count) for functions whose parameter count meets or exceeds
     /// a threshold. Derived from `function_param_types` by grouping. Threshold
     /// fixed at 5 by convention (matches `function_clone_counts_high` shape).
@@ -59,6 +62,28 @@ pub struct SyntaxFacts {
     /// (fn_name, guard_name) for std synchronization guards whose lexical
     /// scope continues across an await point.
     pub sync_lock_guards_across_await: Vec<(String, String)>,
+    /// (fn_name or `<module>`, construct) for parser-identified starter-pack
+    /// invocations: unwrap, empty-message expect, todo, panic, unimplemented,
+    /// and dbg.
+    pub rust_governed_invocations: Vec<(String, String)>,
+    /// Stable names for parser-identified crate/item attributes governed by
+    /// starter rules.
+    pub rust_governed_attributes: Vec<String>,
+    /// (implementing_type, trait_name) for parsed Rust trait impl blocks.
+    pub rust_trait_impls: Vec<(String, String)>,
+    /// (implementing_type, construct) for panicking constructs — unwrap,
+    /// empty-message expect, todo, panic, unimplemented — inside the body of
+    /// a `Drop::drop` implementation. A panic during unwind inside
+    /// `Drop::drop` aborts the whole process rather than failing gracefully.
+    pub rust_panic_in_drop: Vec<(String, String)>,
+    /// (fn_name or `<module>`, shape) for governed Rust match-arm forms.
+    pub rust_governed_match_arms: Vec<(String, String)>,
+    /// (field_name, primitive_type) for parsed fields ending in `_id` whose
+    /// type is `u64`. The String-ID rule retains line-oriented matching so
+    /// its field-level documentation exception remains enforceable.
+    pub rust_primitive_id_fields: Vec<(String, String)>,
+    /// Count of parsed `Rc<RefCell<_>>` type shapes.
+    pub rust_rc_refcell_count: usize,
     /// Functions with 8 or more *outer-scope* `let` declarations.
     /// Bindings inside child `block_expression` and `closure_expression`
     /// nodes are NOT counted, so functions that already adopted the
@@ -79,6 +104,9 @@ pub struct SyntaxFacts {
     pub swift_force_unwraps: Vec<(String, usize)>,
     pub swift_throwing_functions: Vec<String>,
     pub swift_async_functions: Vec<String>,
+    /// (fn_name or `<module>`, construct) for parser-identified Swift starter
+    /// rule shapes.
+    pub swift_governed_constructs: Vec<(String, String)>,
 
     // ─── Python ─────────────────────────────────────────────────────
     /// Enclosing function name (or `<module>`) per bare `except:` clause.
@@ -112,6 +140,39 @@ pub struct SyntaxFacts {
     /// Module names used by `from module import *`.
     pub python_star_imports: Vec<String>,
 
+    // ─── Python: python-patterns.guide derived (opt-in `python-patterns` pack)
+    /// (fn_name, global_name) per name declared with `global` inside a def.
+    pub python_global_statements: Vec<(String, String)>,
+    /// Enclosing function per `globals()[...] = ...` assignment.
+    pub python_globals_subscript_assignments: Vec<String>,
+    /// Enclosing function per three-argument `type(name, bases, ns)` call.
+    pub python_dynamic_class_creations: Vec<String>,
+    /// (class_name, shape) per class defining `__new__`; shape is
+    /// `singleton` when the body touches a `_instance`-style cache, else
+    /// `custom`.
+    pub python_new_overrides: Vec<(String, String)>,
+    /// (fn_name, count) for defs whose `if`/`elif` conditions call
+    /// `isinstance` at least twice.
+    pub python_isinstance_chains: Vec<(String, usize)>,
+    /// Classes that implement a container protocol method and also make
+    /// `__iter__` return `self` alongside `__next__`.
+    pub python_containers_own_iterator: Vec<String>,
+    /// (class_name, count) for classes with 2+ concrete (non-mixin,
+    /// non-ABC/Protocol/Generic) base classes.
+    pub python_multiple_inheritance: Vec<(String, usize)>,
+    /// (class_name, depth) for classes whose file-local inheritance chain
+    /// is 3+ levels deep.
+    pub python_inheritance_depths: Vec<(String, usize)>,
+    /// Classes named `*Mixin` that define `__init__`.
+    pub python_mixins_with_init: Vec<String>,
+    /// (class_name, attr, count) for classes with 4+ methods that only
+    /// delegate `return self.<attr>.<same_name>(...)` and no `__getattr__`.
+    pub python_static_delegation_wrappers: Vec<(String, String, usize)>,
+    /// (class_name, attr) for class-body `attr = []` / `{}` / `set()` etc.
+    pub python_mutable_class_attributes: Vec<(String, String)>,
+    /// Enclosing function per `x == None` / `x != None` comparison.
+    pub python_equality_with_none: Vec<String>,
+
     // ─── TypeScript ─────────────────────────────────────────────────
     /// (fn_name or `<module>`, count) of explicit `any` type annotations.
     pub ts_explicit_anys: Vec<(String, usize)>,
@@ -122,6 +183,9 @@ pub struct SyntaxFacts {
     pub ts_suppression_comment_count: usize,
     /// (fn_name, count) for functions with 5+ parameters.
     pub ts_function_param_counts_high: Vec<(String, usize)>,
+    /// (fn_name or `<module>`, count) for direct global `console.log(...)`
+    /// calls.
+    pub ts_console_log_calls: Vec<(String, usize)>,
 }
 
 /// A `tests/` or `benches/` target is test code in its entirety, with no
@@ -147,6 +211,7 @@ impl SyntaxFacts {
         "function_returns_result_string",
         "function_param_type",
         "function_param_is_vec_ref",
+        "function_param_is_box_ref",
         "function_param_count_high",
         "function_clone_count",
         "function_clone_count_high",
@@ -161,9 +226,17 @@ impl SyntaxFacts {
         "rust_unsafe_without_safety_comment",
         "rust_async_blocking_call",
         "rust_sync_lock_guard_across_await",
+        "rust_governed_invocation",
+        "rust_governed_attribute",
+        "rust_trait_impl",
+        "rust_panic_in_drop",
+        "rust_governed_match_arm",
+        "rust_primitive_id_field",
+        "rust_rc_refcell_type",
         // Swift
         "function_uses_force_unwrap",
         "function_throws",
+        "swift_governed_construct",
         // `function_is_async` appears for both Rust and Swift but is
         // listed once because it's the same predicate name.
         // Python
@@ -178,11 +251,24 @@ impl SyntaxFacts {
         "python_is_literal_comparison",
         "python_mutated_module_global",
         "python_star_import",
+        "python_global_statement",
+        "python_globals_subscript_assignment",
+        "python_dynamic_class_creation",
+        "python_new_override",
+        "python_isinstance_chain",
+        "python_container_is_own_iterator",
+        "python_multiple_inheritance",
+        "python_inheritance_depth",
+        "python_mixin_with_init",
+        "python_static_delegation_wrapper",
+        "python_mutable_class_attribute",
+        "python_equality_with_none",
         // TypeScript
         "ts_explicit_any",
         "ts_non_null_assertion",
         "ts_suppression_comment",
         "ts_function_param_count_high",
+        "ts_console_log_call",
     ];
 
     /// Flatten every populated field into a `Vec<Fact>` ready for assertion.
@@ -224,6 +310,16 @@ impl SyntaxFacts {
             out.push(Fact {
                 id: format!("function_param_is_vec_ref_{}_{}_{}", fn_name, param, i),
                 predicate: "function_param_is_vec_ref".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), param.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (fn_name, param)) in self.box_ref_params.iter().enumerate() {
+            out.push(Fact {
+                id: format!("function_param_is_box_ref_{}_{}_{}", fn_name, param, i),
+                predicate: "function_param_is_box_ref".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), param.clone()],
                 timestamp: 0,
                 source: source.clone(),
@@ -387,6 +483,90 @@ impl SyntaxFacts {
             });
         }
 
+        for (i, (fn_name, construct)) in self.rust_governed_invocations.iter().enumerate() {
+            out.push(Fact {
+                id: format!("rust_governed_invocation_{}_{}_{}", fn_name, construct, i),
+                predicate: "rust_governed_invocation".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), construct.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, attribute) in self.rust_governed_attributes.iter().enumerate() {
+            out.push(Fact {
+                id: format!("rust_governed_attribute_{}_{}", attribute, i),
+                predicate: "rust_governed_attribute".to_string(),
+                args: vec![file_path.to_string(), attribute.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (implementing_type, trait_name)) in self.rust_trait_impls.iter().enumerate() {
+            out.push(Fact {
+                id: format!("rust_trait_impl_{}_{}_{}", implementing_type, trait_name, i),
+                predicate: "rust_trait_impl".to_string(),
+                args: vec![
+                    file_path.to_string(),
+                    implementing_type.clone(),
+                    trait_name.clone(),
+                ],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (implementing_type, construct)) in self.rust_panic_in_drop.iter().enumerate() {
+            out.push(Fact {
+                id: format!(
+                    "rust_panic_in_drop_{}_{}_{}",
+                    implementing_type, construct, i
+                ),
+                predicate: "rust_panic_in_drop".to_string(),
+                args: vec![
+                    file_path.to_string(),
+                    implementing_type.clone(),
+                    construct.clone(),
+                ],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (fn_name, shape)) in self.rust_governed_match_arms.iter().enumerate() {
+            out.push(Fact {
+                id: format!("rust_governed_match_arm_{}_{}_{}", fn_name, shape, i),
+                predicate: "rust_governed_match_arm".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), shape.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (field, primitive)) in self.rust_primitive_id_fields.iter().enumerate() {
+            out.push(Fact {
+                id: format!("rust_primitive_id_field_{}_{}_{}", field, primitive, i),
+                predicate: "rust_primitive_id_field".to_string(),
+                args: vec![file_path.to_string(), field.clone(), primitive.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        if self.rust_rc_refcell_count > 0 {
+            out.push(Fact {
+                id: "rust_rc_refcell_type_0".to_string(),
+                predicate: "rust_rc_refcell_type".to_string(),
+                args: vec![
+                    file_path.to_string(),
+                    self.rust_rc_refcell_count.to_string(),
+                ],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
         for (i, (fn_name, count)) in self.swift_force_unwraps.iter().enumerate() {
             out.push(Fact {
                 id: format!("function_uses_force_unwrap_{}_{}", fn_name, i),
@@ -412,6 +592,16 @@ impl SyntaxFacts {
                 id: format!("function_is_async_{}_{}", name, i),
                 predicate: "function_is_async".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (fn_name, construct)) in self.swift_governed_constructs.iter().enumerate() {
+            out.push(Fact {
+                id: format!("swift_governed_construct_{}_{}_{}", fn_name, construct, i),
+                predicate: "swift_governed_construct".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), construct.clone()],
                 timestamp: 0,
                 source: source.clone(),
             });
@@ -535,6 +725,74 @@ impl SyntaxFacts {
             });
         }
 
+        // python-patterns.guide derived facts. Shapes: (file, a) / (file, a, b)
+        // / (file, a, b, c) in the field order documented on the struct.
+        let mut push2 = |predicate: &str, a: &str, i: usize| {
+            out.push(Fact {
+                id: format!("{}_{}_{}", predicate, a, i),
+                predicate: predicate.to_string(),
+                args: vec![file_path.to_string(), a.to_string()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        };
+        for (i, f) in self.python_globals_subscript_assignments.iter().enumerate() {
+            push2("python_globals_subscript_assignment", f, i);
+        }
+        for (i, f) in self.python_dynamic_class_creations.iter().enumerate() {
+            push2("python_dynamic_class_creation", f, i);
+        }
+        for (i, c) in self.python_containers_own_iterator.iter().enumerate() {
+            push2("python_container_is_own_iterator", c, i);
+        }
+        for (i, c) in self.python_mixins_with_init.iter().enumerate() {
+            push2("python_mixin_with_init", c, i);
+        }
+        for (i, f) in self.python_equality_with_none.iter().enumerate() {
+            push2("python_equality_with_none", f, i);
+        }
+        let mut push3 = |predicate: &str, a: &str, b: &str, i: usize| {
+            out.push(Fact {
+                id: format!("{}_{}_{}_{}", predicate, a, b, i),
+                predicate: predicate.to_string(),
+                args: vec![file_path.to_string(), a.to_string(), b.to_string()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        };
+        for (i, (f, g)) in self.python_global_statements.iter().enumerate() {
+            push3("python_global_statement", f, g, i);
+        }
+        for (i, (c, shape)) in self.python_new_overrides.iter().enumerate() {
+            push3("python_new_override", c, shape, i);
+        }
+        for (i, (f, n)) in self.python_isinstance_chains.iter().enumerate() {
+            push3("python_isinstance_chain", f, &n.to_string(), i);
+        }
+        for (i, (c, n)) in self.python_multiple_inheritance.iter().enumerate() {
+            push3("python_multiple_inheritance", c, &n.to_string(), i);
+        }
+        for (i, (c, n)) in self.python_inheritance_depths.iter().enumerate() {
+            push3("python_inheritance_depth", c, &n.to_string(), i);
+        }
+        for (i, (c, a)) in self.python_mutable_class_attributes.iter().enumerate() {
+            push3("python_mutable_class_attribute", c, a, i);
+        }
+        for (i, (c, attr, n)) in self.python_static_delegation_wrappers.iter().enumerate() {
+            out.push(Fact {
+                id: format!("python_static_delegation_wrapper_{}_{}_{}", c, attr, i),
+                predicate: "python_static_delegation_wrapper".to_string(),
+                args: vec![
+                    file_path.to_string(),
+                    c.clone(),
+                    attr.clone(),
+                    n.to_string(),
+                ],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
         for (i, (fn_name, count)) in self.ts_explicit_anys.iter().enumerate() {
             out.push(Fact {
                 id: format!("ts_explicit_any_{}_{}", fn_name, i),
@@ -572,6 +830,16 @@ impl SyntaxFacts {
             out.push(Fact {
                 id: format!("ts_function_param_count_high_{}_{}", fn_name, i),
                 predicate: "ts_function_param_count_high".to_string(),
+                args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
+                timestamp: 0,
+                source: source.clone(),
+            });
+        }
+
+        for (i, (fn_name, count)) in self.ts_console_log_calls.iter().enumerate() {
+            out.push(Fact {
+                id: format!("ts_console_log_call_{}_{}", fn_name, i),
+                predicate: "ts_console_log_call".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
                 source: source.clone(),
@@ -650,6 +918,7 @@ mod tests {
             functions_returning_result_string: vec!["a".to_string()],
             function_param_types: vec![("a".to_string(), "b".to_string(), "c".to_string())],
             vec_ref_params: vec![("a".to_string(), "b".to_string())],
+            box_ref_params: vec![("a".to_string(), "b".to_string())],
             function_param_counts_high: vec![("a".to_string(), 5)],
             function_clone_counts: vec![("a".to_string(), 1)],
             function_clone_counts_high: vec![("a".to_string(), 3)],
@@ -664,9 +933,17 @@ mod tests {
             unsafe_blocks_without_safety_comment: vec!["a".to_string()],
             async_blocking_calls: vec![("a".to_string(), "b".to_string())],
             sync_lock_guards_across_await: vec![("a".to_string(), "b".to_string())],
+            rust_governed_invocations: vec![("a".to_string(), "unwrap".to_string())],
+            rust_governed_attributes: vec!["deny_warnings".to_string()],
+            rust_trait_impls: vec![("S".to_string(), "Deref".to_string())],
+            rust_panic_in_drop: vec![("S".to_string(), "unwrap".to_string())],
+            rust_governed_match_arms: vec![("a".to_string(), "none_empty".to_string())],
+            rust_primitive_id_fields: vec![("user_id".to_string(), "u64".to_string())],
+            rust_rc_refcell_count: 1,
             swift_force_unwraps: vec![("a".to_string(), 1)],
             swift_throwing_functions: vec!["a".to_string()],
             swift_async_functions: vec!["a".to_string()],
+            swift_governed_constructs: vec![("a".to_string(), "try_force".to_string())],
             python_bare_excepts: vec!["a".to_string()],
             python_mutable_default_args: vec![("a".to_string(), "b".to_string())],
             python_function_param_counts_high: vec![("a".to_string(), 6)],
@@ -678,10 +955,23 @@ mod tests {
             python_is_literal_comparisons: vec!["a".to_string()],
             python_mutated_module_globals: vec![("a".to_string(), "b".to_string())],
             python_star_imports: vec!["a".to_string()],
+            python_global_statements: vec![("a".to_string(), "b".to_string())],
+            python_globals_subscript_assignments: vec!["a".to_string()],
+            python_dynamic_class_creations: vec!["a".to_string()],
+            python_new_overrides: vec![("A".to_string(), "singleton".to_string())],
+            python_isinstance_chains: vec![("a".to_string(), 2)],
+            python_containers_own_iterator: vec!["A".to_string()],
+            python_multiple_inheritance: vec![("A".to_string(), 2)],
+            python_inheritance_depths: vec![("A".to_string(), 3)],
+            python_mixins_with_init: vec!["AMixin".to_string()],
+            python_static_delegation_wrappers: vec![("A".to_string(), "_f".to_string(), 4)],
+            python_mutable_class_attributes: vec![("A".to_string(), "b".to_string())],
+            python_equality_with_none: vec!["a".to_string()],
             ts_explicit_anys: vec![("a".to_string(), 1)],
             ts_non_null_assertions: vec![("a".to_string(), 1)],
             ts_suppression_comment_count: 1,
             ts_function_param_counts_high: vec![("a".to_string(), 5)],
+            ts_console_log_calls: vec![("a".to_string(), 1)],
         };
 
         let emitted: std::collections::BTreeSet<String> = facts

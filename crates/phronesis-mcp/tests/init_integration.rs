@@ -330,6 +330,35 @@ fn init_packs_rust_adds_language_rules_to_the_base() {
         .collect();
     assert!(ids.contains(&"enforce-no-unwrap-in-src"));
     assert!(ids.contains(&"enforce-no-pre-existing-issue"));
+    assert!(!ids.contains(&"block-await-on-sync-execute-all-agenda-items"));
+    assert!(!ids.contains(&"block-await-on-sync-fire-all-consequences"));
+}
+
+#[test]
+fn init_typescript_pack_uses_only_the_structural_explicit_any_rule() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "typescript"], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let rules: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = rules["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|rule| rule["id"].as_str())
+        .collect();
+
+    assert!(ids.contains(&"warn-ts-explicit-any-ast"));
+    assert!(
+        !ids.contains(&"warn-any-in-src"),
+        "the lexical duplicate must not ship alongside its structural replacement: {ids:?}"
+    );
 }
 
 #[test]

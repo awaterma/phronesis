@@ -150,13 +150,10 @@ pub fn load_or_disabled(root: &Path) -> OwnershipConfig {
 /// Parse the whole file, keeping only the `[ownership.rust]` table.
 pub fn parse(content: &str) -> Result<OwnershipConfig, OwnershipConfigError> {
     let mut config = OwnershipConfig::disabled();
-    let mut in_section = false;
-    // An array value may span lines; `pending` holds the key and the text
-    // accumulated so far until its closing bracket arrives.
-    let mut pending: Option<(String, String)> = None;
+    let mut scan = Scan::default();
     for raw in content.lines() {
         let line = raw.trim();
-        if let Some((key, mut buffer)) = pending.take() {
+        if let Some((key, mut buffer)) = scan.pending.take() {
             buffer.push(' ');
             // Comments are stripped per line: a `#` carried into the
             // accumulated buffer would truncate the array at that point.
@@ -164,7 +161,7 @@ pub fn parse(content: &str) -> Result<OwnershipConfig, OwnershipConfigError> {
             if closes_array(&buffer) {
                 apply(&mut config, &key, &buffer)?;
             } else {
-                pending = Some((key, buffer));
+                scan.pending = Some((key, buffer));
             }
             continue;
         }
@@ -172,10 +169,10 @@ pub fn parse(content: &str) -> Result<OwnershipConfig, OwnershipConfigError> {
             continue;
         }
         if line.starts_with('[') {
-            in_section = line == SECTION_HEADER;
+            scan.in_section = line == SECTION_HEADER;
             continue;
         }
-        if !in_section {
+        if !scan.in_section {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
@@ -186,16 +183,26 @@ pub fn parse(content: &str) -> Result<OwnershipConfig, OwnershipConfigError> {
             strip_comment(value.trim()).to_string(),
         );
         if value.starts_with('[') && !closes_array(&value) {
-            pending = Some((key, value));
+            scan.pending = Some((key, value));
             continue;
         }
         apply(&mut config, &key, &value)?;
     }
-    if let Some((key, value)) = pending {
+    if let Some((key, value)) = scan.pending {
         // An unterminated array is a malformed value, not an empty list.
         return Err(OwnershipConfigError::InvalidValue { key, value });
     }
     Ok(config)
+}
+
+/// Line-scanner state for [`parse`].
+#[derive(Default)]
+struct Scan {
+    /// True while inside the `[ownership.rust]` table.
+    in_section: bool,
+    /// An array value may span lines; `pending` holds the key and the text
+    /// accumulated so far until its closing bracket arrives.
+    pending: Option<(String, String)>,
 }
 
 fn apply(config: &mut OwnershipConfig, key: &str, value: &str) -> Result<(), OwnershipConfigError> {
@@ -226,13 +233,16 @@ fn apply(config: &mut OwnershipConfig, key: &str, value: &str) -> Result<(), Own
 fn closes_array(text: &str) -> bool {
     let mut quote: Option<char> = None;
     for character in text.chars() {
-        match quote {
-            Some(open) if character == open => quote = None,
-            Some(_) => {}
-            None if character == '"' || character == '\'' => quote = Some(character),
-            None if character == ']' => return true,
-            None if character == '#' => return false,
-            None => {}
+        if let Some(open) = quote {
+            if character == open {
+                quote = None;
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+        } else if character == ']' {
+            return true;
+        } else if character == '#' {
+            return false;
         }
     }
     false
@@ -242,12 +252,14 @@ fn closes_array(text: &str) -> bool {
 fn strip_comment(value: &str) -> &str {
     let mut quote: Option<char> = None;
     for (index, character) in value.char_indices() {
-        match quote {
-            Some(open) if character == open => quote = None,
-            Some(_) => {}
-            None if character == '"' || character == '\'' => quote = Some(character),
-            None if character == '#' => return value[..index].trim_end(),
-            None => {}
+        if let Some(open) = quote {
+            if character == open {
+                quote = None;
+            }
+        } else if character == '"' || character == '\'' {
+            quote = Some(character);
+        } else if character == '#' {
+            return value[..index].trim_end();
         }
     }
     value.trim_end()
@@ -286,18 +298,21 @@ fn quoted_value(value: &str) -> Option<String> {
 /// Every quoted string in an array literal, in order.
 fn quoted_strings(value: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let mut current = String::new();
-    let mut quote: Option<char> = None;
+    // `Some((open, current))` while inside a quoted string: the opening
+    // quote character and the text accumulated so far.
+    let mut quoted: Option<(char, String)> = None;
     for character in value.chars() {
-        match quote {
-            Some(open) if character == open => {
-                out.push(std::mem::take(&mut current));
-                quote = None;
+        if let Some((open, current)) = quoted.as_mut() {
+            if character == *open {
+                out.push(std::mem::take(current));
+                quoted = None;
+            } else {
+                current.push(character);
             }
-            Some(_) => current.push(character),
-            None if character == '"' || character == '\'' => quote = Some(character),
-            None if character == '#' => break,
-            None => {}
+        } else if character == '"' || character == '\'' {
+            quoted = Some((character, String::new()));
+        } else if character == '#' {
+            break;
         }
     }
     out

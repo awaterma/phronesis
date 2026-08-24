@@ -231,7 +231,6 @@ mod tests {
     #[test]
     fn render_pre_block() {
         let d = CodexDecision {
-            exit: 2,
             block_messages: vec!["Found .unwrap() in src/".to_string()],
             warn_messages: Vec::new(),
             additional_context: String::new(),
@@ -245,7 +244,6 @@ mod tests {
     #[test]
     fn render_pre_clean() {
         let d = CodexDecision {
-            exit: 0,
             block_messages: Vec::new(),
             warn_messages: Vec::new(),
             additional_context: String::new(),
@@ -258,7 +256,6 @@ mod tests {
     #[test]
     fn render_post_clean() {
         let d = CodexDecision {
-            exit: 0,
             block_messages: Vec::new(),
             warn_messages: Vec::new(),
             additional_context: String::new(),
@@ -271,7 +268,6 @@ mod tests {
     #[test]
     fn render_post_warn() {
         let d = CodexDecision {
-            exit: 1,
             block_messages: Vec::new(),
             warn_messages: vec!["Consider using ?".to_string()],
             additional_context: String::new(),
@@ -286,7 +282,6 @@ mod tests {
     #[test]
     fn render_context_with_body() {
         let d = CodexDecision {
-            exit: 0,
             block_messages: Vec::new(),
             warn_messages: Vec::new(),
             additional_context: "## Rules\n- rule-a".to_string(),
@@ -301,7 +296,6 @@ mod tests {
     #[test]
     fn render_unsupported_event_empty() {
         let d = CodexDecision {
-            exit: 0,
             block_messages: Vec::new(),
             warn_messages: Vec::new(),
             additional_context: String::new(),

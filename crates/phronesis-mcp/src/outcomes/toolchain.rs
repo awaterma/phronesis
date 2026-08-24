@@ -368,12 +368,79 @@ impl CompiledDef {
     }
 }
 
-/// The bundled defs. Cargo is the only built-in — pytest/tsc examples ship
-/// via `phr-mcp init` as project defs so the built-in surface stays minimal.
-/// This def must keep the retired `CargoAdapter`'s exact semantics; the
-/// fidelity tests below are the acceptance bar.
+/// XCTest summary lines, shared by `xcodebuild` and `swift test`:
+///
+/// ```text
+/// Test Suite 'All tests' passed at 2026-08-22 10:00:01.000.
+///      Executed 55 tests, with 0 failures (0 unexpected) in 1.201 (1.210) seconds
+/// ```
+///
+/// `Executed N tests` counts tests *run*, not tests passed, and xcodebuild
+/// prints one line per suite plus the `All tests` aggregate, so the summed
+/// `passed` is an over-count. The confidence signal only asks "did at least
+/// one test run and did none fail?", which the `failed` group answers
+/// exactly; the count is diagnostic.
+const XCTEST_SUMMARY: &str = r"Executed (?P<passed>\d+) tests?, with (?P<failed>\d+) failures?";
+
+/// Swift Testing's run summary (`swift test` on Swift 6+, also under
+/// xcodebuild when a target mixes frameworks):
+///
+/// ```text
+/// ✔ Test run with 12 tests in 2 suites passed after 0.123 seconds.
+/// ✘ Test run with 12 tests in 2 suites failed after 0.123 seconds with 2 issues.
+/// ```
+///
+/// A failing run is the only branch that binds `failed`; a passing run leaves
+/// it absent, which the engine reads as zero.
+const SWIFT_TESTING_SUMMARY: &str = r"Test run with (?P<passed>\d+) tests?(?: in \d+ suites?)? (?:passed after [^\n]*|failed after [^\n]* with (?P<failed>\d+) issues?)";
+
+/// Swift compiler diagnostics carry `file:line:col: error:`; XCTest
+/// assertion failures carry `file:line: error:` (no column). Requiring the
+/// column keeps a red test from being misread as a broken build.
+const SWIFT_COMPILE_ERROR: &str = r"\.swift:\d+:\d+: error:";
+
+/// The bundled defs: cargo, xcodebuild, and `swift build|test`. pytest/tsc
+/// examples ship via `phr-mcp init` as project defs so the built-in surface
+/// stays small. The cargo def must keep the retired `CargoAdapter`'s exact
+/// semantics; the fidelity tests below are the acceptance bar.
 pub fn builtin_defs() -> Vec<ToolchainDef> {
-    vec![ToolchainDef {
+    let swift_summaries = || {
+        Some(Patterns::Many(vec![
+            XCTEST_SUMMARY.to_string(),
+            SWIFT_TESTING_SUMMARY.to_string(),
+        ]))
+    };
+    vec![
+        cargo_builtin(),
+        ToolchainDef {
+            id: "xcodebuild".to_string(),
+            matches: r"^xcodebuild(\s|$)".to_string(),
+            compile_fail: vec![
+                SWIFT_COMPILE_ERROR.to_string(),
+                r"\*\* BUILD FAILED \*\*".to_string(),
+            ],
+            compile_success: vec![
+                r"\*\* BUILD SUCCEEDED \*\*".to_string(),
+                r"\*\* TEST SUCCEEDED \*\*".to_string(),
+            ],
+            test_summary: swift_summaries(),
+            per_test: None,
+            pass_tokens: default_pass_tokens(),
+        },
+        ToolchainDef {
+            id: "swift".to_string(),
+            matches: r"^swift\s+(build|test)\b".to_string(),
+            compile_fail: vec![SWIFT_COMPILE_ERROR.to_string()],
+            compile_success: vec![r"(?m)^Build complete!".to_string()],
+            test_summary: swift_summaries(),
+            per_test: None,
+            pass_tokens: default_pass_tokens(),
+        },
+    ]
+}
+
+fn cargo_builtin() -> ToolchainDef {
+    ToolchainDef {
         id: "cargo".to_string(),
         matches: r"^cargo\s+(build|check|test|nextest)\b".to_string(),
         compile_fail: vec![
@@ -395,7 +462,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
         ])),
         per_test: Some(r"(?m)^test (?P<name>\S+) \.\.\. (?P<status>ok|FAILED)".to_string()),
         pass_tokens: default_pass_tokens(),
-    }]
+    }
 }
 
 pub fn config_path(root: &Path) -> PathBuf {
@@ -531,7 +598,7 @@ mod tests {
     #[test]
     fn builtin_cargo_def_compiles_and_recognizes_cargo_commands() {
         let defs = builtin_defs();
-        assert_eq!(defs.len(), 1);
+        assert_eq!(defs.len(), 3, "cargo, xcodebuild, swift");
         let cargo = CompiledDef::compile(defs.into_iter().next().unwrap(), DefSource::BuiltIn)
             .expect("built-in cargo def must compile");
         assert!(cargo.handles("cargo build --workspace"));
@@ -580,11 +647,11 @@ mod tests {
         )
         .unwrap();
         let reg = registry(dir.path());
-        assert_eq!(reg.len(), 2);
+        assert_eq!(reg.len(), builtin_defs().len() + 1);
         assert_eq!(reg[0].def.id, "cargo");
         assert_eq!(reg[0].source, DefSource::BuiltIn);
-        assert_eq!(reg[1].def.id, "pytest");
-        assert_eq!(reg[1].source, DefSource::Project);
+        assert_eq!(reg.last().unwrap().def.id, "pytest");
+        assert_eq!(reg.last().unwrap().source, DefSource::Project);
     }
 
     #[test]
@@ -597,7 +664,11 @@ mod tests {
         )
         .unwrap();
         let reg = registry(dir.path());
-        assert_eq!(reg.len(), 1, "override replaces, not appends");
+        assert_eq!(
+            reg.len(),
+            builtin_defs().len(),
+            "override replaces, not appends"
+        );
         assert_eq!(reg[0].source, DefSource::Override);
         assert!(reg[0].handles("cargo-custom build"));
         assert!(!reg[0].handles("cargo build"));
@@ -607,7 +678,7 @@ mod tests {
     fn registry_with_no_project_file_is_builtins_only() {
         let dir = tempfile::tempdir().unwrap();
         let reg = registry(dir.path());
-        assert_eq!(reg.len(), 1);
+        assert_eq!(reg.len(), builtin_defs().len());
         assert_eq!(reg[0].def.id, "cargo");
     }
 
@@ -1055,5 +1126,102 @@ mod tests {
         // Escape-fidelity guard for the anchored matcher.
         let def = builtin_defs().into_iter().next().unwrap();
         assert_eq!(def.matches, "^cargo\\s+(build|check|test|nextest)\\b");
+    }
+
+    // ── xcodebuild / swift (XCTest + Swift Testing) ───────────────────────
+    //
+    // An `xcodebuild test` run through the Bash tool used to ground nothing:
+    // cargo was the only built-in def and nothing recognized the command, so
+    // the 55-pass result never reached the journal and the commit gate kept
+    // the subject at `low` on the compile signal alone.
+
+    fn builtin(id: &str) -> CompiledDef {
+        let def = builtin_defs().into_iter().find(|d| d.id == id).unwrap();
+        CompiledDef::compile(def, DefSource::BuiltIn).unwrap()
+    }
+
+    const XCTEST_PASS: &str = "Test Suite 'FooTests' passed at 2026-08-22 10:00:01.000.\n\
+        \t Executed 12 tests, with 0 failures (0 unexpected) in 0.101 (0.103) seconds\n\
+        Test Suite 'All tests' passed at 2026-08-22 10:00:01.000.\n\
+        \t Executed 55 tests, with 0 failures (0 unexpected) in 1.201 (1.210) seconds\n\
+        ** TEST SUCCEEDED **\n";
+
+    const XCTEST_FAIL: &str = "/Users/me/App/AppTests/FooTests.swift:42: error: -[AppTests.FooTests testBar] : XCTAssertEqual failed: (\"1\") is not equal to (\"2\")\n\
+        Test Suite 'All tests' failed at 2026-08-22 10:00:01.000.\n\
+        \t Executed 55 tests, with 1 failure (0 unexpected) in 1.201 (1.210) seconds\n\
+        ** TEST FAILED **\n";
+
+    #[test]
+    fn xcodebuild_def_recognizes_test_and_build_invocations() {
+        let d = builtin("xcodebuild");
+        assert!(d.handles("xcodebuild test -scheme App -destination 'platform=macOS'"));
+        assert!(d.handles("cd ios && xcodebuild -scheme App build"));
+        assert!(d.handles("xcodebuild test-without-building -scheme App"));
+        assert!(!d.handles("echo xcodebuild"));
+        assert!(!d.handles("cat xcodebuild.log"));
+    }
+
+    #[test]
+    fn xcodebuild_all_pass_grounds_compile_and_test_signals() {
+        let facts =
+            builtin("xcodebuild").parse("u", "xcodebuild test -scheme App", XCTEST_PASS, None);
+        assert_eq!(build_status(&facts), Some("pass"));
+        let t = test_fact(&facts).expect("xcodebuild output must ground a test_outcome");
+        assert_eq!(t.args[2], "0", "no failures");
+        assert!(t.args[3].parse::<usize>().unwrap() > 0, "tests ran");
+    }
+
+    #[test]
+    fn xcodebuild_assertion_failure_is_a_test_failure_not_a_compile_failure() {
+        let facts =
+            builtin("xcodebuild").parse("u", "xcodebuild test -scheme App", XCTEST_FAIL, Some(65));
+        assert_eq!(
+            build_status(&facts),
+            Some("pass"),
+            "the suite compiled and ran"
+        );
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args[2], "1");
+    }
+
+    #[test]
+    fn xcodebuild_compile_error_is_a_build_failure_without_test_fact() {
+        let out = "/Users/me/App/Sources/Foo.swift:12:9: error: cannot find 'frobnicate' in scope\n\
+                   ** BUILD FAILED **\n";
+        let facts = builtin("xcodebuild").parse("u", "xcodebuild test -scheme App", out, None);
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn xcodebuild_build_succeeded_marker_is_compile_success_without_exit_code() {
+        let out = "Build settings from command line:\n** BUILD SUCCEEDED **\n";
+        let facts = builtin("xcodebuild").parse("u", "xcodebuild build -scheme App", out, None);
+        assert_eq!(build_status(&facts), Some("pass"));
+    }
+
+    #[test]
+    fn swift_test_xctest_output_grounds_a_test_signal() {
+        let d = builtin("swift");
+        assert!(d.handles("swift test"));
+        assert!(d.handles("swift build -c release"));
+        assert!(!d.handles("swift run"));
+        let facts = d.parse("u", "swift test", XCTEST_PASS, Some(0));
+        let t = test_fact(&facts).expect("test_outcome present");
+        assert_eq!(t.args[2], "0");
+    }
+
+    #[test]
+    fn swift_testing_run_summary_pass_and_fail() {
+        let d = builtin("swift");
+        let pass = "\u{2714} Test run with 12 tests in 2 suites passed after 0.123 seconds.\n";
+        let facts = d.parse("u", "swift test", pass, None);
+        let t = test_fact(&facts).expect("passing Swift Testing run grounds a test_outcome");
+        assert_eq!(t.args, vec!["u", "12", "0", "12"]);
+
+        let fail = "\u{2718} Test run with 12 tests in 2 suites failed after 0.123 seconds with 2 issues.\n";
+        let facts = d.parse("u", "swift test", fail, Some(1));
+        let t = test_fact(&facts).expect("failing run still grounds a (failing) test_outcome");
+        assert_eq!(t.args[2], "2");
     }
 }

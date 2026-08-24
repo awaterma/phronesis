@@ -102,3 +102,57 @@ fn subject_override_targets_a_specific_unit() {
     assert_eq!(v["subject"], "other");
     assert_eq!(v["signals"][0], "compile");
 }
+
+// ── `phr-mcp signal` — the explicit escape hatch ──────────────────────────
+
+#[test]
+fn signal_tests_pass_opens_a_unit_and_is_visible_in_confidence() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+    std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").unwrap();
+    let (code, stdout) = run(&["signal", "tests", "pass"], dir.path());
+    assert_eq!(code, 0, "stdout: {stdout}");
+    let (code, stdout) = run(&["confidence", "--json"], dir.path());
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(v["signals"], serde_json::json!(["tests"]));
+}
+
+#[test]
+fn signal_fail_retracts_an_earlier_pass() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").ok();
+    std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+    std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").unwrap();
+    seed_journey(
+        dir.path(),
+        "u",
+        true,
+        &["outcome:compile_ok", "outcome:test_pass"],
+    );
+    let (code, _) = run(&["signal", "tests", "fail"], dir.path());
+    assert_eq!(code, 0);
+    let (_, stdout) = run(&["confidence", "--json"], dir.path());
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    assert_eq!(v["subject"], "u");
+    assert_eq!(v["signals"], serde_json::json!(["compile"]));
+}
+
+#[test]
+fn signal_refuses_when_confidence_is_not_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["signal", "tests", "pass"])
+        .env("PHRONESIS_PROJECT_ROOT", dir.path())
+        .output()
+        .unwrap();
+    assert!(!out.status.success());
+    assert!(!dir.path().join(".phronesis/journey/events.jsonl").exists());
+}
+
+#[test]
+fn signal_rejects_unknown_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let (code, _) = run(&["signal", "vibes", "pass"], dir.path());
+    assert_ne!(code, 0);
+}

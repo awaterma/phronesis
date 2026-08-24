@@ -236,6 +236,26 @@ fn extract_schema_dialect(
 ///   against the file's directory, then converted to a module path
 /// - Absolute URIs or external schemes → diagnostic, no edge
 fn resolve_ref(ref_value: &str, file_path: &str, unit: &UnitContext) -> Option<String> {
+    let normalized = relative_ref_target(ref_value, file_path)?;
+    if !unit.files.is_empty() && !unit.files.iter().any(|file| file == &normalized) {
+        return None;
+    }
+    let target_lang = super::unit::lang_of_path(&normalized)?;
+    let target_id = if target_lang == super::unit::LANG_JSON {
+        unit.id.clone()
+    } else {
+        UnitContext::unnamed_for(target_lang).id
+    };
+    let mut module = format!("{target_id}::{}", raw_module_path(&normalized));
+    if target_lang == super::unit::LANG_YAML {
+        module.push_str("::doc:0");
+    }
+    Some(module)
+}
+
+/// Normalized repo path a relative `$ref` points at, or `None` for
+/// fragment-only refs, external URIs, and empty path parts.
+fn relative_ref_target(ref_value: &str, file_path: &str) -> Option<String> {
     // Fragment-only ref: resolves to an anchor inside the same document.
     // No cross-file edge is emitted for this.
     if ref_value.starts_with('#') {
@@ -257,27 +277,12 @@ fn resolve_ref(ref_value: &str, file_path: &str, unit: &UnitContext) -> Option<S
         return None;
     }
     let dir = Path::new(file_path).parent().unwrap_or(Path::new(""));
-    let resolved = dir.join(path_part);
-
     // Normalize dot-segments.
-    let normalized = normalize_path(&resolved);
-
-    // Convert to module path segments.
-    let normalized = normalized.to_string_lossy();
-    if !unit.files.is_empty() && !unit.files.iter().any(|file| file == normalized.as_ref()) {
-        return None;
-    }
-    let target_lang = super::unit::lang_of_path(normalized.as_ref())?;
-    let target_id = if target_lang == super::unit::LANG_JSON {
-        unit.id.clone()
-    } else {
-        UnitContext::unnamed_for(target_lang).id
-    };
-    let mut module = format!("{target_id}::{}", raw_module_path(normalized.as_ref()));
-    if target_lang == super::unit::LANG_YAML {
-        module.push_str("::doc:0");
-    }
-    Some(module)
+    Some(
+        normalize_path(&dir.join(path_part))
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 /// Strip `.` and `..` path segments.
@@ -391,6 +396,26 @@ fn extract_schema_entities(
     // resources (§ shared graph contract).
 }
 
+/// Where a `$ref` is being resolved from: the importing module, its file,
+/// and the unit whose file list gates resolution.
+struct RefScope<'a> {
+    self_module: &'a str,
+    file_path: &'a str,
+    unit: &'a UnitContext,
+}
+
+impl RefScope<'_> {
+    /// Insert an `imports` edge if `ref_val` resolves to a tracked file.
+    fn insert_import(&self, ref_val: &str, out: &mut BTreeSet<(String, Vec<String>)>) {
+        if let Some(resolved) = resolve_ref(ref_val, self.file_path, self.unit) {
+            out.insert((
+                "imports".to_string(),
+                vec![self.self_module.to_string(), resolved],
+            ));
+        }
+    }
+}
+
 /// Extract `$ref` import edges from a JSON document.
 ///
 /// Only `$ref` values that resolve to a tracked file within the repository
@@ -398,9 +423,7 @@ fn extract_schema_entities(
 /// silently skipped (they are either internal or out-of-scope).
 fn extract_ref_imports(
     root: &serde_json::Value,
-    self_module: &str,
-    file_path: &str,
-    unit: &UnitContext,
+    scope: &RefScope<'_>,
     out: &mut BTreeSet<(String, Vec<String>)>,
 ) {
     let Some(obj) = root.as_object() else {
@@ -408,13 +431,8 @@ fn extract_ref_imports(
     };
 
     // Top-level $ref.
-    if let Some(ref_val) = obj.get("$ref").and_then(|v| v.as_str())
-        && let Some(resolved) = resolve_ref(ref_val, file_path, unit)
-    {
-        out.insert((
-            "imports".to_string(),
-            vec![self_module.to_string(), resolved],
-        ));
+    if let Some(ref_val) = obj.get("$ref").and_then(|v| v.as_str()) {
+        scope.insert_import(ref_val, out);
     }
 
     // Recurse into $defs/definitions for nested $ref values.
@@ -423,7 +441,7 @@ fn extract_ref_imports(
             && let Some(defs_obj) = defs.as_object()
         {
             for (_name, def_val) in defs_obj {
-                extract_ref_from_value(def_val, self_module, file_path, unit, out);
+                extract_ref_from_value(def_val, scope, out);
             }
         }
     }
@@ -433,7 +451,7 @@ fn extract_ref_imports(
         && let Some(props_obj) = props.as_object()
     {
         for (_name, prop_schema) in props_obj {
-            extract_ref_from_value(prop_schema, self_module, file_path, unit, out);
+            extract_ref_from_value(prop_schema, scope, out);
         }
     }
 }
@@ -441,28 +459,21 @@ fn extract_ref_imports(
 /// Walk a value looking for $ref strings and emit import edges.
 fn extract_ref_from_value(
     value: &serde_json::Value,
-    self_module: &str,
-    file_path: &str,
-    unit: &UnitContext,
+    scope: &RefScope<'_>,
     out: &mut BTreeSet<(String, Vec<String>)>,
 ) {
-    if let Some(ref_val) = value.get("$ref").and_then(|v| v.as_str())
-        && let Some(resolved) = resolve_ref(ref_val, file_path, unit)
-    {
-        out.insert((
-            "imports".to_string(),
-            vec![self_module.to_string(), resolved],
-        ));
+    if let Some(ref_val) = value.get("$ref").and_then(|v| v.as_str()) {
+        scope.insert_import(ref_val, out);
     }
     // Recurse into nested objects and arrays.
     if let Some(obj) = value.as_object() {
         for (_, v) in obj {
-            extract_ref_from_value(v, self_module, file_path, unit, out);
+            extract_ref_from_value(v, scope, out);
         }
     }
     if let Some(arr) = value.as_array() {
         for v in arr {
-            extract_ref_from_value(v, self_module, file_path, unit, out);
+            extract_ref_from_value(v, scope, out);
         }
     }
 }
@@ -512,7 +523,15 @@ pub fn extract_json(file_path: &str, content: &str, unit: &UnitContext) -> Extra
         extract_schema_entities(&root, &self_module, file_path, &mut out);
 
         // $ref imports: resolve against file directory, emit imports edges.
-        extract_ref_imports(&root, &self_module, file_path, unit, &mut out);
+        extract_ref_imports(
+            &root,
+            &RefScope {
+                self_module: &self_module,
+                file_path,
+                unit,
+            },
+            &mut out,
+        );
 
         // Validate $schema dialect (emits json_schema_unknown_dialect).
         extract_schema_dialect(&root, file_path, &self_module, &mut out);

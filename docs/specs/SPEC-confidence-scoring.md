@@ -15,6 +15,14 @@
               server_params.rs}`. No `phr` change — confidence facts are
               ordinary `Fact`s; gate verdicts are ordinary `Consequence`s.
 
+> **Amended by `SPEC-structural-rule-migration.md` §"Confidence gate
+> severity":** the low-confidence band described below as a `block` was
+> changed to `warn`. Incomplete or failing confidence evidence is now
+> advisory at Git-mutation time — it never blocks the governed `git (commit|
+> merge|rebase|cherry-pick|revert|pull)` commands. The design rationale, the
+> signal derivation, and the medium/high bands below are otherwise still
+> current; read `then: block` in the examples that follow as historical.
+
 ## North star (context, not scope)
 
 The end goal is a *participatory* system: the rules engine, the human, and the
@@ -130,14 +138,22 @@ output and emits the **same neutral facts**; rules never name `cargo`.
 | `test_outcome` | `[subject, passed, failed, total]` | test step |
 | `bug_check_outcome` | `[subject, bug_id, status]`  status ∈ `fixed`/`open`/`regressed` | known-bug test transition |
 
-Adapter registry (milestone ships `cargo` only):
+Adapter registry — built-in defs (`outcomes::toolchain::builtin_defs`);
+anything else is a project def in `.phronesis/toolchains.json`:
 
 | Adapter | Command pattern | Parses |
 |---|---|---|
 | `cargo` | `cargo (build\|check)` | error/warning summary → `build_outcome` |
-| `cargo` | `cargo (test\|nextest)` | `test result: ok. N passed; M failed` → `test_outcome` + per-test names for bug matching |
-| *(later)* `pytest` | `pytest` | summary line → same neutral facts |
-| *(later)* `tsc` / `go test` | … | … |
+| `cargo` | `cargo (test\|nextest)` | `test result: ok. N passed; M failed` / nextest `Summary […]` → `test_outcome` + per-test names for bug matching |
+| `xcodebuild` | `xcodebuild …` | `file:line:col: error:` / `** BUILD FAILED **` → build fail; `** BUILD SUCCEEDED **` / `** TEST SUCCEEDED **` → build pass without an exit code; XCTest `Executed N tests, with M failures` and Swift Testing `Test run with N tests … passed/failed … with K issues` → `test_outcome` |
+| `swift` | `swift (build\|test)` | same Swift patterns; `Build complete!` → build pass |
+| *(project def)* `pytest`, `tsc` | shipped as examples by `init --packs confidence` | summary line → same neutral facts |
+
+A command no def recognizes grounds nothing — it is not an error, it is
+simply invisible to confidence. That is the failure mode a user sees as "tests
+never registered": the run happened, but nothing parsed it. The remedies, in
+order, are a built-in def, a project def, or the explicit `phr-mcp signal`
+escape hatch below.
 
 Only the adapter knows toolchain specifics; everything above is
 language-neutral, so confidence generalizes the moment a second adapter lands.
@@ -166,21 +182,33 @@ into the otherwise-fresh network (§5), so the rules use the wildcard subject
 
 ```json
 { "id": "confidence-low-blocks-commit", "phase": "pre", "priority": 30,
-  "when": [ { "bash_command_matches": "git commit" },
+  "when": [ { "bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)" },
             { "__script__": "facts_count('signal_pass', ['*','*']) <= 1" } ],
-  "then": { "block": "Low confidence — compile/tests/known-bug not all green. Do not present this as done; resolve the failing signal first." } }
+  "then": { "warn": "Low confidence — compile/tests/known-bug evidence is incomplete or failing. Run `phr-mcp confidence` for the per-signal report before presenting this as done." } }
 
 { "id": "confidence-medium-warns-commit", "phase": "pre", "priority": 29,
-  "when": [ { "bash_command_matches": "git commit" },
+  "when": [ { "bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)" },
             { "__script__": "facts_count('signal_pass', ['*','*']) == 2" } ],
   "then": { "warn": "Medium confidence — one grounded signal is missing. Review before presenting as done." } }
 ```
 
-3/3 = high, 2/3 = medium, ≤1 = low. At 3/3 neither rule fires and the commit
-proceeds. Maps 1:1 to the milestone and uses only predicates that exist today
-(`bash_command_matches` is the real regex predicate; `facts_count(...) <op> N`
-is the real DSL). `signal_pass` carries `[subject, signal_name]`, so
-`['*','*']` counts the open subject's passed signals regardless of name.
+3/3 = high, 2/3 = medium, ≤1 = low. At 3/3 neither rule fires and the Git
+command proceeds. As of `SPEC-structural-rule-migration.md`, **both bands
+`warn`** — the low-confidence rule's id and priority are unchanged from the
+milestone-0.13.0 design, but its action changed from `block` to `warn` (see
+the amendment note above). Maps 1:1 to the milestone and uses only predicates
+that exist today (`bash_command_matches` is the real regex predicate;
+`facts_count(...) <op> N` is the real DSL). `signal_pass` carries `[subject,
+signal_name]`, so `['*','*']` counts the open subject's passed signals
+regardless of name.
+
+The aggregate count cannot distinguish "a signal never ran" from "a signal ran
+and failed" — both leave the same `signal_pass` fact absent. Neither gate
+message names a specific missing or failing signal for that reason; naming
+one would claim more than the asserted facts prove. A future change may add
+explicit per-signal status facts (`signal_missing` / `signal_failed`) to
+support named messages, but that is a separately reviewed change, not part of
+this milestone.
 
 ### (B) Host-computed band fact — escape hatch for weighting
 
@@ -243,18 +271,21 @@ it. (If journey-facts hasn't shipped, `outcomes/` carries a minimal
 `.phronesis/outcomes/<subject>.jsonl` ledger with the same flock discipline as
 `action_log.rs`; swap to the shared journal when available.)
 
-### Gate point — block the done-claim / commit (chosen)
+### Gate point — advise on the done-claim / commit (amended)
 
 By post-check the edit is already on disk; you cannot un-write it. So the gate
 fires at the **moment of presentation**, not the moment of editing:
 
-- **Primary (milestone):** a **pre-check on `git commit`** (and the existing
+- **Primary (milestone):** a **pre-check on the governed Git mutations**
+  (`git (commit|merge|rebase|cherry-pick|revert|pull)`; and the existing
   "report done" surface). Re-derive the open subject's signals; if the band is
-  low (or any `regressed`), **block** with the specific missing/failed signal.
-  This dovetails with the existing `llm` pack's "verify before done" rules —
-  confidence is the grounded teeth behind that nudge.
+  low (or any `regressed`), **warn** — per
+  `SPEC-structural-rule-migration.md` §"Confidence gate severity", incomplete
+  or failing confidence evidence is advisory, not a block, so the command
+  always proceeds. This dovetails with the existing `llm` pack's "verify
+  before done" rules — confidence is the grounded teeth behind that nudge.
 - **Explicit:** `submit_suggestion(subject)` returns the structured report and
-  refuses/flags low-confidence subjects before the human sees them.
+  flags low-confidence subjects before the human sees them.
 
 Wiring in `hook.rs`:
 
@@ -262,10 +293,13 @@ Wiring in `hook.rs`:
   and the command matches an adapter pattern, parse `payload.tool_output`,
   append outcome facts to the ledger under the open subject, and (approach B)
   recompute the band. Fail-open: a parse miss never blocks.
-- **Gate** — in `run_pre_check`, when the command is `git commit` (or done-claim
-  surface), load the open subject, re-derive its `signal_pass`/`confidence`
-  facts via `outcomes::derive`, bind `?s` = subject, then the existing rule-fire
-  path applies. A low verdict exits 2 with the missing signal named.
+- **Gate** — in `run_pre_check`, when the command matches the governed Git
+  mutation scope (or the done-claim surface), load the open subject,
+  re-derive its `signal_pass`/`confidence` facts via `outcomes::derive`, bind
+  `?s` = subject, then the existing rule-fire path applies. A low or medium
+  verdict exits 1 (warn) without naming a specific signal — the aggregate
+  count can't prove which one is missing or failing; run `phr-mcp confidence`
+  for that detail.
 
 ## 6. The human-in-the-loop seam — built *for*, not built
 
@@ -288,7 +322,16 @@ Design for the feedback path; don't implement the loop. Concretely:
 phr-mcp confidence                 # band + signals for the open work unit (table)
 phr-mcp confidence --subject <id>  # for a specific subject
 phr-mcp confidence --json
+phr-mcp signal tests pass|fail     # explicit escape hatch: journal the outcome
+phr-mcp signal compile pass|fail   #   for the open unit (minting one if needed)
 ```
+
+`signal` exists for test runners with no toolchain def and for runs that
+happened outside the hook. It writes the identical `outcome:*` journal tag the
+post-check hook stamps, so derivation (latest-of-each-kind wins) and the commit
+gate cannot distinguish it from a hook-captured run. It refuses when the
+`confidence` pack is not enabled, and accepts only `compile` and `tests`
+(known-bug signals stay grounded in the registry).
 
 MCP: `submit_suggestion(subject, summary)` (open + gate query) and
 `get_confidence(subject?)` (read-only report). No tree-sweep variant —
@@ -325,7 +368,7 @@ ordinary `Consequence`s with existing provenance.
 | bug registry | open test red→green ⇒ `fixed`; still red ⇒ `open`; previously-green now red ⇒ `regressed`; unknown test ignored |
 | band derivation | 3 signals ⇒ high; 2 ⇒ medium; ≤1 ⇒ low; any `regressed` ⇒ low regardless of count (approach B); count DSL path (approach A) end-to-end |
 | ledger / subject | mint on first edit after green; carry across invocations; settle on build/test; flock serialization (mirror `action_log_concurrency`) |
-| gate (hook integration) | low band blocks `git commit` (exit 2) with named missing signal; high band allows; fail-open on unparseable output / missing ledger; `PHRONESIS_NO_*` disables |
+| gate (hook integration) | low and medium bands warn on the governed Git mutations (exit 1, no named signal — the aggregate count can't distinguish missing from failed); high band passes clean (exit 0); an unrelated blocking rule still exits 2; fail-open on unparseable output / missing ledger; `PHRONESIS_NO_*` disables |
 | provenance | verdict `Consequence` carries the outcome fact ids that produced it |
 | MCP | `submit_suggestion` opens subject + returns report; `get_confidence` read-only mirror |
 

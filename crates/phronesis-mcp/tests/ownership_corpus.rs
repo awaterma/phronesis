@@ -35,7 +35,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use phronesis_mcp::graph::extract::{DEFAULT_WATCHLIST, extract_rust_at_module_with_ownership};
+use phronesis_mcp::graph::extract::{DEFAULT_WATCHLIST, RustExtractOptions, extract_rust_file};
 use phronesis_mcp::graph::model::Edge;
 use phronesis_mcp::graph::ownership as own;
 use phronesis_mcp::graph::ownership::config::OwnershipConfig;
@@ -122,13 +122,15 @@ impl Fixture {
         let source = std::fs::read_to_string(corpus_dir().join(name))
             .unwrap_or_else(|error| panic!("fixture {name} must be readable: {error}"));
         let path = format!("src/{name}");
-        let edges = extract_rust_at_module_with_ownership(
+        let edges = extract_rust_file(
             &path,
             &source,
-            DEFAULT_WATCHLIST,
-            &UnitContext::default(),
-            None,
-            config,
+            &RustExtractOptions {
+                watchlist: DEFAULT_WATCHLIST,
+                unit: &UnitContext::default(),
+                module_override: None,
+                ownership: config,
+            },
         )
         .edges;
         Self {

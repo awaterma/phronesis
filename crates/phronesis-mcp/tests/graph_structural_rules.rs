@@ -802,3 +802,256 @@ fn codex_post_hook_updates_graph_from_a_symlinked_absolute_path() {
         "the Codex post sensor must extract the newly added function: {output}"
     );
 }
+
+/// Swift sources must enter the graph: `file_type`, `defines_fn`, and
+/// `tested_by` edges, so a Swift feature is not invisible to
+/// `no_direct_test` and the coverage rules built on it.
+#[test]
+fn rebuild_indexes_swift_sources_with_tests() {
+    let d = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(d.path().join("App/Overlay")).expect("mkdir app");
+    std::fs::create_dir_all(d.path().join("AppTests")).expect("mkdir tests");
+    std::fs::write(
+        d.path().join("App/Overlay/NPCOverlay.swift"),
+        "import Foundation\n\
+         struct LocalNPC { let id: Int }\n\
+         final class NPCOverlay {\n\
+         \x20   func updateNPCOverlay() { fatalError(\"x\") }\n\
+         \x20   func handleEntityTap(_ id: Int) -> Bool { return freeHelper() > 0 }\n\
+         }\n\
+         func freeHelper() -> Int { 1 }\n",
+    )
+    .expect("swift source");
+    std::fs::write(
+        d.path().join("AppTests/NPCOverlayTests.swift"),
+        "import XCTest\n\
+         final class NPCOverlayTests: XCTestCase {\n\
+         \x20   func testTapHandled() {\n\
+         \x20       let o = NPCOverlay()\n\
+         \x20       XCTAssertTrue(o.handleEntityTap(3))\n\
+         \x20   }\n\
+         }\n",
+    )
+    .expect("swift test");
+
+    rebuild_graph(d.path());
+    let edges = store::load(&store::graph_path(d.path())).expect("load graph");
+
+    let file_types: Vec<(String, String)> = edges
+        .iter()
+        .filter(|e| e.p == "file_type")
+        .map(|e| (e.a[0].clone(), e.a[1].clone()))
+        .collect();
+    assert!(
+        file_types.contains(&("App/Overlay/NPCOverlay.swift".into(), "production".into())),
+        "swift production file must be typed: {file_types:?}"
+    );
+    assert!(
+        file_types.contains(&("AppTests/NPCOverlayTests.swift".into(), "test".into())),
+        "swift test file must be typed: {file_types:?}"
+    );
+
+    let functions: Vec<String> = edges
+        .iter()
+        .filter(|e| e.p == "defines_fn")
+        .filter_map(|e| e.a.get(1).cloned())
+        .collect();
+    for expected in [
+        "swift:project::App::Overlay::NPCOverlay::NPCOverlay::updateNPCOverlay",
+        "swift:project::App::Overlay::NPCOverlay::NPCOverlay::handleEntityTap",
+        "swift:project::App::Overlay::NPCOverlay::freeHelper",
+    ] {
+        assert!(
+            functions.contains(&expected.to_string()),
+            "missing {expected} in {functions:?}"
+        );
+    }
+    assert!(
+        !functions.iter().any(|f| f.ends_with("testTapHandled")),
+        "XCTest methods are coverage sources, not subjects: {functions:?}"
+    );
+
+    let tests: Vec<String> = edges
+        .iter()
+        .filter(|e| e.p == "defines_test")
+        .filter_map(|e| e.a.get(1).cloned())
+        .collect();
+    assert!(
+        tests.contains(
+            &"swift:project::AppTests::NPCOverlayTests::NPCOverlayTests::testTapHandled"
+                .to_string()
+        ),
+        "XCTest method must be a defines_test: {tests:?}"
+    );
+    let tested: Vec<(String, String)> = edges
+        .iter()
+        .filter(|e| e.p == "tested_by")
+        .map(|e| (e.a[0].clone(), e.a[1].clone()))
+        .collect();
+    assert!(
+        tested.contains(&(
+            "swift:project::App::Overlay::NPCOverlay::NPCOverlay::handleEntityTap".into(),
+            "swift:project::AppTests::NPCOverlayTests::NPCOverlayTests::testTapHandled".into(),
+        )),
+        "method called from the test must resolve to its canonical tested_by: {tested:?}"
+    );
+    let untested: Vec<String> = edges
+        .iter()
+        .filter(|e| e.p == "no_direct_test")
+        .filter_map(|e| e.a.first().cloned())
+        .collect();
+    assert!(
+        untested.iter().any(|f| f.ends_with("::updateNPCOverlay")),
+        "uncalled method must be no_direct_test: {untested:?}"
+    );
+    assert!(
+        !untested.iter().any(|f| f.ends_with("::handleEntityTap")),
+        "tested method must not be no_direct_test: {untested:?}"
+    );
+    let calls: Vec<(String, String)> = edges
+        .iter()
+        .filter(|e| e.p == "calls")
+        .map(|e| (e.a[0].clone(), e.a[1].clone()))
+        .collect();
+    assert!(
+        calls.contains(&(
+            "swift:project::App::Overlay::NPCOverlay::NPCOverlay::handleEntityTap".into(),
+            "swift:project::App::Overlay::NPCOverlay::freeHelper".into(),
+        )),
+        "production call must resolve to a canonical calls edge: {calls:?}"
+    );
+    let apis: Vec<(String, String)> = edges
+        .iter()
+        .filter(|e| e.p == "calls_api")
+        .map(|e| (e.a[0].clone(), e.a[1].clone()))
+        .collect();
+    assert!(
+        apis.contains(&(
+            "swift:project::App::Overlay::NPCOverlay::NPCOverlay::updateNPCOverlay".into(),
+            "fatalError".into(),
+        )),
+        "fatalError must be a calls_api edge: {apis:?}"
+    );
+}
+
+/// With a `Package.swift`, each target is its own unit: module paths are
+/// rooted at the target directory, every file in a `.testTarget` is a test
+/// whatever it is called, `@testable import App` becomes a whole-unit
+/// `imports` edge, and `tested_by` canonicalizes across targets.
+#[test]
+fn rebuild_indexes_swiftpm_targets() {
+    let d = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(d.path().join("Sources/App/Overlay")).expect("mkdir app");
+    std::fs::create_dir_all(d.path().join("Tests/AppTests")).expect("mkdir tests");
+    std::fs::write(
+        d.path().join("Package.swift"),
+        "// swift-tools-version:5.9\n\
+         import PackageDescription\n\
+         let package = Package(\n\
+         \x20   name: \"Demo\",\n\
+         \x20   targets: [\n\
+         \x20       .target(name: \"App\"),\n\
+         \x20       .testTarget(name: \"AppTests\", dependencies: [\"App\"]),\n\
+         \x20   ]\n\
+         )\n",
+    )
+    .expect("manifest");
+    std::fs::write(
+        d.path().join("Sources/App/Overlay/NPCOverlay.swift"),
+        "import Foundation\n\
+         final class NPCOverlay {\n\
+         \x20   func updateNPCOverlay() { fatalError(\"x\") }\n\
+         \x20   func handleEntityTap(_ id: Int) -> Bool { return true }\n\
+         }\n",
+    )
+    .expect("swift source");
+    // Not named `*Tests.swift`: only the target makes it a test file.
+    std::fs::write(
+        d.path().join("Tests/AppTests/Helpers.swift"),
+        "import XCTest\n\
+         @testable import App\n\
+         final class OverlayChecks: XCTestCase {\n\
+         \x20   func testTapHandled() {\n\
+         \x20       XCTAssertTrue(NPCOverlay().handleEntityTap(3))\n\
+         \x20   }\n\
+         }\n",
+    )
+    .expect("swift test");
+
+    rebuild_graph(d.path());
+    let edges = store::load(&store::graph_path(d.path())).expect("load graph");
+    let pairs = |p: &str| -> Vec<(String, String)> {
+        edges
+            .iter()
+            .filter(|e| e.p == p)
+            .map(|e| (e.a[0].clone(), e.a[1].clone()))
+            .collect()
+    };
+
+    let modules = pairs("declares_module");
+    assert!(
+        modules.contains(&(
+            "Sources/App/Overlay/NPCOverlay.swift".into(),
+            "swift:App::Overlay::NPCOverlay".into()
+        )),
+        "module path must be rooted at the target: {modules:?}"
+    );
+    assert!(
+        modules.contains(&(
+            "Tests/AppTests/Helpers.swift".into(),
+            "swift:AppTests::Helpers".into()
+        )),
+        "test target must be its own unit: {modules:?}"
+    );
+
+    let file_types = pairs("file_type");
+    assert!(
+        file_types.contains(&("Tests/AppTests/Helpers.swift".into(), "test".into())),
+        "every file in a .testTarget is a test: {file_types:?}"
+    );
+    assert!(
+        file_types.contains(&(
+            "Sources/App/Overlay/NPCOverlay.swift".into(),
+            "production".into()
+        )),
+        "{file_types:?}"
+    );
+
+    let imports = pairs("imports");
+    assert!(
+        imports.contains(&("swift:AppTests::Helpers".into(), "swift:App".into())),
+        "@testable import App must be a whole-unit import: {imports:?}"
+    );
+    assert!(
+        imports.contains(&("swift:AppTests::Helpers".into(), "swift:AppTests".into())),
+        "the self-unit import stays: {imports:?}"
+    );
+    assert!(
+        !imports
+            .iter()
+            .any(|(_, t)| t.contains("XCTest") || t.contains("Foundation")),
+        "framework imports must not become nodes: {imports:?}"
+    );
+
+    let tested = pairs("tested_by");
+    assert!(
+        tested.contains(&(
+            "swift:App::Overlay::NPCOverlay::NPCOverlay::handleEntityTap".into(),
+            "swift:AppTests::Helpers::OverlayChecks::testTapHandled".into(),
+        )),
+        "cross-target tested_by must canonicalize: {tested:?}"
+    );
+    let untested: Vec<String> = edges
+        .iter()
+        .filter(|e| e.p == "no_direct_test")
+        .filter_map(|e| e.a.first().cloned())
+        .collect();
+    assert!(
+        untested.contains(&"swift:App::Overlay::NPCOverlay::NPCOverlay::updateNPCOverlay".into()),
+        "{untested:?}"
+    );
+    assert!(
+        !untested.iter().any(|f| f.ends_with("::handleEntityTap")),
+        "tested method must not be no_direct_test: {untested:?}"
+    );
+}

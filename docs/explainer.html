@@ -639,7 +639,7 @@
         <text font-family="Manrope, serif" font-size="9" font-weight="600"
               letter-spacing="3" fill="#0F766E">
           <textPath xlink:href="#circle-text" startOffset="0">
-            PHRONESIS · RULES ENGINE · v 0.26 · MCP HOSTED · A DURABLE INSTRUMENT ·
+            PHRONESIS · RULES ENGINE · v 0.30 · MCP HOSTED · A DURABLE INSTRUMENT ·
           </textPath>
         </text>
         <!-- states in center: tiny RETE network -->
@@ -1560,8 +1560,8 @@
           end-to-end</em> reads well in a warning string. <em>The
           tests passed and the known-bug test went from red to
           green</em> reads as evidence. Confidence scoring is the
-          subsystem that watches for evidence and refuses to let a
-          weak claim reach a commit.
+          subsystem that watches for evidence and makes weak closure
+          visible before a Git mutation.
         </p>
         <p>
           It helps to think of two clocks. Edits, diffs, ASTs,
@@ -1578,10 +1578,10 @@
         </p>
         <p>
           Three grounded signals are enough to ground a claim.
-          <code>compile_ok</code> — the build adapter parsed a
-          successful <code>cargo build</code> or <code>cargo
-          check</code>. <code>test_pass</code> — the test adapter
-          parsed a green <code>cargo test</code> with no failures.
+          <code>compile_ok</code> — a matched toolchain adapter parsed a
+          successful build. <code>test_pass</code> — the adapter parsed a
+          green test run with no failures. Cargo, <code>xcodebuild</code>,
+          and SwiftPM ship as built-ins; projects can add more.
           <code>bug_caught</code> — a test named in
           <code>.phronesis/bugs.json</code> as red on the buggy
           baseline went red-to-green under the current change, with
@@ -1592,12 +1592,12 @@
           a rule can match against.
         </p>
         <p>
-          The gate fires before a commit, not after it. Phronesis
+          The confidence check fires before a Git mutation, not after it. Phronesis
           installs two default rules from the <code>confidence</code>
-          pack: one pre-check that blocks the commit when fewer than
-          two signals have passed, one that warns at exactly two.
-          Three passes silently — the commit proceeds, the work is
-          presented as done with grounded evidence behind it. The
+          pack: one pre-check that warns when fewer than two signals
+          have passed, and one that warns at exactly two. Neither blocks
+          the command. Three passes silently — the mutation proceeds with
+          grounded evidence behind it. The
           rules live in <code>rules.json</code>; the band is read
           from <code>signal_pass</code> facts derived from the open
           work unit's slow-clock history; the known-bug registry
@@ -1638,25 +1638,14 @@
         </p>
         <p>
           <span class="label label-ink" style="display: block; margin-bottom: 0.4rem;">An honest limitation.</span>
-          A playtest of the gate against real merge-night traffic
-          surfaced a hole worth naming. The two confidence rules
-          currently trigger on <code>bash_command_matches: "git
-          commit"</code> — the literal substring. That catches the
-          headline case of an agent typing <code>git commit -m
-          "…"</code>, but five of six commit-producing porcelain
-          commands bypass it: <code>git merge</code>, <code>git
-          rebase</code>, <code>git cherry-pick</code>, <code>git
-          revert</code>, and the default-merge form of <code>git
-          pull</code> all produce commits without containing the
-          literal <code>git commit</code>. The invariant the rules
-          mean to enforce — <em>no commit reaches main without
-          grounded validation</em> — is honored for one shape and
-          quietly violated for the rest. The follow-up
-          (<code>SPEC-gate-merge-commits</code>) widens the pattern
-          to a regex over the full set of commit-producing verbs.
-          A first-class <code>produces_commit</code> predicate would
-          be cleaner still, and is the long-term shape; the regex
-          closes the immediate hole.
+          The two rules recognize the command shapes <code>git commit</code>,
+          <code>merge</code>, <code>rebase</code>, <code>cherry-pick</code>,
+          <code>revert</code>, and the default-merge form of
+          <code>pull</code>. This is command-scoped lexical evidence, not a
+          shell AST or proof that a commit will be created. More importantly,
+          confidence is advisory: it records and explains missing or failing
+          evidence, but it does not replace repository policy, CI, or human
+          judgment with a local refusal.
         </p>
       </div>
       <aside class="margin">
@@ -1891,7 +1880,7 @@ $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold
 
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
     <a href="./index.html">Home</a> &middot; <span class="doc-web-here">Explainer</span> &middot; <a href="./catalogue.html">Catalogue</a> &middot; <a href="./guide.html">Guide</a> &middot; <a href="./changelog.html">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.26.0</span>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.30.0</span>
   </nav>
   <footer>
     <div>
@@ -1906,7 +1895,7 @@ $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold
     </div>
     <div class="folio">
       ⁂
-      <small>End · Vol. 0.26.0</small>
+      <small>End · Vol. 0.30.0</small>
     </div>
   </footer>
 
