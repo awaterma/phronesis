@@ -20,7 +20,6 @@ use super::unit::UnitContext;
 use serde::de::{self, Deserialize, Deserializer, MapAccess, SeqAccess, Visitor};
 use std::collections::BTreeSet;
 use std::fmt;
-use std::path::Path;
 
 /// JSON Schema keywords that, when present at the top level of a document,
 /// mark it as schema-identified (spec §Dialect classification).
@@ -276,16 +275,39 @@ fn relative_ref_target(ref_value: &str, file_path: &str) -> Option<String> {
     if path_part.is_empty() {
         return None;
     }
-    let dir = Path::new(file_path).parent().unwrap_or(Path::new(""));
-    // Normalize dot-segments.
-    Some(
-        normalize_path(&dir.join(path_part))
-            .to_string_lossy()
-            .into_owned(),
-    )
+    // Graph paths are repository-relative and use `/` on every host. Normalize
+    // Windows separators lexically as well, reject absolute/drive paths, and
+    // reject a parent traversal that would climb above the repository root.
+    let file_path = file_path.replace('\\', "/");
+    let path_part = path_part.replace('\\', "/");
+    if path_part.starts_with('/')
+        || path_part
+            .as_bytes()
+            .get(1)
+            .is_some_and(|byte| *byte == b':')
+    {
+        return None;
+    }
+    let dir = file_path.rsplit_once('/').map_or("", |(dir, _)| dir);
+    normalize_relative_graph_path(&format!("{dir}/{path_part}"))
+}
+
+fn normalize_relative_graph_path(path: &str) -> Option<String> {
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            normal => parts.push(normal),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
 }
 
 /// Strip `.` and `..` path segments.
+#[cfg(test)]
 fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
     let mut components = path.components().peekable();
     let mut ret = std::path::PathBuf::new();
@@ -877,6 +899,35 @@ mod tests {
     }
 
     #[test]
+    fn ref_that_climbs_above_repository_root_is_skipped() {
+        assert_eq!(
+            relative_ref_target("../../outside.json", "schema.json"),
+            None
+        );
+        assert_eq!(relative_ref_target("../outside.json", "schema.json"), None);
+    }
+
+    #[test]
+    fn absolute_and_windows_drive_refs_are_skipped() {
+        assert_eq!(
+            relative_ref_target("/tmp/schema.json", "schemas/user.json"),
+            None
+        );
+        assert_eq!(
+            relative_ref_target(r"C:\\schemas\\base.json", "schemas/user.json"),
+            None
+        );
+    }
+
+    #[test]
+    fn windows_separators_normalize_to_graph_paths() {
+        assert_eq!(
+            relative_ref_target(r"..\\common\\base.json", r"schemas\\nested\\user.json"),
+            Some("schemas/common/base.json".to_string())
+        );
+    }
+
+    #[test]
     fn http_ref_skipped() {
         let content = r#"{
             "$ref": "https://example.com/schema.json"
@@ -884,6 +935,21 @@ mod tests {
         let result = run("schemas/external.json", content);
         let imports: Vec<_> = result.edges.iter().filter(|e| e.p == "imports").collect();
         assert!(imports.is_empty());
+    }
+
+    #[test]
+    fn ref_to_file_outside_the_discovered_unit_is_skipped() {
+        let mut unit = UnitContext::unnamed_for(super::super::unit::LANG_JSON);
+        unit.files = vec![
+            "schemas/user.json".to_string(),
+            "schemas/local.json".to_string(),
+        ];
+        let result = extract_json(
+            "schemas/user.json",
+            r#"{"$ref":"../shared/base.json"}"#,
+            &unit,
+        );
+        assert!(result.edges.iter().all(|edge| edge.p != "imports"));
     }
 
     #[test]

@@ -341,11 +341,12 @@ fn line_preceded_by_doc_comment(lines: &[&str], i: usize) -> bool {
     false
 }
 
-/// True if `id` is selected by `--rule <filter>`. Matches the id exactly,
-/// or any `or`-branch expansion of it (`<filter>#or0`, `<filter>#or1`,
-/// `<filter>#or0-or1`, ...) — a rule whose `when` carries an `or` clause is
-/// stored on disk as one rule per branch (see `rules_file::unfold_or`), and
-/// users name the rule, not the branch.
+/// Match a requested source-rule ID against its runtime rule ID.
+///
+/// [`crate::rules_file::unfold_or`] expands a source rule with `or` clauses
+/// into IDs such as `rule#or1` and `rule#or0-or1`. CLI filters keep treating
+/// the source ID as the public identity, while still accepting an exact
+/// expanded ID.
 pub fn rule_matches_filter(id: &str, filter: &str) -> bool {
     if id == filter {
         return true;

@@ -42,8 +42,12 @@ fn strip_comments(s: &str) -> String {
 
 /// Parse tokenised action content and collect Helm-relevant facts.
 ///
-/// This parser walks action tokens, treating quoted strings as opaque
-/// (so `{{ define "x" }}` inside a comment is ignored by the caller).
+/// This is deliberately a small evidence extractor, not a complete Go
+/// template interpreter. It recognizes only the closed set of Helm constructs
+/// represented by graph facts, treats quoted strings as opaque, and does not
+/// attempt pipelines, variable evaluation, whitespace-control semantics, or
+/// template execution. Keep additions paired with lexer/parser corpus tests;
+/// use Helm itself when semantic rendering evidence is required.
 pub(super) fn parse_action(content: &str, self_module: &str, chart_name: &str) -> Facts {
     let mut facts = Facts::default();
     // Strip Go template comments (/* ... */) so calls inside are not extracted.

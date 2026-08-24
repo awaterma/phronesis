@@ -89,6 +89,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Changed
 
+- **Review hardening makes integration contracts explicit.** CI now runs the
+  blocking Phronesis audit in addition to formatting, clippy, and workspace
+  tests. Codex documentation and integration coverage pin its structured-JSON
+  decision contract (process exit 0, with logical 0/1/2 verdicts retained in
+  the action log), and a checked-in v1 bindings fixture proves reconciliation
+  remains idempotent before becoming stale. JSON Schema `$ref` resolution now
+  rejects repository-root escapes and absolute/drive paths while normalizing
+  Windows separators consistently.
+
 - **Rust panic/debug starter rules now use syntax-tree facts.** The existing
   unwrap, empty-message expect, `todo!`, `panic!`, `unimplemented!`, and
   `dbg!` rule IDs now consume `rust_governed_invocation` instead of source

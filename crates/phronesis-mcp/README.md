@@ -103,8 +103,16 @@ hooks are deterministic guardrails, not a complete security boundary: some
 specialized or hosted tool paths may not traverse local lifecycle hooks.
 
 Codex observes unified shell execution as `Bash`, file edits as `apply_patch`,
-and can expose other local or MCP tools. Phronesis v0.26 governs only `Bash` and
+and can expose other local or MCP tools. Phronesis v0.30 governs only `Bash` and
 `apply_patch`; unsupported tools are safe no-ops.
+
+The Codex adapter always exits 0 after producing valid JSON. A pre-tool block
+is represented by `hookSpecificOutput.permissionDecision = "deny"`; an
+advisory is represented by `additionalContext` or `systemMessage`. This keeps
+Codex's structured response authoritative. The Claude-compatible `pre-check`
+and `post-check` commands retain their process contract: clean is 0, advisory
+is 1, and a pre-tool block is 2. Action-log entries record those logical
+0/1/2 verdicts for both hosts even though the Codex adapter process exits 0.
 
 ## Rule-emitted context capsules
 

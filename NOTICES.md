@@ -98,9 +98,14 @@ public rule catalogue, Python documentation, and standard PEPs — all
 permissively licensed or public-domain. No license concern applies to the
 base pack.
 
-If the upstream project adds an open license or the author requests
-removal of derived phrasings, the rule messages should be updated or the
-pack removed accordingly.
+Maintainer policy: if the upstream project changes its licensing, or its
+author requests removal, disable distribution of the optional pack while the
+request is assessed; preserve the independently implemented predicates only
+if counsel/maintainers confirm they are unaffected; replace any disputed
+message or link with generic Python terminology; and record the resolution in
+this notice and the changelog. If that cannot be done promptly, remove the
+pack in the next patch release. No upstream prose or source should be copied
+into future rules without an explicit compatible license.
 
 ---
 

@@ -372,6 +372,15 @@ heuristic.</li>
 </ul>
 <h3 id="changed">Changed</h3>
 <ul>
+<li><p><strong>Review hardening makes integration contracts
+explicit.</strong> CI now runs the blocking Phronesis audit in addition
+to formatting, clippy, and workspace tests. Codex documentation and
+integration coverage pin its structured-JSON decision contract (process
+exit 0, with logical 0/1/2 verdicts retained in the action log), and a
+checked-in v1 bindings fixture proves reconciliation remains idempotent
+before becoming stale. JSON Schema <code>$ref</code> resolution now
+rejects repository-root escapes and absolute/drive paths while
+normalizing Windows separators consistently.</p></li>
 <li><p><strong>Rust panic/debug starter rules now use syntax-tree
 facts.</strong> The existing unwrap, empty-message expect,
 <code>todo!</code>, <code>panic!</code>, <code>unimplemented!</code>,

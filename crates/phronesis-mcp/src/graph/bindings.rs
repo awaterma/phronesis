@@ -477,6 +477,44 @@ mod tests {
     }
 
     #[test]
+    fn pre_reconcile_stamp_v1_fixture_remains_idempotent_and_marks_stale_once() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = bindings_path(dir.path());
+        std::fs::create_dir_all(path.parent().expect("bindings parent")).expect("mkdir");
+        std::fs::write(
+            &path,
+            include_str!("../../tests/fixtures/graph/bindings-v1.json"),
+        )
+        .expect("legacy fixture");
+
+        let persisted = load_recovering(&path)
+            .expect("load legacy bindings")
+            .expect("supported v1 fixture");
+        let rules = [rule("legacy-call", "legacy_call(")];
+        assert_eq!(persisted.bindings[0].rule_hash, rule_hash(&rules[0]));
+
+        let unchanged = reconcile(
+            &persisted,
+            &rules,
+            &[defined("crate::old::legacy_call")],
+            7,
+            200,
+        );
+        assert_eq!(
+            unchanged, persisted,
+            "same graph must be an idempotent load/reconcile"
+        );
+
+        let stale = reconcile(&unchanged, &rules, &[], 8, 300);
+        assert_eq!(stale.bindings[0].state, BindingState::Stale);
+        assert_eq!(stale.bindings[0].stale_at, Some(300));
+        assert_eq!(stale.bindings[0].bound_to, ["crate::old::legacy_call"]);
+
+        let still_stale = reconcile(&stale, &rules, &[], 9, 400);
+        assert_eq!(still_stale.bindings[0].stale_at, Some(300));
+    }
+
+    #[test]
     fn changed_rule_content_discards_old_binding() {
         let first_rule = [rule("r", "foo(")];
         let first = reconcile(

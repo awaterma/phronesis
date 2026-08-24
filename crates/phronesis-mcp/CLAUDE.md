@@ -203,6 +203,15 @@ Codex registration is deliberately project-scoped: `phr-mcp init` merges
 `.codex/config.toml` and `.codex/hooks.json`. Review new or changed commands
 with Codex `/hooks`; Phronesis never marks its own hooks trusted.
 
+Codex hook decisions are a structured-JSON contract: after emitting valid
+JSON, `phr-mcp codex-hook` exits 0 even when its `PreToolUse` response contains
+`permissionDecision: "deny"`. Warnings use `additionalContext` or
+`systemMessage`. Claude-compatible `pre-check`/`post-check` remain a process
+exit contract (0 clean, 1 advisory, 2 pre-tool block). The shared action log
+records the logical 0/1/2 verdict for either host. External automation must
+therefore parse Codex stdout rather than interpreting its process exit as the
+rule verdict.
+
 ## Setting up a project
 
 For hooks and project-specific rules, in any project:

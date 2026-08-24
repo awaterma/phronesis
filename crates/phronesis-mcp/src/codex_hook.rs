@@ -1041,9 +1041,13 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
     let root = security::project_root();
     let tool = payload.tool_name.as_deref().unwrap_or("");
     let cfg = journey::load_config(&root).unwrap_or_default();
-    let tag_result = journey::tagger::fire(&cfg, &file_path_facts(file_path))
-        .await
-        .unwrap_or_default();
+    let tag_result = match journey::tagger::fire(&cfg, &file_path_facts(file_path)).await {
+        Ok(result) => result,
+        Err(error) => {
+            eprintln!("phronesis: journey tagger warning: {error}");
+            Default::default()
+        }
+    };
     let (outcome_tags, subject, command_exit) = extract_post_outcomes(payload, &root, tool);
     let record = journey::journal::JournalRecord {
         v: 1,
@@ -1149,7 +1153,7 @@ mod hook {
 
 #[cfg(test)]
 mod tests {
-    use super::assert_new_content;
+    use super::{CodexPayload, ToolCall, assert_new_content};
 
     #[tokio::test]
     async fn new_content_assertion_surfaces_engine_errors() {
@@ -1161,5 +1165,29 @@ mod tests {
             .await
             .expect_err("duplicate fact id must be propagated");
         assert!(error.to_string().contains("incoming"));
+    }
+
+    #[test]
+    fn tool_call_defaults_missing_tool_name_and_input_without_panicking() {
+        let payload: CodexPayload =
+            serde_json::from_value(serde_json::json!({})).expect("payload defaults");
+        let call = ToolCall::from_payload(&payload, "");
+        assert_eq!(call.tool_name, "");
+        assert_eq!(call.file_path, "");
+        assert!(!call.supported());
+        assert!(payload.tool_input.is_none());
+    }
+
+    #[test]
+    fn tool_call_preserves_supported_name_and_resolved_path() {
+        let payload: CodexPayload = serde_json::from_value(serde_json::json!({
+            "tool_name": "apply_patch",
+            "tool_input": {"command": "*** Begin Patch\n*** End Patch"}
+        }))
+        .expect("payload");
+        let call = ToolCall::from_payload(&payload, "src/lib.rs");
+        assert_eq!(call.tool_name, "apply_patch");
+        assert_eq!(call.file_path, "src/lib.rs");
+        assert!(call.supported());
     }
 }

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "generation": 7,
+  "bindings": [
+    {
+      "rule": "legacy-call",
+      "rule_hash": "47f24541bd893d56",
+      "symbol": "legacy_call",
+      "bound_to": ["crate::old::legacy_call"],
+      "surviving": ["crate::old::legacy_call"],
+      "relocated": [],
+      "bound_at": 100,
+      "stale_at": null,
+      "state": "bound"
+    }
+  ]
+}
