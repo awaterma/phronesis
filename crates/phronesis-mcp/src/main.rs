@@ -862,7 +862,7 @@ async fn handle_audit(
         return Ok(());
     }
 
-    let (report, diag) = {
+    let (report, empty_diag, script_diags) = {
         // Convert Option<PathBuf> → Option<&str> at the call site so we can
         // use the shared `resolve_scan_root` (which takes `Option<&str>`).
         // CLI paths come from clap and are always valid UTF-8; `to_str()`
@@ -897,13 +897,14 @@ async fn handle_audit(
             );
         }
         let report = report;
-        let diag = phronesis_mcp::audit::empty_result_diagnostic(
+        let empty_diag = phronesis_mcp::audit::empty_result_diagnostic(
             &report,
             &rules,
             rule.as_deref(),
             &opts.scan_root,
         );
-        (report, diag)
+        let script_diags = phronesis_mcp::audit::script_diagnostics(&rules, rule.as_deref());
+        (report, empty_diag, script_diags)
     };
 
     // Write a snapshot entry so `phr-mcp trend` can read it.
@@ -919,13 +920,16 @@ async fn handle_audit(
     }
     if json {
         println!("{}", render_json(&report));
-        if let Some(msg) = &diag {
+        if let Some(msg) = &empty_diag {
             eprintln!("{}", msg);
         }
-    } else if let Some(msg) = &diag {
+    } else if let Some(msg) = &empty_diag {
         eprintln!("{}", msg);
     } else {
         print!("{}", render_table(&report, rule.is_some()));
+    }
+    for diagnostic in &script_diags {
+        eprintln!("{diagnostic}");
     }
 
     // Exit code logic.

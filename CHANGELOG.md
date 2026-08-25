@@ -166,6 +166,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   until they re-run `phr-mcp init --rules-only --force --packs confidence`
   (existing project rule files are not rewritten automatically).
 
+### Fixed
+
+- **Whole-tree audits no longer silently suppress rules with builtin path
+  guards.** `audit_codebase` and `phr-mcp audit` evaluate builtin
+  `facts_contain`/`facts_count` `__script__` conditions against fresh per-file
+  path and extension facts. Unsupported Rhai or binding-dependent guards now
+  produce a diagnostic instead of making the affected audit rule appear
+  clean. Fixes #52.
+
 ## [0.29.0] - 2026-08-16
 
 ### Changed

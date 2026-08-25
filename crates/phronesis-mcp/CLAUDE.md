@@ -465,8 +465,12 @@ phr-mcp audit --fail-on block          # exit 1 on any blocked violation (CI gat
 Rules opt in via `audit: true` on the disk rule. Diff-only rules and
 LLM-deflection rules don't participate by default. The audit engine
 honors `new_content_contains` predicates plus `file_path_matches` and
-`file_extension_is` as gates; rules using AST predicates are deferred to
-a follow-up.
+`file_extension_is` as gates, and evaluates registered AST predicates.
+Builtin `__script__` guards using `facts_contain` or `facts_count` may inspect
+fresh per-file `file_path`, path-component `file_path_matches`, and
+`file_extension_is` facts. Audit does not support arbitrary Rhai or binding
+variables in scripts; unsupported guards are skipped with a diagnostic rather
+than silently producing a clean result.
 
 A rule's `phase` field is consulted by the hook (which only loads rules
 whose phase equals `"pre"` or `"post"`). Setting `phase: "audit"` on a

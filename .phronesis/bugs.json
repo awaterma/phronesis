@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "bug_id": "52",
+    "test": "audit::tests::run_scopes_ast_rule_with_builtin_script_path_exclusion",
+    "status": "open"
+  }
+]
