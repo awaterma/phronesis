@@ -76,6 +76,14 @@ impl EpistemeMcp {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
+    fn audit_response(body: String, diagnostics: &[String]) -> String {
+        if diagnostics.is_empty() {
+            body
+        } else {
+            format!("{}\n\n{}", diagnostics.join("\n"), body)
+        }
+    }
+
     /// Return a machine-readable MCP result while retaining JSON text for
     /// clients that do not yet consume `structuredContent`.
     ///
@@ -1096,7 +1104,7 @@ impl EpistemeMcp {
 
         let scan_root = crate::audit::resolve_scan_root(params.path.as_deref(), &project_root);
 
-        let (report, diag) = {
+        let (report, diagnostics) = {
             let opts = AuditOpts {
                 project_root: project_root.clone(),
                 scan_root,
@@ -1126,13 +1134,17 @@ impl EpistemeMcp {
                 );
             }
             let report = report;
-            let diag = crate::audit::empty_result_diagnostic(
+            let empty_diag = crate::audit::empty_result_diagnostic(
                 &report,
                 &rules,
                 params.rule.as_deref(),
                 &opts.scan_root,
             );
-            (report, diag)
+            let mut diagnostics = crate::audit::script_diagnostics(&rules, params.rule.as_deref());
+            if let Some(message) = empty_diag {
+                diagnostics.insert(0, message);
+            }
+            (report, diagnostics)
         };
 
         // Write the audit snapshot to the log so get_debt_trend can read it.
@@ -1147,10 +1159,7 @@ impl EpistemeMcp {
             }
             _ => render_json(&report),
         };
-        let response = match diag {
-            Some(msg) => format!("{}\n\n{}", msg, body),
-            None => body,
-        };
+        let response = Self::audit_response(body, &diagnostics);
         Self::ok_text(response)
     }
 
@@ -1997,6 +2006,25 @@ mod tool_registration_tests {
                 .map(|t| t.name.to_string())
                 .collect::<Vec<_>>()
         );
+    }
+}
+
+#[cfg(test)]
+mod audit_tool_tests {
+    use super::*;
+
+    #[test]
+    fn audit_response_prepends_diagnostics_to_mcp_text_body() {
+        let body = r#"{"files_scanned":1,"rules":[]}"#.to_string();
+        let diagnostics = vec![
+            "phronesis: audit rule `bad-script` was skipped because its `__script__` guard is unsupported."
+                .to_string(),
+        ];
+
+        let response = EpistemeMcp::audit_response(body.clone(), &diagnostics);
+        assert!(response.starts_with(&diagnostics[0]), "{response}");
+        assert!(response.ends_with(&body), "{response}");
+        assert_eq!(EpistemeMcp::audit_response(body.clone(), &[]), body);
     }
 }
 

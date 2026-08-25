@@ -165,6 +165,45 @@ fn audit_rule_filter_matches_or_expansions_and_reports_unmatched_filter() {
 }
 
 #[test]
+fn audit_json_keeps_stdout_machine_readable_when_script_diagnostic_is_emitted() {
+    let dir = tempfile::tempdir().unwrap();
+    let ph = dir.path().join(".phronesis");
+    std::fs::create_dir_all(&ph).unwrap();
+    std::fs::write(
+        ph.join("rules.json"),
+        r#"{"rules":[{
+            "id":"unsupported-audit-script",
+            "phase":"audit",
+            "audit":true,
+            "when":[
+                {"new_content_contains":"print("},
+                {"__script__":"facts.len > 0"}
+            ],
+            "then":{"warn":"unsupported"}
+        }]}"#,
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("example.py"), "print('x')\n").unwrap();
+
+    let out = run_bin(&["audit", "--json"], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let value: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|error| panic!("stdout must remain JSON: {error}; stdout: {stdout}"));
+    assert_eq!(value["rules"], serde_json::json!([]));
+    assert!(
+        stderr.contains("unsupported-audit-script"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("unsupported"), "stderr: {stderr}");
+}
+
+#[test]
 fn stats_exits_zero_on_empty_log() {
     let dir = tempfile::tempdir().unwrap();
     make_project(dir.path());

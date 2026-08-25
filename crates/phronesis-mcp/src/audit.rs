@@ -11,7 +11,7 @@
 //!
 //! phronesis-allow: audit-file-loc-high (cohesive audit-engine surface)
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -182,6 +182,11 @@ fn rule_applies_to_file(rule: &DiskRule, path: &Path, line_count: usize) -> bool
                 // Content predicate — evaluated separately in the scan loop.
                 continue;
             }
+            "__script__" => {
+                // File-scoped guard — evaluated after the cheap ordinary
+                // gates, against fresh audit facts for this file.
+                continue;
+            }
             "file_path_matches" => {
                 let needle = match cond.args.first() {
                     Some(s) => s,
@@ -284,6 +289,113 @@ fn is_whole_file_rule(rule: &DiskRule) -> bool {
     rule.conditions
         .iter()
         .all(|c| c.predicate != "new_content_contains")
+}
+
+fn normalized_relative_path(project_root: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(project_root).unwrap_or(path);
+    relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn audit_path_facts(project_root: &Path, path: &Path) -> Vec<Fact> {
+    let relative = normalized_relative_path(project_root, path);
+    let mut facts = vec![Fact {
+        id: "audit_file_path".to_string(),
+        predicate: "file_path".to_string(),
+        args: vec![relative.clone()],
+        timestamp: 0,
+        source: Some("audit".to_string()),
+    }];
+    for (index, part) in relative
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .enumerate()
+    {
+        facts.push(Fact {
+            id: format!("audit_file_path_matches_{index}"),
+            predicate: "file_path_matches".to_string(),
+            args: vec![part.to_string()],
+            timestamp: 0,
+            source: Some("audit".to_string()),
+        });
+    }
+    if let Some(extension) = path.extension().and_then(|value| value.to_str()) {
+        facts.push(Fact {
+            id: "audit_file_extension".to_string(),
+            predicate: "file_extension_is".to_string(),
+            args: vec![extension.to_ascii_lowercase()],
+            timestamp: 0,
+            source: Some("audit".to_string()),
+        });
+    }
+    facts
+}
+
+fn script_body(condition: &crate::rules_file::DiskCondition) -> Result<&str, String> {
+    condition
+        .script
+        .as_deref()
+        .filter(|script| !script.trim().is_empty())
+        .ok_or_else(|| "missing script body".to_string())
+}
+
+fn validate_builtin_script(script: &str) -> Result<(), String> {
+    if script.contains('?') {
+        return Err("binding-dependent scripts are not supported by audit".to_string());
+    }
+    phr::BuiltinScriptEvaluator::new()
+        .evaluate(script, &[], &HashMap::new())
+        .map(|_| ())
+        .map_err(|error| format!("unsupported or malformed builtin script: {error}"))
+}
+
+/// Diagnose opted-in rules whose script guards cannot be evaluated by the
+/// whole-tree audit's builtin, zero-binding script surface.
+pub fn script_diagnostics(rules: &RulesFile, rule_filter: Option<&str>) -> Vec<String> {
+    filter_audit_rules(rules, rule_filter)
+        .into_iter()
+        .filter_map(|rule| {
+            rule.conditions
+                .iter()
+                .filter(|condition| condition.predicate == "__script__")
+                .find_map(|condition| {
+                    script_body(condition)
+                        .and_then(validate_builtin_script)
+                        .err()
+                })
+                .map(|reason| {
+                    format!(
+                        "phronesis: audit rule `{}` was skipped because its `__script__` guard is unsupported: {}.",
+                        rule.id, reason
+                    )
+                })
+        })
+        .collect()
+}
+
+fn script_guards_pass(rule: &DiskRule, facts: &[Fact]) -> bool {
+    let evaluator = phr::BuiltinScriptEvaluator::new();
+    let bindings = HashMap::new();
+    rule.conditions
+        .iter()
+        .filter(|condition| condition.predicate == "__script__")
+        .all(|condition| {
+            script_body(condition)
+                .and_then(validate_builtin_script)
+                .and_then(|_| {
+                    evaluator
+                        .evaluate(
+                            condition.script.as_deref().unwrap_or_default(),
+                            facts,
+                            &bindings,
+                        )
+                        .map_err(|error| error.to_string())
+                })
+                .unwrap_or(false)
+        })
 }
 
 /// True if the file's top-level `//!` doc-comment carries an exemption
@@ -462,6 +574,7 @@ struct EvalCtx<'a> {
     keep_mask: &'a Option<Vec<bool>>,
     effective_line_count: usize,
     ast_facts: &'a mut Option<Vec<Fact>>,
+    script_facts: &'a [Fact],
     times: Option<&'a mut AuditSectionTimes>,
 }
 
@@ -473,6 +586,9 @@ fn evaluate_rule_for_file(
     accum: &mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
 ) {
     if !rule_applies_to_file(rule, ctx.path, ctx.effective_line_count) {
+        return;
+    }
+    if !script_guards_pass(rule, ctx.script_facts) {
         return;
     }
     if rule.doc_excepted.unwrap_or(false) && file_exempts_rule(ctx.lines, &rule.id) {
@@ -539,6 +655,7 @@ fn evaluate_rule_for_file(
 /// Per-file scan body: runs all `rules` against `content`, accumulating hits
 /// into `accum`.
 struct ScanFileInput<'a> {
+    project_root: &'a Path,
     path: &'a Path,
     content: &'a str,
     rules: &'a [&'a DiskRule],
@@ -548,6 +665,7 @@ struct ScanFileInput<'a> {
 
 fn scan_file_into_accum(input: ScanFileInput<'_>) {
     let ScanFileInput {
+        project_root,
         path,
         content,
         rules,
@@ -575,6 +693,7 @@ fn scan_file_into_accum(input: ScanFileInput<'_>) {
     };
 
     let mut ast_facts: Option<Vec<Fact>> = None;
+    let script_facts = audit_path_facts(project_root, path);
     let path_str = path.to_string_lossy().to_string();
 
     let match_started = Instant::now();
@@ -587,6 +706,7 @@ fn scan_file_into_accum(input: ScanFileInput<'_>) {
             keep_mask: &keep_mask,
             effective_line_count,
             ast_facts: &mut ast_facts,
+            script_facts: &script_facts,
             times: times.as_deref_mut(),
         };
 
@@ -693,6 +813,7 @@ fn run_core(
             t2.read_files += t.elapsed();
         }
         scan_file_into_accum(ScanFileInput {
+            project_root: &opts.project_root,
             path,
             content: &content,
             rules: &audit_rules,
@@ -2123,6 +2244,201 @@ mod tests {
             "rule with unsupported predicate must be skipped: {:?}",
             report.per_rule
         );
+    }
+
+    fn add_script(rule: &mut DiskRule, script: &str) {
+        rule.conditions.push(DiskCondition {
+            predicate: "__script__".to_string(),
+            args: Vec::new(),
+            script: Some(script.to_string()),
+        });
+    }
+
+    #[test]
+    fn run_scopes_builtin_script_path_exclusion_to_each_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = dir.path().join("commands");
+        let integration = dir.path().join("integration");
+        std::fs::create_dir_all(&commands).unwrap();
+        std::fs::create_dir_all(&integration).unwrap();
+        std::fs::write(commands.join("example.py"), "print('match')\n").unwrap();
+        std::fs::write(integration.join("example.py"), "print('match')\n").unwrap();
+
+        let mut r = rule("no-print", "print(", "constraint_warning");
+        add_script(
+            &mut r,
+            "!facts_contain('file_path_matches', ['integration'])",
+        );
+        let report = run(
+            &RulesFile { rules: vec![r] },
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+
+        assert_eq!(report.per_rule.len(), 1);
+        assert_eq!(report.per_rule[0].hits, 1);
+        let path = report.per_rule[0].files[0].path.to_string_lossy();
+        assert!(path.ends_with("commands/example.py"), "got {path}");
+    }
+
+    #[test]
+    fn run_scopes_ast_rule_with_builtin_script_path_exclusion() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = dir.path().join("commands");
+        let integration = dir.path().join("integration");
+        std::fs::create_dir_all(&commands).unwrap();
+        std::fs::create_dir_all(&integration).unwrap();
+        let source = "def undocumented():\n    pass\n";
+        std::fs::write(commands.join("example.py"), source).unwrap();
+        std::fs::write(integration.join("example.py"), source).unwrap();
+
+        let r = DiskRule {
+            id: "missing-docstring".to_string(),
+            phase: "audit".to_string(),
+            priority: 3,
+            conditions: vec![
+                DiskCondition {
+                    predicate: "python_function_missing_docstring".to_string(),
+                    args: vec!["?file".to_string(), "?fn".to_string()],
+                    script: None,
+                },
+                DiskCondition {
+                    predicate: "__script__".to_string(),
+                    args: Vec::new(),
+                    script: Some(
+                        "!facts_contain('file_path_matches', ['integration'])".to_string(),
+                    ),
+                },
+            ],
+            actions: vec![DiskAction {
+                action_type: "constraint_warning".to_string(),
+                params: vec!["missing docstring".to_string()],
+                ..Default::default()
+            }],
+            silent: None,
+            audit: Some(true),
+            doc_excepted: None,
+        };
+        let report = run(
+            &RulesFile { rules: vec![r] },
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+
+        assert_eq!(report.per_rule.len(), 1);
+        assert_eq!(report.per_rule[0].hits, 1);
+        assert!(
+            report.per_rule[0].files[0]
+                .path
+                .to_string_lossy()
+                .ends_with("commands/example.py")
+        );
+        assert_eq!(report.per_rule[0].files[0].details, vec!["undocumented"]);
+    }
+
+    #[test]
+    fn builtin_script_path_facts_are_fresh_in_either_evaluation_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let commands = dir.path().join("commands/example.py");
+        let integration = dir.path().join("integration/example.py");
+        let script = "!facts_contain('file_path_matches', ['integration'])";
+        let evaluator = phr::BuiltinScriptEvaluator::new();
+        let bindings = HashMap::new();
+
+        for (first, second) in [(&integration, &commands), (&commands, &integration)] {
+            let first_result = evaluator
+                .evaluate(script, &audit_path_facts(dir.path(), first), &bindings)
+                .unwrap();
+            let second_result = evaluator
+                .evaluate(script, &audit_path_facts(dir.path(), second), &bindings)
+                .unwrap();
+            assert_eq!(first_result, first == &commands);
+            assert_eq!(second_result, second == &commands);
+        }
+    }
+
+    #[test]
+    fn run_ands_multiple_builtin_script_guards() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("example.py"), "print('match')\n").unwrap();
+        std::fs::write(dir.path().join("example.rs"), "print!(\"match\");\n").unwrap();
+
+        let mut r = rule("python-only", "print", "constraint_warning");
+        add_script(&mut r, "facts_contain('file_extension_is', ['py'])");
+        add_script(&mut r, "facts_count('file_extension_is', ['py']) == 1");
+        add_script(
+            &mut r,
+            "!facts_contain('file_path_matches', ['integration'])",
+        );
+        let report = run(
+            &RulesFile { rules: vec![r] },
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+
+        assert_eq!(report.per_rule[0].hits, 1);
+        assert!(
+            report.per_rule[0].files[0]
+                .path
+                .to_string_lossy()
+                .ends_with("example.py")
+        );
+    }
+
+    #[test]
+    fn run_allows_passing_script_only_whole_file_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("example.py"), "pass\n").unwrap();
+        let mut r = rule("python-file", "unused", "constraint_warning");
+        r.conditions.clear();
+        add_script(&mut r, "facts_contain('file_extension_is', ['py'])");
+
+        let report = run(
+            &RulesFile { rules: vec![r] },
+            &AuditOpts {
+                project_root: dir.path().to_path_buf(),
+                scan_root: dir.path().to_path_buf(),
+                rule_filter: None,
+            },
+        );
+
+        assert_eq!(report.per_rule[0].hits, 1);
+        assert_eq!(report.per_rule[0].files[0].lines, vec![1]);
+    }
+
+    #[test]
+    fn script_diagnostics_reject_unsupported_scripts_once_per_rule() {
+        let mut malformed = rule("malformed", "x", "constraint_warning");
+        add_script(&mut malformed, "facts_contain(");
+        let mut bound = rule("bound", "x", "constraint_warning");
+        add_script(
+            &mut bound,
+            "facts_contain('file_path_matches', ['?segment'])",
+        );
+        let mut rhai = rule("rhai", "x", "constraint_warning");
+        add_script(&mut rhai, "facts.len > 0");
+        let rules = RulesFile {
+            rules: vec![malformed, bound, rhai],
+        };
+
+        let diagnostics = script_diagnostics(&rules, None);
+        assert_eq!(diagnostics.len(), 3, "{diagnostics:?}");
+        assert!(diagnostics.iter().any(|d| d.contains("malformed")));
+        assert!(diagnostics.iter().any(|d| d.contains("bound")));
+        assert!(diagnostics.iter().any(|d| d.contains("rhai")));
+
+        let filtered = script_diagnostics(&rules, Some("bound"));
+        assert_eq!(filtered.len(), 1, "{filtered:?}");
+        assert!(filtered[0].contains("bound"));
     }
 
     // ── AST predicate evaluation in audit (Phase 3.5) ─────────────────────────
