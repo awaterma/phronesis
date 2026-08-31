@@ -1,0 +1,15 @@
+# Minimal Prometheus config for scraping a local phronesis exporter.
+#
+#   phr-mcp metrics --listen 127.0.0.1:9464
+#   prometheus --config.file=crates/phronesis-metrics/examples/prometheus-scrape.yml
+#
+# The exporter re-reads .phronesis/log.jsonl on every scrape; 5s keeps the
+# dashboard lively. Raise it if the log gets large.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: phronesis
+    static_configs:
+      - targets: ["127.0.0.1:9464"]
+      - targets: ["127.0.0.1:9465"]

@@ -8,6 +8,13 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Optional Prometheus metrics exporter.** The new `phronesis-metrics` crate
+  derives bounded OpenMetrics families from each project's
+  `.phronesis/log.jsonl`. Install the CLI with `--features metrics` to enable
+  one-shot, atomic textfile, and loopback-only HTTP export through
+  `phr-mcp metrics`. Source paths and repository names are never exposed as
+  labels, rule-id cardinality is capped, and non-loopback listeners are
+  rejected unconditionally.
 - **New opt-in `python-patterns` pack** (`phr-mcp init --packs
   python,python-patterns`; alias `py-patterns`). Thirteen advisories derived
   from <https://python-patterns.guide/>, every one backed by a new

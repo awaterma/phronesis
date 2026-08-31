@@ -29,8 +29,8 @@ changelog_update = false
 # casualty every time: v0.20.1, v0.21.0, v0.22.1, v0.24.0.
 #
 # Per-package tags make that check mean what it says. This does NOT split the
-# version: all three crates still share one version through `version_group`
-# below, because `phronesis-mcp` depends on the other two and skew would be
+# version: all four crates still share one version through `version_group`
+# below, because `phronesis-mcp` depends on the other three and skew would be
 # pure bookkeeping. It splits only the *tag*, which was never a version
 # statement — it was a per-package "did this ship" marker wearing a
 # version-shaped name.
@@ -55,6 +55,10 @@ version_group = "workspace"
 
 [[package]]
 name = "phronesis-rhai"
+version_group = "workspace"
+
+[[package]]
+name = "phronesis-metrics"
 version_group = "workspace"
 
 [[package]]

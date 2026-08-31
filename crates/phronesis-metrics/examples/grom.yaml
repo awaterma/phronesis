@@ -1,0 +1,143 @@
+# grom dashboard for phronesis-metrics.
+#
+# Start the exporter:   phr-mcp metrics --listen 127.0.0.1:9464
+# Point Prometheus at it (see prometheus-scrape.yml next to this file), then:
+#
+#   grom run --config crates/phronesis-metrics/examples/grom.yaml --prom http://localhost:9090
+#
+# Every expression below uses only the log-derived families, which the
+# standalone exporter always emits. The `phronesis_server_*` families
+# (uptime, tool latency, rules loaded) live in the MCP server's in-process
+# registry and are absent from a `phr-mcp metrics --listen` exporter, so no
+# panel here depends on them.
+# Log-derived counters reset when .phronesis/log.jsonl is truncated, so the
+# panels use rate()/increase() rather than raw totals wherever it matters.
+title: phronesis
+theme: tokyo-night
+refresh: 10s
+range: 1h
+
+widgets:
+  # Row 1 — is the exporter alive, and how much is flowing through it.
+  - type: stat
+    title: exporter up
+    unit: short
+    sparkline: true
+    grid: { x: 0, y: 0, w: 6, h: 4 }
+    queries:
+      - expr: up{job="phronesis"}
+
+  - type: stat
+    title: log entries
+    unit: short
+    sparkline: true
+    grid: { x: 6, y: 0, w: 6, h: 4 }
+    queries:
+      - expr: max(phronesis_log_entries_total)
+
+  - type: stat
+    title: hook checks / min
+    unit: short
+    sparkline: true
+    grid: { x: 12, y: 0, w: 6, h: 4 }
+    queries:
+      - expr: sum(rate(phronesis_hook_checks_total[5m])) * 60
+
+  - type: stat
+    title: blocks (30m)
+    unit: short
+    sparkline: true
+    grid: { x: 18, y: 0, w: 6, h: 4 }
+    queries:
+      - expr: sum(increase(phronesis_hook_checks_total{decision="block"}[30m]))
+
+  # Row 2 — enforcement pressure: what share of edits the rules stop, and
+  # which rules are doing the stopping.
+  - type: gauge
+    title: edits allowed (all time)
+    unit: percentunit
+    min: 0
+    max: 1
+    grid: { x: 0, y: 4, w: 12, h: 6 }
+    thresholds:
+      - color: red
+      - value: 0.8
+        color: yellow
+      - value: 0.95
+        color: green
+    queries:
+      # Ratio of lifetime totals rather than a rate: an idle window would
+      # otherwise divide 0 by 0 and paint the gauge red for no reason.
+      - expr: >-
+          sum(phronesis_hook_checks_total{decision="allow"})
+          /
+          clamp_min(sum(phronesis_hook_checks_total), 1)
+
+  - type: bargauge
+    title: top rules (72h)
+    unit: short
+    grid: { x: 12, y: 4, w: 12, h: 6 }
+    queries:
+      # __other__ is the overflow bucket from --max-rule-series; it shows up
+      # here as a single bar rather than being hidden.
+      - expr: topk(10, sum by (rule_id) (increase(phronesis_rule_fires_total[72h])))
+        legend: "{{rule_id}}"
+
+  # Row 3 — hook traffic over time, split the way the hook itself decides.
+  - type: timeseries
+    title: hook decisions
+    unit: short
+    stacked: true
+    grid: { x: 0, y: 10, w: 12, h: 8 }
+    queries:
+      - expr: sum by (decision) (rate(phronesis_hook_checks_total[5m]))
+        legend: "{{decision}}"
+
+  - type: timeseries
+    title: rule fires by outcome
+    unit: short
+    grid: { x: 12, y: 10, w: 12, h: 8 }
+    queries:
+      - expr: sum by (outcome) (rate(phronesis_rule_fires_total[5m]))
+        legend: "{{outcome}}"
+
+  # Row 4 — context cost and MCP server health.
+  - type: timeseries
+    title: context tokens / s
+    unit: short
+    stacked: true
+    grid: { x: 0, y: 18, w: 12, h: 8 }
+    queries:
+      - expr: sum by (event) (rate(phronesis_context_estimated_tokens_total[5m]))
+        legend: "{{event}}"
+
+  - type: timeseries
+    title: mcp tool calls / s
+    unit: short
+    grid: { x: 12, y: 18, w: 12, h: 8 }
+    queries:
+      - expr: sum by (tool) (rate(phronesis_mcp_tool_calls_total[5m]))
+        legend: "{{tool}}"
+
+  # Row 5 — the log itself: growth, parse failures, tool errors.
+  - type: timeseries
+    title: action log size
+    unit: bytes
+    grid: { x: 0, y: 26, w: 8, h: 6 }
+    queries:
+      - expr: phronesis_log_size_bytes
+
+  - type: timeseries
+    title: malformed log lines / s
+    unit: short
+    grid: { x: 8, y: 26, w: 8, h: 6 }
+    queries:
+      - expr: rate(phronesis_log_malformed_lines_total[5m])
+
+  - type: timeseries
+    title: context omitted / s
+    unit: short
+    grid: { x: 16, y: 26, w: 8, h: 6 }
+    queries:
+      - expr: sum by (kind) (rate(phronesis_context_omitted_total[5m]))
+        legend: "{{kind}}"

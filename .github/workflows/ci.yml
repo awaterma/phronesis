@@ -28,12 +28,14 @@ jobs:
       - name: Audit repository rules (blocking findings fail CI)
         run: cargo run -p phronesis-mcp -- audit --fail-on block
       # Feature configs must not bit-rot: the embedding-host gate on the
-      # engine and the Rhai evaluator path in the MCP each get their own
-      # clippy + test pass.
+      # engine plus the Rhai evaluator and metrics exporter paths in the MCP
+      # each get their own clippy + test pass.
       - run: cargo clippy -p phronesis --all-targets --features embedding-host -- -D warnings
       - run: cargo test -p phronesis --features embedding-host
       - run: cargo clippy -p phronesis-mcp --all-targets --features rhai -- -D warnings
       - run: cargo test -p phronesis-mcp --features rhai
+      - run: cargo clippy -p phronesis-mcp --all-targets --features metrics -- -D warnings
+      - run: cargo test -p phronesis-mcp --features metrics
 
   # Forward-compat canary: tests on current stable. No clippy here, so new
   # stable lints can't fail the build.
