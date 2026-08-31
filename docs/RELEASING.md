@@ -37,7 +37,8 @@ operator guide.
 5. **Merging the Release PR** triggers the release job
    (`release_always = true`; ordinary pushes to `main` are harmless because
    an unchanged workspace version is already present in the registry). CI then:
-   - publishes `phronesis`, `phronesis-rhai`, `phronesis-mcp` to
+   - publishes `phronesis`, `phronesis-rhai`, `phronesis-metrics`, and
+     `phronesis-mcp` to
      crates.io in dependency order via trusted publishing (OIDC — no
      `CARGO_REGISTRY_TOKEN`),
    - tags `<package>-vX.Y.Z` (one tag per crate; `vX.Y.Z` up to and
@@ -59,8 +60,8 @@ operator guide.
 Done by a human, once:
 
 1. **crates.io trusted publishing** — for EACH of `phronesis`,
-   `phronesis-rhai`, `phronesis-mcp`: crate page → Settings → Trusted
-   Publishing → Add GitHub:
+   `phronesis-rhai`, `phronesis-metrics`, and `phronesis-mcp`: crate page →
+   Settings → Trusted Publishing → Add GitHub:
    - owner: `awaterma`
    - repo: `phronesis`
    - workflow filename: `release-plz.yml`
@@ -80,6 +81,34 @@ Done by a human, once:
    ```bash
    git tag v0.20.0 fb604a9 && git push origin v0.20.0
    ```
+
+### Bootstrapping a new crate
+
+crates.io cannot configure a trusted publisher until a crate has one published
+version. A newly added workspace crate therefore needs one manual bootstrap
+before the OIDC-only release workflow can publish it:
+
+1. Merge the reviewed crate source to `main` and use a clean checkout of that
+   exact commit.
+2. Create a short-lived crates.io token restricted to the new crate name and
+   initial publication, then publish only that package:
+
+   ```bash
+   CARGO_REGISTRY_TOKEN=<short-lived-token> \
+     cargo publish --locked -p phronesis-metrics
+   ```
+
+   Pass the token only to that process; do not persist it with `cargo login`.
+3. Revoke the token immediately.
+4. On the new crate's crates.io Settings page, add the same trusted-publisher
+   configuration listed above and enable Trusted Publishing Only.
+5. Re-run the registry verification job. Subsequent workspace releases use the
+   normal release-plz/OIDC path.
+
+The first bootstrap publishes the workspace's current version of the new
+crate. The next release-plz Release PR advances the shared version group and
+publishes `phronesis-mcp` with its new optional dependency after
+`phronesis-metrics` is available in the registry.
 
 ## Troubleshooting
 

@@ -13,6 +13,9 @@ context window at every tool call, and cannot be compressed away.
 # Install the binary
 cargo install phronesis-mcp
 
+# Optional: include the local-only Prometheus/OpenMetrics exporter
+cargo install phronesis-mcp --features metrics
+
 # Register globally for Claude Code + Gemini CLI.
 # Codex receives project-scoped MCP registration during init.
 phr-mcp install
@@ -83,6 +86,7 @@ phr-mcp codex-hook        # Codex lifecycle adapter (JSON stdin/stdout)
 phr-mcp init              # One-command project setup
 phr-mcp audit             # Whole-tree rule sweep
 phr-mcp stats             # Per-rule activity summary
+phr-mcp metrics           # Prometheus export (requires the `metrics` feature)
 phr-mcp journey           # journey_* facts asserted right now
 phr-mcp confidence        # Confidence band + grounded signals
 phr-mcp drift             # Guidance/rule gaps (`--source wiki`, memory, claude_md, code)

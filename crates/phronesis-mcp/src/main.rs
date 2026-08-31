@@ -55,6 +55,27 @@ enum Command {
         #[arg(long, default_value_t = 5)]
         last: usize,
     },
+    /// Render Prometheus metrics derived from `.phronesis/log.jsonl`.
+    ///
+    /// Requires the `metrics` cargo feature. With no `--listen`, writes one
+    /// scrape to stdout (or `--out FILE`, atomically) — the shape node_exporter's
+    /// textfile collector expects. With `--listen`, runs as a standalone
+    /// exporter serving `/metrics` until interrupted.
+    Metrics {
+        /// Serve `/metrics` on this address instead of printing once.
+        #[arg(long, value_name = "ADDR")]
+        listen: Option<String>,
+        /// Only consider log entries newer than this window, e.g. `24h`, `7d`.
+        #[arg(long)]
+        since: Option<String>,
+        /// Cap on distinct `rule_id` label values; the rest fold into
+        /// `__other__`.
+        #[arg(long, default_value_t = 100)]
+        max_rule_series: usize,
+        /// Write the scrape to this file (temp + rename) instead of stdout.
+        #[arg(long, value_name = "FILE")]
+        out: Option<String>,
+    },
     /// Print a per-rule summary of recent hook activity from
     /// `.phronesis/log.jsonl`. Default output is a terminal table; pass
     /// `--json` for machine-readable output. Read-only, never errors loudly.
@@ -550,6 +571,12 @@ async fn main() -> anyhow::Result<()> {
         Command::PostCheck => hook::run_post_check().await,
         Command::SessionContext => handle_session_context().await,
         Command::InteractionContext { last } => handle_interaction_context(last).await,
+        Command::Metrics {
+            listen,
+            since,
+            max_rule_series,
+            out,
+        } => handle_metrics(listen, since, max_rule_series, out).await,
         Command::Stats { since, rule, json } => handle_stats(since, rule, json),
         Command::Confidence { subject, json } => handle_confidence(subject, json),
         Command::Signal { name, outcome } => handle_signal(&name, outcome == "pass"),
@@ -670,6 +697,83 @@ async fn handle_interaction_context(last: usize) -> anyhow::Result<()> {
         println!("{}", out);
     }
     Ok(())
+}
+
+/// Resolve a `--since` window to an absolute unix-seconds cutoff, sharing
+/// `stats::parse_since` so `phr-mcp stats --since` and `phr-mcp metrics
+/// --since` accept exactly the same vocabulary.
+#[cfg(feature = "metrics")]
+fn metrics_cutoff(since: Option<String>) -> Option<u64> {
+    let raw = since.as_deref()?;
+    let Some(window) = phronesis_mcp::stats::parse_since(raw) else {
+        eprintln!(
+            "phronesis: unrecognized --since `{}`, considering all time",
+            raw
+        );
+        return None;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Some(now.saturating_sub(window))
+}
+
+#[cfg(feature = "metrics")]
+async fn handle_metrics(
+    listen: Option<String>,
+    since: Option<String>,
+    max_rule_series: usize,
+    out: Option<String>,
+) -> anyhow::Result<()> {
+    use phronesis_metrics::families::Options;
+    use phronesis_metrics::serve::ServeConfig;
+
+    let root = phronesis_mcp::security::project_root();
+    let options = Options {
+        max_rule_series,
+        since: metrics_cutoff(since),
+        now: 0,
+    };
+
+    let Some(addr) = listen else {
+        let text = phronesis_metrics::scrape(&root, &options, None)?;
+        match out {
+            // Temp + rename: the textfile collector polls this path on its own
+            // schedule and must never observe a half-written scrape.
+            Some(path) => {
+                let path = std::path::PathBuf::from(path);
+                let tmp = path.with_extension("prom.tmp");
+                std::fs::write(&tmp, &text)?;
+                std::fs::rename(&tmp, &path)?;
+            }
+            None => print!("{text}"),
+        }
+        return Ok(());
+    };
+
+    let addr: std::net::SocketAddr = addr
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid --listen address `{addr}`: {e}"))?;
+    let mut cfg = ServeConfig::new(addr, root);
+    cfg.options = options;
+    let (listener, bound) = phronesis_metrics::serve::bind(&cfg).await?;
+    eprintln!("phronesis: serving metrics on http://{bound}/metrics");
+    phronesis_metrics::serve::serve_on(listener, cfg, None).await?;
+    Ok(())
+}
+
+#[cfg(not(feature = "metrics"))]
+async fn handle_metrics(
+    _listen: Option<String>,
+    _since: Option<String>,
+    _max_rule_series: usize,
+    _out: Option<String>,
+) -> anyhow::Result<()> {
+    anyhow::bail!(
+        "this phr-mcp was built without Prometheus support; \
+         rebuild with `cargo install phronesis-mcp --features metrics`"
+    )
 }
 
 fn handle_stats(since: Option<String>, rule: Option<String>, json: bool) -> anyhow::Result<()> {
