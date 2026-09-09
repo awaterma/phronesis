@@ -52,9 +52,8 @@ impl Project {
         for import in &file.source.imports {
             match self
                 .index
-                .resolve(import.as_import(), &file.owner, |owner| {
-                    file.visible.contains(&owner.file)
-                }) {
+                .resolve(import.as_import(), &file.owner, |owner| file.sees(owner))
+            {
                 Resolution::Module(target) => emit("imports", &[&file.owner.module, &target]),
                 Resolution::Unresolved => out.skipped += 1,
                 _ => {}
@@ -227,15 +226,16 @@ impl Project {
         // visible types stay ambiguous even if only one declares this method.
         let mut resolved_types = Vec::new();
         for ty in types {
-            if self.index.resolve(Import::Type(&ty), &file.owner, |owner| {
-                file.visible.contains(&owner.file)
-            }) == Resolution::Unresolved
+            if self
+                .index
+                .resolve(Import::Type(&ty), &file.owner, |owner| file.sees(owner))
+                == Resolution::Unresolved
             {
                 return None;
             }
             if let Some(owner) = self
                 .index
-                .type_owner(&ty, &file.owner, |owner| file.visible.contains(&owner.file))
+                .type_owner(&ty, &file.owner, |owner| file.sees(owner))
             {
                 resolved_types.push((ty, owner));
             }

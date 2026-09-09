@@ -461,3 +461,47 @@ fn non_utf8_java_is_counted_without_aborting_other_files() {
     assert_eq!(project.diagnostics.count("unreadable_input"), 1);
     assert!(!project.input_hashes.contains_key("Invalid.java"));
 }
+
+#[test]
+fn a_maven_unit_named_project_does_not_share_a_classpath_with_the_fallback_backend() {
+    // An unresolved groupId degrades the Maven unit id to a bare artifactId.
+    // When that artifactId is literally "project" it matches the no-build
+    // fallback's unit id, so a classpath memo keyed on the unit alone hands
+    // one backend's visibility to the other.
+    let project = project(&[
+        (
+            "a/pom.xml",
+            "<project><artifactId>project</artifactId><dependencies><dependency>\
+             <groupId>other</groupId><artifactId>lib</artifactId></dependency>\
+             </dependencies></project>",
+        ),
+        (
+            "b/pom.xml",
+            "<project><groupId>other</groupId><artifactId>lib</artifactId></project>",
+        ),
+        (
+            "a/src/main/java/p/A.java",
+            "package p; class A { void m() {} }",
+        ),
+        (
+            "b/src/main/java/q/B.java",
+            "package q; public class B { public void m() {} }",
+        ),
+        // Outside every Maven source root, so it lands on the fallback
+        // backend and takes the unit id "project".
+        ("Stray.java", "class Stray {}"),
+    ]);
+    let maven = &project.files["a/src/main/java/p/A.java"];
+    let stray = &project.files["Stray.java"];
+    assert_eq!(maven.owner.unit, "project");
+    assert_eq!(stray.owner.unit, "project");
+    let target = project.files["b/src/main/java/q/B.java"].owner.clone();
+    assert!(
+        maven.sees(&target),
+        "the Maven unit must keep its declared classpath"
+    );
+    assert!(
+        !stray.sees(&target),
+        "the fallback unit must not inherit the Maven unit's classpath"
+    );
+}

@@ -91,13 +91,16 @@ fn effective(
     if let Some(found) = cache.get(file) {
         return found.clone();
     }
+    // Look the POM up before claiming a slot in `visiting`: returning while
+    // still marked in-progress would leave a stale entry that reports a
+    // spurious `parent_cycle` and drops a real parent chain.
+    let Some(pom) = poms.get(file) else {
+        return Effective::default();
+    };
     if !visiting.insert(file.into()) {
         diagnostics.record("parent_cycle", file);
         return Effective::default();
     }
-    let Some(pom) = poms.get(file) else {
-        return Effective::default();
-    };
     let mut inherited = Effective::default();
     if let Some(parent) = &pom.parent {
         let path = parent.path.as_deref().unwrap_or("../pom.xml");

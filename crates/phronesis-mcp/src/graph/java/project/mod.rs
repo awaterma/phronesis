@@ -13,8 +13,46 @@ use std::sync::Arc;
 pub struct File {
     pub owner: Owner,
     pub source: Arc<parse::Source>,
-    pub visible: BTreeSet<String>,
+    pub visible: Visibility,
     pub path_mismatch: bool,
+}
+
+/// What a file may resolve names against.
+///
+/// Bazel states compile visibility per target, so it stays an explicit file
+/// set. Maven and the no-build fallback derive it from the owning unit and
+/// its classpath, so they keep the *predicate* rather than materializing one
+/// path set per file: the set is identical for every file sharing a
+/// `(unit, context)`, and expanding it made discovery quadratic in both time
+/// and memory on single-module repositories.
+#[derive(Debug, Clone)]
+pub enum Visibility {
+    /// An explicit per-target file set.
+    Files(BTreeSet<String>),
+    /// Same-unit files plus production files of the units on the classpath.
+    Classpath {
+        units: Arc<BTreeSet<String>>,
+        test: bool,
+    },
+}
+
+impl Default for Visibility {
+    fn default() -> Self {
+        Self::Files(BTreeSet::new())
+    }
+}
+
+impl File {
+    /// Whether this file may resolve a declaration owned by `owner`.
+    pub fn sees(&self, owner: &Owner) -> bool {
+        match &self.visible {
+            Visibility::Files(files) => files.contains(&owner.file),
+            Visibility::Classpath { units, test } => {
+                (owner.unit == self.owner.unit && (*test || owner.context != Context::Test))
+                    || (units.contains(&owner.unit) && owner.context == Context::Production)
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -307,45 +345,37 @@ impl Project {
                 File {
                     owner,
                     source,
-                    visible: BTreeSet::new(),
+                    visible: Visibility::default(),
                     path_mismatch,
                 },
             );
             backends.insert(file, backend);
         }
-        let owners = out
-            .files
-            .iter()
-            .map(|(file, entry)| (file.clone(), entry.owner.clone()))
-            .collect::<BTreeMap<_, _>>();
-        let mut classpaths = BTreeMap::new();
+        // Keyed by backend as well as unit: an unresolved Maven group
+        // degrades the unit id to a bare artifactId, which can collide with
+        // the fallback backend's literal "project" unit and hand one
+        // backend's classpath to the other.
+        let mut classpaths: BTreeMap<(&str, String, bool), Arc<BTreeSet<String>>> = BTreeMap::new();
         for (file, entry) in &mut out.files {
             match backends[file] {
                 "bazel" => {
                     if let Some(metadata) = bazel.files.get(file) {
-                        entry.visible = metadata.visible_files.clone();
+                        entry.visible = Visibility::Files(metadata.visible_files.clone());
                     }
                 }
                 backend => {
                     let test = entry.owner.context == Context::Test;
-                    let visible_units = classpaths
-                        .entry((entry.owner.unit.clone(), test))
+                    let units = classpaths
+                        .entry((backend, entry.owner.unit.clone(), test))
                         .or_insert_with(|| {
-                            if backend == "maven" {
+                            Arc::new(if backend == "maven" {
                                 maven.visible_units(&entry.owner.unit, test)
                             } else {
                                 BTreeSet::new()
-                            }
-                        });
-                    for (candidate_file, candidate) in &owners {
-                        if (candidate.unit == entry.owner.unit
-                            && (test || candidate.context != Context::Test))
-                            || (visible_units.contains(&candidate.unit)
-                                && candidate.context == Context::Production)
-                        {
-                            entry.visible.insert(candidate_file.clone());
-                        }
-                    }
+                            })
+                        })
+                        .clone();
+                    entry.visible = Visibility::Classpath { units, test };
                 }
             }
         }

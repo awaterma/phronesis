@@ -65,7 +65,20 @@ pub fn save_index(path: &Path, index: &Index) -> std::io::Result<()> {
 /// and `is_tracked` must agree with this walk or a sensor-recorded file
 /// becomes permanent drift.
 pub(super) fn tracked_files(root: &Path) -> Vec<String> {
-    let mut out = Vec::new();
+    walk(root).0
+}
+
+/// One walk yielding both the tracked-language files and the Java build
+/// manifests. `check_freshness` needs both sets; collecting them in separate
+/// traversals charged every repository — including those containing no Java
+/// at all — for a second full `ignore` walk of the tree.
+///
+/// The manifest policy here must stay identical to
+/// `java::project::input_files`, which shares this hidden-directory and
+/// `node_modules` handling.
+fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
+    let mut tracked = Vec::new();
+    let mut manifests = Vec::new();
     for entry in ignore::WalkBuilder::new(root)
         .hidden(true)
         .filter_entry(|e| e.file_name() != "node_modules")
@@ -76,6 +89,19 @@ pub(super) fn tracked_files(root: &Path) -> Vec<String> {
             continue;
         }
         let path = entry.path();
+        let Ok(rel) = path.strip_prefix(root) else {
+            continue;
+        };
+        let Some(rel) = rel.to_str() else {
+            continue;
+        };
+        let rel = rel.replace('\\', "/");
+        // No manifest name carries a tracked extension, so the two sets stay
+        // disjoint and a manifest never enters the tracked list.
+        if crate::graph::java::project::is_manifest(&rel) {
+            manifests.push(rel);
+            continue;
+        }
         let ext = path
             .extension()
             .and_then(|e| e.to_str())
@@ -100,14 +126,11 @@ pub(super) fn tracked_files(root: &Path) -> Vec<String> {
         ) {
             continue;
         }
-        if let Ok(rel) = path.strip_prefix(root)
-            && let Some(rel) = rel.to_str()
-        {
-            out.push(rel.replace('\\', "/"));
-        }
+        tracked.push(rel);
     }
-    out.sort();
-    out
+    tracked.sort();
+    manifests.sort();
+    (tracked, manifests)
 }
 
 pub(super) fn decision_input_files(root: &Path) -> Vec<String> {
@@ -147,12 +170,8 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
         };
     }
     let mut drifted = Vec::new();
-    let mut on_disk = tracked_files(root);
-    on_disk.extend(
-        crate::graph::java::project::input_files(root)
-            .into_iter()
-            .filter(|file| crate::graph::java::project::is_manifest(file)),
-    );
+    let (mut on_disk, manifests) = walk(root);
+    on_disk.extend(manifests);
     if root.join(".phronesis/graph.toml").is_file() {
         on_disk.push(".phronesis/graph.toml".to_string());
     }

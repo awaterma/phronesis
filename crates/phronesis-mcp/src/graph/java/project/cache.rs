@@ -2,12 +2,18 @@
 
 use super::*;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 mod disk;
 
 type Files = BTreeMap<String, (u64, Arc<parse::Source>)>;
-static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, Files>>> = OnceLock::new();
+/// Each root carries the tick at which it was last used, so eviction can drop
+/// the genuinely least-recently-used root. Ordering by `PathBuf` instead would
+/// evict whichever root sorts first — often the one being actively rebuilt,
+/// forcing a cold re-parse of its whole tree on every pass.
+static CACHE: OnceLock<Mutex<BTreeMap<PathBuf, (u64, Files)>>> = OnceLock::new();
+static TICK: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn parse_sources(
     root: &Path,
@@ -18,11 +24,17 @@ pub(super) fn parse_sources(
     if let Some(cache) = cache.as_mut()
         && !cache.contains_key(&key)
         && cache.len() >= 8
-        && let Some(oldest) = cache.keys().next().cloned()
+        && let Some(oldest) = cache
+            .iter()
+            .min_by_key(|(_, (used, _))| *used)
+            .map(|(root, _)| root.clone())
     {
         cache.remove(&oldest);
     }
-    let previous = cache.as_ref().and_then(|cache| cache.get(&key));
+    let previous = cache
+        .as_ref()
+        .and_then(|cache| cache.get(&key))
+        .map(|(_, files)| files);
     let persisted = previous.is_none().then(|| disk::load(&key)).flatten();
     let previous = previous.or(persisted.as_ref());
     let (next, out) = parse_inputs(inputs, previous);
@@ -36,7 +48,8 @@ pub(super) fn parse_sources(
         disk::save(&key, &next);
     }
     if let Some(cache) = cache.as_mut() {
-        cache.insert(key, next);
+        let used = TICK.fetch_add(1, Ordering::Relaxed);
+        cache.insert(key, (used, next));
     }
     out
 }

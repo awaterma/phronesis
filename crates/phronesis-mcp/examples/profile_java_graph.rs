@@ -39,7 +39,7 @@ fn main() -> anyhow::Result<()> {
                         project
                             .index
                             .resolve(import.as_import(), &entry.owner, |owner| {
-                                let visible = entry.visible.contains(&owner.file);
+                                let visible = entry.sees(owner);
                                 candidates.borrow_mut().push(serde_json::json!({
                                     "file": owner.file, "unit": owner.unit,
                                     "context": format!("{:?}", owner.context), "visible": visible,
