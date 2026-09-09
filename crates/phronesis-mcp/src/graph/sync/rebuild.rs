@@ -147,6 +147,7 @@ fn extract_for_save(
         content,
         units: &units,
         cue_index: None,
+        java_project: None,
         rust_inclusions: &rust_inclusions,
         ownership: &ownership,
     });
@@ -168,9 +169,19 @@ fn untouched_outcome(existing: &[Edge], skipped: usize) -> SaveOutcome {
 /// Apply one save: parse the edited file, compact by provenance, re-derive
 /// over the whole graph, and write atomically.
 ///
-/// Only the edited file is parsed; derivation runs over the full edge set
-/// already on disk. That is what makes whole-repo facts affordable per save.
+/// Java saves refresh the project snapshot because changed declarations or
+/// build metadata can alter imports in otherwise unchanged source files.
+/// Other ordinary saves parse only the edited file before derivation.
 pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<SaveOutcome> {
+    if file_path.ends_with(".java") || graph::java::project::is_manifest(file_path) {
+        let Some(relative) = graph::java::project::overlay_path(root, file_path) else {
+            return Ok(untouched_outcome(
+                &store::load(&store::graph_path(root))?,
+                0,
+            ));
+        };
+        return rebuild_with_overlay(root, Some((&relative, content)));
+    }
     if forces_rebuild(root, file_path, content)? {
         return rebuild(root);
     }
@@ -267,25 +278,34 @@ struct RebuildScan {
     files: Vec<String>,
     rust_inclusions: BTreeMap<String, IncludedRustModule>,
     ownership: ownership::config::OwnershipConfig,
+    java: graph::java::project::Project,
 }
 
 impl RebuildScan {
-    fn discover(root: &Path) -> Self {
+    fn discover(root: &Path, overlay: Option<(&str, &str)>) -> std::io::Result<Self> {
         let units = UnitMap::discover(root);
         let cue_index = graph::cue::build_package_index(root);
-        let files = tracked_files(root);
+        let mut files = tracked_files(root);
+        if let Some((file, _)) = overlay
+            && file.ends_with(".java")
+            && !files.iter().any(|existing| existing == file)
+        {
+            files.push(file.into());
+            files.sort();
+        }
         let rust_inclusions = rust_path_inclusions(root, &files, &units);
         // Loaded once for the whole rebuild. `.phronesis/graph.toml` is a single
         // file read; doing it per tracked file would repeat it thousands of times
         // to reach the same answer.
         let ownership = ownership::config::load_or_disabled(root);
-        Self {
+        Ok(Self {
             units,
             cue_index,
             files,
             rust_inclusions,
             ownership,
-        }
+            java: graph::java::project::Project::discover(root, overlay)?,
+        })
     }
 }
 
@@ -307,8 +327,15 @@ fn extract_tracked(root: &Path, scan: &RebuildScan, index: &mut Index) -> (Vec<E
     let mut base = Vec::new();
     let mut skipped = 0;
     for rel in &scan.files {
-        let Ok(content) = std::fs::read_to_string(root.join(rel)) else {
-            continue;
+        // Java's snapshot already read and parsed these bytes. Re-reading
+        // here could stamp a different edit's hash onto the extracted edges.
+        let content = if rel.ends_with(".java") {
+            String::new()
+        } else {
+            let Ok(content) = std::fs::read_to_string(root.join(rel)) else {
+                continue;
+            };
+            content
         };
         let extracted = extract_one(ExtractOneParams {
             root,
@@ -316,10 +343,20 @@ fn extract_tracked(root: &Path, scan: &RebuildScan, index: &mut Index) -> (Vec<E
             content: &content,
             units: &scan.units,
             cue_index: Some(&scan.cue_index),
+            java_project: Some(&scan.java),
             rust_inclusions: &scan.rust_inclusions,
             ownership: &scan.ownership,
         });
         skipped += extracted.skipped;
+        if rel.ends_with(".java") {
+            if !extracted.parse_failed
+                && let Some(hash) = scan.java.input_hashes.get(rel)
+            {
+                base.extend(extracted.edges);
+                index.entries.insert(rel.clone(), *hash);
+            }
+            continue;
+        }
         if extracted.parse_failed {
             // A complete rebuild has observed this exact content and
             // intentionally excluded it. Record the hash so status does not
@@ -355,28 +392,67 @@ fn record_auxiliary_inputs(root: &Path, index: &mut Index) {
 /// `node_modules`. The recovery path after the graph has drifted, and the
 /// only way edges for deleted files are cleared.
 pub fn rebuild(root: &Path) -> std::io::Result<SaveOutcome> {
+    rebuild_with_overlay(root, None)
+}
+
+fn rebuild_with_overlay(
+    root: &Path,
+    overlay: Option<(&str, &str)>,
+) -> std::io::Result<SaveOutcome> {
     // Rules are graph consumers. Migrate their vocabulary before hashing
     // inputs so the rebuild cannot make its own index immediately stale.
     let migrated_rules = migrate_graph_rule_predicates(root)?;
     let mut index = next_index(root);
-    let scan = RebuildScan::discover(root);
+    let scan = RebuildScan::discover(root, overlay)?;
+    if let Some((file, _)) = overlay
+        && scan.java.failed_inputs.contains(file)
+    {
+        return Ok(untouched_outcome(
+            &store::load(&store::graph_path(root))?,
+            1,
+        ));
+    }
     let (mut base, skipped) = extract_tracked(root, &scan, &mut index);
 
     graph::data_contracts::augment(root, &mut base);
     // Compiler enrichment is rebuild-only (§8.2) and runs after AST extraction
     // because its subject list is read back off the extracted edges — the ids
     // must be the ones already in the graph, not a second reconstruction.
-    let (compiler_edges, diagnostics) = compiler_evidence(root, &scan.ownership, &base);
+    let (compiler_edges, mut diagnostics) = compiler_evidence(root, &scan.ownership, &base);
+    for (name, objects) in &scan.java.diagnostics.0 {
+        diagnostics.push(format!("java.{name}={}", objects.len()));
+    }
+    if !scan.java.input_hashes.is_empty() {
+        let units = scan
+            .java
+            .files
+            .values()
+            .map(|f| &f.owner.unit)
+            .collect::<BTreeSet<_>>();
+        let modules = scan
+            .java
+            .files
+            .values()
+            .map(|f| &f.owner.module)
+            .collect::<BTreeSet<_>>();
+        diagnostics.push(format!("java.units={}", units.len()));
+        diagnostics.push(format!("java.modules={}", modules.len()));
+    }
     base.extend(compiler_edges);
     base.extend(rule_predicate_edges(root)?);
     base.extend(graph::decisions::extract(root));
     record_auxiliary_inputs(root, &mut index);
+    for (file, hash) in &scan.java.input_hashes {
+        if graph::java::project::is_manifest(file) && !scan.java.failed_inputs.contains(file) {
+            index.entries.insert(file.clone(), *hash);
+        }
+    }
 
     let (n_base, n_derived) = persist(root, base)?;
     save_index(&index_path(root), &index)?;
     reconcile_bindings_best_effort(root, index.generation);
     for diagnostic in &diagnostics {
-        tracing::info!("ownership provider limitation: {diagnostic}");
+        tracing::info!("graph analysis diagnostic: {diagnostic}");
     }
     Ok(SaveOutcome {
         base: n_base,

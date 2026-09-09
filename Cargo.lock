@@ -1238,12 +1238,14 @@ name = "phronesis-mcp"
 version = "0.32.0"
 dependencies = [
  "anyhow",
+ "cc",
  "chrono",
  "clap",
  "criterion",
  "cucumber",
  "dirs",
  "fs2",
+ "globset",
  "ignore",
  "phronesis",
  "phronesis-metrics",
@@ -1251,6 +1253,7 @@ dependencies = [
  "rand",
  "regex",
  "rmcp",
+ "roxmltree",
  "schemars",
  "serde",
  "serde_json",
@@ -1262,6 +1265,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
+ "tree-sitter-language",
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-swift",
@@ -1606,6 +1610,12 @@ dependencies = [
  "serde_json",
  "syn",
 ]
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rustc_version"

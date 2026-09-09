@@ -322,6 +322,208 @@ fn pre_check_file(dir: &Path, rel: &str) -> (i32, String) {
     )
 }
 
+/// Exercise the actual shipped structural pack for both Java build backends.
+fn java_packaged_project(bazel: bool) -> TempDir {
+    let dir = TempDir::new().expect("tempdir");
+    for (file, body) in [
+        (
+            "src/main/java/a/A.java",
+            "package a; import b.B; class A {}",
+        ),
+        (
+            "src/main/java/b/B.java",
+            "package b; import a.A; class B {}",
+        ),
+        (
+            "src/main/java/clean/Clean.java",
+            "package clean; class Clean {}",
+        ),
+    ] {
+        let path = dir.path().join(file);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, body).expect("source");
+    }
+    let (manifest, body) = if bazel {
+        (
+            "BUILD.bazel",
+            "java_library(name='app', srcs=glob(['src/**/*.java']))",
+        )
+    } else {
+        (
+            "pom.xml",
+            "<project><groupId>example</groupId><artifactId>app</artifactId></project>",
+        )
+    };
+    std::fs::write(dir.path().join(manifest), body).expect("manifest");
+    let status = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(dir.path())
+        .args(["init", "--packs", "structural", "."])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("init");
+    assert!(status.success());
+    dir
+}
+
+#[test]
+fn java_maven_and_bazel_cycles_reach_the_shipped_rule_and_leave_clean_files_alone() {
+    for bazel in [false, true] {
+        let dir = java_packaged_project(bazel);
+        let (code, stderr) = pre_check_file(dir.path(), "src/main/java/a/A.java");
+        assert_eq!(
+            code, 1,
+            "warning exit differs from blocking exit 2: {stderr}"
+        );
+        assert!(stderr.contains("import cycle"), "bazel={bazel}: {stderr}");
+        assert!(stderr.contains("java:"), "{stderr}");
+        let (_, clean) = pre_check_file(dir.path(), "src/main/java/clean/Clean.java");
+        assert!(!clean.contains("import cycle"), "{clean}");
+    }
+}
+
+#[test]
+fn java_disk_cache_preserves_cross_process_graphs_and_validates_same_mtime_edits() {
+    let dir = java_packaged_project(false);
+    let cache = dir.path().join(".phronesis/java-declarations.json");
+    assert!(cache.is_file());
+    let original = store::load(&store::graph_path(dir.path())).expect("original graph");
+    let cached_at = std::fs::metadata(&cache)
+        .expect("cache metadata")
+        .modified()
+        .expect("mtime");
+    rebuild_graph(dir.path());
+    assert_eq!(
+        original,
+        store::load(&store::graph_path(dir.path())).expect("warm graph")
+    );
+    assert_eq!(
+        cached_at,
+        std::fs::metadata(&cache)
+            .expect("metadata")
+            .modified()
+            .expect("mtime")
+    );
+
+    let source = dir.path().join("src/main/java/b/B.java");
+    let metadata = std::fs::metadata(&source).expect("source metadata");
+    std::fs::write(&source, "package b; import a.A; class D {}").expect("same length edit");
+    std::fs::File::options()
+        .write(true)
+        .open(&source)
+        .expect("source")
+        .set_times(std::fs::FileTimes::new().set_modified(metadata.modified().expect("mtime")))
+        .expect("restore mtime");
+    assert_eq!(
+        metadata.len(),
+        std::fs::metadata(&source).expect("metadata").len()
+    );
+    assert_eq!(post_check(dir.path(), "src/main/java/b/B.java"), 0);
+    let changed = store::load(&store::graph_path(dir.path())).expect("changed graph");
+    assert!(!changed.iter().any(|edge| edge.p == "in_cycle"));
+    assert_ne!(original, changed);
+    std::fs::remove_file(&cache).expect("remove optional cache");
+    rebuild_graph(dir.path());
+    assert_eq!(
+        changed,
+        store::load(&store::graph_path(dir.path())).expect("cold graph")
+    );
+    std::fs::write(cache, "corrupt cache").expect("corrupt optional cache");
+    rebuild_graph(dir.path());
+    assert_eq!(
+        changed,
+        store::load(&store::graph_path(dir.path())).expect("recovered graph")
+    );
+}
+
+#[test]
+fn java_post_check_removes_cycles_after_a_manifest_only_edit() {
+    let dir = java_packaged_project(true);
+    // Splitting the files between targets removes compile visibility without
+    // touching Java source. The post-check hook must update the whole graph.
+    std::fs::write(dir.path().join("BUILD.bazel"), "java_library(name='a', srcs=['src/main/java/a/A.java'])\njava_library(name='b', srcs=['src/main/java/b/B.java'])").expect("edit BUILD");
+    assert_eq!(post_check(dir.path(), "BUILD.bazel"), 0);
+    let graph = store::load(&store::graph_path(dir.path())).expect("graph");
+    assert!(!graph.iter().any(|edge| edge.p == "in_cycle"));
+    let (_, stderr) = pre_check_file(dir.path(), "src/main/java/a/A.java");
+    assert!(!stderr.contains("import cycle"), "{stderr}");
+}
+
+#[test]
+fn java_manifest_hook_preserves_four_languages_and_matches_a_clean_binary_rebuild() {
+    let dir = java_packaged_project(false);
+    for (file, body) in [
+        ("src/lib.rs", "pub fn rust_function() {}"),
+        ("script.py", "def python_function():\n    pass\n"),
+        ("script.ts", "export function typescriptFunction() {}"),
+        (
+            "src/main/java/service/Service.java",
+            "package service; public class Service { public static void run() {} }",
+        ),
+        (
+            "src/test/java/check/ServiceTest.java",
+            "package check; import service.Service; class ServiceTest { @Test void verifies() { Service.run(); } }",
+        ),
+    ] {
+        let path = dir.path().join(file);
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, body).expect("source");
+    }
+    rebuild_graph(dir.path());
+    let before = store::load(&store::graph_path(dir.path())).expect("initial graph");
+    for language in ["rust:", "python:", "typescript:", "java:"] {
+        assert!(
+            before
+                .iter()
+                .any(|edge| edge.p == "defines_fn" && edge.a[1].starts_with(language)),
+            "missing {language}"
+        );
+    }
+    assert!(before.iter().any(|edge| edge.p == "tested_by"
+        && edge.a
+            == [
+                "java:example:app::service::Service::run",
+                "java:example:app::check::ServiceTest::verifies",
+            ]));
+
+    std::fs::write(
+        dir.path().join("pom.xml"),
+        "<project><groupId>example</groupId><artifactId>renamed</artifactId></project>",
+    )
+    .expect("edit manifest");
+    let status = post_check(dir.path(), "pom.xml");
+    assert!(matches!(status, 0 | 1), "post-check failed: {status}");
+    let after = store::load(&store::graph_path(dir.path())).expect("hook graph");
+    for file in ["src/lib.rs", "script.py", "script.ts"] {
+        let old = before
+            .iter()
+            .filter(|edge| edge.src == file)
+            .collect::<Vec<_>>();
+        let new = after
+            .iter()
+            .filter(|edge| edge.src == file)
+            .collect::<Vec<_>>();
+        assert!(!old.is_empty(), "missing {file}");
+        assert_eq!(old, new, "Java manifest changed {file}");
+    }
+    assert!(
+        !after
+            .iter()
+            .any(|edge| edge.a.iter().any(|arg| arg.starts_with("java:example:app")))
+    );
+    assert!(after.iter().any(|edge| edge.p == "tested_by"
+        && edge.a
+            == [
+                "java:example:renamed::service::Service::run",
+                "java:example:renamed::check::ServiceTest::verifies",
+            ]));
+    rebuild_graph(dir.path());
+    assert_eq!(
+        after,
+        store::load(&store::graph_path(dir.path())).expect("clean rebuild")
+    );
+}
+
 #[test]
 fn the_shipped_pack_flags_a_risky_function() {
     let d = packaged_project();

@@ -165,6 +165,7 @@ pub(super) struct ExtractOneParams<'a> {
     pub(super) content: &'a str,
     pub(super) units: &'a UnitMap,
     pub(super) cue_index: Option<&'a graph::cue::PackageIndex>,
+    pub(super) java_project: Option<&'a graph::java::project::Project>,
     pub(super) rust_inclusions: &'a BTreeMap<String, IncludedRustModule>,
     /// Loaded **once per pass** by the caller, never per file: it is one read
     /// of `.phronesis/graph.toml`, and re-reading it for every tracked file
@@ -212,6 +213,7 @@ pub(super) fn extract_one(params: ExtractOneParams<'_>) -> graph::extract::Extra
         content,
         units,
         cue_index,
+        java_project,
         rust_inclusions,
         ownership,
     } = params;
@@ -234,6 +236,10 @@ pub(super) fn extract_one(params: ExtractOneParams<'_>) -> graph::extract::Extra
         return helm3::extract_helm3(rel, content, &helm_unit, Some(&chart_root));
     }
     match graph::unit::lang_of_path(rel) {
+        Some(graph::unit::LANG_JAVA) => java_project
+            .map_or_else(graph::extract::Extracted::unparseable, |project| {
+                project.extract(rel)
+            }),
         Some(graph::unit::LANG_PYTHON) => graph::python::extract_python(rel, content, &unit),
         Some(graph::unit::LANG_TYPESCRIPT) => {
             graph::typescript::extract_typescript(rel, content, &unit)

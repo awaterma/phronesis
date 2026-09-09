@@ -89,6 +89,7 @@ pub(super) fn tracked_files(root: &Path) -> Vec<String> {
                 | "mts"
                 | "cts"
                 | "swift"
+                | "java"
                 | "lua"
                 | "rhai"
                 | "cue"
@@ -147,6 +148,11 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     }
     let mut drifted = Vec::new();
     let mut on_disk = tracked_files(root);
+    on_disk.extend(
+        crate::graph::java::project::input_files(root)
+            .into_iter()
+            .filter(|file| crate::graph::java::project::is_manifest(file)),
+    );
     if root.join(".phronesis/graph.toml").is_file() {
         on_disk.push(".phronesis/graph.toml".to_string());
     }
@@ -185,7 +191,7 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
 /// and Helm3 template files.
 pub const TRACKED_EXTENSIONS: &[&str] = &[
     ".rs", ".py", ".ts", ".tsx", ".mts", ".cts", ".swift", ".lua", ".rhai", ".cue", ".json",
-    ".yaml", ".yml", ".tpl",
+    ".yaml", ".yml", ".tpl", ".java",
 ];
 
 /// Whether `on_save`/`record_from_disk` should index this file.
