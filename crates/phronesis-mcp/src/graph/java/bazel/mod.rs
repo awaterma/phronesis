@@ -5,12 +5,13 @@ mod eval;
 use super::index::Context;
 use super::maven::Diagnostics;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct File {
     pub unit: String,
     pub context: Context,
-    pub visible_files: BTreeSet<String>,
+    pub visible_files: Arc<BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -176,7 +177,7 @@ pub fn discover(builds: &BTreeMap<String, String>, java_files: &[String]) -> Dis
                 File {
                     unit: format!("//{package}"),
                     context: Context::Unclaimed,
-                    visible_files: BTreeSet::new(),
+                    visible_files: Arc::default(),
                 },
             );
         }
@@ -253,6 +254,7 @@ pub fn discover(builds: &BTreeMap<String, String>, java_files: &[String]) -> Dis
             );
         }
     }
+    let mut visibility = BTreeMap::new();
     for (file, metadata) in &mut out.files {
         let Some(claiming) = claims.get(file) else {
             out.diagnostics.record("files_unclaimed", file);
@@ -276,22 +278,29 @@ pub fn discover(builds: &BTreeMap<String, String>, java_files: &[String]) -> Dis
             out.diagnostics
                 .record("multi_target_visibility_unioned", file);
         }
+        if let Some(shared) = visibility.get(claiming) {
+            metadata.visible_files = Arc::clone(shared);
+            continue;
+        }
+        let mut visible_files = BTreeSet::new();
         for id in claiming {
             let Some(target) = targets.get(id) else {
                 continue;
             };
-            metadata.visible_files.extend(target.sources.clone());
+            visible_files.extend(target.sources.iter().cloned());
             for dependency in target.deps.iter().chain(&target.exports) {
                 exported_files(
                     dependency,
                     &targets,
                     &mut BTreeSet::new(),
                     &mut BTreeSet::new(),
-                    &mut metadata.visible_files,
+                    &mut visible_files,
                     &mut out.diagnostics,
                 );
             }
         }
+        metadata.visible_files = Arc::new(visible_files);
+        visibility.insert(claiming.clone(), Arc::clone(&metadata.visible_files));
     }
     out
 }

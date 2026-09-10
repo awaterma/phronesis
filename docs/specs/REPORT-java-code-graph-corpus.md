@@ -431,3 +431,64 @@ two real-binary Java hook tests, formatting, and workspace Clippy. A full
 workspace test run passed with socket access before the final literal-alias
 change; that change passed its focused regression test. Final gates must
 be rerun after the remaining fixes.
+
+## Published grammar dependency — 2026-09-09
+
+The bundled parser described in the historical measurements above is replaced
+by the published `tree-sitter-java-orchard` dependency. A maintainer identifies
+this fork in the original [qualified-pattern PR discussion](https://github.com/tree-sitter/tree-sitter-java/pull/231).
+The repository no longer carries the generated Java C parser, grammar source,
+headers, custom build script, or unsafe language loader.
+
+The dependency is pinned to **0.5.8**, rather than the latest 0.5.15. Direct
+probes found that 0.5.9, 0.5.10, 0.5.11, 0.5.12, and 0.5.15 reject a Kelvin
+sign inside a string (`class A { String s = "K"; }`). The 0.5.15 corpus run
+therefore rejected `FileSystemTest.java:2089` and
+`WindowsFileSystemTest.java:492`, losing 112 import edges and 13 coverage
+edges. Version 0.5.8 parses both complete files and qualified record patterns.
+`unicode_string_literals_preserve_complete_file_evidence` locks in that
+requirement for future dependency updates.
+
+Orchard uses named `modifier` nodes for `static`; the extractor now reads
+those nodes. Module-import validation explicitly rejects reserved names and
+keeps ordinary imports whose type or package is named `module`. Existing
+qualified-pattern, malformed-input, and coverage regressions remain enabled.
+Declaration-cache format 3 invalidates parses produced before these changes.
+
+The final **0.5.8** runs used the same pinned commits above and matched the
+fresh bundled-parser baseline in every non-timing JSON field: import edges
+with provenance, cycle membership, relation counts, diagnostics, failed inputs,
+and per-file skipped details. Both reporters also verified cold/warm equality
+of their complete extracted edge vectors. This comparison does not establish
+compiler-equivalent resolution or cross-parser equality of every non-import
+edge; the report serializes counts for those relations.
+
+| Measure | Maven | Bazel |
+|---|---:|---:|
+| Files | 3186 | 5827 |
+| Imports | 3961 | 15769 |
+| Method definitions | 16207 | 62164 |
+| `tested_by` | 2364 | 11925 |
+| Skipped evidence items | 114 | 3856 |
+| Parse-failed inputs | 7 | 0 |
+| Cold discovery (ms) | 5584 | 18260 |
+| Warm discovery (ms) | 1218 | 2270 |
+
+Concurrent debug-build timings are observations, not an isolated benchmark.
+The seven Maven failures remain the previously reconciled templates and
+intentionally invalid fixture.
+
+The same remediation bounds eager BUILD value expansion and shares Bazel
+visibility sets among identical claiming-target sets. A synthetic single
+3,000-file target used approximately 29 MB peak child RSS instead of the
+handover's reported 1.34 GB rebuild peak; the operations differ, so this is
+scaling evidence rather than a like-for-like speedup claim. Doubling-list
+fixtures at 20 and 40 assignments each produced one budget diagnostic at
+approximately 28 MB peak child RSS. Literal 10,000-entry source lists remain
+supported. Enhanced-for variables now suppress false static-receiver coverage,
+with parser and project regressions.
+
+Final verification on Orchard 0.5.8: `cargo test --workspace` passed 2,499
+Rust tests (one ignored), plus 46 BDD scenarios / 181 steps. Workspace/example
+builds, `cargo clippy --workspace --all-targets -- -D warnings`, and
+`cargo fmt --all -- --check` exited 0. The local graph rebuild exited 0.

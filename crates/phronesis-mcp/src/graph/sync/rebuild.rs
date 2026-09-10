@@ -349,12 +349,21 @@ fn extract_tracked(root: &Path, scan: &RebuildScan, index: &mut Index) -> (Vec<E
         });
         skipped += extracted.skipped;
         if rel.ends_with(".java") {
-            if !extracted.parse_failed
-                && let Some(hash) = scan.java.input_hashes.get(rel)
-            {
+            // An unreadable input has no snapshot hash. Leave it unindexed,
+            // matching the read-failure `continue` taken above for every
+            // other language.
+            let Some(hash) = scan.java.input_hashes.get(rel) else {
+                continue;
+            };
+            if !extracted.parse_failed {
                 base.extend(extracted.edges);
-                index.entries.insert(rel.clone(), *hash);
             }
+            // Record the hash even when the parse failed, for the same reason
+            // the non-Java branch below does: a complete rebuild has observed
+            // this exact content and intentionally excluded it, so status must
+            // not misreport a permanently skipped input as post-build drift.
+            // A later edit changes the hash and correctly becomes stale.
+            index.entries.insert(rel.clone(), *hash);
             continue;
         }
         if extracted.parse_failed {

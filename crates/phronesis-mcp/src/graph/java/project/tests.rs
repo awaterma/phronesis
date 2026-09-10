@@ -505,3 +505,25 @@ fn a_maven_unit_named_project_does_not_share_a_classpath_with_the_fallback_backe
         "the fallback unit must not inherit the Maven unit's classpath"
     );
 }
+
+#[test]
+fn enhanced_for_receiver_does_not_create_static_type_coverage() {
+    let project = project(&[
+        ("pom.xml", "<project><artifactId>app</artifactId></project>"),
+        (
+            "src/main/java/p/Service.java",
+            "package p; class Service { static void run() {} }",
+        ),
+        (
+            "src/main/java/p/Worker.java",
+            "package p; class Worker { void run() {} }",
+        ),
+        (
+            "src/test/java/q/Check.java",
+            "package q; import p.Service; import p.Worker; class Check { @Test void check(java.util.List<Worker> workers) { for (Worker Service : workers) { Service.run(); } } }",
+        ),
+    ]);
+    let out = project.extract("src/test/java/q/Check.java");
+    assert_eq!(out.skipped, 0);
+    assert!(!out.edges.iter().any(|edge| edge.p == "tested_by"));
+}

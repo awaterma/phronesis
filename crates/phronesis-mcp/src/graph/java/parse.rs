@@ -192,21 +192,26 @@ fn module_identifier(token: &str) -> bool {
 fn import(node: Node<'_>, source: &str) -> Option<ImportDecl> {
     let mut tokens = Vec::new();
     leaves(node, source, &mut tokens);
-    // The pinned grammar predates Java 25's module import. Recognize only
-    // that exact token sequence, including comments handled as AST extras.
-    // A missing semicolon or arbitrary parser error must still fail.
-    if let ["import", "module", names @ .., ";"] = tokens.as_slice()
-        && !names.is_empty()
-        && names.iter().enumerate().all(|(i, token)| {
-            if i % 2 == 1 {
-                *token == "."
-            } else {
-                module_identifier(token)
-            }
-        })
-        && names.len() % 2 == 1
-    {
-        return Some(ImportDecl::Module);
+    // Validate module names explicitly: grammar recovery can accept reserved
+    // words here. Invalid module imports must not fall through as type imports.
+    let mut cursor = node.walk();
+    let module_import = node
+        .children(&mut cursor)
+        .any(|child| child.kind() == "module");
+    if module_import {
+        let ["import", "module", names @ .., ";"] = tokens.as_slice() else {
+            return None;
+        };
+        return (!names.is_empty()
+            && names.len() % 2 == 1
+            && names.iter().enumerate().all(|(i, token)| {
+                if i % 2 == 1 {
+                    *token == "."
+                } else {
+                    module_identifier(token)
+                }
+            }))
+        .then_some(ImportDecl::Module);
     }
     if node.has_error() {
         return None;
@@ -363,7 +368,7 @@ fn members(node: Node<'_>, enclosing: &str, source: &str, out: &mut Source) {
                         let mut cursor = modifiers.walk();
                         modifiers
                             .children(&mut cursor)
-                            .any(|n| n.kind() == "static")
+                            .any(|n| n.kind() == "modifier" && text(n, source) == "static")
                     })
             },
             calls: found_calls,
@@ -397,6 +402,7 @@ pub fn parse(file: &str, source: &str) -> Source {
                 | "catch_formal_parameter"
                 | "spread_parameter"
                 | "instanceof_expression"
+                | "enhanced_for_statement"
         ) && let Some(name) = node.child_by_field_name("name")
         {
             out.value_names.insert(text(name, source).to_string());

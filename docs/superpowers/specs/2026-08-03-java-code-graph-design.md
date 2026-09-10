@@ -212,19 +212,23 @@ first is what jdepend and ArchUnit report and what Java architects act on.
 
 ## Java parser provenance
 
-Use the bundled `tree-sitter-java` 0.23.5 grammar with the narrow qualified
-record-pattern extension documented in
-`crates/phronesis-mcp/vendor/tree-sitter-java/README.phronesis.md`. The upstream
-production accepts simple and generic record names but omits scoped
-non-generic names such as `Outer.Item`. The bundled production adds
-`scoped_type_identifier`, restoring complete parsing of the 14 Bazel corpus
-files that exposed the defect. Pattern-bound names participate in receiver
-shadowing so they cannot be mistaken for static type references.
+Use the published `tree-sitter-java-orchard` 0.5.8 dependency, pinned exactly
+because extractor behavior depends on its node shapes. Versions 0.5.9 through
+0.5.15 reject U+212A (the Kelvin sign) inside string literals in two Bazel
+corpus files; the Unicode-string regression must pass before lifting this pin. The maintained fork
+includes qualified record patterns such as `Outer.Item`, which the original
+`tree-sitter-java` 0.23.5 release rejected. Pattern-bound names participate in
+receiver shadowing so they cannot be mistaken for static type references.
 
-Generated C, grammar source, headers, and licenses ship inside the MCP crate.
-Builds compile the C parser without requiring Node or the Tree-sitter CLI.
-Malformed syntax still produces parse-failed inputs; this change does not
-silently accept partial syntax trees.
+The dependency supplies and compiles its generated parser; this repository
+carries no generated Java C parser, custom build script, or unsafe language
+loader. No JVM, Node, or Tree-sitter CLI is required to use the extractor.
+Orchard represents `static` as a named `modifier` node. Module-import names
+are explicitly validated so reserved words cannot become type-import evidence.
+Malformed syntax still produces parse-failed inputs.
+
+See [the crate](https://crates.io/crates/tree-sitter-java-orchard/0.5.8)
+and [upstream discussion](https://github.com/tree-sitter/tree-sitter-java/pull/231).
 
 ## The declaration index
 
@@ -351,7 +355,7 @@ engine version, and canonical repository root must match. Corrupt, oversized
 (over 64 MiB), incompatible, and symlinked caches are misses; write failures
 do not fail graph extraction. Changed and deleted sources replace/drop cached
 entries, and build ownership/visibility is always recomputed. Increment the
-cache format when declaration extraction or the bundled grammar changes.
+cache format when declaration extraction or the grammar changes.
 The file is disposable derived state and is covered by the generated
 `.phronesis/*` ignore pattern.
 
@@ -716,6 +720,13 @@ formatting, `depset`, or `struct`.
 
 ### Evaluation
 
+Evaluation has a per-BUILD cumulative allocation budget of approximately 8 MiB
+for string contents and list entries. Identifier copies, string concatenation,
+select unions, and glob results consume that budget. Exhaustion records
+`evaluation_budget_exceeded` and stops the rest of the file; already evaluated
+targets remain available. This bounds exponential value expansion, not total
+process RSS or parser input size.
+
 **Pass 1 — bind.** Evaluate top-level assignments in order into a local scope,
 then evaluate each rule call's arguments against it, recording
 `(rule_kind, attrs)`.
@@ -931,8 +942,8 @@ extraction together — a cross-language decision that belongs in its own ADR:
 5. `calls_api` and `defines_fn` must share that overload-aware identity so the
    join stays exact.
 
-Until then, Java's enforceable feature is exact package dependency and cycle
-detection.
+Until then, Java's shipped feature is advisory package import-cycle detection
+under the build-visibility approximations described above.
 
 ## Out of scope
 

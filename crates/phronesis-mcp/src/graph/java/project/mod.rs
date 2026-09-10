@@ -27,8 +27,8 @@ pub struct File {
 /// and memory on single-module repositories.
 #[derive(Debug, Clone)]
 pub enum Visibility {
-    /// An explicit per-target file set.
-    Files(BTreeSet<String>),
+    /// An explicit file set shared by files with the same claiming targets.
+    Files(Arc<BTreeSet<String>>),
     /// Same-unit files plus production files of the units on the classpath.
     Classpath {
         units: Arc<BTreeSet<String>>,
@@ -38,7 +38,7 @@ pub enum Visibility {
 
 impl Default for Visibility {
     fn default() -> Self {
-        Self::Files(BTreeSet::new())
+        Self::Files(Arc::default())
     }
 }
 

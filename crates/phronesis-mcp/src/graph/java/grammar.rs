@@ -1,13 +1,6 @@
-//! Java grammar with qualified record patterns supported.
+//! Java grammar supplied by the maintained Orchard dependency.
 
-unsafe extern "C" {
-    fn tree_sitter_java() -> *const ();
-}
-
-/// Load the bundled parser generated from the documented upstream grammar.
+/// Load the published grammar, including qualified record pattern support.
 pub fn language() -> tree_sitter::Language {
-    // SAFETY: build.rs links the generated Tree-sitter C parser whose exported
-    // function returns the static TSLanguage expected by LanguageFn.
-    let function = unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_java) };
-    function.into()
+    tree_sitter_java_orchard::LANGUAGE.into()
 }

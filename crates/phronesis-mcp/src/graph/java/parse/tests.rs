@@ -221,3 +221,56 @@ fn malformed_declarations_do_not_become_default_package_evidence() {
         assert!(out.types.is_empty());
     }
 }
+
+#[test]
+fn enhanced_for_variables_are_value_bindings() {
+    let parsed = parse(
+        "Check.java",
+        "class Check { void check(java.util.List<Worker> workers) { for (Worker Service : workers) { Service.run(); } } }",
+    );
+    assert!(!parsed.parse_failed);
+    assert!(parsed.value_names.contains("workers"));
+    assert!(parsed.value_names.contains("Service"));
+}
+
+#[test]
+fn orchard_modifiers_preserve_static_methods_and_test_annotations() {
+    let out = parse(
+        "Check.java",
+        "class Check { @Test public static void check() {} public void instance() {} }",
+    );
+    assert!(!out.parse_failed);
+    assert!(out.methods[0].is_static);
+    assert!(out.methods[0].test_annotation);
+    assert!(!out.methods[1].is_static);
+}
+
+#[test]
+fn module_spelling_in_ordinary_imports_is_not_a_module_import() {
+    let out = parse(
+        "Check.java",
+        "import module; import module.Type; import module.*; class Check {}",
+    );
+    assert!(!out.parse_failed, "{out:?}");
+    assert_eq!(
+        out.imports,
+        [
+            ImportDecl::Type("module".into()),
+            ImportDecl::Type("module.Type".into()),
+            ImportDecl::Wildcard("module".into())
+        ]
+    );
+}
+
+#[test]
+fn unicode_string_literals_preserve_complete_file_evidence() {
+    // Orchard 0.5.9–0.5.15 reject the Kelvin sign in two Bazel corpus files.
+    let out = parse(
+        "Names.java",
+        r#"class Names { String name = "K"; void check() { value.get(); } }"#,
+    );
+    assert!(!out.parse_failed, "{out:?}");
+    assert_eq!(out.types, ["Names"]);
+    assert_eq!(out.methods.len(), 1);
+    assert_eq!(out.methods[0].calls.len(), 1);
+}

@@ -1238,7 +1238,6 @@ name = "phronesis-mcp"
 version = "0.32.0"
 dependencies = [
  "anyhow",
- "cc",
  "chrono",
  "clap",
  "criterion",
@@ -1265,7 +1264,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tree-sitter",
- "tree-sitter-language",
+ "tree-sitter-java-orchard",
  "tree-sitter-python",
  "tree-sitter-rust",
  "tree-sitter-swift",
@@ -2141,6 +2140,16 @@ dependencies = [
  "regex-syntax",
  "serde_json",
  "streaming-iterator",
+ "tree-sitter-language",
+]
+
+[[package]]
+name = "tree-sitter-java-orchard"
+version = "0.5.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d4fbd6bcce611c82251462bda6070f6c1c2120174991c32eea21f1d0758bc89"
+dependencies = [
+ "cc",
  "tree-sitter-language",
 ]
 

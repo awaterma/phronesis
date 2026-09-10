@@ -19,7 +19,30 @@ impl Value {
             _ => Err(()),
         }
     }
+
+    /// What materializing this value costs against the evaluation budget.
+    fn cost(&self) -> usize {
+        match self {
+            Self::String(value) => value.len().saturating_add(std::mem::size_of::<String>()),
+            Self::List(items) | Self::StringChoices(items) => {
+                items.iter().fold(0usize, |cost, value| {
+                    cost.saturating_add(value.len().saturating_add(std::mem::size_of::<String>()))
+                })
+            }
+        }
+    }
 }
+
+/// Approximate total bytes of strings and list entries materialized per BUILD.
+///
+/// Top-level assignments are evaluated eagerly even when no target consumes
+/// them, `+` concatenates without shrinking, and an identifier reference
+/// clones the whole bound value. Doubling assignments (`x1 = x0 + x0`,
+/// repeated) therefore grow exponentially in the number of *lines*, not in
+/// nesting depth, so the recursion guard never fires: about thirty lines
+/// would materialize over a billion strings and exhaust the hook process.
+/// This is a cumulative allocation estimate, not a process RSS limit.
+const EVALUATION_BUDGET: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct Call {
@@ -38,6 +61,7 @@ struct Evaluator<'a> {
     files: &'a [String],
     bindings: BTreeMap<String, Value>,
     diagnostics: &'a mut Diagnostics,
+    budget: usize,
 }
 
 fn text<'a>(node: Node<'_>, body: &'a str) -> &'a str {
@@ -79,16 +103,39 @@ impl Evaluator<'_> {
             .record(name, format!("{}:{}", self.file, node.start_byte()));
     }
 
+    /// Draw `amount` from the budget, failing the whole evaluation once it is
+    /// spent. Exhaustion is sticky: the budget stays at zero so later
+    /// statements in the same file cannot each spend the remainder.
+    fn charge(&mut self, amount: usize, node: Node<'_>) -> Result<(), ()> {
+        if amount >= self.budget {
+            self.budget = 0;
+            self.count("evaluation_budget_exceeded", node);
+            return Err(());
+        }
+        self.budget -= amount;
+        Ok(())
+    }
+
     fn value(&mut self, node: Node<'_>, depth: usize) -> Result<Value, ()> {
         if depth > 128 || node.has_error() {
             return Err(());
         }
         match node.kind() {
-            "string" => string(node, self.body).map(Value::String),
+            "string" => {
+                self.charge(
+                    node.byte_range()
+                        .len()
+                        .saturating_add(std::mem::size_of::<String>()),
+                    node,
+                )?;
+                string(node, self.body).map(Value::String)
+            }
             "identifier" => {
                 let name = text(node, self.body);
                 if let Some(value) = self.bindings.get(name) {
-                    return Ok(value.clone());
+                    let cost = value.cost();
+                    self.charge(cost, node)?;
+                    return self.bindings.get(name).cloned().ok_or(());
                 }
                 self.count("unbound_identifier", node);
                 Ok(Value::List(Vec::new()))
@@ -105,6 +152,7 @@ impl Evaluator<'_> {
                         Value::List(_) | Value::StringChoices(_) => return Err(()),
                     }
                 }
+                self.charge(out.len(), node)?;
                 Ok(Value::List(out))
             }
             "binary_operator" => {
@@ -116,10 +164,12 @@ impl Evaluator<'_> {
                 let right = self.value(node.child_by_field_name("right").ok_or(())?, depth + 1)?;
                 match (left, right) {
                     (Value::List(mut left), Value::List(right)) => {
+                        self.charge(right.len(), node)?;
                         left.extend(right);
                         Ok(Value::List(left))
                     }
                     (Value::String(mut left), Value::String(right)) => {
+                        self.charge(right.len(), node)?;
                         left.push_str(&right);
                         Ok(Value::String(left))
                     }
@@ -167,6 +217,7 @@ impl Evaluator<'_> {
                         return Err(());
                     }
                     scalar = Some(is_scalar);
+                    self.charge(branch.len(), node)?;
                     values.extend(branch);
                 }
                 self.count("select_branch_unioned", node);
@@ -210,16 +261,19 @@ impl Evaluator<'_> {
                 };
                 let include = compile(include.ok_or(())?)?;
                 let exclude = compile(exclude)?;
-                Ok(Value::List(
-                    self.files
-                        .iter()
-                        .filter(|file| {
-                            include.iter().any(|pattern| pattern.is_match(file))
-                                && !exclude.iter().any(|pattern| pattern.is_match(file))
-                        })
-                        .cloned()
-                        .collect(),
-                ))
+                let mut matched = Vec::new();
+                for file in self.files {
+                    if include.iter().any(|pattern| pattern.is_match(file))
+                        && !exclude.iter().any(|pattern| pattern.is_match(file))
+                    {
+                        self.charge(
+                            file.len().saturating_add(std::mem::size_of::<String>()),
+                            node,
+                        )?;
+                        matched.push(file.clone());
+                    }
+                }
+                Ok(Value::List(matched))
             }
             _ => Err(()),
         }
@@ -290,6 +344,7 @@ pub(super) fn evaluate(
         files,
         bindings: BTreeMap::new(),
         diagnostics,
+        budget: EVALUATION_BUDGET,
     };
     let mut calls = Vec::new();
     let mut cursor = tree.root_node().walk();
@@ -330,6 +385,9 @@ pub(super) fn evaluate(
         } else {
             Err(())
         };
+        if eval.budget == 0 {
+            break;
+        }
         if result.is_err() {
             eval.count("unsupported_syntax_skipped", statement);
         }

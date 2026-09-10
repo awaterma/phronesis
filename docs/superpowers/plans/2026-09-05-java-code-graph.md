@@ -59,13 +59,17 @@ are newly diagnosed; imports and cycles are unchanged. Of 884 unclaimed
 files, 778 are reconciled as vendored ProGuard sources packaged into a ZIP,
 without a Java compilation target. See the updated corpus report.
 
+The bundled-parser packaging described below is superseded by the 2026-09-09
+switch to the published `tree-sitter-java-orchard` 0.5.8 dependency. See the
+parser provenance section of the design and the corpus report for verification.
+
 The corpus reporter now supports `--parse-errors`, independently using the
 pinned Rust parser to emit ERROR/missing-node locations. All seven Maven
 failures are generation templates or the deliberate `Bad.java` fixture.
 The 14 Bazel failures expose qualified record patterns unsupported by the
 grammar; a minimal simple-versus-qualified reproduction confirms the gap.
 Upstream grammar has the same restriction, so a published dependency update
-alone did not provide a fix. This is now resolved by a narrow bundled grammar
+alone did not provide a fix. This was initially resolved by a narrow bundled grammar
 patch accepting scoped type identifiers in record patterns. Generated C and
 licenses ship in the crate; normal builds do not regenerate the parser.
 All 745 graph library tests pass, including valid/malformed qualified-pattern

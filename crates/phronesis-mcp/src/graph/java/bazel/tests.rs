@@ -79,7 +79,7 @@ java_library(name='unrelated', srcs=['Unrelated.java'])
     );
     assert_eq!(out.files["app/App.java"].context, Context::Production);
     assert_eq!(
-        out.files["app/App.java"].visible_files,
+        *out.files["app/App.java"].visible_files,
         BTreeSet::from([
             "app/App.java".into(),
             "app/Api.java".into(),
@@ -170,7 +170,7 @@ fn dependencies_are_target_specific_and_follow_exports_but_not_transitive_deps()
         ],
     );
     assert_eq!(
-        out.files["A.java"].visible_files,
+        *out.files["A.java"].visible_files,
         BTreeSet::from([
             "A.java".into(),
             "x/X.java".into(),
@@ -178,7 +178,7 @@ fn dependencies_are_target_specific_and_follow_exports_but_not_transitive_deps()
         ])
     );
     assert_eq!(
-        out.files["B.java"].visible_files,
+        *out.files["B.java"].visible_files,
         BTreeSet::from(["B.java".into(), "y/Y.java".into()])
     );
 }
@@ -291,4 +291,73 @@ alias(name='invalid', actual=select({':platform': ['//lib:api'], '//conditions:d
     assert_eq!(out.diagnostics.count("select_branch_unioned"), 2);
     assert_eq!(out.diagnostics.count("unresolved_label"), 1);
     assert_eq!(out.diagnostics.count("unsupported_syntax_skipped"), 1);
+}
+
+#[test]
+fn exponential_values_exhaust_budget_before_materialization() {
+    for initial in [
+        "['A.java']",
+        "'A.java'",
+        "select({':a': ':target', ':b': ':other'})",
+    ] {
+        let mut body = format!("x0 = {initial}\n");
+        for i in 1..40 {
+            let previous = i - 1;
+            if initial.starts_with("select") {
+                body.push_str(&format!(
+                    "x{i} = select({{':a': x{previous}, ':b': x{previous}}})\n"
+                ));
+            } else {
+                body.push_str(&format!("x{i} = x{previous} + x{previous}\n"));
+            }
+        }
+        body.push_str("java_library(name='after', srcs=['A.java'])\n");
+        let mut diagnostics = Diagnostics::default();
+        let calls = eval::evaluate("BUILD", &body, &[], &mut diagnostics);
+        assert!(
+            calls.is_empty(),
+            "evaluation continued after exhaustion: {initial}"
+        );
+        assert_eq!(diagnostics.count("evaluation_budget_exceeded"), 1);
+    }
+}
+
+#[test]
+fn large_literal_source_lists_remain_supported() {
+    let sources = (0..10_000)
+        .map(|i| format!("'Source{i}.java'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let body = format!("SRCS = [{sources}]\njava_library(name='large', srcs=SRCS)");
+    let mut diagnostics = Diagnostics::default();
+    let calls = eval::evaluate("BUILD", &body, &[], &mut diagnostics);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].srcs.len(), 10_000);
+    assert_eq!(diagnostics.count("evaluation_budget_exceeded"), 0);
+}
+
+#[test]
+fn identical_claims_share_visibility_and_multiple_claims_union_it() {
+    let out = discover_files(
+        &[(
+            "BUILD",
+            "java_library(name='a', srcs=['A.java', 'B.java', 'Both.java'], deps=[':dep'])\njava_library(name='b', srcs=['C.java', 'Both.java'])\njava_library(name='dep', srcs=['Dep.java'])",
+        )],
+        &["A.java", "B.java", "C.java", "Both.java", "Dep.java"],
+    );
+    assert!(Arc::ptr_eq(
+        &out.files["A.java"].visible_files,
+        &out.files["B.java"].visible_files
+    ));
+    assert_eq!(
+        *out.files["Both.java"].visible_files,
+        BTreeSet::from([
+            "A.java".into(),
+            "B.java".into(),
+            "Both.java".into(),
+            "C.java".into(),
+            "Dep.java".into()
+        ])
+    );
+    assert!(!out.files["C.java"].visible_files.contains("Dep.java"));
 }

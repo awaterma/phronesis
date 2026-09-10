@@ -4,8 +4,8 @@ use super::Files;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-// Increment when declaration extraction or its bundled grammar changes.
-const FORMAT: u32 = 2;
+// Increment when declaration extraction or its grammar changes.
+const FORMAT: u32 = 3;
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 const NAME: &str = "java-declarations.json";
 

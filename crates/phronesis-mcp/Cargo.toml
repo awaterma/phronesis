@@ -58,13 +58,11 @@ chrono = "0.4"
 dirs = "5"
 tree-sitter-python = "0.25.0"
 tree-sitter-typescript = "0.23.2"
-tree-sitter-language = "0.1"
+# 0.5.9–0.5.15 reject U+212A in string literals; covered by parser regression.
+tree-sitter-java-orchard = "=0.5.8"
 roxmltree = "0.20"
 globset = "0.4"
 tempfile = "3"
-
-[build-dependencies]
-cc = "1.1"
 
 [dev-dependencies]
 cucumber = "0.23"

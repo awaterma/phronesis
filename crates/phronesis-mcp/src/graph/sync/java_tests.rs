@@ -199,7 +199,7 @@ fn adding_and_removing_ambiguity_recomputes_imports() {
 }
 
 #[test]
-fn invalid_java_save_preserves_graph_and_explicit_rebuild_reports_staleness() {
+fn invalid_java_save_preserves_graph_and_rebuild_settles_without_permanent_drift() {
     let root = fixture();
     rebuild(root.path()).unwrap();
     let before = edges(root.path());
@@ -211,6 +211,20 @@ fn invalid_java_save_preserves_graph_and_explicit_rebuild_reports_staleness() {
     write(root.path(), "src/main/java/a/A.java", invalid);
     let outcome = rebuild(root.path()).unwrap();
     assert!(outcome.skipped > 0);
+    // The rebuild observed this exact content and intentionally excluded it.
+    // Reporting drift here would never clear, permanently demoting structural
+    // rules on any repository holding one unparseable file. The skipped count
+    // above is what signals the exclusion; staleness signals stale input.
+    assert_eq!(
+        check_freshness(root.path(), &load_index(&index_path(root.path())).unwrap()),
+        Freshness::Fresh
+    );
+    // A later edit changes the hash and correctly becomes stale again.
+    write(
+        root.path(),
+        "src/main/java/a/A.java",
+        "package a; class A { }",
+    );
     assert!(matches!(
         check_freshness(root.path(), &load_index(&index_path(root.path())).unwrap()),
         Freshness::Stale(_)
