@@ -195,6 +195,100 @@ fn tools_list_advertises_collection_envelopes() {
 }
 
 #[test]
+fn java_maven_and_bazel_graphs_refresh_through_mcp_tools() {
+    for bazel in [false, true] {
+        let dir = tempfile::tempdir().expect("repository");
+        for (file, body) in [
+            (
+                "src/main/java/a/A.java",
+                "package a; import b.B; class A {}",
+            ),
+            (
+                "src/main/java/b/B.java",
+                "package b; import a.A; class B {}",
+            ),
+        ] {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().expect("parent")).expect("directories");
+            std::fs::write(path, body).expect("Java source");
+        }
+        let (manifest, body, replacement) = if bazel {
+            (
+                "BUILD.bazel",
+                "java_library(name='app', srcs=glob(['src/**/*.java']))",
+                "java_library(name='a', srcs=['src/main/java/a/A.java'])\njava_library(name='b', srcs=['src/main/java/b/B.java'])",
+            )
+        } else {
+            (
+                "pom.xml",
+                "<project><groupId>example</groupId><artifactId>app</artifactId></project>",
+                "<project><groupId>example</groupId><artifactId>renamed</artifactId></project>",
+            )
+        };
+        std::fs::write(dir.path().join(manifest), body).expect("manifest");
+        let mut client = McpClient::spawn(dir.path());
+        let rebuilt = client.tool("rebuild_code_graph", serde_json::json!({}));
+        assert_eq!(rebuilt["status"], "fresh", "{rebuilt}");
+        let cycles = client.tool(
+            "query_code_graph",
+            serde_json::json!({"relation":"in_cycle"}),
+        );
+        assert!(
+            cycles["total"].as_u64().expect("cycle count") > 0,
+            "{cycles}"
+        );
+        assert!(
+            cycles["results"]
+                .as_array()
+                .expect("rows")
+                .iter()
+                .all(|row| {
+                    row["args"][0]
+                        .as_str()
+                        .expect("module")
+                        .starts_with("java:")
+                })
+        );
+        std::fs::write(dir.path().join(manifest), replacement).expect("manifest edit");
+        let status = client.tool("get_code_graph_status", serde_json::json!({}));
+        assert_eq!(status["status"], "stale", "{status}");
+        assert!(
+            status["drifted_files"]
+                .as_array()
+                .expect("drift")
+                .contains(&serde_json::json!(manifest))
+        );
+        let rebuilt = client.tool("rebuild_code_graph", serde_json::json!({}));
+        assert_eq!(rebuilt["status"], "fresh", "{rebuilt}");
+        if bazel {
+            let cycles = client.tool(
+                "query_code_graph",
+                serde_json::json!({"relation":"in_cycle"}),
+            );
+            assert_eq!(cycles["total"], 0, "{cycles}");
+        } else {
+            let modules = client.tool(
+                "query_code_graph",
+                serde_json::json!({"relation":"declares_module"}),
+            );
+            assert_eq!(modules["total"], 2);
+            assert!(
+                modules["results"]
+                    .as_array()
+                    .expect("modules")
+                    .iter()
+                    .all(|row| {
+                        row["args"][1]
+                            .as_str()
+                            .expect("module")
+                            .starts_with("java:example:renamed::")
+                    })
+            );
+        }
+    }
+}
+
+#[test]
 fn mcp_reports_and_rebuilds_the_code_graph_lifecycle() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();

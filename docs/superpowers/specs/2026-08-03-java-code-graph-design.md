@@ -1,10 +1,10 @@
 # SPEC: Java code-graph extractor
 
-**Status:** design, revision 6, 2026-08-03
-**Target release:** 0.26.0 (MINOR — new extractor, new pack rule)
+**Status:** implemented, revision 8; Qwen reassessment PASS; workspace and corpus validation complete
+**Target release:** next MINOR after 0.31.1 — new extractor, existing structural cycle rule
 **Parent spec:** `docs/specs/SPEC-triple-store-rete.md` (rev 6)
-**Affects:** `crates/phronesis-mcp/src/graph/{unit,java,java_bazel,java_maven,sync,mod}.rs`,
-`crates/phronesis-mcp/src/init.rs` (pack rules), `docs/catalogue.html`
+**Affects:** `crates/phronesis-mcp/src/graph/{java/,unit/,sync/,mod.rs}`,
+`crates/phronesis-mcp/tests/graph_structural_rules.rs` (shipped-pack verification)
 **Precedent:** `docs/superpowers/specs/2026-07-31-typescript-code-graph-design.md`
 
 > **Revision 2** replaces revision 1's resolution and discovery design, which
@@ -60,9 +60,24 @@
 > argued test was safer, which was backwards, since rules exempt tests and
 > mislabelling production code therefore suppresses findings.
 
+## Revision 7 implementation reconciliation
+
+Revision 7 reconciled revision 6 against the current repository. It corrected contradictory phase ordering,
+compilation-context deduplication, content-cache promises, and source-change
+invalidation. The current graph implementation lives in `unit/` and `sync/`,
+and persistence now checks canonical `tested_by` targets. The Maven and Bazel
+backends, cycle rule, mixed-language tests, and both corpus gates remain
+required; these corrections do not reduce the implementation scope.
+
+Revision 8 incorporates the completed Qwen review: malformed module-import
+names are rejected, cached pre-fix parses are invalidated, external-parent
+coordinate behavior is clarified, and concrete review fixtures are covered.
+See [review and verification](../../specs/REPORT-java-qwen-review.md) for the
+findings, dispositions, and limits of the model's static review.
+
 ## Summary
 
-A fourth extractor for the structural code graph, covering Java, with unit
+An additional extractor for the structural code graph, covering Java, with unit
 discovery from **both Maven and Bazel**.
 
 Java inverts TypeScript's difficulty. TypeScript's hard part was resolution:
@@ -195,6 +210,26 @@ claims **"these two packages are mutually dependent — neither can be extracted
 without the other,"** not "there is a circular reference between classes." The
 first is what jdepend and ArchUnit report and what Java architects act on.
 
+## Java parser provenance
+
+Use the published `tree-sitter-java-orchard` 0.5.8 dependency, pinned exactly
+because extractor behavior depends on its node shapes. Versions 0.5.9 through
+0.5.15 reject U+212A (the Kelvin sign) inside string literals in two Bazel
+corpus files; the Unicode-string regression must pass before lifting this pin. The maintained fork
+includes qualified record patterns such as `Outer.Item`, which the original
+`tree-sitter-java` 0.23.5 release rejected. Pattern-bound names participate in
+receiver shadowing so they cannot be mistaken for static type references.
+
+The dependency supplies and compiles its generated parser; this repository
+carries no generated Java C parser, custom build script, or unsafe language
+loader. No JVM, Node, or Tree-sitter CLI is required to use the extractor.
+Orchard represents `static` as a named `modifier` node. Module-import names
+are explicitly validated so reserved words cannot become type-import evidence.
+Malformed syntax still produces parse-failed inputs.
+
+See [the crate](https://crates.io/crates/tree-sitter-java-orchard/0.5.8)
+and [upstream discussion](https://github.com/tree-sitter/tree-sitter-java/pull/231).
+
 ## The declaration index
 
 Built during discovery, keyed on dotted names:
@@ -217,11 +252,13 @@ package declared in two Maven modules or two Bazel packages) are legal in
 source trees. Discovery preserves the ambiguity rather than resolving it by
 traversal order.
 
-**`packages` owners are deduplicated by `(unit_id, module_id)`, never per
-file.** A package normally spans many files, so a per-file owner vector would
+**`packages` owners are deduplicated by `(unit_id, module_id, context)`, never
+per file.** A package normally spans many files, so a per-file owner vector would
 make *every* wildcard import ambiguous under owner selection — a package of
-three files would present three candidates and be skipped. The file belongs in
-`types`, where it is genuinely per-declaration, and is diagnostic only.
+three files would present three candidates and be skipped. Implementations retain each package owner's contributing files until
+visibility filtering has completed, because Bazel visibility is target-based
+even within a unit. Deduplication then uses the key above; a visible package
+with three source files must still be one candidate.
 
 ### Phase order
 
@@ -234,8 +271,8 @@ order is fixed and must not be interleaved per directory:
    `srcs` records a *deferred* reference; it classifies nothing yet.
 2. **Indexing.** Index all declarations across the whole repository, using the
    unit ids from phase 1.
-3. **Deferred classification.** Resolve each recorded `test_class` against the
-   completed index and reclassify its file as test.
+3. **Entry-point diagnostics.** Resolve each recorded `test_class` against the
+   completed index for diagnostics only; never reclassify its file.
 
 Phase 2 must complete repository-wide before phase 3 begins. Evaluating one
 Bazel package at a time would leave a `test_class` naming a class in a
@@ -276,7 +313,7 @@ Indexing, per file:
    so attempting to index it would inflate `skipped` on every file that uses
    one — manufacturing exactly the source-root-misdetection signal `skipped`
    exists to carry.
-5. Deduplicate and sort owner vectors by `(unit_id, module_id, file)` for
+5. Deduplicate and sort type owner vectors by `(unit_id, module_id, context, file)` for
    deterministic output.
 
 ### Path cross-check
@@ -291,25 +328,42 @@ this extractor could quietly under-report.
 
 ### Per-save cost
 
-`UnitMap::discover` runs on every save, and reparsing every Java file each
-time is not acceptable. Discovery keeps a process-local cache per repository
-root, fingerprinted on a **content hash**, matching the existing index
+Java discovery builds a dedicated repository-wide `Project` beside the existing
+`UnitMap`; per-file `UnitContext` cannot represent declaration ownership and
+Bazel target visibility. Reparsing every Java file each time is not acceptable.
+Discovery keeps a bounded process-local cache per repository root and a
+best-effort `.phronesis/java-declarations.json` cache for separate hook
+processes. Entries are fingerprinted on a **content hash**, matching the existing index
 (`sync.rs:75`) rather than inventing a weaker scheme beside it. `(length,
 mtime)` is not sound: a rebase, checkout, or file restore can produce
 equal-length content under a preserved or same-granularity timestamp, and
 `package a; class X {}` → `package b; class Y {}` is exactly that shape. The
 cache would then keep resolving imports to a type that no longer exists —
-violating the guarantee stated below. `mtime` may gate *whether to hash*, but
-never whether to reuse.
+violating the guarantee stated below. Every candidate cache reuse requires
+hashing the current bytes; metadata alone cannot justify skipping the read.
 
 - Cold: read and parse every Java file once. Unavoidable — package
   declarations and nested types cannot be obtained soundly from paths.
-- Warm: stat the tree, reuse cached declarations, parse only changed files,
-  drop deleted entries, and rebuild the maps from cache with no source reads.
+- Warm: read and hash the tracked Java files, reuse cached declarations for
+  unchanged hashes, parse only changed files, drop deleted entries, and rebuild
+  the maps. This saves parsing, not source reads.
 - If metadata is unavailable, reread conservatively.
 
+The disk cache is written atomically only when `.phronesis` already exists,
+and does not create project configuration during discovery. Its format version,
+engine version, and canonical repository root must match. Corrupt, oversized
+(over 64 MiB), incompatible, and symlinked caches are misses; write failures
+do not fail graph extraction. Changed and deleted sources replace/drop cached
+entries, and build ownership/visibility is always recomputed. Increment the
+cache format when declaration extraction or the grammar changes.
+The file is disposable derived state and is covered by the generated
+`.phronesis/*` ignore pattern.
+
 The cache is an optimization only; reuse must never change identity or
-resolution results. Current per-save is 6.5–10 ms — measure, do not assume.
+resolution results. The earlier 6.5–10 ms per-save baseline does not describe
+these Java corpus rebuilds. Measured release hooks with the disk cache take
+about 2.2 seconds on Maven and 2.7 seconds on Bazel; see the corpus report
+for sample sizes, methodology, and remaining full-rebuild cost.
 
 ## Import resolution
 
@@ -339,10 +393,11 @@ per import:
    this design exists to prevent. Sealed hierarchies with nested permitted
    subtypes make this shape common in modern Java.
 4. **Static member import** — `import static com.example.order.Order.of;`
-   Test type prefixes longest-first (`com.example.order.Order`,
-   `com.example.order`, …) against `types`, stopping at the first exact key.
-   The removed suffix is the member path and must be non-empty. This
-   classifies declaring-type versus member; it never falls back to a package.
+   Remove exactly the final member identifier and look up the remaining
+   canonical type name in `types`. JLS §7.5.3 defines this as
+   `TypeName.Identifier`, not an arbitrary member path. Never remove further
+   segments: that could resolve an invalid path through an unrelated ancestor
+   type. See [JLS §7.5.3](https://docs.oracle.com/javase/specs/jls/se25/html/jls-7.html#jls-7.5.3).
 5. **Static wildcard** — `import static com.example.order.Order.*;`
    Strip `.*`, look up the remainder in `types`.
 6. **Module import** — `import module java.sql;`
@@ -362,7 +417,9 @@ not silently ignored.
 Then, for any resolution that produced owners:
 
 6. **Owner selection, constrained by build visibility.**
-   a. If exactly one candidate is in the source file's own unit **and
+   a. First filter candidates by per-file build visibility, including candidates
+      within the same Bazel unit. Then, if exactly one candidate is in the
+      source file's own unit **and
       compilation context**, take it. Context is production or test: a
       production file sees production owners only; a test file sees test
       owners first, then production. `Owner` therefore carries the
@@ -406,31 +463,50 @@ is the whole point of package granularity.
 the Maven compile classpath, so state the approximation rather than imply
 exactness:
 
-**Visibility models the *compile* classpath.** Runtime-only dependencies are
-excluded from both backends: Maven `runtime` scope and Bazel `runtime_deps`
-are by definition absent at compile time, so admitting them would resolve
-imports javac rejects.
+**Visibility models the compilation context's classpath.** Production and
+test compilation have different classpaths. Maven runtime dependencies are
+excluded from production compilation, but may be present for test compilation.
+Bazel `runtime_deps` never grants direct source-level import visibility.
+Same-package labels accept both `:target` and bare `target`, including
+dependencies, exports, aliases, and local filegroup references. Omitting the
+colon does not make the dependency external or unresolvable.
+Dependency aliases follow literal `actual` labels and the union of string
+branches in `actual = select(...)`, including values assigned to variables.
+These unions increment `select_branch_unioned`; they do not claim knowledge
+of the active configuration. Alias cycles increment `unresolved_label`, while
+shared targets reached through independent branches are not cycles. A
+`select` mixing string and list branches is unsupported syntax.
 
 - **Maven.** Build a reactor graph from `<dependencies>` entries whose
-  `groupId:artifactId` matches another discovered unit. For a production file,
-  visibility is the **direct `compile` and `provided` dependencies, plus the
-  closure that follows `compile` → `compile` edges only.** That is Maven's own
-  propagation table: a compile dependency of a compile dependency stays
-  compile, while a `runtime` or `test` edge downgrades the rest of the path
-  and `provided` does not propagate at all. Following a flat closure over
-  mixed scopes would reach `impl` in `app --compile--> api --runtime--> impl`,
-  which `app` cannot compile against.
+  `groupId:artifactId` matches another discovered unit. Propagate an effective
+  scope along each dependency path using Maven's published table:
 
-  For a file under a test root, `test`-scope direct dependencies are added on
-  top. `<optional>`, `<exclusions>`, and **`<dependencyManagement>`** —
-  including `<scope>import</scope>` BOM imports — are ignored, counted once
-  per occurrence as `dependency_modifier_ignored`. Dependency management is
-  named explicitly because it is a far more common source of classpath
-  divergence than exclusions, and omitting it from this list would imply the
-  approximation is tighter than it is.
+  | Effective scope so far | Next `compile` | Next `runtime` | Next `provided` or `test` |
+  |---|---|---|---|
+  | `compile` | `compile` | `runtime` | omitted |
+  | `provided` | `provided` | `provided` | omitted |
+  | `runtime` | `runtime` | `runtime` | omitted |
+  | `test` | `test` | `test` | omitted |
 
-  Dependencies on artifacts outside the reactor are irrelevant — they can
-  never be candidates, since candidates come only from the declaration index.
+  Production compilation admits effective `compile` and `provided`; test
+  compilation also admits effective `runtime` and `test`. Direct dependencies
+  start with their declared scope. Track visited `(unit, scope)` pairs so
+  different paths are preserved and cycles terminate. This replaces revision
+  6's overly narrow `compile`-only closure. See the
+  [Maven dependency scope table](https://maven.apache.org/guides/introduction/introduction-to-dependency-mechanism.html#dependency-scope).
+
+  `<optional>`, `<exclusions>`, and **`<dependencyManagement>`** — including
+  BOM imports — remain explicit approximations, counted as
+  `dependency_modifier_ignored`. A classifier, non-jar type, or `systemPath`
+  artifact cannot be mapped to a unit's main declarations just by matching
+  coordinates: omit that dependency and count `dependency_artifact_unsupported`.
+  The scope evaluator supports the classic compile/provided/runtime/test
+  table above. Maven 4 `compile-only`, `test-only`, and `test-runtime` scopes
+  are currently unsupported and omitted with the same diagnostic; the Maven
+  corpus report accounts for the affected fixture imports.
+  Dependencies on artifacts outside the reactor have no indexed source
+  candidates and create no project edges. External units expose their
+  production declarations only; test-jar source ownership is not modelled.
 
 - **Bazel.** `java_library` defaults to `strict_deps = True`, so only **direct
   `deps`, extended through `exports`**, are on the compile classpath. A
@@ -527,6 +603,10 @@ a test."
 
 - **Unit id** is `groupId:artifactId`, with `groupId` inherited from the
   parent chain when absent.
+  A literal `groupId` in the child's own `<parent>` element remains usable
+  when the parent POM is external: it is declared coordinate evidence in the
+  local file. This does not import the unavailable parent's build settings,
+  dependencies, or properties.
 - **Source roots** default to `src/main/java` (production) and
   `src/test/java` (test); `<sourceDirectory>` / `<testSourceDirectory>`
   override them.
@@ -542,7 +622,15 @@ a test."
   `<modules>` need no special handling — each child has its own `pom.xml` and
   the walk finds it.
 - **`build-helper-maven-plugin`** `add-source` / `add-test-source` executions
-  are honoured. Any other plugin that appears to modify source roots is
+  are merged by execution ID before roots are materialized. Child execution
+  configuration overrides parent configuration; plugin-level configuration
+  supplies execution defaults. `combine.self="override"` and
+  `combine.children="append"` control configuration merging. Plugin and
+  execution `<inherited>false</inherited>` suppress inheritance (an execution
+  can explicitly opt back in); `<phase>none</phase>` disables an execution.
+  See the [Maven POM reference](https://maven.apache.org/pom.html) and the
+  [Maven model merger](https://github.com/apache/maven/blob/ea4a417bd2482448b8a5b2cf83f2738eee99d47f/impl/maven-impl/src/main/java/org/apache/maven/impl/model/MavenModelMerger.java).
+  Any other plugin that appears to modify source roots is
   counted as `unsupported_plugin_source_modifier` and ignored.
 - **Profiles** are merged only when `<activeByDefault>true</activeByDefault>`.
   Profiles activated by file existence, environment, system property, or `-P`
@@ -622,11 +710,22 @@ meaningful (`srcs`, `deps`, `select` keys). Starlark has no bare label syntax.
 cannot be identified as `srcs` without the attribute name, so it claims
 nothing. This is a stated limit, and its files surface as `unclaimed`.
 
-Anything outside this grammar skips that statement and increments
+Attributes unrelated to ownership and visibility (such as integer timeouts)
+do not invalidate a target's known `srcs`. Relevant attributes use the restricted
+expression subset below; unsupported relevant expressions skip the statement.
+
+Anything outside this grammar in an ownership-relevant expression skips that statement and increments
 `unsupported_syntax_skipped`. No functions, loops, comprehensions, string
 formatting, `depset`, or `struct`.
 
 ### Evaluation
+
+Evaluation has a per-BUILD cumulative allocation budget of approximately 8 MiB
+for string contents and list entries. Identifier copies, string concatenation,
+select unions, and glob results consume that budget. Exhaustion records
+`evaluation_budget_exceeded` and stops the rest of the file; already evaluated
+targets remain available. This bounds exponential value expansion, not total
+process RSS or parser input size.
 
 **Pass 1 — bind.** Evaluate top-level assignments in order into a local scope,
 then evaluate each rule call's arguments against it, recording
@@ -659,8 +758,9 @@ a silently wrong claim.
    source. This over-approximates: a file built only under a non-default
    config is still claimed. Counted as `select_branch_unioned`.
 3. **Any rule call with a `srcs` attribute claims those files**, regardless of
-   rule name. An unrecognised macro therefore still claims its sources; only
-   *classification* needs the rule kind.
+   rule name, except `filegroup`, which is a source container, not a compilation
+   target. Files reached through a filegroup inherit the consuming target's
+   classification. An unrecognised macro with `srcs` still claims its sources.
 4. Local `:label` references resolve to a `filegroup` in the same file, whose
    `srcs` are claimed transitively. Cross-package `//pkg:target` labels are
    not resolved, counted as `unresolved_label`.
@@ -681,7 +781,8 @@ a silently wrong claim.
    `java_test` with `srcs` marks those files as test.
    `java_test` with `test_class` and no `srcs` resolves the class name through
    the **declaration index** — the same index resolution needs — to find its
-   file. A rule whose name ends in `_test` classifies its claimed files as
+   file for entry-point diagnostics only; it does not change classification.
+   A rule whose name ends in `_test` classifies its claimed files as
    test, which covers the common macro case.
 6. Files present but claimed by nothing belong to the Bazel package's unit and
    are emitted as `file_type(file, "unclaimed")`, counted as
@@ -695,6 +796,26 @@ counter.
 
 `target/`, `build/`, and `bazel-*` output are left to `.gitignore`. Java needs
 no `node_modules` analogue: dependencies are jars outside the tree.
+
+## Mixed ownership and path diagnostics
+
+Prefer the owner whose build manifest directory is closest to the source.
+At equal manifest depth, a matching Maven source root takes precedence over
+Bazel ownership, and `mixed_build_owner_selected` identifies every overlap.
+Within one Maven unit, production wins overlapping production/test roots;
+within the chosen context, use the longest matching root. Sources outside any
+claimed Maven root fall back to a containing Bazel package or `java:project`.
+Explicitly configured versioned roots, plus conventional
+`src/main/java[0-9]+` and `src/test/java[0-9]+` roots, are excluded before
+fallback. A package segment named `java11` beneath a normal source root is
+not an exclusion.
+
+For Bazel path diagnostics, first recognize ancestor source roots named
+`src/main/java`, `src/test/java`, `javatests`, or `java`. BUILD files may live
+inside a declared Java package beneath that root. Then consider those roots
+and `src` relative to the Bazel package; otherwise use its package directory. This is only a diagnostic
+heuristic. It never creates a package identity. Corpus path mismatches require
+reconciliation because arbitrary Bazel source layouts remain legal.
 
 ## Invalidation
 
@@ -727,8 +848,21 @@ Therefore:
   wholesale when any tracked manifest changes, since unit ids and
   classifications are inputs to every Java identity.
 
+Java declarations are also repository-wide resolution inputs. Adding,
+removing, moving, or changing a Java file can alter the target or ambiguity of
+imports in untouched files. The initial implementation must rebuild on any
+Java source save or deletion, as well as on manifest changes. Optimizing this
+later requires a reverse dependency index that includes unresolved lookups;
+refreshing only currently resolved importers misses newly resolvable imports.
+A rebuild invoked by `on_save(root, path, content)` must use the supplied
+content for that path, rather than accidentally indexing old disk contents.
+
 Integration tests must cover a manifest-only edit — changing a source root
-with no `.java` file touched — and assert the graph reclassifies.
+with no `.java` file touched — and assert the graph reclassifies. They must
+also cover a declaration rename, added ambiguity, removal of ambiguity, and
+file deletion, checking imports from unchanged source files against a clean
+rebuild. A source root removed from a Maven unit must leave no edges under
+its old identity (unclaimed sources follow the documented fallback policy).
 
 ## Relations
 
@@ -750,6 +884,18 @@ with no `.java` file touched — and assert the graph reclassifies.
 - **`tested_by(callee, test_fn)`** — only calls inside methods annotated
   `@Test`, `@ParameterizedTest`, `@RepeatedTest`, or `@TestFactory`, in a file
   the build system classified as test. A helper's calls are not evidence.
+  Explicit `this` calls never resolve through static imports. Methods
+  declared on the current type precede imported methods; explicit static
+  imports precede wildcard static imports. Receiver types are resolved before
+  method names, with lexical member types preceding explicit type imports,
+  which precede wildcard imports. Ambiguous visible receiver types or
+  applicable overloaded candidates suppress coverage rather than being
+  discarded to make another candidate appear unique. Direct construction
+  (`new Service<T>().run()` or `(new p.Service<T>()).run()`) supplies an
+  instance receiver type. Anonymous subclasses, factory results, and ordinary
+  variable receivers do not supply that evidence. Unresolved ancestry and
+  inherited `Object` method names prevent unqualified calls from falling
+  through to same-named static imports.
 - **`file_type`** carries `production`, `test`, or — Bazel only —
   `unclaimed`. A Maven file under a production source root is `production`,
   one under a test root is `test`; Maven never yields `unclaimed`, because a
@@ -766,28 +912,29 @@ with no `.java` file touched — and assert the graph reclassifies.
 
 | id | severity | fires on |
 |---|---|---|
-| `warn-java-import-cycle` | `warn` | edited Java file whose declared package is in an import cycle |
+| `warn-import-cycle` (existing `structural` pack) | `warn` | edited Java file whose declared package is in an import cycle |
 
-**Java ships one rule. A risky-call rule cannot work in v1, and this is a
-measured limit, not caution.**
+**Java uses the existing language-neutral cycle rule.** The current pack
+already applies it to every `declares_module`/`in_cycle` pair. Adding the earlier
+draft's `warn-java-import-cycle` would duplicate every Java cycle warning.
+The real-binary tests must prove the existing rule reaches Java findings.
+No Java risky-call rule is introduced in v1.
 
-`derive::untested` (`derive.rs:45-58`) reduces every `tested_by` callee to its
-final `::` segment and applies that coverage globally across the repository.
-In Java, method names like `get`, `build`, `create`, `run`, and `execute`
-recur across unrelated classes, and overloads collapse outright — `parse(String)`
-and `parse(byte[])` are one identity. One test anywhere calling `get()` marks
-every method named `get` in the codebase as covered.
+The original revision described repository-global short-name coverage. The
+current implementation instead canonicalizes function edges in
+`derive::canonicalize_function_edges`, and `sync/rebuild.rs` rejects
+`tested_by` targets absent from `defines_fn`. Java must respect that invariant:
+emit coverage only for a uniquely resolved canonical function identity, and
+omit ambiguous or unresolved calls. Do not rely on a shared method leaf name
+to infer receiver identity. Overloaded Java methods still need an explicit
+identity and resolution policy before a risky-call rule can be trusted.
 
-`Optional.get()` is the natural Java watchlist entry and `get` is the single
-worst name to pair with that derivation. The rule would essentially never
-fire. Shipping it would produce a rule nobody can trust, which is worse than
-no rule.
+Enabling it later requires verifying the canonicalization path and Java
+extraction together — a cross-language decision that belongs in its own ADR:
 
-Enabling it later requires changing `derive.rs` and the extractors together —
-a cross-language decision that belongs in its own ADR:
-
-1. `tested_by` must carry a resolvable qualified identity, not a bare name.
-2. `untested` must compare complete identities; `short_name` matching goes.
+1. `tested_by` must carry a resolvable qualified identity, not a bare name
+   (already enforced at persistence).
+2. Coverage derivation must preserve exact identities through canonicalization.
 3. A call that cannot be resolved to exactly one defined function must emit no
    `tested_by` edge — ambiguity must *reduce* claimed coverage, not spread it.
 4. Java identity must carry an overload discriminator, minimally arity
@@ -795,8 +942,8 @@ a cross-language decision that belongs in its own ADR:
 5. `calls_api` and `defines_fn` must share that overload-aware identity so the
    join stays exact.
 
-Until then, Java's enforceable feature is exact package dependency and cycle
-detection.
+Until then, Java's shipped feature is advisory package import-cycle detection
+under the build-visibility approximations described above.
 
 ## Out of scope
 
@@ -843,7 +990,7 @@ profiles; the Bazel evaluator over `COMMON + select(...)`, `glob` exclude,
 `test_class` and no `srcs`, and a `java_library` plus `java_test` in one
 `BUILD` file yielding **one** unit with two classifications; a nested `BUILD`
 halting a parent's recursive glob; a file claimed by both a library and a test
-resolving to `test`; a wildcard import into a three-file package resolving to
+resolving to `production`; a wildcard import into a three-file package resolving to
 **one** owner; and a cross-unit type that is unique but not a declared
 dependency emitting **no** edge.
 
@@ -883,8 +1030,8 @@ explained.
    the path cross-check, which is aimed directly at this symptom, and by the
    corpus gate.
 2. **Declaration-index cost.** Cold discovery reads every Java file. Mitigated
-   by the mtime cache; if a large corpus still bites, cache to disk beside
-   `graph.jsonl`. Measure on both corpora.
+   by the content-hash declaration cache; if a large corpus still bites, cache
+   to disk beside `graph.jsonl`. Measure on both corpora.
 3. **Bazel evaluator coverage.** The grammar is a subset by design. Every gap
    is counted, and a large `files_unclaimed` or `unsupported_syntax_skipped`
    on the corpus is a signal to extend the grammar before shipping, not to

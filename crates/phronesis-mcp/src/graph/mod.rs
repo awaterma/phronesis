@@ -17,6 +17,7 @@ pub mod derive;
 pub mod extract;
 pub mod helm3;
 pub mod hydrate;
+pub mod java;
 pub mod json_extractor;
 pub mod lua;
 pub mod model;

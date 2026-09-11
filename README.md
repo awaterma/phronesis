@@ -42,11 +42,18 @@ still belongs in rules.
 
 **Journey facts** ([SPEC-journey-facts](docs/specs/SPEC-journey-facts.md)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
 
-**Structural code graph** parses Rust, Python, TypeScript, and Swift into queryable
+**Structural code graph** parses Rust, Python, TypeScript, Swift, and Java into queryable
 relations such as `defines_fn`, `calls_api`, `tested_by`, and `no_direct_test`.
 Rules can bind to concrete code referents, structural packs can reason over
 relationships, and clients can inspect freshness or rebuild derived state over
 MCP.
+
+Java discovers Maven and Bazel compilation units and reports dependencies
+between declared packages. The existing `structural` pack warns about package
+import cycles. Build-file edits refresh unchanged importers; diagnostics expose
+unsupported build constructs and unresolved project imports. See the
+[Java design and limitations](docs/superpowers/specs/2026-08-03-java-code-graph-design.md)
+for the classpath approximation and corpus-validation requirements.
 
 The default `base` is intentionally language-neutral: it includes LLM,
 confidence, journey, structural-graph, and durable-context capabilities.

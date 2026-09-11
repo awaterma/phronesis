@@ -355,12 +355,19 @@ The packs are composable and **independent**:
   warnings until `phr-mcp graph rebuild`. Every hooked document save triggers
   a complete graph rebuild; `on_save` remains available as a lower-level
   incremental API for explicit callers and performance comparisons. Rust,
-  Python, and TypeScript produce
+  Python, TypeScript, Swift, and Java produce
   graph facts. Rust's risky-call watchlist covers panic-at-call-site APIs;
   TypeScript's narrower `!` watchlist means "unchecked type assumption," not
   that failure occurs at the assertion site. Both structural rules can fire
   for Rust and TypeScript. Python has no defensible risky-call watchlist, so
-  only its import-cycle rule can fire. Both rules remain `warn`; measured
+  only its import-cycle rule can fire. Java uses Maven/Bazel discovery and
+  package-level modules; the same `warn-import-cycle` rule reports package
+  cycles. Java has no packaged risky-call rule. Java source and build-metadata
+  edits refresh the repository-wide declaration index and unchanged importers.
+  A content-validated `.phronesis/java-declarations.json` cache reuses parses
+  across hook processes; `state` lists it and `clean --cache` removes it.
+  Discovery diagnostics expose unsupported build constructs and classpath
+  approximations. Both rules remain `warn`; measured
   precision is recorded in the spec and promotion to `block` requires broader
   corpus evidence.
   Rule staleness uses the same graph, but accepts only conservative evidence:

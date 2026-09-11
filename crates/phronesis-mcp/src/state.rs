@@ -29,6 +29,7 @@ const ENTRIES: &[(&str, &str, bool)] = &[
     ("graph.jsonl", "cache", false),
     ("graph.index", "cache", false),
     ("bindings.json", "cache", false),
+    ("java-declarations.json", "cache", false),
     ("log.jsonl", "history", false),
     ("log.jsonl.1", "history", false),
     ("journey", "history", false),
@@ -61,7 +62,12 @@ pub fn inspect(root: &Path) -> Vec<StateEntry> {
 pub fn clean_cache(root: &Path) -> std::io::Result<Vec<String>> {
     let dir = root.join(".phronesis");
     let mut removed = Vec::new();
-    for name in ["graph.jsonl", "graph.index", "bindings.json"] {
+    for name in [
+        "graph.jsonl",
+        "graph.index",
+        "bindings.json",
+        "java-declarations.json",
+    ] {
         let path = dir.join(name);
         if path.is_file() {
             fs::remove_file(&path)?;
@@ -118,12 +124,17 @@ mod tests {
             "graph.jsonl",
             "graph.index",
             "bindings.json",
+            "java-declarations.json",
             "rules.json",
             "log.jsonl",
         ] {
             fs::write(phr.join(name), name).expect("fixture");
         }
-        assert_eq!(clean_cache(dir.path()).expect("clean").len(), 3);
+        assert!(inspect(dir.path()).iter().any(|entry| {
+            entry.path == ".phronesis/java-declarations.json" && entry.class == "cache"
+        }));
+        assert_eq!(clean_cache(dir.path()).expect("clean").len(), 4);
+        assert!(!phr.join("java-declarations.json").exists());
         assert!(phr.join("rules.json").exists());
         assert!(phr.join("log.jsonl").exists());
     }

@@ -47,6 +47,8 @@ pub const LANG_RHAI: &str = "rhai";
 
 /// Language tag for the Swift extractor.
 pub const LANG_SWIFT: &str = "swift";
+/// Java graph ownership comes from its repository-wide declaration snapshot.
+pub const LANG_JAVA: &str = "java";
 
 /// Language tag for the CUE extractor.
 pub const LANG_CUE: &str = "cue";
@@ -69,6 +71,7 @@ pub fn lang_of_path(file_rel: &str) -> Option<&'static str> {
         Some((_, "py")) => Some(LANG_PYTHON),
         Some((_, "ts" | "tsx" | "mts" | "cts")) => Some(LANG_TYPESCRIPT),
         Some((_, "swift")) => Some(LANG_SWIFT),
+        Some((_, "java")) => Some(LANG_JAVA),
         Some((_, "lua")) => Some(LANG_LUA),
         Some((_, "rhai")) => Some(LANG_RHAI),
         Some((_, "cue")) => Some(LANG_CUE),

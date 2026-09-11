@@ -47,7 +47,8 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// the whole set, and absence of ownership evidence must never be readable as
 /// absence of an ownership concern, so those graphs rebuild rather than mix
 /// generations.
-pub const GRAPH_FORMAT: u32 = 19;
+/// 20 — Java package identities and build-metadata freshness inputs.
+pub const GRAPH_FORMAT: u32 = 20;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -126,5 +127,7 @@ pub fn index_path(root: &Path) -> PathBuf {
     root.join(INDEX_REL_PATH)
 }
 
+#[cfg(test)]
+mod java_tests;
 #[cfg(test)]
 mod tests;
