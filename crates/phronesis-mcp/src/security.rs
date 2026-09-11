@@ -348,37 +348,47 @@ mod tests {
         assert_eq!(content.len(), cap as usize);
     }
 
-    // Single test combining all env-var cases. Env vars are process-global,
-    // so running these scenarios in parallel races. Keep them sequential.
-    //
-    // SAFETY: edition 2024 marks std::env::{set_var, remove_var} as unsafe
-    // because mutating the environment is unsound when other threads read
-    // it concurrently. This test runs single-threaded inside `cargo test`
-    // and touches an env var no other test reads, so the contract holds.
     #[test]
     fn max_file_bytes_env_override_behavior() {
-        let prior = std::env::var("PHRONESIS_MAX_FILE_BYTES").ok();
+        const EXPECTED_CAP: &str = "PHRONESIS_TEST_EXPECTED_MAX_FILE_BYTES";
+        if let Ok(expected) = std::env::var(EXPECTED_CAP) {
+            assert_eq!(max_file_bytes(), expected.parse::<u64>().unwrap());
+            return;
+        }
 
-        // Default when unset
-        unsafe { std::env::remove_var("PHRONESIS_MAX_FILE_BYTES") };
-        assert_eq!(max_file_bytes(), MAX_FILE_BYTES_DEFAULT);
-
-        // Honors explicit override
-        unsafe { std::env::set_var("PHRONESIS_MAX_FILE_BYTES", "2048") };
-        assert_eq!(max_file_bytes(), 2048);
-
-        // Ceiling caps a runaway value
-        unsafe { std::env::set_var("PHRONESIS_MAX_FILE_BYTES", "999999999999") };
-        assert_eq!(max_file_bytes(), MAX_FILE_BYTES_CEILING);
-
-        // Garbage falls back to default
-        unsafe { std::env::set_var("PHRONESIS_MAX_FILE_BYTES", "not-a-number") };
-        assert_eq!(max_file_bytes(), MAX_FILE_BYTES_DEFAULT);
-
-        // Restore
-        match prior {
-            Some(v) => unsafe { std::env::set_var("PHRONESIS_MAX_FILE_BYTES", v) },
-            None => unsafe { std::env::remove_var("PHRONESIS_MAX_FILE_BYTES") },
+        // Other tests read this process-global setting, including twice in
+        // read_file_capped_truncates_oversize_file. Configure each child before
+        // it starts instead of mutating the parallel test runner's environment.
+        let executable = std::env::current_exe().unwrap();
+        for (value, expected) in [
+            (None, MAX_FILE_BYTES_DEFAULT),
+            (Some("2048"), 2048),
+            (Some("999999999999"), MAX_FILE_BYTES_CEILING),
+            (Some("not-a-number"), MAX_FILE_BYTES_DEFAULT),
+            (Some("0"), 0),
+            (Some("-1"), MAX_FILE_BYTES_DEFAULT),
+            (Some("18446744073709551616"), MAX_FILE_BYTES_DEFAULT),
+        ] {
+            let mut command = std::process::Command::new(&executable);
+            command
+                .args([
+                    "--exact",
+                    "security::tests::max_file_bytes_env_override_behavior",
+                    "--nocapture",
+                ])
+                .env(EXPECTED_CAP, expected.to_string())
+                .env_remove("PHRONESIS_MAX_FILE_BYTES");
+            if let Some(value) = value {
+                command.env("PHRONESIS_MAX_FILE_BYTES", value);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success()
+                    && String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
+                "override {value:?} failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
         }
     }
 
