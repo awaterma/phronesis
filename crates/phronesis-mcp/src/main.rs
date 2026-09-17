@@ -431,7 +431,7 @@ enum Command {
 
 #[derive(clap::Subcommand, Debug)]
 enum GraphCmd {
-    /// Rescan every tracked Rust file and rewrite the graph from scratch.
+    /// Rescan every tracked source file and rewrite the graph from scratch.
     Rebuild {
         /// Project root (defaults to current directory).
         #[arg(long, default_value = ".")]
