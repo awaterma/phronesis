@@ -125,6 +125,10 @@ upgrade unchanged ones while preserving local edits and custom rules. The
 older projects without it keep conflicting definitions and receive warnings.
 Use `--dry-run` to preview or `--force` to replace the selected rules file.
 
+The Rust code graph also traces Rhai registrations through single-expression
+forwarding closures, including a single call inside a block. Complex closures
+remain unresolved rather than assigning an arbitrary backing function.
+
 ## Lineage
 
 The engine is a modern Rust implementation of the RETE algorithm (Forgy, 1982). It was extracted from a high-performance game logic system and repurposed for LLM-agent governance. 

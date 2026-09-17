@@ -10,6 +10,8 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 - Non-destructive `init --rules-only` starter syncing with a recorded baseline,
   local override/deletion preservation, and conflict warnings.
+- Structural Rhai registration extraction and conservative forwarding-closure
+  backing detection. Graph format 21 invalidates older extraction caches.
 
 - **Java structural graph extraction for Maven and Bazel.** Java modules are
   declared packages within build units; exact declaration lookup and build

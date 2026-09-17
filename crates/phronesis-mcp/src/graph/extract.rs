@@ -861,7 +861,7 @@ pub fn extract_rust_file(
 fn emit_rhai_boundary(sensor: &mut Sensor<'_>, root: Node, source: &str) {
     let self_module = sensor.self_module.clone();
     let boundary_source = rhai_boundary_nodes(root, source).join("\n");
-    emit_rhai_registrations(sensor, &self_module, &boundary_source);
+    emit_rhai_registrations(sensor, &self_module, root, source);
     emit_rhai_proxies_and_loaders(sensor, &self_module, &boundary_source);
 }
 
@@ -894,34 +894,113 @@ fn rhai_boundary_nodes(root: Node, source: &str) -> Vec<String> {
 }
 
 /// `register_fn("name", backing)` exposures and their backing functions.
-fn emit_rhai_registrations(sensor: &mut Sensor<'_>, self_module: &str, boundary_source: &str) {
-    let registration = regex::Regex::new(r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,"#)
-        .expect("static Rhai registration regex");
-    for captures in registration.captures_iter(boundary_source) {
-        let Some(name) = captures.get(1).map(|value| value.as_str()) else {
+fn emit_rhai_registrations(sensor: &mut Sensor<'_>, self_module: &str, root: Node, source: &str) {
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        push_children(node, &mut pending);
+        if node.kind() != "call_expression" {
+            continue;
+        }
+        let Some(function) = node.child_by_field_name("function") else {
             continue;
         };
-        sensor.emit("exposes", &[self_module, &format!("rhai:callable::{name}")]);
-    }
-    let named_registration = regex::Regex::new(
-        r#"register_fn\s*\(\s*"([_A-Za-z][_A-Za-z0-9]*)"\s*,\s*([_A-Za-z][_A-Za-z0-9:]*)\s*\)"#,
-    )
-    .expect("static named Rhai registration regex");
-    for captures in named_registration.captures_iter(boundary_source) {
-        let (Some(name), Some(backing)) = (
-            captures.get(1).map(|value| value.as_str()),
-            captures.get(2).map(|value| value.as_str()),
-        ) else {
+        let function_name = function.child_by_field_name("field").unwrap_or(function);
+        if function_name
+            .utf8_text(source.as_bytes())
+            .ok()
+            .and_then(|name| name.rsplit("::").next())
+            != Some("register_fn")
+        {
+            continue;
+        }
+        let Some(arguments) = node.child_by_field_name("arguments") else {
             continue;
         };
-        sensor.emit(
-            "rhai_callable_backing",
-            &[
-                &format!("rhai:callable::{name}"),
-                backing.rsplit("::").next().unwrap_or(backing),
-            ],
-        );
+        let mut cursor = arguments.walk();
+        let args: Vec<_> = arguments
+            .named_children(&mut cursor)
+            .filter(|node| !matches!(node.kind(), "line_comment" | "block_comment"))
+            .collect();
+        let [name, backing] = args.as_slice() else {
+            continue;
+        };
+        if name.kind() != "string_literal" {
+            continue;
+        }
+        let Ok(text) = name.utf8_text(source.as_bytes()) else {
+            continue;
+        };
+        let Some(name) = text
+            .strip_prefix('"')
+            .and_then(|text| text.strip_suffix('"'))
+        else {
+            continue;
+        };
+        if !name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_')
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            continue;
+        }
+        let callable = format!("rhai:callable::{name}");
+        sensor.emit("exposes", &[self_module, &callable]);
+        if let Some(backing) = rhai_backing(*backing, source) {
+            sensor.emit("rhai_callable_backing", &[&callable, backing]);
+        }
     }
+}
+
+/// Only direct function references or a single forwarding expression are evidence.
+/// Multi-statement, branching, method, and nested-call closures remain unknown.
+fn rhai_backing<'a>(node: Node, source: &'a str) -> Option<&'a str> {
+    let mut target = node;
+    if node.kind() == "closure_expression" {
+        target = node.child_by_field_name("body")?;
+        if target.kind() == "block" {
+            let mut cursor = target.walk();
+            let body: Vec<_> = target
+                .named_children(&mut cursor)
+                .filter(|node| !matches!(node.kind(), "line_comment" | "block_comment"))
+                .collect();
+            let [expression] = body.as_slice() else {
+                return None;
+            };
+            target = *expression;
+        }
+        if target.kind() != "call_expression" {
+            return None;
+        }
+        let arguments = target.child_by_field_name("arguments")?;
+        let mut pending = vec![arguments];
+        while let Some(arg) = pending.pop() {
+            if matches!(
+                arg.kind(),
+                "call_expression" | "closure_expression" | "macro_invocation" | "block"
+            ) {
+                return None;
+            }
+            push_children(arg, &mut pending);
+        }
+        target = target.child_by_field_name("function")?;
+        // Calling a closure parameter does not identify a Rust backing function.
+        let name = target.utf8_text(source.as_bytes()).ok()?;
+        let mut pending = vec![node.child_by_field_name("parameters")?];
+        while let Some(parameter) = pending.pop() {
+            if parameter.kind() == "identifier"
+                && parameter.utf8_text(source.as_bytes()).ok() == Some(name)
+            {
+                return None;
+            }
+            push_children(parameter, &mut pending);
+        }
+    }
+    if !matches!(target.kind(), "identifier" | "scoped_identifier") {
+        return None;
+    }
+    target
+        .utf8_text(source.as_bytes())
+        .ok()?
+        .rsplit("::")
+        .next()
 }
 
 /// `register_state_proxy!` exposures/backings and literal `.rhai` loads.
@@ -1013,6 +1092,41 @@ mod tests {
                 "state_attempt_stunning_strike".to_string()
             ]]
         );
+    }
+
+    #[test]
+    fn forwarding_rhai_closures_have_only_unambiguous_backings() {
+        let out = run(
+            "src/bridge.rs",
+            r#"
+            fn install(engine: &mut Engine) {
+                engine.register_fn("direct", |mut state: State| backend(state));
+                engine.register_fn("block", move |s| { /* forwarding */ host::forward(s) });
+                engine.register_fn("named", host::named);
+                engine.register_fn("multi", |s| { log(s); backend(s) });
+                engine.register_fn("nested", |s| backend(convert(s)));
+                engine.register_fn("branch", |s| if s { first() } else { second() });
+                engine.register_fn("method", |s| s.backend());
+                engine.register_fn("parameter", |backend| backend());
+                engine.register_fn("arithmetic", |s| s + 1);
+                engine.register_fn("comment", |s| {
+                    // register_fn("fake", mut)
+                    s
+                });
+            }
+        "#,
+        );
+        let mut backings = edges_of(&out, "rhai_callable_backing");
+        backings.sort();
+        assert_eq!(
+            backings,
+            vec![
+                vec!["rhai:callable::block".to_string(), "forward".to_string()],
+                vec!["rhai:callable::direct".to_string(), "backend".to_string()],
+                vec!["rhai:callable::named".to_string(), "named".to_string()],
+            ]
+        );
+        assert_eq!(edges_of(&out, "exposes").len(), 10);
     }
 
     #[test]

@@ -48,7 +48,8 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// absence of an ownership concern, so those graphs rebuild rather than mix
 /// generations.
 /// 20 — Java package identities and build-metadata freshness inputs.
-pub const GRAPH_FORMAT: u32 = 20;
+/// 21 — structural Rhai registration and forwarding-closure backing extraction.
+pub const GRAPH_FORMAT: u32 = 21;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
