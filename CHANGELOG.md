@@ -8,6 +8,9 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- Non-destructive `init --rules-only` starter syncing with a recorded baseline,
+  local override/deletion preservation, and conflict warnings.
+
 - **Java structural graph extraction for Maven and Bazel.** Java modules are
   declared packages within build units; exact declaration lookup and build
   visibility constrain import edges. The existing structural cycle rule now

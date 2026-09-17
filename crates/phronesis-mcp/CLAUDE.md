@@ -416,14 +416,25 @@ pack into an existing project — without touching its hook config, MCP
 registration, or gitignore — use `--rules-only`:
 
 ```
-phr-mcp init --rules-only --force --packs llm,rust
+phr-mcp init --rules-only --packs llm,rust
 ```
 
-This writes only `.phronesis/rules.json` (with a `.bak` of the prior version
-since `--force` is set). Everything else in the project stays exactly as it
-was — custom permissions, custom hooks, custom gitignore entries, none of
-it touched. Useful when you've changed `--packs` or just want to pick up
-a new rule that ships in `llm` after upgrading the binary.
+Sync adds new starter rules and updates previously installed definitions that
+have not been edited locally. Custom rules, local edits, remembered deletions,
+rules from other packs, and top-level metadata are preserved. Conflicting
+local definitions are reported. Older projects without a baseline preserve
+all existing definitions on their first sync; differing starter IDs produce
+warnings because their ownership cannot be inferred safely.
+
+`.phronesis/starter-rules.json` records starter definitions for future syncs.
+Keep this file with the project rules; if it is missing, sync falls back to
+conservative conflict handling. Comparisons use JSON values, so rules rewritten
+into another schema are also conservatively preserved. Removed upstream rules
+are retained. `--packs none` preserves existing rules during sync.
+
+Changed rules are backed up to `rules.json.bak`; dry runs write neither rules,
+baselines, nor backups. Invalid rule files or baselines fail without replacement.
+Use `--force` for an explicit replacement of all rules with the selected packs.
 
 ### Refreshing just the hooks
 

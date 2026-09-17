@@ -12,12 +12,15 @@
 //!
 //! Idempotent and non-destructive by default. Existing permissions, hooks,
 //! and MCP servers are preserved; only our entries are added or refreshed.
-//! Existing rules files are left alone unless `--force` is set.
+//! Existing rules files are left alone unless `--rules-only` or `--force` is set.
 
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 use thiserror::Error;
+
+mod rule_sync;
+use rule_sync::write_rules_file;
 
 /// A starter rule pack. Packs are composable — caller picks a comma-separated
 /// list and `compose_packs` merges them, deduping by rule_id.
@@ -265,6 +268,8 @@ pub enum InitError {
         #[source]
         source: std::io::Error,
     },
+    #[error("invalid rules file: {0}")]
+    InvalidRules(String),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 }
@@ -274,9 +279,9 @@ pub struct InitOpts {
     pub packs: Vec<Pack>,
     pub force: bool,
     pub dry_run: bool,
-    /// When true, only touch `.phronesis/rules.json` — leave the hook config,
-    /// MCP registration, and .gitignore alone. Pairs naturally with `--force`
-    /// for "refresh just the rules pack" workflows.
+    /// When true, only touch rules and their starter baseline — leave the hook config,
+    /// MCP registration, and .gitignore alone. Syncs starter rules while preserving
+    /// local edits; `--force` replaces the rules pack.
     pub rules_only: bool,
     /// Only touch hook config (`.claude/settings.local.json`, `.mcp.json`,
     /// `.gemini/settings.json`). Skip rules.json and .gitignore. Use to
@@ -800,56 +805,6 @@ fn write_codex_config(
     report
         .steps
         .push("+ registered `phronesis` in .codex/config.toml".to_string());
-    Ok(())
-}
-
-fn write_rules_file(
-    root: &Path,
-    opts: &InitOpts,
-    report: &mut InitReport,
-) -> Result<(), InitError> {
-    let path = root.join(".phronesis").join("rules.json");
-
-    if path.exists() && !opts.force {
-        report.steps.push(
-            "= .phronesis/rules.json already exists — leaving unchanged (re-run with --force to overwrite)"
-                .to_string(),
-        );
-        return Ok(());
-    }
-
-    let rules = compose_packs(&opts.packs);
-    let count = rules["rules"].as_array().map(Vec::len).unwrap_or(0);
-    let pack_labels: Vec<&str> = opts.packs.iter().map(|p| p.label()).collect();
-    let label = pack_labels.join("+");
-
-    if opts.dry_run {
-        report.steps.push(format!(
-            "+ would write .phronesis/rules.json with {} {} rule(s)",
-            count, label
-        ));
-        return Ok(());
-    }
-
-    ensure_parent(&path)?;
-    // Back up the prior rules file (force-overwrite path) so users can recover
-    // if the starter pack wasn't what they wanted.
-    if path.exists() {
-        let bak = with_extension(&path, "bak");
-        std::fs::copy(&path, &bak).map_err(|e| InitError::Io {
-            path: bak.display().to_string(),
-            source: e,
-        })?;
-    }
-    let content = serde_json::to_string_pretty(&rules)?;
-    std::fs::write(&path, content).map_err(|e| InitError::Io {
-        path: path.display().to_string(),
-        source: e,
-    })?;
-    report.steps.push(format!(
-        "+ wrote .phronesis/rules.json ({} {} rule(s))",
-        count, label
-    ));
     Ok(())
 }
 
