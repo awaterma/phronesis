@@ -693,17 +693,16 @@ fn rules_only_dry_run_writes_nothing() {
 fn rules_only_without_force_respects_existing_rules() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
-    let custom =
-        r#"{"rules":[{"id":"mine","phase":"pre","priority":1,"conditions":[],"actions":[]}]}"#;
+    let custom = r#"{"rules":[{"id":"mine","phase":"pre","priority":1,"conditions":[],"actions":[{"action_type":"constraint_violation","params":["custom"]}]}]}"#;
     std::fs::write(dir.path().join(".phronesis/rules.json"), custom).unwrap();
 
     let out = run_init(&["--rules-only", "--packs", "llm,rust"], dir.path());
     assert!(out.status.success());
 
-    // Without --force, the existing file is preserved verbatim.
+    // Sync retains custom rules and adds selected starter rules.
     let content = std::fs::read_to_string(dir.path().join(".phronesis/rules.json")).unwrap();
     assert!(content.contains("\"mine\""));
-    assert!(!content.contains("enforce-no-unwrap-in-src"));
+    assert!(content.contains("enforce-no-unwrap-in-src"));
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -1089,4 +1088,113 @@ fn init_gitignore_idempotent_on_second_run() {
         first, second,
         "gitignore must not duplicate entries on re-run"
     );
+}
+
+#[test]
+fn rules_sync_preserves_metadata_backups_and_dry_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join(".phronesis");
+    std::fs::create_dir_all(&config).unwrap();
+    let path = config.join("rules.json");
+    let original = r#"{"metadata":{"owner":"example-app"},"rules":[{"id":"mine","phase":"pre","priority":1,"conditions":[],"actions":[{"action_type":"constraint_violation","params":["custom"]}]}]}"#;
+    std::fs::write(&path, original).unwrap();
+    assert!(
+        run_init(
+            &["--rules-only", "--dry-run", "--packs", "rust"],
+            dir.path()
+        )
+        .status
+        .success()
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    assert!(!config.join("starter-rules.json").exists());
+    assert!(!config.join("rules.json.bak").exists());
+    assert!(
+        run_init(&["--rules-only", "--packs", "rust"], dir.path())
+            .status
+            .success()
+    );
+    let first = std::fs::read_to_string(&path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&first).unwrap();
+    assert_eq!(parsed["metadata"]["owner"], "example-app");
+    assert!(parsed["rules"].as_array().unwrap().len() > 1);
+    assert_eq!(
+        std::fs::read_to_string(config.join("rules.json.bak")).unwrap(),
+        original
+    );
+    assert!(config.join("starter-rules.json").exists());
+    assert!(
+        run_init(&["--rules-only", "--packs", "rust"], dir.path())
+            .status
+            .success()
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+    assert_eq!(
+        std::fs::read_to_string(config.join("rules.json.bak")).unwrap(),
+        original
+    );
+    assert!(
+        run_init(&["--rules-only", "--packs", "none"], dir.path())
+            .status
+            .success()
+    );
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), first);
+}
+
+#[test]
+fn rules_sync_rejects_invalid_files_without_writing() {
+    for invalid in [
+        "",
+        "{",
+        "{}",
+        r#"{"rules":null}"#,
+        r#"{"rules":[{}]}"#,
+        r#"{"rules":[{"id":"duplicate","conditions":[],"actions":[{"action_type":"constraint_violation","params":["custom"]}]},{"id":"duplicate","conditions":[],"actions":[{"action_type":"constraint_violation","params":["custom"]}]}]}"#,
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".phronesis");
+        std::fs::create_dir_all(&config).unwrap();
+        let path = config.join("rules.json");
+        std::fs::write(&path, invalid).unwrap();
+        assert!(
+            !run_init(&["--rules-only", "--packs", "rust"], dir.path())
+                .status
+                .success(),
+            "accepted {invalid}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), invalid);
+        assert!(!config.join("starter-rules.json").exists());
+        assert!(!config.join("rules.json.bak").exists());
+    }
+}
+
+#[test]
+fn rules_sync_preserves_edited_and_deleted_starters() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = ["--rules-only", "--packs", "rust"];
+    assert!(run_init(&args, dir.path()).status.success());
+    let path = dir.path().join(".phronesis/rules.json");
+    let mut rules: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let entries = rules["rules"].as_array_mut().unwrap();
+    entries.remove(0);
+    entries[0]["priority"] = serde_json::json!(9876);
+    std::fs::write(&path, serde_json::to_string_pretty(&rules).unwrap()).unwrap();
+    assert!(run_init(&args, dir.path()).status.success());
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(after, rules);
+}
+
+#[test]
+fn rules_sync_rejects_invalid_baseline_without_changing_rules() {
+    let dir = tempfile::tempdir().unwrap();
+    let args = ["--rules-only", "--packs", "rust"];
+    assert!(run_init(&args, dir.path()).status.success());
+    let path = dir.path().join(".phronesis/rules.json");
+    let original = std::fs::read(&path).unwrap();
+    std::fs::write(dir.path().join(".phronesis/starter-rules.json"), "{}").unwrap();
+    assert!(!run_init(&args, dir.path()).status.success());
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert!(!dir.path().join(".phronesis/rules.json.bak").exists());
 }

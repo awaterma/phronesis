@@ -49,7 +49,7 @@ phr-mcp init --packs rust       # Default platform + Rust rules
 phr-mcp init --packs none       # No starter rules
 
 # Configuration refresh
-phr-mcp init --rules-only --force --packs llm,rust   # Update rules only
+phr-mcp init --rules-only --packs llm,rust   # Sync starters; preserve local edits
 phr-mcp init --hooks-only                                            # Update hooks only
 
 # Activity inspection

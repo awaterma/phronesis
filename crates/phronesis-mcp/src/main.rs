@@ -358,8 +358,8 @@ enum Command {
         /// Print what would be done without writing anything
         #[arg(long)]
         dry_run: bool,
-        /// Only touch .phronesis/rules.json. Skip hook config, MCP registration,
-        /// and .gitignore. Use with --force to refresh just the rules pack.
+        /// Sync starter rules and their baseline, preserving local edits. Skip
+        /// hook config, MCP registration, and .gitignore. --force replaces rules.
         #[arg(long)]
         rules_only: bool,
         /// Only touch hook config. Skip rules.json and .gitignore. Use to
@@ -431,7 +431,7 @@ enum Command {
 
 #[derive(clap::Subcommand, Debug)]
 enum GraphCmd {
-    /// Rescan every tracked Rust file and rewrite the graph from scratch.
+    /// Rescan every tracked source file and rewrite the graph from scratch.
     Rebuild {
         /// Project root (defaults to current directory).
         #[arg(long, default_value = ".")]

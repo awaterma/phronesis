@@ -8,6 +8,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- Non-destructive `init --rules-only` starter syncing with a recorded baseline,
+  local override/deletion preservation, and conflict warnings.
+
+- Structural Rhai registration extraction and conservative forwarding-closure
+  backing detection. Graph format 21 invalidates older extraction caches.
+
+## [0.33.0] - 2026-09-11
+
+### Added
+
 - **Java structural graph extraction for Maven and Bazel.** Java modules are
   declared packages within build units; exact declaration lookup and build
   visibility constrain import edges. The existing structural cycle rule now
@@ -16,6 +26,11 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   diagnostics expose unsupported build constructs and resolution gaps.
   A versioned declaration cache reuses unchanged parses across hook processes;
   `state` reports it and `clean --cache` removes it.
+
+## [0.32.0] - 2026-08-31
+
+### Added
+
 - **Optional Prometheus metrics exporter.** The new `phronesis-metrics` crate
   derives bounded OpenMetrics families from each project's
   `.phronesis/log.jsonl`. Install the CLI with `--features metrics` to enable
@@ -23,6 +38,22 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `phr-mcp metrics`. Source paths and repository names are never exposed as
   labels, rule-id cardinality is capped, and non-loopback listeners are
   rejected unconditionally.
+
+## [0.31.1] - 2026-08-24
+
+### Fixed
+
+- **Whole-tree audits no longer silently suppress rules with builtin path
+  guards.** `audit_codebase` and `phr-mcp audit` evaluate builtin
+  `facts_contain`/`facts_count` `__script__` conditions against fresh per-file
+  path and extension facts. Unsupported Rhai or binding-dependent guards now
+  produce a diagnostic instead of making the affected audit rule appear
+  clean. Fixes #52.
+
+## [0.31.0] - 2026-08-24
+
+### Added
+
 - **New opt-in `python-patterns` pack** (`phr-mcp init --packs
   python,python-patterns`; alias `py-patterns`). Thirteen advisories derived
   from <https://python-patterns.guide/>, every one backed by a new
@@ -48,6 +79,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   Each message cites the guide page and states the limit of its heuristic.
   The base `python` pack is unchanged; the guide remains a secondary source
   there (see the Deviation note in `SPEC-python-pack-expansion.md`).
+
 - **`xcodebuild` and `swift build|test` are built-in toolchains for
   confidence scoring.** A Swift project running `xcodebuild test` through the
   Bash tool saw "tests never registered": cargo was the only built-in def, so
@@ -60,6 +92,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   build), and accept `** BUILD SUCCEEDED **` / `** TEST SUCCEEDED **` /
   `Build complete!` as compile evidence when no exit code was captured.
   `phr-mcp toolchains` lists them.
+
 - **`phr-mcp signal <compile|tests> <pass|fail>`** records a confidence
   signal explicitly for the open work unit — the escape hatch for a test
   runner with no toolchain def, or a run that happened outside the hook. It
@@ -180,15 +213,6 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   ran `phr-mcp init --packs confidence` keep the old blocking rule on disk
   until they re-run `phr-mcp init --rules-only --force --packs confidence`
   (existing project rule files are not rewritten automatically).
-
-### Fixed
-
-- **Whole-tree audits no longer silently suppress rules with builtin path
-  guards.** `audit_codebase` and `phr-mcp audit` evaluate builtin
-  `facts_contain`/`facts_count` `__script__` conditions against fresh per-file
-  path and extension facts. Unsupported Rhai or binding-dependent guards now
-  produce a diagnostic instead of making the affected audit rule appear
-  clean. Fixes #52.
 
 ## [0.29.0] - 2026-08-16
 

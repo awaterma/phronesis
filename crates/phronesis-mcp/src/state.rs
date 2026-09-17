@@ -16,6 +16,7 @@ pub struct StateEntry {
 const ENTRIES: &[(&str, &str, bool)] = &[
     ("loader.json", "authored", false),
     ("rules.json", "authored", false),
+    ("starter-rules.json", "history", false),
     ("wiki", "authored", false),
     ("predicates", "authored", false),
     ("kernel.md", "authored", false),
@@ -126,6 +127,7 @@ mod tests {
             "bindings.json",
             "java-declarations.json",
             "rules.json",
+            "starter-rules.json",
             "log.jsonl",
         ] {
             fs::write(phr.join(name), name).expect("fixture");
@@ -133,9 +135,13 @@ mod tests {
         assert!(inspect(dir.path()).iter().any(|entry| {
             entry.path == ".phronesis/java-declarations.json" && entry.class == "cache"
         }));
+        assert!(inspect(dir.path()).iter().any(|entry| {
+            entry.path == ".phronesis/starter-rules.json" && entry.class == "history"
+        }));
         assert_eq!(clean_cache(dir.path()).expect("clean").len(), 4);
         assert!(!phr.join("java-declarations.json").exists());
         assert!(phr.join("rules.json").exists());
+        assert!(phr.join("starter-rules.json").exists());
         assert!(phr.join("log.jsonl").exists());
     }
 
