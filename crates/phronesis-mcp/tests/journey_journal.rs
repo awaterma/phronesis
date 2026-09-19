@@ -460,3 +460,32 @@ fn compaction_retains_commit_and_kalpa_records_in_prefix() {
     );
     assert!(all.iter().any(|r| r.tool == "Edit"), "the tail survives");
 }
+
+// ---------- record() journal placement (Task 7) ----------
+
+/// No field of a lifecycle journal record ever contains prompt text.
+/// Not "no `prompt` key": no field at all, checked over the serialized line.
+#[test]
+fn a_prompt_event_journals_no_field_containing_the_text() {
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, record::record};
+    let d = tempfile::tempdir().unwrap();
+    record(
+        d.path(),
+        LifecycleEvent::new(Kind::Prompt, Host::Claude)
+            .with_mode(Mode::Correction)
+            .with_prompt("zzz-distinctive-prompt-text"),
+    );
+    let line = std::fs::read_to_string(d.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    assert!(!line.contains("zzz-distinctive"), "{line}");
+    let rec: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    for (_, v) in rec.as_object().unwrap() {
+        assert!(!v.to_string().contains("zzz-distinctive"), "{rec}");
+    }
+    // …and the action log does hold it, so this is a placement test, not a
+    // "the text vanished" test.
+    assert!(
+        std::fs::read_to_string(d.path().join(".phronesis/log.jsonl"))
+            .unwrap()
+            .contains("zzz-distinctive-prompt-text")
+    );
+}

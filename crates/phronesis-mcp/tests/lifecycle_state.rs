@@ -463,3 +463,170 @@ fn with_locked_serializes_sixteen_writers() {
     let final_v = std::fs::read_to_string(p.join(".phronesis/journey/counter")).unwrap();
     assert_eq!(final_v.trim(), "800");
 }
+
+// ---------- record() and prompt_text config (Task 7) ----------
+
+#[test]
+fn record_writes_journal_and_log_with_kalpa_and_no_text_in_journal() {
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, record::record};
+    let d = root();
+    write_kalpa(
+        d.path(),
+        &Kalpa {
+            name: "demo".into(),
+            started_ts: 1,
+        },
+    );
+    let ev = LifecycleEvent::new(Kind::Prompt, Host::Claude)
+        .with_mode(Mode::Fresh)
+        .with_prompt("hello world");
+    let stamped = record(d.path(), ev).unwrap();
+    assert_eq!(stamped.kalpa.as_deref(), Some("demo"));
+    let journal =
+        std::fs::read_to_string(d.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    assert!(journal.contains(r#""kind":"prompt""#));
+    assert!(journal.contains(r#""kalpa":"demo""#));
+    assert!(!journal.contains("hello world"));
+    let log = std::fs::read_to_string(d.path().join(".phronesis/log.jsonl")).unwrap();
+    assert!(log.contains(r#""kind":"lifecycle""#));
+    assert!(log.contains(r#""prompt":"hello world""#));
+}
+
+#[test]
+fn record_honors_prompt_text_none() {
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, record::record};
+    let d = root();
+    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
+    std::fs::write(
+        d.path().join(".phronesis/journey.json"),
+        r#"{"version":1,"taggers":[],"modules":[],"lifecycle":{"prompt_text":"none"}}"#,
+    )
+    .unwrap();
+    record(
+        d.path(),
+        LifecycleEvent::new(Kind::Prompt, Host::Codex)
+            .with_mode(Mode::Fresh)
+            .with_prompt("hidden"),
+    )
+    .unwrap();
+    let log = std::fs::read_to_string(d.path().join(".phronesis/log.jsonl")).unwrap();
+    assert!(!log.contains("hidden"));
+    assert!(log.contains(r#""prompt_bytes":6"#));
+}
+
+/// The switch fails **closed**: a `journey.json` we cannot parse must omit the
+/// text, never print it. Failing open here would leak prompts from exactly the
+/// projects whose config says not to.
+#[test]
+fn malformed_journey_config_omits_prompt_text() {
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, record::record};
+    let d = root();
+    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
+    for bad in [
+        r#"{"version":1,"taggers":[],"modules":[],"lifecycle":{"prompt_text":"maybe"}}"#,
+        r#"{"version":1,"taggers":[],"modules":[],"lifecycle":"full"}"#,
+        r#"{not json at all"#,
+    ] {
+        let _ = std::fs::remove_file(d.path().join(".phronesis/log.jsonl"));
+        std::fs::write(d.path().join(".phronesis/journey.json"), bad).unwrap();
+        record(
+            d.path(),
+            LifecycleEvent::new(Kind::Prompt, Host::Claude)
+                .with_mode(Mode::Fresh)
+                .with_prompt("hidden"),
+        );
+        let log = std::fs::read_to_string(d.path().join(".phronesis/log.jsonl")).unwrap();
+        assert!(!log.contains("hidden"), "{bad}: {log}");
+        assert!(log.contains(r#""prompt_bytes":6"#), "{bad}: {log}");
+    }
+    // No config file at all is the documented default, and it is `full`.
+    std::fs::remove_file(d.path().join(".phronesis/journey.json")).unwrap();
+    let _ = std::fs::remove_file(d.path().join(".phronesis/log.jsonl"));
+    record(
+        d.path(),
+        LifecycleEvent::new(Kind::Prompt, Host::Claude)
+            .with_mode(Mode::Fresh)
+            .with_prompt("hidden"),
+    );
+    assert!(
+        std::fs::read_to_string(d.path().join(".phronesis/log.jsonl"))
+            .unwrap()
+            .contains("hidden")
+    );
+}
+
+/// `correction_text` is the one accessor, and it consults the *current* value,
+/// so flipping the switch hides text already written under `"full"`.
+#[test]
+fn correction_text_hides_already_written_prompts_when_the_switch_flips() {
+    use phronesis_mcp::action_log::LogEntry;
+    use phronesis_mcp::lifecycle::record::correction_text;
+    let d = root();
+    let entry = LogEntry::new("lifecycle", "prompt")
+        .with("mode", "correction")
+        .with("prompt", "no, the other thing");
+    assert_eq!(
+        correction_text(d.path(), &entry).as_deref(),
+        Some("no, the other thing")
+    );
+
+    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
+    std::fs::write(
+        d.path().join(".phronesis/journey.json"),
+        r#"{"version":1,"taggers":[],"modules":[],"lifecycle":{"prompt_text":"none"}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        correction_text(d.path(), &entry),
+        None,
+        "the switch is enforced at read time"
+    );
+}
+
+/// The journal append fails (the path is a directory), but the log entry —
+/// which is where the prompt text and `prompt_bytes` live — is still written,
+/// and `record` reports the failure by returning `None`. Spec: lifecycle
+/// writes are fail-open and never fail a hook.
+#[test]
+fn record_still_logs_when_the_journal_append_fails() {
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, record::record};
+    let d = root();
+    std::fs::create_dir_all(d.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    let out = record(
+        d.path(),
+        LifecycleEvent::new(Kind::Prompt, Host::Claude)
+            .with_mode(Mode::Fresh)
+            .with_prompt("abc"),
+    );
+    assert!(out.is_none(), "a failed journal append must report itself");
+    let log = std::fs::read_to_string(d.path().join(".phronesis/log.jsonl")).unwrap();
+    assert!(log.contains(r#""prompt_bytes":3"#), "{log}");
+}
+
+/// The join key between the two files (spec §"Action log").
+#[test]
+fn journal_record_and_log_entry_share_sid_and_seq() {
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, record::record};
+    let d = root();
+    record(d.path(), LifecycleEvent::new(Kind::Stop, Host::Claude)).unwrap();
+    let journal: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(d.path().join(".phronesis/journey/events.jsonl"))
+            .unwrap()
+            .lines()
+            .next_back()
+            .unwrap(),
+    )
+    .unwrap();
+    let log: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(d.path().join(".phronesis/log.jsonl"))
+            .unwrap()
+            .lines()
+            .next_back()
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(!journal["sid"].is_null());
+    assert!(!journal["seq"].is_null());
+    assert_eq!(journal["sid"], log["sid"]);
+    assert_eq!(journal["seq"], log["seq"]);
+}

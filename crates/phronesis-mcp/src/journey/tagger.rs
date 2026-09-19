@@ -36,6 +36,20 @@ use crate::rules_file::{self, SourceRule};
 /// `"tag"` would land in the wrong places.
 const TAG_ACTION: &str = "tag";
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptTextSetting {
+    #[default]
+    Full,
+    None,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LifecycleConfig {
+    #[serde(default)]
+    pub prompt_text: PromptTextSetting,
+}
+
 /// On-disk shape of `.phronesis/journey.json`. Owns the project's
 /// risk-surface vocabulary (taggers) and the named-entity surface
 /// (modules). Both are project-defined; the engine itself stays
@@ -48,6 +62,8 @@ pub struct TaggerConfig {
     pub taggers: Vec<TaggerEntry>,
     #[serde(default)]
     pub modules: Vec<ModuleEntry>,
+    #[serde(default)]
+    pub lifecycle: LifecycleConfig,
     /// Compiled rules, lazily populated by `fire`. `OnceLock` so the
     /// first `fire` call seeds it and the rest hit cache. Skipped on
     /// serialize/deserialize — it's pure runtime state.
@@ -65,6 +81,7 @@ impl Default for TaggerConfig {
             version: 1,
             taggers: Vec::new(),
             modules: Vec::new(),
+            lifecycle: LifecycleConfig::default(),
             compiled: OnceLock::new(),
         }
     }
@@ -79,6 +96,7 @@ impl Clone for TaggerConfig {
             version: self.version,
             taggers: self.taggers.clone(),
             modules: self.modules.clone(),
+            lifecycle: self.lifecycle.clone(),
             compiled: OnceLock::new(),
         }
     }
