@@ -769,6 +769,17 @@ pub(crate) fn state_items(root: &Path) -> Vec<ContextItem> {
     if let Some(line) = graph_freshness_line(root) {
         items.push(ContextItem::new(ItemKind::State, "state:graph", line));
     }
+    // The kalpa is a cross-session theme, so a stale one is invisible unless
+    // something says it out loud every session (spec §"Forgotten kalpas are
+    // made visible, not expired"). `header_line` appends its own
+    // "(stale? run phr-mcp kalpa end)" past 30 days.
+    if let Some(line) = crate::lifecycle::kalpa_cli::header_line(root, unix_now()) {
+        items.push(ContextItem::new(
+            ItemKind::State,
+            "state:kalpa",
+            format!("- {line}"),
+        ));
+    }
     items
 }
 
@@ -1289,5 +1300,50 @@ mod tests {
                 "selected `{id}` was never listed as a candidate"
             );
         }
+    }
+
+    #[test]
+    fn state_items_include_the_open_kalpa() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".phronesis/journey")).unwrap();
+        std::fs::write(
+            d.path().join(".phronesis/journey/kalpa"),
+            serde_json::json!({"name": "lifecycle-events", "started_ts": 1}).to_string(),
+        )
+        .unwrap();
+        let items = state_items(d.path());
+        let kalpa = items
+            .iter()
+            .find(|i| i.stable_id == "state:kalpa")
+            .expect("a state:kalpa item");
+        assert!(
+            kalpa.body.contains("kalpa: lifecycle-events"),
+            "{}",
+            kalpa.body
+        );
+    }
+
+    #[test]
+    fn state_items_omit_the_kalpa_line_when_none_is_open() {
+        let d = tempfile::tempdir().unwrap();
+        assert!(
+            !state_items(d.path())
+                .iter()
+                .any(|i| i.stable_id == "state:kalpa"),
+            "no kalpa file means no line at all"
+        );
+    }
+
+    #[test]
+    fn legacy_session_context_prints_the_open_kalpa() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join(".phronesis/journey")).unwrap();
+        std::fs::write(
+            d.path().join(".phronesis/journey/kalpa"),
+            serde_json::json!({"name": "demo", "started_ts": 1}).to_string(),
+        )
+        .unwrap();
+        let out = crate::context::run_session_context(d.path(), crate::context::DEFAULT_MAX_BYTES);
+        assert!(out.contains("kalpa: demo"), "{out}");
     }
 }
