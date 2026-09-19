@@ -227,7 +227,7 @@ git commit -m "feat(journey): JournalRecord v2 lifecycle fields"
 
 **Interfaces:**
 - Consumes: `JournalRecord::is_lifecycle()` from Task 1.
-- Produces: no public signature change. `WindowContext` (private) gains `tool_records: &'a [JournalRecord]`. `journey::ConfigError` gains a `ReservedTag { path, tag }` variant.
+- Produces: `Window::parse` additionally accepts an `Ns` seconds token (`60s`); the bare `s` token remains the session window (landed with this task; documented in SPEC-journey-facts.md and the loop guide). Otherwise no public signature change. `WindowContext` (private) gains `tool_records: &'a [JournalRecord]`. `journey::ConfigError` gains a `ReservedTag { path, tag }` variant.
 
 - [ ] **Step 1: Write the failing tests**
 
