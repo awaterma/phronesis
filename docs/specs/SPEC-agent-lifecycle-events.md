@@ -85,7 +85,8 @@ Today (`v0.34.0`):
 - Crush and other hosts without a hook protocol.
 - Fixing the Codex `PreCompact`/`PostCompact` response bug (§Adjacent
   findings). It is real and separate.
-- Derived ratios other than one: `interventions / commit` is printed because
+- Derived ratios other than two (`interventions / commit` here and
+  `interventions / work item` in §Work items): `interventions / commit` is printed because
   it is the autonomy signal the feature exists for, and it is printed beside
   the retention boundary so its window is visible. No other ratio ships; raw
   counts do.
@@ -111,6 +112,7 @@ action-log entry.
 | `interrupt` | the human aborts a running turn | Codex `Interrupt` (direct); Claude and Gemini inferred at the next `prompt` (§Classification) |
 | `stop` | the main agent finishes a turn | Claude `Stop`; Codex `Stop`; Gemini `AfterAgent` |
 | `commit` | `HEAD` moved during a shell tool call | derived in `post-check` (§Outcomes and kalpas) |
+| `unit_start` / `unit_end` | a human names a work item, optionally with its spec | `phr-mcp unit start` / `unit end` (§Work items and governed throughput) |
 
 A `prompt` record carries a `mode`:
 
@@ -156,6 +158,8 @@ lifecycle:stop
 lifecycle:commit
 lifecycle:kalpa_start
 lifecycle:kalpa_end
+lifecycle:unit_start
+lifecycle:unit_end
 kalpa:<name>                        (on every lifecycle record while a kalpa is open)
 ```
 
@@ -873,6 +877,87 @@ Rule selectors added: `lifecycle:commit`, `lifecycle:kalpa_start`,
 `lifecycle:kalpa_end`, and `kalpa:<name>`. A kalpa window (`k`) for
 `journey_*` is deliberately not added in v1.
 
+### Work items and governed throughput
+
+The kalpa report answers "did this theme produce anything". The work-item
+view answers the question underneath it: for one piece of work, which spec
+was it built to, which rules fired, what evidence was recorded, and where did
+a human step in. With that, an agent can run freely inside a work item while
+the governance stays at the work-item boundary, and "software factory"
+becomes a measurable claim about governed throughput rather than a metaphor.
+
+**The work item is the existing work unit.** `outcomes::subject` already
+mints an implicit unit id (`unit-<nanos>`) on demand and settles it on a
+build/test cycle; journal records, outcome signals, and every lifecycle record
+in this spec already carry it as `subject`. This section adds three things.
+
+1. **Explicit units with a spec pointer.** `phr-mcp unit start [<id>] [--spec
+   <path>]` sets the open subject (a caller-chosen id or a fresh mint) and
+   records a `unit_start` lifecycle event with `extra.spec` (repo-relative;
+   the file must exist) and `extra.unit_id`. `phr-mcp unit end` records
+   `unit_end` and clears the open subject. Starting a unit while one is open
+   ends the open one first. Implicit units keep working exactly as today and
+   get no `unit_start` record; the report says which units were implicit.
+   `extra.implicit: true` is stamped on `unit_end` for a unit that was never
+   started explicitly, when the report has to synthesize one.
+2. **`subject` on rule evaluations.** `pre_check` / `post_check` action-log
+   entries (`hook/mod.rs::log_hook_event`) gain `subject` when a unit is open.
+   Today only journal records carry it, so "which rules fired for this work
+   item" is not answerable from the log. Consequences already list `rule_id`
+   and `action_type`.
+3. **`phr-mcp unit show [<id>]`** joins the journal and the action log on
+   `subject` and prints, oldest first:
+
+   ```
+   unit: unit-1789095489589855000   explicit   spec: docs/specs/SPEC-agent-lifecycle-events.md
+   window: 2026-09-18 14:02 → 16:40   kalpa: lifecycle-events
+   rules evaluated  41   fired 6   blocked 1   warned 5
+     block-await-on-sync-execute-all-agenda-items  1   warn-piped-verification-masks-exit-status  3   …
+   evidence         compile pass   tests pass (12/12)   band: high
+   interventions     2   mid_turn 1   correction 1
+     16:12  correction  "no, keep the journal free of text …"
+   commits           1   0f3c9a1e  band high
+   ```
+
+   The intervention lines print the scrubbed prompt text from the action log,
+   subject to the `prompt_text` switch. `--json` emits the same as one object.
+
+**Definitions, stated so the numbers mean one thing.**
+
+- A work item is **completed** when at least one `commit` record carries its
+  `subject`.
+- It is **governed** when it is completed and, in addition, at least one
+  `pre_check` or `post_check` entry carries its `subject` (a rule was actually
+  evaluated against its edits) and the confidence band at its last commit is
+  not `low`.
+- **Governed throughput** of a kalpa is the count of governed work items whose
+  records fall inside the retention window. It is printed with the boundary,
+  like every other kalpa number.
+- **Interventions per work item** is interventions carrying a `subject` in the
+  kalpa divided by completed work items. This is the second and last ratio
+  the spec ships; §Non-goals is amended accordingly.
+
+`kalpa show` gains three lines:
+
+```
+work items      9   explicit 6   implicit 3
+governed        7   (commit + rules evaluated + band ≥ medium)
+interventions / work item   1.89
+```
+
+**Limits.** Implicit units split on every build/test cycle, so a session that
+never runs `unit start` will report many small units and a flattering
+interventions-per-item number; the `explicit` / `implicit` split makes that
+visible rather than hidden. A spec pointer is a path, not a hash; if the spec
+changes after the unit starts, the report shows the path only. Rules that
+fired inside a sub-agent carry the parent's `subject` because the subject file
+is per project, which is the desired accounting (the sub-agent worked on the
+same item) but is stated here so nobody expects per-agent attribution.
+
+**Storage.** No new file. `unit_start` / `unit_end` are lifecycle records with
+`subject` set. `extra` gains `spec`, `unit_id`, and `implicit` to its closed
+vocabulary. Rollout node 6 owns this section (§Rollout).
+
 ## CLI and MCP surface
 
 - `phr-mcp journey` renders lifecycle records inline with a `⟂` marker and the
@@ -1021,7 +1106,13 @@ Dependency graph, not a chain:
         ├── 2 Claude adapter (claude-hook, pre/post inflight + commit detection, init writer)   ─┐
         ├── 3 Codex adapter (payload fields, Interrupt/SessionEnd, renderer, init writer)        ├── 5 stats, metrics, journey/kalpa CLI rendering
         └── 4 Gemini registrations                                                               ─┘
+                                                                                                  │
+                                                        6 work items: unit start/end/show, subject on rule evaluations, governed throughput in kalpa show
 ```
+
+- 6 runs after 5 and touches `hook/mod.rs::log_hook_event` (Plan 1's file,
+  already merged by then), `main.rs` (a `Unit` subcommand), a new
+  `lifecycle/unit_cli.rs`, and the report code 5 introduced.
 
 - 0 needs a live host, not a code change, and it gates 2 and 4:
   `tests/hook_integration.rs` and `tests/payload_contract.rs` cannot be written
