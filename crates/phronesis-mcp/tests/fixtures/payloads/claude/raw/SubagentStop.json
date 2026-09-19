@@ -1,0 +1,18 @@
+{
+  "session_id": "claude-s-001",
+  "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
+  "cwd": "/home/dev/project",
+  "prompt_id": "claude-p-002",
+  "permission_mode": "auto",
+  "agent_id": "claude-a-001",
+  "agent_type": "Explore",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "SubagentStop",
+  "stop_hook_active": false,
+  "agent_transcript_path": "/home/dev/.claude/projects/p/claude-s-001/subagents/agent-claude-a-001.jsonl",
+  "last_assistant_message": "<redacted:1507 bytes>",
+  "background_tasks": [],
+  "session_crons": []
+}

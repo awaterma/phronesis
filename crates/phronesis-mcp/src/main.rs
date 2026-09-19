@@ -427,6 +427,19 @@ enum Command {
         #[arg(default_value = "PreToolUse")]
         event: String,
     },
+    /// Claude Code lifecycle hook adapter — reads a Claude Code hook JSON
+    /// payload from stdin and writes one JSON object to stdout.
+    ///
+    /// Handles `UserPromptSubmit`, `SessionStart`, `SessionEnd`,
+    /// `SubagentStart`, `SubagentStop`, and `Stop`, plus Gemini CLI's
+    /// `BeforeAgent` / `AfterAgent`. `PreToolUse` / `PostToolUse` delegate to
+    /// `pre-check` / `post-check` unchanged.
+    ClaudeHook {
+        /// The hook event name. The event from stdin takes precedence when
+        /// available.
+        #[arg(default_value = "UserPromptSubmit")]
+        event: String,
+    },
     /// Name the theme (kalpa) the current run of sessions belongs to.
     Kalpa {
         #[command(subcommand)]
@@ -654,6 +667,7 @@ async fn main() -> anyhow::Result<()> {
             project_root,
         } => scrub_payload::run(&path, write, home, project_root),
         Command::CodexHook { event } => phronesis_mcp::codex_hook::run(&event).await,
+        Command::ClaudeHook { event } => phronesis_mcp::claude_hook::run(&event).await,
         Command::Kalpa { cmd } => {
             let root = phronesis_mcp::security::project_root();
             let cmd =

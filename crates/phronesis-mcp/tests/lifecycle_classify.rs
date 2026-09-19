@@ -384,3 +384,31 @@ fn detect_interrupt_is_reusable_by_session_end() {
         "it drops the entries too"
     );
 }
+
+/// The marker branch against the transcript line shape Claude Code writes.
+/// The committed tail is SYNTHETIC (see `fixtures/transcripts/claude/README.md`):
+/// hand-written to the documented shape with placeholder ids and redacted
+/// prose. A real, scrubbed capture may replace it later.
+#[test]
+fn the_committed_transcript_tail_is_recognized_as_an_interrupt() {
+    let tail = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/transcripts/claude/interrupted-tail.jsonl");
+    let raw = std::fs::read_to_string(&tail).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e} — see fixtures/transcripts/claude/README.md",
+            tail.display()
+        )
+    });
+    assert!(
+        raw.contains("[Request interrupted by user"),
+        "the committed tail has no marker in it"
+    );
+    let d = root();
+    // The turn opened before the marker's timestamp, so the marker is after it.
+    open_turn(d.path(), None, 0);
+    let mut c = ctx(Host::Claude, u64::MAX / 2);
+    c.transcript_path = Some(&tail);
+    let out = classify_prompt(d.path(), &c);
+    assert_eq!(out.mode, Mode::Correction);
+    assert_eq!(out.interrupt.map(|i| i.as_str()), Some("transcript"));
+}

@@ -1,0 +1,8 @@
+{
+  "session_id": "claude-s-001",
+  "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
+  "cwd": "/home/dev/project",
+  "prompt_id": "claude-p-001",
+  "hook_event_name": "SessionEnd",
+  "reason": "other"
+}

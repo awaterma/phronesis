@@ -2,6 +2,7 @@ pub mod action_log;
 pub mod audit;
 pub mod capsule;
 pub mod catalogue;
+pub mod claude_hook;
 pub mod claude_md_drift;
 pub mod clock_facts;
 pub mod codex_hook;

@@ -27,6 +27,12 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         }
     };
 
+    let root = security::project_root();
+    let inflight_key = super::lifecycle_wiring::pre_push_inflight(&root, &payload);
+    if payload.tool_name.as_deref() == Some("invoke_agent") {
+        super::lifecycle_wiring::gemini_subagent_start(&root, &payload);
+    }
+
     let tool_name = match &payload.tool_name {
         Some(name)
             if name == "Edit"
@@ -35,7 +41,8 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                 || name == "Bash"
                 || name == "replace"
                 || name == "write_file"
-                || name == "run_shell_command" =>
+                || name == "run_shell_command"
+                || name == "invoke_agent" =>
         {
             name.clone()
         }
@@ -48,7 +55,11 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             Ok(None) => super::exit_ok(),
             Err(e) => {
                 eprintln!("phronesis: BLOCKED — {}", e);
-                process::exit(2);
+                blocked_exit(
+                    &root,
+                    &inflight_key,
+                    payload.tool_name.as_deref().unwrap_or_default(),
+                );
             }
         };
         let rules = loaded.rules;
@@ -73,17 +84,29 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         for rule in rules {
             if let Err(e) = net.add_rule(rule).await {
                 eprintln!("phronesis: BLOCKED — failed to load rule: {}", e);
-                process::exit(2);
+                blocked_exit(
+                    &root,
+                    &inflight_key,
+                    payload.tool_name.as_deref().unwrap_or_default(),
+                );
             }
         }
         if let Err(e) = assert_common_facts(&net, &file_path, &tool_name, "pre").await {
             eprintln!("phronesis: BLOCKED — failed to assert facts: {}", e);
-            process::exit(2);
+            blocked_exit(
+                &root,
+                &inflight_key,
+                payload.tool_name.as_deref().unwrap_or_default(),
+            );
         }
         for fact in override_facts {
             if let Err(e) = net.assert_fact(fact).await {
                 eprintln!("phronesis: BLOCKED — failed to assert rule override provenance: {e}");
-                process::exit(2);
+                blocked_exit(
+                    &root,
+                    &inflight_key,
+                    payload.tool_name.as_deref().unwrap_or_default(),
+                );
             }
         }
         if let Err(e) = super::assert_journey_facts_into(
@@ -94,7 +117,11 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         .await
         {
             eprintln!("phronesis: BLOCKED — {}", e);
-            process::exit(2);
+            blocked_exit(
+                &root,
+                &inflight_key,
+                payload.tool_name.as_deref().unwrap_or_default(),
+            );
         }
         super::assert_pack_marker_facts(&net, &security::project_root()).await;
         super::assert_confidence_signals(&net).await;
@@ -153,7 +180,11 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         .await
         .is_err()
     {
-        process::exit(2);
+        blocked_exit(
+            &root,
+            &inflight_key,
+            payload.tool_name.as_deref().unwrap_or_default(),
+        );
     }
 
     let provider_event = super::provider_event(&payload, &tool_name, &file_path, "pre");
@@ -165,18 +196,30 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     .await
     {
         eprintln!("phronesis: BLOCKED — {error}");
-        process::exit(2);
+        blocked_exit(
+            &root,
+            &inflight_key,
+            payload.tool_name.as_deref().unwrap_or_default(),
+        );
     }
 
     if let Err(e) = network.update_agenda().await {
         eprintln!("phronesis: BLOCKED — agenda update failed: {}", e);
-        process::exit(2);
+        blocked_exit(
+            &root,
+            &inflight_key,
+            payload.tool_name.as_deref().unwrap_or_default(),
+        );
     }
     let consequences = match network.fire_all_consequences() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("phronesis: BLOCKED — rule execution failed: {}", e);
-            process::exit(2);
+            blocked_exit(
+                &root,
+                &inflight_key,
+                payload.tool_name.as_deref().unwrap_or_default(),
+            );
         }
     };
     crate::capsule::capture_for_hook(&security::project_root(), &consequences);
@@ -211,7 +254,11 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             command_exit: None,
             consequences: &logged,
         });
-        process::exit(2);
+        blocked_exit(
+            &root,
+            &inflight_key,
+            payload.tool_name.as_deref().unwrap_or_default(),
+        );
     }
 
     if !warnings.is_empty() {
@@ -238,6 +285,15 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         consequences: &logged,
     });
     super::exit_ok();
+}
+
+/// Exit 2 after undoing what this pre-check pushed. A block means the tool never
+/// ran, so the `inflight` entry must not survive to make the next prompt look
+/// like a correction, and an `invoke_agent`'s `agents` entry must not survive to
+/// be popped LIFO by the next real sub-agent stop.
+fn blocked_exit(root: &std::path::Path, key: &str, tool_name: &str) -> ! {
+    super::lifecycle_wiring::undo_blocked_pre(root, key, tool_name);
+    process::exit(2)
 }
 
 /// Assert all content-derived facts for the pre-check phase: new_content,
