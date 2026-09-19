@@ -59,6 +59,49 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 - Structural Rhai registration extraction and conservative forwarding-closure
   backing detection. Graph format 21 invalidates older extraction caches.
 
+- `phr-mcp stats` prints a lifecycle section — sessions, prompts by mode,
+  interrupts, sub-agents with median duration, and commits with their
+  confidence band — plus the active kalpa and the retention boundary of the
+  action log. `--kalpa <name>` restricts the section to one kalpa.
+- `phr-mcp kalpa show [name]` reports the same counts for a kalpa, open or
+  closed, with the date it started and the retention boundary.
+- `phr-mcp journey` renders lifecycle records inline with a `⟂` marker and the
+  record's kind/mode in place of a path, and prints the active kalpa in its
+  header. `--lifecycle` shows only those records; `--corrections` lists the
+  prompts that followed an interrupt, oldest first, with their scrubbed text.
+- Prometheus: `phronesis_lifecycle_events_total{host,event,mode}` and
+  `phronesis_subagent_duration_seconds{host}` (13 exponential buckets, 1 s to
+  ~68 min). No kalpa label and no `agent_type` label — both are free text,
+  user-typed and model-supplied respectively.
+- The `get_journey` MCP tool takes an optional `include_lifecycle` boolean
+  (default `false`). Left off, it returns exactly the bare array of fact rows
+  it always has. Set to `true`, it returns
+  `{"facts": [...], "lifecycle": [...]}` so lifecycle records travel with the
+  facts they explain. Prompt text is never included either way, and
+  `phr-mcp journey --json` is unchanged.
+
+### Upgrading
+
+- **Upgrading the binary registers nothing.** Run `phr-mcp init` in each project
+  to get the new hook registrations. Codex users then re-trust hooks via
+  `/hooks`; Gemini users must trust the folder, or project hooks are skipped.
+  Until you run `init`, `session-context` and `interaction-context` keep behaving
+  exactly as they do today and no lifecycle event is recorded.
+- **`s`-window journey rules now scope to a session.** The `.phronesis/journey/session`
+  file used to be create-on-miss and never overwritten, so in practice a
+  project's session id — and therefore every `s` window — spanned the file's
+  lifetime. Each session-begin `SessionStart` now mints a new id, which is what
+  the window name always claimed. This is a permanent semantic change, not a
+  one-time boundary: review your `s`-window rules, which now see shorter windows.
+  Rules using `Nc` or time windows are unaffected.
+- **Claude users with outcomes enabled get the confidence gate on turn stop for
+  the first time.** It is disabled the same way it is disabled for Codex today.
+- **The hooks and the MCP server upgrade in lockstep.** A project that has
+  written a `lifecycle:*` rule requires ≥ 0.35: an older binary fails closed with
+  `UndefinedSelector` on the first such rule, taking every journey fact with it,
+  and reads lifecycle records as odd `__lifecycle` tool records that shift
+  positional windows.
+
 ## [0.33.0] - 2026-09-11
 
 ### Added
