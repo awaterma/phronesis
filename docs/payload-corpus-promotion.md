@@ -40,6 +40,15 @@ PHRONESIS_CAPTURE_DIR=/safe/private/path phr-mcp post-check
 Use a private path outside any repository. Raw captures may contain secrets,
 usernames, and absolute paths — never commit them.
 
+> **From 0.35.0 the capture is a redacted re-serialization, not a verbatim
+> tee.** `capture_raw_payload` parses stdin, replaces the value of any key named
+> `prompt`, `prompt_response`, or `last_assistant_message` — at any depth — with
+> `"<redacted:N bytes>"` where `N` is the original byte length, and serializes
+> the result. Key order therefore follows `serde_json`'s object ordering rather
+> than the host's, and stdin that is not valid JSON is not captured at all (one
+> stderr line names the event). Everything else is captured unchanged, and
+> `phr-mcp scrub-payload` still runs afterwards as the second stage.
+
 ### 2. Scrub
 
 ```bash

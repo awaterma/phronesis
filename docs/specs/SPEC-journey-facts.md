@@ -167,6 +167,14 @@ only (never full content — privacy and size):
 {"v":1,"ts":1718700000,"sid":"s-2026-06-18-a1b2","seq":4137,"tool":"Edit","path":"src/auth/login.rs","ext":"rs","module":"auth","tags":["auth"],"subject":"auth-fix-3"}
 ```
 
+> **Amendment (lifecycle events, 2026-09-18).** From record schema v2, one
+> line per executed tool call **or lifecycle event**. Lifecycle records are
+> written by the event's own hook, carry `tool: "__lifecycle"` and
+> `kind: <event>`, and are excluded from every record-position and
+> record-count computation by the tool projection described in
+> `SPEC-agent-lifecycle-events.md` §"The journal record, v2". They never carry
+> content beyond tags and ids.
+
 | Field | Meaning |
 |---|---|
 | `v` | record schema version |
