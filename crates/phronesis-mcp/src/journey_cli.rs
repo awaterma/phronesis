@@ -143,6 +143,78 @@ pub fn render_lifecycle_json(rows: &[LifecycleRow]) -> Result<String, JourneyCli
     Ok(serde_json::to_string_pretty(rows)?)
 }
 
+/// One `prompt` entry with `mode: "correction"` from the action log — the only
+/// surface that prints prompt text, and only because the text was scrubbed by
+/// `lifecycle::scrub::scrub_prompt` at write time.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CorrectionRow {
+    pub ts: u64,
+    pub sid: String,
+    /// `None` under `lifecycle.prompt_text: "none"`. The row still shows *when*
+    /// the correction happened, which is the part the switch does not hide.
+    pub prompt: Option<String>,
+}
+
+/// Every recorded correction, oldest first, across `.phronesis/log.jsonl` and
+/// its rotated predecessor. Fail-open: an unreadable log yields none.
+pub fn corrections(project_root: &Path) -> Vec<CorrectionRow> {
+    use crate::action_log::{self, ReadOpts};
+    let opts = ReadOpts {
+        kind: Some("lifecycle".to_string()),
+        event: Some("prompt".to_string()),
+        ..ReadOpts::default()
+    };
+    // `limit: None` reads `.phronesis/log.jsonl` AND its rotated predecessor,
+    // oldest first. "The list the feature exists to surface must not silently
+    // lose its oldest half to rotation" (spec §"CLI and MCP surface").
+    action_log::read_recent(&action_log::default_path(project_root), &opts)
+        .unwrap_or_default()
+        .iter()
+        .filter(|e| e.data.get("mode").and_then(|v| v.as_str()) == Some("correction"))
+        .map(|e| CorrectionRow {
+            ts: e.ts,
+            sid: e
+                .data
+                .get("sid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-")
+                .to_string(),
+            // The ONE accessor. It consults the current `prompt_text` value, so
+            // flipping the switch to `"none"` hides text already written under
+            // `"full"` as well as text not yet written.
+            prompt: crate::lifecycle::record::correction_text(project_root, e),
+        })
+        .collect()
+}
+
+/// One block per correction: a `ts  sid` line, then the prompt, indented.
+pub fn render_corrections(rows: &[CorrectionRow]) -> String {
+    if rows.is_empty() {
+        return "(no corrections recorded)\n".to_string();
+    }
+    let mut out = String::new();
+    for r in rows {
+        let when = chrono::DateTime::from_timestamp(r.ts as i64, 0)
+            .map(|dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| r.ts.to_string());
+        out.push_str(&format!("{when}  {}\n", r.sid));
+        match &r.prompt {
+            Some(text) => {
+                for line in text.lines() {
+                    out.push_str(&format!("    {line}\n"));
+                }
+            }
+            None => out.push_str("    (prompt text disabled)\n"),
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Compute the rows the CLI / MCP surface render. Async because the engine
 /// asserts are async.
 pub async fn compute(

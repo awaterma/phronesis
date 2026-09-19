@@ -292,3 +292,123 @@ fn journey_lifecycle_flag_shows_only_lifecycle_records() {
     assert_eq!(rows[0]["mode"], "fresh");
     assert_eq!(rows[3]["kind"], "subagent_stop");
 }
+
+#[test]
+fn journey_corrections_lists_scrubbed_prompts_oldest_first() {
+    let dir = tempfile::tempdir().unwrap();
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 1, "auth");
+    let lines = [
+        serde_json::json!({"ts":1_700_000_000u64,"kind":"lifecycle","event":"prompt","host":"claude","sid":"s-1","seq":1,"mode":"fresh","prompt":"start here","prompt_bytes":10}),
+        serde_json::json!({"ts":1_700_000_100u64,"kind":"lifecycle","event":"interrupt","host":"claude","sid":"s-1","seq":2,"inferred_from":"inflight"}),
+        serde_json::json!({"ts":1_700_000_110u64,"kind":"lifecycle","event":"prompt","host":"claude","sid":"s-1","seq":3,"mode":"correction","prompt":"no, use the repo root","prompt_bytes":21}),
+        serde_json::json!({"ts":1_700_000_900u64,"kind":"lifecycle","event":"prompt","host":"claude","sid":"s-2","seq":4,"mode":"correction","prompt":"second correction","prompt_bytes":17}),
+        serde_json::json!({"ts":1_700_000_950u64,"kind":"hook","event":"pre_check","tool":"Edit","exit":0}),
+    ];
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    std::fs::write(dir.path().join(".phronesis/log.jsonl"), body).unwrap();
+
+    let (code, stdout, stderr) = run(&["journey", "--corrections"], dir.path());
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let first = stdout
+        .find("no, use the repo root")
+        .expect("first correction");
+    let second = stdout.find("second correction").expect("second correction");
+    assert!(first < second, "oldest first: {stdout}");
+    assert!(
+        stdout.contains("s-1") && stdout.contains("s-2"),
+        "sids printed: {stdout}"
+    );
+    assert!(
+        !stdout.contains("start here"),
+        "fresh prompts are not corrections: {stdout}"
+    );
+    assert!(
+        !stdout.contains("pre_check"),
+        "non-lifecycle entries ignored: {stdout}"
+    );
+}
+
+/// The rotated predecessor is read: a kalpa long enough to rotate the log must
+/// not lose the oldest half of the list the feature exists to produce.
+#[test]
+fn journey_corrections_include_the_rotated_predecessor() {
+    let dir = tempfile::tempdir().unwrap();
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 1, "auth");
+    let correction = |ts: u64, seq: u64, text: &str| {
+        serde_json::json!({"ts":ts,"kind":"lifecycle","event":"prompt","host":"claude",
+                           "sid":"s-1","seq":seq,"mode":"correction","prompt":text,
+                           "prompt_bytes":text.len()})
+        .to_string()
+    };
+    std::fs::write(
+        dir.path().join(".phronesis/log.jsonl.1"),
+        format!(
+            "{}\n",
+            correction(1_700_000_000, 1, "the oldest correction")
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".phronesis/log.jsonl"),
+        format!(
+            "{}\n",
+            correction(1_700_000_900, 2, "the newest correction")
+        ),
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run(&["journey", "--corrections"], dir.path());
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let old = stdout
+        .find("the oldest correction")
+        .expect("the rotated file is read");
+    let new = stdout
+        .find("the newest correction")
+        .expect("the current file is read");
+    assert!(old < new, "oldest first across both files: {stdout}");
+}
+
+/// `prompt_text: "none"` is enforced at READ time: text already written under
+/// `"full"` is hidden too, and the row still shows when the correction happened.
+#[test]
+fn journey_corrections_honor_prompt_text_none_at_read_time() {
+    let dir = tempfile::tempdir().unwrap();
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 1, "auth");
+    std::fs::write(
+        dir.path().join(".phronesis/log.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({"ts":1_700_000_110u64,"kind":"lifecycle","event":"prompt",
+                               "host":"claude","sid":"s-1","seq":3,"mode":"correction",
+                               "prompt":"already-on-disk text","prompt_bytes":20})
+        ),
+    )
+    .unwrap();
+    // Written under "full"; the switch flips afterwards.
+    std::fs::write(
+        dir.path().join(".phronesis/journey.json"),
+        r#"{"version":1,"taggers":[],"modules":[],"lifecycle":{"prompt_text":"none"}}"#,
+    )
+    .unwrap();
+
+    let (code, stdout, _) = run(&["journey", "--corrections"], dir.path());
+    assert_eq!(code, 0);
+    assert!(!stdout.contains("already-on-disk text"), "{stdout}");
+    assert!(stdout.contains("(prompt text disabled)"), "{stdout}");
+    assert!(
+        stdout.contains("s-1"),
+        "the row still shows when it happened: {stdout}"
+    );
+}
+
+#[test]
+fn journey_corrections_on_an_empty_log_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 1, "auth");
+    let (code, stdout, _) = run(&["journey", "--corrections"], dir.path());
+    assert_eq!(code, 0);
+    assert!(
+        stdout.contains("(no corrections recorded)"),
+        "stdout: {stdout}"
+    );
+}

@@ -142,6 +142,10 @@ enum Command {
         /// interrupts, turn stops, commits) instead of derived facts.
         #[arg(long)]
         lifecycle: bool,
+        /// List the prompts recorded as corrections (a prompt that followed an
+        /// interrupt), oldest first, with their scrubbed text.
+        #[arg(long)]
+        corrections: bool,
     },
     /// Audit the project tree against opted-in rules. Reports per-rule
     /// violation counts with the affected files and line numbers. Default
@@ -615,7 +619,8 @@ async fn main() -> anyhow::Result<()> {
             json,
             explain,
             lifecycle,
-        } => handle_journey(json, explain, lifecycle).await,
+            corrections,
+        } => handle_journey(json, explain, lifecycle, corrections).await,
         Command::Audit {
             rule,
             path,
@@ -987,9 +992,19 @@ async fn handle_journey(
     json: bool,
     explain: Option<String>,
     lifecycle: bool,
+    corrections: bool,
 ) -> anyhow::Result<()> {
     use phronesis_mcp::journey_cli;
     let root = phronesis_mcp::security::project_root();
+    if corrections {
+        let rows = journey_cli::corrections(&root);
+        if json {
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+        } else {
+            print!("{}", journey_cli::render_corrections(&rows));
+        }
+        return Ok(());
+    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
