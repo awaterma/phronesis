@@ -91,6 +91,9 @@ enum Command {
         /// Emit JSON instead of a table.
         #[arg(long)]
         json: bool,
+        /// Restrict the lifecycle section to one kalpa (see `phr-mcp kalpa`).
+        #[arg(long, value_name = "NAME")]
+        kalpa: Option<String>,
     },
     /// Report the confidence band (high/medium/low) and the grounded signals
     /// (compile / tests / known-bug) for the open work unit, or `--subject
@@ -595,7 +598,12 @@ async fn main() -> anyhow::Result<()> {
             max_rule_series,
             out,
         } => handle_metrics(listen, since, max_rule_series, out).await,
-        Command::Stats { since, rule, json } => handle_stats(since, rule, json),
+        Command::Stats {
+            since,
+            rule,
+            json,
+            kalpa,
+        } => handle_stats(since, rule, json, kalpa),
         Command::Confidence { subject, json } => handle_confidence(subject, json),
         Command::Signal { name, outcome } => handle_signal(&name, outcome == "pass"),
         Command::Toolchains { json } => handle_toolchains(json),
@@ -803,9 +811,17 @@ async fn handle_metrics(
     )
 }
 
-fn handle_stats(since: Option<String>, rule: Option<String>, json: bool) -> anyhow::Result<()> {
+fn handle_stats(
+    since: Option<String>,
+    rule: Option<String>,
+    json: bool,
+    kalpa: Option<String>,
+) -> anyhow::Result<()> {
     use phronesis_mcp::action_log::{self, ReadOpts};
-    use phronesis_mcp::stats::{StatsOpts, aggregate, parse_since, render_json, render_table};
+    use phronesis_mcp::stats::{
+        LifecycleOpts, StatsOpts, aggregate, aggregate_lifecycle, parse_since,
+        render_json_with_lifecycle, render_lifecycle, render_table, retention_line,
+    };
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -826,7 +842,8 @@ fn handle_stats(since: Option<String>, rule: Option<String>, json: bool) -> anyh
         },
     };
 
-    let path = action_log::default_path(&phronesis_mcp::security::project_root());
+    let root = phronesis_mcp::security::project_root();
+    let path = action_log::default_path(&root);
     let opts_log = ReadOpts {
         kind: Some("hook".to_string()),
         ..ReadOpts::default()
@@ -840,11 +857,34 @@ fn handle_stats(since: Option<String>, rule: Option<String>, json: bool) -> anyh
     };
     let values = aggregate(&entries, &values_opts);
 
+    let life_entries = action_log::read_recent(
+        &path,
+        &ReadOpts {
+            kind: Some("lifecycle".to_string()),
+            ..ReadOpts::default()
+        },
+    )
+    .unwrap_or_default();
+    let life = aggregate_lifecycle(
+        &life_entries,
+        &LifecycleOpts {
+            since_secs,
+            kalpa,
+            now_secs: now,
+        },
+    );
+
     if json {
-        println!("{}", render_json(&values));
-    } else {
-        print!("{}", render_table(&values));
+        println!("{}", render_json_with_lifecycle(&values, Some(&life)));
+        return Ok(());
     }
+    print!("{}", render_table(&values));
+    println!();
+    if let Some(header) = phronesis_mcp::lifecycle::kalpa_cli::header_line(&root, now) {
+        println!("{header}");
+    }
+    println!("lifecycle      {}", retention_line(life.oldest_entry_ts));
+    print!("{}", render_lifecycle(&life));
     Ok(())
 }
 
