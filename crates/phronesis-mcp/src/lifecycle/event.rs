@@ -15,6 +15,10 @@ pub enum Kind {
     Commit,
     KalpaStart,
     KalpaEnd,
+    /// A human named a work item: `phr-mcp unit start`.
+    UnitStart,
+    /// The work item closed: `phr-mcp unit end`, or the next `unit start`.
+    UnitEnd,
 }
 
 impl Kind {
@@ -28,6 +32,8 @@ impl Kind {
             Kind::Commit => "commit",
             Kind::KalpaStart => "kalpa_start",
             Kind::KalpaEnd => "kalpa_end",
+            Kind::UnitStart => "unit_start",
+            Kind::UnitEnd => "unit_end",
         }
     }
     pub fn tag(self) -> String {
@@ -83,7 +89,7 @@ pub enum PromptText {
 /// `last_assistant_message`, `prompt_response`, `transcript_path` and
 /// `agent_transcript_path` are read for decisions and dropped at the adapter
 /// boundary, and `tests/hook_integration.rs` asserts no log entry contains them.
-pub const EXTRA_KEYS: [&str; 9] = [
+pub const EXTRA_KEYS: [&str; 12] = [
     "inferred_from",
     "stop_hook_active",
     "matched_start",
@@ -95,6 +101,15 @@ pub const EXTRA_KEYS: [&str; 9] = [
     // Why commit detection was skipped for a shell call: "timeout" or
     // "no_exit_code" (spec §"Success signal: commit").
     "detection",
+    // Work items (spec §"Work items and governed throughput" / Storage). The
+    // spec pointer is a repo-relative path, not a hash: if the spec changes
+    // after the unit starts, the report shows the path only.
+    "spec",
+    // The work-unit id, duplicated out of `subject` so a log reader does not
+    // have to know that `subject` and the unit id are the same thing.
+    "unit_id",
+    // `true` on a `unit_end` for a unit that was never explicitly started.
+    "implicit",
 ];
 
 /// Lowercase, then keep only if the result matches `[a-z0-9][a-z0-9_.:-]{0,63}` —
@@ -466,5 +481,87 @@ mod tests {
         let v = serde_json::to_value(e.to_log_entry(&s, PromptText::Full)).unwrap();
         assert_eq!(v["duration_secs"], 12);
         assert_eq!(v["matched_start"], true);
+    }
+
+    /// The two selectors spec §"Event model" lists for work items. They are in the
+    /// closed set `validate_selectors` exempts, so a rule may scope to them.
+    #[test]
+    fn unit_kinds_have_their_spec_names_and_tags() {
+        assert_eq!(Kind::UnitStart.as_str(), "unit_start");
+        assert_eq!(Kind::UnitEnd.as_str(), "unit_end");
+        assert_eq!(Kind::UnitStart.tag(), "lifecycle:unit_start");
+        assert_eq!(Kind::UnitEnd.tag(), "lifecycle:unit_end");
+        let e = LifecycleEvent::new(Kind::UnitStart, Host::Cli);
+        assert_eq!(
+            e.tags(Some("demo")),
+            vec!["lifecycle:unit_start", "kalpa:demo"]
+        );
+        // A unit boundary is not a prompt, so it can never be an intervention.
+        assert!(!e.tags(None).iter().any(|t| t.contains("intervention")));
+    }
+
+    /// `extra` gains exactly three keys and no more (spec §"Work items / Storage").
+    #[test]
+    fn extra_vocabulary_gains_spec_unit_id_and_implicit() {
+        for k in ["spec", "unit_id", "implicit"] {
+            assert!(
+                EXTRA_KEYS.contains(&k),
+                "{k} must be in the closed vocabulary"
+            );
+        }
+        assert_eq!(EXTRA_KEYS.len(), 12, "three added, nothing else");
+        for forbidden in [
+            "prompt_response",
+            "last_assistant_message",
+            "transcript_path",
+            "spec_hash",
+        ] {
+            assert!(!EXTRA_KEYS.contains(&forbidden), "{forbidden}");
+        }
+    }
+
+    /// The `unit_start` projection: `unit_id` and `spec` flatten into the action
+    /// log, and `subject` is the same id, which is what the report joins on.
+    #[test]
+    fn unit_start_log_entry_carries_unit_id_spec_and_subject() {
+        let e = LifecycleEvent::new(Kind::UnitStart, Host::Cli)
+            .with_extra("unit_id", "unit-42")
+            .with_extra("spec", "docs/specs/SPEC-agent-lifecycle-events.md");
+        let s = Stamped {
+            ts: 7,
+            sid: "s-a".into(),
+            seq: 3,
+            kalpa: Some("k".into()),
+            subject: Some("unit-42".into()),
+        };
+        let v = serde_json::to_value(e.to_log_entry(&s, PromptText::Full)).unwrap();
+        assert_eq!(v["kind"], "lifecycle");
+        assert_eq!(v["event"], "unit_start");
+        assert_eq!(v["unit_id"], "unit-42");
+        assert_eq!(v["spec"], "docs/specs/SPEC-agent-lifecycle-events.md");
+        assert_eq!(v["subject"], "unit-42");
+        let rec = e.to_journal_record(&s);
+        assert_eq!(rec.kind.as_deref(), Some("unit_start"));
+        assert_eq!(rec.subject.as_deref(), Some("unit-42"));
+        assert_eq!(rec.tool, "__lifecycle");
+    }
+
+    /// `implicit` marks a unit that was never explicitly started — the flag that
+    /// keeps the `explicit` / `implicit` split in `kalpa show` honest.
+    #[test]
+    fn unit_end_can_be_marked_implicit() {
+        let e = LifecycleEvent::new(Kind::UnitEnd, Host::Cli)
+            .with_extra("unit_id", "unit-9")
+            .with_extra("implicit", true);
+        let s = Stamped {
+            ts: 1,
+            sid: "s".into(),
+            seq: 1,
+            kalpa: None,
+            subject: Some("unit-9".into()),
+        };
+        let v = serde_json::to_value(e.to_log_entry(&s, PromptText::Full)).unwrap();
+        assert_eq!(v["implicit"], true);
+        assert_eq!(v["event"], "unit_end");
     }
 }
