@@ -116,7 +116,7 @@ impl Scrubber {
         }
     }
 
-    fn scrub_str(&mut self, s: &str) -> String {
+    pub(crate) fn scrub_str(&mut self, s: &str) -> String {
         // 1. Project-root prefix → canonical fixture root.
         let out = s.replace(&self.project_root, "/home/dev/project");
         // 2. Any remaining $HOME-rooted path → indexed external placeholder.

@@ -425,3 +425,98 @@ fn benign_password_prose_passes() {
         "project content passes through"
     );
 }
+
+// ---------- lifecycle::scrub::scrub_prompt (Task 6) ----------
+
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+/// Serializes every test in this file that mutates `$HOME`.
+fn home_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Sets `$HOME` (or removes it when `value` is `None`) and restores the previous
+/// value on drop, including when the test panics.
+struct HomeGuard {
+    previous: Option<String>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl HomeGuard {
+    fn set(value: Option<&str>) -> Self {
+        let guard = Self {
+            previous: std::env::var("HOME").ok(),
+            _lock: home_lock(),
+        };
+        // SAFETY: edition 2024 requires `unsafe` for env mutation because it is
+        // not thread-safe; `home_lock` is what makes it safe here, and every
+        // other `$HOME` mutation in this file goes through this guard.
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+        guard
+    }
+}
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}
+
+#[test]
+fn scrub_prompt_removes_bare_session_ids_transcripts_and_home_paths() {
+    let fake_home = tempfile::tempdir().unwrap();
+    let home = fake_home.path().display().to_string();
+    let _guard = HomeGuard::set(Some(&home));
+    let root = tempfile::tempdir().unwrap();
+    let text = format!(
+        "resume session 0f3c9a1e-1234-4bcd-9ef0-abcdefabcdef please, transcript at {home}/.claude/projects/x/abc.jsonl and file {home}/secret/notes.txt"
+    );
+    let out = phronesis_mcp::lifecycle::scrub::scrub_prompt(root.path(), &text);
+    assert!(
+        !out.contains("0f3c9a1e-1234-4bcd-9ef0-abcdefabcdef"),
+        "{out}"
+    );
+    assert!(!out.contains("/.claude/projects/x/abc.jsonl"), "{out}");
+    assert!(!out.contains(&format!("{home}/secret")), "{out}");
+    assert!(out.contains("sess-00000000"), "{out}");
+    assert!(out.contains("resume session"), "{out}");
+}
+
+/// The three regexes are unconditional: a bare UUID with no `session` word
+/// beside it, a phronesis sid, and a relative transcript path all go.
+#[test]
+fn scrub_prompt_removes_ids_with_no_surrounding_context() {
+    let root = tempfile::tempdir().unwrap();
+    let out = phronesis_mcp::lifecycle::scrub::scrub_prompt(
+        root.path(),
+        "compare 0f3c9a1e-1234-4bcd-9ef0-abcdefabcdef with s-2026-09-18-3a9f1c, see .codex/sessions/x.jsonl",
+    );
+    assert!(!out.contains("0f3c9a1e"), "{out}");
+    assert!(!out.contains("s-2026-09-18-3a9f1c"), "{out}");
+    assert!(!out.contains(".codex/sessions/x.jsonl"), "{out}");
+    assert_eq!(out.matches("sess-00000000").count(), 2, "{out}");
+    assert!(out.contains("compare") && out.contains("with"), "{out}");
+}
+
+#[test]
+fn scrub_prompt_without_home_still_scrubs_project_root() {
+    let _guard = HomeGuard::set(None);
+    let root = tempfile::tempdir().unwrap();
+    let text = format!("edit {}/src/main.rs now", root.path().display());
+    let out = phronesis_mcp::lifecycle::scrub::scrub_prompt(root.path(), &text);
+    assert!(!out.contains(&root.path().display().to_string()), "{out}");
+    assert!(out.contains("src/main.rs"), "{out}");
+}
