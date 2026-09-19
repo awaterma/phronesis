@@ -316,6 +316,10 @@ mod tests {
             tool_name: Some(tool_name.to_string()),
             tool_input: Some(input),
             tool_output: None,
+            session_id: None,
+            tool_use_id: None,
+            hook_event_name: None,
+            agent_id: None,
         }
     }
 
@@ -467,6 +471,10 @@ mod tests {
             tool_name: Some("Bash".to_string()),
             tool_input: Some(serde_json::json!({ "command": "cargo build --workspace" })),
             tool_output: Some(output),
+            session_id: None,
+            tool_use_id: None,
+            hook_event_name: None,
+            agent_id: None,
         }
     }
 
