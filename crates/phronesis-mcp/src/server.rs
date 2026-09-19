@@ -1479,27 +1479,55 @@ impl EpistemeMcp {
         Self::ok_text(json)
     }
 
+    /// The `submit_suggestion` body, minus MCP plumbing: open the work item
+    /// through the one shared code path and return the response object.
+    ///
+    /// Takes `root` explicitly rather than calling `security::project_root`
+    /// so it is testable without an environment variable.
+    pub fn submit_suggestion_report(
+        root: &std::path::Path,
+        params: &SubmitSuggestionParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        // `start` sets the subject itself, ending any open unit first, and
+        // records exactly one `unit_start` (spec §"Where the name comes
+        // from": "so there is one code path").
+        let started = crate::lifecycle::unit_cli::start(
+            root,
+            crate::lifecycle::unit_cli::StartRequest {
+                id: Some(params.subject.clone()),
+                spec: params.spec.clone(),
+                bug_id: params.bug_id.clone(),
+            },
+        )?;
+        let report = crate::outcomes::report(root, Some(&started.unit_id));
+        let band = report.as_ref().map(|r| r.band.as_str()).unwrap_or("low");
+        let signals = report.map(|r| r.signals).unwrap_or_default();
+        Ok(serde_json::json!({
+            // `subject` is the id that was actually opened, which differs from
+            // the caller's when `bug_id` renamed it.
+            "subject": started.unit_id,
+            "unit_id": started.unit_id,
+            "summary": params.summary,
+            "spec": started.spec,
+            "band": band,
+            "signals": signals,
+        }))
+    }
+
     #[tool(
-        description = "Declare a confidence work unit ('subject') — e.g. a cross-language translation or a discrete suggestion — and return its current confidence report. Sets the open subject so subsequent build/test runs accrue grounded signals to it (the explicit-subject path; the implicit path mints a unit automatically). Returns JSON `{subject, summary, band, signals}`. Confidence is opt-in per project via `.phronesis/confidence.json`."
+        description = "Declare a confidence work unit ('subject') — e.g. a cross-language translation or a discrete suggestion — and return its current confidence report. Sets the open subject so subsequent build/test runs accrue grounded signals to it, and records a `unit_start` lifecycle event naming the work item. Optionally pass `spec` (a repo-relative path to the spec this work is built to; it must exist) or `bug_id` (an id from `.phronesis/bugs.json`, which names the unit `bug-<id>` and carries the bug's test name; an unknown id is an error). Returns JSON `{subject, unit_id, summary, spec, band, signals}`; `subject` is the id actually opened, which `bug_id` may rename. Confidence is opt-in per project via `.phronesis/confidence.json`."
     )]
     async fn submit_suggestion(
         &self,
         Parameters(params): Parameters<SubmitSuggestionParams>,
     ) -> Result<CallToolResult, McpError> {
         let root = security::project_root();
-        crate::outcomes::subject::set(&root, &params.subject)
-            .map_err(|e| Self::err(e.to_string()))?;
-        let report = crate::outcomes::report(&root, Some(&params.subject));
-        let band = report.as_ref().map(|r| r.band.as_str()).unwrap_or("low");
-        let signals = report.map(|r| r.signals).unwrap_or_default();
+        let out =
+            Self::submit_suggestion_report(&root, &params).map_err(|e| Self::err(e.to_string()))?;
+        let subject = out["subject"].as_str().unwrap_or_default().to_string();
+        let band = out["band"].as_str().unwrap_or("low").to_string();
         Self::log_event("submit_suggestion", |e| {
-            e.with("subject", params.subject.clone()).with("band", band)
-        });
-        let out = serde_json::json!({
-            "subject": params.subject,
-            "summary": params.summary,
-            "band": band,
-            "signals": signals,
+            e.with("subject", subject).with("band", band)
         });
         Self::ok_text(serde_json::to_string_pretty(&out).map_err(|e| Self::err(e.to_string()))?)
     }

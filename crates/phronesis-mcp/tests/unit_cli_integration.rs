@@ -324,3 +324,120 @@ fn unit_start_rejects_bug_together_with_a_positional_id() {
     );
     assert!(!d.path().join(".phronesis/outcomes/current").exists());
 }
+
+// --- submit_suggestion MCP tool (Task 2c) ---
+
+use phronesis_mcp::server::EpistemeMcp;
+use phronesis_mcp::server_params::SubmitSuggestionParams;
+
+fn suggestion(subject: &str, spec: Option<&str>, bug_id: Option<&str>) -> SubmitSuggestionParams {
+    SubmitSuggestionParams {
+        subject: subject.to_string(),
+        summary: Some("a suggestion".to_string()),
+        spec: spec.map(str::to_string),
+        bug_id: bug_id.map(str::to_string),
+    }
+}
+
+/// The plain path an agent already uses — declaring a subject — now also
+/// leaves the `unit_start` record the CLI leaves, so a work item named in the
+/// LLM window is indistinguishable from one named at a shell.
+#[test]
+fn submit_suggestion_records_unit_start_for_a_plain_subject() {
+    let d = tempfile::tempdir().unwrap();
+    write_spec(d.path(), "docs/specs/SPEC-thing.md");
+    let out = EpistemeMcp::submit_suggestion_report(
+        d.path(),
+        &suggestion("xlate-7", Some("docs/specs/SPEC-thing.md"), None),
+    )
+    .expect("report");
+    assert_eq!(out["subject"], "xlate-7");
+    assert_eq!(out["unit_id"], "xlate-7");
+    assert_eq!(out["spec"], "docs/specs/SPEC-thing.md");
+    assert!(
+        out.get("band").is_some(),
+        "the existing confidence fields survive: {out}"
+    );
+
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".phronesis/outcomes/current")).unwrap(),
+        "xlate-7"
+    );
+    let entries = lifecycle_entries(d.path());
+    assert_eq!(
+        entries.len(),
+        1,
+        "exactly one unit_start, not two: {entries:?}"
+    );
+    assert_eq!(entries[0]["event"], "unit_start");
+    assert_eq!(entries[0]["unit_id"], "xlate-7");
+    assert_eq!(entries[0]["subject"], "xlate-7");
+    assert_eq!(entries[0]["spec"], "docs/specs/SPEC-thing.md");
+}
+
+/// `bug_id` overrides the caller's subject with the registry name, and the
+/// response says so — the agent must report the id the reports will use.
+#[test]
+fn submit_suggestion_with_a_bug_id_names_the_unit_and_records_the_test() {
+    let d = tempfile::tempdir().unwrap();
+    write_bugs(
+        d.path(),
+        serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
+    );
+    let out = EpistemeMcp::submit_suggestion_report(
+        d.path(),
+        &suggestion("my-guess", None, Some("1042")),
+    )
+    .expect("report");
+    assert_eq!(out["unit_id"], "bug-1042");
+    assert_eq!(
+        out["subject"], "bug-1042",
+        "the response reports the real name"
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".phronesis/outcomes/current")).unwrap(),
+        "bug-1042"
+    );
+    let entries = lifecycle_entries(d.path());
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["unit_id"], "bug-1042");
+    assert_eq!(entries[0]["test"], "auth::rejects_expired");
+    assert_eq!(entries[0]["bug_id"], "1042");
+}
+
+/// An unknown id fails the call and leaves nothing behind — the same rule the
+/// CLI enforces, reached through the same function.
+#[test]
+fn submit_suggestion_with_an_unknown_bug_id_errors_and_sets_no_subject() {
+    let d = tempfile::tempdir().unwrap();
+    let err = EpistemeMcp::submit_suggestion_report(
+        d.path(),
+        &suggestion("my-guess", None, Some("9999")),
+    )
+    .expect_err("unknown bug id must fail");
+    assert!(
+        err.to_string()
+            .contains("unknown bug id `9999` (not in .phronesis/bugs.json)"),
+        "{err}"
+    );
+    assert!(
+        !d.path().join(".phronesis/outcomes/current").exists(),
+        "no subject is set on a rejected call"
+    );
+    assert!(lifecycle_entries(d.path()).is_empty());
+}
+
+/// A bad `--spec`-equivalent is rejected here too: the parameter goes through
+/// the same `validate_spec`, so the MCP surface cannot record a pointer the
+/// CLI would refuse.
+#[test]
+fn submit_suggestion_rejects_a_spec_that_does_not_exist() {
+    let d = tempfile::tempdir().unwrap();
+    let err = EpistemeMcp::submit_suggestion_report(
+        d.path(),
+        &suggestion("xlate-7", Some("docs/specs/NOPE.md"), None),
+    )
+    .expect_err("missing spec must fail");
+    assert!(err.to_string().contains("--spec"), "{err}");
+    assert!(!d.path().join(".phronesis/outcomes/current").exists());
+}
