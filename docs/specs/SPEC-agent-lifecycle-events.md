@@ -350,6 +350,18 @@ Known limits, stated where they apply:
 - A stale `inflight` entry from a killed hook, a denied permission, or a
   cancelled tool is bounded by the 900 s TTL and the SessionStart truncation.
   Within that window one spurious `correction` is possible.
+- A prompt hook that runs concurrently with a still-running `post-check` for
+  the previous tool can see that tool's `inflight` entry and infer an
+  interrupt. Hosts appear to serialize hook phases, and `post-check` pops the
+  entry as its first action after reading stdin, so the window is
+  milliseconds, but it is not zero. Recorded as a limit rather than mitigated:
+  any age threshold that closed it would also miss real interrupts of
+  long-running commands.
+- A sub-agent that crashes without firing its stop leaves an entry in
+  `agents` until SessionStart truncates it. A later stop with no `agent_id`
+  would pop that stale entry LIFO and report a wrong duration. Sub-agents can
+  legitimately run for hours, so no TTL is applied; `matched_start` and the
+  ids make the case auditable after the fact.
 
 ## Host adapters
 
