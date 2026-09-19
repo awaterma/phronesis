@@ -1330,3 +1330,120 @@ fn init_migrates_interaction_context_in_place_and_keeps_foreign_hooks() {
         "{stop:?}"
     );
 }
+
+fn gemini_settings(dir: &Path) -> serde_json::Value {
+    serde_json::from_str(
+        &std::fs::read_to_string(dir.join(".gemini/settings.json")).expect("gemini settings"),
+    )
+    .expect("gemini settings JSON")
+}
+
+fn only_command(settings: &serde_json::Value, event: &str) -> String {
+    let arr = settings["hooks"][event]
+        .as_array()
+        .unwrap_or_else(|| panic!("no {event} hook array: {settings}"));
+    assert_eq!(arr.len(), 1, "expected exactly one {event} entry: {arr:?}");
+    arr[0]["hooks"][0]["command"].as_str().unwrap().to_string()
+}
+
+#[test]
+fn init_registers_gemini_lifecycle_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(&[], dir.path());
+    let s = gemini_settings(dir.path());
+    for event in ["SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"] {
+        assert_eq!(
+            only_command(&s, event),
+            format!("phr-mcp claude-hook {event}")
+        );
+        assert_eq!(
+            s["hooks"][event][0]["matcher"], "",
+            "{event} matcher must be empty"
+        );
+    }
+}
+
+#[test]
+fn init_anchors_gemini_tool_matcher_and_includes_invoke_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(&[], dir.path());
+    let s = gemini_settings(dir.path());
+    for (event, command) in [
+        ("BeforeTool", "phr-mcp pre-check"),
+        ("AfterTool", "phr-mcp post-check"),
+    ] {
+        assert_eq!(only_command(&s, event), command);
+        assert_eq!(
+            s["hooks"][event][0]["matcher"],
+            "^(replace|write_file|run_shell_command|invoke_agent)$"
+        );
+    }
+}
+
+#[test]
+fn init_migrates_old_gemini_registrations_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".gemini")).unwrap();
+    std::fs::write(
+        dir.path().join(".gemini/settings.json"),
+        r#"{"hooks":{
+            "BeforeTool":[{"matcher":"replace|write_file|run_shell_command",
+                           "hooks":[{"type":"command","command":"phr-mcp pre-check"}]}],
+            "SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"phr-mcp session-context"}]}],
+            "BeforeAgent":[{"matcher":"","hooks":[{"type":"command","command":"phr-mcp interaction-context"}]}]
+        }}"#,
+    )
+    .unwrap();
+    run_init(&[], dir.path());
+    let s = gemini_settings(dir.path());
+    assert_eq!(
+        only_command(&s, "SessionStart"),
+        "phr-mcp claude-hook SessionStart"
+    );
+    assert_eq!(
+        only_command(&s, "BeforeAgent"),
+        "phr-mcp claude-hook BeforeAgent"
+    );
+    assert_eq!(
+        s["hooks"]["BeforeTool"][0]["matcher"],
+        "^(replace|write_file|run_shell_command|invoke_agent)$"
+    );
+}
+
+#[test]
+fn init_gemini_hooks_are_idempotent_and_spare_foreign_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".gemini")).unwrap();
+    std::fs::write(
+        dir.path().join(".gemini/settings.json"),
+        r#"{"hooks":{"AfterAgent":[{"matcher":"","hooks":[{"type":"command","command":"my-own-tool"}]}]}}"#,
+    )
+    .unwrap();
+    run_init(&[], dir.path());
+    run_init(&[], dir.path());
+    let s = gemini_settings(dir.path());
+    for event in [
+        "BeforeTool",
+        "AfterTool",
+        "SessionStart",
+        "SessionEnd",
+        "BeforeAgent",
+    ] {
+        assert_eq!(
+            s["hooks"][event].as_array().unwrap().len(),
+            1,
+            "{event} duplicated"
+        );
+    }
+    let after = s["hooks"]["AfterAgent"].as_array().unwrap();
+    assert_eq!(
+        after.len(),
+        2,
+        "foreign AfterAgent hook must survive init: {after:?}"
+    );
+    assert_eq!(after[0]["hooks"][0]["command"], "my-own-tool");
+    assert_eq!(
+        after[1]["hooks"][0]["command"],
+        "phr-mcp claude-hook AfterAgent"
+    );
+}
