@@ -258,8 +258,8 @@ The aggregator family:
 | `journey_count` | `[selector, window, count]` | the count as a bindable value |
 | `journey_distinct` | `[field, window, count]` | distinct values of a field in a window |
 
-**Window tokens:** `5c` = last 5 calls · `30m`/`2h`/`7d` = wall time · `s` =
-current session.
+**Window tokens:** `5c` = last 5 calls · `45s`/`30m`/`2h`/`7d` = wall time · `s` =
+current session (bare `s`; `45s` with a number is seconds).
 
 ### The headline four
 

@@ -128,6 +128,13 @@ fn build_journal_record(input: JournalRecordInput<'_>) -> journey::journal::Jour
         tags: all_tags,
         subject: input.subject,
         command_exit: input.command_exit,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 
@@ -309,6 +316,10 @@ mod tests {
             tool_name: Some(tool_name.to_string()),
             tool_input: Some(input),
             tool_output: None,
+            session_id: None,
+            tool_use_id: None,
+            hook_event_name: None,
+            agent_id: None,
         }
     }
 
@@ -460,6 +471,10 @@ mod tests {
             tool_name: Some("Bash".to_string()),
             tool_input: Some(serde_json::json!({ "command": "cargo build --workspace" })),
             tool_output: Some(output),
+            session_id: None,
+            tool_use_id: None,
+            hook_event_name: None,
+            agent_id: None,
         }
     }
 

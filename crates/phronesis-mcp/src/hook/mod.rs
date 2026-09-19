@@ -55,13 +55,67 @@ impl From<String> for HookError {
 pub(super) struct HookPayload {
     pub(super) tool_name: Option<String>,
     pub(super) tool_input: Option<serde_json::Value>,
-    /// PostToolUse payloads carry the tool's output here. Claude Code sends
-    /// this field as `tool_response`; Gemini and our own integration tests
-    /// use `tool_output`. The serde alias accepts both so confidence scoring
-    /// sees the captured stdout/stderr of a build/test command regardless of
-    /// which runtime fired the hook.
+    /// PostToolUse payloads carry the tool's output here. Claude Code and
+    /// Gemini both send `tool_response`; this repo's own integration tests
+    /// use `tool_output`. The alias accepts both.
     #[serde(default, alias = "tool_response")]
     pub(super) tool_output: Option<serde_json::Value>,
+    // Correlation fields parsed here, read by the host adapters in Plans 2 and 3
+    // (`claude_hook.rs`, `codex_hook.rs`); no Plan 1 code path consumes them yet.
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(super) session_id: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(super) tool_use_id: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(super) hook_event_name: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub(super) agent_id: Option<String>,
+}
+
+/// Keys whose string value is free human or model text and must never reach
+/// `payloads.jsonl`, which `docs/payload-corpus-promotion.md` copies into a
+/// committed tree. `prompt` covers Claude/Codex `UserPromptSubmit`, Gemini
+/// `BeforeAgent`, and Gemini `invoke_agent`'s `tool_input.prompt`;
+/// `prompt_response` covers Gemini `AfterAgent`; `last_assistant_message`
+/// covers Codex `SubagentStop`.
+pub(crate) const REDACTED_KEYS: [&str; 3] = ["prompt", "prompt_response", "last_assistant_message"];
+
+/// Replace every `REDACTED_KEYS` string value, **at any depth**, with
+/// `"<redacted:N bytes>"`. `None` when `raw` is not valid JSON: it cannot be
+/// redacted, so the caller writes nothing rather than a verbatim copy.
+///
+/// The placeholder's `N` is the original byte length, which deliberately
+/// reveals it; the spec records that as a decision.
+pub fn redact_for_capture(raw: &str) -> Option<String> {
+    fn walk(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(obj) => {
+                for (k, val) in obj.iter_mut() {
+                    if REDACTED_KEYS.contains(&k.as_str()) {
+                        // Redact whatever shape the host used: a string, or an
+                        // array of content blocks. Nested text must never reach
+                        // the capture file.
+                        let n = match &*val {
+                            serde_json::Value::String(s) => s.len(),
+                            other => other.to_string().len(),
+                        };
+                        *val = serde_json::Value::String(format!("<redacted:{n} bytes>"));
+                    } else {
+                        walk(val);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(walk),
+            _ => {}
+        }
+    }
+    let mut v = serde_json::from_str::<serde_json::Value>(raw).ok()?;
+    walk(&mut v);
+    serde_json::to_string(&v).ok()
 }
 
 /// Print `{}` to stdout and exit 0.
@@ -82,20 +136,32 @@ fn read_payload(phase: &str) -> anyhow::Result<HookPayload> {
     Ok(payload)
 }
 
-/// When `PHRONESIS_CAPTURE_DIR` is set, append the raw stdin payload as one
-/// JSONL record to `<dir>/payloads.jsonl`. Best-effort: capture must never
-/// change hook behavior or exit codes, so every failure path returns silently.
-/// Uses an exclusive advisory file lock (fs2 flock) around the write so
-/// concurrent hook processes cannot interleave lines.
-fn capture_raw_payload(phase: &str, raw: &str) {
+/// When `PHRONESIS_CAPTURE_DIR` is set, append the **redacted** stdin payload
+/// as one JSONL record to `<dir>/payloads.jsonl`. Best-effort: capture must
+/// never change hook behavior or exit codes, so every failure path returns
+/// silently. Uses an exclusive advisory file lock (fs2 flock) around the
+/// write so concurrent hook processes cannot interleave lines.
+pub(crate) fn capture_raw_payload(phase: &str, raw: &str) {
     let Ok(dir) = std::env::var("PHRONESIS_CAPTURE_DIR") else {
+        return;
+    };
+    // Redact free-text fields before anything is written. Prompt text must
+    // never reach `payloads.jsonl`, which the corpus-promotion doc copies
+    // into a committed tree (spec §"Payload capture").
+    let Some(redacted) = redact_for_capture(raw) else {
+        // Stdin that is not valid JSON cannot be redacted, so it is not written
+        // at all. One stderr line names the event; the payload itself is not
+        // echoed, because the reason it failed to parse may be that it is
+        // truncated free text.
+        eprintln!("phronesis: capture skipped for {phase}: stdin is not valid JSON");
         return;
     };
     let record = serde_json::json!({
         "ts": unix_secs_now(),
         "phase": phase,
-        "raw": serde_json::from_str::<serde_json::Value>(raw)
-            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string())),
+        // Already a redacted `Value` round-trip, so this parse cannot fail.
+        "raw": serde_json::from_str::<serde_json::Value>(&redacted)
+            .unwrap_or(serde_json::Value::Null),
     });
     let path = std::path::Path::new(&dir).join("payloads.jsonl");
     let Ok(mut file) = std::fs::OpenOptions::new()
@@ -475,7 +541,32 @@ mod tests {
             tool_name: Some(tool_name.to_string()),
             tool_input: Some(input),
             tool_output: None,
+            session_id: None,
+            tool_use_id: None,
+            hook_event_name: None,
+            agent_id: None,
         }
+    }
+
+    #[test]
+    fn hook_payload_parses_the_correlation_fields() {
+        let p: HookPayload = serde_json::from_str(
+            r#"{"tool_name":"Bash","tool_input":{"command":"ls"},
+                "session_id":"s-1","tool_use_id":"tu-1",
+                "hook_event_name":"PreToolUse","agent_id":"a-1"}"#,
+        )
+        .expect("parse");
+        assert_eq!(p.session_id.as_deref(), Some("s-1"));
+        assert_eq!(p.tool_use_id.as_deref(), Some("tu-1"));
+        assert_eq!(p.hook_event_name.as_deref(), Some("PreToolUse"));
+        assert_eq!(p.agent_id.as_deref(), Some("a-1"));
+
+        let bare: HookPayload =
+            serde_json::from_str(r#"{"tool_name":"Bash","tool_input":{}}"#).expect("parse");
+        assert!(bare.session_id.is_none());
+        assert!(bare.tool_use_id.is_none());
+        assert!(bare.hook_event_name.is_none());
+        assert!(bare.agent_id.is_none());
     }
 
     #[tokio::test]

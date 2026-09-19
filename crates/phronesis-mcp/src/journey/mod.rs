@@ -101,6 +101,11 @@ pub enum ConfigError {
         #[source]
         source: serde_json::Error,
     },
+    #[error(
+        "journey.json at {path}: tagger tag `{tag}` is in a reserved namespace \
+             (`lifecycle:` and `kalpa:` are written by the lifecycle module)"
+    )]
+    ReservedTag { path: String, tag: String },
 }
 
 /// Load `.phronesis/journey.json` into a `TaggerConfig`. The hook caller is
@@ -120,10 +125,26 @@ pub fn load_config(project_root: &Path) -> Result<tagger::TaggerConfig, ConfigEr
             });
         }
     };
-    serde_json::from_str::<tagger::TaggerConfig>(&raw).map_err(|e| ConfigError::Malformed {
-        path: path.display().to_string(),
-        source: e,
-    })
+    let cfg =
+        serde_json::from_str::<tagger::TaggerConfig>(&raw).map_err(|e| ConfigError::Malformed {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+    // The built-in namespaces are exempt from selector validation, so a tagger
+    // that claimed one would stamp a tag no rule could distinguish from a
+    // lifecycle record's own. Reject it where it is written, not where it is
+    // read (spec §"The journal record, v2").
+    if let Some(entry) = cfg
+        .taggers
+        .iter()
+        .find(|t| t.tag.starts_with("lifecycle:") || t.tag.starts_with("kalpa:"))
+    {
+        return Err(ConfigError::ReservedTag {
+            path: path.display().to_string(),
+            tag: entry.tag.clone(),
+        });
+    }
+    Ok(cfg)
 }
 
 #[cfg(test)]

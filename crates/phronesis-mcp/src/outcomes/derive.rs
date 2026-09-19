@@ -181,6 +181,13 @@ mod tests {
             tags: tags.iter().map(|s| s.to_string()).collect(),
             subject: Some(subject.to_string()),
             command_exit: None,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
         }
     }
 

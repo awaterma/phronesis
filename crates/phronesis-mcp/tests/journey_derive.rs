@@ -22,6 +22,8 @@ fn window_parses_time() {
     assert_eq!(Window::parse("30m").unwrap(), Window::Seconds(30 * 60));
     assert_eq!(Window::parse("2h").unwrap(), Window::Seconds(2 * 3600));
     assert_eq!(Window::parse("7d").unwrap(), Window::Seconds(7 * 86_400));
+    // `Ns` is seconds; the bare token `s` (tested below) is the session window.
+    assert_eq!(Window::parse("60s").unwrap(), Window::Seconds(60));
 }
 
 #[test]
@@ -82,6 +84,13 @@ fn make_record(
         tags: tags.iter().map(|s| s.to_string()).collect(),
         subject: subject.map(|s| s.to_string()),
         command_exit: None,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 
@@ -104,6 +113,13 @@ fn make_record_with_path(
         tags: tags.iter().map(|s| s.to_string()).collect(),
         subject: None,
         command_exit: None,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 
@@ -808,4 +824,459 @@ fn rule_scan_collects_script_and_bare_forms() {
             .iter()
             .any(|(f, w)| f == "path" && w == "s")
     );
+}
+
+// ---------- Lifecycle tool projection (Task 2) ----------
+
+/// A lifecycle record, in the same `(seq, ts)` / `(sid, tags)` shape as the
+/// file's existing helpers.
+fn make_lifecycle(timing: (u64, u64), identity: (&str, &[&str]), kind: &str) -> JournalRecord {
+    let (seq, ts) = timing;
+    let (sid, tags) = identity;
+    JournalRecord {
+        v: journal::JOURNAL_V,
+        ts,
+        sid: sid.to_string(),
+        seq,
+        tool: journal::LIFECYCLE_TOOL.to_string(),
+        path: String::new(),
+        ext: None,
+        module: None,
+        tags: tags.iter().map(|s| s.to_string()).collect(),
+        subject: None,
+        command_exit: None,
+        kind: Some(kind.to_string()),
+        mode: None,
+        host: Some("claude".to_string()),
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
+    }
+}
+
+/// Goal 5 of the spec: interleaving lifecycle records changes no existing fact.
+#[tokio::test]
+async fn tool_projection_keeps_existing_facts_identical() {
+    async fn facts_for(
+        records: &[JournalRecord],
+        rules: &[Rule],
+        config: &TaggerConfig,
+    ) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        for r in records {
+            journal::append(dir.path(), r).unwrap();
+        }
+        let mut net = ReteNetwork::new();
+        assert_facts(&mut net, derive_input(dir.path(), rules, config, 200))
+            .await
+            .unwrap();
+        let mut all: Vec<String> = Vec::new();
+        for p in [
+            "journey_count",
+            "journey_since_ge",
+            "journey_filtered_since_ge",
+            "journey_distinct",
+        ] {
+            for f in journey_facts(&net, p) {
+                all.push(format!("{}:{}", f.predicate, f.args.join(",")));
+            }
+        }
+        all.sort();
+        all
+    }
+
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[
+            {"tag":"edits","when":[{"file_path_matches":"src/"}]},
+            {"tag":"tests","when":[{"file_path_matches":"tests/"}]}
+        ],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec![
+            "facts_count('journey_count', ['edits','5c']) >= 0",
+            "facts_count('journey_since_ge', ['tests', 1]) >= 0",
+            "facts_count('journey_filtered_since_ge', ['tests','edits',1]) >= 0",
+            "facts_count('journey_distinct', ['path','5c']) >= 0",
+        ],
+    )];
+
+    let tools: Vec<JournalRecord> = (0..10u64)
+        .map(|i| {
+            if i == 4 {
+                make_record_with_path((i, 100 + i), ("s-now", &["tests"]), "tests/x.rs")
+            } else {
+                make_record_with_path((i, 100 + i), ("s-now", &["edits"]), &format!("src/f{i}.rs"))
+            }
+        })
+        .collect();
+    let mut mixed = Vec::new();
+    for (i, t) in tools.iter().enumerate() {
+        let i = i as u64;
+        mixed.push(t.clone());
+        mixed.push(make_lifecycle(
+            (100 + i, 100 + i),
+            ("s-now", &["lifecycle:prompt", "lifecycle:prompt:fresh"]),
+            "prompt",
+        ));
+    }
+
+    let tools_only = facts_for(&tools, &rules, &c).await;
+    // Golden values, so a symmetric off-by-one in both runs cannot pass: the
+    // `5c` window is the last 5 tool records (indices 5..9), all `edits`, over
+    // 5 distinct paths; the `tests` record at index 4 has 5 tool records after
+    // it, all `edits`, so both ladders cap at k = 1.
+    assert!(
+        tools_only.contains(&"journey_count:edits,5c,5".to_string()),
+        "{tools_only:?}"
+    );
+    assert!(
+        tools_only.contains(&"journey_distinct:path,5c,5".to_string()),
+        "{tools_only:?}"
+    );
+    assert!(
+        tools_only.contains(&"journey_since_ge:tests,1".to_string()),
+        "{tools_only:?}"
+    );
+    assert!(
+        tools_only.contains(&"journey_filtered_since_ge:tests,edits,1".to_string()),
+        "{tools_only:?}"
+    );
+    assert_eq!(tools_only, facts_for(&mixed, &rules, &c).await);
+}
+
+#[tokio::test]
+async fn lifecycle_selectors_validate_without_journey_config() {
+    let c = TaggerConfig::default();
+    let rules = vec![rule_with_script(
+        "r",
+        vec![
+            "facts_count('journey_seen', ['lifecycle:interrupt','s']) >= 1",
+            "facts_count('journey_count', ['kalpa:demo','s']) >= 1",
+            // Spec: a `lifecycle:*` selector with an `Nc` window yields no facts,
+            // because positional windows run over the tool projection.
+            "facts_count('journey_occurrence', ['lifecycle:interrupt','5c']) >= 1",
+        ],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle(
+            (1, 5),
+            ("s-now", &["lifecycle:interrupt", "kalpa:demo"]),
+            "interrupt",
+        ),
+    )
+    .unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap();
+    assert_eq!(journey_facts(&net, "journey_seen").len(), 1);
+    assert_eq!(
+        journey_facts(&net, "journey_count")[0].args,
+        vec!["kalpa:demo", "s", "1"]
+    );
+    assert!(journey_facts(&net, "journey_occurrence").is_empty());
+}
+
+/// Fail-closed is unchanged for everything outside the two built-in namespaces.
+#[tokio::test]
+async fn undefined_non_lifecycle_selector_still_fails_closed() {
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[{"tag":"edits","when":[{"file_path_matches":"src/"}]}],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_count', ['nonexistent','s']) >= 1"],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    let mut net = ReteNetwork::new();
+    let err = assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, derive::DeriveError::UndefinedSelector { .. }),
+        "{err:?}"
+    );
+}
+
+#[tokio::test]
+async fn since_ge_counts_tool_records_after_lifecycle_target() {
+    let c = TaggerConfig::default();
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_since_ge', ['lifecycle:interrupt', 3]) >= 0"],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle((1, 1), ("s-now", &["lifecycle:interrupt"]), "interrupt"),
+    )
+    .unwrap();
+    for i in 0..2u64 {
+        journal::append(dir.path(), &rec!(2 + i, 2 + i, "s-now", &["edits"], None)).unwrap();
+    }
+    journal::append(
+        dir.path(),
+        &make_lifecycle((5, 5), ("s-now", &["lifecycle:stop"]), "stop"),
+    )
+    .unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap();
+    // Distance is 2 (two *tool* records after the interrupt; the trailing stop
+    // does not count), and `emit_since_ge` ladders k = 1..=min(max_k, distance)
+    // = 1..=min(3, 2), so exactly "1" and "2" are emitted and "3" is not.
+    let mut ks: Vec<String> = journey_facts(&net, "journey_since_ge")
+        .iter()
+        .map(|f| f.args[1].clone())
+        .collect();
+    ks.sort_by_key(|s| s.parse::<u32>().unwrap_or(u32::MAX));
+    assert_eq!(ks, vec!["1", "2"]);
+}
+
+/// Spec §"The journal record, v2" / Read bound: "5 tool records followed by 200
+/// lifecycle records under a `Calls(5)` rule (the iterative re-read must still
+/// find all five)". A fixed multiple of `n` cannot do this; only doubling can.
+#[tokio::test]
+async fn calls_window_reads_iteratively_until_it_has_n_tool_records() {
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[{"tag":"edits","when":[{"file_path_matches":"src/"}]}],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_count', ['edits','5c']) >= 0"],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..5u64 {
+        journal::append(dir.path(), &rec!(i, i, "s-now", &["edits"], None)).unwrap();
+    }
+    for i in 5..205u64 {
+        journal::append(
+            dir.path(),
+            &make_lifecycle((i, i), ("s-now", &["lifecycle:prompt"]), "prompt"),
+        )
+        .unwrap();
+    }
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 1_000))
+        .await
+        .unwrap();
+    // A single 5-line read would see only lifecycle records and count 0; a
+    // 2n+64 read would reach line 74 and still count 0. Doubling reaches 256.
+    assert_eq!(journey_facts(&net, "journey_count")[0].args[2], "5");
+}
+
+/// The over-read must stop as well as start: a file with fewer tool records
+/// than the window asks for terminates rather than looping to the hard cap on
+/// every hook.
+#[tokio::test]
+async fn calls_window_terminates_when_the_file_holds_fewer_tool_records() {
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[{"tag":"edits","when":[{"file_path_matches":"src/"}]}],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_count', ['edits','50c']) >= 0"],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..2u64 {
+        journal::append(dir.path(), &rec!(i, i, "s-now", &["edits"], None)).unwrap();
+    }
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 100))
+        .await
+        .unwrap();
+    assert_eq!(journey_facts(&net, "journey_count")[0].args[2], "2");
+}
+
+/// Spec §"The journal record, v2": "a `Seconds` window whose range contains
+/// lifecycle records" — time windows enumerate **every** record, so a
+/// lifecycle selector matches there.
+#[tokio::test]
+async fn seconds_window_enumerates_lifecycle_records() {
+    let c = TaggerConfig::default();
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_count', ['lifecycle:interrupt','60s']) >= 1"],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle((1, 950), ("s-now", &["lifecycle:interrupt"]), "interrupt"),
+    )
+    .unwrap();
+    // Outside the 60 s window: same selector, must not be counted.
+    journal::append(
+        dir.path(),
+        &make_lifecycle((2, 100), ("s-now", &["lifecycle:interrupt"]), "interrupt"),
+    )
+    .unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 1_000))
+        .await
+        .unwrap();
+    assert_eq!(journey_facts(&net, "journey_count")[0].args[2], "1");
+}
+
+/// Spec §"The journal record, v2": "a `since_ge` whose last match sits behind
+/// more lifecycle records than a single read would cover". `since_ge` already
+/// reads the hard cap, so this pins that the branch selection did not regress
+/// into the calls-only path.
+#[tokio::test]
+async fn since_ge_finds_a_target_behind_two_hundred_lifecycle_records() {
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[{"tag":"edits","when":[{"file_path_matches":"src/"}]}],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_since_ge', ['lifecycle:interrupt', 5]) >= 0"],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle((0, 0), ("s-now", &["lifecycle:interrupt"]), "interrupt"),
+    )
+    .unwrap();
+    for i in 1..201u64 {
+        journal::append(
+            dir.path(),
+            &make_lifecycle((i, i), ("s-now", &["lifecycle:prompt"]), "prompt"),
+        )
+        .unwrap();
+    }
+    for i in 201..204u64 {
+        journal::append(dir.path(), &rec!(i, i, "s-now", &["edits"], None)).unwrap();
+    }
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 1_000))
+        .await
+        .unwrap();
+    let mut ks: Vec<String> = journey_facts(&net, "journey_since_ge")
+        .iter()
+        .map(|f| f.args[1].clone())
+        .collect();
+    ks.sort_by_key(|s| s.parse::<u32>().unwrap_or(u32::MAX));
+    assert_eq!(
+        ks,
+        vec!["1", "2", "3"],
+        "three tool records after the interrupt"
+    );
+}
+
+/// The exemption is a **closed set**: a typo must still fail closed, or a rule
+/// that can never fire validates and sits silent forever.
+#[tokio::test]
+async fn a_misspelled_lifecycle_selector_still_fails_closed() {
+    let c = TaggerConfig::default();
+    for bad in [
+        "lifecycle:prompt:corection",
+        "lifecycle:subagent_started",
+        "lifecycle:",
+        "kalpa:",
+    ] {
+        let rules = vec![rule_with_script(
+            "r",
+            vec![&format!("facts_count('journey_count', ['{bad}','s']) >= 1")],
+        )];
+        let dir = tempfile::tempdir().unwrap();
+        let mut net = ReteNetwork::new();
+        let err = assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, derive::DeriveError::UndefinedSelector { .. }),
+            "{bad}: {err:?}"
+        );
+    }
+}
+
+/// Spec §"The journal record, v2": "No tagger, no modules." A catch-all tagger
+/// config must stamp nothing on a lifecycle record, so no user-defined tag can
+/// ever land on one and no existing tag selector can match one.
+#[tokio::test]
+async fn a_catch_all_tagger_stamps_nothing_on_a_lifecycle_record() {
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[{"tag":"everything","when":[]}],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_count', ['everything','s']) >= 0"],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle((1, 5), ("s-now", &["lifecycle:prompt"]), "prompt"),
+    )
+    .unwrap();
+    journal::append(dir.path(), &rec!(2, 6, "s-now", &["everything"], None)).unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap();
+    // One tool record carries the tag; the lifecycle record does not, because
+    // the tagger never runs for it (the record is written by `lifecycle::record`,
+    // which stamps `tags()` and nothing else).
+    assert_eq!(journey_facts(&net, "journey_count")[0].args[2], "1");
+}
+
+/// The `lifecycle:` and `kalpa:` namespaces are reserved: a tagger that claims
+/// one is rejected at config load, not silently shadowed.
+#[test]
+fn a_tagger_tag_in_a_reserved_namespace_is_rejected_at_load() {
+    for tag in ["lifecycle:prompt", "kalpa:demo"] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+        std::fs::write(
+            dir.path().join(".phronesis/journey.json"),
+            format!(
+                r#"{{"version":1,"taggers":[{{"tag":"{tag}","when":[{{"file_path_matches":"src/"}}]}}],"modules":[]}}"#
+            ),
+        )
+        .unwrap();
+        let err = phronesis_mcp::journey::load_config(dir.path()).unwrap_err();
+        assert!(
+            matches!(err, phronesis_mcp::journey::ConfigError::ReservedTag { .. }),
+            "{tag}: {err:?}"
+        );
+    }
+}
+
+/// Pairing a lifecycle selector with an `Nc` window yields no facts by
+/// construction, so the rule can never fire. One stderr warning names the rule
+/// rather than leaving it silent (spec §"The journal record, v2", tool
+/// projection table).
+#[tokio::test]
+async fn a_lifecycle_selector_with_a_calls_window_warns_and_still_validates() {
+    let c = TaggerConfig::default();
+    let rules = vec![rule_with_script(
+        "never-fires",
+        vec!["facts_count('journey_count', ['lifecycle:interrupt','5c']) >= 1"],
+    )];
+    let scan = derive::scan_rules(&rules).expect("scan");
+    let warnings = derive::lifecycle_window_warnings(&rules, &scan);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(warnings[0].contains("never-fires"), "{warnings:?}");
+    assert!(warnings[0].contains("lifecycle:interrupt"), "{warnings:?}");
+    // It is a warning, not an error: the rule still validates.
+    let dir = tempfile::tempdir().unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap();
 }

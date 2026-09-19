@@ -8,6 +8,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Lifecycle events, foundation.** `JournalRecord` v2 with optional `kind`,
+  `mode`, `host`, `turn`, `agent`, `agent_type`, `kalpa`; the derive pass
+  computes positional windows on tool records only, so existing `journey_*`
+  rules are unchanged; built-in `lifecycle:*` and `kalpa:*` selectors; new
+  `lifecycle` module (`LifecycleEvent`, locked state files, `classify_prompt`,
+  `detect_commit`, `scrub_prompt`); `phr-mcp kalpa start|end|show`; prompt
+  text is redacted from `PHRONESIS_CAPTURE_DIR` captures, recursively, so a
+  nested `tool_input.prompt` is covered too. No host emits lifecycle events yet
+  (adapters follow).
+
 - Non-destructive `init --rules-only` starter syncing with a recorded baseline,
   local override/deletion preservation, and conflict warnings.
 

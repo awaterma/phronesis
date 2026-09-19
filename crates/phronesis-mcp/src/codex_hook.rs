@@ -1070,6 +1070,13 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
         tags: tag_result.tags.into_iter().chain(outcome_tags).collect(),
         subject,
         command_exit,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     };
     let _ = journey::journal::append(&root, &record);
 }
