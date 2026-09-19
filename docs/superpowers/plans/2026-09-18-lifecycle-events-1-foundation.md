@@ -10,6 +10,25 @@
 
 **Spec:** `docs/specs/SPEC-agent-lifecycle-events.md` (revised 2026-09-18). Read it first; the plan argues from it.
 
+**Depends on:** nothing. This plan lands first, before Plans 2, 3, 4 and 5. Merge order for the whole feature is `1 → (2, 3, 4 in parallel) → 5`.
+
+**Files this plan owns exclusively** (no other plan in the set creates or edits them):
+
+- `crates/phronesis-mcp/src/lifecycle/mod.rs`, `event.rs`, `state.rs`, `scrub.rs`, `record.rs`, `outcome.rs`
+- `crates/phronesis-mcp/src/journey/journal.rs`, `crates/phronesis-mcp/src/journey/derive.rs`, `crates/phronesis-mcp/src/journey/tagger.rs`
+- `crates/phronesis-mcp/src/payload_scrub.rs`
+- `crates/phronesis-mcp/src/hook/mod.rs` — **Plan 1 is the sole owner of `HookPayload`, `redact_for_capture`, `capture_raw_payload`'s visibility and the `tool_output` comment.** Plan 2 adds exactly one line to this file (`mod lifecycle_wiring;`) and nothing else; Plan 3 does not touch it.
+- `crates/phronesis-mcp/tests/lifecycle_state.rs`, `lifecycle_classify.rs`, `lifecycle_outcome.rs`, `kalpa_integration.rs` (created here; Plan 5 appends to `kalpa_integration.rs` only)
+- `crates/phronesis-mcp/tests/journey_journal.rs`, `journey_derive.rs`, `payload_capture.rs`, `scrub_payload_integration.rs`
+- `docs/specs/SPEC-journey-facts.md`
+
+**Files this plan shares with later plans** (each edit is disjoint; see the per-file notes):
+
+- `crates/phronesis-mcp/src/lifecycle/kalpa_cli.rs` — created here; Plan 5 Task 3 replaces only the `KalpaCmd::Show` arm and adds a private `report` fn.
+- `crates/phronesis-mcp/src/lib.rs` — Plan 1 adds `pub mod lifecycle;`, Plan 2 adds `pub mod claude_hook;`. Both go in alphabetical position.
+- `crates/phronesis-mcp/src/main.rs` — Plan 1 adds the `Kalpa` variant, Plan 2 adds `ClaudeHook`, Plan 5 adds fields to `Stats` and `Journey`. All four land in sequence, never in parallel.
+- `CHANGELOG.md` — every plan appends its own bullet under `## [Unreleased]` → `### Added`.
+
 ## Global Constraints
 
 - No new crate dependencies. Hash with `std::hash::DefaultHasher`, lock with `fs2::FileExt`.
@@ -302,14 +321,33 @@ fn is_builtin_selector(selector: &str) -> bool {
 }
 ```
 
-In `validate_selectors`, change the loop body:
+In `validate_selectors`, replace the whole `for selector in &referenced { … }` loop (`derive.rs:446-467`) with:
 
 ```rust
     for selector in &referenced {
+        // `lifecycle:` and `kalpa:` are built-in namespaces written by the
+        // lifecycle module itself, not by a tagger, so they have no entry in
+        // `journey.json` and must not fail closed. Everything else still does.
         if is_builtin_selector(selector) {
             continue;
         }
-        let ok = if let Some(name) = selector.strip_prefix("module:") { ... } else { ... };
+        let ok = if let Some(name) = selector.strip_prefix("module:") {
+            defined_modules.contains(selector) || cfg.modules.iter().any(|m| m.name == name)
+        } else {
+            defined_tags.contains(selector.as_str())
+        };
+        if !ok {
+            let rule_id = rules
+                .iter()
+                .find(|r| rule_refs_selector(r, selector))
+                .map(|r| r.id.clone())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            return Err(DeriveError::UndefinedSelector {
+                rule: rule_id,
+                selector: selector.clone(),
+            });
+        }
+    }
 ```
 
 In `assert_facts`, replace the calls-only branch and context construction:
@@ -361,17 +399,88 @@ fn record_in_window(rec: &JournalRecord, window_tok: &str, rec_idx: usize, total
 }
 ```
 
-Each emitter loop becomes:
+Each of the three occurrence-style emitters changes in exactly two places: bind `view` at the top of the per-pair loop, and pass `view.len()` plus `&context.scope` to `record_in_window` instead of `context`. Nothing else in their bodies moves. Written out for all three:
 
 ```rust
-let view = window_records(context, win);
-for (i, rec) in view.iter().enumerate() {
-    if !record_in_window(rec, win, i, view.len(), &context.scope) { continue; }
-    ...
+async fn emit_occurrence(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
+    for (sel, win) in &scan.occurrence_pairs {
+        let view = window_records(context, win);
+        let mut n = 0u64;
+        for (i, rec) in view.iter().enumerate() {
+            if !matches_selector(rec, sel) {
+                continue;
+            }
+            if !record_in_window(rec, win, i, view.len(), &context.scope) {
+                continue;
+            }
+            n += 1;
+            let id = format!("journey_occurrence:{}:{}:{}", sel, win, rec.seq);
+            let _ = network
+                .assert_fact(Fact {
+                    id,
+                    predicate: "journey_occurrence".to_string(),
+                    args: vec![sel.clone(), win.clone()],
+                    timestamp: 0,
+                    source: Some("journey".to_string()),
+                })
+                .await;
+            if n > journal::SUFFIX_HARD_CAP as u64 {
+                break;
+            }
+        }
+    }
+}
+
+async fn emit_count(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
+    for (sel, win) in &scan.count_pairs {
+        let view = window_records(context, win);
+        let mut count = 0u64;
+        for (i, rec) in view.iter().enumerate() {
+            if !matches_selector(rec, sel) {
+                continue;
+            }
+            if !record_in_window(rec, win, i, view.len(), &context.scope) {
+                continue;
+            }
+            count += 1;
+        }
+        let id = format!("journey_count:{}:{}", sel, win);
+        let _ = network
+            .assert_fact(Fact {
+                id,
+                predicate: "journey_count".to_string(),
+                args: vec![sel.clone(), win.clone(), count.to_string()],
+                timestamp: 0,
+                source: Some("journey".to_string()),
+            })
+            .await;
+    }
+}
+
+async fn emit_seen(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
+    for (sel, win) in &scan.seen_pairs {
+        let view = window_records(context, win);
+        let any = view.iter().enumerate().any(|(i, rec)| {
+            matches_selector(rec, sel) && record_in_window(rec, win, i, view.len(), &context.scope)
+        });
+        if !any {
+            continue;
+        }
+        let id = format!("journey_seen:{}:{}", sel, win);
+        let _ = network
+            .assert_fact(Fact {
+                id,
+                predicate: "journey_seen".to_string(),
+                args: vec![sel.clone(), win.clone()],
+                timestamp: 0,
+                source: Some("journey".to_string()),
+            })
+            .await;
+    }
 }
 ```
 
-`emit_distinct` always uses `context.tool_records` as its view regardless of window (lifecycle paths are `""`). `emit_since_ge` keeps searching `records` for the last match but computes distance as the number of tool records after it:
+`emit_distinct` takes the same two-line change but always binds `let view = context.tool_records;` regardless of window — a lifecycle record's `path` is `""` and must never add a distinct path. `emit_since_ge` keeps searching `records` for the last match but computes distance as the number of tool records after it, replacing `distance = Some((records.len() - 1 - i) as u32);`:
 
 ```rust
         for (i, rec) in records.iter().enumerate().rev() {
@@ -407,28 +516,94 @@ git commit -m "feat(journey): tool projection so lifecycle records leave existin
 
 - [ ] **Step 1: Write the failing test**
 
-Find the existing compaction test in `tests/journey_journal.rs` (search `compact`) to learn how it forces compaction with `PHRONESIS_MAX_JOURNAL_BYTES` or `append_with_max`-style helpers. Then add:
+`journal::maybe_compact(root, max_bytes, tail_records)` is `pub`, so an integration test can force compaction directly — `max_bytes: 1` puts the journal over cap unconditionally and `tail_records: 1` leaves everything but the last record in the compaction prefix. This mirrors `src/journey/journal.rs`'s own `compaction_preserves_grounded_outcome_over_later_unknown` unit test.
+
+Append to `crates/phronesis-mcp/tests/journey_journal.rs`:
 
 ```rust
+/// A lifecycle record, mirroring Task 2's `make_lifecycle` in
+/// `tests/journey_derive.rs`.
+fn lifecycle_record(ts: u64, seq: u64, kind: &str, tags: &[&str]) -> JournalRecord {
+    JournalRecord {
+        v: journal::JOURNAL_V,
+        ts,
+        sid: "s-a".into(),
+        seq,
+        tool: journal::LIFECYCLE_TOOL.into(),
+        path: String::new(),
+        ext: None,
+        module: None,
+        tags: tags.iter().map(|s| s.to_string()).collect(),
+        subject: None,
+        command_exit: None,
+        kind: Some(kind.into()),
+        mode: None,
+        host: Some("claude".into()),
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
+    }
+}
+
+/// A plain tool record, used here only as the compaction tail.
+fn tool_record(ts: u64, seq: u64) -> JournalRecord {
+    JournalRecord {
+        v: journal::JOURNAL_V,
+        ts,
+        sid: "s-a".into(),
+        seq,
+        tool: "Edit".into(),
+        path: format!("src/f{seq}.rs"),
+        ext: Some("rs".into()),
+        module: None,
+        tags: vec!["edits".into()],
+        subject: None,
+        command_exit: None,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
+    }
+}
+
 #[test]
 fn compaction_retains_commit_and_kalpa_records_in_prefix() {
     let dir = tempfile::tempdir().unwrap();
     let mut commit = lifecycle_record(1, 1, "commit", &["lifecycle:commit"]);
     commit.kalpa = Some("demo".into());
-    let kalpa_start = lifecycle_record(0, 0, "kalpa_start", &["lifecycle:kalpa_start", "kalpa:demo"]);
-    let prompt = lifecycle_record(2, 2, "prompt", &["lifecycle:prompt"]);
-    // write the three lifecycle records, then enough tool records to push them
-    // into the compaction prefix, using the same forcing mechanism as the
-    // existing compaction test in this file
-    ...
+
+    journal::append(
+        dir.path(),
+        &lifecycle_record(0, 0, "kalpa_start", &["lifecycle:kalpa_start", "kalpa:demo"]),
+    )
+    .unwrap();
+    journal::append(dir.path(), &commit).unwrap();
+    journal::append(dir.path(), &lifecycle_record(2, 2, "prompt", &["lifecycle:prompt"])).unwrap();
+    journal::append(
+        dir.path(),
+        &lifecycle_record(3, 3, "kalpa_end", &["lifecycle:kalpa_end", "kalpa:demo"]),
+    )
+    .unwrap();
+    // The one record the tail keeps, so every lifecycle record above lands in
+    // the compaction prefix and is subject to the retention rule.
+    journal::append(dir.path(), &tool_record(4, 4)).unwrap();
+
+    // max_bytes = 1 forces compaction; tail_records = 1 keeps only the last.
+    assert!(journal::maybe_compact(dir.path(), 1, 1).unwrap());
+
     let all = journal::read_recent(dir.path(), journal::SUFFIX_HARD_CAP).unwrap();
-    assert!(all.iter().any(|r| r.kind.as_deref() == Some("commit")));
-    assert!(all.iter().any(|r| r.kind.as_deref() == Some("kalpa_start")));
-    assert!(!all.iter().any(|r| r.kind.as_deref() == Some("prompt")));
+    let kinds: Vec<&str> = all.iter().filter_map(|r| r.kind.as_deref()).collect();
+    assert!(kinds.contains(&"commit"), "{kinds:?}");
+    assert!(kinds.contains(&"kalpa_start"), "{kinds:?}");
+    assert!(kinds.contains(&"kalpa_end"), "{kinds:?}");
+    assert!(!kinds.contains(&"prompt"), "a prompt compacts away: {kinds:?}");
+    assert!(all.iter().any(|r| r.tool == "Edit"), "the tail survives");
 }
 ```
-
-Write `lifecycle_record(ts, seq, kind, tags)` as a local helper mirroring Task 2's `make_lifecycle`.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -447,7 +622,7 @@ const RETAINED_LIFECYCLE_TAGS: [&str; 3] =
     ["lifecycle:commit", "lifecycle:kalpa_start", "lifecycle:kalpa_end"];
 
 fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {
-    let mut latest: HashMap<&str, usize> = HashMap::new();
+    let mut latest: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     let mut keep: Vec<usize> = Vec::new();
     for (i, r) in prefix.iter().enumerate() {
         if r.tags.iter().any(|t| RETAINED_LIFECYCLE_TAGS.contains(&t.as_str())) {
@@ -1063,17 +1238,9 @@ pub fn write_kalpa(root: &Path, k: &Kalpa) {
 pub fn clear_kalpa(root: &Path) {
     let _ = std::fs::remove_file(dir(root).join("kalpa"));
 }
-pub fn valid_kalpa_name(name: &str) -> bool {
-    let b = name.as_bytes();
-    (1..=64).contains(&b.len())
-        && b[0].is_ascii_lowercase() || b.first().is_some_and(u8::is_ascii_digit)
-        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
-}
-```
-
-Fix `valid_kalpa_name` precedence explicitly:
-
-```rust
+/// `^[a-z0-9][a-z0-9-]{0,63}$`. Written with explicit early returns rather
+/// than a chained boolean: `&&` binds tighter than `||`, and the obvious
+/// one-expression form silently accepts `-lead`.
 pub fn valid_kalpa_name(name: &str) -> bool {
     let b = name.as_bytes();
     if !(1..=64).contains(&b.len()) { return false; }
@@ -1192,7 +1359,9 @@ pub fn scrub_prompt(project_root: &Path, text: &str) -> String {
 }
 ```
 
-Check the placeholder the existing scrubber uses for the project root (search `payload_scrub.rs` for `"/home/dev/`) and use the same string in the fallback branch.
+The fallback branch's `"/home/dev/project"` is the same placeholder `Scrubber::scrub_str` uses for the project root (`payload_scrub.rs:57, 121`), so a prompt scrubbed with or without `$HOME` reads identically for the project-root prefix.
+
+In `payload_scrub.rs`, change `fn scrub_str(&mut self, s: &str) -> String` (line 119) to `pub(crate) fn scrub_str(&mut self, s: &str) -> String`. `scrub_prompt` does not call it today — `scrub_value` on a one-key wrapper object applies it plus the session/transcript key rules — but the spec fixes the visibility so a future caller that already holds a plain `&str` has the same code path available.
 
 - [ ] **Step 4: Run tests**
 
@@ -1230,7 +1399,9 @@ pub fn record(root: &Path, event: LifecycleEvent) -> Option<Stamped>;  // None i
 pub fn prompt_text_setting(root: &Path) -> PromptText;               // reads journey.json, defaults Full
 ```
 
-`record` does, in order: read kalpa; read `outcomes::subject::current(root)` for `subject`; `journey::current_sid`; `hook::seq::next_seq` (make `next_seq` `pub(crate)` → it already is `pub(crate)`; the `hook` module is `pub mod hook` so reference it as `crate::hook::seq::next_seq` — if `seq` is a private submodule, add `pub(crate) mod seq;` in `hook/mod.rs`); `unix_secs_now`; build `Stamped`; `journal::append`; `action_log::append(default_path(root), to_log_entry(.., prompt_text_setting(root)))`; return `Some(stamped)`. Errors → stderr, and a failed journal append still attempts the log append.
+`record` does, in order: read kalpa; read `outcomes::subject::current(root)` for `subject`; `journey::current_sid`; `crate::hook::seq::next_seq`; `unix_secs_now`; build `Stamped`; `journal::append`; `action_log::append(&default_path(root), &to_log_entry(.., prompt_text_setting(root)))`; return `Some(stamped)`. Errors → stderr, and a failed journal append still attempts the log append.
+
+Verified against the current tree: `hook/mod.rs:10` already declares `pub(crate) mod seq;` and `seq.rs:11` already declares `pub(crate) fn next_seq(project_root: &Path) -> u64`, so no visibility change is needed. `outcomes::subject::current(root) -> Option<String>` exists at `outcomes/subject.rs:33`. `journey::load_config(root) -> Result<TaggerConfig, ConfigError>` exists at `journey/mod.rs:109`.
 
 - [ ] **Step 1: Write the failing tests** (append to `tests/lifecycle_state.rs`)
 
@@ -1332,7 +1503,7 @@ pub fn record(root: &Path, event: LifecycleEvent) -> Option<Stamped> {
 }
 ```
 
-If `hook::seq` is private, change `mod seq;` to `pub(crate) mod seq;` in `hook/mod.rs`. Verify `outcomes::subject::current(root) -> Option<String>` exists (`outcomes/mod.rs:54` calls it); if its signature differs, adapt.
+No visibility changes are needed for this task: `pub(crate) mod seq;` and `pub(crate) fn next_seq` already exist, as does `outcomes::subject::current(root) -> Option<String>`.
 
 - [ ] **Step 4: Run tests**
 
@@ -1695,10 +1866,16 @@ pub(super) session_id: Option<String>, pub(super) tool_use_id: Option<String>,
 pub(super) hook_event_name: Option<String>, pub(super) agent_id: Option<String>,
 // hook/mod.rs:
 pub(crate) const REDACTED_KEYS: [&str; 2] = ["prompt", "last_assistant_message"];
-pub(crate) fn redact_for_capture(raw: &str) -> String;   // replaces those keys' string values with "<redacted:N bytes>", returns raw unchanged if not a JSON object
+/// `pub`, not `pub(crate)`: `tests/payload_capture.rs` is an integration test
+/// and reaches it as `phronesis_mcp::hook::redact_for_capture`.
+pub fn redact_for_capture(raw: &str) -> String;   // replaces those keys' string values with "<redacted:N bytes>", returns raw unchanged if not a JSON object
+/// Promoted from private `fn` so `claude_hook.rs` (Plan 2) and `codex_hook.rs`
+/// (Plan 3) can tee their own stdin. Plan 1 makes this change; neither
+/// dependent plan touches `hook/mod.rs` for it.
+pub(crate) fn capture_raw_payload(phase: &str, raw: &str);
 ```
 
-Wire `redact_for_capture` into `capture_raw_payload` so the tee writes the redacted string. Plans 2 and 3 call `capture_raw_payload` from their adapters.
+Wire `redact_for_capture` into `capture_raw_payload` so the tee writes the redacted string. Because `read_payload` already calls `capture_raw_payload`, this covers `pre-check` and `post-check` in the same edit. Plans 2 and 3 call `capture_raw_payload` directly from their adapters and rely on this task for both the visibility and the redaction.
 
 - [ ] **Step 1: Write the failing test** (append to `tests/payload_capture.rs`, following the file's existing pattern for setting `PHRONESIS_CAPTURE_DIR` and invoking `phr-mcp pre-check`)
 
@@ -1757,7 +1934,25 @@ pub fn redact_for_capture(raw: &str) -> String {
 }
 ```
 
-In `capture_raw_payload`, apply `redact_for_capture(&raw)` to the string before writing. Make `capture_raw_payload` `pub(crate)` if it is not already (Plans 2/3 need it).
+Change `fn capture_raw_payload(phase: &str, raw: &str)` (`hook/mod.rs:90`) to `pub(crate) fn capture_raw_payload(phase: &str, raw: &str)` and redact before the tee. The function currently embeds `raw` under a `"raw"` key; redact the string first so the parsed value it stores is already clean:
+
+```rust
+pub(crate) fn capture_raw_payload(phase: &str, raw: &str) {
+    let Ok(dir) = std::env::var("PHRONESIS_CAPTURE_DIR") else {
+        return;
+    };
+    // Redact free-text fields before anything is written. Prompt text must
+    // never reach `payloads.jsonl`, which the corpus-promotion doc copies into
+    // a committed tree (spec §"Payload capture").
+    let raw = redact_for_capture(raw);
+    let record = serde_json::json!({
+        "ts": unix_secs_now(),
+        "phase": phase,
+        "raw": serde_json::from_str::<serde_json::Value>(&raw)
+            .unwrap_or_else(|_| serde_json::Value::String(raw.clone())),
+    });
+    // …the rest of the function is unchanged.
+```
 
 - [ ] **Step 4: Run tests**
 
@@ -1787,7 +1982,7 @@ pub fn run(root: &Path, cmd: KalpaCmd) -> anyhow::Result<String>;              /
 pub fn header_line(root: &Path, now: u64) -> Option<String>;  // "kalpa: <name> (<age>)" [+ " (stale? run phr-mcp kalpa end)" past 30 days]; Plan 5 prints this in journey/stats headers
 ```
 
-`Show` in this plan prints the header line and "counts: see Plan 5" placeholder is **not** acceptable; instead it prints the header line only, and Plan 5 extends it with counts. `run` with `Show` and no name uses the open kalpa; with no open kalpa returns `Err("no kalpa open")`.
+`Show` prints the header line and nothing else — no "counts: see Plan 5" stub, which would be a placeholder shipped to a user. Plan 5 Task 3 replaces the `Show` arm with one that appends the count block. `run` with `Show` and no name uses the open kalpa; with no open kalpa it returns `Err("no kalpa open")`.
 
 - [ ] **Step 1: Write the failing tests** in `tests/kalpa_integration.rs` (use the same `phr-mcp` binary invocation helper style as `tests/journey_cli_integration.rs`; read that file first and copy its `cargo_bin`/`Command` setup)
 
@@ -1893,7 +2088,7 @@ pub fn run(root: &Path, cmd: KalpaCmd) -> anyhow::Result<String> {
 
 Note `kalpa_end` records after `clear_kalpa`, so the record's `kalpa` field is `None`; the name travels in `extra.kalpa_name`. `kalpa_start` records after `write_kalpa`, so it is stamped with the new name.
 
-`main.rs`: add to the `Command` enum
+`main.rs`: add to the `Command` enum. **Placement convention for this whole five-plan set:** every new `Command` variant goes in alphabetical position by variant name among the *newly added* lifecycle variants, and the group as a whole sits immediately after the existing `CodexHook` variant (`main.rs:424`). The set adds exactly two: `ClaudeHook` (Plan 2) and `Kalpa` (Plan 1). Alphabetically `ClaudeHook` precedes `Kalpa`, so the final order after both land is `CodexHook`, `ClaudeHook`, `Kalpa`. Plan 1 lands first and puts `Kalpa` directly after `CodexHook`; Plan 2 inserts `ClaudeHook` between them. Same rule in the `match cli.command` dispatch block, so the two edits never touch the same line.
 
 ```rust
     /// Name the theme (kalpa) the current run of sessions belongs to.
@@ -1980,4 +2175,5 @@ git commit -m "docs: journey spec amendment and changelog for lifecycle foundati
 
 - **Spec coverage (steps 1a/1b):** journal v2 (T1), projection + selectors + read bound (T2), compaction (T3), shared type (T4), state files with lock, TTL, scope, session overwrite (T5), scrub_prompt (T6), record + prompt_text (T7), classify (T8), detect_commit (T9), HookPayload widening + comment fix + capture redaction (T10), kalpa subcommand + header (T11), spec amendment + changelog (T12). Not in this plan by design: pre/post inflight push/pop and `invoke_agent` derivation (Plan 2), Codex payload fields (Plan 3), Gemini registrations (Plan 4), stats/metrics/CLI rendering and `kalpa show` counts (Plan 5).
 - **Type consistency:** `LifecycleEvent`, `Stamped`, `PromptText`, `Kind`, `Mode`, `Host` are defined once in T4 and used by T7, T8, T11 with the same names. `Inflight`, `OpenAgent`, `Turn`, `Kalpa`, `PromptContext`, `Classification`, `InterruptSource` are defined in T5/T8. `Commit` in T9. `redact_for_capture` in T10.
-- **Placeholders:** none. T11's `Show` intentionally prints only the header until Plan 5 adds counts, and says so.
+- **Placeholders:** none. T11's `Show` intentionally prints only the header until Plan 5 adds counts, and says so. T3's compaction test and T2's `validate_selectors` loop are written out in full against the real `maybe_compact` / `validate_selectors` bodies.
+- **Ownership:** this plan is the sole owner of `hook/mod.rs` for the feature. `HookPayload`'s new fields, `redact_for_capture`, `capture_raw_payload`'s `pub(crate)` visibility, and the corrected `tool_output` comment all land in T10. Plans 2 and 3 consume them and must not re-make those changes; Plan 2 adds only the single `mod lifecycle_wiring;` line to that file.
