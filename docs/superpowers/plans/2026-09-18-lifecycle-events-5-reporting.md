@@ -73,8 +73,15 @@ This plan consumes the exact action-log fields `LifecycleEvent::to_log_entry` wr
 ```rust
 pub struct LifecycleOpts { pub since_secs: Option<u64>, pub kalpa: Option<String>, pub now_secs: u64 }  // Default
 pub struct LifecycleStats { pub kalpa: Option<String>, pub oldest_entry_ts: Option<u64>, pub sessions: u32,
-    pub events: BTreeMap<String,u32>, pub prompt_modes: BTreeMap<String,u32>, pub subagents: u32,
-    pub subagent_median_secs: Option<u64>, pub commits: u32, pub confidence_bands: BTreeMap<String,u32> }
+    pub events: BTreeMap<String,u32>, pub prompt_modes: BTreeMap<String,u32>,
+    /// `subagent_start` records — what was launched.
+    pub subagents: u32,
+    /// The subset that paired with a stop (`matched_start: true`).
+    pub subagents_matched: u32,
+    /// Median over the matched pairs' durations alone. A pair whose start
+    /// rotated away contributes no duration.
+    pub subagent_median_secs: Option<u64>, pub commits: u32,
+    pub confidence_bands: BTreeMap<String,u32>, pub interventions: u32 }
 pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> LifecycleStats;
 pub fn render_lifecycle(s: &LifecycleStats) -> String;          // the spec's five-line block
 pub fn retention_line(oldest_entry_ts: Option<u64>) -> String;  // "counts since log entry 2026-09-17 14:02"
@@ -98,9 +105,13 @@ fn fixture_log() -> Vec<LogEntry> {
         life(100, "prompt", &[("mode", json!("fresh")), k("k1"), ("prompt_bytes", json!(12))]),
         life(110, "prompt", &[("mode", json!("correction")), k("k1")]),
         life(120, "interrupt", &[k("k1"), ("inferred_from", json!("inflight"))]),
+        life(125, "subagent_start", &[k("k1"), ("agent_id", json!("a1"))]),
+        life(126, "subagent_start", &[k("k1"), ("agent_id", json!("a2"))]),
         life(130, "subagent_stop", &[k("k1"), ("duration_secs", json!(10)), ("matched_start", json!(true))]),
-        life(140, "subagent_stop", &[k("k1"), ("duration_secs", json!(220))]),
-        life(150, "subagent_stop", &[k("k1"), ("duration_secs", json!(30))]),
+        life(140, "subagent_stop", &[k("k1"), ("duration_secs", json!(220)), ("matched_start", json!(true))]),
+        // Unmatched: its start rotated away, so it contributes no duration and
+        // is not counted among the matched pairs.
+        life(150, "subagent_stop", &[k("k1"), ("duration_secs", json!(30)), ("matched_start", json!(false))]),
         life(160, "commit", &[k("k1"), ("sha", json!("0f3c")), ("confidence_band", json!("high"))]),
         life(170, "commit", &[k("k1"), ("sha", json!("aa11")), ("confidence_band", json!("medium"))]),
         {
@@ -121,8 +132,13 @@ fn aggregate_lifecycle_counts_events_modes_subagents_and_commits() {
     assert_eq!(s.events.get("interrupt"), Some(&1));
     assert_eq!(s.prompt_modes.get("fresh"), Some(&1));
     assert_eq!(s.prompt_modes.get("correction"), Some(&1));
-    assert_eq!(s.subagents, 3);
-    assert_eq!(s.subagent_median_secs, Some(30), "durations 10, 30, 220");
+    assert_eq!(s.subagents, 2, "two starts were launched");
+    assert_eq!(s.subagents_matched, 2, "two of the three stops paired");
+    assert_eq!(
+        s.subagent_median_secs,
+        Some(115),
+        "matched durations 10 and 220 only; the unmatched stop's 30 does not count"
+    );
     assert_eq!(s.commits, 2);
     assert_eq!(s.confidence_bands.get("high"), Some(&1));
     assert_eq!(s.confidence_bands.get("medium"), Some(&1));
@@ -160,8 +176,8 @@ fn render_lifecycle_matches_the_spec_block() {
     assert!(out.contains("prompts         2   fresh 1   mid_turn 0   correction 1"), "{out}");
     assert!(out.contains("interventions   1   (mid_turn + correction)"), "{out}");
     assert!(out.contains("interrupts      1"), "{out}");
-    assert!(out.contains("sub-agents      3   median 30s"), "{out}");
-    assert!(out.contains("commits         2   confidence at commit: high 1  medium 1  low 0"), "{out}");
+    assert!(out.contains("sub-agents      2   starts, 2 matched   median 1m55s"), "{out}");
+    assert!(out.contains("commits         2   (shell tool calls only)   confidence at commit: high 1  medium 1  low 0"), "{out}");
     assert!(out.contains("interventions / commit   0.50"), "{out}");
     assert!(!out.contains("prompt_bytes"), "no raw field names leak: {out}");
 }
@@ -172,6 +188,29 @@ fn render_lifecycle_omits_ratio_without_commits() {
     assert!(!render_lifecycle(&s).contains("interventions / commit"));
 }
 
+/// "The `confidence at commit` segment is omitted entirely when no commit in the
+/// window carries a band, rather than printing zeros" — printing `high 0 medium
+/// 0 low 0` reads as "we measured and found none", which is not what happened.
+#[test]
+fn render_lifecycle_omits_the_band_segment_when_no_commit_carries_one() {
+    let entries = vec![life(100, "commit", &[("sha", json!("0f3c"))])];
+    let s = aggregate_lifecycle(&entries, &LifecycleOpts::default());
+    let out = render_lifecycle(&s);
+    assert!(out.contains("commits         1   (shell tool calls only)"), "{out}");
+    assert!(!out.contains("confidence at commit"), "{out}");
+    assert!(!out.contains("low 0"), "{out}");
+}
+
+/// The commit line always carries its own disclaimer, because the denominator
+/// is read honestly or not at all: commits made outside a shell tool call — in
+/// another terminal, through a host's commit UI, by a wrapper script — are
+/// invisible here (spec §"Success signal: commit").
+#[test]
+fn the_commit_line_says_where_its_commits_came_from() {
+    let s = aggregate_lifecycle(&fixture_log(), &LifecycleOpts::default());
+    assert!(render_lifecycle(&s).contains("(shell tool calls only)"));
+}
+
 #[test]
 fn humanize_duration_and_retention_line_formats() {
     assert_eq!(humanize_duration(30), "30s");
@@ -179,6 +218,41 @@ fn humanize_duration_and_retention_line_formats() {
     assert_eq!(humanize_duration(3_840), "1h04m");
     assert_eq!(retention_line(None), "counts since log entry (none)");
     assert!(retention_line(Some(1_700_000_000)).starts_with("counts since log entry 20"));
+}
+
+/// Both `stats` and `kalpa show` read `.phronesis/log.jsonl` **and its one
+/// rotated predecessor**, because a long kalpa's early events are in the
+/// rotated file and the median would otherwise be computed over half the data.
+/// `action_log::read_recent` with `limit: None` already reads both, oldest
+/// first; this pins it, because "for free" is exactly the kind of claim that
+/// stops being true.
+#[test]
+fn lifecycle_entries_are_read_from_the_rotated_predecessor_too() {
+    use crate::action_log::{self, ReadOpts};
+    let dir = tempfile::tempdir().unwrap();
+    let path = action_log::default_path(dir.path());
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let line = |ts: u64, secs: u64| {
+        format!(
+            r#"{{"ts":{ts},"kind":"lifecycle","event":"subagent_stop","host":"claude","sid":"s-1","seq":{ts},"duration_secs":{secs},"matched_start":true}}"#
+        )
+    };
+    std::fs::write(
+        path.with_file_name("log.jsonl.1"),
+        format!("{}\n{}\n", line(10, 10), line(20, 20)),
+    )
+    .unwrap();
+    std::fs::write(&path, format!("{}\n", line(30, 300))).unwrap();
+
+    let entries = action_log::read_recent(
+        &path,
+        &ReadOpts { kind: Some("lifecycle".to_string()), ..ReadOpts::default() },
+    )
+    .unwrap();
+    assert_eq!(entries.len(), 3, "the rotated predecessor is read");
+    let s = aggregate_lifecycle(&entries, &LifecycleOpts::default());
+    assert_eq!(s.subagent_median_secs, Some(20), "median over all three, not just the current file");
+    assert_eq!(s.oldest_entry_ts, Some(10), "and the boundary is the oldest of the pair");
 }
 
 #[test]
@@ -229,8 +303,13 @@ pub struct LifecycleStats {
     pub sessions: u32,
     pub events: BTreeMap<String, u32>,
     pub prompt_modes: BTreeMap<String, u32>,
-    /// `subagent_stop` entries: only a stop carries a duration.
+    /// `subagent_start` entries: what was launched. Spec §Reporting:
+    /// "`sub-agents` counts `subagent_start` records".
     pub subagents: u32,
+    /// The subset that paired — `subagent_stop` entries with
+    /// `matched_start: true`. A stop whose start rotated away is not one.
+    pub subagents_matched: u32,
+    /// Median over the **matched** pairs' durations alone.
     pub subagent_median_secs: Option<u64>,
     pub commits: u32,
     pub confidence_bands: BTreeMap<String, u32>,
@@ -284,10 +363,16 @@ pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> Lifecy
                     out.interventions += 1;
                 }
             }
+            "subagent_start" => out.subagents += 1,
             "subagent_stop" => {
-                out.subagents += 1;
-                if let Some(d) = e.data.get("duration_secs").and_then(|v| v.as_u64()) {
-                    durations.push(d);
+                // Only a matched stop is a pair, and only a pair has a duration
+                // worth a median: an unmatched stop's start rotated away or was
+                // never recorded, so its `duration_secs` is absent or wrong.
+                if e.data.get("matched_start").and_then(|v| v.as_bool()) == Some(true) {
+                    out.subagents_matched += 1;
+                    if let Some(d) = e.data.get("duration_secs").and_then(|v| v.as_u64()) {
+                        durations.push(d);
+                    }
                 }
             }
             "commit" => {
@@ -346,6 +431,19 @@ pub fn render_lifecycle(s: &LifecycleStats) -> String {
         .subagent_median_secs
         .map(|d| format!("   median {}", humanize_duration(d)))
         .unwrap_or_default();
+    // Omitted entirely when no commit in the window carries a band: printing
+    // `high 0  medium 0  low 0` reads as "we measured and found none", which is
+    // not what happened (spec §Reporting).
+    let bands = if s.confidence_bands.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "   confidence at commit: high {}  medium {}  low {}",
+            b("high"),
+            b("medium"),
+            b("low")
+        )
+    };
     let mut out = String::new();
     out.push_str(&format!("{:<12}{:>4}\n", "sessions", s.sessions));
     out.push_str(&format!(
@@ -354,10 +452,16 @@ pub fn render_lifecycle(s: &LifecycleStats) -> String {
     ));
     out.push_str(&format!("{:<12}{:>4}   (mid_turn + correction)\n", "interventions", s.interventions));
     out.push_str(&format!("{:<12}{:>4}\n", "interrupts", n("interrupt")));
-    out.push_str(&format!("{:<12}{:>4}{}\n", "sub-agents", s.subagents, median));
     out.push_str(&format!(
-        "{:<12}{:>4}   confidence at commit: high {}  medium {}  low {}\n",
-        "commits", s.commits, b("high"), b("medium"), b("low")
+        "{:<12}{:>4}   starts, {} matched{}\n",
+        "sub-agents", s.subagents, s.subagents_matched, median
+    ));
+    // The disclaimer is part of the line, not a footnote: commits made outside a
+    // shell tool call are invisible here, so the denominator is undercounted and
+    // must say so wherever it is printed (spec §"Success signal: commit").
+    out.push_str(&format!(
+        "{:<12}{:>4}   (shell tool calls only){}\n",
+        "commits", s.commits, bands
     ));
     if let Some(r) = s.interventions_per_commit() {
         out.push_str(&format!("interventions / commit   {r:.2}\n"));
@@ -396,6 +500,7 @@ pub fn render_json_with_lifecycle(values: &Stats, life: Option<&LifecycleStats>)
         obj.insert("lifecycle".to_string(), json!({
             "kalpa": l.kalpa, "oldest_entry_ts": l.oldest_entry_ts, "sessions": l.sessions,
             "events": l.events, "prompts": l.prompt_modes, "subagents": l.subagents,
+            "subagents_matched": l.subagents_matched,
             "subagent_median_secs": l.subagent_median_secs, "commits": l.commits,
             "interventions": l.interventions, "interventions_per_commit": l.interventions_per_commit(),
             "confidence_bands": l.confidence_bands,
@@ -443,8 +548,10 @@ fn seed_lifecycle_log(root: &std::path::Path, kalpa: &str) {
         (1_700_000_000, LifecycleEvent::new(Kind::Prompt, Host::Claude).with_mode(Mode::Fresh).with_prompt("do the thing")),
         (1_700_000_100, LifecycleEvent::new(Kind::Interrupt, Host::Claude).with_extra("inferred_from", "inflight")),
         (1_700_000_110, LifecycleEvent::new(Kind::Prompt, Host::Claude).with_mode(Mode::Correction).with_prompt("no, the other thing")),
+        (1_700_000_150, LifecycleEvent::new(Kind::SubagentStart, Host::Claude).with_agent("a1", Some("reviewer".into()))),
+        (1_700_000_160, LifecycleEvent::new(Kind::SubagentStart, Host::Claude).with_agent("a2", Some("reviewer".into()))),
         (1_700_000_200, LifecycleEvent::new(Kind::SubagentStop, Host::Claude).with_agent("a1", Some("reviewer".into())).with_extra("duration_secs", 220u64).with_extra("matched_start", true)),
-        (1_700_000_300, LifecycleEvent::new(Kind::SubagentStop, Host::Claude).with_agent("a2", Some("reviewer".into())).with_extra("duration_secs", 20u64)),
+        (1_700_000_300, LifecycleEvent::new(Kind::SubagentStop, Host::Claude).with_agent("a2", Some("reviewer".into())).with_extra("duration_secs", 20u64).with_extra("matched_start", true)),
         (1_700_000_400, LifecycleEvent::new(Kind::Commit, Host::Claude).with_extra("sha", "0f3c").with_extra("confidence_band", "high")),
     ];
     for (i, (ts, ev)) in events.iter().enumerate() {
@@ -570,8 +677,8 @@ fn kalpa_show_reports_counts_for_the_named_kalpa() {
     assert!(stdout.contains("sessions        1"), "{stdout}");
     assert!(stdout.contains("prompts         2"), "{stdout}");
     assert!(stdout.contains("interrupts      1"), "{stdout}");
-    assert!(stdout.contains("sub-agents      2   median 2m00s"), "{stdout}");
-    assert!(stdout.contains("commits         1   confidence at commit: high 1  medium 0  low 0"), "{stdout}");
+    assert!(stdout.contains("sub-agents      2   starts, 2 matched   median 2m00s"), "{stdout}");
+    assert!(stdout.contains("commits         1   (shell tool calls only)   confidence at commit: high 1  medium 0  low 0"), "{stdout}");
     assert!(!stdout.contains("do the thing"), "prompt text must never reach kalpa show: {stdout}");
 }
 
@@ -583,6 +690,37 @@ fn kalpa_show_of_a_closed_kalpa_still_counts_its_entries() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("kalpa: old-theme (closed)"), "{stdout}");
     assert!(stdout.contains("commits         1"), "{stdout}");
+    // `seed_lifecycle_log` writes no `kalpa_start` entry, which is exactly the
+    // case where the boundary has rotated off.
+    assert!(stdout.contains("start not retained"), "{stdout}");
+}
+
+/// The other half: when the `kalpa_start` entry is still in the log, the header
+/// prints the date it holds rather than the disclaimer.
+#[test]
+fn kalpa_show_prints_the_start_date_when_the_boundary_is_still_retained() {
+    let d = tempfile::tempdir().unwrap();
+    seed_lifecycle_log(d.path(), "old-theme");
+    {
+        use phronesis_mcp::action_log;
+        use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, PromptText, Stamped};
+        let stamped = Stamped {
+            ts: 1_699_999_000,
+            sid: "s-1".to_string(),
+            seq: 0,
+            kalpa: Some("old-theme".to_string()),
+            subject: None,
+        };
+        action_log::append(
+            &action_log::default_path(d.path()),
+            &LifecycleEvent::new(Kind::KalpaStart, Host::Cli).to_log_entry(&stamped, PromptText::Full),
+        )
+        .unwrap();
+    }
+    let out = run_phr(d.path(), &["kalpa", "show", "old-theme"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("started 20"), "{stdout}");
+    assert!(!stdout.contains("start not retained"), "{stdout}");
 }
 ```
 
@@ -611,6 +749,15 @@ fn report(root: &Path, kalpa: &str, now: u64) -> String {
         &LifecycleOpts { since_secs: None, kalpa: Some(kalpa.to_string()), now_secs: now },
     );
 
+    // "when the `kalpa_start` entry has itself rotated off, the header prints
+    // `start not retained` in place of the start date" (spec §Reporting). The
+    // open `kalpa` file still knows `started_ts`, but a *closed* kalpa's start
+    // is only knowable from the log — and `kalpa end` deletes the file, so the
+    // date is gone with the rotation. Saying "start not retained" is honest;
+    // printing the oldest retained entry as if it were the start is not.
+    let start_retained = entries
+        .iter()
+        .any(|e| e.event == "kalpa_start" && e.data.get("kalpa").and_then(|v| v.as_str()) == Some(kalpa));
     let head = match state::read_kalpa(root).filter(|k| k.name == kalpa) {
         Some(k) => {
             let started = chrono::DateTime::from_timestamp(k.started_ts as i64, 0)
@@ -622,7 +769,27 @@ fn report(root: &Path, kalpa: &str, now: u64) -> String {
                 retention_line(stats.oldest_entry_ts)
             )
         }
-        None => format!("kalpa: {kalpa} (closed)      {}", retention_line(stats.oldest_entry_ts)),
+        None if start_retained => {
+            let started = entries
+                .iter()
+                .find(|e| {
+                    e.event == "kalpa_start"
+                        && e.data.get("kalpa").and_then(|v| v.as_str()) == Some(kalpa)
+                })
+                .map(|e| e.ts)
+                .unwrap_or_default();
+            let when = chrono::DateTime::from_timestamp(started as i64, 0)
+                .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| started.to_string());
+            format!(
+                "kalpa: {kalpa} (closed)      started {when}      {}",
+                retention_line(stats.oldest_entry_ts)
+            )
+        }
+        None => format!(
+            "kalpa: {kalpa} (closed)      start not retained      {}",
+            retention_line(stats.oldest_entry_ts)
+        ),
     };
     format!("{head}\n{}", render_lifecycle(&stats))
 }
@@ -897,11 +1064,16 @@ git commit -m "feat(journey): render lifecycle records with a marker and a --lif
 - Test: `crates/phronesis-mcp/tests/journey_cli_integration.rs`
 
 **Interfaces:**
-- Consumes: `action_log::{default_path, read_recent, ReadOpts}`.
+- Consumes: `action_log::{default_path, read_recent, ReadOpts}` and
+  **`lifecycle::record::correction_text`** (Plan 1 Task 7) — the one accessor for
+  correction text. Spec §"Action log": "Every consumer of correction text …
+  goes through one accessor … No consumer greps the log directly." Reading
+  `entry.data["prompt"]` here would make `prompt_text: "none"` a write-time-only
+  switch, so flipping it would leave every prompt already on disk printable.
 - Produces:
 
 ```rust
-pub struct CorrectionRow { pub ts: u64, pub sid: String, pub prompt: String }
+pub struct CorrectionRow { pub ts: u64, pub sid: String, pub prompt: Option<String> }
 pub fn corrections(project_root: &Path) -> Vec<CorrectionRow>;   // oldest first, rotated log included
 pub fn render_corrections(rows: &[CorrectionRow]) -> String;
 ```
@@ -933,6 +1105,66 @@ fn journey_corrections_lists_scrubbed_prompts_oldest_first() {
     assert!(!stdout.contains("pre_check"), "non-lifecycle entries ignored: {stdout}");
 }
 
+/// The rotated predecessor is read: a kalpa long enough to rotate the log must
+/// not lose the oldest half of the list the feature exists to produce.
+#[test]
+fn journey_corrections_include_the_rotated_predecessor() {
+    let dir = tempfile::tempdir().unwrap();
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 1, "auth");
+    let correction = |ts: u64, seq: u64, text: &str| {
+        serde_json::json!({"ts":ts,"kind":"lifecycle","event":"prompt","host":"claude",
+                           "sid":"s-1","seq":seq,"mode":"correction","prompt":text,
+                           "prompt_bytes":text.len()})
+        .to_string()
+    };
+    std::fs::write(
+        dir.path().join(".phronesis/log.jsonl.1"),
+        format!("{}\n", correction(1_700_000_000, 1, "the oldest correction")),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join(".phronesis/log.jsonl"),
+        format!("{}\n", correction(1_700_000_900, 2, "the newest correction")),
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = run(&["journey", "--corrections"], dir.path());
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let old = stdout.find("the oldest correction").expect("the rotated file is read");
+    let new = stdout.find("the newest correction").expect("the current file is read");
+    assert!(old < new, "oldest first across both files: {stdout}");
+}
+
+/// `prompt_text: "none"` is enforced at READ time: text already written under
+/// `"full"` is hidden too, and the row still shows when the correction happened.
+#[test]
+fn journey_corrections_honor_prompt_text_none_at_read_time() {
+    let dir = tempfile::tempdir().unwrap();
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 1, "auth");
+    std::fs::write(
+        dir.path().join(".phronesis/log.jsonl"),
+        format!(
+            "{}\n",
+            serde_json::json!({"ts":1_700_000_110u64,"kind":"lifecycle","event":"prompt",
+                               "host":"claude","sid":"s-1","seq":3,"mode":"correction",
+                               "prompt":"already-on-disk text","prompt_bytes":20})
+        ),
+    )
+    .unwrap();
+    // Written under "full"; the switch flips afterwards.
+    std::fs::write(
+        dir.path().join(".phronesis/journey.json"),
+        r#"{"version":1,"taggers":[],"modules":[],"lifecycle":{"prompt_text":"none"}}"#,
+    )
+    .unwrap();
+
+    let (code, stdout, _) = run(&["journey", "--corrections"], dir.path());
+    assert_eq!(code, 0);
+    assert!(!stdout.contains("already-on-disk text"), "{stdout}");
+    assert!(stdout.contains("(prompt text disabled)"), "{stdout}");
+    assert!(stdout.contains("s-1"), "the row still shows when it happened: {stdout}");
+}
+
 #[test]
 fn journey_corrections_on_an_empty_log_says_so() {
     let dir = tempfile::tempdir().unwrap();
@@ -958,7 +1190,9 @@ Expected: FAIL — `unexpected argument '--corrections'`.
 pub struct CorrectionRow {
     pub ts: u64,
     pub sid: String,
-    pub prompt: String,
+    /// `None` under `lifecycle.prompt_text: "none"`. The row still shows *when*
+    /// the correction happened, which is the part the switch does not hide.
+    pub prompt: Option<String>,
 }
 
 /// Every recorded correction, oldest first, across `.phronesis/log.jsonl` and
@@ -970,6 +1204,9 @@ pub fn corrections(project_root: &Path) -> Vec<CorrectionRow> {
         event: Some("prompt".to_string()),
         ..ReadOpts::default()
     };
+    // `limit: None` reads `.phronesis/log.jsonl` AND its rotated predecessor,
+    // oldest first. "The list the feature exists to surface must not silently
+    // lose its oldest half to rotation" (spec §"CLI and MCP surface").
     action_log::read_recent(&action_log::default_path(project_root), &opts)
         .unwrap_or_default()
         .iter()
@@ -977,10 +1214,10 @@ pub fn corrections(project_root: &Path) -> Vec<CorrectionRow> {
         .map(|e| CorrectionRow {
             ts: e.ts,
             sid: e.data.get("sid").and_then(|v| v.as_str()).unwrap_or("-").to_string(),
-            // Absent under `lifecycle.prompt_text: "none"`; the row still shows
-            // when the correction happened.
-            prompt: e.data.get("prompt").and_then(|v| v.as_str())
-                .unwrap_or("(prompt text disabled)").to_string(),
+            // The ONE accessor. It consults the current `prompt_text` value, so
+            // flipping the switch to `"none"` hides text already written under
+            // `"full"` as well as text not yet written.
+            prompt: crate::lifecycle::record::correction_text(project_root, e),
         })
         .collect()
 }
@@ -996,8 +1233,13 @@ pub fn render_corrections(rows: &[CorrectionRow]) -> String {
             .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_else(|| r.ts.to_string());
         out.push_str(&format!("{when}  {}\n", r.sid));
-        for line in r.prompt.lines() {
-            out.push_str(&format!("    {line}\n"));
+        match &r.prompt {
+            Some(text) => {
+                for line in text.lines() {
+                    out.push_str(&format!("    {line}\n"));
+                }
+            }
+            None => out.push_str("    (prompt text disabled)\n"),
         }
         out.push('\n');
     }
@@ -1342,7 +1584,7 @@ git commit -m "feat(context): print the active kalpa in the session-context rend
 
 **Interfaces:**
 - Consumes: `LogRecord::{kind, event, str_field, num}`; action-log fields `host`, `mode`, `duration_secs`.
-- Produces: `phronesis_lifecycle_events_total{host,event,mode}` and `phronesis_subagent_duration_seconds`. No new Rust API.
+- Produces: `phronesis_lifecycle_events_total{host,event,mode}` and `phronesis_subagent_duration_seconds{host}`. No new Rust API.
 
 - [ ] **Step 1: Write the failing tests** — append to `tests/derivation.rs`
 
@@ -1371,7 +1613,7 @@ fn lifecycle_events_counter_labels_host_event_and_mode() {
 }
 
 #[test]
-fn subagent_duration_histogram_has_twelve_exponential_buckets() {
+fn subagent_duration_histogram_has_thirteen_exponential_buckets_and_a_host_label() {
     let out = render(
         vec![
             record(serde_json::json!({
@@ -1394,9 +1636,36 @@ fn subagent_duration_histogram_has_twelve_exponential_buckets() {
     let buckets = out.lines()
         .filter(|l| l.starts_with("phronesis_subagent_duration_seconds_bucket"))
         .count();
-    assert_eq!(buckets, 13, "exponential_buckets(1.0, 2.0, 12) plus +Inf:\n{out}");
-    assert!(out.contains("phronesis_subagent_duration_seconds_count 2"), "{out}");
-    assert!(out.contains("phronesis_subagent_duration_seconds_sum 223"), "{out}");
+    // `exponential_buckets(1.0, 2.0, 13)` is 13 finite buckets — the last is
+    // 4096 s, about 68 min — plus `+Inf`.
+    assert_eq!(buckets, 14, "exponential_buckets(1.0, 2.0, 13) plus +Inf:\n{out}");
+    assert!(out.contains(r#"le="4096""#), "the last finite bucket is 4096 s: {out}");
+    // `host` is a label on the histogram too, so one host's slow sub-agents do
+    // not smear another's distribution.
+    assert!(out.contains(r#"phronesis_subagent_duration_seconds_count{host="claude"} 2"#), "{out}");
+    assert!(out.contains(r#"phronesis_subagent_duration_seconds_sum{host="claude"} 223"#), "{out}");
+}
+
+/// Two hosts, two series. Without the label they share one distribution and the
+/// median of a mixed fleet means nothing.
+#[test]
+fn subagent_duration_is_split_by_host() {
+    let out = render(
+        vec![
+            record(serde_json::json!({
+                "ts": 100, "kind": "lifecycle", "event": "subagent_stop", "host": "claude",
+                "sid": "s-1", "seq": 1, "duration_secs": 10, "matched_start": true,
+            })),
+            record(serde_json::json!({
+                "ts": 110, "kind": "lifecycle", "event": "subagent_stop", "host": "codex",
+                "sid": "s-1", "seq": 2, "duration_secs": 1000, "matched_start": true,
+            })),
+        ],
+        &Options::default(),
+    );
+    assert!(out.contains(r#"phronesis_subagent_duration_seconds_sum{host="claude"} 10"#), "{out}");
+    assert!(out.contains(r#"phronesis_subagent_duration_seconds_sum{host="codex"} 1000"#), "{out}");
+    assert!(!out.contains("kalpa"), "still no kalpa label: {out}");
 }
 
 #[test]
@@ -1430,14 +1699,25 @@ struct LifecycleLabels {
     /// label set closed; an absent label would split the series.
     mode: String,
 }
+
+/// The histogram's label set is `{host}` alone: a duration is a property of the
+/// sub-agent, and `event` is always `subagent_stop` here.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct HostLabel {
+    host: String,
+}
 ```
 
 In `build`, beside the other family declarations:
 
 ```rust
     let lifecycle_events = Family::<LifecycleLabels, Counter>::default();
-    // 1 s to ~68 min: the useful range of a sub-agent's life.
-    let subagent_duration = Histogram::new(exponential_buckets(1.0, 2.0, 12));
+    // 13 buckets, so the last finite one is 4096 s — about 68 min, the useful
+    // range of a sub-agent's life. A `Family` of histograms needs an explicit
+    // constructor: `Default` would give every series the default bucket set.
+    let subagent_duration = Family::<HostLabel, Histogram>::new_with_constructor(|| {
+        Histogram::new(exponential_buckets(1.0, 2.0, 13))
+    });
 ```
 
 New match arm after `"context"`:
@@ -1456,7 +1736,11 @@ New match arm after `"context"`:
                 if rec.event == "subagent_stop"
                     && let Some(secs) = rec.num("duration_secs")
                 {
-                    subagent_duration.observe(secs as f64);
+                    subagent_duration
+                        .get_or_create(&HostLabel {
+                            host: rec.str_field("host").unwrap_or("unknown").to_string(),
+                        })
+                        .observe(secs as f64);
                 }
             }
 ```
@@ -1471,7 +1755,7 @@ Registrations, beside the others (counter registered without `_total`):
     );
     registry.register(
         "phronesis_subagent_duration_seconds",
-        "Wall-clock seconds between a sub-agent's start and its stop",
+        "Wall-clock seconds between a sub-agent's start and its stop, by host",
         subagent_duration,
     );
 ```
@@ -1509,8 +1793,9 @@ git commit -m "feat(metrics): lifecycle event counter and sub-agent duration his
   header. `--lifecycle` shows only those records; `--corrections` lists the
   prompts that followed an interrupt, oldest first, with their scrubbed text.
 - Prometheus: `phronesis_lifecycle_events_total{host,event,mode}` and
-  `phronesis_subagent_duration_seconds` (12 exponential buckets, 1 s to ~68
-  min). No kalpa label — kalpa names are user-typed free text.
+  `phronesis_subagent_duration_seconds{host}` (13 exponential buckets, 1 s to
+  ~68 min). No kalpa label and no `agent_type` label — both are free text,
+  user-typed and model-supplied respectively.
 ```
 
 And, still under `### Added` (this is additive, not a change — nothing about the existing response moves):
@@ -1525,6 +1810,37 @@ And, still under `### Added` (this is additive, not a change — nothing about t
 ```
 
 Nothing goes under `### Changed` for this plan: no existing output shape moves.
+
+- [ ] **Step 1b: Add the upgrade note**
+
+This plan merges last, so it is where the release's user-facing note lands. Spec
+§Rollout: "**Upgrade note for users**, in the release notes as well as the
+CHANGELOG." Add it as its own `### Upgrading` subsection under
+`## [Unreleased]`, after `### Added`:
+
+```markdown
+### Upgrading
+
+- **Upgrading the binary registers nothing.** Run `phr-mcp init` in each project
+  to get the new hook registrations. Codex users then re-trust hooks via
+  `/hooks`; Gemini users must trust the folder, or project hooks are skipped.
+  Until you run `init`, `session-context` and `interaction-context` keep behaving
+  exactly as they do today and no lifecycle event is recorded.
+- **`s`-window journey rules now scope to a session.** The `.phronesis/journey/session`
+  file used to be create-on-miss and never overwritten, so in practice a
+  project's session id — and therefore every `s` window — spanned the file's
+  lifetime. Each session-begin `SessionStart` now mints a new id, which is what
+  the window name always claimed. This is a permanent semantic change, not a
+  one-time boundary: review your `s`-window rules, which now see shorter windows.
+  Rules using `Nc` or time windows are unaffected.
+- **Claude users with outcomes enabled get the confidence gate on turn stop for
+  the first time.** It is disabled the same way it is disabled for Codex today.
+- **The hooks and the MCP server upgrade in lockstep.** A project that has
+  written a `lifecycle:*` rule requires ≥ 0.35: an older binary fails closed with
+  `UndefinedSelector` on the first such rule, taking every journey fact with it,
+  and reads lifecycle records as odd `__lifecycle` tool records that shift
+  positional windows.
+```
 
 - [ ] **Step 2: Verify the whole suite**
 
@@ -1549,7 +1865,11 @@ git commit -m "docs(changelog): lifecycle reporting surfaces and metrics"
 | §Action log: stats gains a `lifecycle` section — per event, per prompt mode, sub-agent count + in-process median, commit count | 1, 2 |
 | §Action log: kalpa name in the stats header | 2 (`kalpa_cli::header_line`) |
 | §Action log: `phronesis_lifecycle_events_total{host,event,mode}`, `mode` empty for non-prompt | 8 |
-| §Action log: `phronesis_subagent_duration_seconds`, `exponential_buckets(1.0, 2.0, 12)`, no kalpa label | 8 |
+| §Action log: `phronesis_subagent_duration_seconds{host}`, `exponential_buckets(1.0, 2.0, 13)`, no kalpa label | 8 |
+| §Action log: sub-agent median computed in-process from the log **and its one rotated predecessor** | 1 |
+| §Reporting: `sub-agents` counts starts, `matched` is the paired subset, the median is over those durations alone | 1 |
+| §Reporting: the band segment is omitted when no commit carries one; `start not retained` when the boundary has rotated off | 1, 3 |
+| §Action log: `prompt_text` enforced at read time through `lifecycle::correction_text` | 5 |
 | §Reporting: `kalpa show <name>` / `stats --kalpa <name>` read log + rotated predecessor, raw counts, retention boundary in the header | 1–3 (`ReadOpts` with no limit reads both files; `retention_line`) |
 | §Reporting: the five-line block (sessions / prompts by mode / interrupts / sub-agents + median / commits + bands) | 1 (renderer), 3 (report) |
 | §Reporting: no ratios | Constraints; `LifecycleStats` holds counts only |
@@ -1560,6 +1880,7 @@ git commit -m "docs(changelog): lifecycle reporting surfaces and metrics"
 | §Reporting: the session-context render prints the active kalpa and its age | 7 |
 | §Testing: `journey_cli_integration.rs`, `kalpa_integration.rs`, `derivation.rs` additions | 2–5, 8 |
 | §Rollout: hand-written CHANGELOG under `## [Unreleased]` | 9 |
+| §Rollout: the upgrade note (`init` registers nothing on upgrade, `s` windows narrow, the Claude stop gate, the lockstep requirement) | 9 |
 
 Out of scope by design: commit detection (Plan 1 Task 9), kalpa start/end/validation (Plan 1 Task 11), and the adapters that emit events (Plans 2–4).
 

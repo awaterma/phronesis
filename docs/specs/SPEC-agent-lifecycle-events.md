@@ -377,9 +377,13 @@ auditable; no better pairing is available from the hook surface.
 **`agent_type` is sanitized at the adapter boundary.** On Gemini it is
 `tool_input.agent_name`, model-generated free text, and it reaches a journal
 tag (`lifecycle:agent:<agent_type>`, hence a RETE fact), the action log, and
-the `agents` file. It gets the same treatment the kalpa name gets: lowercased,
-then kept only if it matches `[a-z0-9][a-z0-9-]{0,63}`. Anything else is stored
-as absent and the `lifecycle:agent:*` tag is dropped.
+the `agents` file. It is lowercased, then kept only if it matches
+`[a-z0-9][a-z0-9_.:-]{0,63}`. The set is wider than the kalpa pattern on
+purpose: Gemini's built-ins are snake_case (`codebase_investigator`) and
+Claude's plugin agents are colon-qualified (`code-simplifier:code-simplifier`),
+and both must survive as tags. Colons are safe because `matches_selector`
+compares tags by exact string. Anything else is stored as absent and the
+`lifecycle:agent:*` tag is dropped.
 
 **Migration: `s` windows become per-session.** Today the `session` file is
 create-on-miss and never overwritten, so in practice a project's sid — and

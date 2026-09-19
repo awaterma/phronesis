@@ -11,7 +11,13 @@
 **Spec:** `docs/specs/SPEC-agent-lifecycle-events.md` (revised 2026-09-18), §"Host adapters / Claude Code", §"Classification at prompt time", §"Outcomes and kalpas / Success signal: commit", and the Gemini `invoke_agent` derivation in §"Host adapters / Gemini CLI". Read it first; this plan argues from it.
 
 **Depends on:** `docs/superpowers/plans/2026-09-18-lifecycle-events-1-foundation.md` (Plan 1) must be merged. Every shared name used below comes from it:
-`lifecycle::{Host, Kind, LifecycleEvent, Mode, PromptText, Stamped}`, `lifecycle::record::{record, prompt_text_setting}`, `lifecycle::state::{push_inflight, pop_inflight, live_inflight, take_inflight_for_scope, inflight_key_for, Inflight, push_agent, pop_agent, OpenAgent, read_turn, open_turn, close_turn, set_session, clear_session, reset_for_session_start, classify_prompt, PromptContext, Classification, InterruptSource}`, `lifecycle::outcome::{is_shell_tool, git_head, detect_commit, Commit}`, `lifecycle::scrub::scrub_prompt`, `hook::{redact_for_capture, capture_raw_payload}` (Plan 1 Task 10 makes `capture_raw_payload` `pub(crate)` and `redact_for_capture` `pub`; **do not re-make those changes here**), and `HookPayload`'s `session_id` / `tool_use_id` / `hook_event_name` / `agent_id` fields.
+`lifecycle::{Host, Kind, LifecycleEvent, Mode, PromptText, Stamped, sanitize_agent_type}`, `lifecycle::record::{record, prompt_text_setting}`, `lifecycle::state::{push_inflight, pop_inflight, live_inflight, clear_inflight, inflight_key_for, Inflight, push_agent, pop_agent, OpenAgent, read_turn, open_turn, close_turn, set_session, is_session_begin, reset_for_session_start, classify_prompt, detect_interrupt, PromptContext, Classification, InterruptSource}`, `lifecycle::outcome::{is_shell_tool, command_may_move_head, git_head_probe, HeadProbe, detect_commit, Commit, DETECTION_TIMEOUT, DETECTION_NO_EXIT_CODE}`, `lifecycle::scrub::scrub_prompt`, `hook::{redact_for_capture, capture_raw_payload}` (Plan 1 Task 10 makes `capture_raw_payload` `pub(crate)` and `redact_for_capture` `pub`, and puts the recursive redaction **inside** `capture_raw_payload`; **do not re-make those changes here**), and `HookPayload`'s `session_id` / `tool_use_id` / `hook_event_name` / `agent_id` fields.
+
+**Three Plan 1 names this plan deliberately does not use**, because the revised
+spec removed them: `state::clear_session` (SessionEnd no longer truncates the
+session file), `state::last_lifecycle_kind` (classification reads
+`turn.last_event`, never the journal tail), and `InterruptSource::Hook`. If any
+of the three resolves when you build, you are on an older Plan 1; re-read it.
 
 **Runs in parallel with:** Plan 3 (Codex) and Plan 4 (Gemini). See §Merge notes at the end of this plan for every file the three share and the exact region each owns.
 
@@ -34,6 +40,17 @@
 - Every lifecycle write is fail-open: swallow the error, `eprintln!("phronesis: ...")`, continue. A lifecycle failure never changes a hook's exit code.
 - `claude-hook` prints exactly one JSON object on stdout and exits 0 for every non-tool event, including on a stdin read or parse failure. A `UserPromptSubmit` hook that exits non-zero discards the human's prompt; that must never happen because of a Phronesis bug.
 - `stop_hook_active: true` short-circuits `Stop` and `SubagentStop` to `{}` without evaluating the confidence gate.
+- **A blocked stop is not a stop.** When the gate blocks, Claude continues the
+  same turn, so a blocking `Stop` records nothing and leaves `turn` **open**; the
+  `stop` is recorded on the `stop_hook_active: true` re-fire, which prints `{}`.
+  The same rule governs `SubagentStop` and its `agents` pop. Without this a steer
+  during the continuation classifies `fresh` and the intervention is lost.
+- The confidence gate is Claude- and Codex-only. A Gemini-mapped `AfterAgent`
+  records its `stop` and prints `{}`: Gemini has no documented `decision`
+  semantics for that event.
+- `SessionStart` is **source-gated**: `startup` / `resume` / `clear` begin a
+  session and reset correlation state; `compact` and `fork` continue one and
+  touch nothing but the context render.
 - Tool events (`PreToolUse`/`PostToolUse`, and their Gemini aliases `BeforeTool`/`AfterTool`) keep today's exit codes exactly: pre 0/1/2, post 0/1.
 - Kalpa names, `inflight` TTL (900 s), and the `__lifecycle` sentinel are Plan 1's; do not restate or re-derive them.
 - Conventional-commit messages. Run `cargo fmt` and `cargo clippy --all-targets -p phronesis-mcp -- -D warnings` before every commit.
@@ -62,13 +79,33 @@
 
 ---
 
-### Task 1: Capture real Claude payloads (REQUIRES THE HUMAN)
+### Task 1: Capture real Claude payloads and a real transcript tail (rollout node 0 — REQUIRES THE HUMAN)
 
-A worker cannot do this alone: it needs a live Claude Code session driving a real sub-agent and a real interrupt. Everything downstream is written against the documented field names, but the fixtures decide what "missing" means for `prompt_id`, `agent_id`, and `agent_type` (spec §"Payload fixtures are a precondition", Open question 2).
+This is the spec's **rollout node 0**, and it *gates this whole plan*: "0 needs a
+live host, not a code change, and it gates 2 and 4: `tests/hook_integration.rs`
+and `tests/payload_contract.rs` cannot be written against invented payloads."
+It runs alongside Plan 1 rather than after it, so it is not on the critical path.
+
+A worker cannot do this alone: it needs a live Claude Code session driving a real
+sub-agent and a real interrupt. Everything downstream is written against the
+documented field names, but the fixtures decide what "missing" means for
+`prompt_id`, `agent_id`, `agent_type` and `source` (spec §"Payload fixtures are a
+precondition", Open question 2).
+
+Two of the captures decide behaviour rather than merely documenting it:
+
+- **`PreToolUse` fired inside a sub-agent** decides whether `inflight` agent
+  scoping works at all (spec §"Sub-agent tool calls and `inflight`"). If
+  `agent_id` is absent there, sub-agent tool entries are parent-scoped and the
+  spurious-`correction` case is real rather than theoretical — a documented miss,
+  not a code path. Task 6's concurrency gate is written against the answer.
+- **The real transcript tail** after a real Esc is what the marker branch is
+  tested against, instead of against a shape this plan guessed.
 
 **Files:**
-- Create: `crates/phronesis-mcp/tests/fixtures/payloads/claude/raw/{UserPromptSubmit,SessionStart,SessionEnd,SubagentStart,SubagentStop,Stop}.json`
+- Create: `crates/phronesis-mcp/tests/fixtures/payloads/claude/raw/{UserPromptSubmit,SessionStart,SessionEnd,SubagentStart,SubagentStop,Stop,PreToolUse,PostToolUse,PreToolUse-in-subagent}.json`
 - Create: `crates/phronesis-mcp/tests/fixtures/payloads/claude/raw/README.md`
+- Create: `crates/phronesis-mcp/tests/fixtures/transcripts/claude/interrupted-tail.jsonl`
 
 `tests/payload_contract.rs::collect_fixtures` walks exactly one level (`payloads/<cli>/*.json`), so files under `claude/raw/` are evidence, not fixtures, and do not have to satisfy the fixture envelope. Task 7 promotes them.
 
@@ -86,30 +123,67 @@ Add to `.claude/settings.local.json` in this repo, merging into the existing `ho
     "SessionEnd":       [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/SessionEnd.json; echo {}'"}]}],
     "SubagentStart":    [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/SubagentStart.json; echo {}'"}]}],
     "SubagentStop":     [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/SubagentStop.json; echo {}'"}]}],
-    "Stop":             [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/Stop.json; echo {}'"}]}]
+    "Stop":             [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/Stop.json; echo {}'"}]}],
+    "PreToolUse":       [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat >> /tmp/phr-capture/PreToolUse.jsonl; echo {}'"}]}],
+    "PostToolUse":      [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat >> /tmp/phr-capture/PostToolUse.jsonl; echo {}'"}]}]
   }
 }
 ```
+
+The two tool hooks **append** (`>>`) rather than truncate, because every tool
+call in the session lands in them and the sub-agent's calls are the ones that
+matter. Everything else overwrites: the last one wins and that is fine.
 
 - [ ] **Step 2: Ask the human to drive one session**
 
 1. Quit and restart Claude Code in this repo (hooks load at startup) — that writes `SessionStart.json`.
 2. Type: `list the files in crates/phronesis-mcp/src` — that writes `UserPromptSubmit.json`, and `Stop.json` when the turn ends.
-3. Type: `use the Explore subagent to find where inflight state is written` — that writes `SubagentStart.json` and `SubagentStop.json`. `agent_type` should read `Explore`; if it is `""`, that is Open question 2 confirmed and the fixture records it as-is.
-4. Type a long-running request (`run cargo build --workspace`), press Esc while it runs, then type `never mind, just say hi`. This produces no hook payload (Claude fires none on interrupt) but is the manual evidence the spec asks for later.
+3. Type: `use the Explore subagent to find where inflight state is written` — that writes `SubagentStart.json` and `SubagentStop.json`, and appends the sub-agent's own tool calls to `PreToolUse.jsonl` / `PostToolUse.jsonl`. `agent_type` should read `Explore`; if it is `""`, that is Open question 2 confirmed and the fixture records it as-is.
+4. Type a long-running request (`run cargo build --workspace`), press Esc while it runs, then type `never mind, just say hi`. This produces no hook payload (Claude fires none on interrupt) but is the manual evidence the spec asks for, **and it is what makes the transcript tail worth capturing**. Note the transcript path from `UserPromptSubmit.json`'s `transcript_path` field.
 5. `/exit` — that writes `SessionEnd.json`.
+6. Copy the last 64 KiB of that transcript:
+   `tail -c 65536 "<transcript_path>" > /tmp/phr-capture/interrupted-tail.jsonl`.
+   It must contain a line whose `message.content` is `[Request interrupted by
+   user]` or begins with `[Request interrupted by user for tool use`. If it does
+   not, the Esc landed outside the tail; repeat step 4 and re-copy.
+7. Note whether `SessionStart.json` carries a `source` field and what its value
+   is. The whole source gate (§Correlation state) rests on it; if the field is
+   absent, `is_session_begin(None)` treats it as a begin and Plan 1's default
+   already covers it, but the fixture is what says which world we are in.
 
 - [ ] **Step 3: Redact and commit**
 
-For every file in `/tmp/phr-capture`: replace the value of `prompt` and `last_assistant_message` with `"<redacted:N bytes>"` (N = the original byte length), replace absolute home paths with `/home/dev`, and replace real session/transcript ids with obviously-synthetic ones (`claude-s-001`, `/home/dev/.claude/projects/p/claude-s-001.jsonl`). Keep every key, including keys with empty-string values — the absence-vs-empty distinction is the whole point of this task.
+For every file in `/tmp/phr-capture`: replace the value of `prompt`,
+`prompt_response` and `last_assistant_message` with `"<redacted:N bytes>"`
+(N = the original byte length), replace absolute home paths with `/home/dev`,
+and replace real session/transcript ids with obviously-synthetic ones
+(`claude-s-001`, `/home/dev/.claude/projects/p/claude-s-001.jsonl`). Keep every
+key, including keys with empty-string values — the absence-vs-empty distinction
+is the whole point of this task.
+
+From `PreToolUse.jsonl`, pick two lines by hand: one from a call the *main* agent
+made (before the sub-agent request) and one from a call the sub-agent made, and
+save them as `PreToolUse.json` and `PreToolUse-in-subagent.json`. The second is
+the one that answers the agent-scoping question; if the two are
+indistinguishable — no `agent_id`, no marker of any kind — say so in
+`raw/README.md` in as many words, because that is a finding, not a gap.
+
+The transcript tail is redacted the same way: every `message.content` that is
+human or model prose becomes `"<redacted:N bytes>"`, **except** the interrupt
+marker lines, which are the format under test and must survive verbatim.
 
 ```bash
 mkdir -p crates/phronesis-mcp/tests/fixtures/payloads/claude/raw
+mkdir -p crates/phronesis-mcp/tests/fixtures/transcripts/claude
 # after redacting each file by hand:
 cp /tmp/phr-capture/*.json crates/phronesis-mcp/tests/fixtures/payloads/claude/raw/
+cp /tmp/phr-capture/interrupted-tail.jsonl crates/phronesis-mcp/tests/fixtures/transcripts/claude/
 ```
 
-Write `raw/README.md` recording: the Claude Code version (`claude --version`), the capture date, that values were hand-redacted, and Steps 1–2 above so the capture is repeatable.
+Write `raw/README.md` recording: the Claude Code version (`claude --version`),
+the capture date, that values were hand-redacted, Steps 1–2 above so the capture
+is repeatable, the `SessionStart` `source` value observed, and the answer to the
+sub-agent `agent_id` question.
 
 - [ ] **Step 4: Ask the human to remove the temporary capture hooks**
 
@@ -118,8 +192,38 @@ Revert `.claude/settings.local.json` (`git checkout -- .claude/settings.local.js
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/phronesis-mcp/tests/fixtures/payloads/claude/raw
-git commit -m "test(fixtures): capture real Claude Code lifecycle payloads"
+git add crates/phronesis-mcp/tests/fixtures/payloads/claude/raw crates/phronesis-mcp/tests/fixtures/transcripts/claude
+git commit -m "test(fixtures): capture real Claude Code lifecycle payloads and an interrupted transcript tail"
+```
+
+- [ ] **Step 6: Add the transcript-tail test**
+
+Append to `crates/phronesis-mcp/tests/lifecycle_classify.rs` (Plan 1 created it;
+this is the one test in that file that needs a fixture only this task can
+produce, which is why it lives here):
+
+```rust
+/// The marker branch against the format Claude actually writes, not the shape
+/// the spec guessed. The tail is the real one, captured after a real Esc.
+#[test]
+fn the_committed_transcript_tail_is_recognized_as_an_interrupt() {
+    let tail = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/transcripts/claude/interrupted-tail.jsonl");
+    let raw = std::fs::read_to_string(&tail)
+        .unwrap_or_else(|e| panic!("{}: {e} — capture it per Plan 2 Task 1", tail.display()));
+    assert!(
+        raw.contains("[Request interrupted by user"),
+        "the committed tail has no marker in it; re-capture"
+    );
+    let d = root();
+    // The turn opened before the marker's timestamp, so the marker is after it.
+    open_turn(d.path(), None, 0);
+    let mut c = ctx(Host::Claude, u64::MAX / 2);
+    c.transcript_path = Some(&tail);
+    let out = classify_prompt(d.path(), &c);
+    assert_eq!(out.mode, Mode::Correction);
+    assert_eq!(out.interrupt.map(|i| i.as_str()), Some("transcript"));
+}
 ```
 
 ---
@@ -265,6 +369,31 @@ fn claude_hook_tool_events_match_the_direct_subcommands() {
     }
 }
 
+/// The gate must not fire on a Gemini-mapped stop even when it would block on
+/// Claude: same project state, two hosts, two answers.
+#[test]
+fn the_confidence_gate_does_not_run_on_a_gemini_after_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".phronesis/outcomes")).unwrap();
+    std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").unwrap();
+    std::fs::write(dir.path().join(".phronesis/outcomes/current"), "unit-1").unwrap();
+
+    let (_, claude_out, _) = run_claude_hook(dir.path(), "Stop", r#"{"hook_event_name":"Stop"}"#);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(claude_out.trim()).unwrap()["decision"],
+        "block",
+        "the same state blocks on Claude: {claude_out}"
+    );
+
+    let (code, gemini_out, stderr) = run_claude_hook(
+        dir.path(),
+        "AfterAgent",
+        r#"{"hook_event_name":"AfterAgent","session_id":"g1","prompt":"hi","prompt_response":"done"}"#,
+    );
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(gemini_out.trim(), "{}", "Gemini gets no decision, only the record");
+}
+
 #[test]
 fn claude_hook_accepts_gemini_event_names() {
     let dir = tempfile::tempdir().unwrap();
@@ -326,6 +455,10 @@ pub struct ClaudePayload {
     pub hook_event_name: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
+    /// `SessionStart` only: `startup` | `resume` | `clear` | `compact` | `fork`.
+    /// The source gate turns on this one field (spec §Correlation state).
+    #[serde(default)]
+    pub source: Option<String>,
     #[serde(default)]
     pub prompt_id: Option<String>,
     #[serde(default)]
@@ -346,6 +479,15 @@ pub struct ClaudePayload {
     pub tool_input: Option<serde_json::Value>,
     #[serde(default)]
     pub tool_response: Option<serde_json::Value>,
+    /// Gemini `AfterAgent` only. Read for nothing and **never persisted**; it is
+    /// declared so `serde` sees the whole payload and so the capture redaction
+    /// has a name to redact. Dropped at this boundary.
+    #[serde(default)]
+    pub prompt_response: Option<String>,
+    /// Codex `SubagentStop` shape, accepted here for the same reason and
+    /// dropped at the same boundary.
+    #[serde(default)]
+    pub last_assistant_message: Option<String>,
 }
 
 const EMPTY: &str = "{}";
@@ -452,7 +594,7 @@ async fn dispatch(root: &Path, event: &str, host: Host, p: &ClaudePayload) -> St
         "SessionStart" => context_or_empty(
             context::run_session_context_configured(root, context::DEFAULT_MAX_BYTES).await,
         ),
-        "Stop" | "SubagentStop" => completion_response(root, p),
+        "Stop" | "SubagentStop" => completion_response(root, host, p),
         _ => {
             let _ = (host, p);
             EMPTY.to_string()
@@ -473,8 +615,13 @@ fn context_or_empty(rendered: String) -> String {
 /// `{"decision":"block","reason":…}` when the confidence gate blocks, else
 /// `{}`. `stop_hook_active` short-circuits without evaluating the gate, as the
 /// Claude docs require, so a blocking gate cannot loop.
-fn completion_response(root: &Path, p: &ClaudePayload) -> String {
-    if p.stop_hook_active {
+///
+/// The gate is **Claude- and Codex-only**. Gemini has no documented `decision`
+/// semantics for `AfterAgent`, so a Gemini-mapped stop records its event and
+/// prints `{}`; blocking a host whose response schema we have not established
+/// would be guessing with the user's turn (spec §"Host adapters / Gemini CLI").
+fn completion_response(root: &Path, host: Host, p: &ClaudePayload) -> String {
+    if host == Host::Gemini || p.stop_hook_active {
         return EMPTY.to_string();
     }
     match gate_block_reason(root) {
@@ -563,7 +710,7 @@ git commit -m "feat(claude-hook): adapter subcommand with response shapes and fa
 - Test: `crates/phronesis-mcp/tests/hook_integration.rs`
 
 **Interfaces:**
-- Consumes: `lifecycle::record::record`, `lifecycle::scrub::scrub_prompt`, `lifecycle::state::{classify_prompt, PromptContext, last_lifecycle_kind, open_turn, close_turn, read_turn, set_session, clear_session, reset_for_session_start, push_agent, pop_agent, OpenAgent}`, `journey::current_sid`, `hook::seq::next_seq`.
+- Consumes: `lifecycle::record::record`, `lifecycle::scrub::scrub_prompt`, `lifecycle::state::{classify_prompt, detect_interrupt, PromptContext, open_turn, close_turn, read_turn, set_session, is_session_begin, reset_for_session_start, push_agent, pop_agent, OpenAgent}`, `journey::current_sid`, `hook::seq::next_seq`.
 - Produces: `pub(crate) fn synth_agent_id(root: &Path) -> String` — the `{sid}:{seq}` fallback, reused by the Gemini derivation in Task 4.
 
 - [ ] **Step 1: Write the failing tests**
@@ -727,12 +874,16 @@ fn claude_hook_subagent_pair_records_duration_and_match() {
     let recs = journal_records(dir.path());
     let start = recs.iter().find(|r| r["kind"] == "subagent_start").unwrap();
     assert_eq!(start["agent"], "a1");
+    // `agent_type` is sanitized at the boundary (Plan 1 Task 4): lowercased,
+    // then kept only if it matches `[a-z0-9][a-z0-9_.:-]{0,63}`. `Explore` →
+    // `explore` in the tag AND in the stored field.
+    assert_eq!(start["agent_type"], "explore");
     assert!(
         start["tags"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|t| t == "lifecycle:agent:Explore")
+            .any(|t| t == "lifecycle:agent:explore")
     );
     let stop = log_entries(dir.path())
         .into_iter()
@@ -757,7 +908,7 @@ fn claude_hook_subagent_pair_records_duration_and_match() {
 }
 
 #[test]
-fn claude_hook_session_start_overwrites_sid_and_truncates_state() {
+fn claude_hook_session_begin_overwrites_sid_and_truncates_state() {
     let dir = tempfile::tempdir().unwrap();
     run_hook_in(
         "pre-check",
@@ -767,7 +918,7 @@ fn claude_hook_session_start_overwrites_sid_and_truncates_state() {
     run_claude_hook(
         dir.path(),
         "SessionStart",
-        r#"{"hook_event_name":"SessionStart","session_id":"claude-s-42"}"#,
+        r#"{"hook_event_name":"SessionStart","session_id":"claude-s-42","source":"startup"}"#,
     );
     assert_eq!(
         std::fs::read_to_string(dir.path().join(".phronesis/journey/session"))
@@ -783,27 +934,256 @@ fn claude_hook_session_start_overwrites_sid_and_truncates_state() {
     );
 }
 
+/// Source gating: `compact` and `fork` continue the session, so its open
+/// sub-agents and in-flight tools are real and must survive. Without the gate a
+/// mid-session compaction orphans every open sub-agent and discards every
+/// in-flight tool — and, because the Codex `SessionStart` matcher widens to `""`
+/// in Plan 3, this is reachable on two hosts.
 #[test]
-fn claude_hook_session_end_stops_an_open_turn_and_clears_the_session() {
+fn claude_hook_session_start_on_compact_or_fork_touches_no_state() {
+    for source in ["compact", "fork"] {
+        let dir = tempfile::tempdir().unwrap();
+        run_claude_hook(
+            dir.path(),
+            "SessionStart",
+            r#"{"hook_event_name":"SessionStart","session_id":"claude-s-1","source":"startup"}"#,
+        );
+        run_claude_hook(
+            dir.path(),
+            "UserPromptSubmit",
+            r#"{"hook_event_name":"UserPromptSubmit","session_id":"claude-s-1","prompt":"go"}"#,
+        );
+        run_hook_in(
+            "pre-check",
+            r#"{"tool_name":"Bash","tool_use_id":"tu-live","tool_input":{"command":"sleep 100"}}"#,
+            Some(dir.path()),
+        );
+        run_claude_hook(
+            dir.path(),
+            "SubagentStart",
+            r#"{"hook_event_name":"SubagentStart","session_id":"claude-s-1","agent_id":"a1","agent_type":"Explore"}"#,
+        );
+
+        run_claude_hook(
+            dir.path(),
+            "SessionStart",
+            &format!(
+                r#"{{"hook_event_name":"SessionStart","session_id":"claude-s-2","source":"{source}"}}"#
+            ),
+        );
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join(".phronesis/journey/session")).unwrap().trim(),
+            "claude-s-1",
+            "{source} must not mint a new sid"
+        );
+        assert_eq!(inflight_keys(dir.path()), vec!["tu-live".to_string()], "{source}");
+        assert!(
+            !std::fs::read_to_string(dir.path().join(".phronesis/journey/agents")).unwrap().trim().is_empty(),
+            "{source}: the open sub-agent must survive"
+        );
+        let turn: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join(".phronesis/journey/turn")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(turn["open"], true, "{source}: the turn is still running");
+    }
+}
+
+/// Quitting out of an aborted turn must not be recorded as a completed turn, and
+/// the session file is **not** truncated: truncation would let any stray hook
+/// between sessions mint a throwaway sid.
+#[test]
+fn claude_hook_session_end_detects_an_interrupt_and_leaves_the_session_file() {
     let dir = tempfile::tempdir().unwrap();
     run_claude_hook(
         dir.path(),
         "SessionStart",
-        r#"{"hook_event_name":"SessionStart","session_id":"claude-s-7"}"#,
+        r#"{"hook_event_name":"SessionStart","session_id":"claude-s-7","source":"startup"}"#,
     );
     run_claude_hook(
         dir.path(),
         "UserPromptSubmit",
-        r#"{"hook_event_name":"UserPromptSubmit","prompt":"go"}"#,
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"claude-s-7","prompt":"go"}"#,
+    );
+    // A tool is still running when the human quits: that is an abort, not a
+    // completed turn.
+    run_hook_in(
+        "pre-check",
+        r#"{"tool_name":"Bash","tool_use_id":"tu-q","tool_input":{"command":"sleep 100"}}"#,
+        Some(dir.path()),
+    );
+    let (code, stdout, stderr) =
+        run_claude_hook(dir.path(), "SessionEnd", r#"{"hook_event_name":"SessionEnd","session_id":"claude-s-7"}"#);
+    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(stdout.trim(), "{}", "SessionEnd prints the empty object");
+
+    let kinds: Vec<&str> = journal_records(dir.path())
+        .iter()
+        .filter_map(|r| r["kind"].as_str())
+        .collect();
+    assert!(kinds.contains(&"interrupt"), "{kinds:?}");
+    assert!(!kinds.contains(&"stop"), "an aborted turn is not a completed one: {kinds:?}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".phronesis/journey/session")).unwrap().trim(),
+        "claude-s-7",
+        "SessionEnd does not truncate the session file"
+    );
+}
+
+/// The other half: a session that ends with nothing in flight ended cleanly, so
+/// it records a `stop`.
+#[test]
+fn claude_hook_session_end_with_no_evidence_records_a_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    run_claude_hook(
+        dir.path(),
+        "UserPromptSubmit",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"claude-s-8","prompt":"go"}"#,
     );
     run_claude_hook(dir.path(), "SessionEnd", r#"{"hook_event_name":"SessionEnd"}"#);
-    assert!(journal_records(dir.path()).iter().any(|r| r["kind"] == "stop"));
-    assert_eq!(
-        std::fs::read_to_string(dir.path().join(".phronesis/journey/session"))
-            .unwrap()
-            .trim(),
-        ""
+    let kinds: Vec<&str> = journal_records(dir.path())
+        .iter()
+        .filter_map(|r| r["kind"].as_str())
+        .collect();
+    assert!(kinds.contains(&"stop"), "{kinds:?}");
+    assert!(!kinds.contains(&"interrupt"), "{kinds:?}");
+}
+
+/// Spec §"A blocked stop is not a stop": when the gate blocks, Claude continues
+/// the same turn, so nothing is recorded and the turn stays open. The `stop` is
+/// recorded on the `stop_hook_active: true` re-fire — exactly once.
+#[test]
+fn a_blocked_stop_records_nothing_and_leaves_the_turn_open() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".phronesis/outcomes")).unwrap();
+    std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").unwrap();
+    std::fs::write(dir.path().join(".phronesis/outcomes/current"), "unit-1").unwrap();
+    run_claude_hook(
+        dir.path(),
+        "UserPromptSubmit",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"go"}"#,
     );
+
+    let (_, stdout, _) = run_claude_hook(dir.path(), "Stop", r#"{"hook_event_name":"Stop"}"#);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(stdout.trim()).unwrap()["decision"],
+        "block",
+        "{stdout}"
+    );
+    assert!(
+        !journal_records(dir.path()).iter().any(|r| r["kind"] == "stop"),
+        "a blocked stop records nothing"
+    );
+    let turn: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/journey/turn")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(turn["open"], true, "the turn continues");
+
+    // The re-fire prints `{}` and records exactly one stop.
+    let (_, stdout, _) = run_claude_hook(
+        dir.path(),
+        "Stop",
+        r#"{"hook_event_name":"Stop","stop_hook_active":true}"#,
+    );
+    assert_eq!(stdout.trim(), "{}");
+    assert_eq!(
+        journal_records(dir.path()).iter().filter(|r| r["kind"] == "stop").count(),
+        1
+    );
+
+    // A steer during the continuation is an intervention, not a `fresh` prompt —
+    // which is the whole reason the blocked stop must not close the turn.
+    let dir2 = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir2.path().join(".phronesis/outcomes")).unwrap();
+    std::fs::write(dir2.path().join(".phronesis/confidence.json"), "{}").unwrap();
+    std::fs::write(dir2.path().join(".phronesis/outcomes/current"), "unit-1").unwrap();
+    run_claude_hook(
+        dir2.path(),
+        "UserPromptSubmit",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"go"}"#,
+    );
+    run_claude_hook(dir2.path(), "Stop", r#"{"hook_event_name":"Stop"}"#);
+    run_claude_hook(
+        dir2.path(),
+        "UserPromptSubmit",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"no, do this"}"#,
+    );
+    let modes: Vec<&str> = journal_records(dir2.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "mid_turn"], "the intervention must not be lost");
+}
+
+/// A blocked `SubagentStop` follows the same rule: no record, and the `agents`
+/// entry stays, so the real stop still pairs.
+#[test]
+fn a_blocked_subagent_stop_records_nothing_and_keeps_the_agents_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".phronesis/outcomes")).unwrap();
+    std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").unwrap();
+    std::fs::write(dir.path().join(".phronesis/outcomes/current"), "unit-1").unwrap();
+    run_claude_hook(
+        dir.path(),
+        "SubagentStart",
+        r#"{"hook_event_name":"SubagentStart","agent_id":"a1","agent_type":"Explore"}"#,
+    );
+    run_claude_hook(
+        dir.path(),
+        "SubagentStop",
+        r#"{"hook_event_name":"SubagentStop","agent_id":"a1"}"#,
+    );
+    assert!(
+        !journal_records(dir.path()).iter().any(|r| r["kind"] == "subagent_stop"),
+        "a blocked subagent stop records nothing"
+    );
+    let (_, stdout, _) = run_claude_hook(
+        dir.path(),
+        "SubagentStop",
+        r#"{"hook_event_name":"SubagentStop","agent_id":"a1","stop_hook_active":true}"#,
+    );
+    assert_eq!(stdout.trim(), "{}");
+    let stop = log_entries(dir.path())
+        .into_iter()
+        .find(|e| e["event"] == "subagent_stop")
+        .expect("the re-fire records it");
+    assert_eq!(stop["matched_start"], true, "the agents entry survived the block");
+}
+
+/// A prompt delivered inside a sub-agent is not the human speaking: `fresh`,
+/// untagged, and the parent's turn is untouched.
+#[test]
+fn a_sub_agent_prompt_is_fresh_untagged_and_moves_no_turn_state() {
+    let dir = tempfile::tempdir().unwrap();
+    run_claude_hook(
+        dir.path(),
+        "UserPromptSubmit",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt_id":"p1","prompt":"go"}"#,
+    );
+    run_claude_hook(
+        dir.path(),
+        "UserPromptSubmit",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","agent_id":"sub-1","prompt":"inner task"}"#,
+    );
+    let recs = journal_records(dir.path());
+    let inner = recs
+        .iter()
+        .find(|r| r["agent"] == "sub-1")
+        .expect("the sub-agent's prompt is recorded");
+    assert_eq!(inner["mode"], "fresh");
+    assert!(
+        !inner["tags"].as_array().unwrap().iter().any(|t| t == "lifecycle:intervention"),
+        "{inner}"
+    );
+    // The parent's turn still points at the parent's prompt.
+    let turn: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.path().join(".phronesis/journey/turn")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(turn["turn_id"], "p1", "a sub-agent prompt must not move the parent's turn");
 }
 
 #[test]
@@ -852,16 +1232,38 @@ async fn dispatch(root: &Path, event: &str, host: Host, p: &ClaudePayload) -> St
             handle_subagent_start(root, host, p);
             EMPTY.to_string()
         }
+        // The response is decided FIRST, and the handler runs only when it does
+        // not block. A blocked stop means Claude continues the same turn, so it
+        // is not a stop: it records nothing and leaves `turn` open (spec §"A
+        // blocked stop is not a stop"). Recording first and then discovering the
+        // block would close a turn that is still running, and the next steer
+        // would classify `fresh`.
         "SubagentStop" => {
-            handle_subagent_stop(root, host, p);
-            completion_response(root, p)
+            let response = completion_response(root, host, p);
+            if !blocks(&response) {
+                handle_subagent_stop(root, host, p);
+            }
+            response
         }
         "Stop" => {
-            handle_stop(root, host, p);
-            completion_response(root, p)
+            let response = completion_response(root, host, p);
+            if !blocks(&response) {
+                handle_stop(root, host, p);
+            }
+            response
         }
         _ => EMPTY.to_string(),
     }
+}
+
+/// Did the completion response block? One definition, so the two arms above
+/// cannot drift, and structural rather than a substring test on the JSON text.
+fn blocks(response: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(response)
+        .ok()
+        .and_then(|v| v.get("decision").and_then(|d| d.as_str()).map(str::to_string))
+        .as_deref()
+        == Some("block")
 }
 
 fn nonempty(v: &Option<String>) -> Option<&str> {
@@ -891,11 +1293,11 @@ pub(crate) fn synth_agent_id(root: &Path) -> String {
 
 ```
 
-`state::last_lifecycle_kind(root)` (Plan 1 Task 8) is the one definition of "the
-`kind` of the most recent lifecycle record for this sid". Do not re-derive it here
-from `read_recent(root, 1)`: a single tool record journaled after an interrupt makes
-that derivation return `None`. Claude never produces an `interrupt` record from a
-hook, but the context is built uniformly so the same handler shape serves both hosts.
+Classification reads `turn.last_event`, never the journal tail. There is no
+`last_lifecycle_kind` call here and no `last_journal_kind` field: a
+`Classification` whose `mode` is `Correction` and whose `interrupt` is `None`
+means the `interrupt` record already exists, so the handler writes only the
+prompt.
 
 ```rust
 async fn handle_prompt(root: &Path, host: Host, p: &ClaudePayload) -> String {
@@ -908,63 +1310,113 @@ async fn handle_prompt(root: &Path, host: Host, p: &ClaudePayload) -> String {
     let rendered = context_or_empty(
         context::run_interaction_context_configured(root, 5, context::DEFAULT_MAX_BYTES).await,
     );
-    let last_kind = state::last_lifecycle_kind(root);
+    let agent_id = nonempty(&p.agent_id);
     let classification = state::classify_prompt(
         root,
         &state::PromptContext {
             host,
             now,
-            agent_id: nonempty(&p.agent_id),
+            agent_id,
             turn_id: nonempty(&p.prompt_id),
             transcript_path: transcript.as_deref(),
-            last_journal_kind: last_kind.as_deref(),
         },
     );
 
+    // `Some(source)` means this handler must write the record;
+    // `None` with mode `Correction` means it already exists (Codex's Interrupt
+    // hook, or an earlier inferred branch), and a second record would
+    // double-count the friction.
     if let Some(source) = classification.interrupt {
-        let mut ev = LifecycleEvent::new(Kind::Interrupt, host).with_extra("inferred_from", source.as_str());
-        ev = with_session_turn(ev, p);
-        if let Some(a) = nonempty(&p.agent_id) {
-            ev = ev.with_agent(a, p.agent_type.clone());
-        }
+        let ev = with_session_turn(
+            LifecycleEvent::new(Kind::Interrupt, host).with_extra("inferred_from", source.as_str()),
+            p,
+        );
         record(root, ev);
         state::close_turn(root, "interrupt");
     }
 
     let mut ev = LifecycleEvent::new(Kind::Prompt, host).with_mode(classification.mode);
     ev = with_session_turn(ev, p);
-    if let Some(a) = nonempty(&p.agent_id) {
+    if let Some(a) = agent_id {
         ev = ev.with_agent(a, p.agent_type.clone());
     }
     if let Some(text) = p.prompt.as_deref() {
         ev = ev.with_prompt(crate::lifecycle::scrub::scrub_prompt(root, text));
     }
     record(root, ev);
-    state::open_turn(root, nonempty(&p.prompt_id), now);
+
+    // A prompt carrying an `agent_id` never writes `turn`: a sub-agent's prompt
+    // must not move the parent's turn state or its `last_prompt_ts`, which the
+    // transcript-marker comparison keys on (spec §Correlation state).
+    if agent_id.is_none() {
+        state::open_turn(root, nonempty(&p.prompt_id), now);
+    }
 
     rendered
 }
 
 async fn handle_session_start(root: &Path, p: &ClaudePayload) -> String {
-    // The host's id wins over the create-on-miss id `current_sid` would mint.
-    if let Some(sid) = nonempty(&p.session_id) {
-        state::set_session(root, sid);
+    // Source-gated. `startup` / `resume` / `clear` begin a session: adopt the
+    // host's id and truncate correlation state. `compact` / `fork` continue one,
+    // so its open sub-agents and in-flight tools are real and are left alone —
+    // only the context render runs.
+    if state::is_session_begin(p.source.as_deref()) {
+        // The host's id wins over the create-on-miss id `current_sid` would mint.
+        if let Some(sid) = nonempty(&p.session_id) {
+            state::set_session(root, sid);
+        }
+        state::reset_for_session_start(root);
     }
-    state::reset_for_session_start(root);
     context_or_empty(context::run_session_context_configured(root, context::DEFAULT_MAX_BYTES).await)
 }
 
+/// Quitting out of an aborted turn must not be recorded as a completed turn, so
+/// SessionEnd runs the same interrupt detection step 2 of the classification
+/// runs and records `interrupt` when there is evidence, `stop` otherwise.
+///
+/// `session` is left in place: truncating it would let any stray hook between
+/// sessions mint a throwaway sid, and the next session-begin overwrites anyway.
 fn handle_session_end(root: &Path, host: Host, p: &ClaudePayload) {
     if state::read_turn(root).open {
-        record(root, with_session_turn(LifecycleEvent::new(Kind::Stop, host), p));
+        let transcript = p.transcript_path.as_deref().map(PathBuf::from);
+        let source = state::detect_interrupt(
+            root,
+            &state::PromptContext {
+                host,
+                now: unix_secs_now(),
+                agent_id: None,
+                turn_id: nonempty(&p.prompt_id),
+                transcript_path: transcript.as_deref(),
+            },
+        );
+        let (kind, last_event) = match source {
+            Some(_) => (Kind::Interrupt, "interrupt"),
+            None => (Kind::Stop, "stop"),
+        };
+        let mut ev = with_session_turn(LifecycleEvent::new(kind, host), p);
+        if let Some(src) = source {
+            ev = ev.with_extra("inferred_from", src.as_str());
+        }
+        record(root, ev);
+        state::close_turn(root, last_event);
+    } else {
+        state::close_turn(root, "stop");
     }
-    state::close_turn(root, "stop");
-    state::clear_session(root);
 }
 
+/// Reached only when the response does not block.
 fn handle_stop(root: &Path, host: Host, p: &ClaudePayload) {
-    record(root, with_session_turn(LifecycleEvent::new(Kind::Stop, host), p));
-    state::close_turn(root, "stop");
+    record(
+        root,
+        with_session_turn(LifecycleEvent::new(Kind::Stop, host), p)
+            .with_extra("stop_hook_active", p.stop_hook_active),
+    );
+    // Spec §Correlation state: if the write that would close the turn fails, the
+    // classifier treats the turn as closed — the conservative answer — so the
+    // failure is reported rather than silently leaving `open: true` on disk.
+    if !state::close_turn(root, "stop") {
+        eprintln!("phronesis: claude-hook Stop: could not close the turn; next prompt reads fresh");
+    }
 }
 
 fn handle_subagent_start(root: &Path, host: Host, p: &ClaudePayload) {
@@ -988,6 +1440,11 @@ fn handle_subagent_start(root: &Path, host: Host, p: &ClaudePayload) {
     );
 }
 
+/// Reached only when the response does not block, so a blocked `SubagentStop`
+/// leaves the `agents` entry in place for the real stop to pop.
+///
+/// **It never touches `turn`.** Only the main-agent `Stop` closes a turn; a
+/// sub-agent finishing does not end the human's turn.
 fn handle_subagent_stop(root: &Path, host: Host, p: &ClaudePayload) {
     // `agents`, not the journal, is authoritative for pairing.
     let open = state::pop_agent(root, nonempty(&p.agent_id));
@@ -1035,7 +1492,7 @@ git commit -m "feat(claude-hook): record prompt, interrupt, stop, session and su
 - Test: `crates/phronesis-mcp/tests/hook_integration.rs`
 
 **Interfaces:**
-- Consumes: `lifecycle::state::{push_inflight, pop_inflight, inflight_key_for, Inflight, push_agent, pop_agent, OpenAgent}`, `lifecycle::outcome::{is_shell_tool, git_head, detect_commit}`, `lifecycle::record::record`, `claude_hook::{synth_agent_id, unix_secs_now}`, plus these two, verified against the current tree — both are private to the `hook` module tree and reachable from a child module without a visibility change:
+- Consumes: `lifecycle::state::{push_inflight, pop_inflight, inflight_key_for, Inflight, push_agent, pop_agent, OpenAgent}`, `lifecycle::outcome::{is_shell_tool, command_may_move_head, git_head_probe, HeadProbe, detect_commit, DETECTION_TIMEOUT, DETECTION_NO_EXIT_CODE}`, `lifecycle::record::record`, `claude_hook::{synth_agent_id, unix_secs_now}`, plus these two, verified against the current tree — both are private to the `hook` module tree and reachable from a child module without a visibility change:
 ```rust
 // hook/mod.rs:180
 fn extract_new_content(payload: &HookPayload, tool_name: &str) -> Option<String>;
@@ -1045,10 +1502,15 @@ pub(super) fn payload_command_exit(payload: &HookPayload) -> Option<i32>;
 - Produces (all `pub(super)`, i.e. visible to `pre.rs` and `post.rs`):
 ```rust
 pub(super) fn pre_push_inflight(root: &Path, payload: &HookPayload) -> String;  // returns the key
-pub(super) fn pop_inflight_key(root: &Path, key: &str);
+/// Undo everything this pre-check pushed, because the tool never ran: pops the
+/// `inflight` entry and, for `invoke_agent`, the `agents` entry too.
+pub(super) fn undo_blocked_pre(root: &Path, key: &str, tool_name: &str);
 pub(super) fn post_pop_and_detect(root: &Path, payload: &HookPayload, tool_name: &str);
 pub(super) fn gemini_subagent_start(root: &Path, payload: &HookPayload);
 pub(super) fn gemini_subagent_stop(root: &Path);
+/// The synthetic path an `invoke_agent` tool record carries — never the
+/// sub-agent prompt, which would put content in the journal.
+pub(crate) const INVOKE_AGENT_PATH: &str = "<invoke_agent>";
 ```
 
 - [ ] **Step 1: Write the failing tests**
@@ -1157,6 +1619,71 @@ fn a_pair_without_tool_use_id_pops_by_hashed_key() {
         Some(dir.path()),
     );
     assert!(inflight_keys(dir.path()).is_empty());
+}
+
+/// `post-check` pops by key **regardless of age**: the TTL is a classification
+/// rule, not a retention rule. A twenty-minute build must still get its commit
+/// detected (spec §Correlation state).
+#[test]
+fn post_check_pops_an_entry_older_than_the_ttl() {
+    let dir = tempfile::tempdir().unwrap();
+    // Write the entry directly with a timestamp well past the 900 s TTL: driving
+    // a real pre-check cannot produce an old entry without sleeping.
+    std::fs::create_dir_all(dir.path().join(".phronesis/journey")).unwrap();
+    std::fs::write(
+        dir.path().join(".phronesis/journey/inflight"),
+        "{\"key\":\"tu-old\",\"tool\":\"Bash\",\"ts\":1,\"agent_id\":null,\"head_before\":null}\n",
+    )
+    .unwrap();
+    run_hook_in(
+        "post-check",
+        r#"{"tool_name":"Bash","tool_use_id":"tu-old","tool_input":{"command":"sleep 2000"},
+            "tool_response":{"exit_code":0}}"#,
+        Some(dir.path()),
+    );
+    assert!(inflight_keys(dir.path()).is_empty(), "a stale entry is still popped by key");
+}
+
+/// The pre-filter runs at PRE as well as POST, so a shell call that cannot be a
+/// commit spawns no git process at all (spec §"Success signal: commit" step 1).
+/// Observable through `head_before`: present only when the filter matched.
+#[test]
+fn head_before_is_recorded_only_for_commands_that_could_move_head() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(dir.path()).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(dir.path().join("a.txt"), "one").unwrap();
+    git(&["add", "a.txt"]);
+    git(&["commit", "-qm", "first"]);
+
+    let entry_for = |payload: &str| -> serde_json::Value {
+        run_hook_in("pre-check", payload, Some(dir.path()));
+        let line = std::fs::read_to_string(dir.path().join(".phronesis/journey/inflight"))
+            .unwrap()
+            .lines()
+            .next_back()
+            .unwrap()
+            .to_string();
+        serde_json::from_str(&line).unwrap()
+    };
+
+    let plain = entry_for(r#"{"tool_name":"Bash","tool_use_id":"tu-1","tool_input":{"command":"cargo build"}}"#);
+    assert!(plain["head_before"].is_null(), "no git process for a non-commit command: {plain}");
+    let committing =
+        entry_for(r#"{"tool_name":"Bash","tool_use_id":"tu-2","tool_input":{"command":"git commit -am x"}}"#);
+    assert!(committing["head_before"].is_string(), "{committing}");
+
+    // Not a shell tool at all: never.
+    let edit = entry_for(
+        r#"{"tool_name":"Edit","tool_use_id":"tu-3","tool_input":{"file_path":"a.txt","old_string":"one","new_string":"two"}}"#,
+    );
+    assert!(edit["head_before"].is_null(), "{edit}");
 }
 
 #[test]
@@ -1305,6 +1832,99 @@ fn invoke_agent_derives_a_subagent_pair_before_the_allowlist() {
         .expect("subagent_stop");
     assert_eq!(stop["matched_start"], true);
     assert_eq!(stop["agent_type"], "reviewer");
+
+    // The tool record for `invoke_agent` carries the synthetic path, never the
+    // sub-agent prompt — which would put content in the journal, and which
+    // `journey_distinct` on `path` would then see.
+    let tool = journal_records(dir.path())
+        .into_iter()
+        .find(|r| r["tool"] == "invoke_agent")
+        .expect("a tool record for invoke_agent");
+    assert_eq!(tool["path"], "<invoke_agent>");
+    assert!(
+        !std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl"))
+            .unwrap()
+            .contains("look"),
+        "the sub-agent prompt must not reach the journal"
+    );
+}
+
+/// `agent_name` is model-generated free text and becomes a journal tag, hence a
+/// RETE fact. Plan 1 sanitizes it; this pins that the derivation actually goes
+/// through that path rather than stamping the raw string.
+#[test]
+fn a_hostile_invoke_agent_name_is_sanitized_away() {
+    let dir = tempfile::tempdir().unwrap();
+    run_hook_in(
+        "pre-check",
+        r#"{"tool_name":"invoke_agent","tool_input":{"agent_name":"kalpa:evil name; rm -rf /","prompt":"x"}}"#,
+        Some(dir.path()),
+    );
+    let start = journal_records(dir.path())
+        .into_iter()
+        .find(|r| r["kind"] == "subagent_start")
+        .expect("subagent_start");
+    assert!(start.get("agent_type").is_none() || start["agent_type"].is_null(), "{start}");
+    assert!(
+        !start["tags"].as_array().unwrap().iter().any(|t| t.as_str().unwrap().starts_with("lifecycle:agent:")),
+        "no tag at all rather than a hostile one: {start}"
+    );
+
+    // And a merely differently-cased one is normalized, not dropped.
+    run_hook_in(
+        "pre-check",
+        r#"{"tool_name":"invoke_agent","tool_input":{"agent_name":"Code-Reviewer","prompt":"x"}}"#,
+        Some(dir.path()),
+    );
+    let second = journal_records(dir.path())
+        .into_iter()
+        .filter(|r| r["kind"] == "subagent_start")
+        .next_back()
+        .unwrap();
+    assert_eq!(second["agent_type"], "code-reviewer");
+}
+
+/// A blocked `invoke_agent` pre-check pops the `agents` entry it just pushed and
+/// writes no `subagent_start`: a sub-agent that never ran must not leave a
+/// dangling entry for the next real stop to pop LIFO (spec §"Where the writes
+/// happen").
+#[test]
+fn a_blocked_invoke_agent_pre_check_pops_its_agents_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"no-agents","phase":"pre","priority":1,
+            "when":[{"tool_name_matches":"invoke_agent"}],
+            "then":{"block":"no sub-agents here"}}]}"#,
+    );
+    let (code, stderr) = run_hook_in(
+        "pre-check",
+        r#"{"tool_name":"invoke_agent","tool_input":{"agent_name":"reviewer","prompt":"look"}}"#,
+        Some(dir.path()),
+    );
+    assert_eq!(code, 2, "{stderr}");
+    assert!(inflight_keys(dir.path()).is_empty(), "the inflight entry is popped too");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join(".phronesis/journey/agents"))
+            .unwrap_or_default()
+            .trim(),
+        "",
+        "no dangling open sub-agent"
+    );
+
+    // A later real stop must therefore find nothing to pair with, rather than
+    // popping the ghost LIFO and reporting a wrong duration.
+    run_hook_in(
+        "post-check",
+        r#"{"tool_name":"invoke_agent","tool_input":{"agent_name":"other","prompt":"x"},
+            "tool_response":{"output":"done"}}"#,
+        Some(dir.path()),
+    );
+    let stop = log_entries(dir.path())
+        .into_iter()
+        .find(|e| e["event"] == "subagent_stop")
+        .expect("subagent_stop");
+    assert_eq!(stop["matched_start"], false);
 }
 
 #[test]
@@ -1366,13 +1986,28 @@ pub(super) fn pre_push_inflight(root: &Path, payload: &HookPayload) -> String {
     let tool = tool_of(payload);
     let input = input_of(payload);
     let key = state::inflight_key_for(payload.tool_use_id.as_deref(), &tool, &input);
-    // HEAD is read only for shell tools: this is the one git call on the pre
-    // path, and every other tool would pay for nothing.
-    let head_before = if outcome::is_shell_tool(&tool) {
-        outcome::git_head(root)
-    } else {
-        None
-    };
+    // HEAD is read only for a shell tool whose command passes the text
+    // pre-filter, so a shell call that cannot be a commit spawns no git process
+    // at all (spec §"Success signal: commit" step 1). This is the one git call
+    // on the pre path.
+    let command = super::extract_new_content(payload, &tool).unwrap_or_default();
+    let (head_before, detection) =
+        if outcome::is_shell_tool(&tool) && outcome::command_may_move_head(&command) {
+            match outcome::git_head_probe(root) {
+                outcome::HeadProbe::Head(sha) => (Some(sha), None),
+                // A timeout is a miss worth auditing: detection is disabled for
+                // this call either way, but only a timeout means the commit may
+                // have been real.
+                outcome::HeadProbe::Timeout => {
+                    (None, Some(outcome::DETECTION_TIMEOUT.to_string()))
+                }
+                // Not a repo, or git unavailable: nothing to detect, nothing to
+                // audit.
+                outcome::HeadProbe::Unavailable => (None, None),
+            }
+        } else {
+            (None, None)
+        };
     state::push_inflight(
         root,
         state::Inflight {
@@ -1381,15 +2016,21 @@ pub(super) fn pre_push_inflight(root: &Path, payload: &HookPayload) -> String {
             ts: unix_secs_now(),
             agent_id: payload.agent_id.clone().filter(|s| !s.is_empty()),
             head_before,
+            detection,
         },
     );
     key
 }
 
-/// A blocked pre-check pops its own entry before exiting: a block is not an
-/// interrupt (spec §"Correlation state").
-pub(super) fn pop_inflight_key(root: &Path, key: &str) {
+/// Undo everything this pre-check pushed, because the tool never ran. The
+/// `inflight` entry goes because a block is not an interrupt; the `agents` entry
+/// goes because a sub-agent that never ran must not leave a dangling entry for
+/// the next real stop to pop LIFO (spec §"Where the writes happen").
+pub(super) fn undo_blocked_pre(root: &Path, key: &str, tool_name: &str) {
     state::pop_inflight(root, key);
+    if tool_name == "invoke_agent" {
+        state::pop_agent(root, None);
+    }
 }
 
 /// Pop the entry this call pushed and, for a shell call that may have moved
@@ -1403,6 +2044,23 @@ pub(super) fn post_pop_and_detect(root: &Path, payload: &HookPayload, tool_name:
     let Some(entry) = entry else { return };
     let command = super::extract_new_content(payload, tool_name).unwrap_or_default();
     let exit = super::journey_record::payload_command_exit(payload);
+
+    // Why detection was skipped, when it was, named on stderr so the miss is
+    // auditable rather than silent. `detection` on the entry came from the pre
+    // side (a timed-out `git rev-parse`); `no_exit_code` is decided here,
+    // because a host that sends no exit code cannot be given the benefit of the
+    // doubt — that is what makes `git commit && false` a non-commit.
+    if outcome::command_may_move_head(&command) {
+        if let Some(marker) = entry.detection.as_deref() {
+            eprintln!("phronesis: commit detection skipped for {tool_name}: {marker}");
+        } else if exit.is_none() {
+            eprintln!(
+                "phronesis: commit detection skipped for {tool_name}: {}",
+                outcome::DETECTION_NO_EXIT_CODE
+            );
+        }
+    }
+
     let Some(commit) = outcome::detect_commit(root, entry.head_before.as_deref(), &command, exit)
     else {
         return;
@@ -1415,6 +2073,9 @@ pub(super) fn post_pop_and_detect(root: &Path, payload: &HookPayload, tool_name:
     }
     if let Some(band) = confidence_band(root) {
         ev = ev.with_extra("confidence_band", band);
+    }
+    if let Some(marker) = entry.detection.as_deref() {
+        ev = ev.with_extra("detection", marker);
     }
     if let Some(agent) = entry.agent_id {
         ev = ev.with_agent(agent, None);
@@ -1444,12 +2105,15 @@ fn confidence_band(root: &Path) -> Option<&'static str> {
 /// tool, so the pair is derived from `BeforeTool`/`AfterTool` (spec §"Host
 /// adapters / Gemini CLI"). The id is synthesized and the stop pops LIFO.
 pub(super) fn gemini_subagent_start(root: &Path, payload: &HookPayload) {
+    // Raw here; `LifecycleEvent::with_agent` and `OpenAgent` both receive it
+    // through `sanitize_agent_type`, so the hostile-name case is handled once,
+    // in Plan 1, rather than at each of the two call sites.
     let agent_type = payload
         .tool_input
         .as_ref()
         .and_then(|v| v.get("agent_name"))
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .and_then(crate::lifecycle::sanitize_agent_type);
     let agent_id = synth_agent_id(root);
     let ev = LifecycleEvent::new(Kind::SubagentStart, Host::Gemini)
         .with_agent(agent_id.clone(), agent_type.clone());
@@ -1494,16 +2158,17 @@ In `src/hook/pre.rs::run_pre_check`, immediately after the `read_payload` match 
 Add `"invoke_agent"` to the allowlist match in the same function (after `|| name == "run_shell_command"`), and add this helper below `run_pre_check`:
 
 ```rust
-/// Exit 2 after dropping this call's `inflight` entry. A block means the tool
-/// never ran, so the entry must not survive to make the next prompt look like
-/// a correction.
-fn blocked_exit(root: &std::path::Path, key: &str) -> ! {
-    super::lifecycle_wiring::pop_inflight_key(root, key);
+/// Exit 2 after undoing what this pre-check pushed. A block means the tool never
+/// ran, so the `inflight` entry must not survive to make the next prompt look
+/// like a correction, and an `invoke_agent`'s `agents` entry must not survive to
+/// be popped LIFO by the next real sub-agent stop.
+fn blocked_exit(root: &std::path::Path, key: &str, tool_name: &str) -> ! {
+    super::lifecycle_wiring::undo_blocked_pre(root, key, tool_name);
     process::exit(2)
 }
 ```
 
-Then replace **every** `process::exit(2)` in `run_pre_check` that appears after the `pre_push_inflight` call with `blocked_exit(&root, &inflight_key)`. The `process::exit(2)` inside the `read_payload` error arm is before the push and stays as it is. Verified against the current tree: `assert_pre_content_facts` (`pre.rs:256`) returns `Result<(), HookError>` and contains no `process::exit` of its own, so every block on that path already funnels back through a `run_pre_check` exit covered by this rule — there is no second exit site to refactor. Confirm this with `grep -n 'process::exit' crates/phronesis-mcp/src/hook/pre.rs` before and after: every hit must be inside `run_pre_check`, and every one after the push must read `blocked_exit`.
+Then replace **every** `process::exit(2)` in `run_pre_check` that appears after the `pre_push_inflight` call with `blocked_exit(&root, &inflight_key, payload.tool_name.as_deref().unwrap_or_default())`. The `process::exit(2)` inside the `read_payload` error arm is before the push and stays as it is. Verified against the current tree: `assert_pre_content_facts` (`pre.rs:256`) returns `Result<(), HookError>` and contains no `process::exit` of its own, so every block on that path already funnels back through a `run_pre_check` exit covered by this rule — there is no second exit site to refactor. Confirm this with `grep -n 'process::exit' crates/phronesis-mcp/src/hook/pre.rs` before and after: every hit must be inside `run_pre_check`, and every one after the push must read `blocked_exit`.
 
 In `src/hook/post.rs::run_post_check`, immediately after the `read_payload` match and before the allowlist match, insert:
 
@@ -1518,7 +2183,26 @@ In `src/hook/post.rs::run_post_check`, immediately after the `read_payload` matc
 
 Add `"invoke_agent"` to post's allowlist match too. Then, unconditionally (clippy's shadow lints are in the `restriction` group and are off by default, so waiting for a warning here would mean never doing it): replace every later `security::project_root()` call inside `run_post_check` with the `root` bound above, so the function resolves the project root exactly once and cannot act on two different roots.
 
-In `src/hook/journey_record.rs::build_journal_record`, change `v: 1,` to `v: journey::journal::JOURNAL_V,` — lifecycle records and tool records now share one schema version.
+In `src/hook/journey_record.rs::build_journal_record`, change `v: 1,` to
+`v: journey::journal::JOURNAL_V,` — lifecycle records and tool records now share
+one schema version.
+
+Also in `build_journal_record`, give `invoke_agent` its synthetic path. The path
+is derived from `tool_input`, and `invoke_agent`'s `tool_input` is
+`{agent_name, prompt}` — a path derivation that fell through to the prompt would
+put a full sub-agent task in the journal, and `journey_distinct` on `path` would
+then see it. Immediately after the tool name is known:
+
+```rust
+    // `invoke_agent` has no file path; its `tool_input.prompt` is a sub-agent
+    // task and must never become one. The synthetic value is what
+    // `journey_distinct` on `path` sees (spec §"Where the writes happen").
+    let path = if tool_name == "invoke_agent" {
+        crate::hook::lifecycle_wiring::INVOKE_AGENT_PATH.to_string()
+    } else {
+        path
+    };
+```
 
 - [ ] **Step 4: Run tests**
 
@@ -1542,7 +2226,16 @@ git commit -m "feat(hook): inflight correlation, commit detection and invoke_age
 - Test: `crates/phronesis-mcp/tests/init_integration.rs`
 
 **Interfaces:**
-- Produces: `fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entry: Value)` — replaces only entries whose command starts with `phr-mcp `, leaving every foreign hook in place.
+- Produces: `fn is_phronesis_hook_command(command: &str) -> bool` and `fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entry: Value)` — replaces only entries that invoke one of *our* subcommands, however the binary is named on disk, and leaves every foreign hook in place.
+
+**Command-keyed means token-keyed, not prefix-keyed.** Spec §"Host adapters /
+Claude Code": "an entry is replaced when its command contains the token `phr-mcp`
+and ends with one of our subcommands … so a user who invokes us through an
+absolute path or a wrapper gets an in-place upgrade rather than a duplicate
+registration and double context injection." A `starts_with("phr-mcp ")` test
+misses `/usr/local/bin/phr-mcp session-context` and `~/bin/phr-mcp claude-hook
+Stop`, and those users get two hooks on the same event — which means two context
+renders injected into every prompt.
 
 > **Shared ownership.** This plan is the **sole owner** of `upsert_hook_by_command`. Plan 4 (Gemini) consumes it and defines nothing; it depends on this plan landing first. Do not change the name, signature, or body without updating Plan 4's §Merge notes, which assume this exact definition is already present in `init.rs` when Plan 4 merges.
 
@@ -1608,6 +2301,41 @@ fn init_is_idempotent_for_the_new_registrations() {
     }
 }
 
+/// A `phr-mcp` invoked by absolute path, or through a wrapper, is still ours:
+/// it is replaced in place rather than duplicated. Duplicate registration means
+/// double context injection on every prompt, which is why this is a test and not
+/// a nicety.
+#[test]
+fn init_replaces_a_path_qualified_phr_mcp_entry_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    std::fs::write(
+        dir.path().join(".claude/settings.local.json"),
+        r#"{"hooks":{
+            "SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"/usr/local/bin/phr-mcp session-context"}]}],
+            "UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"/opt/tools/phr-mcp claude-hook UserPromptSubmit"}]}],
+            "Stop":[{"matcher":"","hooks":[{"type":"command","command":"/usr/bin/phr-mcp-notify --all"}]}]
+        }}"#,
+    )
+    .unwrap();
+    assert!(run_init(&["--force"], dir.path()).status.success());
+    let s = claude_settings(dir.path());
+    assert_eq!(
+        commands_for(&s, "SessionStart"),
+        vec!["phr-mcp claude-hook SessionStart".to_string()],
+        "an absolute-path entry is replaced, not duplicated"
+    );
+    assert_eq!(
+        commands_for(&s, "UserPromptSubmit"),
+        vec!["phr-mcp claude-hook UserPromptSubmit".to_string()]
+    );
+    // `phr-mcp-notify` is a different binary whose name merely starts the same
+    // way. It is not ours and must survive.
+    let stop = commands_for(&s, "Stop");
+    assert!(stop.contains(&"/usr/bin/phr-mcp-notify --all".to_string()), "{stop:?}");
+    assert!(stop.contains(&"phr-mcp claude-hook Stop".to_string()), "{stop:?}");
+}
+
 #[test]
 fn init_migrates_interaction_context_in_place_and_keeps_foreign_hooks() {
     let dir = tempfile::tempdir().unwrap();
@@ -1646,14 +2374,46 @@ Expected: `init_registers_the_claude_lifecycle_events` fails (`SubagentStart` ab
 In `src/init.rs`, add beside `upsert_hook`:
 
 ```rust
+/// Subcommands Phronesis registers as hooks. An entry that names one of these
+/// after a `phr-mcp` token is ours; anything else is the user's.
+const PHRONESIS_HOOK_SUBCOMMANDS: [&str; 5] = [
+    "session-context",
+    "interaction-context",
+    "claude-hook",
+    "codex-hook",
+    // Gemini registers the tool phases directly (Plan 4).
+    "pre-check",
+];
+
+/// Is this hook command one of ours? The binary may be invoked bare
+/// (`phr-mcp claude-hook Stop`), by absolute path
+/// (`/usr/local/bin/phr-mcp session-context`), or through a wrapper — all three
+/// are the same installation and must be upgraded in place rather than
+/// duplicated, because two entries on one event mean two context renders per
+/// prompt.
+///
+/// Token-based, not prefix-based: `phr-mcp-notify --all` is a different binary
+/// whose name merely starts the same way, and it must survive `init`.
+fn is_phronesis_hook_command(command: &str) -> bool {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let Some(bin_at) = tokens.iter().position(|t| {
+        *t == "phr-mcp" || t.rsplit(['/', '\\']).next() == Some("phr-mcp")
+    }) else {
+        return false;
+    };
+    tokens[bin_at + 1..]
+        .iter()
+        .any(|t| PHRONESIS_HOOK_SUBCOMMANDS.contains(t) || *t == "post-check")
+}
+
 /// Replace Phronesis's own entry for a hook event regardless of its former
 /// matcher or command, and leave every other hook alone. Matcher-keyed
 /// `upsert_hook` both deletes a user's hook that happens to share our matcher
 /// (spec §"Adjacent findings" 7) and leaves a stale entry behind whenever we
-/// change our own matcher or command; keying on the `phr-mcp ` command prefix
-/// does neither. Phronesis registers at most one entry per event, so dropping
-/// every `phr-mcp ` entry and pushing one back is exact. Migrating the four
-/// pre-existing matcher-keyed registrations to this is a follow-up.
+/// change our own matcher or command; keying on the command does neither.
+/// Phronesis registers at most one entry per event, so dropping every entry of
+/// ours and pushing one back is exact. Migrating the four pre-existing
+/// matcher-keyed registrations to this is a follow-up.
 fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entry: Value) {
     let hooks = settings.as_object_mut().and_then(|o| {
         o.entry("hooks".to_string())
@@ -1668,16 +2428,19 @@ fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entry: Value) {
     let arr = arr.as_array_mut().unwrap();
     arr.retain(|entry| {
         !entry["hooks"].as_array().is_some_and(|handlers| {
-            handlers.iter().any(|hook| {
-                hook["command"]
-                    .as_str()
-                    .is_some_and(|c| c.starts_with("phr-mcp "))
-            })
+            handlers
+                .iter()
+                .any(|hook| hook["command"].as_str().is_some_and(is_phronesis_hook_command))
         })
     });
     arr.push(new_entry);
 }
 ```
+
+`post-check` is spelled out in the `any` rather than added to the array only so
+the array's length stays a compile-time constant that reads as "the five names a
+settings file has ever contained"; feel free to widen the array to six instead —
+the behaviour is identical and the test below pins it either way.
 
 Also add its two unit tests to `init.rs`'s `#[cfg(test)] mod tests`, beside `upsert_hook_replaces_matching_matcher` (`init.rs:3429`). Plan 4 asserts the same behaviour through the Gemini writer and relies on these:
 
@@ -1685,7 +2448,7 @@ Also add its two unit tests to `init.rs`'s `#[cfg(test)] mod tests`, beside `ups
 #[test]
 fn upsert_hook_by_command_replaces_ours_and_keeps_foreign() {
     let mut settings = json!({"hooks": {"SessionStart": [
-        {"matcher": "", "hooks": [{"type": "command", "command": "phr-mcp session-context"}]},
+        {"matcher": "", "hooks": [{"type": "command", "command": "/usr/local/bin/phr-mcp session-context"}]},
         {"matcher": "", "hooks": [{"type": "command", "command": "my-own-tool --flag"}]}
     ]}});
     upsert_hook_by_command(
@@ -1697,6 +2460,32 @@ fn upsert_hook_by_command_replaces_ours_and_keeps_foreign() {
     assert_eq!(arr.len(), 2, "one foreign hook plus exactly one of ours: {arr:?}");
     assert_eq!(arr[0]["hooks"][0]["command"], "my-own-tool --flag");
     assert_eq!(arr[1]["hooks"][0]["command"], "phr-mcp claude-hook SessionStart");
+}
+
+#[test]
+fn is_phronesis_hook_command_recognizes_ours_and_only_ours() {
+    for ours in [
+        "phr-mcp session-context",
+        "phr-mcp claude-hook SessionStart",
+        "/usr/local/bin/phr-mcp interaction-context",
+        "/opt/tools/phr-mcp claude-hook Stop",
+        "env FOO=1 phr-mcp codex-hook Interrupt",
+        "phr-mcp pre-check",
+        "phr-mcp post-check",
+    ] {
+        assert!(is_phronesis_hook_command(ours), "{ours}");
+    }
+    for theirs in [
+        "my-own-notifier",
+        "phr-mcp-notify --all",
+        "/usr/bin/phr-mcp-notify --all",
+        // The binary with no subcommand of ours is not a hook we registered.
+        "phr-mcp --version",
+        "phr",
+        "",
+    ] {
+        assert!(!is_phronesis_hook_command(theirs), "{theirs}");
+    }
 }
 
 #[test]
@@ -1965,6 +2754,77 @@ Expected: FAIL naming the first key the captures do not carry — or PASS immedi
 
 If a key is genuinely absent from the capture, delete it from the `expected` list and add a one-line comment saying which event did not send it. Do not edit the capture.
 
+Two more tests the spec's §Testing row for `tests/hook_integration.rs` names,
+appended there (not to `payload_contract.rs`) because they drive the adapter:
+
+```rust
+/// A sweep over every event × committed fixture: exit 0 and parseable JSON on
+/// stdout, every time. The per-event tests above each pin one shape; this pins
+/// that no combination crashes or prints something Gemini would turn into a
+/// user-visible `systemMessage`.
+#[test]
+fn every_event_and_fixture_combination_exits_zero_with_json_stdout() {
+    let raw_dir =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/payloads/claude/raw");
+    let events = [
+        "UserPromptSubmit", "SessionStart", "SessionEnd", "SubagentStart", "SubagentStop", "Stop",
+        "BeforeAgent", "AfterAgent",
+    ];
+    let mut fixtures: Vec<(String, String)> = Vec::new();
+    for entry in std::fs::read_dir(&raw_dir).expect("captured fixtures") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            let body = std::fs::read_to_string(&path).expect("fixture");
+            fixtures.push((path.file_name().unwrap().to_string_lossy().to_string(), body));
+        }
+    }
+    assert!(!fixtures.is_empty(), "no captured fixtures under {}", raw_dir.display());
+
+    for event in events {
+        for (name, body) in &fixtures {
+            let dir = tempfile::tempdir().unwrap();
+            // The argument and the payload's own `hook_event_name` disagree on
+            // purpose: the payload wins, and neither path may crash.
+            let (code, stdout, stderr) = run_claude_hook(dir.path(), event, body);
+            assert_eq!(code, 0, "{event} × {name}: {stderr}");
+            let v: serde_json::Value = serde_json::from_str(stdout.trim())
+                .unwrap_or_else(|e| panic!("{event} × {name}: {e}: {stdout:?}"));
+            assert!(v.is_object(), "{event} × {name}: {stdout:?}");
+        }
+    }
+}
+
+/// `last_assistant_message`, `prompt_response` and transcript paths are read for
+/// decisions and dropped at the adapter boundary. Nothing persists them.
+#[test]
+fn no_log_entry_carries_a_transcript_path_or_an_assistant_message() {
+    let dir = tempfile::tempdir().unwrap();
+    let transcript = "/home/dev/.claude/projects/p/claude-s-001.jsonl";
+    for (event, payload) in [
+        (
+            "UserPromptSubmit",
+            format!(r#"{{"hook_event_name":"UserPromptSubmit","session_id":"s1","transcript_path":"{transcript}","prompt":"go"}}"#),
+        ),
+        (
+            "SubagentStop",
+            format!(r#"{{"hook_event_name":"SubagentStop","session_id":"s1","agent_id":"a1","agent_transcript_path":"{transcript}","last_assistant_message":"zzz-assistant-text"}}"#),
+        ),
+        (
+            "AfterAgent",
+            r#"{"hook_event_name":"AfterAgent","session_id":"g1","prompt":"hi","prompt_response":"zzz-response-text"}"#.to_string(),
+        ),
+    ] {
+        run_claude_hook(dir.path(), event, &payload);
+    }
+    let log = std::fs::read_to_string(dir.path().join(".phronesis/log.jsonl")).unwrap();
+    assert!(!log.contains(".jsonl"), "no transcript path in the log: {log}");
+    assert!(!log.contains("zzz-assistant-text"), "{log}");
+    assert!(!log.contains("zzz-response-text"), "{log}");
+    let journal = std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    assert!(!journal.contains(".jsonl"), "{journal}");
+}
+```
+
 - [ ] **Step 3: Write the fixture envelopes**
 
 One file per event, using the captured payload verbatim. `crates/phronesis-mcp/tests/fixtures/payloads/claude/subagent-stop.json`:
@@ -2076,8 +2936,16 @@ git commit -m "docs(changelog): Claude lifecycle adapter and commit detection"
 | Gemini `BeforeAgent` → prompt, `AfterAgent` → stop in the same adapter | 2 (dispatch), 3 (host tagging test) |
 | `UserPromptSubmit` → render interaction context, then record `prompt` | 3 |
 | classification: scrub → classify → interrupt record with `inferred_from` → prompt with mode → `open_turn` | 3 |
-| `SessionStart` overwrites `session`, truncates `agents`/`inflight`, renders session context | 3 |
-| `SessionEnd` records `stop` when open, truncates `session`, closes `turn` | 3 |
+| `SessionStart` is source-gated: a begin overwrites `session` and truncates `agents`/`inflight`/`turn`; `compact`/`fork` touch nothing | 3 |
+| `SessionEnd` runs step 2's interrupt detection, records `interrupt` or `stop`, closes `turn`, **leaves `session` in place**, prints `{}` | 3 |
+| a blocked `Stop`/`SubagentStop` records nothing and leaves the turn open; the re-fire records exactly one `stop` | 3 |
+| a prompt carrying `agent_id` is `fresh`, untagged, and writes no `turn` | 3 |
+| the confidence gate does not run on a Gemini-mapped `AfterAgent` | 2 |
+| the pre-filter runs at pre as well as post; `detection` markers for `timeout` / `no_exit_code` | 4 |
+| `invoke_agent` records carry the synthetic path `<invoke_agent>`; a blocked `invoke_agent` pre-check pops `agents` | 4 |
+| `agent_type` sanitized before it becomes a tag (Plan 1's `sanitize_agent_type`, exercised here) | 4 |
+| command-keyed replacement matches a path-qualified `phr-mcp` | 5 |
+| the captured transcript tail drives the marker branch | 1 |
 | `SubagentStart` push + record; `SubagentStop` pop, `duration_secs`, `matched_start` | 3 |
 | payload capture redaction (`redact_for_capture` inside `capture_raw_payload`) | 2 (call site; the redaction itself is Plan 1 Task 10) |
 | `inflight` push after `read_payload`, before the allowlist; `head_before` for shell tools | 4 |
@@ -2095,7 +2963,7 @@ Out of scope by the spec's own rollout graph and not covered here: the Codex ada
 
 **2. Placeholder scan:** the only intentional fill-in-the-blank is Task 7's fixture envelopes, which paste a *captured* payload that cannot exist before Task 1 runs on a real host; the surrounding envelope, the table of expected tags, and the pin test are fully written. Task 1 is explicitly marked as requiring the human and gives the exact settings JSON and the exact sentences to type. No "TBD", no "add error handling", no "similar to Task N".
 
-**3. Shared ownership:** `upsert_hook_by_command` is defined here, in Task 5, and nowhere else. Plan 4 consumes it. `hook/mod.rs`'s `HookPayload`, `redact_for_capture` and `capture_raw_payload` visibility belong to Plan 1 Task 10; this plan adds exactly one line (`mod lifecycle_wiring;`) to that file.
+**3. Shared ownership:** `upsert_hook_by_command` and `is_phronesis_hook_command` are defined here, in Task 5, and nowhere else. Plan 4 consumes it. `hook/mod.rs`'s `HookPayload`, `redact_for_capture` and `capture_raw_payload` visibility belong to Plan 1 Task 10; this plan adds exactly one line (`mod lifecycle_wiring;`) to that file.
 
 ---
 
@@ -2105,7 +2973,7 @@ Plans 2, 3, and 4 are executed in separate worktrees off the same Plan 1 base an
 
 | file | Plan 2 (this plan) owns | Plan 3 (Codex) owns | Plan 4 (Gemini) owns |
 |---|---|---|---|
-| `src/init.rs` | `write_settings` (`:580-622`) — the two `upsert_hook(context_entry(…))` calls become one `upsert_hook_by_command` loop over six events; **and** the new `upsert_hook_by_command` fn + its two unit tests, added immediately after `upsert_hook` (which ends at `:1559`) | `write_codex_hooks`'s `for (event, matcher)` table (`:735-757`) only | `write_gemini_settings`'s hook block (`:676-706`) and the `report.steps.push` note after `write_json` (`:714`) only. **Plan 4 adds no `upsert_hook_by_command`** — it is already present from this plan. |
+| `src/init.rs` | `write_settings` (`:580-622`) — the two `upsert_hook(context_entry(…))` calls become one `upsert_hook_by_command` loop over six events; **and** the new `is_phronesis_hook_command` + `upsert_hook_by_command` fns and their three unit tests, added immediately after `upsert_hook` (which ends at `:1559`) | `write_codex_hooks`'s `for (event, matcher)` table (`:735-757`) only | `write_gemini_settings`'s hook block (`:676-706`) and the `report.steps.push` note after `write_json` (`:714`) only. **Plan 4 adds no `upsert_hook_by_command`** — it is already present from this plan. |
 | `src/main.rs` | `Command::ClaudeHook` variant (immediately after `CodexHook`, before Plan 1's `Kalpa`) + its dispatch arm in the same relative position | — | — |
 | `src/lib.rs` | `pub mod claude_hook;` in alphabetical position, immediately before `pub mod codex_hook;` | — | — |
 | `src/hook/mod.rs` | one line: `mod lifecycle_wiring;` next to `pub(crate) mod seq;` (`:10`) | — (Plan 3 must not edit this file) | — |

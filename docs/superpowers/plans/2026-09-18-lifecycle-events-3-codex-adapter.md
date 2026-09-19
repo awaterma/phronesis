@@ -10,7 +10,13 @@
 
 **Spec:** `docs/specs/SPEC-agent-lifecycle-events.md` (revised 2026-09-18), §"Host adapters / Codex CLI", §Classification, §"Action log". Read it first; this plan argues from it.
 
-**Depends on:** `docs/superpowers/plans/2026-09-18-lifecycle-events-1-foundation.md` (Plan 1) must be merged. This plan uses **only** these Plan 1 names: `lifecycle::event::{LifecycleEvent, Kind, Mode, Host, Stamped, PromptText}`, `lifecycle::record::record`, `lifecycle::state::{push_agent, pop_agent, OpenAgent, read_turn, open_turn, close_turn, set_session, clear_session, reset_for_session_start, classify_prompt, PromptContext, Classification, InterruptSource, take_inflight_for_scope}`, `lifecycle::scrub::scrub_prompt`, `hook::redact_for_capture`, plus `hook::capture_raw_payload`, which Plan 1 Task 10 already makes `pub(crate)` *and* already wires through `redact_for_capture`. **This plan makes no edit to `hook/mod.rs`.**
+**Depends on:** `docs/superpowers/plans/2026-09-18-lifecycle-events-1-foundation.md` (Plan 1) must be merged. This plan uses **only** these Plan 1 names: `lifecycle::event::{LifecycleEvent, Kind, Mode, Host, Stamped, PromptText}`, `lifecycle::record::record`, `lifecycle::state::{push_agent, pop_agent, OpenAgent, read_turn, open_turn, close_turn, set_session, is_session_begin, reset_for_session_start, clear_inflight, classify_prompt, PromptContext, Classification, InterruptSource}`, `lifecycle::scrub::scrub_prompt`, `hook::redact_for_capture`, plus `hook::capture_raw_payload`, which Plan 1 Task 10 already makes `pub(crate)` *and* already wires through `redact_for_capture`. **This plan makes no edit to `hook/mod.rs`.**
+
+**Three Plan 1 names this plan deliberately does not use**, because the revised
+spec removed them: `state::clear_session` (SessionEnd no longer truncates the
+session file), `state::last_lifecycle_kind` (classification reads
+`turn.last_event`, never the journal tail), and `InterruptSource::Hook`. If any
+of the three resolves when you build, you are on an older Plan 1.
 
 **Runs in parallel with:** Plan 2 (Claude) and Plan 4 (Gemini). See §Merge notes at the end of this plan for every shared file and the exact region each plan owns. This plan needs nothing from Plan 2 or Plan 4 and can merge before or after either.
 
@@ -31,6 +37,18 @@
 - Every lifecycle write is fail-open: failures print `phronesis: …` on stderr; the hook still responds with valid JSON and exit 0.
 - Codex output schemas are `deny_unknown_fields`. An extra key fails the whole hook. Permitted keys per event are the table in the spec §"Host adapters / Codex CLI".
 - `Stop` does not fire on abort; `Interrupt` does. A missing `Stop` never means the turn completed.
+- `Interrupt` sets `turn` to `{open: false, last_event: "interrupt"}` **and drops
+  the session's `inflight` entries**: the aborted tools' `PostToolUse` never
+  fires, and a lingering entry would fake an interrupt for the next 900 s.
+- **`SubagentStop` never closes `turn`; only the main-agent `Stop` does.** The two
+  share a `dispatch` arm in the current code, which makes the distinction easy to
+  lose — Task 5 splits them and pins it.
+- `Stop` and `SubagentStop` skip the confidence gate entirely when
+  `stop_hook_active: true`, and **record nothing when the response blocks**: a
+  blocked stop means the turn continues.
+- `SessionStart` is **source-gated**. The matcher widens to `""` in Task 7, so
+  `compact` and `fork` now reach the handler; they render context and touch no
+  correlation state.
 - Conventional-commit messages. Run `cargo fmt` and `cargo clippy --all-targets -p phronesis-mcp -- -D warnings` before every commit.
 - Machine note: if `cargo` fails with "You have not agreed to the Xcode license", stop and report; the human must run `sudo xcodebuild -license accept`.
 
@@ -116,6 +134,12 @@ Append to `CodexPayload`, after `tool_response`:
     /// `UserPromptSubmit` only, verbatim. Scrubbed before it reaches the log.
     #[serde(default)]
     prompt: Option<String>,
+    /// `SessionStart` only: `startup` | `resume` | `clear` | `compact` | `fork`.
+    /// Task 7 widens the registration matcher to `""`, so `compact` and `fork`
+    /// reach the handler for the first time and the gate is what keeps them
+    /// from orphaning an open sub-agent.
+    #[serde(default)]
+    source: Option<String>,
 ```
 
 Tee stdin through the shared capture path, which redacts `prompt` and `last_assistant_message`:
@@ -155,7 +179,7 @@ git commit -m "feat(codex): widen CodexPayload and tee redacted payloads to the 
 - Test: `crates/phronesis-mcp/tests/codex_hook_integration.rs`
 
 **Interfaces:**
-- Consumes: `lifecycle::record::record`, `lifecycle::state::{close_turn, clear_session, read_turn}`, `lifecycle::event::{LifecycleEvent, Kind, Host}`.
+- Consumes: `lifecycle::record::record`, `lifecycle::state::{close_turn, clear_inflight, read_turn}`, `lifecycle::event::{LifecycleEvent, Kind, Host}`.
 - Produces: `fn lifecycle_event(payload: &CodexPayload, kind: Kind) -> LifecycleEvent` and the test helpers `journal_records` / `lifecycle_records` / `lifecycle_kinds` / `lifecycle_log` / `log_event` / `turn_file` / `prompt_payload` (used by Tasks 3–5). `fn unix_secs_now() -> u64` is added by Task 4, its first user.
 
 - [ ] **Step 1: Write the failing tests**
@@ -236,20 +260,47 @@ fn interrupt_records_and_closes_the_turn() {
 }
 
 #[test]
-fn session_end_stops_an_open_turn_and_clears_the_session() {
+fn session_end_stops_an_open_turn_and_leaves_the_session_file() {
     let project = tempfile::tempdir().expect("temp project");
+    state::set_session(project.path(), "codex-s-3");
     state::open_turn(project.path(), Some("codex-t-3"), 10);
     let end = json!({"hook_event_name": "SessionEnd", "session_id": "codex-s-3"});
     assert_eq!(response(&run_hook(project.path(), &end)), json!({}));
     assert_eq!(lifecycle_kinds(project.path()), vec!["stop"]);
+    // SessionEnd does NOT truncate the session file: truncation would let any
+    // stray hook between sessions mint a throwaway sid, and the next
+    // session-begin SessionStart overwrites it anyway (spec §Correlation state).
     assert_eq!(
         fs::read_to_string(project.path().join(".phronesis/journey/session"))
             .expect("session file").trim(),
-        ""
+        "codex-s-3"
     );
     // A second SessionEnd with no open turn records nothing further.
     assert_eq!(response(&run_hook(project.path(), &end)), json!({}));
     assert_eq!(lifecycle_records(project.path()).len(), 1);
+}
+
+/// The aborted tools' `PostToolUse` never fires, so their `inflight` entries
+/// would sit there faking an interrupt for the next 900 s. `Interrupt` drops
+/// them.
+#[test]
+fn interrupt_drops_the_sessions_inflight_entries() {
+    let project = tempfile::tempdir().expect("temp project");
+    state::open_turn(project.path(), Some("codex-t-7"), 10);
+    state::push_inflight(project.path(), state::Inflight {
+        key: "u-aborted".into(), tool: "Bash".into(), ts: 10,
+        agent_id: None, head_before: None, detection: None,
+    });
+    let interrupt =
+        json!({"hook_event_name": "Interrupt", "session_id": "codex-s-7", "turn_id": "codex-t-7"});
+    assert_eq!(response(&run_hook(project.path(), &interrupt)), json!({}));
+    assert!(
+        state::pop_inflight(project.path(), "u-aborted").is_none(),
+        "an aborted tool's entry must not survive its own turn"
+    );
+    // And the classifier's evidence is `last_event`, so the next prompt is a
+    // correction with no second interrupt record.
+    assert_eq!(turn_file(project.path())["last_event"], "interrupt");
 }
 ```
 
@@ -299,17 +350,26 @@ Add two `dispatch` arms before the `_ => empty_decision()` fallback:
                 root,
                 lifecycle_event(payload, Kind::Interrupt).with_extra("inferred_from", "hook"),
             );
+            // `{open: false, last_event: "interrupt"}`. The next prompt reads
+            // `last_event` in classification step 1 and comes out `correction`
+            // with no second interrupt record — the single
+            // interrupt-already-recorded path, on every host.
             state::close_turn(root, "interrupt");
+            // The aborted tools' PostToolUse never fires; a lingering entry
+            // would fake an interrupt for 900 s.
+            state::clear_inflight(root);
             empty_decision()
         }
         // A session ending with a turn still open ended without a Stop:
-        // record the stop so the turn is closed in the journal too.
+        // record the stop so the turn is closed in the journal too. `session` is
+        // left in place — the next session-begin SessionStart overwrites it, and
+        // truncating would let any stray hook between sessions mint a throwaway
+        // sid (spec §"Host adapters / Codex CLI").
         "SessionEnd" | "session-end" => {
             if state::read_turn(root).open {
                 record(root, lifecycle_event(payload, Kind::Stop));
             }
-            state::clear_session(root);
-            state::close_turn(root, "session_end");
+            state::close_turn(root, "stop");
             empty_decision()
         }
 ```
@@ -354,7 +414,9 @@ fn session_start_adopts_the_host_session_id_and_resets_correlation_state() {
     let project = tempfile::tempdir().expect("temp project");
     assert!(run_hook(project.path(), &prompt_payload("codex-s-old", "codex-t-old", "before"))
         .status.success());
-    let start = json!({"hook_event_name": "SessionStart", "session_id": "codex-s-new"});
+    let start = json!({
+        "hook_event_name": "SessionStart", "session_id": "codex-s-new", "source": "startup"
+    });
     assert!(run_hook(project.path(), &start).status.success());
     assert_eq!(
         fs::read_to_string(project.path().join(".phronesis/journey/session"))
@@ -377,6 +439,46 @@ fn session_start_adopts_the_host_session_id_and_resets_correlation_state() {
         .expect("a tool record");
     assert_eq!(tool_record["sid"], "codex-s-new");
 }
+
+/// Task 7 widens the SessionStart matcher to `""`, so compact and fork sessions
+/// reach this handler for the first time. They must render context and touch no
+/// correlation state: their open sub-agents and in-flight tools are real.
+#[test]
+fn session_start_on_compact_or_fork_touches_no_correlation_state() {
+    for source in ["compact", "fork"] {
+        let project = tempfile::tempdir().expect("temp project");
+        let begin =
+            json!({"hook_event_name": "SessionStart", "session_id": "codex-s-a", "source": "startup"});
+        assert!(run_hook(project.path(), &begin).status.success());
+        assert!(
+            run_hook(project.path(), &prompt_payload("codex-s-a", "codex-t-a", "go"))
+                .status.success()
+        );
+        let sub = json!({
+            "hook_event_name": "SubagentStart", "session_id": "codex-s-a",
+            "turn_id": "codex-t-a", "agent_id": "codex-a-live", "agent_type": "reviewer"
+        });
+        assert!(run_hook(project.path(), &sub).status.success());
+
+        let continued = json!({
+            "hook_event_name": "SessionStart", "session_id": "codex-s-b", "source": source
+        });
+        assert!(run_hook(project.path(), &continued).status.success());
+
+        assert_eq!(
+            fs::read_to_string(project.path().join(".phronesis/journey/session"))
+                .expect("session file").trim(),
+            "codex-s-a",
+            "{source} must not mint a new sid"
+        );
+        assert_eq!(turn_file(project.path())["open"], true, "{source}: the turn is still running");
+        assert!(
+            !fs::read_to_string(project.path().join(".phronesis/journey/agents"))
+                .unwrap_or_default().trim().is_empty(),
+            "{source}: the open sub-agent must survive"
+        );
+    }
+}
 ```
 
 - [ ] **Step 2: Run to verify failure**
@@ -390,14 +492,24 @@ Replace the `SessionStart` arm in `dispatch`:
 
 ```rust
         "SessionStart" | "session-start" => {
-            // The shared `session` file is the single source of session
-            // identity for every host (spec §Correlation state). SessionStart
-            // overwrites it and truncates agents/inflight, closing any turn
-            // left open by a crashed or aborted previous session.
-            if let Some(sid) = payload.session_id.as_deref().filter(|s| !s.is_empty()) {
-                state::set_session(root, sid);
+            // Source-gated. The shared `session` file is the single source of
+            // session identity for every host (spec §Correlation state), and a
+            // session-begin source (`startup` / `resume` / `clear`, or an absent
+            // source) overwrites it and truncates agents/inflight, closing any
+            // turn left open by a crashed or aborted previous session.
+            //
+            // `compact` and `fork` continue the current session, so its open
+            // sub-agents and in-flight tools are real. Task 7 widens the
+            // registration matcher from `"startup|resume|clear"` to `""`, which
+            // is safe ONLY because of this gate: without it, a mid-session
+            // compaction would orphan every open sub-agent and discard every
+            // in-flight tool, on a path that did not fire at all before.
+            if state::is_session_begin(payload.source.as_deref()) {
+                if let Some(sid) = payload.session_id.as_deref().filter(|s| !s.is_empty()) {
+                    state::set_session(root, sid);
+                }
+                state::reset_for_session_start(root);
             }
-            state::reset_for_session_start(root);
             make_ctx_decision(root, ContextKind::SessionStart).await
         }
 ```
@@ -457,13 +569,27 @@ git commit -m "feat(codex): adopt host session id at SessionStart and journal fr
 - Test: `crates/phronesis-mcp/tests/codex_hook_integration.rs`
 
 **Interfaces:**
-- Consumes: `lifecycle::state::{classify_prompt, PromptContext, Classification, InterruptSource, read_turn, open_turn, last_lifecycle_kind}`, `lifecycle::scrub::scrub_prompt`.
+- Consumes: `lifecycle::state::{classify_prompt, PromptContext, Classification, InterruptSource, read_turn, open_turn}`, `lifecycle::scrub::scrub_prompt`.
 - Produces: `fn record_prompt(payload: &CodexPayload, root: &Path)` and `fn unix_secs_now() -> u64` (also used by Task 5).
 
 **Classification rules on Codex (spec §Classification):**
-- `classify_prompt`'s `Hook` branch fires when the last lifecycle journal record is an `interrupt` — meaning the `Interrupt` hook already wrote it. **Do not write a second interrupt record.**
-- Only the `Inflight` branch writes an interrupt record from the prompt handler.
-- A prompt whose `turn_id` equals the open turn's id is a queued mid-turn message (Codex fires `UserPromptSubmit` with the *running* turn's id). That is sufficient evidence of `mid_turn` and overrides an inflight-inferred correction; it never overrides the `Hook` branch, since an explicit `Interrupt` is ground truth.
+- Step 1 reads `turn.last_event == "interrupt"` and returns
+  `Classification { mode: Correction, interrupt: None }`. `None` means **the
+  record already exists** — the `Interrupt` arm wrote it in Task 2. The handler
+  must not write a second one, and the contract that stops it is exactly this:
+  write an `interrupt` record only for `Some(source)`.
+- On Codex `classify_prompt` never returns `Some(_)`: the transcript branch is
+  Claude-only, the `open_turn` branch is Gemini-only, and the `inflight` branch
+  is skipped on Codex because the `Interrupt` hook is authoritative. The
+  `Some(source)` arm below is therefore defensive rather than reachable today —
+  it is written generically so that if Plan 1 ever enables a branch for Codex,
+  this adapter records it instead of silently dropping it.
+- An open turn with no interrupt evidence is `mid_turn`. Spec step 3 notes that
+  on Codex a `turn_id` equal to the open turn's id is "a second, sufficient
+  signal for `mid_turn`" — Codex fires `UserPromptSubmit` with the *running*
+  turn's id for a queued message. With the `inflight` branch off on Codex the two
+  signals agree by construction, so no override code is needed; the test below
+  asserts the agreement rather than the plan re-deriving it.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -493,10 +619,10 @@ fn prompt_modes_are_fresh_mid_turn_and_never_double_interrupt() {
     let modes: Vec<String> = recs.iter()
         .filter(|r| r["kind"] == "prompt")
         .map(|r| r["mode"].as_str().unwrap_or_default().to_string()).collect();
-    // The third prompt follows an `interrupt` record in the same session, which
-    // is the spec's definition of `correction`. The Interrupt arm closed the
-    // turn, so this only holds because `classify_prompt` weighs the Hook
-    // evidence before the closed-turn short-circuit (Plan 1 Task 8).
+    // The third prompt follows an `interrupt` in the same session, which is the
+    // spec's definition of `correction`. The Interrupt arm closed the turn, and
+    // this holds because classification step 1 checks
+    // `turn.last_event == "interrupt"` BEFORE declaring `fresh` (Plan 1 Task 8).
     assert_eq!(modes, vec!["fresh", "mid_turn", "correction"]);
     let correction = recs.iter().rfind(|r| r["kind"] == "prompt").expect("a prompt");
     let tags = correction["tags"].as_array().expect("tags");
@@ -505,7 +631,9 @@ fn prompt_modes_are_fresh_mid_turn_and_never_double_interrupt() {
 }
 
 /// A tool record journaled between the interrupt and the prompt must not hide
-/// the interrupt, and another session's interrupt must not answer for this one.
+/// the interrupt — it cannot, because the evidence is `turn.last_event` and not
+/// a journal scan — and another session's interrupt must not answer for this
+/// one, because the turn file carries its own `sid`.
 #[test]
 fn correction_survives_an_intervening_tool_record_and_is_session_scoped() {
     let project = tempfile::tempdir().expect("temp project");
@@ -624,45 +752,44 @@ fn unix_secs_now() -> u64 {
 /// its scrubbed text, and open the turn. Spec §Classification.
 fn record_prompt(payload: &CodexPayload, root: &Path) {
     let now = unix_secs_now();
-    // Plan 1 Task 8 owns this: it scans backwards for the last **lifecycle**
-    // record whose sid is the current one. Do not substitute
-    // `read_recent(root, 1)` plus `.kind` — a tool record journaled after the
-    // interrupt would then return `None` and every correction would be lost.
-    let last_kind = state::last_lifecycle_kind(root);
+    // Read before `classify_prompt`, which may rewrite the file.
     let turn = state::read_turn(root);
     let context = state::PromptContext {
         host: Host::Codex,
         now,
         agent_id: payload.agent_id.as_deref(),
         turn_id: payload.turn_id.as_deref(),
-        // Codex needs no transcript scan: its Interrupt hook is ground truth.
+        // Codex needs no transcript scan: its Interrupt hook is ground truth,
+        // and step 1 reads the result from `turn.last_event`.
         transcript_path: None,
-        last_journal_kind: last_kind.as_deref(),
     };
-    let mut classification = state::classify_prompt(root, &context);
+    let classification = state::classify_prompt(root, &context);
 
     // Codex fires UserPromptSubmit with the *running* turn's id for a message
-    // queued mid-turn. That id match is sufficient evidence of `mid_turn` and
-    // outranks an inflight-inferred interrupt, which only means a tool was
-    // still running. It never outranks the Hook branch. (`classify_prompt` has
-    // already consumed the inflight entries; they stay consumed, which is
-    // correct — they are stale either way.)
-    let queued_in_same_turn = turn.open
-        && payload.turn_id.is_some()
-        && turn.turn_id.as_deref() == payload.turn_id.as_deref();
-    if classification.interrupt == Some(state::InterruptSource::Inflight) && queued_in_same_turn {
-        classification = state::Classification {
-            mode: Mode::MidTurn,
-            interrupt: None,
-        };
-    }
+    // queued mid-turn, which is spec step 3's second sufficient signal for
+    // `mid_turn`. The `inflight` branch is off on Codex, so an open turn with no
+    // interrupt evidence already classifies `mid_turn` and the two signals
+    // agree; the assertion is here rather than an override, so a future
+    // divergence is loud instead of silently papered over.
+    debug_assert!(
+        !(turn.open
+            && payload.turn_id.is_some()
+            && turn.turn_id.as_deref() == payload.turn_id.as_deref()
+            && classification.mode != Mode::MidTurn
+            && classification.interrupt.is_none()),
+        "a message queued in the running turn classified as {:?}",
+        classification.mode
+    );
 
-    // The Hook source means the Interrupt hook already wrote the record; only
-    // an inferred interrupt is written here.
-    if classification.interrupt == Some(state::InterruptSource::Inflight) {
+    // `Some(source)` means this handler must write the record. `None` with mode
+    // `Correction` means the `Interrupt` arm already wrote it, and a second
+    // record would double-count the friction. On Codex today only the second
+    // case occurs.
+    if let Some(source) = classification.interrupt {
         record(
             root,
-            lifecycle_event(payload, Kind::Interrupt).with_extra("inferred_from", "inflight"),
+            lifecycle_event(payload, Kind::Interrupt)
+                .with_extra("inferred_from", source.as_str()),
         );
     }
 
@@ -671,7 +798,13 @@ fn record_prompt(payload: &CodexPayload, root: &Path) {
         event = event.with_prompt(scrub::scrub_prompt(root, text));
     }
     record(root, event);
-    state::open_turn(root, payload.turn_id.as_deref(), now);
+    // A prompt carrying an `agent_id` never writes `turn` — a sub-agent's prompt
+    // must not move the parent's turn state (spec §Correlation state). Codex
+    // does not deliver prompts inside sub-agents today; the guard costs one line
+    // and means this adapter does not have to be revisited if it starts.
+    if payload.agent_id.as_deref().filter(|s| !s.is_empty()).is_none() {
+        state::open_turn(root, payload.turn_id.as_deref(), now);
+    }
 }
 ```
 
@@ -747,6 +880,9 @@ fn subagent_start_and_stop_pair_with_duration_and_unmatched_stop_does_not() {
     assert!(unmatched.get("duration_secs").is_none());
 }
 
+/// A bare project has no confidence scoring, so `make_completion_decision`
+/// never blocks and both invocations record. The blocking case is the test
+/// below this one.
 #[test]
 fn stop_closes_the_turn_and_records_stop_hook_active() {
     let project = tempfile::tempdir().expect("temp project");
@@ -773,6 +909,71 @@ fn stop_closes_the_turn_and_records_stop_hook_active() {
         .filter(|r| r["kind"] == "prompt")
         .map(|r| r["mode"].as_str().unwrap_or_default().to_string()).collect();
     assert_eq!(modes, vec!["fresh", "fresh"]);
+}
+
+/// A sub-agent finishing does not end the human's turn. The two events share a
+/// dispatch arm in the code this task rewrites, so the distinction is one merge
+/// away from being lost — and losing it means every prompt after a sub-agent
+/// returns classifies `fresh`, erasing the intervention count.
+#[test]
+fn subagent_stop_never_closes_the_turn() {
+    let project = tempfile::tempdir().expect("temp project");
+    assert!(run_hook(project.path(), &prompt_payload("codex-s-11", "codex-t-11", "go"))
+        .status.success());
+    let start = json!({
+        "hook_event_name": "SubagentStart", "session_id": "codex-s-11",
+        "turn_id": "codex-t-11", "agent_id": "codex-a-2", "agent_type": "reviewer"
+    });
+    assert!(run_hook(project.path(), &start).status.success());
+    let stop = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-11",
+        "turn_id": "codex-t-11", "agent_id": "codex-a-2", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+
+    assert_eq!(turn_file(project.path())["open"], true, "the human's turn is still running");
+    assert_eq!(turn_file(project.path())["last_event"], "prompt");
+    // Which is what makes the next prompt an intervention rather than a reply.
+    assert!(run_hook(project.path(), &prompt_payload("codex-s-11", "codex-t-11", "also"))
+        .status.success());
+    let modes: Vec<String> = lifecycle_records(project.path()).iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string()).collect();
+    assert_eq!(modes, vec!["fresh", "mid_turn"]);
+}
+
+/// A blocked stop is not a stop: it records nothing, leaves the turn open, and
+/// leaves the `agents` entry for the real stop to pop. The re-fire, which skips
+/// the gate because `stop_hook_active` is true, records exactly one.
+#[test]
+fn a_blocked_stop_records_nothing_and_the_refire_records_one() {
+    let project = tempfile::tempdir().expect("temp project");
+    fs::create_dir_all(project.path().join(".phronesis/outcomes")).expect("outcomes dir");
+    fs::write(project.path().join(".phronesis/confidence.json"), "{}").expect("confidence");
+    fs::write(project.path().join(".phronesis/outcomes/current"), "unit-1").expect("current");
+    assert!(run_hook(project.path(), &prompt_payload("codex-s-12", "codex-t-12", "go"))
+        .status.success());
+
+    let stop = json!({
+        "hook_event_name": "Stop", "session_id": "codex-s-12",
+        "turn_id": "codex-t-12", "stop_hook_active": false
+    });
+    let blocked = response(&run_hook(project.path(), &stop));
+    assert_eq!(blocked["decision"], "block", "{blocked}");
+    assert!(
+        !lifecycle_kinds(project.path()).contains(&"stop".to_string()),
+        "a blocked stop records nothing"
+    );
+    assert_eq!(turn_file(project.path())["open"], true, "the turn continues");
+
+    let mut refire = stop.clone();
+    refire["stop_hook_active"] = json!(true);
+    assert_eq!(response(&run_hook(project.path(), &refire)), json!({}), "the gate is skipped");
+    assert_eq!(
+        lifecycle_kinds(project.path()).iter().filter(|k| *k == "stop").count(),
+        1
+    );
+    assert_eq!(turn_file(project.path())["open"], false);
 }
 ```
 
@@ -806,36 +1007,79 @@ Replace the `SubagentStart` arm and split the combined `SubagentStop`/`Stop` arm
             );
             make_ctx_decision(root, ContextKind::SubagentStart).await
         }
+        // NOTE the shape of both arms: the decision is made FIRST, and the
+        // record is written only when it does not block. A blocked stop means
+        // the host continues the same turn, so it is not a stop — recording one
+        // would close a turn that is still running and the next steer would
+        // classify `fresh`, losing the intervention (spec §"Host adapters /
+        // Codex CLI", and the same rule as on Claude).
+        //
+        // `stop_hook_active: true` skips the gate entirely, as the docs require,
+        // so a blocking gate cannot loop; the re-fire is the invocation that
+        // records.
         "SubagentStop" | "subagent-stop" => {
-            let opened = state::pop_agent(root, payload.agent_id.as_deref());
-            let now = unix_secs_now();
-            let mut event = lifecycle_event(payload, Kind::SubagentStop)
-                .with_extra("matched_start", opened.is_some())
-                .with_extra("stop_hook_active", payload.stop_hook_active.unwrap_or(false));
-            if let Some(open) = &opened {
-                event = event.with_extra("duration_secs", now.saturating_sub(open.ts));
-                // Backfill identity the stop payload omitted.
-                if event.agent_id.is_none() {
-                    event.agent_id = Some(open.agent_id.clone());
+            let decision = completion_decision_for_stop(root, payload);
+            if !blocks(&decision) {
+                let opened = state::pop_agent(root, payload.agent_id.as_deref());
+                let now = unix_secs_now();
+                let mut event = lifecycle_event(payload, Kind::SubagentStop)
+                    .with_extra("matched_start", opened.is_some())
+                    .with_extra("stop_hook_active", payload.stop_hook_active.unwrap_or(false));
+                if let Some(open) = &opened {
+                    event = event.with_extra("duration_secs", now.saturating_sub(open.ts));
+                    // Backfill identity the stop payload omitted.
+                    if event.agent_id.is_none() {
+                        event.agent_id = Some(open.agent_id.clone());
+                    }
+                    if event.agent_type.is_none() {
+                        event.agent_type = open.agent_type.clone();
+                    }
                 }
-                if event.agent_type.is_none() {
-                    event.agent_type = open.agent_type.clone();
-                }
+                record(root, event);
             }
-            record(root, event);
-            make_completion_decision(root)
+            // **`SubagentStop` never closes `turn`.** A sub-agent finishing does
+            // not end the human's turn; only the main-agent `Stop` does. The two
+            // arms used to share a body, which is exactly how this gets lost.
+            decision
         }
         "Stop" | "stop" => {
-            // Close before recording so a concurrent prompt hook cannot read
-            // the turn as still open.
-            state::close_turn(root, "stop");
-            record(
-                root,
-                lifecycle_event(payload, Kind::Stop)
-                    .with_extra("stop_hook_active", payload.stop_hook_active.unwrap_or(false)),
-            );
-            make_completion_decision(root)
+            let decision = completion_decision_for_stop(root, payload);
+            if !blocks(&decision) {
+                // Close before recording so a concurrent prompt hook cannot read
+                // the turn as still open.
+                state::close_turn(root, "stop");
+                record(
+                    root,
+                    lifecycle_event(payload, Kind::Stop)
+                        .with_extra("stop_hook_active", payload.stop_hook_active.unwrap_or(false)),
+                );
+            }
+            decision
         }
+```
+
+and add the two helpers beside `lifecycle_event`:
+
+```rust
+/// The completion decision for a stop event. `stop_hook_active: true` skips the
+/// gate entirely and responds `{}`, as the host docs require: without it a
+/// blocking gate re-fires forever.
+fn completion_decision_for_stop(root: &Path, payload: &CodexPayload) -> String {
+    if payload.stop_hook_active.unwrap_or(false) {
+        return empty_decision();
+    }
+    make_completion_decision(root)
+}
+
+/// Did the rendered decision block? Structural, not a substring test: a `reason`
+/// string that merely contains the word would false-positive.
+fn blocks(response: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(response)
+        .ok()
+        .and_then(|v| v.get("decision").and_then(|d| d.as_str()).map(str::to_string))
+        .as_deref()
+        == Some("block")
+}
 ```
 
 - [ ] **Step 4: Run tests**
@@ -1230,13 +1474,13 @@ git commit -m "docs(codex): document Interrupt and SessionEnd handling and the a
 
 ## Self-review
 
-**1. Spec coverage (§"Host adapters / Codex CLI", rollout step 3).** All seven `CodexPayload` fields (T1). Capture tee with redaction (T1). `Interrupt` → record with `inferred_from: "hook"`, close turn, `{}` (T2). `SessionEnd` → conditional `stop`, clear session, `{}` (T2). `SessionStart` sets the session and resets correlation state before the existing render (T3). `UserPromptSubmit` classifies, records at most one *inferred* interrupt, records the prompt with mode and scrubbed text, opens the turn (T4). `SubagentStart`/`SubagentStop` push/pop with `duration_secs`, `matched_start`, `stop_hook_active` (T5). `Stop` closes the turn and records, then keeps `make_completion_decision` (T5). Renderer emits `{}` for both new events and the permitted-key table is pinned, including "no `hookSpecificOutput` on completion events" (T2, T6). Journal `sid` from `journey::current_sid` (T3). Init registrations and matcher (T7). Contract fixture (T8). Docs (T9).
+**1. Spec coverage (§"Host adapters / Codex CLI", rollout step 3).** All eight `CodexPayload` fields, `source` included (T1). Capture tee with the recursive redaction (T1). `Interrupt` → record with `inferred_from: "hook"`, set `turn` to `{open: false, last_event: "interrupt"}`, **drop the session's `inflight` entries**, `{}` (T2). `SessionEnd` → conditional `stop`, close turn, **`session` left in place**, `{}` (T2). `SessionStart` is **source-gated** and resets correlation state only on a begin, which is what makes T7's matcher widening safe (T3). `UserPromptSubmit` classifies from `turn.last_event`, records an interrupt only for `Some(source)` (never reachable on Codex today, written generically), records the prompt with mode and scrubbed text, and opens the turn only for a top-level prompt (T4). `SubagentStart`/`SubagentStop` push/pop with `duration_secs`, `matched_start`, `stop_hook_active`; **`SubagentStop` never closes the turn**; both stop events skip the gate on `stop_hook_active` and **record nothing when the response blocks** (T5). `Stop` closes the turn and records, then keeps `make_completion_decision` (T5). Renderer emits `{}` for both new events and the permitted-key table is pinned, including "no `hookSpecificOutput` on completion events" (T2, T6). Journal `sid` from `journey::current_sid`, records at `v: JOURNAL_V` (T3). Init registrations and matcher (T7). Contract fixture (T8). Docs (T9).
 
-Out of scope by design: the `PreCompact`/`PostCompact` response bug (spec Adjacent finding 1, separate PR); Claude and Gemini adapters (Plans 2 and 4); stats, metrics, `journey --lifecycle`/`--corrections` (Plan 5); `inflight` push/pop in `pre.rs`/`post.rs`, which Plan 2 owns — this plan only *reads* `inflight` via `classify_prompt`, so on a Codex-only install the `Inflight` branch never fires and prompts classify as `mid_turn`, exactly as the spec's known-limits section allows.
+Out of scope by design: the `PreCompact`/`PostCompact` response bug (spec Adjacent finding 1, separate PR); Claude and Gemini adapters (Plans 2 and 4); stats, metrics, `journey --lifecycle`/`--corrections` (Plan 5); `inflight` push/pop in `pre.rs`/`post.rs`, which Plan 2 owns. This plan never reads `inflight` for classification — the spec disables that branch on Codex, where the `Interrupt` hook is authoritative — and only *clears* it, in the `Interrupt` arm. On a Codex-only install an open turn with no `Interrupt` classifies `mid_turn`, exactly as the spec's known-limits section allows.
 
 **2. Placeholder scan.** No TBDs. Every code step carries compilable Rust or literal JSON. T6's implement step is a verification step by construction — the renderer already conforms after T2 — and states exactly what to do on a violation (fix the renderer, never the table). T8 names the exact function to read if the contract runner needs widening.
 
-**3. Type consistency.** Only Plan 1 names, with Plan 1's signatures: the `LifecycleEvent` builder (`new`/`with_mode`/`with_session`/`with_turn`/`with_agent`/`with_prompt`/`with_extra`, by value) plus its public `agent_id`/`agent_type` fields for T5's backfill; `record(root, event) -> Option<Stamped>` with `Stamped { ts, sid, seq, kalpa, subject }`; `state::OpenAgent { agent_id, agent_type, ts, seq }`; `state::PromptContext { host, now, agent_id, turn_id, transcript_path, last_journal_kind }`; `state::Classification { mode, interrupt }`; `state::InterruptSource::{Hook, Inflight}`; `state::{read_turn, open_turn, close_turn, set_session, clear_session, reset_for_session_start, push_agent, pop_agent, last_lifecycle_kind}`; `scrub::scrub_prompt(root, text)`; `hook::{capture_raw_payload, redact_for_capture}`. `lifecycle_event` is introduced in T2 and used unchanged in T3–T5; `unix_secs_now` and `record_prompt` are T4's, used again in T5. `last_lifecycle_kind` is Plan 1's, not defined here. Test helpers `journal_records`, `lifecycle_records`, `lifecycle_kinds`, `lifecycle_log`, `log_event`, `turn_file`, `prompt_payload` are defined once in T2 and reused by T3–T5, all inside `tests/codex_hook_integration.rs`, which no other plan touches. (Plan 4 defines same-named helpers in `tests/hook_integration.rs`; different file, no collision.)
+**3. Type consistency.** Only Plan 1 names, with Plan 1's **revised** signatures: the `LifecycleEvent` builder (`new`/`with_mode`/`with_session`/`with_turn`/`with_agent`/`with_prompt`/`with_extra`, by value; `with_agent` sanitizes `agent_type`) plus its public `agent_id`/`agent_type` fields for T5's backfill; `record(root, event) -> Option<Stamped>` with `Stamped { ts, sid, seq, kalpa, subject }`; `state::OpenAgent { agent_id, agent_type, ts, seq }`; `state::Inflight { key, tool, ts, agent_id, head_before, detection }`; `state::PromptContext { host, now, agent_id, turn_id, transcript_path }` — **five fields**; `state::Classification { mode, interrupt }`; `state::InterruptSource::{Inflight, Transcript, OpenTurn}` — **no `Hook`**; `state::{read_turn, open_turn, close_turn, set_session, is_session_begin, reset_for_session_start, clear_inflight, push_agent, pop_agent}`; `scrub::scrub_prompt(root, text)`; `hook::{capture_raw_payload, redact_for_capture}`. `close_turn` returns `bool`; this adapter ignores it, because every call site here is already on the conservative side. `lifecycle_event` is introduced in T2 and used unchanged in T3–T5; `unix_secs_now` and `record_prompt` are T4's, `completion_decision_for_stop` and `blocks` are T5's. Test helpers `journal_records`, `lifecycle_records`, `lifecycle_kinds`, `lifecycle_log`, `log_event`, `turn_file`, `prompt_payload` are defined once in T2 and reused by T3–T5, all inside `tests/codex_hook_integration.rs`, which no other plan touches. (Plan 4 defines same-named helpers in `tests/hook_integration.rs`; different file, no collision.)
 
 **4. Shared ownership.** This plan defines nothing that another plan defines. It does not touch `hook/mod.rs`, does not define `upsert_hook_by_command`, and does not add a `main.rs` `Command` variant.
 

@@ -19,7 +19,7 @@
 - Lifecycle writes are best-effort: a failure prints `phronesis: …` on stderr and never fails the hook.
 - Journal lifecycle records carry `tool: "__lifecycle"`, `path: ""`, and `host: "gemini"`.
 
-**Depends on:** **Plan 1 and Plan 2, both merged, before any task here runs.**
+**Depends on:** **Plan 1 and Plan 2, both merged, before any task after Task 0 runs.** Task 0 (fixture capture) is the spec's rollout node 0 for Gemini and needs a live host rather than any code, so it runs in parallel with Plan 1.
 
 - Plan 1 (`docs/superpowers/plans/2026-09-18-lifecycle-events-1-foundation.md`) supplies `lifecycle::{event, state, record}` and `classify_prompt`'s `open_turn` branch.
 - Plan 2 (`docs/superpowers/plans/2026-09-18-lifecycle-events-2-claude-adapter.md`) supplies **`init.rs::upsert_hook_by_command`**, the `phr-mcp claude-hook <Event>` subcommand, and the `invoke_agent` derivation in `pre-check`/`post-check`. This plan defines none of them. Task 1 of this plan used to define `upsert_hook_by_command`; it has been removed so there is exactly one definition, in Plan 2 Task 5.
@@ -31,9 +31,143 @@ Consequently this plan is **not** independently mergeable: merge Plan 2 first, t
 - `pre-check`/`post-check` derive `subagent_start`/`subagent_stop` when `tool_name == "invoke_agent"`, with `agent_type = tool_input.agent_name` and a synthesized `agent_id`, before the tool allowlist match.
 - `fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entry: Value)`, private to `init.rs`, added by Plan 2 Task 5 immediately after `upsert_hook` (which ends at `init.rs:1559`), together with its two unit tests `upsert_hook_by_command_replaces_ours_and_keeps_foreign` and `upsert_hook_by_command_creates_missing_event_array`. It replaces only entries whose command starts with `phr-mcp `, leaving every foreign hook in place. That is exactly the behaviour Task 1 below relies on: matcher-keyed `upsert_hook` (`init.rs:1544-1559`) would delete a foreign hook sharing our matcher (spec §Adjacent findings 7), and would leave a stale entry behind when *we* change our own matcher or command — both of which happen in Task 1.
 
-**Files this plan owns exclusively:** none of the source files are exclusive; this plan is registrations plus one install-output line. Its exclusive regions are listed in §Merge notes.
+**Files this plan owns exclusively:** `crates/phronesis-mcp/tests/fixtures/payloads/gemini/**` (Task 0). None of the *source* files are exclusive; the rest of this plan is registrations plus one install-output line. Its exclusive regions are listed in §Merge notes.
 
-**Files shared with Plans 2 and 3** (regions disjoint; see §Merge notes): `src/init.rs` (only `write_gemini_settings`), `tests/init_integration.rs`, `tests/hook_integration.rs`, `tests/fixtures/hook_events.json` (only the `"gemini"` array), `CHANGELOG.md`.
+**Files shared with Plans 2 and 3** (regions disjoint; see §Merge notes): `src/init.rs` (only `write_gemini_settings`), `tests/init_integration.rs`, `tests/hook_integration.rs`, `tests/fixtures/hook_events.json` (only the `"gemini"` array), `tests/payload_contract.rs`, `CHANGELOG.md`.
+
+---
+
+### Task 0: Capture real Gemini payloads (rollout node 0 — REQUIRES THE HUMAN)
+
+**This task gates the rest of the plan.** Spec §"Host adapters / Gemini CLI":
+"Fixtures are a precondition for this adapter too, on the same terms as the
+Claude ones and for the same reason — this repo has already misread a Gemini
+field name once (§Adjacent findings 4). Before step 4: `BeforeAgent`,
+`AfterAgent`, `SessionStart`, `SessionEnd`, and `BeforeTool`/`AfterTool` for
+`invoke_agent`, committed under `tests/fixtures/payloads/gemini/`."
+
+The misread is not hypothetical: `hook/mod.rs:57-64` says Gemini sends
+`tool_output` when it actually sends `tool_response`. Tasks 3 and 4 below are
+written against field names taken from Gemini's TypeScript sources, and this task
+is what turns them from a reading into evidence. It runs alongside Plan 1, not
+after it.
+
+**Files:**
+- Create: `crates/phronesis-mcp/tests/fixtures/payloads/gemini/raw/{BeforeAgent,AfterAgent,SessionStart,SessionEnd,BeforeTool-invoke_agent,AfterTool-invoke_agent}.json`
+- Create: `crates/phronesis-mcp/tests/fixtures/payloads/gemini/raw/README.md`
+- Modify: `crates/phronesis-mcp/tests/payload_contract.rs`
+
+- [ ] **Step 1: Ask the human to add the capture hooks**
+
+Give them this verbatim, for `.gemini/settings.json` in a scratch project (not
+this repo — Gemini's `invoke_agent` needs a project it is willing to work in).
+It uses `sh`, not `phr-mcp`, so the capture does not depend on anything this plan
+builds:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-gemini && cat > /tmp/phr-gemini/SessionStart.json; echo {}'"}]}],
+    "SessionEnd":   [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-gemini && cat > /tmp/phr-gemini/SessionEnd.json; echo {}'"}]}],
+    "BeforeAgent":  [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-gemini && cat > /tmp/phr-gemini/BeforeAgent.json; echo {}'"}]}],
+    "AfterAgent":   [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-gemini && cat > /tmp/phr-gemini/AfterAgent.json; echo {}'"}]}],
+    "BeforeTool":   [{"matcher": "^invoke_agent$", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-gemini && cat > /tmp/phr-gemini/BeforeTool-invoke_agent.json; echo {}'"}]}],
+    "AfterTool":    [{"matcher": "^invoke_agent$", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-gemini && cat > /tmp/phr-gemini/AfterTool-invoke_agent.json; echo {}'"}]}]
+  }
+}
+```
+
+- [ ] **Step 2: Ask the human to drive one session**
+
+1. Start `gemini` in the scratch project and **trust the folder** when prompted —
+   project hooks are skipped until then, which is the second half of Task 2's
+   install note.
+2. Type `list the files here` — that writes `SessionStart.json`,
+   `BeforeAgent.json`, and `AfterAgent.json`.
+3. Ask for a sub-agent explicitly: `use a sub-agent to summarise README.md`.
+   That writes the two `invoke_agent` files. Note the exact `agent_name` value:
+   Gemini's built-ins use snake_case (`codebase_investigator`);
+   `sanitize_agent_type` keeps `[a-z0-9][a-z0-9_.:-]{0,63}` after lowercasing, so
+   the name survives as `lifecycle:agent:codebase_investigator`. Record the real
+   value in the README; Task 3 below asserts the sanitizer on a snake_case name
+   and on a hostile one.
+4. Press Esc during a long answer, then type another prompt. `AfterAgent` does not
+   fire on an abort, so its file keeps the *previous* turn's content — which is
+   exactly the fact the `open_turn` inference rests on. Confirm the file's
+   `prompt` is the older one and say so in the README.
+5. `/quit` — that writes `SessionEnd.json`.
+
+- [ ] **Step 3: Redact and commit**
+
+Same treatment as the Claude captures: replace `prompt`, `prompt_response` and
+any `tool_input.prompt` with `"<redacted:N bytes>"`, absolute home paths with
+`/home/dev`, and real ids with synthetic ones (`gemini-s-001`). Keep every key,
+including empty-string values.
+
+```bash
+mkdir -p crates/phronesis-mcp/tests/fixtures/payloads/gemini/raw
+cp /tmp/phr-gemini/*.json crates/phronesis-mcp/tests/fixtures/payloads/gemini/raw/
+```
+
+`raw/README.md` records the Gemini CLI version (`gemini --version`), the capture
+date, the observed `agent_name`, whether `SessionStart` carries a `source` field,
+whether `AfterTool` uses `tool_response` (Adjacent finding 4), and the Esc
+observation from step 4.
+
+- [ ] **Step 4: Pin the field sets**
+
+Append to `crates/phronesis-mcp/tests/payload_contract.rs`:
+
+```rust
+/// Pin the Gemini field sets the adapter reads. This repo has already misread
+/// one of them (`tool_output` vs `tool_response`, spec Adjacent finding 4), so
+/// a host that renames a field must fail here rather than silently stop
+/// recording.
+#[test]
+fn captured_gemini_payloads_carry_the_documented_fields() {
+    let raw_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/payloads/gemini/raw");
+    let expected: &[(&str, &[&str])] = &[
+        ("BeforeAgent", &["hook_event_name", "session_id", "prompt"]),
+        ("AfterAgent", &["hook_event_name", "session_id", "prompt", "prompt_response"]),
+        ("SessionStart", &["hook_event_name", "session_id"]),
+        ("SessionEnd", &["hook_event_name", "session_id"]),
+        ("BeforeTool-invoke_agent", &["hook_event_name", "tool_name", "tool_input"]),
+        ("AfterTool-invoke_agent", &["hook_event_name", "tool_name", "tool_input", "tool_response"]),
+    ];
+    for (name, keys) in expected {
+        let path = raw_dir.join(format!("{name}.json"));
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("{}: {e} — capture it per this plan's Task 0", path.display()));
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for key in *keys {
+            assert!(v.get(key).is_some(), "{name}.json is missing {key}");
+        }
+        assert!(!raw.contains("/Users/"), "{name}.json still holds an unredacted home path");
+    }
+    // The misread field name, pinned from the other side.
+    let after: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(raw_dir.join("AfterTool-invoke_agent.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(after.get("tool_output").is_none(), "Gemini sends tool_response, not tool_output");
+    // And the sub-agent's name, whatever it turned out to be, must be a string.
+    assert!(
+        after.pointer("/tool_input/agent_name").and_then(|v| v.as_str()).is_some(),
+        "invoke_agent carries tool_input.agent_name"
+    );
+}
+```
+
+If a key is genuinely absent from a capture, delete it from `expected` and add a
+one-line comment naming the event that did not send it. Do not edit the capture.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/phronesis-mcp/tests/fixtures/payloads/gemini crates/phronesis-mcp/tests/payload_contract.rs
+git commit -m "test(fixtures): capture real Gemini CLI lifecycle payloads"
+```
 
 ---
 
@@ -335,12 +469,16 @@ fn gemini_invoke_agent_pairs_a_subagent_start_and_stop() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
 
-    let before = r#"{"hook_event_name":"BeforeTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase_investigator","prompt":"x"}}"#;
+    // `agent_name` is sanitized before it becomes a tag: lowercased, then kept
+    // only if it matches `[a-z0-9][a-z0-9_.:-]{0,63}` (spec §Correlation state,
+    // "`agent_type` is sanitized at the adapter boundary"). Hyphenated and
+    // snake_case names both survive; a hostile one (below) is dropped.
+    let before = r#"{"hook_event_name":"BeforeTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase-investigator","prompt":"x"}}"#;
     let (code, stdout, stderr) = run_hook_at(root, &["pre-check"], before);
     assert_eq!(code, 0, "pre-check must allow invoke_agent: {stderr}");
     assert_allow_stdout(&stdout);
 
-    let after = r#"{"hook_event_name":"AfterTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase_investigator","prompt":"x"},"tool_response":{"output":"done"}}"#;
+    let after = r#"{"hook_event_name":"AfterTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase-investigator","prompt":"x"},"tool_response":{"output":"done"}}"#;
     let (code, stdout, stderr) = run_hook_at(root, &["post-check"], after);
     assert_eq!(code, 0, "post-check must succeed: {stderr}");
     assert_allow_stdout(&stdout);
@@ -353,10 +491,10 @@ fn gemini_invoke_agent_pairs_a_subagent_start_and_stop() {
     for r in [starts[0], stops[0]] {
         assert_eq!(r["host"], "gemini");
         assert_eq!(r["path"], "");
-        assert_eq!(r["agent_type"], "codebase_investigator");
+        assert_eq!(r["agent_type"], "codebase-investigator");
         let tags = r["tags"].as_array().expect("tags");
         assert!(
-            tags.iter().any(|t| t == "lifecycle:agent:codebase_investigator"),
+            tags.iter().any(|t| t == "lifecycle:agent:codebase-investigator"),
             "agent tag missing: {r}"
         );
     }
@@ -370,12 +508,66 @@ fn gemini_invoke_agent_pairs_a_subagent_start_and_stop() {
         .iter()
         .find(|e| e["event"] == "subagent_stop")
         .expect("subagent_stop action-log entry");
-    assert_eq!(stop_entry["agent_type"], "codebase_investigator");
+    assert_eq!(stop_entry["agent_type"], "codebase-investigator");
     assert_eq!(stop_entry["matched_start"], true);
     assert_eq!(stop_entry["host"], "gemini");
     assert_eq!(
         log.iter().filter(|e| e["event"] == "subagent_start").count(),
         1
+    );
+
+    // `<invoke_agent>` is the tool record's path: never the sub-agent prompt,
+    // which would put content in the journal and in `journey_distinct` on path.
+    let tool_paths: Vec<String> = std::fs::read_to_string(root.join(".phronesis/journey/events.jsonl"))
+        .unwrap()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|r| r["tool"] == "invoke_agent")
+        .map(|r| r["path"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert!(!tool_paths.is_empty(), "invoke_agent is in both allowlists");
+    assert!(tool_paths.iter().all(|p| p == "<invoke_agent>"), "{tool_paths:?}");
+}
+
+/// Gemini's built-in agent names are snake_case (`codebase_investigator`). The
+/// sanitizer keeps underscores (spec §Correlation state), so the real built-in
+/// name survives as a tag a rule can scope to. A hostile `agent_name` with a
+/// path separator is dropped and the record carries no `lifecycle:agent:*` tag.
+#[test]
+fn a_snake_case_gemini_agent_name_survives_and_a_hostile_one_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let before = r#"{"hook_event_name":"BeforeTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase_investigator","prompt":"x"}}"#;
+    let (code, _, stderr) = run_hook_at(root, &["pre-check"], before);
+    assert_eq!(code, 0, "{stderr}");
+    let start = lifecycle_records(root)
+        .into_iter()
+        .find(|r| r["kind"] == "subagent_start")
+        .expect("the pair is derived");
+    assert_eq!(start["agent_type"], "codebase_investigator", "{start}");
+    assert!(
+        start["tags"].as_array().unwrap().iter().any(|t| t == "lifecycle:agent:codebase_investigator"),
+        "snake_case survives as a tag: {start}"
+    );
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let root2 = dir2.path();
+    let hostile = r#"{"hook_event_name":"BeforeTool","session_id":"g2","tool_name":"invoke_agent","tool_input":{"agent_name":"../../etc/passwd","prompt":"x"}}"#;
+    let (code, _, stderr) = run_hook_at(root2, &["pre-check"], hostile);
+    assert_eq!(code, 0, "{stderr}");
+    let start = lifecycle_records(root2)
+        .into_iter()
+        .find(|r| r["kind"] == "subagent_start")
+        .expect("the pair is still derived");
+    assert!(
+        start.get("agent_type").is_none() || start["agent_type"].is_null(),
+        "an unsanitizable name is stored as absent: {start}"
+    );
+    assert!(
+        !start["tags"].as_array().unwrap().iter().any(|t| {
+            t.as_str().unwrap_or_default().starts_with("lifecycle:agent:")
+        }),
+        "and carries no agent tag: {start}"
     );
 }
 ```
@@ -403,7 +595,7 @@ git commit -m "test(hooks): gemini invoke_agent produces a paired subagent start
 - Consumes: Task 3's helpers, `phr-mcp claude-hook {SessionStart,SessionEnd,BeforeAgent,AfterAgent}` (Plan 2), and `lifecycle::state::classify_prompt`'s `open_turn` branch (Plan 1 Task 8).
 - Produces: nothing. This is the acceptance test for "an aborted Gemini turn becomes an interrupt plus a correction".
 
-**Why these two tests together** (helpers `run_hook_at`, `lifecycle_records`, `lifecycle_log` come from Task 3, in the same file)**:** `open_turn` inference is only sound if `AfterAgent` reliably closes the turn. One test proves the inference fires when `AfterAgent` is missing; its twin proves it does *not* fire when `AfterAgent` ran. Without the second test a bug that ignores `AfterAgent` would pass.
+**Why these tests together** (helpers `run_hook_at`, `lifecycle_records`, `lifecycle_log` come from Task 3, in the same file)**:** `open_turn` inference is only sound if `AfterAgent` reliably closes the turn. One test proves the inference fires when `AfterAgent` is missing; its twin proves it does *not* fire when `AfterAgent` ran. Without the second test a bug that ignores `AfterAgent` would pass.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -415,6 +607,10 @@ const G_AFTER_AGENT: &str = r#"{"hook_event_name":"AfterAgent","session_id":"g1"
 
 /// A bare temp project has no rules and no durable context, so every render is
 /// empty and `claude-hook` prints the empty object rather than nothing at all.
+///
+/// `AfterAgent` in particular must print `{}`: the confidence gate is suppressed
+/// on Gemini (Plan 2 Task 2), because Gemini has no documented `decision`
+/// semantics for that event, so the stop is recorded and nothing is decided.
 fn assert_json_object_stdout(stdout: &str) {
     let v: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("Gemini needs JSON on stdout, got {stdout:?}: {e}"));
@@ -531,9 +727,12 @@ fn gemini_session_end_records_a_stop_and_closes_the_turn() {
     // interrupt is inferred.
     assert_eq!(recs[2]["mode"], "fresh");
     assert!(lifecycle_log(root).iter().all(|e| e["event"] != "interrupt"), "{recs:?}");
+    // SessionEnd does NOT truncate the session file: truncating would let any
+    // stray hook between sessions mint a throwaway sid, and the next
+    // session-begin SessionStart overwrites it anyway (spec §Correlation state).
     assert_eq!(
         std::fs::read_to_string(root.join(".phronesis/journey/session")).unwrap().trim(),
-        ""
+        "g1"
     );
 }
 ```
@@ -574,7 +773,13 @@ git commit -m "test(hooks): gemini turn, interrupt inference, and correction end
 - [ ] **Step 2: Run the whole suite**
 
 Run: `cargo test -p phronesis-mcp`
-Expected: PASS (Plan 2 is a prerequisite, so Tasks 3 and 4 are green).
+Expected: PASS (Plan 2 is a prerequisite, so Tasks 3 and 4 are green; Task 0 is a prerequisite, so `captured_gemini_payloads_carry_the_documented_fields` is green).
+
+The spec also makes a **live Gemini session the gate for this step**: "A Gemini
+session is the gate for step 4 specifically: without one, step 4 does not ship in
+this release rather than shipping untried." Task 0's session satisfies it if, and
+only if, it covered a sub-agent spawn and an Esc; re-read Task 0 step 2 before
+calling this plan done.
 
 - [ ] **Step 3: Commit**
 
@@ -591,6 +796,7 @@ git commit -m "docs(changelog): gemini lifecycle hook registrations"
 
 | spec requirement | task |
 |---|---|
+| fixtures are a precondition (`BeforeAgent`, `AfterAgent`, `SessionStart`, `SessionEnd`, `BeforeTool`/`AfterTool` for `invoke_agent`) | **Task 0** |
 | `write_gemini_settings` registers `AfterAgent` and `SessionEnd` with an empty matcher → `phr-mcp claude-hook <Event>` | Task 1 |
 | repoints `SessionStart` and `BeforeAgent` at `claude-hook` | Task 1 (plus the in-place migration test) |
 | `BeforeTool` matcher widened and anchored to `^(replace\|write_file\|run_shell_command\|invoke_agent)$` (§Adjacent findings 5) | Task 1 |
@@ -598,6 +804,10 @@ git commit -m "docs(changelog): gemini lifecycle hook registrations"
 | every response is `{}` or context JSON, never empty stdout | Tasks 3 and 4 assert stdout on every invocation |
 | `subagent_start`/`subagent_stop` derived from `invoke_agent` with `agent_type = agent_name` and a synthesized `agent_id` | behaviour owned by Plan 2; end-to-end coverage in Task 3 |
 | `open_turn` interrupt branch, `mid_turn` never emitted for Gemini | Task 4 (`kinds == ["prompt","interrupt","prompt"]`, mode `correction`, never `mid_turn`) |
+| the confidence gate does not run on `AfterAgent`: the stop is recorded and `{}` is printed | behaviour owned by Plan 2 Task 2; asserted here in Task 4 |
+| `agent_type` sanitized to `[a-z0-9][a-z0-9_.:-]{0,63}` before it becomes a tag | Task 3 (both the surviving and the dropped shape) |
+| `invoke_agent` tool records carry the synthetic path `<invoke_agent>` | Task 3 (behaviour owned by Plan 2 Task 4) |
+| `SessionEnd` does not truncate the `session` file | Task 4 |
 | Gemini HTML-escapes `additionalContext`; project hooks skipped until trust (§Adjacent findings 6) | Task 2 |
 | `tests/init_integration.rs`: "Gemini matcher is anchored", registrations idempotent | Task 1 |
 | CHANGELOG `## [Unreleased] → ### Added` | Task 5 |
@@ -606,19 +816,21 @@ Out of scope by construction, and owned elsewhere: the `claude-hook` subcommand 
 
 **2. Placeholder scan:** no TBD, no "add error handling", no "similar to Task N". Every code step is complete Rust or complete JSON. Task 3 and Task 4 restate their helpers' use rather than referring back, and Task 4's constants are spelled out.
 
-**3. Type consistency:** `upsert_hook_by_command` has one signature, defined by Plan 2 Task 5 and only *called* here (Task 1). Test helpers `gemini_settings`/`only_command` are defined once in Task 1's file (`tests/init_integration.rs`) and `run_hook_at`/`lifecycle_records`/`lifecycle_log` once in Task 3's file (`tests/hook_integration.rs`), used again in Task 4 with the same names and arities. None of those five names is defined by Plan 2 or Plan 3 in the same file. Record field names (`kind`, `mode`, `host`, `agent`, `agent_type`, `tags`, `tool`, `path`) match Plan 1 Task 1's serialization order; action-log field names (`kind`, `event`, `host`, `mode`, `prompt`, `agent_type`, `matched_start`, `inferred_from`) match Plan 1 Task 4's `to_log_entry`. Selector strings (`lifecycle:prompt:correction`, `lifecycle:agent:<type>`) match Plan 1's `tags()`.
+**3. Type consistency:** `upsert_hook_by_command` and `is_phronesis_hook_command` have one definition each, in Plan 2 Task 5, and are only *called* here (Task 1). Test helpers `gemini_settings`/`only_command` are defined once in Task 1's file (`tests/init_integration.rs`) and `run_hook_at`/`lifecycle_records`/`lifecycle_log` once in Task 3's file (`tests/hook_integration.rs`), used again in Task 4 with the same names and arities. None of those five names is defined by Plan 2 or Plan 3 in the same file. Record field names (`kind`, `mode`, `host`, `agent`, `agent_type`, `tags`, `tool`, `path`) match Plan 1 Task 1's serialization order; action-log field names (`kind`, `event`, `host`, `mode`, `prompt`, `agent_type`, `matched_start`, `inferred_from`) match Plan 1 Task 4's `to_log_entry`. Selector strings (`lifecycle:prompt:correction`, `lifecycle:agent:<type>`) match Plan 1's `tags()`.
 
 ---
 
 ## Merge notes
 
-Plans 2, 3, and 4 are executed in separate worktrees off the same Plan 1 base. **This plan must merge after Plan 2** (it calls `upsert_hook_by_command` and `phr-mcp claude-hook`, both of which Plan 2 adds). Plan 3 is independent of both.
+Plans 2, 3, and 4 are executed in separate worktrees off the same Plan 1 base. **This plan must merge after Plan 2** (it calls `upsert_hook_by_command` and `phr-mcp claude-hook`, both of which Plan 2 adds). Plan 3 is independent of both. **Task 0 is not gated on anything** — it needs a live Gemini CLI, not a build — and should be started as early as Plan 1, because the rest of this plan cannot be verified without it.
 
 | file | Plan 2 (Claude) owns | Plan 3 (Codex) owns | Plan 4 (this plan) owns |
 |---|---|---|---|
 | `src/init.rs` | `write_settings` (`:580-622`) and the new `upsert_hook_by_command` fn + its two unit tests, added after `upsert_hook` (ends `:1559`) | `write_codex_hooks`'s `for (event, matcher)` table (`:735-757`) only | **`write_gemini_settings`'s hook block (`:676-706`) and the `report.steps.push` note immediately after `write_json(&path, &settings, opts, ".gemini/settings.json", report)?` (`:714`) only.** Plus the four `write_gemini_settings_*` unit tests in `init.rs`'s `mod tests` (`:4293`, `:4598`, `:4624`, `:4665`). Nothing else in `init.rs`. |
 | `tests/fixtures/hook_events.json` | the `"claude-code"` array | the `"codex"` array | **the `"gemini"` array only** (Task 1) |
-| `tests/init_integration.rs` | appends `claude_settings`, `commands_for`, and its three `init_*` tests | nothing | **appends `gemini_settings`, `only_command`, and its five tests at the end of the file.** Helper names are disjoint from Plan 2's by construction. |
+| `tests/init_integration.rs` | appends `claude_settings`, `commands_for`, and its four `init_*` tests | nothing | **appends `gemini_settings`, `only_command`, and its five tests at the end of the file.** Helper names are disjoint from Plan 2's by construction. |
+| `tests/payload_contract.rs` | appends `captured_claude_payloads_carry_the_documented_fields` | the `.codex/hooks.json` matcher assertion | **appends `captured_gemini_payloads_carry_the_documented_fields` (Task 0), at the end of the file** |
+| `tests/fixtures/payloads/gemini/**` | — | — | **exclusively this plan's (Task 0)** |
 | `tests/hook_integration.rs` | appends `run_claude_hook`, `journal_records`, `log_entries`, `inflight_keys` and its tests | nothing | **appends `run_hook_at`, `lifecycle_records`, `lifecycle_log`, `assert_json_object_stdout`, the four `G_*` constants and its `gemini_*` tests at the end of the file.** Names are disjoint from Plan 2's. If Plan 2 has already added `use serde_json::Value;` at the top, drop the duplicate `use` from Task 3's snippet. |
 | `src/hook/mod.rs`, `src/main.rs`, `src/lib.rs`, `src/claude_hook.rs`, `src/codex_hook.rs` | Plan 2 / Plan 3 | — | **nothing** |
 | `CHANGELOG.md` | two bullets under `## [Unreleased]` → `### Added` | one bullet after Plan 2's | one bullet appended last |
