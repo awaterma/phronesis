@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "codex",
+    "event": "Interrupt",
+    "provenance": "authored",
+    "captured": "2026-09-18",
+    "description": "Authored from the Codex Interrupt hook schema (codex-rs/hooks/schema/generated). Field set pinned by SPEC-agent-lifecycle-events: cwd, hook_event_name, model, permission_mode, session_id, transcript_path, turn_id."
+  },
+  "subcommand": "codex-hook",
+  "packs": "rust",
+  "payload": {
+    "hook_event_name": "Interrupt",
+    "cwd": "/home/dev/project",
+    "model": "gpt-5-codex",
+    "permission_mode": "on-request",
+    "session_id": "codex-s-030",
+    "transcript_path": "/home/dev/.codex/sessions/codex-s-030.jsonl",
+    "turn_id": "codex-t-030"
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": ["lifecycle:interrupt"],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}
