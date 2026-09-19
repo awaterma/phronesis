@@ -860,3 +860,187 @@ fn session_start_adopts_the_host_session_id_and_resets_correlation_state() {
         "Codex tool records share the v2 schema"
     );
 }
+
+#[test]
+fn prompt_modes_are_fresh_mid_turn_and_never_double_interrupt() {
+    let project = tempfile::tempdir().expect("temp project");
+    // 1. No open turn → fresh.
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-4", "codex-t-1", "first")
+        )
+        .status
+        .success()
+    );
+    // 2. Same turn id while the turn is open → a queued mid-turn message.
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-4", "codex-t-1", "also this")
+        )
+        .status
+        .success()
+    );
+    // 3. Interrupt closes the turn and writes the only interrupt record.
+    let interrupt =
+        json!({"hook_event_name": "Interrupt", "session_id": "codex-s-4", "turn_id": "codex-t-1"});
+    assert!(run_hook(project.path(), &interrupt).status.success());
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-4", "codex-t-2", "instead do")
+        )
+        .status
+        .success()
+    );
+
+    assert_eq!(
+        lifecycle_kinds(project.path()),
+        vec!["prompt", "prompt", "interrupt", "prompt"],
+        "the Hook branch must not write a second interrupt record"
+    );
+    let recs = lifecycle_records(project.path());
+    let modes: Vec<String> = recs
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    // The third prompt follows an `interrupt` in the same session, which is the
+    // spec's definition of `correction`. The Interrupt arm closed the turn, and
+    // this holds because classification step 1 checks
+    // `turn.last_event == "interrupt"` BEFORE declaring `fresh` (Plan 1 Task 8).
+    assert_eq!(modes, vec!["fresh", "mid_turn", "correction"]);
+    let correction = recs
+        .iter()
+        .rfind(|r| r["kind"] == "prompt")
+        .expect("a prompt");
+    let tags = correction["tags"].as_array().expect("tags");
+    assert!(
+        tags.contains(&json!("lifecycle:prompt:correction")),
+        "{correction}"
+    );
+    assert!(
+        tags.contains(&json!("lifecycle:intervention")),
+        "{correction}"
+    );
+}
+
+/// A tool record journaled between the interrupt and the prompt must not hide
+/// the interrupt — it cannot, because the evidence is `turn.last_event` and not
+/// a journal scan — and another session's interrupt must not answer for this
+/// one, because the turn file carries its own `sid`.
+#[test]
+fn correction_survives_an_intervening_tool_record_and_is_session_scoped() {
+    let project = tempfile::tempdir().expect("temp project");
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-9", "codex-t-9", "go")
+        )
+        .status
+        .success()
+    );
+    let interrupt =
+        json!({"hook_event_name": "Interrupt", "session_id": "codex-s-9", "turn_id": "codex-t-9"});
+    assert!(run_hook(project.path(), &interrupt).status.success());
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "codex-s-9", "tool_use_id": "u9",
+        "tool_name": "Bash", "tool_input": {"command": "echo hi"},
+        "tool_response": {"output": "hi", "exit_code": 0}
+    });
+    assert!(run_hook(project.path(), &post).status.success());
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-9", "codex-t-10", "instead")
+        )
+        .status
+        .success()
+    );
+    let modes: Vec<String> = lifecycle_records(project.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "correction"]);
+
+    // A new session starts clean: the previous session's interrupt is not its
+    // evidence.
+    let start = json!({"hook_event_name": "SessionStart", "session_id": "codex-s-10"});
+    assert!(run_hook(project.path(), &start).status.success());
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-10", "codex-t-11", "new")
+        )
+        .status
+        .success()
+    );
+    let modes: Vec<String> = lifecycle_records(project.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "correction", "fresh"]);
+}
+
+#[test]
+fn prompt_text_is_scrubbed_into_the_log_and_never_the_journal() {
+    let project = tempfile::tempdir().expect("temp project");
+    // A temp `$HOME` set on the *child* process only: the parent's environment
+    // is never mutated, so this test cannot race the rest of the binary, and it
+    // does not require the ambient HOME to exist (CI sandboxes sometimes unset
+    // it). `run_hook` does not take env overrides, so spawn directly.
+    let home = tempfile::tempdir().expect("fake home");
+    let home_str = home.path().display().to_string();
+    let payload = prompt_payload(
+        "codex-s-5",
+        "codex-t-5",
+        &format!("fix {home_str}/work/notes.txt then run tests"),
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["codex-hook", "UserPromptSubmit"])
+        .env("PHRONESIS_PROJECT_ROOT", project.path())
+        .env("HOME", home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn codex hook");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write payload");
+    let out = child.wait_with_output().expect("wait");
+    assert!(out.status.success());
+
+    let journal = fs::read_to_string(project.path().join(".phronesis/journey/events.jsonl"))
+        .expect("journal");
+    // Both halves: the raw path, and the part of the text that *survives*
+    // scrubbing. Asserting only the path would pass even if the whole scrubbed
+    // prompt were journaled.
+    assert!(!journal.contains("notes.txt"), "{journal}");
+    assert!(!journal.contains("then run tests"), "{journal}");
+    // Nor may it reach stdout, where it would become injected context.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("then run tests"), "{stdout}");
+
+    let entry = log_event(project.path(), "prompt");
+    let text = entry["prompt"].as_str().expect("prompt text");
+    assert!(text.contains("then run tests"), "{text}");
+    assert!(!text.contains(&home_str), "{text}");
+    assert!(entry["prompt_bytes"].as_u64().expect("bytes") > 0);
+    assert_eq!(entry["mode"], "fresh");
+    assert_eq!(entry["turn_id"], "codex-t-5");
+
+    // The two files join on (sid, seq) — spec §"Action log".
+    let record = lifecycle_records(project.path())
+        .into_iter()
+        .rfind(|r| r["kind"] == "prompt")
+        .expect("a prompt record");
+    assert_eq!(record["sid"], entry["sid"]);
+    assert_eq!(record["seq"], entry["seq"]);
+}

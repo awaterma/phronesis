@@ -25,8 +25,9 @@ use serde::Deserialize;
 use crate::action_log;
 use crate::context;
 use crate::journey;
-use crate::lifecycle::event::{Host, Kind, LifecycleEvent};
+use crate::lifecycle::event::{Host, Kind, LifecycleEvent, Mode};
 use crate::lifecycle::record::record;
+use crate::lifecycle::scrub;
 use crate::lifecycle::state;
 use crate::outcomes;
 use crate::security;
@@ -75,7 +76,6 @@ struct CodexPayload {
     stop_hook_active: Option<bool>,
     /// `UserPromptSubmit` only, verbatim. Scrubbed before it reaches the log.
     #[serde(default)]
-    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
     prompt: Option<String>,
     /// `SessionStart` only: `startup` | `resume` | `clear` | `compact` | `fork`.
     /// Task 7 widens the registration matcher to `""`, so `compact` and `fork`
@@ -187,6 +187,7 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
             make_ctx_decision(root, ContextKind::SessionStart).await
         }
         "UserPromptSubmit" | "user-prompt-submit" => {
+            record_prompt(payload, root);
             make_ctx_decision(root, ContextKind::InteractionContext).await
         }
         "PreCompact" | "pre-compact" => make_compact_decision(root, true),
@@ -252,6 +253,77 @@ fn lifecycle_event(payload: &CodexPayload, kind: Kind) -> LifecycleEvent {
         event = event.with_agent(aid, payload.agent_type.clone());
     }
     event
+}
+
+fn unix_secs_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Classify the prompt, record any inferred interrupt, record the prompt with
+/// its scrubbed text, and open the turn. Spec §Classification.
+fn record_prompt(payload: &CodexPayload, root: &Path) {
+    let now = unix_secs_now();
+    // Read before `classify_prompt`, which may rewrite the file.
+    let turn = state::read_turn(root);
+    let context = state::PromptContext {
+        host: Host::Codex,
+        now,
+        agent_id: payload.agent_id.as_deref(),
+        turn_id: payload.turn_id.as_deref(),
+        // Codex needs no transcript scan: its Interrupt hook is ground truth,
+        // and step 1 reads the result from `turn.last_event`.
+        transcript_path: None,
+    };
+    let classification = state::classify_prompt(root, &context);
+
+    // Codex fires UserPromptSubmit with the *running* turn's id for a message
+    // queued mid-turn, which is spec step 3's second sufficient signal for
+    // `mid_turn`. The `inflight` branch is off on Codex, so an open turn with no
+    // interrupt evidence already classifies `mid_turn` and the two signals
+    // agree; the assertion is here rather than an override, so a future
+    // divergence is loud instead of silently papered over.
+    debug_assert!(
+        !(turn.open
+            && payload.turn_id.is_some()
+            && turn.turn_id.as_deref() == payload.turn_id.as_deref()
+            && classification.mode != Mode::MidTurn
+            && classification.interrupt.is_none()),
+        "a message queued in the running turn classified as {:?}",
+        classification.mode
+    );
+
+    // `Some(source)` means this handler must write the record. `None` with mode
+    // `Correction` means the `Interrupt` arm already wrote it, and a second
+    // record would double-count the friction. On Codex today only the second
+    // case occurs.
+    if let Some(source) = classification.interrupt {
+        record(
+            root,
+            lifecycle_event(payload, Kind::Interrupt).with_extra("inferred_from", source.as_str()),
+        );
+    }
+
+    let mut event = lifecycle_event(payload, Kind::Prompt).with_mode(classification.mode);
+    if let Some(text) = payload.prompt.as_deref().filter(|t| !t.is_empty()) {
+        event = event.with_prompt(scrub::scrub_prompt(root, text));
+    }
+    record(root, event);
+
+    // A prompt carrying an `agent_id` never writes `turn` — a sub-agent's prompt
+    // must not move the parent's turn state (spec §Correlation state). Codex
+    // does not deliver prompts inside sub-agents today; the guard costs one line
+    // and means this adapter does not have to be revisited if it starts.
+    if payload
+        .agent_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        state::open_turn(root, payload.turn_id.as_deref(), now);
+    }
 }
 
 fn make_completion_decision(root: &Path) -> CodexDecision {
