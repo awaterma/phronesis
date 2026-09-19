@@ -577,6 +577,25 @@ pub fn classify_prompt(root: &Path, ctx: &PromptContext<'_>) -> Classification {
 /// Exposed on its own because `SessionEnd` runs the same check to decide
 /// whether a quit out of an aborted turn is an `interrupt` or a `stop`.
 pub fn detect_interrupt(root: &Path, ctx: &PromptContext<'_>) -> Option<InterruptSource> {
+    detect_interrupt_inner(root, ctx, true)
+}
+
+/// The same evidence check for `SessionEnd`, where the Gemini open-turn
+/// heuristic must not fire: a session that exits with a turn still open is a
+/// normal quit, not an abort, so only transcript and inflight evidence count.
+/// Callers pass the real host; nothing here is faked to skip a branch.
+pub fn detect_interrupt_at_session_end(
+    root: &Path,
+    ctx: &PromptContext<'_>,
+) -> Option<InterruptSource> {
+    detect_interrupt_inner(root, ctx, false)
+}
+
+fn detect_interrupt_inner(
+    root: &Path,
+    ctx: &PromptContext<'_>,
+    allow_open_turn: bool,
+) -> Option<InterruptSource> {
     let turn = read_turn(root);
 
     // Transcript marker (Claude only), FIRST: it is direct evidence. A queued
@@ -596,7 +615,7 @@ pub fn detect_interrupt(root: &Path, ctx: &PromptContext<'_>) -> Option<Interrup
     // Open turn (Gemini only): Gemini never delivers a prompt while a turn is
     // running, so an open turn here means AfterAgent was skipped, which only
     // happens on abort.
-    } else if ctx.host == Host::Gemini && turn.open {
+    } else if allow_open_turn && ctx.host == Host::Gemini && turn.open {
         Some(InterruptSource::OpenTurn)
     } else {
         None

@@ -385,15 +385,13 @@ fn handle_session_end(root: &Path, host: Host, p: &ClaudePayload) {
     if state::read_turn(root).open {
         let transcript = p.transcript_path.as_deref().map(PathBuf::from);
         // SessionEnd is a clean session exit, not a new prompt arriving while a
-        // turn is running. The Gemini "open turn = abort" heuristic (which fires
-        // when BeforeAgent arrives without a prior AfterAgent) must NOT fire
-        // here: a session that ends with an open turn is a normal stop, not an
-        // interrupt. Pass Host::Claude to skip that branch while still using the
-        // real host for the record.
-        let source = state::detect_interrupt(
+        // turn is running, so the Gemini "open turn = abort" heuristic must not
+        // fire; `detect_interrupt_at_session_end` leaves it out while the real
+        // host still gates the transcript and inflight checks.
+        let source = state::detect_interrupt_at_session_end(
             root,
             &state::PromptContext {
-                host: Host::Claude,
+                host,
                 now: unix_secs_now(),
                 agent_id: None,
                 turn_id: nonempty(&p.prompt_id),
