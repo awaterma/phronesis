@@ -1044,3 +1044,191 @@ fn prompt_text_is_scrubbed_into_the_log_and_never_the_journal() {
     assert_eq!(record["sid"], entry["sid"]);
     assert_eq!(record["seq"], entry["seq"]);
 }
+
+#[test]
+fn subagent_start_and_stop_pair_with_duration_and_unmatched_stop_does_not() {
+    let project = tempfile::tempdir().expect("temp project");
+    let start = json!({
+        "hook_event_name": "SubagentStart", "session_id": "codex-s-6",
+        "turn_id": "codex-t-6", "agent_id": "codex-a-1", "agent_type": "reviewer"
+    });
+    assert_eq!(response(&run_hook(project.path(), &start)), json!({}));
+    let stop = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-6",
+        "turn_id": "codex-t-6", "agent_id": "codex-a-1", "agent_type": "reviewer",
+        "agent_transcript_path": "/tmp/p/.codex/agents/codex-a-1.jsonl",
+        "last_assistant_message": "done reviewing", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+
+    let recs = lifecycle_records(project.path());
+    assert_eq!(recs[0]["kind"], "subagent_start");
+    assert_eq!(recs[0]["agent"], "codex-a-1");
+    assert_eq!(recs[0]["agent_type"], "reviewer");
+    assert!(
+        recs[0]["tags"]
+            .as_array()
+            .expect("tags")
+            .contains(&json!("lifecycle:agent:reviewer"))
+    );
+    assert_eq!(recs[1]["kind"], "subagent_stop");
+
+    let entry = log_event(project.path(), "subagent_stop");
+    assert_eq!(entry["matched_start"], true);
+    assert_eq!(entry["stop_hook_active"], false);
+    assert!(entry["duration_secs"].is_u64());
+    assert_eq!(entry["agent_id"], "codex-a-1");
+    // The journal never carries the sub-agent's last assistant message.
+    let journal = fs::read_to_string(project.path().join(".phronesis/journey/events.jsonl"))
+        .expect("journal");
+    assert!(!journal.contains("done reviewing"), "{journal}");
+
+    // A stop with no matching start is still recorded, without a duration.
+    let ghost = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-6",
+        "agent_id": "codex-a-ghost", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &ghost)), json!({}));
+    let unmatched = lifecycle_log(project.path())
+        .into_iter()
+        .rfind(|e| e["event"] == "subagent_stop")
+        .expect("second stop");
+    assert_eq!(unmatched["matched_start"], false);
+    assert!(unmatched.get("duration_secs").is_none());
+}
+
+/// A bare project has no confidence scoring, so `make_completion_decision`
+/// never blocks and both invocations record. The blocking case is the test
+/// below this one.
+#[test]
+fn stop_closes_the_turn_and_records_stop_hook_active() {
+    let project = tempfile::tempdir().expect("temp project");
+    let prompt = prompt_payload("codex-s-8", "codex-t-8", "go");
+    assert!(run_hook(project.path(), &prompt).status.success());
+    let stop = json!({
+        "hook_event_name": "Stop", "session_id": "codex-s-8",
+        "turn_id": "codex-t-8", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+    assert_eq!(turn_file(project.path())["open"], false);
+    assert_eq!(turn_file(project.path())["last_event"], "stop");
+
+    let mut reentrant = stop.clone();
+    reentrant["stop_hook_active"] = json!(true);
+    assert_eq!(response(&run_hook(project.path(), &reentrant)), json!({}));
+    let flags: Vec<Value> = lifecycle_log(project.path())
+        .into_iter()
+        .filter(|e| e["event"] == "stop")
+        .map(|e| e["stop_hook_active"].clone())
+        .collect();
+    assert_eq!(flags, vec![json!(false), json!(true)]);
+
+    // A prompt after a Stop starts a fresh turn.
+    assert!(run_hook(project.path(), &prompt).status.success());
+    let modes: Vec<String> = lifecycle_records(project.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "fresh"]);
+}
+
+/// A sub-agent finishing does not end the human's turn. The two events share a
+/// dispatch arm in the code this task rewrites, so the distinction is one merge
+/// away from being lost — and losing it means every prompt after a sub-agent
+/// returns classifies `fresh`, erasing the intervention count.
+#[test]
+fn subagent_stop_never_closes_the_turn() {
+    let project = tempfile::tempdir().expect("temp project");
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-11", "codex-t-11", "go")
+        )
+        .status
+        .success()
+    );
+    let start = json!({
+        "hook_event_name": "SubagentStart", "session_id": "codex-s-11",
+        "turn_id": "codex-t-11", "agent_id": "codex-a-2", "agent_type": "reviewer"
+    });
+    assert!(run_hook(project.path(), &start).status.success());
+    let stop = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-11",
+        "turn_id": "codex-t-11", "agent_id": "codex-a-2", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+
+    assert_eq!(
+        turn_file(project.path())["open"],
+        true,
+        "the human's turn is still running"
+    );
+    assert_eq!(turn_file(project.path())["last_event"], "prompt");
+    // Which is what makes the next prompt an intervention rather than a reply.
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-11", "codex-t-11", "also")
+        )
+        .status
+        .success()
+    );
+    let modes: Vec<String> = lifecycle_records(project.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "mid_turn"]);
+}
+
+/// A blocked stop is not a stop: it records nothing, leaves the turn open, and
+/// leaves the `agents` entry for the real stop to pop. The re-fire, which skips
+/// the gate because `stop_hook_active` is true, records exactly one.
+#[test]
+fn a_blocked_stop_records_nothing_and_the_refire_records_one() {
+    let project = tempfile::tempdir().expect("temp project");
+    fs::create_dir_all(project.path().join(".phronesis/outcomes")).expect("outcomes dir");
+    fs::write(project.path().join(".phronesis/confidence.json"), "{}").expect("confidence");
+    fs::write(project.path().join(".phronesis/outcomes/current"), "unit-1").expect("current");
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-12", "codex-t-12", "go")
+        )
+        .status
+        .success()
+    );
+
+    let stop = json!({
+        "hook_event_name": "Stop", "session_id": "codex-s-12",
+        "turn_id": "codex-t-12", "stop_hook_active": false
+    });
+    let blocked = response(&run_hook(project.path(), &stop));
+    assert_eq!(blocked["decision"], "block", "{blocked}");
+    assert!(
+        !lifecycle_kinds(project.path()).contains(&"stop".to_string()),
+        "a blocked stop records nothing"
+    );
+    assert_eq!(
+        turn_file(project.path())["open"],
+        true,
+        "the turn continues"
+    );
+
+    let mut refire = stop.clone();
+    refire["stop_hook_active"] = json!(true);
+    assert_eq!(
+        response(&run_hook(project.path(), &refire)),
+        json!({}),
+        "the gate is skipped"
+    );
+    assert_eq!(
+        lifecycle_kinds(project.path())
+            .iter()
+            .filter(|k| *k == "stop")
+            .count(),
+        1
+    );
+    assert_eq!(turn_file(project.path())["open"], false);
+}

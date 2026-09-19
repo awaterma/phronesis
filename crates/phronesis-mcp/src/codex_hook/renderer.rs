@@ -91,6 +91,7 @@ fn render_context(event: &str, d: &CodexDecision) -> String {
 fn render_completion(d: &CodexDecision) -> String {
     if let Some(reason) = d.block_messages.first() {
         return serde_json::to_string(&CodexCompletionBlock {
+            decision: "block",
             continue_turn: false,
             stop_reason: reason,
             system_message: reason,
@@ -112,6 +113,10 @@ fn render_completion(d: &CodexDecision) -> String {
 
 #[derive(Serialize)]
 struct CodexCompletionBlock<'a> {
+    /// `"block"` — the same signal `blocks` in the adapter reads, and a key
+    /// the Stop/SubagentStop schema permits. Without it a blocked stop is
+    /// indistinguishable from a clean `{continue: false}` stopReason response.
+    decision: &'static str,
     #[serde(rename = "continue")]
     continue_turn: bool,
     #[serde(rename = "stopReason")]

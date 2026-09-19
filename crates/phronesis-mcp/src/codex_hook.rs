@@ -72,7 +72,6 @@ struct CodexPayload {
     /// True when the host re-runs a stop hook after a block. `Stop` and
     /// `SubagentStop`.
     #[serde(default)]
-    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
     stop_hook_active: Option<bool>,
     /// `UserPromptSubmit` only, verbatim. Scrubbed before it reaches the log.
     #[serde(default)]
@@ -193,9 +192,79 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
         "PreCompact" | "pre-compact" => make_compact_decision(root, true),
         "PostCompact" | "post-compact" => make_ctx_decision(root, ContextKind::PostCompact).await,
         "SubagentStart" | "subagent-start" => {
+            // Record first so the Stamped seq is available for the synthesized
+            // id fallback (spec §Correlation state). Codex always supplies
+            // agent_id today; the fallback keeps `agents` poppable if it stops.
+            let stamped = record(root, lifecycle_event(payload, Kind::SubagentStart));
+            let agent_id = payload.agent_id.clone().unwrap_or_else(|| match &stamped {
+                Some(s) => format!("{}:{}", s.sid, s.seq),
+                None => format!("codex:{}", unix_secs_now()),
+            });
+            state::push_agent(
+                root,
+                state::OpenAgent {
+                    agent_id,
+                    agent_type: payload.agent_type.clone(),
+                    ts: stamped.as_ref().map_or_else(unix_secs_now, |s| s.ts),
+                    seq: stamped.as_ref().map_or(0, |s| s.seq),
+                },
+            );
             make_ctx_decision(root, ContextKind::SubagentStart).await
         }
-        "SubagentStop" | "subagent-stop" | "Stop" | "stop" => make_completion_decision(root),
+        // NOTE the shape of both arms: the decision is made FIRST, and the
+        // record is written only when it does not block. A blocked stop means
+        // the host continues the same turn, so it is not a stop — recording one
+        // would close a turn that is still running and the next steer would
+        // classify `fresh`, losing the intervention (spec §"Host adapters /
+        // Codex CLI", and the same rule as on Claude).
+        //
+        // `stop_hook_active: true` skips the gate entirely, as the docs require,
+        // so a blocking gate cannot loop; the re-fire is the invocation that
+        // records.
+        "SubagentStop" | "subagent-stop" => {
+            let decision = completion_decision_for_stop(root, payload);
+            if !blocks(&decision) {
+                let opened = state::pop_agent(root, payload.agent_id.as_deref());
+                let now = unix_secs_now();
+                let mut event = lifecycle_event(payload, Kind::SubagentStop)
+                    .with_extra("matched_start", opened.is_some())
+                    .with_extra(
+                        "stop_hook_active",
+                        payload.stop_hook_active.unwrap_or(false),
+                    );
+                if let Some(open) = &opened {
+                    event = event.with_extra("duration_secs", now.saturating_sub(open.ts));
+                    // Backfill identity the stop payload omitted.
+                    if event.agent_id.is_none() {
+                        event.agent_id = Some(open.agent_id.clone());
+                    }
+                    if event.agent_type.is_none() {
+                        event.agent_type = open.agent_type.clone();
+                    }
+                }
+                record(root, event);
+            }
+            // **`SubagentStop` never closes `turn`.** A sub-agent finishing does
+            // not end the human's turn; only the main-agent `Stop` does. The two
+            // arms used to share a body, which is exactly how this gets lost.
+            decision
+        }
+        "Stop" | "stop" => {
+            let decision = completion_decision_for_stop(root, payload);
+            if !blocks(&decision) {
+                // Close before recording so a concurrent prompt hook cannot read
+                // the turn as still open.
+                state::close_turn(root, "stop");
+                record(
+                    root,
+                    lifecycle_event(payload, Kind::Stop).with_extra(
+                        "stop_hook_active",
+                        payload.stop_hook_active.unwrap_or(false),
+                    ),
+                );
+            }
+            decision
+        }
         // Codex fires Interrupt on abort, before TurnAborted, with the
         // transcript flushed. Stop does not fire, so this is the only end of
         // an aborted turn. Its schema permits `systemMessage` only.
@@ -260,6 +329,23 @@ fn unix_secs_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// The completion decision for a stop event. `stop_hook_active: true` skips the
+/// gate entirely and responds `{}`, as the host docs require: without it a
+/// blocking gate re-fires forever.
+fn completion_decision_for_stop(root: &Path, payload: &CodexPayload) -> CodexDecision {
+    if payload.stop_hook_active.unwrap_or(false) {
+        return empty_decision();
+    }
+    make_completion_decision(root)
+}
+
+/// Did the decision block? `render_completion` emits the block shape exactly
+/// when `block_messages` is non-empty, so this is the same predicate the
+/// response speaks — structural, not a substring test.
+fn blocks(decision: &CodexDecision) -> bool {
+    !decision.block_messages.is_empty()
 }
 
 /// Classify the prompt, record any inferred interrupt, record the prompt with
