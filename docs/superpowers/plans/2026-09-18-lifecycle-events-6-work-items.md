@@ -30,6 +30,9 @@
 - `crates/phronesis-mcp/src/lifecycle/mod.rs` (Plan 1) — two `pub mod` lines.
 - `crates/phronesis-mcp/src/lifecycle/kalpa_cli.rs` (Plans 1, 5) — the `report` fn's `read_recent` call.
 - `crates/phronesis-mcp/src/outcomes/subject.rs` — `clear`.
+- `crates/phronesis-mcp/src/outcomes/bugs.rs` — two optional `KnownBug` fields (`spec`, `title`), both ignored by `check`.
+- `crates/phronesis-mcp/src/server_params.rs` — two optional `SubmitSuggestionParams` fields (`spec`, `bug_id`).
+- `crates/phronesis-mcp/src/server.rs` — `submit_suggestion` delegates to `lifecycle::unit_cli::start`.
 - `crates/phronesis-mcp/src/hook/mod.rs` (Plan 1) — `LogEventInput.subject`, `log_hook_event`.
 - `crates/phronesis-mcp/src/hook/pre.rs`, `src/hook/post.rs` (Plan 2) — five call sites.
 - `crates/phronesis-mcp/src/main.rs` (Plans 1, 2, 5) — one `Command` variant, one dispatch arm, one `handle_stats` line.
@@ -40,7 +43,7 @@
 ## Global Constraints
 
 - No new crate dependencies.
-- **`extra` stays a closed vocabulary.** This plan adds exactly three keys — `spec`, `unit_id`, `implicit` — and nothing else. `with_extra`'s `debug_assert!` is the guard; a key outside `EXTRA_KEYS` is a plan failure.
+- **`extra` stays a closed vocabulary.** This plan adds exactly five keys — `spec`, `unit_id`, `implicit` (Task 1) and `test`, `bug_id` (Task 2b, for the known-bug naming source) — and nothing else. `with_extra`'s `debug_assert!` is the guard; a key outside `EXTRA_KEYS` is a plan failure. `KnownBug.title` is deliberately *not* among them: no report reads it.
 - **A second surface may print prompt text, and only a second one.** Plan 5's constraint was "prompt text appears in exactly one output: `phr-mcp journey --corrections`". The spec's §"Work items" amends that: `phr-mcp unit show` prints intervention text too. Both go through `lifecycle::record::correction_text`, so the `prompt_text: "none"` switch hides them at read time. No third surface, and never in `stats`, `kalpa show`, `get_journey`, a context render, or a metric label.
 - **Every new reporting surface is read-only and fail-open**: an unreadable log or journal yields an empty section, never an error.
 - **A lifecycle write never fails a CLI command that did real work.** `record` already swallows its errors; `unit start` reports the subject change even if the record was lost.
@@ -54,9 +57,12 @@
 
 | path | responsibility |
 |---|---|
-| `crates/phronesis-mcp/src/lifecycle/event.rs` (modify) | `Kind::UnitStart` / `Kind::UnitEnd`; `EXTRA_KEYS` gains `spec`, `unit_id`, `implicit` |
+| `crates/phronesis-mcp/src/lifecycle/event.rs` (modify) | `Kind::UnitStart` / `Kind::UnitEnd`; `EXTRA_KEYS` gains `spec`, `unit_id`, `implicit`, `test`, `bug_id` |
 | `crates/phronesis-mcp/src/outcomes/subject.rs` (modify) | `clear` — the explicit close, beside the implicit `settle` |
-| `crates/phronesis-mcp/src/lifecycle/unit_cli.rs` (create) | `UnitCmd`, `run` — `unit start` / `unit end` / `unit show` |
+| `crates/phronesis-mcp/src/lifecycle/unit_cli.rs` (create) | `UnitCmd`, `run` — `unit start` / `unit end` / `unit show`; `StartRequest`, `Started`, `start` — the one code path behind all three naming sources |
+| `crates/phronesis-mcp/src/outcomes/bugs.rs` (modify) | `KnownBug.spec` / `KnownBug.title`, optional and unscored — the registry as a name source |
+| `crates/phronesis-mcp/src/server_params.rs` (modify) | `SubmitSuggestionParams.spec` / `.bug_id` |
+| `crates/phronesis-mcp/src/server.rs` (modify) | `submit_suggestion` records `unit_start` through `unit_cli::start`; `submit_suggestion_report` |
 | `crates/phronesis-mcp/src/lifecycle/unit_report.rs` (create) | `UnitReport`, `build`, `render`, `render_json` — the journal × action-log join for one subject |
 | `crates/phronesis-mcp/src/hook/mod.rs` (modify) | `LogEventInput.subject`, written onto `pre_check` / `post_check` entries |
 | `crates/phronesis-mcp/src/hook/pre.rs`, `post.rs` (modify) | fill `subject` from `outcomes::subject::current` |
@@ -622,6 +628,679 @@ git add crates/phronesis-mcp/src/lifecycle/unit_cli.rs crates/phronesis-mcp/src/
         crates/phronesis-mcp/src/outcomes/subject.rs crates/phronesis-mcp/src/main.rs \
         crates/phronesis-mcp/tests/unit_cli_integration.rs
 git commit -m "feat(cli): phr-mcp unit start/end with a validated spec pointer"
+```
+
+---
+
+### Task 2b: `phr-mcp unit start --bug <id>` — the known-bug registry as a name source
+
+The spec's §"Where the name comes from" lists three sources for a work-item
+name, all landing in the same `unit_start` record: the human on the CLI (Task
+2), the known-bug registry (this task), and the agent through
+`submit_suggestion` (Task 2c). The second and third must not grow their own
+copy of "open a unit", so this task first extracts Task 2's `Start` body into a
+reusable `start(root, StartRequest) -> Started` and then teaches it `--bug`.
+Task 2c calls that same function; the spec's "so there is one code path" is
+this refactor.
+
+**Files:**
+- Modify: `crates/phronesis-mcp/src/outcomes/bugs.rs` (`KnownBug` gains `spec` and `title`)
+- Modify: `crates/phronesis-mcp/src/lifecycle/event.rs` (`EXTRA_KEYS` gains `test`, `bug_id`; Task 1's count assertion)
+- Modify: `crates/phronesis-mcp/src/lifecycle/unit_cli.rs` (extract `start`, add `--bug`)
+- Test: `crates/phronesis-mcp/tests/unit_cli_integration.rs` (append), unit tests in `bugs.rs` and `event.rs`
+
+**Interfaces:**
+- Consumes: `outcomes::bugs::{load, KnownBug}`; everything Task 2 consumed.
+- Produces:
+
+```rust
+// outcomes/bugs.rs
+pub struct KnownBug { pub bug_id: String, pub test: String, pub status: String,
+                      pub spec: Option<String>, pub title: Option<String> }
+
+// lifecycle/unit_cli.rs
+pub struct StartRequest { pub id: Option<String>, pub spec: Option<String>, pub bug_id: Option<String> }
+pub struct Started { pub unit_id: String, pub spec: Option<String>, pub ended: Option<String> }
+pub fn start(root: &Path, req: StartRequest) -> anyhow::Result<Started>;
+
+// lifecycle/event.rs
+pub const EXTRA_KEYS: [&str; 14];   // + "test", "bug_id"
+```
+
+**Decisions, stated rather than deferred:**
+
+- **`--spec` beats the registry's `spec`.** `--bug` with an explicit `--spec`
+  is legal and the flag wins: the registry records where a bug was *filed*, the
+  flag records what this unit is being built to, and the caller is the later,
+  more specific voice. The registry's `spec` is validated by the same
+  `validate_spec` when it is used, so a stale registry path fails loudly
+  instead of recording a pointer no reader can open.
+- **`--bug` conflicts with a positional id** (clap `conflicts_with = "id"`).
+  The registry *is* the name for bug-shaped work; accepting both would let a
+  caller file a bug unit under a name the report cannot join back to the bug.
+- **`title` is recorded nowhere.** The spec adds it for humans reading
+  `bugs.json` and says both new fields are ignored by the confidence scorer;
+  inventing an `extra.title` would widen the closed vocabulary for a field no
+  report reads.
+- **Unknown id is an error, not a fresh unit**, and the error is raised before
+  the open subject moves — same discipline as a bad `--spec`.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append to `crates/phronesis-mcp/tests/unit_cli_integration.rs`:
+
+```rust
+/// Seed `.phronesis/bugs.json`. `entries` is written verbatim so a test can
+/// exercise an entry with and without the optional `spec`.
+fn write_bugs(root: &Path, entries: serde_json::Value) {
+    let phr = root.join(".phronesis");
+    std::fs::create_dir_all(&phr).unwrap();
+    std::fs::write(phr.join("bugs.json"), entries.to_string()).unwrap();
+}
+
+/// Spec §"Where the name comes from": `--bug` names the unit `bug-<bug_id>`
+/// and records the registry's cargo test name, which is what later joins the
+/// unit to its red→green signal.
+#[test]
+fn unit_start_from_a_known_bug_names_the_unit_and_records_its_test() {
+    let d = tempfile::tempdir().unwrap();
+    write_bugs(
+        d.path(),
+        serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
+    );
+    let out = run_phr(d.path(), &["unit", "start", "--bug", "1042"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(stdout(&out).contains("started work unit bug-1042"), "{}", stdout(&out));
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".phronesis/outcomes/current")).unwrap(),
+        "bug-1042"
+    );
+    let entries = lifecycle_entries(d.path());
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["event"], "unit_start");
+    assert_eq!(entries[0]["unit_id"], "bug-1042");
+    assert_eq!(entries[0]["subject"], "bug-1042");
+    assert_eq!(entries[0]["bug_id"], "1042");
+    assert_eq!(entries[0]["test"], "auth::rejects_expired");
+    assert!(entries[0].get("spec").is_none(), "no spec in the entry, none recorded");
+}
+
+/// An entry carrying a `spec` supplies the pointer without a flag — the
+/// registry answers "which spec is this bug against?" once, for everyone.
+#[test]
+fn unit_start_from_a_known_bug_takes_the_registry_spec() {
+    let d = tempfile::tempdir().unwrap();
+    write_spec(d.path(), "docs/specs/SPEC-auth.md");
+    write_bugs(
+        d.path(),
+        serde_json::json!([{
+            "bug_id": "1042", "test": "auth::rejects_expired", "status": "open",
+            "spec": "docs/specs/SPEC-auth.md", "title": "expired tokens accepted"
+        }]),
+    );
+    let out = run_phr(d.path(), &["unit", "start", "--bug", "1042"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let entries = lifecycle_entries(d.path());
+    assert_eq!(entries[0]["spec"], "docs/specs/SPEC-auth.md");
+    assert!(stdout(&out).contains("docs/specs/SPEC-auth.md"), "{}", stdout(&out));
+}
+
+/// "An unknown id is an error, not a fresh unit: the registry is the source of
+/// truth for bug-shaped work" (spec §"Where the name comes from").
+#[test]
+fn unit_start_from_an_unknown_bug_errors_and_opens_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    write_bugs(
+        d.path(),
+        serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
+    );
+    let out = run_phr(d.path(), &["unit", "start", "--bug", "9999"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("unknown bug id `9999` (not in .phronesis/bugs.json)"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !d.path().join(".phronesis/outcomes/current").exists(),
+        "a rejected start opens no unit"
+    );
+    assert!(lifecycle_entries(d.path()).is_empty(), "and records nothing");
+}
+
+/// A missing registry is the same error, not a silent fresh unit: `bugs::load`
+/// is fail-open (empty on a missing file), so the lookup has to be the gate.
+#[test]
+fn unit_start_with_bug_and_no_registry_errors() {
+    let d = tempfile::tempdir().unwrap();
+    let out = run_phr(d.path(), &["unit", "start", "--bug", "1042"]);
+    assert!(!out.status.success());
+    assert!(stderr(&out).contains("unknown bug id `1042`"), "{}", stderr(&out));
+}
+
+/// The registry is the name; a second name is a contradiction, and clap
+/// rejects it before anything runs.
+#[test]
+fn unit_start_rejects_bug_together_with_a_positional_id() {
+    let d = tempfile::tempdir().unwrap();
+    let out = run_phr(d.path(), &["unit", "start", "item-1", "--bug", "1042"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("cannot be used with"),
+        "clap's conflict message: {}",
+        stderr(&out)
+    );
+    assert!(!d.path().join(".phronesis/outcomes/current").exists());
+}
+```
+
+Append to `outcomes/bugs.rs`'s `mod tests`:
+
+```rust
+    /// The two new optional fields parse when present and default when absent,
+    /// so every registry written before this change still loads.
+    #[test]
+    fn load_parses_optional_spec_and_title_and_defaults_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let phr = dir.path().join(".phronesis");
+        std::fs::create_dir_all(&phr).unwrap();
+        std::fs::write(
+            phr.join("bugs.json"),
+            r#"[{"bug_id":"7","test":"a::b","spec":"docs/specs/SPEC-x.md","title":"boom"},
+                {"bug_id":"8","test":"c::d"}]"#,
+        )
+        .unwrap();
+        let bugs = load(dir.path());
+        assert_eq!(bugs[0].spec.as_deref(), Some("docs/specs/SPEC-x.md"));
+        assert_eq!(bugs[0].title.as_deref(), Some("boom"));
+        assert_eq!(bugs[1].spec, None);
+        assert_eq!(bugs[1].title, None);
+    }
+
+    /// "both ignored by the confidence scorer" (spec §"Where the name comes
+    /// from"): scoring depends on `test` and `status` only.
+    #[test]
+    fn check_ignores_spec_and_title() {
+        let mut b = bug("1042", "auth::rejects_expired");
+        b.spec = Some("docs/specs/SPEC-x.md".to_string());
+        b.title = Some("boom".to_string());
+        let per_test = vec![("auth::rejects_expired".to_string(), true)];
+        assert_eq!(
+            statuses(&check("u", &[b], &per_test, true)),
+            vec![("1042".to_string(), "fixed".to_string())]
+        );
+    }
+```
+
+And amend the vocabulary assertion Task 1 wrote in `event.rs` — the count and
+its comment move from three added keys to five:
+
+```rust
+/// `extra` gains exactly five keys and no more (spec §"Work items / Storage"
+/// plus §"Where the name comes from", which adds `test` and `bug_id`).
+#[test]
+fn extra_vocabulary_gains_spec_unit_id_and_implicit() {
+    for k in ["spec", "unit_id", "implicit", "test", "bug_id"] {
+        assert!(EXTRA_KEYS.contains(&k), "{k} must be in the closed vocabulary");
+    }
+    assert_eq!(EXTRA_KEYS.len(), 14, "five added, nothing else");
+    for forbidden in ["prompt_response", "last_assistant_message", "transcript_path", "spec_hash", "title"] {
+        assert!(!EXTRA_KEYS.contains(&forbidden), "{forbidden}");
+    }
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `cargo test -p phronesis-mcp --test unit_cli_integration --lib outcomes::bugs --lib lifecycle::event 2>&1 | tail -30`
+Expected: FAIL — `unexpected argument '--bug' found` from clap in the five
+integration tests, `no field `spec` on type `KnownBug`` in the two `bugs.rs`
+tests, and `assertion `left == right` failed: five added, nothing else` (12 vs
+14) in `event.rs`.
+
+- [ ] **Step 3: Implement**
+
+`lifecycle/event.rs` — append the two keys to `EXTRA_KEYS` and widen its
+length to 14:
+
+```rust
+pub const EXTRA_KEYS: [&str; 14] = [
+    // … the nine Plan 1 keys, then Task 1's three …
+    "spec",
+    "unit_id",
+    "implicit",
+    // A unit named from `.phronesis/bugs.json` (spec §"Where the name comes
+    // from"): the registry's cargo test name and the id it was looked up by.
+    "test",
+    "bug_id",
+];
+```
+
+`outcomes/bugs.rs` — two optional fields on `KnownBug`, and the test helper
+that builds one by hand:
+
+```rust
+    /// Repo-relative spec this bug is filed against, when the registry knows
+    /// one. Read by `phr-mcp unit start --bug` to point the work item at its
+    /// spec without a flag; ignored by [`check`] — scoring depends on `test`
+    /// and `status` only.
+    #[serde(default)]
+    pub spec: Option<String>,
+    /// Human-readable one-liner. Recorded nowhere: it exists so a person
+    /// reading `bugs.json` knows what `1042` is. Ignored by [`check`].
+    #[serde(default)]
+    pub title: Option<String>,
+```
+
+```rust
+    fn bug(id: &str, test: &str) -> KnownBug {
+        KnownBug {
+            bug_id: id.to_string(),
+            test: test.to_string(),
+            status: "open".to_string(),
+            spec: None,
+            title: None,
+        }
+    }
+```
+
+`lifecycle/unit_cli.rs` — extract `start` out of `run`'s `Start` arm and add
+the registry lookup. `use crate::outcomes::{bugs, subject};` replaces the
+existing `use crate::outcomes::subject;`.
+
+```rust
+/// What to name a work item, from any of the spec's three naming sources.
+///
+/// One struct rather than three `start_*` functions because the sources differ only
+/// in where the name comes from: once resolved they take the identical path
+/// (end the open unit, set the subject, record one `unit_start`), and a second
+/// path is exactly what §"Where the name comes from" forbids.
+#[derive(Debug, Default)]
+pub struct StartRequest {
+    /// Caller-chosen id. `None` with no `bug_id` mints `unit-<nanos>`.
+    pub id: Option<String>,
+    /// Repo-relative spec pointer; validated before the subject moves.
+    pub spec: Option<String>,
+    /// Look the name up in `.phronesis/bugs.json` instead: `bug-<bug_id>`.
+    pub bug_id: Option<String>,
+}
+
+/// What a start actually did — the caller renders it (CLI text, MCP JSON).
+#[derive(Debug)]
+pub struct Started {
+    pub unit_id: String,
+    /// The spec finally recorded: `--spec` if given, else the registry's.
+    pub spec: Option<String>,
+    /// The unit this start closed first, when one was open.
+    pub ended: Option<String>,
+}
+
+/// Open a work item. The one code path behind `phr-mcp unit start` and the
+/// `submit_suggestion` MCP tool (spec §"Where the name comes from": "through
+/// `lifecycle::unit_cli::start`, so there is one code path").
+///
+/// Everything that can fail — the spec pointer, the bug lookup — is checked
+/// **before** the open subject moves, so a rejected start leaves the workspace
+/// exactly as it was. `Host::Cli` is stamped on the record from both callers:
+/// the MCP server is the same `phr-mcp` process, and `Host` names the host
+/// that produced the event, not the transport that asked for it.
+pub fn start(root: &Path, req: StartRequest) -> anyhow::Result<Started> {
+    let mut spec = req.spec.map(|s| validate_spec(root, &s)).transpose()?;
+    let mut test = None;
+    let mut chosen = req.id;
+    if let Some(bug_id) = &req.bug_id {
+        let bugs = bugs::load(root);
+        let Some(bug) = bugs.iter().find(|b| &b.bug_id == bug_id) else {
+            // `load` is fail-open, so a missing or malformed registry lands
+            // here too — which is right: either way the id is not known.
+            bail!("unknown bug id `{bug_id}` (not in .phronesis/bugs.json)");
+        };
+        chosen = Some(format!("bug-{bug_id}"));
+        test = Some(bug.test.clone());
+        if spec.is_none() {
+            if let Some(s) = &bug.spec {
+                spec = Some(validate_spec(root, s)?);
+            }
+        }
+    }
+    let ended = end_open(root)?;
+    let unit_id = match chosen {
+        Some(id) => {
+            subject::set(root, &id)?;
+            id
+        }
+        None => subject::open(root)?,
+    };
+    let mut ev =
+        LifecycleEvent::new(Kind::UnitStart, Host::Cli).with_extra("unit_id", unit_id.clone());
+    if let Some(s) = &spec {
+        ev = ev.with_extra("spec", s.clone());
+    }
+    if let Some(t) = &test {
+        ev = ev.with_extra("test", t.clone());
+    }
+    if let Some(b) = &req.bug_id {
+        ev = ev.with_extra("bug_id", b.clone());
+    }
+    record(root, ev);
+    Ok(Started { unit_id, spec, ended })
+}
+```
+
+`UnitCmd::Start` gains the flag:
+
+```rust
+    /// Open a work item (ends any open one first).
+    Start {
+        /// The work-item id. Omitted, a fresh `unit-<nanos>` id is minted.
+        id: Option<String>,
+        /// Repo-relative path to the spec this item is built to. Must exist.
+        #[arg(long, value_name = "PATH")]
+        spec: Option<String>,
+        /// Name the item from `.phronesis/bugs.json`: the unit becomes
+        /// `bug-<ID>` and carries the registry's test name (and its spec, if
+        /// it has one). An unknown id is an error.
+        #[arg(long = "bug", value_name = "ID", conflicts_with = "id")]
+        bug_id: Option<String>,
+    },
+```
+
+and `run`'s `Start` arm becomes rendering only:
+
+```rust
+        UnitCmd::Start { id, spec, bug_id } => {
+            let started = start(root, StartRequest { id, spec, bug_id })?;
+            let mut out = String::new();
+            if let Some(e) = started.ended {
+                out.push_str(&format!("ended work unit {e}\n"));
+            }
+            out.push_str(&format!("started work unit {}", started.unit_id));
+            if let Some(s) = &started.spec {
+                out.push_str(&format!("   spec: {s}"));
+            }
+            Ok(out)
+        }
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test -p phronesis-mcp --test unit_cli_integration --lib outcomes::bugs --lib lifecycle::event 2>&1 | tail -20`
+Expected: PASS — Task 2's seven integration tests still pass unchanged (the
+refactor is behaviour-preserving), plus the five new ones and the four
+`bugs.rs` / `event.rs` unit tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cargo fmt && cargo clippy --all-targets -p phronesis-mcp -- -D warnings
+git add crates/phronesis-mcp/src/lifecycle/unit_cli.rs crates/phronesis-mcp/src/lifecycle/event.rs \
+        crates/phronesis-mcp/src/outcomes/bugs.rs crates/phronesis-mcp/tests/unit_cli_integration.rs
+git commit -m "feat(cli): name a work unit from the known-bug registry"
+```
+
+---
+
+### Task 2c: `submit_suggestion` names the work item from inside the conversation
+
+The third naming source (spec §"Where the name comes from"): "The existing MCP
+tool `submit_suggestion` already sets the explicit subject. It gains optional
+`spec` and `bug_id` parameters and, on success, records the same `unit_start`
+event the CLI does (through `lifecycle::unit_cli::start`, so there is one code
+path). … No new MCP tool." This is how the naming question gets asked in the
+LLM window instead of at a shell.
+
+**Files:**
+- Modify: `crates/phronesis-mcp/src/server_params.rs` (`SubmitSuggestionParams`)
+- Modify: `crates/phronesis-mcp/src/server.rs` (`submit_suggestion` + its description)
+- Test: `crates/phronesis-mcp/tests/unit_cli_integration.rs` (append)
+
+**Interfaces:**
+- Consumes: `lifecycle::unit_cli::{start, StartRequest, Started}` (Task 2b); `outcomes::report`.
+- Produces:
+
+```rust
+// server_params.rs
+pub struct SubmitSuggestionParams { pub subject: String, pub summary: Option<String>,
+                                    pub spec: Option<String>, pub bug_id: Option<String> }
+
+// server.rs (associated fn on EpistemeMcp, no server state needed)
+pub fn submit_suggestion_report(root: &Path, params: &SubmitSuggestionParams)
+    -> anyhow::Result<serde_json::Value>;
+```
+
+**Where the tests go, and why.** `submit_suggestion` has no test today: no
+integration test constructs an `EpistemeMcp` or drives the tool router (grep
+for `submit_suggestion` across `crates/` finds only `server.rs` and two doc
+comments in `outcomes/subject.rs`), and the `#[tool]` methods are private, so
+there is no pattern to follow — only an absence to fix. The tool bodies that
+*are* reachable are reached through their library functions (`journey_cli`,
+`outcomes`), which is the pattern this task adopts: the body moves to a `pub`
+associated fn taking an explicit `root`, the `#[tool]` method keeps only the
+MCP plumbing (`project_root`, `log_event`, `ok_text`, error mapping), and the
+tests exercise the fn. They live in `tests/unit_cli_integration.rs` beside the
+`unit start` tests because they assert on the same `unit_start` records through
+the same `lifecycle_entries` / `write_bugs` helpers; a second file would clone
+both.
+
+**Decision: the tool delegates its `subject::set` to `start` instead of calling
+it first.** Today the tool calls `outcomes::subject::set` directly. It must not
+keep doing that *and* call `start`: `start` ends the open unit before setting
+the new one, so a pre-set subject would make it record a `unit_end` for the very
+unit being opened (and, with `bug_id`, for a name the caller never opened). The
+set moves inside `start`, which is what "so there is one code path" asks for;
+the failure mode the original ordering protected — an unwritable subject file
+must fail the call before anything is recorded — is preserved, because `start`
+also sets before it records, and its `SubjectError` surfaces through `anyhow`
+into the same `Self::err` mapping.
+
+- [ ] **Step 1: Write the failing tests** — append to `crates/phronesis-mcp/tests/unit_cli_integration.rs`
+
+```rust
+use phronesis_mcp::server::EpistemeMcp;
+use phronesis_mcp::server_params::SubmitSuggestionParams;
+
+fn suggestion(subject: &str, spec: Option<&str>, bug_id: Option<&str>) -> SubmitSuggestionParams {
+    SubmitSuggestionParams {
+        subject: subject.to_string(),
+        summary: Some("a suggestion".to_string()),
+        spec: spec.map(str::to_string),
+        bug_id: bug_id.map(str::to_string),
+    }
+}
+
+/// The plain path an agent already uses — declaring a subject — now also
+/// leaves the `unit_start` record the CLI leaves, so a work item named in the
+/// LLM window is indistinguishable from one named at a shell.
+#[test]
+fn submit_suggestion_records_unit_start_for_a_plain_subject() {
+    let d = tempfile::tempdir().unwrap();
+    write_spec(d.path(), "docs/specs/SPEC-thing.md");
+    let out = EpistemeMcp::submit_suggestion_report(
+        d.path(),
+        &suggestion("xlate-7", Some("docs/specs/SPEC-thing.md"), None),
+    )
+    .expect("report");
+    assert_eq!(out["subject"], "xlate-7");
+    assert_eq!(out["unit_id"], "xlate-7");
+    assert_eq!(out["spec"], "docs/specs/SPEC-thing.md");
+    assert!(out.get("band").is_some(), "the existing confidence fields survive: {out}");
+
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".phronesis/outcomes/current")).unwrap(),
+        "xlate-7"
+    );
+    let entries = lifecycle_entries(d.path());
+    assert_eq!(entries.len(), 1, "exactly one unit_start, not two: {entries:?}");
+    assert_eq!(entries[0]["event"], "unit_start");
+    assert_eq!(entries[0]["unit_id"], "xlate-7");
+    assert_eq!(entries[0]["subject"], "xlate-7");
+    assert_eq!(entries[0]["spec"], "docs/specs/SPEC-thing.md");
+}
+
+/// `bug_id` overrides the caller's subject with the registry name, and the
+/// response says so — the agent must report the id the reports will use.
+#[test]
+fn submit_suggestion_with_a_bug_id_names_the_unit_and_records_the_test() {
+    let d = tempfile::tempdir().unwrap();
+    write_bugs(
+        d.path(),
+        serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
+    );
+    let out =
+        EpistemeMcp::submit_suggestion_report(d.path(), &suggestion("my-guess", None, Some("1042")))
+            .expect("report");
+    assert_eq!(out["unit_id"], "bug-1042");
+    assert_eq!(out["subject"], "bug-1042", "the response reports the real name");
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".phronesis/outcomes/current")).unwrap(),
+        "bug-1042"
+    );
+    let entries = lifecycle_entries(d.path());
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["unit_id"], "bug-1042");
+    assert_eq!(entries[0]["test"], "auth::rejects_expired");
+    assert_eq!(entries[0]["bug_id"], "1042");
+}
+
+/// An unknown id fails the call and leaves nothing behind — the same rule the
+/// CLI enforces, reached through the same function.
+#[test]
+fn submit_suggestion_with_an_unknown_bug_id_errors_and_sets_no_subject() {
+    let d = tempfile::tempdir().unwrap();
+    let err = EpistemeMcp::submit_suggestion_report(
+        d.path(),
+        &suggestion("my-guess", None, Some("9999")),
+    )
+    .expect_err("unknown bug id must fail");
+    assert!(
+        err.to_string().contains("unknown bug id `9999` (not in .phronesis/bugs.json)"),
+        "{err}"
+    );
+    assert!(
+        !d.path().join(".phronesis/outcomes/current").exists(),
+        "no subject is set on a rejected call"
+    );
+    assert!(lifecycle_entries(d.path()).is_empty());
+}
+
+/// A bad `--spec`-equivalent is rejected here too: the parameter goes through
+/// the same `validate_spec`, so the MCP surface cannot record a pointer the
+/// CLI would refuse.
+#[test]
+fn submit_suggestion_rejects_a_spec_that_does_not_exist() {
+    let d = tempfile::tempdir().unwrap();
+    let err = EpistemeMcp::submit_suggestion_report(
+        d.path(),
+        &suggestion("xlate-7", Some("docs/specs/NOPE.md"), None),
+    )
+    .expect_err("missing spec must fail");
+    assert!(err.to_string().contains("--spec"), "{err}");
+    assert!(!d.path().join(".phronesis/outcomes/current").exists());
+}
+```
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `cargo test -p phronesis-mcp --test unit_cli_integration 2>&1 | tail -20`
+Expected: FAIL to compile — `no function or associated item named
+`submit_suggestion_report` found for struct `EpistemeMcp`` and `struct
+`SubmitSuggestionParams` has no field named `spec``.
+
+- [ ] **Step 3: Implement**
+
+`server_params.rs` — two optional parameters on `SubmitSuggestionParams`, in
+the file's existing style (`#[serde(default)]` plus a doc comment, which
+`schemars` lifts into the tool's JSON schema as the field description):
+
+```rust
+    /// Optional repo-relative path to the spec this work item is built to
+    /// (e.g. `"docs/specs/SPEC-auth.md"`). The file must exist. Recorded on
+    /// the `unit_start` lifecycle event so reports can answer "which spec was
+    /// this built to?".
+    #[serde(default)]
+    pub spec: Option<String>,
+    /// Optional id from `.phronesis/bugs.json`. When given, the work unit is
+    /// named `bug-<id>` (overriding `subject`) and carries the registry's
+    /// cargo test name, plus its spec when the entry has one. An id that is
+    /// not in the registry is an error.
+    #[serde(default)]
+    pub bug_id: Option<String>,
+```
+
+`server.rs` — the body moves to a `pub` associated fn and the `#[tool]` method
+keeps only the MCP plumbing:
+
+```rust
+    /// The `submit_suggestion` body, minus MCP plumbing: open the work item
+    /// through the one shared code path and return the response object.
+    ///
+    /// Takes `root` explicitly rather than calling `security::project_root`
+    /// so it is testable without an environment variable.
+    pub fn submit_suggestion_report(
+        root: &std::path::Path,
+        params: &SubmitSuggestionParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        // `start` sets the subject itself, ending any open unit first, and
+        // records exactly one `unit_start` (spec §"Where the name comes
+        // from": "so there is one code path").
+        let started = crate::lifecycle::unit_cli::start(
+            root,
+            crate::lifecycle::unit_cli::StartRequest {
+                id: Some(params.subject.clone()),
+                spec: params.spec.clone(),
+                bug_id: params.bug_id.clone(),
+            },
+        )?;
+        let report = crate::outcomes::report(root, Some(&started.unit_id));
+        let band = report.as_ref().map(|r| r.band.as_str()).unwrap_or("low");
+        let signals = report.map(|r| r.signals).unwrap_or_default();
+        Ok(serde_json::json!({
+            // `subject` is the id that was actually opened, which differs from
+            // the caller's when `bug_id` renamed it.
+            "subject": started.unit_id,
+            "unit_id": started.unit_id,
+            "summary": params.summary,
+            "spec": started.spec,
+            "band": band,
+            "signals": signals,
+        }))
+    }
+```
+
+```rust
+    #[tool(
+        description = "Declare a confidence work unit ('subject') — e.g. a cross-language translation or a discrete suggestion — and return its current confidence report. Sets the open subject so subsequent build/test runs accrue grounded signals to it, and records a `unit_start` lifecycle event naming the work item. Optionally pass `spec` (a repo-relative path to the spec this work is built to; it must exist) or `bug_id` (an id from `.phronesis/bugs.json`, which names the unit `bug-<id>` and carries the bug's test name; an unknown id is an error). Returns JSON `{subject, unit_id, summary, spec, band, signals}`; `subject` is the id actually opened, which `bug_id` may rename. Confidence is opt-in per project via `.phronesis/confidence.json`."
+    )]
+    async fn submit_suggestion(
+        &self,
+        Parameters(params): Parameters<SubmitSuggestionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        let out = Self::submit_suggestion_report(&root, &params)
+            .map_err(|e| Self::err(e.to_string()))?;
+        let subject = out["subject"].as_str().unwrap_or_default().to_string();
+        let band = out["band"].as_str().unwrap_or("low").to_string();
+        Self::log_event("submit_suggestion", |e| {
+            e.with("subject", subject).with("band", band)
+        });
+        Self::ok_text(serde_json::to_string_pretty(&out).map_err(|e| Self::err(e.to_string()))?)
+    }
+```
+
+- [ ] **Step 4: Run tests**
+
+Run: `cargo test -p phronesis-mcp --test unit_cli_integration --test payload_contract 2>&1 | tail -20`
+Expected: PASS — the four new tests plus everything Tasks 2 and 2b added, and
+the payload/schema contract tests still pass with the two added parameters
+(both optional, so no existing caller breaks).
+
+- [ ] **Step 5: Commit**
+
+```bash
+cargo fmt && cargo clippy --all-targets -p phronesis-mcp -- -D warnings
+git add crates/phronesis-mcp/src/server.rs crates/phronesis-mcp/src/server_params.rs \
+        crates/phronesis-mcp/tests/unit_cli_integration.rs
+git commit -m "feat(mcp): submit_suggestion names the work item and records unit_start"
 ```
 
 ---
@@ -1896,7 +2575,16 @@ Add this bullet at the end of the existing `### Added` list under `## [Unrelease
   count (committed, with a rule evaluated against it, and a last-commit
   confidence band above `low`), and `interventions / work item`. Implicit work
   units keep working exactly as before and need no new file: the two new
-  lifecycle records carry everything.
+  lifecycle records carry everything. A work item can be named from any of
+  three places: the CLI, the known-bug registry (`phr-mcp unit start --bug
+  <id>` names it `bug-<id>` and carries the registry's cargo test name and its
+  spec — `.phronesis/bugs.json` entries gain optional `spec` and `title`
+  fields, neither of which affects confidence scoring), or the agent itself,
+  since the `submit_suggestion` MCP tool now takes optional `spec` and `bug_id`
+  and records the same `unit_start` event through the same code path. The spec
+  carries an example rule, `suggest-name-the-work-item`, that nudges an agent
+  to ask which bug or spec a session is for when no work item is open; it is an
+  example to copy, not a packaged rule.
 ```
 
 - [ ] **Step 2: Verify the file still parses as the changelog it claims to be**
@@ -1932,6 +2620,16 @@ git commit -m "docs(changelog): work items and governed throughput"
 | `--json` emits the same as one object | 4 (`render_json`) |
 | intervention text is subject to the `prompt_text` switch | 4 (`correction_text`, pinned by `unit_show_hides_intervention_text_under_prompt_text_none`) |
 | `extra` gains `spec`, `unit_id`, `implicit` to its closed vocabulary | 1 |
+| §"Where the name comes from": the three sources all land in one `unit_start` record | 2b (`start` is the single path; 2 and 2c call it) |
+| source 1 — the human on the CLI: `unit start <id> --spec <path>` | 2 |
+| source 2 — `unit start --bug <bug_id>` looks the id up in `.phronesis/bugs.json`, names the unit `bug-<bug_id>` | 2b |
+| …records `extra.test` (the registry's cargo test name) and `extra.spec` when the entry has one | 2b (`EXTRA_KEYS` + emission; the registry spec is validated like `--spec`) |
+| `KnownBug` gains optional `spec` and `title`, both ignored by the confidence scorer | 2b (`#[serde(default)]`; pinned by `check_ignores_spec_and_title`) |
+| an unknown bug id is an error, not a fresh unit | 2b (`unit_start_from_an_unknown_bug_errors_and_opens_nothing`, and the same via MCP in 2c) |
+| source 3 — `submit_suggestion` gains optional `spec` / `bug_id` and records the same `unit_start` | 2c |
+| …"through `lifecycle::unit_cli::start`, so there is one code path" | 2c (the tool's own `subject::set` is removed; `start` does it) |
+| …"No new MCP tool" | 2c (`submit_suggestion` only; no tool is added) |
+| example rule `suggest-name-the-work-item`, shipped as an example, not a packaged rule | 6 (named in the CHANGELOG bullet as an example in the spec; no rules file, no `init` template, and no `packaged_rules` entry is added by this plan) |
 | `unit_start` / `unit_end` are lifecycle records with `subject` set; no new file | 1, 2 (`record` stamps `subject` from `subject::current`) |
 | completed = ≥1 `commit` carrying the subject | 5 |
 | governed = completed + ≥1 `pre_check`/`post_check` with the subject + band at last commit not `low` | 5 |
@@ -1946,13 +2644,16 @@ Out of scope by design: the `kalpa` subcommand and `record`/`state` themselves (
 
 **2. Placeholder scan**
 
-No "TBD", no "add error handling", no "similar to Task N", no "write tests for the above". Every code step carries compilable Rust; every test step carries its assertions. Task 2 explicitly states that it does *not* register a `Show` variant rather than shipping a stub arm, and Task 4 adds the variant together with its implementation. Task 4's two departures from the spec's illustrative block (`(12/12)`, the `…` elisions) are written down as decisions with reasons, not deferred. Task 5 states the column-width derivation rather than leaving the format string to taste.
+No "TBD", no "add error handling", no "similar to Task N", no "write tests for the above". Every code step carries compilable Rust; every test step carries its assertions. Task 2 explicitly states that it does *not* register a `Show` variant rather than shipping a stub arm, and Task 4 adds the variant together with its implementation. Task 4's two departures from the spec's illustrative block (`(12/12)`, the `…` elisions) are written down as decisions with reasons, not deferred. Task 5 states the column-width derivation rather than leaving the format string to taste. Tasks 2b and 2c each write down their judgement calls — `--spec` beating a registry `spec`, `title` being recorded nowhere, and the tool's `subject::set` moving inside `start` — with the reason, rather than leaving them to the implementer.
 
 **3. Type consistency**
 
 - `Kind::UnitStart` / `Kind::UnitEnd` and `EXTRA_KEYS: [&str; 12]` — defined Task 1, used in Tasks 2, 4, 5.
 - `outcomes::subject::clear(&Path) -> Result<(), SubjectError>` — defined Task 2, used in Task 2 only.
-- `UnitCmd::{Start { id, spec }, End}` (Task 2) + `Show { id, json }` (Task 4); `unit_cli::run(&Path, UnitCmd) -> anyhow::Result<String>` — one signature across both tasks, called once from `main.rs`.
+- `UnitCmd::{Start { id, spec }, End}` (Task 2), `Start` gains `bug_id` (Task 2b), + `Show { id, json }` (Task 4); `unit_cli::run(&Path, UnitCmd) -> anyhow::Result<String>` — one signature across all three tasks, called once from `main.rs`.
+- `unit_cli::{StartRequest { id, spec, bug_id }, Started { unit_id, spec, ended }, start(&Path, StartRequest) -> anyhow::Result<Started>}` — defined Task 2b, called from exactly two places: `run`'s `Start` arm (Task 2b) and `EpistemeMcp::submit_suggestion_report` (Task 2c).
+- `KnownBug.spec: Option<String>` / `.title: Option<String>` — defined Task 2b, read only by `start`; `check` is untouched.
+- `SubmitSuggestionParams.{spec, bug_id}: Option<String>` and `EpistemeMcp::submit_suggestion_report(&Path, &SubmitSuggestionParams) -> anyhow::Result<serde_json::Value>` — defined Task 2c, used by the `#[tool]` method and the integration tests.
 - `unit_report::{UnitReport, Intervention, CommitRow, build, render, render_json}` — defined Task 4, used only by `unit_cli::run`'s `Show` arm.
 - `LogEventInput.subject: Option<&'a str>` — defined Task 3, filled at all five call sites with `subject.as_deref()` from an `Option<String>` binding, matching the struct's existing borrow style.
 - `LifecycleStats::{work_items_explicit, work_items_implicit, work_items_completed, governed, subject_interventions}`, `interventions_per_work_item()`, `work_items()` — defined Task 5, used by `render_lifecycle` and `render_json_with_lifecycle` in the same task.
