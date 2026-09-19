@@ -108,6 +108,13 @@ pub fn record_signal(root: &Path, name: &str, passed: bool) -> Result<String, Si
         tags: vec![tag.to_string()],
         subject: Some(subject_id.clone()),
         command_exit: None,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     };
     crate::journey::journal::append(root, &record)?;
     Ok(subject_id)
@@ -186,6 +193,13 @@ mod tests {
                 ],
                 subject: Some("u".to_string()),
                 command_exit: None,
+                kind: None,
+                mode: None,
+                host: None,
+                turn: None,
+                agent: None,
+                agent_type: None,
+                kalpa: None,
             },
         )
         .unwrap();

@@ -20,6 +20,13 @@ fn make_record(
         tags: tags.iter().map(|s| s.to_string()).collect(),
         subject: subject.map(|s| s.to_string()),
         command_exit: None,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 
@@ -251,4 +258,71 @@ fn journal_error_display_renders_both_variants() {
     let je: journal::JournalError = json_err.into();
     let s = format!("{je}");
     assert!(s.contains("json"));
+}
+
+#[test]
+fn v1_record_reads_under_v2_with_kind_none() {
+    let line = r#"{"v":1,"ts":1,"sid":"s-x","seq":1,"tool":"Edit","path":"a.rs","ext":"rs","tags":["edits"]}"#;
+    let rec: JournalRecord = serde_json::from_str(line).unwrap();
+    assert_eq!(rec.v, 1);
+    assert!(rec.kind.is_none());
+    assert!(!rec.is_lifecycle());
+}
+
+#[test]
+fn v2_lifecycle_record_round_trips_in_field_order() {
+    let rec = JournalRecord {
+        v: journal::JOURNAL_V,
+        ts: 10,
+        sid: "s-x".into(),
+        seq: 7,
+        tool: "__lifecycle".into(),
+        path: String::new(),
+        ext: None,
+        module: None,
+        tags: vec!["lifecycle:prompt".into(), "lifecycle:prompt:fresh".into()],
+        subject: None,
+        command_exit: None,
+        kind: Some("prompt".into()),
+        mode: Some("fresh".into()),
+        host: Some("claude".into()),
+        turn: Some("t-1".into()),
+        agent: None,
+        agent_type: None,
+        kalpa: Some("demo".into()),
+    };
+    assert!(rec.is_lifecycle());
+    let s = serde_json::to_string(&rec).unwrap();
+    assert_eq!(
+        s,
+        r#"{"v":2,"ts":10,"sid":"s-x","seq":7,"tool":"__lifecycle","path":"","tags":["lifecycle:prompt","lifecycle:prompt:fresh"],"kind":"prompt","mode":"fresh","host":"claude","turn":"t-1","kalpa":"demo"}"#
+    );
+    let back: JournalRecord = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, rec);
+}
+
+/// Spec §"Determinism and versioning": a downgraded binary reads a lifecycle
+/// record as an odd `__lifecycle` tool record with no projection, which shifts
+/// positional windows and adds `""` to `journey_distinct` on `path`. That is
+/// the rollout hazard; pinning it here keeps it visible rather than
+/// rediscovered.
+#[test]
+fn a_v1_reader_sees_a_lifecycle_record_as_a_tool_record() {
+    /// The v1 shape, verbatim: no `kind`, no `mode`, no lifecycle fields.
+    #[derive(serde::Deserialize)]
+    struct V1Record {
+        v: u32,
+        tool: String,
+        path: String,
+        tags: Vec<String>,
+    }
+    let line = r#"{"v":2,"ts":10,"sid":"s-x","seq":7,"tool":"__lifecycle","path":"","tags":["lifecycle:prompt"],"kind":"prompt","mode":"fresh","host":"claude"}"#;
+    let old: V1Record = serde_json::from_str(line).unwrap();
+    assert_eq!(old.v, 2, "a v1 reader has no way to reject the record");
+    assert_eq!(old.tool, "__lifecycle");
+    assert_eq!(
+        old.path, "",
+        "which is what pollutes journey_distinct on path"
+    );
+    assert_eq!(old.tags, vec!["lifecycle:prompt"]);
 }

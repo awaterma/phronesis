@@ -780,6 +780,13 @@ mod tests {
             tags: vec![],
             subject: None,
             command_exit: None,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
         };
         let records = std::slice::from_ref(&rec);
         let current = WindowContext {
@@ -816,6 +823,13 @@ mod tests {
                 tags: vec!["t".to_string()],
                 subject: None,
                 command_exit: None,
+                kind: None,
+                mode: None,
+                host: None,
+                turn: None,
+                agent: None,
+                agent_type: None,
+                kalpa: None,
             })
             .collect();
         let context = WindowContext {
@@ -844,6 +858,13 @@ mod tests {
             tags: vec!["sql".to_string()],
             subject: None,
             command_exit: None,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
         };
         assert!(matches_selector(&rec, "sql"));
         assert!(matches_selector(&rec, "module:payments"));

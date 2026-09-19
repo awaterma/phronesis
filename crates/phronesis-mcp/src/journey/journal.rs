@@ -53,9 +53,17 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Current on-disk record schema version. v1 = tool records only; v2 adds
+/// the optional lifecycle fields below. Readers accept both.
+pub const JOURNAL_V: u32 = 2;
+
+/// `tool` value on every lifecycle record. Never a real tool name.
+pub const LIFECYCLE_TOOL: &str = "__lifecycle";
+
 /// One line of the journey journal. Field order here is the serialization
 /// order: `v`, `ts`, `sid`, `seq`, `tool`, `path`, `ext?`, `module?`,
-/// `tags[]`, `subject?`, `command_exit?`. See SPEC §"The journal record".
+/// `tags[]`, `subject?`, `command_exit?`, `kind?`, `mode?`, `host?`, `turn?`,
+/// `agent?`, `agent_type?`, `kalpa?`. See SPEC §"The journal record".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalRecord {
     /// Record schema version. Bump when the on-disk shape changes.
@@ -88,6 +96,35 @@ pub struct JournalRecord {
     /// collide. Absent means the CLI genuinely didn't send one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_exit: Option<i32>,
+    /// Lifecycle kind (`prompt`, `interrupt`, `subagent_start`, …). `None` on
+    /// tool records. See SPEC-agent-lifecycle-events §"The journal record".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Prompt mode (`fresh` | `mid_turn` | `correction`); prompt records only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Emitting host (`claude` | `codex` | `gemini` | `cli`); lifecycle only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Host turn id when the payload carried one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+    /// Agent id on sub-agent records and on prompts made inside a sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Host agent type when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// Open kalpa name at write time; lifecycle records only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kalpa: Option<String>,
+}
+
+impl JournalRecord {
+    /// True for records written by a lifecycle event rather than a tool call.
+    pub fn is_lifecycle(&self) -> bool {
+        self.kind.is_some()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -420,6 +457,13 @@ mod tests {
             tags: vec![],
             subject: None,
             command_exit,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
         }
     }
 

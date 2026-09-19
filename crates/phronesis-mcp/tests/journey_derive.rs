@@ -82,6 +82,13 @@ fn make_record(
         tags: tags.iter().map(|s| s.to_string()).collect(),
         subject: subject.map(|s| s.to_string()),
         command_exit: None,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 
@@ -104,6 +111,13 @@ fn make_record_with_path(
         tags: tags.iter().map(|s| s.to_string()).collect(),
         subject: None,
         command_exit: None,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 

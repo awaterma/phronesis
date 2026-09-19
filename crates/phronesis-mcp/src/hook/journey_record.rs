@@ -128,6 +128,13 @@ fn build_journal_record(input: JournalRecordInput<'_>) -> journey::journal::Jour
         tags: all_tags,
         subject: input.subject,
         command_exit: input.command_exit,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 
