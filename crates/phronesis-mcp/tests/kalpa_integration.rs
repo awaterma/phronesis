@@ -224,3 +224,79 @@ fn stats_kalpa_filter_excludes_other_kalpas() {
         "boundary ignores the filter"
     );
 }
+
+#[test]
+fn kalpa_show_reports_counts_for_the_named_kalpa() {
+    let d = tempfile::tempdir().unwrap();
+    assert!(
+        run_phr(d.path(), &["kalpa", "start", "lifecycle-events"])
+            .status
+            .success()
+    );
+    seed_lifecycle_log(d.path(), "lifecycle-events");
+
+    let out = run_phr(d.path(), &["kalpa", "show", "lifecycle-events"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("kalpa: lifecycle-events"), "{stdout}");
+    assert!(stdout.contains("started "), "{stdout}");
+    assert!(stdout.contains("counts since log entry 20"), "{stdout}");
+    assert!(stdout.contains("sessions        1"), "{stdout}");
+    assert!(stdout.contains("prompts         2"), "{stdout}");
+    assert!(stdout.contains("interrupts      1"), "{stdout}");
+    assert!(
+        stdout.contains("sub-agents      2   starts, 2 matched   median 2m00s"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("commits         1   (shell tool calls only)   confidence at commit: high 1  medium 0  low 0"), "{stdout}");
+    assert!(
+        !stdout.contains("do the thing"),
+        "prompt text must never reach kalpa show: {stdout}"
+    );
+}
+
+#[test]
+fn kalpa_show_of_a_closed_kalpa_still_counts_its_entries() {
+    let d = tempfile::tempdir().unwrap();
+    seed_lifecycle_log(d.path(), "old-theme");
+    let out = run_phr(d.path(), &["kalpa", "show", "old-theme"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("kalpa: old-theme (closed)"), "{stdout}");
+    assert!(stdout.contains("commits         1"), "{stdout}");
+    // `seed_lifecycle_log` writes no `kalpa_start` entry, which is exactly the
+    // case where the boundary has rotated off.
+    assert!(stdout.contains("start not retained"), "{stdout}");
+}
+
+/// The other half: when the `kalpa_start` entry is still in the log, the header
+/// prints the date it holds rather than the disclaimer.
+#[test]
+fn kalpa_show_prints_the_start_date_when_the_boundary_is_still_retained() {
+    let d = tempfile::tempdir().unwrap();
+    seed_lifecycle_log(d.path(), "old-theme");
+    {
+        use phronesis_mcp::action_log;
+        use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, PromptText, Stamped};
+        let stamped = Stamped {
+            ts: 1_699_999_000,
+            sid: "s-1".to_string(),
+            seq: 0,
+            kalpa: Some("old-theme".to_string()),
+            subject: None,
+        };
+        action_log::append(
+            &action_log::default_path(d.path()),
+            &LifecycleEvent::new(Kind::KalpaStart, Host::Cli)
+                .to_log_entry(&stamped, PromptText::Full),
+        )
+        .unwrap();
+    }
+    let out = run_phr(d.path(), &["kalpa", "show", "old-theme"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("started 20"), "{stdout}");
+    assert!(!stdout.contains("start not retained"), "{stdout}");
+}

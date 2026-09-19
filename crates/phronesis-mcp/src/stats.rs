@@ -208,7 +208,12 @@ pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> Lifecy
             continue;
         }
         *out.events.entry(e.event.clone()).or_insert(0) += 1;
-        if let Some(sid) = e.data.get("sid").and_then(|v| v.as_str()) {
+        // `kalpa_start` and `kalpa_end` are CLI boundary markers, not session
+        // activity — their sid is the CLI's throwaway session, not an agent
+        // session that worked under the kalpa.
+        if !matches!(e.event.as_str(), "kalpa_start" | "kalpa_end")
+            && let Some(sid) = e.data.get("sid").and_then(|v| v.as_str())
+        {
             sids.insert(sid);
         }
         match e.event.as_str() {
