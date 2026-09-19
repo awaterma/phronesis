@@ -106,6 +106,39 @@ pub fn set_session(root: &Path, sid: &str) {
     swallow(write(), "set_session");
 }
 
+/// Record the detected host for the current session. Gemini-specific event
+/// names (`BeforeAgent`, `AfterAgent`, `BeforeTool`, `AfterTool`) identify
+/// Gemini unambiguously, but `SessionStart` and `SessionEnd` are shared with
+/// Claude. When a Gemini-specific event fires, the adapter stamps `host` so a
+/// later `SessionEnd` can inherit it rather than defaulting to Claude.
+pub fn set_host(root: &Path, host: &str) {
+    let d = dir(root);
+    let write = || -> std::io::Result<()> {
+        std::fs::create_dir_all(&d)?;
+        let tmp = d.join(format!("host.{}.tmp", std::process::id()));
+        std::fs::write(&tmp, host)?;
+        let result = std::fs::rename(&tmp, d.join("host"));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
+    };
+    swallow(write(), "set_host");
+}
+
+/// Read the host stamped by a prior Gemini-specific event, or `None` when no
+/// host has been recorded (Claude-only session, fresh project).
+pub fn read_host(root: &Path) -> Option<String> {
+    let path = dir(root).join("host");
+    let body = std::fs::read_to_string(&path).ok()?;
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 /// Truncate `agents` and `inflight` and reset `turn` to closed, for the current
 /// session. Called only on a **session-begin** `SessionStart`
 /// (`is_session_begin`). `session` itself is not touched here: the caller
@@ -119,6 +152,10 @@ pub fn reset_for_session_start(root: &Path) {
         with_locked(root, "inflight", |_| (Some(String::new()), ())),
         "reset inflight",
     );
+    // A session-begin SessionStart clears the host stamp: the next
+    // Gemini-specific event re-stamps it, and a Claude-only session leaves it
+    // absent so SessionEnd defaults to Claude.
+    let _ = std::fs::write(dir(root).join("host"), "");
     let fresh = Turn {
         sid: crate::journey::current_sid(root),
         open: false,

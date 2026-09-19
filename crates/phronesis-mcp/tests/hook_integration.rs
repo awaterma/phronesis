@@ -2289,3 +2289,146 @@ fn a_snake_case_gemini_agent_name_survives_and_a_hostile_one_is_dropped() {
         "and carries no agent tag: {start}"
     );
 }
+
+const G_SESSION_START: &str =
+    r#"{"hook_event_name":"SessionStart","session_id":"g1","source":"startup"}"#;
+const G_PROMPT_1: &str =
+    r#"{"hook_event_name":"BeforeAgent","session_id":"g1","prompt":"add a test"}"#;
+const G_PROMPT_2: &str =
+    r#"{"hook_event_name":"BeforeAgent","session_id":"g1","prompt":"no, use a temp dir"}"#;
+const G_AFTER_AGENT: &str = r#"{"hook_event_name":"AfterAgent","session_id":"g1","prompt":"add a test","prompt_response":"done","stop_hook_active":false}"#;
+
+fn assert_json_object_stdout(stdout: &str) {
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Gemini needs JSON on stdout, got {stdout:?}: {e}"));
+    assert!(v.is_object(), "stdout must be a JSON object: {stdout}");
+    assert_eq!(v, serde_json::json!({}), "bare project renders no context");
+}
+
+#[test]
+fn gemini_second_prompt_without_after_agent_is_an_interrupt_and_correction() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    for (args, payload) in [
+        (["claude-hook", "SessionStart"], G_SESSION_START),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_1),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_2),
+    ] {
+        let (code, stdout, stderr) = run_hook_at(root, &args, payload);
+        assert_eq!(code, 0, "{args:?} must exit 0: {stderr}");
+        assert_json_object_stdout(&stdout);
+    }
+
+    let recs = lifecycle_records(root);
+    let kinds: Vec<&str> = recs.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["prompt", "interrupt", "prompt"],
+        "a missing AfterAgent means the turn was aborted: {recs:?}"
+    );
+    assert_eq!(recs[0]["mode"], "fresh");
+    assert_eq!(recs[2]["mode"], "correction");
+    assert_eq!(recs[2]["host"], "gemini");
+    assert!(
+        recs[2]["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "lifecycle:prompt:correction"),
+        "correction tag missing: {}",
+        recs[2]
+    );
+    let journal_json = serde_json::to_string(&recs).unwrap();
+    assert!(
+        !journal_json.contains("add a test"),
+        "the journal must never carry prompt text: {recs:?}"
+    );
+    assert!(
+        !journal_json.contains("temp dir"),
+        "the journal must never carry prompt text: {recs:?}"
+    );
+
+    let log = lifecycle_log(root);
+    let interrupt = log
+        .iter()
+        .find(|e| e["event"] == "interrupt")
+        .expect("interrupt entry");
+    assert_eq!(interrupt["inferred_from"], "open_turn");
+    assert_eq!(interrupt["host"], "gemini");
+    let correction = log
+        .iter()
+        .rfind(|e| e["event"] == "prompt")
+        .expect("prompt entry");
+    assert_eq!(correction["mode"], "correction");
+    assert_eq!(correction["prompt"], "no, use a temp dir");
+}
+
+#[test]
+fn gemini_after_agent_closes_the_turn_so_the_next_prompt_is_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    for (args, payload) in [
+        (["claude-hook", "SessionStart"], G_SESSION_START),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_1),
+        (["claude-hook", "AfterAgent"], G_AFTER_AGENT),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_2),
+    ] {
+        let (code, stdout, stderr) = run_hook_at(root, &args, payload);
+        assert_eq!(code, 0, "{args:?} must exit 0: {stderr}");
+        assert_json_object_stdout(&stdout);
+    }
+
+    let recs = lifecycle_records(root);
+    let kinds: Vec<&str> = recs.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["prompt", "stop", "prompt"],
+        "no interrupt: {recs:?}"
+    );
+    assert_eq!(recs[0]["mode"], "fresh");
+    assert_eq!(recs[2]["mode"], "fresh", "AfterAgent must close the turn");
+    assert!(
+        lifecycle_log(root)
+            .iter()
+            .all(|e| e["event"] != "interrupt"),
+        "a completed turn must not infer an interrupt"
+    );
+}
+
+#[test]
+fn gemini_session_end_records_a_stop_and_closes_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    const G_SESSION_END: &str = r#"{"hook_event_name":"SessionEnd","session_id":"g1"}"#;
+
+    for (args, payload) in [
+        (["claude-hook", "SessionStart"], G_SESSION_START),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_1),
+        (["claude-hook", "SessionEnd"], G_SESSION_END),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_2),
+    ] {
+        let (code, stdout, stderr) = run_hook_at(root, &args, payload);
+        assert_eq!(code, 0, "{args:?} must exit 0: {stderr}");
+        assert_json_object_stdout(&stdout);
+    }
+
+    let recs = lifecycle_records(root);
+    let kinds: Vec<&str> = recs.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert_eq!(kinds, ["prompt", "stop", "prompt"], "{recs:?}");
+    assert_eq!(recs[1]["host"], "gemini");
+    assert_eq!(recs[2]["mode"], "fresh");
+    assert!(
+        lifecycle_log(root)
+            .iter()
+            .all(|e| e["event"] != "interrupt"),
+        "{recs:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".phronesis/journey/session"))
+            .unwrap()
+            .trim(),
+        "g1"
+    );
+}

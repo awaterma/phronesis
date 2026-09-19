@@ -157,6 +157,21 @@ pub async fn run(event: &str) -> ! {
         .clone()
         .unwrap_or_else(|| event.to_string());
     let host = host_for(&named);
+    // Gemini-specific event names identify Gemini unambiguously; stamp it so a
+    // later SessionEnd (shared name) can inherit the host. SessionStart and
+    // SessionEnd are shared with Claude, so when host_for defaults to Claude,
+    // check whether a prior Gemini event stamped the host file.
+    let host = if host == Host::Gemini {
+        state::set_host(&root, "gemini");
+        host
+    } else if matches!(named.as_str(), "SessionStart" | "SessionEnd") {
+        match state::read_host(&root).as_deref() {
+            Some("gemini") => Host::Gemini,
+            _ => host,
+        }
+    } else {
+        host
+    };
     let response = dispatch(&root, canonical_event(&named), host, &payload).await;
     println!("{response}");
     process::exit(0);
@@ -369,10 +384,16 @@ async fn handle_session_start(root: &Path, p: &ClaudePayload) -> String {
 fn handle_session_end(root: &Path, host: Host, p: &ClaudePayload) {
     if state::read_turn(root).open {
         let transcript = p.transcript_path.as_deref().map(PathBuf::from);
+        // SessionEnd is a clean session exit, not a new prompt arriving while a
+        // turn is running. The Gemini "open turn = abort" heuristic (which fires
+        // when BeforeAgent arrives without a prior AfterAgent) must NOT fire
+        // here: a session that ends with an open turn is a normal stop, not an
+        // interrupt. Pass Host::Claude to skip that branch while still using the
+        // real host for the record.
         let source = state::detect_interrupt(
             root,
             &state::PromptContext {
-                host,
+                host: Host::Claude,
                 now: unix_secs_now(),
                 agent_id: None,
                 turn_id: nonempty(&p.prompt_id),
