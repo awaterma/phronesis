@@ -599,24 +599,29 @@ fn write_settings(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Resu
         our_entry("phr-mcp post-check"),
     );
 
-    // Context-injection hooks. Empty matcher → fires on every event.
-    // SessionStart runs once per session; UserPromptSubmit fires every turn.
+    // Lifecycle + context hooks, all empty-matcher (fire on every event) and
+    // all served by one adapter. Command-keyed replacement so a user's own
+    // empty-matcher hook on the same event survives `phr-mcp init`.
     let context_entry = |cmd: &str| {
         json!({
             "matcher": "",
             "hooks": [{"type":"command","command":cmd}]
         })
     };
-    upsert_hook(
-        &mut settings,
+    for event in [
         "SessionStart",
-        context_entry("phr-mcp session-context"),
-    );
-    upsert_hook(
-        &mut settings,
+        "SessionEnd",
         "UserPromptSubmit",
-        context_entry("phr-mcp interaction-context"),
-    );
+        "SubagentStart",
+        "SubagentStop",
+        "Stop",
+    ] {
+        upsert_hook_by_command(
+            &mut settings,
+            event,
+            context_entry(&format!("phr-mcp claude-hook {event}")),
+        );
+    }
 
     write_json(&path, &settings, opts, "settings.local.json", report)?;
     Ok(())
@@ -1555,6 +1560,71 @@ fn upsert_hook(settings: &mut Value, event: &str, new_entry: Value) {
     let our_matcher = new_entry["matcher"].as_str().map(String::from);
     let arr = arr.as_array_mut().unwrap();
     arr.retain(|m| m["matcher"].as_str().map(String::from) != our_matcher);
+    arr.push(new_entry);
+}
+
+/// Subcommands Phronesis registers as hooks. An entry that names one of these
+/// after a `phr-mcp` token is ours; anything else is the user's.
+const PHRONESIS_HOOK_SUBCOMMANDS: [&str; 5] = [
+    "session-context",
+    "interaction-context",
+    "claude-hook",
+    "codex-hook",
+    // Gemini registers the tool phases directly (Plan 4).
+    "pre-check",
+];
+
+/// Is this hook command one of ours? The binary may be invoked bare
+/// (`phr-mcp claude-hook Stop`), by absolute path
+/// (`/usr/local/bin/phr-mcp session-context`), or through a wrapper — all three
+/// are the same installation and must be upgraded in place rather than
+/// duplicated, because two entries on one event mean two context renders per
+/// prompt.
+///
+/// Token-based, not prefix-based: `phr-mcp-notify --all` is a different binary
+/// whose name merely starts the same way, and it must survive `init`.
+fn is_phronesis_hook_command(command: &str) -> bool {
+    let tokens: Vec<&str> = command.split_whitespace().collect();
+    let Some(bin_at) = tokens
+        .iter()
+        .position(|t| *t == "phr-mcp" || t.rsplit(['/', '\\']).next() == Some("phr-mcp"))
+    else {
+        return false;
+    };
+    tokens[bin_at + 1..]
+        .iter()
+        .any(|t| PHRONESIS_HOOK_SUBCOMMANDS.contains(t) || *t == "post-check")
+}
+
+/// Replace Phronesis's own entry for a hook event regardless of its former
+/// matcher or command, and leave every other hook alone. Matcher-keyed
+/// `upsert_hook` both deletes a user's hook that happens to share our matcher
+/// (spec §"Adjacent findings" 7) and leaves a stale entry behind whenever we
+/// change our own matcher or command; keying on the command does neither.
+/// Phronesis registers at most one entry per event, so dropping every entry of
+/// ours and pushing one back is exact. Migrating the four pre-existing
+/// matcher-keyed registrations to this is a follow-up.
+fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entry: Value) {
+    let hooks = settings.as_object_mut().and_then(|o| {
+        o.entry("hooks".to_string())
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+    });
+    let Some(hooks) = hooks else { return };
+    let arr = hooks.entry(event.to_string()).or_insert_with(|| json!([]));
+    if !arr.is_array() {
+        *arr = json!([]);
+    }
+    let arr = arr.as_array_mut().unwrap();
+    arr.retain(|entry| {
+        !entry["hooks"].as_array().is_some_and(|handlers| {
+            handlers.iter().any(|hook| {
+                hook["command"]
+                    .as_str()
+                    .is_some_and(is_phronesis_hook_command)
+            })
+        })
+    });
     arr.push(new_entry);
 }
 
@@ -3460,6 +3530,67 @@ mod tests {
     }
 
     #[test]
+    fn upsert_hook_by_command_replaces_ours_and_keeps_foreign() {
+        let mut settings = json!({"hooks": {"SessionStart": [
+            {"matcher": "", "hooks": [{"type": "command", "command": "/usr/local/bin/phr-mcp session-context"}]},
+            {"matcher": "", "hooks": [{"type": "command", "command": "my-own-tool --flag"}]}
+        ]}});
+        upsert_hook_by_command(
+            &mut settings,
+            "SessionStart",
+            json!({"matcher": "", "hooks": [{"type": "command", "command": "phr-mcp claude-hook SessionStart"}]}),
+        );
+        let arr = settings["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(
+            arr.len(),
+            2,
+            "one foreign hook plus exactly one of ours: {arr:?}"
+        );
+        assert_eq!(arr[0]["hooks"][0]["command"], "my-own-tool --flag");
+        assert_eq!(
+            arr[1]["hooks"][0]["command"],
+            "phr-mcp claude-hook SessionStart"
+        );
+    }
+
+    #[test]
+    fn is_phronesis_hook_command_recognizes_ours_and_only_ours() {
+        for ours in [
+            "phr-mcp session-context",
+            "phr-mcp claude-hook SessionStart",
+            "/usr/local/bin/phr-mcp interaction-context",
+            "/opt/tools/phr-mcp claude-hook Stop",
+            "env FOO=1 phr-mcp codex-hook Interrupt",
+            "phr-mcp pre-check",
+            "phr-mcp post-check",
+        ] {
+            assert!(is_phronesis_hook_command(ours), "{ours}");
+        }
+        for theirs in [
+            "my-own-notifier",
+            "phr-mcp-notify --all",
+            "/usr/bin/phr-mcp-notify --all",
+            // The binary with no subcommand of ours is not a hook we registered.
+            "phr-mcp --version",
+            "phr",
+            "",
+        ] {
+            assert!(!is_phronesis_hook_command(theirs), "{theirs}");
+        }
+    }
+
+    #[test]
+    fn upsert_hook_by_command_creates_missing_event_array() {
+        let mut settings = json!({});
+        upsert_hook_by_command(
+            &mut settings,
+            "AfterAgent",
+            json!({"matcher": "", "hooks": [{"type": "command", "command": "phr-mcp claude-hook AfterAgent"}]}),
+        );
+        assert_eq!(settings["hooks"]["AfterAgent"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
     fn upsert_hook_appends_when_no_matching_matcher() {
         let mut settings = json!({"hooks": {"PreToolUse": [
             {"matcher": "Read", "hooks":[{"type":"command","command":"keep"}]}
@@ -4281,12 +4412,12 @@ mod tests {
         let session = content["hooks"]["SessionStart"].as_array().unwrap();
         assert!(!session.is_empty(), "SessionStart must be wired");
         let session_cmd = session[0]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(session_cmd, "phr-mcp session-context");
+        assert_eq!(session_cmd, "phr-mcp claude-hook SessionStart");
 
         let prompt = content["hooks"]["UserPromptSubmit"].as_array().unwrap();
         assert!(!prompt.is_empty(), "UserPromptSubmit must be wired");
         let prompt_cmd = prompt[0]["hooks"][0]["command"].as_str().unwrap();
-        assert_eq!(prompt_cmd, "phr-mcp interaction-context");
+        assert_eq!(prompt_cmd, "phr-mcp claude-hook UserPromptSubmit");
     }
 
     #[test]

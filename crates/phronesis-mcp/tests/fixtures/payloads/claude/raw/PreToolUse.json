@@ -1,0 +1,17 @@
+{
+  "session_id": "claude-s-001",
+  "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
+  "cwd": "/home/dev/project",
+  "prompt_id": "claude-p-001",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "ls -la /home/dev/project/crates/phronesis-mcp/src",
+    "description": "List files in phronesis-mcp src directory"
+  },
+  "tool_use_id": "toolu_01SyntheticPreToolUse0001"
+}

@@ -1,0 +1,15 @@
+{
+  "session_id": "claude-s-001",
+  "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
+  "cwd": "/home/dev/project",
+  "prompt_id": "claude-p-002",
+  "permission_mode": "auto",
+  "effort": {
+    "level": "high"
+  },
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "<redacted:360 bytes>",
+  "background_tasks": [],
+  "session_crons": []
+}

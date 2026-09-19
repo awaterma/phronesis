@@ -8,6 +8,21 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Agent lifecycle events from Claude Code.** A new `phr-mcp claude-hook
+  <Event>` adapter records prompts (with `fresh` / `mid_turn` / `correction`
+  mode), inferred interrupts, turn stops, and sub-agent start/stop into the
+  journey journal and the action log. `phr-mcp init` registers `SubagentStart`,
+  `SubagentStop`, `Stop`, and `SessionEnd`, and repoints `UserPromptSubmit` and
+  `SessionStart` at the adapter; replacement is now keyed on the command, so a
+  hook you wrote yourself on the same event survives `init`. `session-context`
+  and `interaction-context` keep working for settings files written by older
+  versions.
+
+- **Commit detection from ground truth.** `pre-check` records `HEAD` before a
+  shell call and `post-check` compares it after, so a commit is recorded by
+  observing the repository rather than by matching command text. Gemini CLI's
+  `invoke_agent` tool is derived into the same sub-agent start/stop pair.
+
 - **Lifecycle events, foundation.** `JournalRecord` v2 with optional `kind`,
   `mode`, `host`, `turn`, `agent`, `agent_type`, `kalpa`; the derive pass
   computes positional windows on tool records only, so existing `journey_*`

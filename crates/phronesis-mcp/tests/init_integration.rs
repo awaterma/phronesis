@@ -1198,3 +1198,135 @@ fn rules_sync_rejects_invalid_baseline_without_changing_rules() {
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert!(!dir.path().join(".phronesis/rules.json.bak").exists());
 }
+
+fn claude_settings(dir: &Path) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(dir.join(".claude/settings.local.json")).unwrap())
+        .unwrap()
+}
+
+fn commands_for(settings: &serde_json::Value, event: &str) -> Vec<String> {
+    settings["hooks"][event]
+        .as_array()
+        .unwrap_or(&vec![])
+        .iter()
+        .flat_map(|entry| {
+            entry["hooks"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|h| h["command"].as_str().map(String::from))
+        })
+        .collect()
+}
+
+#[test]
+fn init_registers_the_claude_lifecycle_events() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(run_init(&[], dir.path()).status.success());
+    let s = claude_settings(dir.path());
+    for event in ["SubagentStart", "SubagentStop", "Stop", "SessionEnd"] {
+        assert_eq!(
+            commands_for(&s, event),
+            vec![format!("phr-mcp claude-hook {event}")],
+            "{event}"
+        );
+        assert_eq!(s["hooks"][event][0]["matcher"], "");
+    }
+    assert_eq!(
+        commands_for(&s, "UserPromptSubmit"),
+        vec!["phr-mcp claude-hook UserPromptSubmit".to_string()]
+    );
+    assert_eq!(
+        commands_for(&s, "SessionStart"),
+        vec!["phr-mcp claude-hook SessionStart".to_string()]
+    );
+}
+
+#[test]
+fn init_is_idempotent_for_the_new_registrations() {
+    let dir = tempfile::tempdir().unwrap();
+    assert!(run_init(&[], dir.path()).status.success());
+    assert!(run_init(&["--force"], dir.path()).status.success());
+    let s = claude_settings(dir.path());
+    for event in [
+        "SubagentStart",
+        "SubagentStop",
+        "Stop",
+        "SessionEnd",
+        "UserPromptSubmit",
+    ] {
+        assert_eq!(s["hooks"][event].as_array().unwrap().len(), 1, "{event}");
+    }
+}
+
+/// A `phr-mcp` invoked by absolute path, or through a wrapper, is still ours:
+/// it is replaced in place rather than duplicated. Duplicate registration means
+/// double context injection on every prompt, which is why this is a test and not
+/// a nicety.
+#[test]
+fn init_replaces_a_path_qualified_phr_mcp_entry_in_place() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    std::fs::write(
+        dir.path().join(".claude/settings.local.json"),
+        r#"{"hooks":{
+            "SessionStart":[{"matcher":"","hooks":[{"type":"command","command":"/usr/local/bin/phr-mcp session-context"}]}],
+            "UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"/opt/tools/phr-mcp claude-hook UserPromptSubmit"}]}],
+            "Stop":[{"matcher":"","hooks":[{"type":"command","command":"/usr/bin/phr-mcp-notify --all"}]}]
+        }}"#,
+    )
+    .unwrap();
+    assert!(run_init(&["--force"], dir.path()).status.success());
+    let s = claude_settings(dir.path());
+    assert_eq!(
+        commands_for(&s, "SessionStart"),
+        vec!["phr-mcp claude-hook SessionStart".to_string()],
+        "an absolute-path entry is replaced, not duplicated"
+    );
+    assert_eq!(
+        commands_for(&s, "UserPromptSubmit"),
+        vec!["phr-mcp claude-hook UserPromptSubmit".to_string()]
+    );
+    // `phr-mcp-notify` is a different binary whose name merely starts the same
+    // way. It is not ours and must survive.
+    let stop = commands_for(&s, "Stop");
+    assert!(
+        stop.contains(&"/usr/bin/phr-mcp-notify --all".to_string()),
+        "{stop:?}"
+    );
+    assert!(
+        stop.contains(&"phr-mcp claude-hook Stop".to_string()),
+        "{stop:?}"
+    );
+}
+
+#[test]
+fn init_migrates_interaction_context_in_place_and_keeps_foreign_hooks() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    std::fs::write(
+        dir.path().join(".claude/settings.local.json"),
+        r#"{"hooks":{
+            "UserPromptSubmit":[{"matcher":"","hooks":[{"type":"command","command":"phr-mcp interaction-context"}]}],
+            "Stop":[{"matcher":"","hooks":[{"type":"command","command":"my-own-notifier"}]}]
+        }}"#,
+    )
+    .unwrap();
+    assert!(run_init(&["--force"], dir.path()).status.success());
+    let s = claude_settings(dir.path());
+    assert_eq!(
+        commands_for(&s, "UserPromptSubmit"),
+        vec!["phr-mcp claude-hook UserPromptSubmit".to_string()],
+        "the old command must be replaced, not appended"
+    );
+    let stop = commands_for(&s, "Stop");
+    assert!(
+        stop.contains(&"my-own-notifier".to_string()),
+        "a foreign empty-matcher Stop hook must survive init: {stop:?}"
+    );
+    assert!(
+        stop.contains(&"phr-mcp claude-hook Stop".to_string()),
+        "{stop:?}"
+    );
+}

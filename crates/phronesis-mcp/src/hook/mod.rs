@@ -5,6 +5,7 @@
 //! (payload parsing, rule loading, fact helpers, logging) stay here.
 
 mod journey_record;
+mod lifecycle_wiring;
 mod post;
 mod pre;
 pub(crate) mod seq;
