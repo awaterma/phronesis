@@ -38,6 +38,8 @@ pub enum JourneyCliError {
     UnknownRule(String),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("journal: {0}")]
+    Journal(#[from] journey::journal::JournalError),
 }
 
 /// A row in the rendered table / JSON: one asserted `journey_*` fact, plus
@@ -54,6 +56,91 @@ pub struct JourneyRow {
     pub extra: Vec<String>,
     /// Rule ids whose `when` references this (predicate, selector) pair.
     pub rules: Vec<String>,
+}
+
+/// One lifecycle journal record, as `phr-mcp journey` and `get_journey` render
+/// it. Lifecycle records have no path, so the `kind`/`mode` pair takes the path
+/// column and a `⟂` marker flags the row as not-a-tool-call.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LifecycleRow {
+    pub ts: u64,
+    pub sid: String,
+    pub seq: u64,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kalpa: Option<String>,
+}
+
+/// The most recent `limit` lifecycle records, oldest first. Never prompt text:
+/// the journal has none (spec §Privacy and scrubbing).
+pub fn lifecycle_rows(
+    project_root: &Path,
+    limit: usize,
+) -> Result<Vec<LifecycleRow>, JourneyCliError> {
+    use crate::journey::journal;
+    // Over-read: lifecycle records share the file with tool records, so asking
+    // for exactly `limit` lines would under-fill this view.
+    let read_n = (limit.saturating_mul(4) + 64).min(journal::SUFFIX_HARD_CAP);
+    let records = journal::read_recent(project_root, read_n)?;
+    let mut rows: Vec<LifecycleRow> = records
+        .iter()
+        .filter(|r| r.is_lifecycle())
+        .map(|r| LifecycleRow {
+            ts: r.ts,
+            sid: r.sid.clone(),
+            seq: r.seq,
+            kind: r.kind.clone().unwrap_or_default(),
+            mode: r.mode.clone(),
+            host: r.host.clone(),
+            agent_type: r.agent_type.clone(),
+            kalpa: r.kalpa.clone(),
+        })
+        .collect();
+    if rows.len() > limit {
+        rows.drain(..rows.len() - limit);
+    }
+    Ok(rows)
+}
+
+fn kind_mode(row: &LifecycleRow) -> String {
+    match row.mode.as_deref() {
+        Some(m) => format!("{}/{}", row.kind, m),
+        None => row.kind.clone(),
+    }
+}
+
+/// Table rendering for lifecycle records; `⟂` marks every row.
+pub fn render_lifecycle_table(rows: &[LifecycleRow]) -> String {
+    let mut out = format!(
+        "{:<2}  {:<14}  {:<8}  {:<22}  {}\n",
+        "", "SID", "SEQ", "KIND/MODE", "HOST"
+    );
+    if rows.is_empty() {
+        out.push_str("(no lifecycle records)\n");
+        return out;
+    }
+    for r in rows {
+        out.push_str(&format!(
+            "{:<2}  {:<14}  {:<8}  {:<22}  {}\n",
+            "⟂",
+            r.sid,
+            r.seq,
+            kind_mode(r),
+            r.host.as_deref().unwrap_or("-")
+        ));
+    }
+    out
+}
+
+/// JSON rendering — flat array, schema mirrors `LifecycleRow`.
+pub fn render_lifecycle_json(rows: &[LifecycleRow]) -> Result<String, JourneyCliError> {
+    Ok(serde_json::to_string_pretty(rows)?)
 }
 
 /// Compute the rows the CLI / MCP surface render. Async because the engine

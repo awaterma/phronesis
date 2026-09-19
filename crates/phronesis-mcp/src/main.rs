@@ -138,6 +138,10 @@ enum Command {
         /// Filter facts to those a specific rule references.
         #[arg(long, value_name = "RULE-ID")]
         explain: Option<String>,
+        /// Show only lifecycle records (sub-agent start/stop, prompts,
+        /// interrupts, turn stops, commits) instead of derived facts.
+        #[arg(long)]
+        lifecycle: bool,
     },
     /// Audit the project tree against opted-in rules. Reports per-rule
     /// violation counts with the affected files and line numbers. Default
@@ -607,7 +611,11 @@ async fn main() -> anyhow::Result<()> {
         Command::Confidence { subject, json } => handle_confidence(subject, json),
         Command::Signal { name, outcome } => handle_signal(&name, outcome == "pass"),
         Command::Toolchains { json } => handle_toolchains(json),
-        Command::Journey { json, explain } => handle_journey(json, explain).await,
+        Command::Journey {
+            json,
+            explain,
+            lifecycle,
+        } => handle_journey(json, explain, lifecycle).await,
         Command::Audit {
             rule,
             path,
@@ -975,7 +983,11 @@ fn handle_toolchains(json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn handle_journey(json: bool, explain: Option<String>) -> anyhow::Result<()> {
+async fn handle_journey(
+    json: bool,
+    explain: Option<String>,
+    lifecycle: bool,
+) -> anyhow::Result<()> {
     use phronesis_mcp::journey_cli;
     let root = phronesis_mcp::security::project_root();
     let now = std::time::SystemTime::now()
@@ -985,6 +997,28 @@ async fn handle_journey(json: bool, explain: Option<String>) -> anyhow::Result<(
     // Single source of truth for the sid — read-or-create at
     // `.phronesis/journey/session` (see `journey::current_sid`).
     let sid = phronesis_mcp::journey::current_sid(&root);
+
+    let header = phronesis_mcp::lifecycle::kalpa_cli::header_line(&root, now);
+    let rows_life = journey_cli::lifecycle_rows(&root, 50).unwrap_or_default();
+
+    if lifecycle {
+        if json {
+            match journey_cli::render_lifecycle_json(&rows_life) {
+                Ok(s) => println!("{s}"),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            if let Some(h) = &header {
+                println!("{h}");
+            }
+            print!("{}", journey_cli::render_lifecycle_table(&rows_life));
+        }
+        return Ok(());
+    }
+
     let rows = match journey_cli::compute(&root, explain.as_deref(), now, &sid).await {
         Ok(r) => r,
         Err(e) => {
@@ -1001,7 +1035,14 @@ async fn handle_journey(json: bool, explain: Option<String>) -> anyhow::Result<(
             }
         }
     } else {
+        if let Some(h) = &header {
+            println!("{h}");
+        }
         print!("{}", journey_cli::render_table(&rows));
+        if !rows_life.is_empty() {
+            println!();
+            print!("{}", journey_cli::render_lifecycle_table(&rows_life));
+        }
     }
     Ok(())
 }

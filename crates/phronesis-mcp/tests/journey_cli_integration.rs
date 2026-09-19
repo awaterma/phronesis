@@ -224,3 +224,71 @@ fn journey_command_handles_missing_journal() {
     let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
     assert_eq!(v.as_array().unwrap().len(), 0, "stdout: {}", stdout);
 }
+
+/// Append v2 lifecycle journal records to a seeded project, and open a kalpa.
+fn append_lifecycle_records(root: &Path) {
+    let events = root.join(".phronesis/journey/events.jsonl");
+    let mut lines = std::fs::read_to_string(&events).unwrap_or_default();
+    for (ts, seq, kind, mode) in [
+        (2000u64, 100u64, "prompt", Some("fresh")),
+        (2001, 101, "interrupt", None),
+        (2002, 102, "prompt", Some("correction")),
+        (2003, 103, "subagent_stop", None),
+    ] {
+        let mut rec = serde_json::json!({
+            "v": 2, "ts": ts, "sid": "s-test", "seq": seq,
+            "tool": "__lifecycle", "path": "", "tags": [format!("lifecycle:{kind}")],
+            "kind": kind, "host": "claude", "kalpa": "demo",
+        });
+        if let Some(m) = mode {
+            rec["mode"] = serde_json::json!(m);
+        }
+        lines.push_str(&rec.to_string());
+        lines.push('\n');
+    }
+    std::fs::write(&events, lines).unwrap();
+    std::fs::write(
+        root.join(".phronesis/journey/kalpa"),
+        serde_json::json!({"name": "demo", "started_ts": 1000}).to_string(),
+    )
+    .unwrap();
+}
+
+#[test]
+fn journey_table_renders_lifecycle_records_and_kalpa_header() {
+    let dir = tempfile::tempdir().unwrap();
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 3, "auth");
+    append_lifecycle_records(dir.path());
+
+    let (code, stdout, stderr) = run(&["journey"], dir.path());
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(stdout.starts_with("kalpa: demo ("), "stdout: {stdout}");
+    assert!(
+        stdout.contains("journey_occurrence"),
+        "facts still render: {stdout}"
+    );
+    assert!(stdout.contains("⟂"), "stdout: {stdout}");
+    assert!(stdout.contains("prompt/correction"), "stdout: {stdout}");
+    assert!(stdout.contains("subagent_stop"), "stdout: {stdout}");
+}
+
+#[test]
+fn journey_lifecycle_flag_shows_only_lifecycle_records() {
+    let dir = tempfile::tempdir().unwrap();
+    seed!(dir.path(), AUTH_CHURN_RULES, AUTH_JOURNEY_JSON, 3, "auth");
+    append_lifecycle_records(dir.path());
+
+    let (code, stdout, stderr) = run(&["journey", "--lifecycle"], dir.path());
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert!(!stdout.contains("journey_occurrence"), "stdout: {stdout}");
+    assert!(stdout.contains("prompt/fresh"), "stdout: {stdout}");
+
+    let (code, stdout, _) = run(&["journey", "--lifecycle", "--json"], dir.path());
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("valid json");
+    let rows = v.as_array().unwrap();
+    assert_eq!(rows.len(), 4, "stdout: {stdout}");
+    assert_eq!(rows[0]["kind"], "prompt");
+    assert_eq!(rows[0]["mode"], "fresh");
+    assert_eq!(rows[3]["kind"], "subagent_stop");
+}
