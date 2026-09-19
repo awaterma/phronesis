@@ -714,6 +714,11 @@ fn write_gemini_settings(
     }
 
     write_json(&path, &settings, opts, ".gemini/settings.json", report)?;
+    report.steps.push(
+        "  note: Gemini HTML-escapes additionalContext (< and > reach the model as entities) \
+         and skips project hooks until the folder is trusted."
+            .to_string(),
+    );
     Ok(())
 }
 

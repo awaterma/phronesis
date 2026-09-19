@@ -1447,3 +1447,18 @@ fn init_gemini_hooks_are_idempotent_and_spare_foreign_hooks() {
         "phr-mcp claude-hook AfterAgent"
     );
 }
+
+#[test]
+fn init_prints_gemini_escaping_and_trust_note() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&[], dir.path());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("HTML-escapes additionalContext"),
+        "install output must warn about Gemini entity escaping: {stdout}"
+    );
+    assert!(
+        stdout.contains("until the folder is trusted"),
+        "install output must warn that project hooks are skipped until trust: {stdout}"
+    );
+}
