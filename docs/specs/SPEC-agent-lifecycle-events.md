@@ -731,8 +731,11 @@ Changes:
 - `write_gemini_settings` registers `AfterAgent` and `SessionEnd` (empty
   matcher) → `phr-mcp claude-hook <Event>`, and repoints `SessionStart` and
   `BeforeAgent` at `claude-hook`. The adapter maps Gemini names inside:
-  `BeforeAgent` → `prompt`, `AfterAgent` → `stop`. Every response is `{}` or
-  the existing context JSON; never empty stdout. The confidence gate does not
+  `BeforeAgent` → `prompt`, `AfterAgent` → `stop`. Every `claude-hook`
+  response is `{}` or the existing context JSON; never empty stdout. The
+  existing `pre-check` / `post-check` runners print nothing on allow today;
+  Gemini tolerates empty stdout (only non-JSON text becomes a user-visible
+  message), so they are unchanged by this spec. The confidence gate does not
   run on Gemini-mapped events: Gemini has no documented `decision` semantics
   for `AfterAgent`, so `stop` is recorded and `{}` is printed. The gate stays
   Claude- and Codex-only until Gemini's response schema for that event is
