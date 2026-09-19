@@ -4,6 +4,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
+use phronesis_mcp::lifecycle::state;
+
 fn run_hook(root: &std::path::Path, payload: &Value) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .arg("codex-hook")
@@ -46,6 +48,58 @@ fn response(output: &Output) -> Value {
 
 fn fixture_payload(raw: &str) -> Value {
     serde_json::from_str::<Value>(raw).expect("fixture JSON")["payload"].clone()
+}
+
+fn journal_records(root: &std::path::Path) -> Vec<Value> {
+    fs::read_to_string(root.join(".phronesis/journey/events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+fn lifecycle_records(root: &std::path::Path) -> Vec<Value> {
+    journal_records(root)
+        .into_iter()
+        .filter(|r| r.get("kind").is_some())
+        .collect()
+}
+
+fn lifecycle_kinds(root: &std::path::Path) -> Vec<String> {
+    lifecycle_records(root)
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn lifecycle_log(root: &std::path::Path) -> Vec<Value> {
+    fs::read_to_string(root.join(".phronesis/log.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["kind"] == "lifecycle")
+        .collect()
+}
+
+fn log_event(root: &std::path::Path, event: &str) -> Value {
+    lifecycle_log(root)
+        .into_iter()
+        .find(|e| e["event"] == event)
+        .unwrap_or_else(|| panic!("no {event} log entry"))
+}
+
+fn turn_file(root: &std::path::Path) -> Value {
+    serde_json::from_str(
+        &fs::read_to_string(root.join(".phronesis/journey/turn")).expect("turn file"),
+    )
+    .expect("turn JSON")
+}
+
+// First used by Task 3's tests; kept here with the other lifecycle helpers.
+#[allow(dead_code)]
+fn prompt_payload(session: &str, turn: &str, text: &str) -> Value {
+    json!({"hook_event_name": "UserPromptSubmit",
+           "session_id": session, "turn_id": turn, "prompt": text})
 }
 
 fn write_rules(root: &std::path::Path, rules: Value) {
@@ -676,4 +730,89 @@ fn codex_hook_captures_payloads_with_prompt_text_redacted() {
     assert!(!captured.contains("zzz-secret-prompt-text"), "{captured}");
     assert!(captured.contains("<redacted:"), "{captured}");
     assert!(captured.contains("UserPromptSubmit"), "{captured}");
+}
+
+#[test]
+fn interrupt_records_and_closes_the_turn() {
+    let project = tempfile::tempdir().expect("temp project");
+    state::open_turn(project.path(), Some("codex-t-2"), 10);
+    let interrupt = json!({
+        "hook_event_name": "Interrupt", "cwd": "/tmp/p", "model": "gpt-5",
+        "permission_mode": "on-request", "session_id": "codex-s-2", "turn_id": "codex-t-2",
+        "transcript_path": "/tmp/p/.codex/sessions/codex-s-2.jsonl"
+    });
+    assert_eq!(response(&run_hook(project.path(), &interrupt)), json!({}));
+
+    // Exactly one record, and it is the interrupt: an abort must never also
+    // manufacture a `stop`, which would mean "the turn completed".
+    assert_eq!(lifecycle_kinds(project.path()), vec!["interrupt"]);
+    let last = lifecycle_records(project.path())
+        .pop()
+        .expect("an interrupt record");
+    assert_eq!(last["host"], "codex");
+    assert_eq!(last["turn"], "codex-t-2");
+    assert!(
+        last["tags"]
+            .as_array()
+            .expect("tags")
+            .contains(&json!("lifecycle:interrupt"))
+    );
+    let entry = log_event(project.path(), "interrupt");
+    assert_eq!(entry["inferred_from"], "hook");
+    assert_eq!(entry["session_id"], "codex-s-2");
+    assert_eq!(turn_file(project.path())["open"], false);
+    assert_eq!(turn_file(project.path())["last_event"], "interrupt");
+}
+
+#[test]
+fn session_end_stops_an_open_turn_and_leaves_the_session_file() {
+    let project = tempfile::tempdir().expect("temp project");
+    state::set_session(project.path(), "codex-s-3");
+    state::open_turn(project.path(), Some("codex-t-3"), 10);
+    let end = json!({"hook_event_name": "SessionEnd", "session_id": "codex-s-3"});
+    assert_eq!(response(&run_hook(project.path(), &end)), json!({}));
+    assert_eq!(lifecycle_kinds(project.path()), vec!["stop"]);
+    // SessionEnd does NOT truncate the session file: truncation would let any
+    // stray hook between sessions mint a throwaway sid, and the next
+    // session-begin SessionStart overwrites it anyway (spec §Correlation state).
+    assert_eq!(
+        fs::read_to_string(project.path().join(".phronesis/journey/session"))
+            .expect("session file")
+            .trim(),
+        "codex-s-3"
+    );
+    // A second SessionEnd with no open turn records nothing further.
+    assert_eq!(response(&run_hook(project.path(), &end)), json!({}));
+    assert_eq!(lifecycle_records(project.path()).len(), 1);
+}
+
+/// The aborted tools' `PostToolUse` never fires, so their `inflight` entries
+/// would sit there faking an interrupt for the next 900 s. `Interrupt` drops
+/// them.
+#[test]
+fn interrupt_drops_the_sessions_inflight_entries() {
+    let project = tempfile::tempdir().expect("temp project");
+    state::open_turn(project.path(), Some("codex-t-7"), 10);
+    state::push_inflight(
+        project.path(),
+        state::Inflight {
+            key: "u-aborted".into(),
+            tool: "Bash".into(),
+            ts: 10,
+            agent_id: None,
+            head_before: None,
+            detection: None,
+        },
+    );
+    let interrupt = json!({
+        "hook_event_name": "Interrupt", "session_id": "codex-s-7", "turn_id": "codex-t-7"
+    });
+    assert_eq!(response(&run_hook(project.path(), &interrupt)), json!({}));
+    assert!(
+        state::pop_inflight(project.path(), "u-aborted").is_none(),
+        "an aborted tool's entry must not survive its own turn"
+    );
+    // And the classifier's evidence is `last_event`, so the next prompt is a
+    // correction with no second interrupt record.
+    assert_eq!(turn_file(project.path())["last_event"], "interrupt");
 }

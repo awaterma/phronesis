@@ -25,6 +25,9 @@ use serde::Deserialize;
 use crate::action_log;
 use crate::context;
 use crate::journey;
+use crate::lifecycle::event::{Host, Kind, LifecycleEvent};
+use crate::lifecycle::record::record;
+use crate::lifecycle::state;
 use crate::outcomes;
 use crate::security;
 
@@ -50,10 +53,8 @@ struct CodexPayload {
     tool_response: Option<serde_json::Value>,
     /// Sub-agent identity on `SubagentStart` / `SubagentStop`.
     #[serde(default)]
-    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
     agent_id: Option<String>,
     #[serde(default)]
-    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
     agent_type: Option<String>,
     /// Main-session transcript; carried by `Interrupt` and most events.
     #[serde(default)]
@@ -177,6 +178,36 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
             make_ctx_decision(root, ContextKind::SubagentStart).await
         }
         "SubagentStop" | "subagent-stop" | "Stop" | "stop" => make_completion_decision(root),
+        // Codex fires Interrupt on abort, before TurnAborted, with the
+        // transcript flushed. Stop does not fire, so this is the only end of
+        // an aborted turn. Its schema permits `systemMessage` only.
+        "Interrupt" | "interrupt" => {
+            record(
+                root,
+                lifecycle_event(payload, Kind::Interrupt).with_extra("inferred_from", "hook"),
+            );
+            // `{open: false, last_event: "interrupt"}`. The next prompt reads
+            // `last_event` in classification step 1 and comes out `correction`
+            // with no second interrupt record — the single
+            // interrupt-already-recorded path, on every host.
+            state::close_turn(root, "interrupt");
+            // The aborted tools' PostToolUse never fires; a lingering entry
+            // would fake an interrupt for 900 s.
+            state::clear_inflight(root);
+            empty_decision()
+        }
+        // A session ending with a turn still open ended without a Stop:
+        // record the stop so the turn is closed in the journal too. `session` is
+        // left in place — the next session-begin SessionStart overwrites it, and
+        // truncating would let any stray hook between sessions mint a throwaway
+        // sid (spec §"Host adapters / Codex CLI").
+        "SessionEnd" | "session-end" => {
+            if state::read_turn(root).open {
+                record(root, lifecycle_event(payload, Kind::Stop));
+            }
+            state::close_turn(root, "stop");
+            empty_decision()
+        }
         _ => empty_decision(),
     }
 }
@@ -188,6 +219,22 @@ fn empty_decision() -> CodexDecision {
         additional_context: String::new(),
         files: Vec::new(),
     }
+}
+
+/// A `LifecycleEvent` pre-filled from the identity fields any Codex payload
+/// may carry. Callers add the kind-specific mode, prompt, and extras.
+fn lifecycle_event(payload: &CodexPayload, kind: Kind) -> LifecycleEvent {
+    let mut event = LifecycleEvent::new(kind, Host::Codex);
+    if let Some(sid) = payload.session_id.as_deref().filter(|s| !s.is_empty()) {
+        event = event.with_session(sid);
+    }
+    if let Some(tid) = payload.turn_id.as_deref().filter(|s| !s.is_empty()) {
+        event = event.with_turn(tid);
+    }
+    if let Some(aid) = payload.agent_id.as_deref().filter(|s| !s.is_empty()) {
+        event = event.with_agent(aid, payload.agent_type.clone());
+    }
+    event
 }
 
 fn make_completion_decision(root: &Path) -> CodexDecision {

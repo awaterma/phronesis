@@ -34,6 +34,10 @@ pub fn render_codex_response(event: &str, decision: &CodexDecision) -> String {
         | "session-start" | "user-prompt-submit" | "pre-compact" | "post-compact"
         | "subagent-start" => render_context(canonical_event(event), decision),
         "SubagentStop" | "Stop" | "subagent-stop" | "stop" => render_completion(decision),
+        // Interrupt permits `systemMessage` only and SessionEnd is advisory;
+        // Phronesis has nothing to say on either, and any extra key would fail
+        // the whole hook under deny_unknown_fields.
+        "Interrupt" | "interrupt" | "SessionEnd" | "session-end" => "{}".to_string(),
         _ => "{}".to_string(),
     }
 }
