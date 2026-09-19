@@ -427,6 +427,11 @@ enum Command {
         #[arg(default_value = "PreToolUse")]
         event: String,
     },
+    /// Name the theme (kalpa) the current run of sessions belongs to.
+    Kalpa {
+        #[command(subcommand)]
+        cmd: Option<phronesis_mcp::lifecycle::kalpa_cli::KalpaCmd>,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -649,6 +654,14 @@ async fn main() -> anyhow::Result<()> {
             project_root,
         } => scrub_payload::run(&path, write, home, project_root),
         Command::CodexHook { event } => phronesis_mcp::codex_hook::run(&event).await,
+        Command::Kalpa { cmd } => {
+            let root = phronesis_mcp::security::project_root();
+            let cmd =
+                cmd.unwrap_or(phronesis_mcp::lifecycle::kalpa_cli::KalpaCmd::Show { name: None });
+            let out = phronesis_mcp::lifecycle::kalpa_cli::run(&root, cmd)?;
+            println!("{out}");
+            Ok(())
+        }
     }
 }
 
