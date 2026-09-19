@@ -237,6 +237,34 @@ fn claude_hook_delegates_tool_events_to_the_existing_runners() {
     assert!(stderr.contains("no edits under src"), "{stderr}");
 }
 
+/// The delegation must be byte-for-byte the existing runner, not a wrapper that
+/// rewrites its exit code. Clap also exits 2 on an unknown subcommand, so the
+/// block case alone cannot prove the subcommand exists — this differential
+/// covers the allow path (0) on both phases too.
+#[test]
+fn claude_hook_tool_events_match_the_direct_subcommands() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"no-src","phase":"pre","priority":1,
+            "when":[{"file_path_matches":"src/"}],
+            "then":{"block":"no edits under src"}}]}"#,
+    );
+    let blocked = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"a","new_string":"b"}}"#;
+    let allowed = r#"{"tool_name":"Edit","tool_input":{"file_path":"docs/a.md","old_string":"a","new_string":"b"}}"#;
+    for (direct, aliases, payload) in [
+        ("pre-check", ["PreToolUse", "BeforeTool"], blocked),
+        ("pre-check", ["PreToolUse", "BeforeTool"], allowed),
+        ("post-check", ["PostToolUse", "AfterTool"], allowed),
+    ] {
+        let (want, _) = run_hook_in(direct, payload, Some(dir.path()));
+        for alias in aliases {
+            let (got, _, stderr) = run_claude_hook(dir.path(), alias, payload);
+            assert_eq!(got, want, "{alias} vs {direct}: {stderr}");
+        }
+    }
+}
+
 #[test]
 fn claude_hook_accepts_gemini_event_names() {
     let dir = tempfile::tempdir().unwrap();
@@ -258,7 +286,7 @@ fn claude_hook_accepts_gemini_event_names() {
 - [ ] **Step 2: Run to verify failure**
 
 Run: `cargo test -p phronesis-mcp --test hook_integration claude_hook 2>&1 | tail -20`
-Expected: every test fails — clap rejects the unknown subcommand `claude-hook` (exit 2, stdout empty).
+Expected: every test fails — clap rejects the unknown subcommand `claude-hook` (exit 2, stdout empty). Note that `claude_hook_delegates_tool_events_to_the_existing_runners` asserts `code == 2`, which clap's own "unrecognized subcommand" exit also satisfies, so that test fails only on its `stderr` assertion; it cannot by itself detect the missing subcommand. `claude_hook_tool_events_match_the_direct_subcommands` is the one that catches it on the allow path (0 vs 2).
 
 - [ ] **Step 3: Implement**
 
@@ -354,16 +382,27 @@ pub(crate) fn unix_secs_now() -> u64 {
 
 pub async fn run(event: &str) -> ! {
     // Tool phases delegate before stdin is read: the runners read and parse it
-    // themselves and own their exit codes (pre 0/1/2, post 0/1).
+    // themselves and own their exit codes (pre 0/1/2, post 0/1). Both are
+    // `async fn … -> anyhow::Result<()>` and exit the process internally on the
+    // allow and block paths; the `Err` return is the remaining path, and
+    // `main.rs` maps it to exit 1 (`Command::PreCheck => hook::run_pre_check().await`,
+    // `main.rs:570-571`). `let _ = …; process::exit(0)` would rewrite that 1
+    // into a 0, so the error is reproduced here instead of discarded.
     match canonical_event(event) {
-        "PreToolUse" => {
-            let _ = hook::run_pre_check().await;
-            process::exit(0);
-        }
-        "PostToolUse" => {
-            let _ = hook::run_post_check().await;
-            process::exit(0);
-        }
+        "PreToolUse" => match hook::run_pre_check().await {
+            Ok(()) => process::exit(0),
+            Err(e) => {
+                eprintln!("phronesis: {e}");
+                process::exit(1);
+            }
+        },
+        "PostToolUse" => match hook::run_post_check().await {
+            Ok(()) => process::exit(0),
+            Err(e) => {
+                eprintln!("phronesis: {e}");
+                process::exit(1);
+            }
+        },
         _ => {}
     }
 
@@ -524,7 +563,7 @@ git commit -m "feat(claude-hook): adapter subcommand with response shapes and fa
 - Test: `crates/phronesis-mcp/tests/hook_integration.rs`
 
 **Interfaces:**
-- Consumes: `lifecycle::record::record`, `lifecycle::scrub::scrub_prompt`, `lifecycle::state::{classify_prompt, PromptContext, open_turn, close_turn, read_turn, set_session, clear_session, reset_for_session_start, push_agent, pop_agent, OpenAgent}`, `journey::journal::read_recent`, `hook::seq::next_seq`.
+- Consumes: `lifecycle::record::record`, `lifecycle::scrub::scrub_prompt`, `lifecycle::state::{classify_prompt, PromptContext, last_lifecycle_kind, open_turn, close_turn, read_turn, set_session, clear_session, reset_for_session_start, push_agent, pop_agent, OpenAgent}`, `journey::current_sid`, `hook::seq::next_seq`.
 - Produces: `pub(crate) fn synth_agent_id(root: &Path) -> String` — the `{sid}:{seq}` fallback, reused by the Gemini derivation in Task 4.
 
 - [ ] **Step 1: Write the failing tests**
@@ -580,43 +619,66 @@ fn claude_hook_prompt_records_fresh_and_opens_turn() {
     assert_eq!(turn["open"], true);
 }
 
+/// The Claude-only transcript-marker branch. Claude fires no hook on interrupt,
+/// so this and the `inflight` branch are the only evidence there is; if
+/// `handle_prompt` ever drops `transcript_path` from `PromptContext` the whole
+/// branch goes dark with a green suite.
 #[test]
-fn claude_hook_prompt_after_inflight_records_interrupt_and_correction() {
+fn claude_hook_prompt_after_transcript_marker_is_a_correction() {
     let dir = tempfile::tempdir().unwrap();
     run_claude_hook(
         dir.path(),
         "UserPromptSubmit",
-        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"first"}"#,
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"go"}"#,
     );
-    // A tool call is still in flight when the human speaks again.
-    run_hook_in(
-        "pre-check",
-        r#"{"tool_name":"Bash","tool_use_id":"tu-1","tool_input":{"command":"sleep 100"}}"#,
-        Some(dir.path()),
+    // The host wrote the interrupt marker into the transcript after the prompt
+    // opened the turn. `timestamp` is absent, which `classify_prompt` accepts.
+    let transcript = dir.path().join("t.jsonl");
+    std::fs::write(
+        &transcript,
+        "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"[Request interrupted by user]\"}}\n",
+    )
+    .unwrap();
+    let payload = format!(
+        r#"{{"hook_event_name":"UserPromptSubmit","session_id":"s1","transcript_path":{},"prompt":"do this instead"}}"#,
+        serde_json::Value::String(transcript.display().to_string())
     );
-    run_claude_hook(
-        dir.path(),
-        "UserPromptSubmit",
-        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"stop, do this instead"}"#,
-    );
+    run_claude_hook(dir.path(), "UserPromptSubmit", &payload);
+
     let recs = journal_records(dir.path());
-    let interrupt = recs.iter().find(|r| r["kind"] == "interrupt").expect("interrupt record");
-    assert!(
-        interrupt["tags"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|t| t == "lifecycle:interrupt")
-    );
     let modes: Vec<&str> = recs
         .iter()
         .filter(|r| r["kind"] == "prompt")
         .map(|r| r["mode"].as_str().unwrap())
         .collect();
     assert_eq!(modes, vec!["fresh", "correction"]);
-    let log = log_entries(dir.path());
-    let entry = log.iter().find(|e| e["event"] == "interrupt").unwrap();
-    assert_eq!(entry["inferred_from"], "inflight");
+    let entry = log_entries(dir.path())
+        .into_iter()
+        .find(|e| e["event"] == "interrupt")
+        .expect("interrupt entry");
+    assert_eq!(entry["inferred_from"], "transcript");
+}
+
+/// The adapter must scrub before the text reaches the log, and must not leak it
+/// to stdout either — Plan 1 tests `scrub_prompt` itself, this tests the wiring.
+#[test]
+fn claude_hook_scrubs_prompt_text_before_the_log_and_never_prints_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let secret = "resume session 0f3c9a1e-1234-4bcd-9ef0-abcdefabcdef and read /home/somebody/notes.txt";
+    let payload = format!(
+        r#"{{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":{}}}"#,
+        serde_json::Value::String(secret.to_string())
+    );
+    let (_, stdout, _) = run_claude_hook(dir.path(), "UserPromptSubmit", &payload);
+    assert!(!stdout.contains("0f3c9a1e"), "prompt text on stdout: {stdout}");
+    let entry = log_entries(dir.path())
+        .into_iter()
+        .find(|e| e["event"] == "prompt")
+        .expect("prompt entry");
+    let text = entry["prompt"].as_str().expect("prompt text");
+    assert!(!text.contains("0f3c9a1e-1234-4bcd-9ef0-abcdefabcdef"), "{text}");
+    assert!(text.contains("sess-00000000"), "{text}");
+    assert!(text.contains("resume session"), "{text}");
 }
 
 #[test]
@@ -768,7 +830,7 @@ Expected: FAIL — `.phronesis/journey/events.jsonl` does not exist, so `journal
 
 - [ ] **Step 3: Implement**
 
-In `claude_hook.rs`, delete `_typecheck`, extend the imports, and replace `dispatch` with the real one plus the handlers:
+In `claude_hook.rs`, delete `_typecheck` and replace `dispatch` with the real one plus the handlers. **Replace** Task 2's `use std::path::Path;` with the two-name form below rather than adding a second `use std::path::…` line, which would not compile:
 
 ```rust
 use std::path::{Path, PathBuf};
@@ -827,22 +889,26 @@ pub(crate) fn synth_agent_id(root: &Path) -> String {
     )
 }
 
-/// The `kind` of the most recent lifecycle journal record, which is how the
-/// Codex branch of `classify_prompt` sees its own `Interrupt` hook. Claude
-/// never produces one, but the context is built uniformly.
-fn last_lifecycle_kind(root: &Path) -> Option<String> {
-    journey::journal::read_recent(root, 1)
-        .ok()?
-        .into_iter()
-        .next_back()
-        .filter(|r| r.is_lifecycle())
-        .and_then(|r| r.kind)
-}
+```
 
+`state::last_lifecycle_kind(root)` (Plan 1 Task 8) is the one definition of "the
+`kind` of the most recent lifecycle record for this sid". Do not re-derive it here
+from `read_recent(root, 1)`: a single tool record journaled after an interrupt makes
+that derivation return `None`. Claude never produces an `interrupt` record from a
+hook, but the context is built uniformly so the same handler shape serves both hosts.
+
+```rust
 async fn handle_prompt(root: &Path, host: Host, p: &ClaudePayload) -> String {
     let now = unix_secs_now();
     let transcript = p.transcript_path.as_deref().map(PathBuf::from);
-    let last_kind = last_lifecycle_kind(root);
+    // Spec §"Host adapters / Claude Code": "UserPromptSubmit → render
+    // interaction context, then record prompt." Rendering first means the
+    // context the human sees describes the state their prompt arrived into,
+    // not one that already counts their own prompt.
+    let rendered = context_or_empty(
+        context::run_interaction_context_configured(root, 5, context::DEFAULT_MAX_BYTES).await,
+    );
+    let last_kind = state::last_lifecycle_kind(root);
     let classification = state::classify_prompt(
         root,
         &state::PromptContext {
@@ -876,9 +942,7 @@ async fn handle_prompt(root: &Path, host: Host, p: &ClaudePayload) -> String {
     record(root, ev);
     state::open_turn(root, nonempty(&p.prompt_id), now);
 
-    context_or_empty(
-        context::run_interaction_context_configured(root, 5, context::DEFAULT_MAX_BYTES).await,
-    )
+    rendered
 }
 
 async fn handle_session_start(root: &Path, p: &ClaudePayload) -> String {
@@ -971,7 +1035,13 @@ git commit -m "feat(claude-hook): record prompt, interrupt, stop, session and su
 - Test: `crates/phronesis-mcp/tests/hook_integration.rs`
 
 **Interfaces:**
-- Consumes: `lifecycle::state::{push_inflight, pop_inflight, inflight_key_for, Inflight, push_agent, pop_agent, OpenAgent}`, `lifecycle::outcome::{is_shell_tool, git_head, detect_commit}`, `lifecycle::record::record`, `claude_hook::{synth_agent_id, unix_secs_now}`, `hook::journey_record::payload_command_exit`, `hook::extract_new_content`.
+- Consumes: `lifecycle::state::{push_inflight, pop_inflight, inflight_key_for, Inflight, push_agent, pop_agent, OpenAgent}`, `lifecycle::outcome::{is_shell_tool, git_head, detect_commit}`, `lifecycle::record::record`, `claude_hook::{synth_agent_id, unix_secs_now}`, plus these two, verified against the current tree — both are private to the `hook` module tree and reachable from a child module without a visibility change:
+```rust
+// hook/mod.rs:180
+fn extract_new_content(payload: &HookPayload, tool_name: &str) -> Option<String>;
+// hook/journey_record.rs:45
+pub(super) fn payload_command_exit(payload: &HookPayload) -> Option<i32>;
+```
 - Produces (all `pub(super)`, i.e. visible to `pre.rs` and `post.rs`):
 ```rust
 pub(super) fn pre_push_inflight(root: &Path, payload: &HookPayload) -> String;  // returns the key
@@ -1004,6 +1074,88 @@ fn pre_pushes_inflight_and_post_pops_it() {
     let post = r#"{"tool_name":"Bash","tool_use_id":"tu-42","tool_input":{"command":"ls"},
         "tool_response":{"exit_code":0,"stdout":""}}"#;
     run_hook_in("post-check", post, Some(dir.path()));
+    assert!(inflight_keys(dir.path()).is_empty());
+}
+
+/// Moved here from Task 3 on purpose: it needs the `pre_push_inflight` wiring
+/// this task adds, so at Task 3 it could not pass. The `inflight` branch of
+/// `classify_prompt` is only reachable once the pre-check pushes.
+#[test]
+fn claude_hook_prompt_after_inflight_records_interrupt_and_correction() {
+    let dir = tempfile::tempdir().unwrap();
+    run_claude_hook(
+        dir.path(),
+        "UserPromptSubmit",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"first"}"#,
+    );
+    // A tool call is still in flight when the human speaks again.
+    run_hook_in(
+        "pre-check",
+        r#"{"tool_name":"Bash","tool_use_id":"tu-1","tool_input":{"command":"sleep 100"}}"#,
+        Some(dir.path()),
+    );
+    run_claude_hook(
+        dir.path(),
+        "UserPromptSubmit",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt":"stop, do this instead"}"#,
+    );
+    let recs = journal_records(dir.path());
+    let interrupt = recs.iter().find(|r| r["kind"] == "interrupt").expect("interrupt record");
+    assert!(
+        interrupt["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "lifecycle:interrupt")
+    );
+    let modes: Vec<&str> = recs
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "correction"]);
+    let log = log_entries(dir.path());
+    let entry = log.iter().find(|e| e["event"] == "interrupt").unwrap();
+    assert_eq!(entry["inferred_from"], "inflight");
+}
+
+/// The push happens before the allowlist match, so a tool Phronesis does not
+/// govern still makes the next prompt a correction (spec §"Where the writes
+/// happen"). Without this test every inflight case uses an allowlisted tool and
+/// a regression that pushed after the allowlist would stay green.
+#[test]
+fn a_non_allowlisted_tool_still_pushes_and_pops_inflight() {
+    let dir = tempfile::tempdir().unwrap();
+    let pre = r#"{"tool_name":"WebSearch","tool_use_id":"tu-w","tool_input":{"query":"rust"}}"#;
+    run_hook_in("pre-check", pre, Some(dir.path()));
+    assert_eq!(inflight_keys(dir.path()), vec!["tu-w".to_string()]);
+    let post = r#"{"tool_name":"WebSearch","tool_use_id":"tu-w","tool_input":{"query":"rust"},
+        "tool_response":{"results":[]}}"#;
+    run_hook_in("post-check", post, Some(dir.path()));
+    assert!(inflight_keys(dir.path()).is_empty());
+}
+
+/// Gemini supplies no `tool_use_id`, so the key is the hash of tool name plus
+/// canonical input. Pre and post must agree on it or the entry leaks.
+#[test]
+fn a_pair_without_tool_use_id_pops_by_hashed_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = r#"{"command":"echo hi"}"#;
+    run_hook_in(
+        "pre-check",
+        &format!(r#"{{"tool_name":"run_shell_command","tool_input":{input}}}"#),
+        Some(dir.path()),
+    );
+    let keys = inflight_keys(dir.path());
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert!(keys[0].starts_with('h'), "hashed key expected: {keys:?}");
+    run_hook_in(
+        "post-check",
+        &format!(
+            r#"{{"tool_name":"run_shell_command","tool_input":{input},"tool_response":{{"exit_code":0}}}}"#
+        ),
+        Some(dir.path()),
+    );
     assert!(inflight_keys(dir.path()).is_empty());
 }
 
@@ -1040,6 +1192,9 @@ fn post_check_records_a_commit_when_head_moved() {
     git(&["init", "-q"]);
     git(&["config", "user.email", "t@example.com"]);
     git(&["config", "user.name", "t"]);
+    // A developer's global `commit.gpgsign = true` would otherwise fail every
+    // commit in this test.
+    git(&["config", "commit.gpgsign", "false"]);
     std::fs::write(dir.path().join("a.txt"), "one").unwrap();
     git(&["add", "a.txt"]);
     git(&["commit", "-qm", "first"]);
@@ -1063,8 +1218,52 @@ fn post_check_records_a_commit_when_head_moved() {
         .find(|e| e["event"] == "commit")
         .unwrap();
     assert_eq!(entry["tool_use_id"], "tu-c");
-    assert_eq!(entry["sha"].as_str().unwrap().len(), 40);
+    let sha = entry["sha"].as_str().unwrap();
+    // 40 for SHA-1, 64 under `--object-format=sha256`; pinning 40 would fail on
+    // a host configured for SHA-256.
+    assert!(matches!(sha.len(), 40 | 64), "unexpected sha: {sha}");
+    assert!(sha.chars().all(|c| c.is_ascii_hexdigit()), "{sha}");
     assert_ne!(entry["sha"], entry["head_before"]);
+    assert!(entry.get("confidence_band").is_none(), "no confidence.json, no band");
+}
+
+/// The band is present exactly when confidence scoring is on and a unit is
+/// open. The spec promises the field, so the absence case above and this one
+/// together pin both halves.
+#[test]
+fn a_commit_carries_the_confidence_band_when_scoring_is_enabled() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".phronesis/outcomes")).unwrap();
+    std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").unwrap();
+    std::fs::write(dir.path().join(".phronesis/outcomes/current"), "unit-1").unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(args).current_dir(dir.path()).output().expect("git");
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(dir.path().join("a.txt"), "one").unwrap();
+    git(&["add", "a.txt"]);
+    git(&["commit", "-qm", "first"]);
+
+    let cmd = r#"{"tool_name":"Bash","tool_use_id":"tu-b","tool_input":{"command":"git commit -am second"}"#;
+    run_hook_in("pre-check", &format!("{cmd}}}"), Some(dir.path()));
+    std::fs::write(dir.path().join("a.txt"), "two").unwrap();
+    git(&["commit", "-qam", "second"]);
+    run_hook_in(
+        "post-check",
+        &format!(r#"{cmd},"tool_response":{{"exit_code":0}}}}"#),
+        Some(dir.path()),
+    );
+
+    let entry = log_entries(dir.path())
+        .into_iter()
+        .find(|e| e["event"] == "commit")
+        .expect("commit entry");
+    let band = entry["confidence_band"].as_str().expect("a band");
+    assert!(matches!(band, "low" | "medium" | "high"), "{band}");
 }
 
 #[test]
@@ -1304,7 +1503,7 @@ fn blocked_exit(root: &std::path::Path, key: &str) -> ! {
 }
 ```
 
-Then replace **every** `process::exit(2)` in `run_pre_check` that appears after the `pre_push_inflight` call with `blocked_exit(&root, &inflight_key)`. (The `process::exit(2)` inside the `read_payload` error arm is before the push and stays as it is; the ones in `assert_pre_content_facts` are in a different function and are reached through `?`, whose caller in `run_pre_check` is covered by this rule.)
+Then replace **every** `process::exit(2)` in `run_pre_check` that appears after the `pre_push_inflight` call with `blocked_exit(&root, &inflight_key)`. The `process::exit(2)` inside the `read_payload` error arm is before the push and stays as it is. Verified against the current tree: `assert_pre_content_facts` (`pre.rs:256`) returns `Result<(), HookError>` and contains no `process::exit` of its own, so every block on that path already funnels back through a `run_pre_check` exit covered by this rule — there is no second exit site to refactor. Confirm this with `grep -n 'process::exit' crates/phronesis-mcp/src/hook/pre.rs` before and after: every hit must be inside `run_pre_check`, and every one after the push must read `blocked_exit`.
 
 In `src/hook/post.rs::run_post_check`, immediately after the `read_payload` match and before the allowlist match, insert:
 
@@ -1317,7 +1516,7 @@ In `src/hook/post.rs::run_post_check`, immediately after the `read_payload` matc
     }
 ```
 
-Add `"invoke_agent"` to post's allowlist match too, and replace the later `let file_path = …` block's use of a freshly computed root with `&root` if clippy flags the shadowing; otherwise leave the existing `security::project_root()` calls alone.
+Add `"invoke_agent"` to post's allowlist match too. Then, unconditionally (clippy's shadow lints are in the `restriction` group and are off by default, so waiting for a warning here would mean never doing it): replace every later `security::project_root()` call inside `run_post_check` with the `root` bound above, so the function resolves the project root exactly once and cannot act on two different roots.
 
 In `src/hook/journey_record.rs::build_journal_record`, change `v: 1,` to `v: journey::journal::JOURNAL_V,` — lifecycle records and tool records now share one schema version.
 

@@ -156,7 +156,7 @@ git commit -m "feat(codex): widen CodexPayload and tee redacted payloads to the 
 
 **Interfaces:**
 - Consumes: `lifecycle::record::record`, `lifecycle::state::{close_turn, clear_session, read_turn}`, `lifecycle::event::{LifecycleEvent, Kind, Host}`.
-- Produces: `fn lifecycle_event(payload: &CodexPayload, kind: Kind) -> LifecycleEvent`, `fn unix_secs_now() -> u64` (used by Tasks 4 and 5), and the test helpers `journal_records` / `lifecycle_records` / `lifecycle_log` (used by Tasks 3–5).
+- Produces: `fn lifecycle_event(payload: &CodexPayload, kind: Kind) -> LifecycleEvent` and the test helpers `journal_records` / `lifecycle_records` / `lifecycle_kinds` / `lifecycle_log` / `log_event` / `turn_file` / `prompt_payload` (used by Tasks 3–5). `fn unix_secs_now() -> u64` is added by Task 4, its first user.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -199,11 +199,21 @@ fn prompt_payload(session: &str, turn: &str, text: &str) -> Value {
            "session_id": session, "turn_id": turn, "prompt": text})
 }
 
+At this task `UserPromptSubmit` still records nothing and opens no turn — Task 4 adds
+that. Both tests below therefore drive the turn state through the library API
+(`phronesis_mcp::lifecycle::state` is `pub`) rather than through a prompt hook, and
+expect only the records this task's arms actually write. The prompt-driven versions
+of these scenarios live in Task 4.
+
+```rust
+use phronesis_mcp::lifecycle::state;
+```
+
+```rust
 #[test]
 fn interrupt_records_and_closes_the_turn() {
     let project = tempfile::tempdir().expect("temp project");
-    assert!(run_hook(project.path(), &prompt_payload("codex-s-2", "codex-t-2", "do it"))
-        .status.success());
+    state::open_turn(project.path(), Some("codex-t-2"), 10);
     let interrupt = json!({
         "hook_event_name": "Interrupt", "cwd": "/tmp/p", "model": "gpt-5",
         "permission_mode": "on-request", "session_id": "codex-s-2", "turn_id": "codex-t-2",
@@ -211,9 +221,10 @@ fn interrupt_records_and_closes_the_turn() {
     });
     assert_eq!(response(&run_hook(project.path(), &interrupt)), json!({}));
 
-    let recs = lifecycle_records(project.path());
-    let last = recs.last().expect("an interrupt record");
-    assert_eq!(last["kind"], "interrupt");
+    // Exactly one record, and it is the interrupt: an abort must never also
+    // manufacture a `stop`, which would mean "the turn completed".
+    assert_eq!(lifecycle_kinds(project.path()), vec!["interrupt"]);
+    let last = lifecycle_records(project.path()).pop().expect("an interrupt record");
     assert_eq!(last["host"], "codex");
     assert_eq!(last["turn"], "codex-t-2");
     assert!(last["tags"].as_array().expect("tags").contains(&json!("lifecycle:interrupt")));
@@ -227,11 +238,10 @@ fn interrupt_records_and_closes_the_turn() {
 #[test]
 fn session_end_stops_an_open_turn_and_clears_the_session() {
     let project = tempfile::tempdir().expect("temp project");
-    assert!(run_hook(project.path(), &prompt_payload("codex-s-3", "codex-t-3", "hi"))
-        .status.success());
+    state::open_turn(project.path(), Some("codex-t-3"), 10);
     let end = json!({"hook_event_name": "SessionEnd", "session_id": "codex-s-3"});
     assert_eq!(response(&run_hook(project.path(), &end)), json!({}));
-    assert_eq!(lifecycle_kinds(project.path()), vec!["prompt", "stop"]);
+    assert_eq!(lifecycle_kinds(project.path()), vec!["stop"]);
     assert_eq!(
         fs::read_to_string(project.path().join(".phronesis/journey/session"))
             .expect("session file").trim(),
@@ -239,7 +249,7 @@ fn session_end_stops_an_open_turn_and_clears_the_session() {
     );
     // A second SessionEnd with no open turn records nothing further.
     assert_eq!(response(&run_hook(project.path(), &end)), json!({}));
-    assert_eq!(lifecycle_records(project.path()).len(), 2);
+    assert_eq!(lifecycle_records(project.path()).len(), 1);
 }
 ```
 
@@ -250,25 +260,17 @@ Expected: FAIL — no lifecycle records are written; `.phronesis/journey/turn` d
 
 - [ ] **Step 3: Implement**
 
-Add to the `use` block at the top of `codex_hook.rs`:
+Add to the `use` block at the top of `codex_hook.rs` — **only these three**. `Mode` and `crate::lifecycle::scrub` have no use until Task 4 and would fail `-D warnings` (`unused_imports`) at this task's commit; Task 4 adds them:
 
 ```rust
-use crate::lifecycle::event::{Host, Kind, LifecycleEvent, Mode};
+use crate::lifecycle::event::{Host, Kind, LifecycleEvent};
 use crate::lifecycle::record::record;
-use crate::lifecycle::scrub;
 use crate::lifecycle::state;
 ```
 
-Add two helpers near `empty_decision`:
+Add one helper near `empty_decision` (`unix_secs_now` belongs to Task 4, its first user, for the same `-D warnings` reason — `dead_code` fires on a never-called private fn):
 
 ```rust
-fn unix_secs_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// A `LifecycleEvent` pre-filled from the identity fields any Codex payload
 /// may carry. Callers add the kind-specific mode, prompt, and extras.
 fn lifecycle_event(payload: &CodexPayload, kind: Kind) -> LifecycleEvent {
@@ -451,12 +453,12 @@ git commit -m "feat(codex): adopt host session id at SessionStart and journal fr
 ### Task 4: `UserPromptSubmit` — classification, mode, scrubbed text
 
 **Files:**
-- Modify: `crates/phronesis-mcp/src/codex_hook.rs` (`dispatch` UserPromptSubmit arm; new `record_prompt`, `last_lifecycle_kind`)
+- Modify: `crates/phronesis-mcp/src/codex_hook.rs` (`dispatch` UserPromptSubmit arm; new `record_prompt`, `unix_secs_now`)
 - Test: `crates/phronesis-mcp/tests/codex_hook_integration.rs`
 
 **Interfaces:**
-- Consumes: `lifecycle::state::{classify_prompt, PromptContext, Classification, InterruptSource, read_turn, open_turn}`, `lifecycle::scrub::scrub_prompt`, `journey::journal::read_recent`.
-- Produces: `fn record_prompt(payload: &CodexPayload, root: &Path)`, `fn last_lifecycle_kind(root: &Path) -> Option<String>`.
+- Consumes: `lifecycle::state::{classify_prompt, PromptContext, Classification, InterruptSource, read_turn, open_turn, last_lifecycle_kind}`, `lifecycle::scrub::scrub_prompt`.
+- Produces: `fn record_prompt(payload: &CodexPayload, root: &Path)` and `fn unix_secs_now() -> u64` (also used by Task 5).
 
 **Classification rules on Codex (spec §Classification):**
 - `classify_prompt`'s `Hook` branch fires when the last lifecycle journal record is an `interrupt` — meaning the `Interrupt` hook already wrote it. **Do not write a second interrupt record.**
@@ -487,31 +489,103 @@ fn prompt_modes_are_fresh_mid_turn_and_never_double_interrupt() {
         vec!["prompt", "prompt", "interrupt", "prompt"],
         "the Hook branch must not write a second interrupt record"
     );
+    let recs = lifecycle_records(project.path());
+    let modes: Vec<String> = recs.iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string()).collect();
+    // The third prompt follows an `interrupt` record in the same session, which
+    // is the spec's definition of `correction`. The Interrupt arm closed the
+    // turn, so this only holds because `classify_prompt` weighs the Hook
+    // evidence before the closed-turn short-circuit (Plan 1 Task 8).
+    assert_eq!(modes, vec!["fresh", "mid_turn", "correction"]);
+    let correction = recs.iter().rfind(|r| r["kind"] == "prompt").expect("a prompt");
+    let tags = correction["tags"].as_array().expect("tags");
+    assert!(tags.contains(&json!("lifecycle:prompt:correction")), "{correction}");
+    assert!(tags.contains(&json!("lifecycle:intervention")), "{correction}");
+}
+
+/// A tool record journaled between the interrupt and the prompt must not hide
+/// the interrupt, and another session's interrupt must not answer for this one.
+#[test]
+fn correction_survives_an_intervening_tool_record_and_is_session_scoped() {
+    let project = tempfile::tempdir().expect("temp project");
+    assert!(run_hook(project.path(), &prompt_payload("codex-s-9", "codex-t-9", "go"))
+        .status.success());
+    let interrupt =
+        json!({"hook_event_name": "Interrupt", "session_id": "codex-s-9", "turn_id": "codex-t-9"});
+    assert!(run_hook(project.path(), &interrupt).status.success());
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "codex-s-9", "tool_use_id": "u9",
+        "tool_name": "Bash", "tool_input": {"command": "echo hi"},
+        "tool_response": {"output": "hi", "exit_code": 0}
+    });
+    assert!(run_hook(project.path(), &post).status.success());
+    assert!(run_hook(project.path(), &prompt_payload("codex-s-9", "codex-t-10", "instead"))
+        .status.success());
     let modes: Vec<String> = lifecycle_records(project.path()).iter()
         .filter(|r| r["kind"] == "prompt")
         .map(|r| r["mode"].as_str().unwrap_or_default().to_string()).collect();
-    assert_eq!(modes, vec!["fresh", "mid_turn", "fresh"]);
+    assert_eq!(modes, vec!["fresh", "correction"]);
+
+    // A new session starts clean: the previous session's interrupt is not its
+    // evidence.
+    let start = json!({"hook_event_name": "SessionStart", "session_id": "codex-s-10"});
+    assert!(run_hook(project.path(), &start).status.success());
+    assert!(run_hook(project.path(), &prompt_payload("codex-s-10", "codex-t-11", "new"))
+        .status.success());
+    let modes: Vec<String> = lifecycle_records(project.path()).iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string()).collect();
+    assert_eq!(modes, vec!["fresh", "correction", "fresh"]);
 }
 
 #[test]
 fn prompt_text_is_scrubbed_into_the_log_and_never_the_journal() {
     let project = tempfile::tempdir().expect("temp project");
-    let home = std::env::var("HOME").expect("HOME");
+    // A temp `$HOME` set on the *child* process only: the parent's environment
+    // is never mutated, so this test cannot race the rest of the binary, and it
+    // does not require the ambient HOME to exist (CI sandboxes sometimes unset
+    // it). `run_hook` does not take env overrides, so spawn directly.
+    let home = tempfile::tempdir().expect("fake home");
+    let home_str = home.path().display().to_string();
     let payload = prompt_payload(
-        "codex-s-5", "codex-t-5", &format!("fix {home}/work/notes.txt then run tests"),
+        "codex-s-5", "codex-t-5", &format!("fix {home_str}/work/notes.txt then run tests"),
     );
-    assert!(run_hook(project.path(), &payload).status.success());
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["codex-hook", "UserPromptSubmit"])
+        .env("PHRONESIS_PROJECT_ROOT", project.path())
+        .env("HOME", home.path())
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().expect("spawn codex hook");
+    child.stdin.take().expect("stdin")
+        .write_all(payload.to_string().as_bytes()).expect("write payload");
+    let out = child.wait_with_output().expect("wait");
+    assert!(out.status.success());
+
     let journal =
         fs::read_to_string(project.path().join(".phronesis/journey/events.jsonl")).expect("journal");
+    // Both halves: the raw path, and the part of the text that *survives*
+    // scrubbing. Asserting only the path would pass even if the whole scrubbed
+    // prompt were journaled.
     assert!(!journal.contains("notes.txt"), "{journal}");
+    assert!(!journal.contains("then run tests"), "{journal}");
+    // Nor may it reach stdout, where it would become injected context.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("then run tests"), "{stdout}");
 
     let entry = log_event(project.path(), "prompt");
     let text = entry["prompt"].as_str().expect("prompt text");
     assert!(text.contains("then run tests"), "{text}");
-    assert!(!text.contains(&home), "{text}");
+    assert!(!text.contains(&home_str), "{text}");
     assert!(entry["prompt_bytes"].as_u64().expect("bytes") > 0);
     assert_eq!(entry["mode"], "fresh");
     assert_eq!(entry["turn_id"], "codex-t-5");
+
+    // The two files join on (sid, seq) — spec §"Action log".
+    let record = lifecycle_records(project.path()).into_iter()
+        .rfind(|r| r["kind"] == "prompt").expect("a prompt record");
+    assert_eq!(record["sid"], entry["sid"]);
+    assert_eq!(record["seq"], entry["seq"]);
 }
 ```
 
@@ -531,24 +605,30 @@ Replace the `UserPromptSubmit` arm in `dispatch`:
         }
 ```
 
-and add:
+and add these imports, whose first use is here (Task 2 deliberately left them out so its commit passed `-D warnings`):
 
 ```rust
-/// `kind` of the most recent journal record when it is a lifecycle record.
-/// This is the evidence `classify_prompt`'s Codex branch runs on.
-fn last_lifecycle_kind(root: &Path) -> Option<String> {
-    journey::journal::read_recent(root, 1)
-        .ok()?
-        .into_iter()
-        .next_back()
-        .and_then(|rec| rec.kind)
+use crate::lifecycle::event::Mode;
+use crate::lifecycle::scrub;
+```
+
+```rust
+fn unix_secs_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Classify the prompt, record any inferred interrupt, record the prompt with
 /// its scrubbed text, and open the turn. Spec §Classification.
 fn record_prompt(payload: &CodexPayload, root: &Path) {
     let now = unix_secs_now();
-    let last_kind = last_lifecycle_kind(root);
+    // Plan 1 Task 8 owns this: it scans backwards for the last **lifecycle**
+    // record whose sid is the current one. Do not substitute
+    // `read_recent(root, 1)` plus `.kind` — a tool record journaled after the
+    // interrupt would then return `None` and every correction would be lost.
+    let last_kind = state::last_lifecycle_kind(root);
     let turn = state::read_turn(root);
     let context = state::PromptContext {
         host: Host::Codex,
@@ -799,6 +879,11 @@ Codex output schemas are `deny_unknown_fields`; an extra key fails the whole hoo
                 "continue", "stopReason", "suppressOutput", "systemMessage",
                 "hookSpecificOutput", "decision", "reason",
             ],
+            // The spec's table says "as today (decision, reason,
+            // hookSpecificOutput)" for these two. `systemMessage` is added
+            // deliberately, not copied: `render_post` already emits it and the
+            // Codex PostToolUse schema permits it. Keep the deliberate widening
+            // documented here rather than silently inside the table.
             "PreToolUse" | "PostToolUse" => {
                 &["decision", "reason", "systemMessage", "hookSpecificOutput"]
             }
@@ -857,8 +942,35 @@ Codex output schemas are `deny_unknown_fields`; an extra key fails the whole hoo
                 decision(&[], &[], "context that must be dropped"),
             ] {
                 let json = render_codex_response(event, &d);
-                assert!(!json.contains("hookSpecificOutput"), "{event}: {json}");
+                // Structural, not substring: a `reason` string that merely
+                // mentioned the word would false-fail a containment check.
+                let v: serde_json::Value = serde_json::from_str(&json)
+                    .unwrap_or_else(|e| panic!("{event}: {json}: {e}"));
+                assert!(v.get("hookSpecificOutput").is_none(), "{event}: {json}");
             }
+        }
+    }
+
+    /// The permitted-key test alone would still pass if the block vanished
+    /// entirely (`{}` is within every key set). This pins that a blocking
+    /// decision actually blocks and carries its reason.
+    #[test]
+    fn a_blocking_completion_decision_still_reaches_the_host() {
+        let d = decision(&["Low confidence for unit-1"], &[], "");
+        for event in ["Stop", "SubagentStop"] {
+            let json = render_codex_response(event, &d);
+            assert_ne!(json, "{}", "{event} dropped the block");
+            let v: serde_json::Value = serde_json::from_str(&json).expect("JSON");
+            let obj = v.as_object().expect("object");
+            for key in obj.keys() {
+                assert!(permitted_keys(event).contains(&key.as_str()), "{event}: {key}: {json}");
+            }
+            assert!(
+                ["reason", "stopReason", "systemMessage"].iter().any(|k| {
+                    obj.get(*k).and_then(|x| x.as_str()).is_some_and(|s| s.contains("unit-1"))
+                }),
+                "{event}: the gate text must survive somewhere: {json}"
+            );
         }
     }
 
@@ -874,9 +986,14 @@ Codex output schemas are `deny_unknown_fields`; an extra key fails the whole hoo
 - [ ] **Step 2: Run to verify failure**
 
 Run: `cargo test -p phronesis-mcp codex_hook::renderer 2>&1 | tail -30`
-Expected: FAIL — a compile error naming `permitted_keys`/`decision` before they are added. Confirm the failure is the compile error, not an assertion.
+Expected: **PASS.** Step 1 adds the helpers and the tests together, so there is no red
+state to observe. This task is a characterization test by design: the renderer already
+conforms once Task 2's explicit `Interrupt`/`SessionEnd` arm exists, and these tests
+are what keep it conforming. To satisfy yourself they can fail, temporarily add
+`"decision"` to the `Interrupt` row of `permitted_keys`, invert one assertion, watch
+it fail, and revert — do not commit that.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Confirm (no production change expected)**
 
 The renderer already produces conforming output for every event in the table once Task 2 added the explicit `Interrupt`/`SessionEnd` arm; this step confirms it. Conforming shapes today: `render_completion` emits only `continue`/`stopReason`/`systemMessage`; `render_context` emits only `hookSpecificOutput`; `render_post` emits `systemMessage` and `hookSpecificOutput`; `render_pre` emits only `hookSpecificOutput`. If the test reports a violation, fix `renderer.rs` — never widen `permitted_keys`, which is copied verbatim from the spec.
 
@@ -1119,7 +1236,7 @@ Out of scope by design: the `PreCompact`/`PostCompact` response bug (spec Adjace
 
 **2. Placeholder scan.** No TBDs. Every code step carries compilable Rust or literal JSON. T6's implement step is a verification step by construction — the renderer already conforms after T2 — and states exactly what to do on a violation (fix the renderer, never the table). T8 names the exact function to read if the contract runner needs widening.
 
-**3. Type consistency.** Only Plan 1 names, with Plan 1's signatures: the `LifecycleEvent` builder (`new`/`with_mode`/`with_session`/`with_turn`/`with_agent`/`with_prompt`/`with_extra`, by value) plus its public `agent_id`/`agent_type` fields for T5's backfill; `record(root, event) -> Option<Stamped>` with `Stamped { ts, sid, seq, kalpa, subject }`; `state::OpenAgent { agent_id, agent_type, ts, seq }`; `state::PromptContext { host, now, agent_id, turn_id, transcript_path, last_journal_kind }`; `state::Classification { mode, interrupt }`; `state::InterruptSource::{Hook, Inflight}`; `state::{read_turn, open_turn, close_turn, set_session, clear_session, reset_for_session_start, push_agent, pop_agent}`; `scrub::scrub_prompt(root, text)`; `hook::{capture_raw_payload, redact_for_capture}`. `lifecycle_event` and `unix_secs_now` are introduced in T2 and used unchanged in T4 and T5; `record_prompt` and `last_lifecycle_kind` are T4's. Test helpers `journal_records`, `lifecycle_records`, `lifecycle_kinds`, `lifecycle_log`, `log_event`, `turn_file`, `prompt_payload` are defined once in T2 and reused by T3–T5, all inside `tests/codex_hook_integration.rs`, which no other plan touches. (Plan 4 defines same-named helpers in `tests/hook_integration.rs`; different file, no collision.)
+**3. Type consistency.** Only Plan 1 names, with Plan 1's signatures: the `LifecycleEvent` builder (`new`/`with_mode`/`with_session`/`with_turn`/`with_agent`/`with_prompt`/`with_extra`, by value) plus its public `agent_id`/`agent_type` fields for T5's backfill; `record(root, event) -> Option<Stamped>` with `Stamped { ts, sid, seq, kalpa, subject }`; `state::OpenAgent { agent_id, agent_type, ts, seq }`; `state::PromptContext { host, now, agent_id, turn_id, transcript_path, last_journal_kind }`; `state::Classification { mode, interrupt }`; `state::InterruptSource::{Hook, Inflight}`; `state::{read_turn, open_turn, close_turn, set_session, clear_session, reset_for_session_start, push_agent, pop_agent, last_lifecycle_kind}`; `scrub::scrub_prompt(root, text)`; `hook::{capture_raw_payload, redact_for_capture}`. `lifecycle_event` is introduced in T2 and used unchanged in T3–T5; `unix_secs_now` and `record_prompt` are T4's, used again in T5. `last_lifecycle_kind` is Plan 1's, not defined here. Test helpers `journal_records`, `lifecycle_records`, `lifecycle_kinds`, `lifecycle_log`, `log_event`, `turn_file`, `prompt_payload` are defined once in T2 and reused by T3–T5, all inside `tests/codex_hook_integration.rs`, which no other plan touches. (Plan 4 defines same-named helpers in `tests/hook_integration.rs`; different file, no collision.)
 
 **4. Shared ownership.** This plan defines nothing that another plan defines. It does not touch `hook/mod.rs`, does not define `upsert_hook_by_command`, and does not add a `main.rs` `Command` variant.
 

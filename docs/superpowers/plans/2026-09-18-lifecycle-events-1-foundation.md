@@ -200,106 +200,265 @@ git commit -m "feat(journey): JournalRecord v2 lifecycle fields"
 
 - [ ] **Step 1: Write the failing tests**
 
-Add a lifecycle record helper and tests to `tests/journey_derive.rs`:
+Add a lifecycle record helper and tests to `tests/journey_derive.rs`.
+
+**The file's existing helpers, verified against the current tree — use these exact
+shapes; do not invent arities:**
 
 ```rust
-fn make_lifecycle(ts: u64, sid: &str, seq: u64, kind: &str, tags: &[&str]) -> JournalRecord {
+fn derive_input<'a>(project_root: &'a Path, rules: &'a [Rule], config: &'a TaggerConfig, now_ts: u64) -> DeriveInput<'a>
+//   `WindowScope::current_sid` is hard-coded to "s-now" inside this helper, so every
+//   record a test wants an `s` window to see must carry sid "s-now".
+fn make_record(timing: (u64, u64), identity: (&str, &[&str]), subject: Option<&str>) -> JournalRecord
+//   timing is (seq, ts); tool "Edit", path "src/a.rs", ext "rs", v: 1.
+fn make_record_with_path(timing: (u64, u64), identity: (&str, &[&str]), path: &str) -> JournalRecord
+fn cfg(json: &str) -> TaggerConfig
+//   TaggerConfig is { version, taggers: Vec<TaggerEntry { tag, when }>, modules }.
+//   There is no `tags` map: a tag is defined by a `taggers[]` entry, e.g.
+//   {"version":1,"taggers":[{"tag":"edits","when":[{"file_path_matches":"src/"}]}],"modules":[]}
+fn rule_with_script(id: &str, scripts: Vec<&str>) -> Rule
+fn journey_facts(net: &ReteNetwork, predicate: &str) -> Vec<Fact>
+//   Networks are built with `ReteNetwork::new()` in this file.
+```
+
+`validate_selectors` only checks the selectors a *rule* references, never the tags on
+a record, so lifecycle records may carry `lifecycle:*` tags that no config defines.
+
+```rust
+/// A lifecycle record, in the same `(seq, ts)` / `(sid, tags)` shape as the
+/// file's existing helpers.
+fn make_lifecycle(timing: (u64, u64), identity: (&str, &[&str]), kind: &str) -> JournalRecord {
+    let (seq, ts) = timing;
+    let (sid, tags) = identity;
     JournalRecord {
-        v: 2, ts, sid: sid.into(), seq,
-        tool: "__lifecycle".into(), path: String::new(),
-        ext: None, module: None,
+        v: journal::JOURNAL_V,
+        ts,
+        sid: sid.to_string(),
+        seq,
+        tool: journal::LIFECYCLE_TOOL.to_string(),
+        path: String::new(),
+        ext: None,
+        module: None,
         tags: tags.iter().map(|s| s.to_string()).collect(),
-        subject: None, command_exit: None,
-        kind: Some(kind.into()), mode: None, host: Some("claude".into()),
-        turn: None, agent: None, agent_type: None, kalpa: None,
+        subject: None,
+        command_exit: None,
+        kind: Some(kind.to_string()),
+        mode: None,
+        host: Some("claude".to_string()),
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 
 /// Goal 5 of the spec: interleaving lifecycle records changes no existing fact.
 #[tokio::test]
 async fn tool_projection_keeps_existing_facts_identical() {
-    let cfg = cfg(r#"{"tags":{"edits":{"tool_is":"Edit"},"tests":{"path_contains":"tests/"}}}"#);
-    let rules = vec![rule_with_script("r", vec![
-        "facts_count('journey_count', ['edits','5c']) >= 0",
-        "facts_count('journey_since_ge', ['tests', 1]) >= 0",
-        "facts_count('journey_filtered_since_ge', ['tests','edits',1]) >= 0",
-        "facts_count('journey_distinct', ['path','5c']) >= 0",
-    ])];
-    let tools: Vec<JournalRecord> = (0..10).map(|i| {
-        if i == 4 { make_record_with_path(100 + i, "s-a", i, "Edit", "tests/x.rs", &["tests"]) }
-        else { make_record_with_path(100 + i, "s-a", i, "Edit", &format!("src/f{i}.rs"), &["edits"]) }
-    }).collect();
+    async fn facts_for(
+        records: &[JournalRecord],
+        rules: &[Rule],
+        config: &TaggerConfig,
+    ) -> Vec<String> {
+        let dir = tempfile::tempdir().unwrap();
+        for r in records {
+            journal::append(dir.path(), r).unwrap();
+        }
+        let mut net = ReteNetwork::new();
+        assert_facts(&mut net, derive_input(dir.path(), rules, config, 200))
+            .await
+            .unwrap();
+        let mut all: Vec<String> = Vec::new();
+        for p in [
+            "journey_count",
+            "journey_since_ge",
+            "journey_filtered_since_ge",
+            "journey_distinct",
+        ] {
+            for f in journey_facts(&net, p) {
+                all.push(format!("{}:{}", f.predicate, f.args.join(",")));
+            }
+        }
+        all.sort();
+        all
+    }
+
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[
+            {"tag":"edits","when":[{"file_path_matches":"src/"}]},
+            {"tag":"tests","when":[{"file_path_matches":"tests/"}]}
+        ],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec![
+            "facts_count('journey_count', ['edits','5c']) >= 0",
+            "facts_count('journey_since_ge', ['tests', 1]) >= 0",
+            "facts_count('journey_filtered_since_ge', ['tests','edits',1]) >= 0",
+            "facts_count('journey_distinct', ['path','5c']) >= 0",
+        ],
+    )];
+
+    let tools: Vec<JournalRecord> = (0..10u64)
+        .map(|i| {
+            if i == 4 {
+                make_record_with_path((i, 100 + i), ("s-now", &["tests"]), "tests/x.rs")
+            } else {
+                make_record_with_path((i, 100 + i), ("s-now", &["edits"]), &format!("src/f{i}.rs"))
+            }
+        })
+        .collect();
     let mut mixed = Vec::new();
     for (i, t) in tools.iter().enumerate() {
+        let i = i as u64;
         mixed.push(t.clone());
-        mixed.push(make_lifecycle(100 + i as u64, "s-a", 100 + i as u64, "prompt", &["lifecycle:prompt", "lifecycle:prompt:fresh"]));
+        mixed.push(make_lifecycle(
+            (100 + i, 100 + i),
+            ("s-now", &["lifecycle:prompt", "lifecycle:prompt:fresh"]),
+            "prompt",
+        ));
     }
-    let facts_for = |records: Vec<JournalRecord>| {
-        let rules = rules.clone(); let cfg = cfg.clone();
-        async move {
-            let dir = tempfile::tempdir().unwrap();
-            for r in &records { journal::append(dir.path(), r).unwrap(); }
-            let mut net = phronesis_mcp::net::build_network();
-            assert_facts(&mut net, derive_input(dir.path(), &rules, &cfg, "s-a", 200)).await.unwrap();
-            let mut all: Vec<String> = Vec::new();
-            for p in ["journey_count", "journey_since_ge", "journey_filtered_since_ge", "journey_distinct"] {
-                for f in journey_facts(&net, p) { all.push(format!("{}:{}", f.predicate, f.args.join(","))); }
-            }
-            all.sort(); all
-        }
-    };
-    assert_eq!(facts_for(tools).await, facts_for(mixed).await);
+
+    let tools_only = facts_for(&tools, &rules, &c).await;
+    // Golden values, so a symmetric off-by-one in both runs cannot pass: the
+    // `5c` window is the last 5 tool records (indices 5..9), all `edits`, over
+    // 5 distinct paths; the `tests` record at index 4 has 5 tool records after
+    // it, all `edits`, so both ladders cap at k = 1.
+    assert!(tools_only.contains(&"journey_count:edits,5c,5".to_string()), "{tools_only:?}");
+    assert!(tools_only.contains(&"journey_distinct:path,5c,5".to_string()), "{tools_only:?}");
+    assert!(tools_only.contains(&"journey_since_ge:tests,1".to_string()), "{tools_only:?}");
+    assert!(
+        tools_only.contains(&"journey_filtered_since_ge:tests,edits,1".to_string()),
+        "{tools_only:?}"
+    );
+    assert_eq!(tools_only, facts_for(&mixed, &rules, &c).await);
 }
 
 #[tokio::test]
 async fn lifecycle_selectors_validate_without_journey_config() {
-    let cfg = TaggerConfig::default();
-    let rules = vec![rule_with_script("r", vec![
-        "facts_count('journey_seen', ['lifecycle:interrupt','s']) >= 1",
-        "facts_count('journey_count', ['kalpa:demo','s']) >= 1",
-    ])];
+    let c = TaggerConfig::default();
+    let rules = vec![rule_with_script(
+        "r",
+        vec![
+            "facts_count('journey_seen', ['lifecycle:interrupt','s']) >= 1",
+            "facts_count('journey_count', ['kalpa:demo','s']) >= 1",
+            // Spec: a `lifecycle:*` selector with an `Nc` window yields no facts,
+            // because positional windows run over the tool projection.
+            "facts_count('journey_occurrence', ['lifecycle:interrupt','5c']) >= 1",
+        ],
+    )];
     let dir = tempfile::tempdir().unwrap();
-    journal::append(dir.path(), &make_lifecycle(5, "s-a", 1, "interrupt", &["lifecycle:interrupt", "kalpa:demo"])).unwrap();
-    let mut net = phronesis_mcp::net::build_network();
-    assert_facts(&mut net, derive_input(dir.path(), &rules, &cfg, "s-a", 10)).await.unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle((1, 5), ("s-now", &["lifecycle:interrupt", "kalpa:demo"]), "interrupt"),
+    )
+    .unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap();
     assert_eq!(journey_facts(&net, "journey_seen").len(), 1);
     assert_eq!(journey_facts(&net, "journey_count")[0].args, vec!["kalpa:demo", "s", "1"]);
+    assert!(journey_facts(&net, "journey_occurrence").is_empty());
+}
+
+/// Fail-closed is unchanged for everything outside the two built-in namespaces.
+#[tokio::test]
+async fn undefined_non_lifecycle_selector_still_fails_closed() {
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[{"tag":"edits","when":[{"file_path_matches":"src/"}]}],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_count', ['nonexistent','s']) >= 1"],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    let mut net = ReteNetwork::new();
+    let err = assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, derive::DeriveError::UndefinedSelector { .. }), "{err:?}");
 }
 
 #[tokio::test]
 async fn since_ge_counts_tool_records_after_lifecycle_target() {
-    let cfg = TaggerConfig::default();
-    let rules = vec![rule_with_script("r", vec!["facts_count('journey_since_ge', ['lifecycle:interrupt', 3]) >= 0"])];
+    let c = TaggerConfig::default();
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_since_ge', ['lifecycle:interrupt', 3]) >= 0"],
+    )];
     let dir = tempfile::tempdir().unwrap();
-    journal::append(dir.path(), &make_lifecycle(1, "s-a", 1, "interrupt", &["lifecycle:interrupt"])).unwrap();
-    for i in 0..2 { journal::append(dir.path(), &make_record(2 + i, "s-a", 2 + i, "Edit", &["edits"])).unwrap(); }
-    journal::append(dir.path(), &make_lifecycle(5, "s-a", 5, "stop", &["lifecycle:stop"])).unwrap();
-    let mut net = phronesis_mcp::net::build_network();
-    assert_facts(&mut net, derive_input(dir.path(), &rules, &cfg, "s-a", 10)).await.unwrap();
-    // two tool records after the interrupt; the trailing stop does not count
-    let ks: Vec<String> = journey_facts(&net, "journey_since_ge").iter().map(|f| f.args[1].clone()).collect();
+    journal::append(
+        dir.path(),
+        &make_lifecycle((1, 1), ("s-now", &["lifecycle:interrupt"]), "interrupt"),
+    )
+    .unwrap();
+    for i in 0..2u64 {
+        journal::append(dir.path(), &rec!(2 + i, 2 + i, "s-now", &["edits"], None)).unwrap();
+    }
+    journal::append(
+        dir.path(),
+        &make_lifecycle((5, 5), ("s-now", &["lifecycle:stop"]), "stop"),
+    )
+    .unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap();
+    // Distance is 2 (two *tool* records after the interrupt; the trailing stop
+    // does not count), and `emit_since_ge` ladders k = 1..=min(max_k, distance)
+    // = 1..=min(3, 2), so exactly "1" and "2" are emitted and "3" is not.
+    let mut ks: Vec<String> = journey_facts(&net, "journey_since_ge")
+        .iter()
+        .map(|f| f.args[1].clone())
+        .collect();
+    ks.sort_by_key(|s| s.parse::<u32>().unwrap_or(u32::MAX));
     assert_eq!(ks, vec!["1", "2"]);
 }
 
 #[tokio::test]
 async fn calls_only_rule_over_reads_past_lifecycle_records() {
-    let cfg = cfg(r#"{"tags":{"edits":{"tool_is":"Edit"}}}"#);
-    let rules = vec![rule_with_script("r", vec!["facts_count('journey_count', ['edits','3c']) >= 0"])];
+    let c = cfg(r#"{
+        "version":1,
+        "taggers":[{"tag":"edits","when":[{"file_path_matches":"src/"}]}],
+        "modules":[]
+    }"#);
+    let rules = vec![rule_with_script(
+        "r",
+        vec!["facts_count('journey_count', ['edits','3c']) >= 0"],
+    )];
     let dir = tempfile::tempdir().unwrap();
-    for i in 0..3 { journal::append(dir.path(), &make_record(i, "s-a", i, "Edit", &["edits"])).unwrap(); }
-    for i in 3..9 { journal::append(dir.path(), &make_lifecycle(i, "s-a", i, "prompt", &["lifecycle:prompt"])).unwrap(); }
-    let mut net = phronesis_mcp::net::build_network();
-    assert_facts(&mut net, derive_input(dir.path(), &rules, &cfg, "s-a", 10)).await.unwrap();
+    for i in 0..3u64 {
+        journal::append(dir.path(), &rec!(i, i, "s-now", &["edits"], None)).unwrap();
+    }
+    for i in 3..9u64 {
+        journal::append(
+            dir.path(),
+            &make_lifecycle((i, i), ("s-now", &["lifecycle:prompt"]), "prompt"),
+        )
+        .unwrap();
+    }
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap();
+    // Without the over-read the 3-record window would be all lifecycle records
+    // and the count would be 0.
     assert_eq!(journey_facts(&net, "journey_count")[0].args[2], "3");
 }
 ```
 
-Adjust helper names/arities to the existing helpers in the file (`make_record`, `make_record_with_path`, `derive_input`); read their signatures at the top of the file before using them.
+`rec!` is the file's existing macro wrapping `make_record`; it takes
+`(seq, ts, sid, tags, subject)`.
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cargo test -p phronesis-mcp --test journey_derive tool_projection lifecycle_selectors since_ge_counts calls_only 2>&1 | tail -30`
-Expected: `tool_projection_keeps_existing_facts_identical` fails (count differs), `lifecycle_selectors_validate_without_journey_config` fails with `UndefinedSelector`, `calls_only…` fails with `0` count.
+Run: `cargo test -p phronesis-mcp --test journey_derive tool_projection lifecycle_selectors since_ge_counts calls_only undefined_non_lifecycle 2>&1 | tail -30`
+Expected: compile error on `JOURNAL_V`/`LIFECYCLE_TOOL` if Task 1 has not landed; otherwise `tool_projection_keeps_existing_facts_identical` fails (the `5c` count differs), `lifecycle_selectors_validate_without_journey_config` fails with `UndefinedSelector`, `calls_only…` fails with `0` count. `undefined_non_lifecycle_selector_still_fails_closed` passes already — it is the regression pin for the loop this task rewrites.
 
 - [ ] **Step 3: Implement**
 
@@ -480,7 +639,11 @@ async fn emit_seen(network: &ReteNetwork, context: &WindowContext<'_>, scan: &Ru
 }
 ```
 
-`emit_distinct` takes the same two-line change but always binds `let view = context.tool_records;` regardless of window — a lifecycle record's `path` is `""` and must never add a distinct path. `emit_since_ge` keeps searching `records` for the last match but computes distance as the number of tool records after it, replacing `distance = Some((records.len() - 1 - i) as u32);`:
+`emit_distinct` takes the same change but always binds `let view = context.tool_records;` regardless of window — a lifecycle record's `path` is `""` and must never add a distinct path — and its `record_in_window(rec, win, i, context)` call becomes `record_in_window(rec, win, i, view.len(), &context.scope)` like the other three.
+
+`record_in_window`'s signature change also breaks `derive.rs`'s own two unit tests, `record_in_window_session` (`derive.rs:770`) and `record_in_window_calls` (`derive.rs:804`). Both build a `WindowContext { records, scope }` literal and call `record_in_window(&rec, tok, i, &context)`. Fix both in this task: add `tool_records: records` (they contain no lifecycle records, so the two views are the same slice) to each literal, and change every call to pass `records.len()` and `&context.scope`. The `JournalRecord` literals in those two tests also need Task 1's seven `None` fields, which Task 1 already added.
+
+`emit_since_ge` keeps searching `records` for the last match but computes distance as the number of tool records after it, replacing `distance = Some((records.len() - 1 - i) as u32);`:
 
 ```rust
         for (i, rec) in records.iter().enumerate().rev() {
@@ -1293,10 +1456,65 @@ pub fn scrub_prompt(project_root: &Path, text: &str) -> String;
 
 Append to `tests/scrub_payload_integration.rs`:
 
+`$HOME` is process-global and Rust runs a test binary's tests on parallel threads,
+so one test removing it while another reads it is a race, not a hypothetical. Both
+tests below take the same mutex and both go through one RAII guard that restores the
+original value even on panic. The guard also means neither test depends on the
+ambient `$HOME`: the positive case sets its own.
+
 ```rust
+use std::sync::{Mutex, MutexGuard, OnceLock};
+
+/// Serializes every test in this file that mutates `$HOME`.
+fn home_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+}
+
+/// Sets `$HOME` (or removes it when `value` is `None`) and restores the previous
+/// value on drop, including when the test panics.
+struct HomeGuard {
+    previous: Option<String>,
+    _lock: MutexGuard<'static, ()>,
+}
+
+impl HomeGuard {
+    fn set(value: Option<&str>) -> Self {
+        let guard = Self {
+            previous: std::env::var("HOME").ok(),
+            _lock: home_lock(),
+        };
+        // SAFETY: edition 2024 requires `unsafe` for env mutation because it is
+        // not thread-safe; `home_lock` is what makes it safe here, and every
+        // other `$HOME` mutation in this file goes through this guard.
+        unsafe {
+            match value {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+        guard
+    }
+}
+
+impl Drop for HomeGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.previous {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+    }
+}
+
 #[test]
 fn scrub_prompt_removes_bare_session_ids_transcripts_and_home_paths() {
-    let home = std::env::var("HOME").unwrap();
+    let fake_home = tempfile::tempdir().unwrap();
+    let home = fake_home.path().display().to_string();
+    let _guard = HomeGuard::set(Some(&home));
     let root = tempfile::tempdir().unwrap();
     let text = format!(
         "resume session 0f3c9a1e-1234-4bcd-9ef0-abcdefabcdef please, transcript at {home}/.claude/projects/x/abc.jsonl and file {home}/secret/notes.txt"
@@ -1311,18 +1529,18 @@ fn scrub_prompt_removes_bare_session_ids_transcripts_and_home_paths() {
 
 #[test]
 fn scrub_prompt_without_home_still_scrubs_project_root() {
+    let _guard = HomeGuard::set(None);
     let root = tempfile::tempdir().unwrap();
     let text = format!("edit {}/src/main.rs now", root.path().display());
-    let saved = std::env::var("HOME").ok();
-    unsafe { std::env::remove_var("HOME"); }
     let out = phronesis_mcp::lifecycle::scrub::scrub_prompt(root.path(), &text);
-    if let Some(h) = saved { unsafe { std::env::set_var("HOME", h); } }
     assert!(!out.contains(&root.path().display().to_string()), "{out}");
     assert!(out.contains("src/main.rs"), "{out}");
 }
 ```
 
-(If the file already has a serial-test pattern for env mutation, follow it; the `unsafe` blocks are required for `set_var` in edition 2024.)
+If the file already has its own serial-test pattern for env mutation, use that one
+instead and delete `home_lock`/`HomeGuard` — there must be exactly one lock in the
+binary or the serialization is worthless.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1440,14 +1658,61 @@ fn record_honors_prompt_text_none() {
     use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, record::record};
     let d = root();
     std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
-    std::fs::write(d.path().join(".phronesis/journey.json"), r#"{"tags":{},"lifecycle":{"prompt_text":"none"}}"#).unwrap();
+    std::fs::write(
+        d.path().join(".phronesis/journey.json"),
+        r#"{"version":1,"taggers":[],"modules":[],"lifecycle":{"prompt_text":"none"}}"#,
+    ).unwrap();
     record(d.path(), LifecycleEvent::new(Kind::Prompt, Host::Codex).with_mode(Mode::Fresh).with_prompt("hidden")).unwrap();
     let log = std::fs::read_to_string(d.path().join(".phronesis/log.jsonl")).unwrap();
     assert!(!log.contains("hidden")); assert!(log.contains(r#""prompt_bytes":6"#));
 }
+
+/// The journal append fails (the path is a directory), but the log entry —
+/// which is where the prompt text and `prompt_bytes` live — is still written,
+/// and `record` reports the failure by returning `None`. Spec: lifecycle
+/// writes are fail-open and never fail a hook.
+#[test]
+fn record_still_logs_when_the_journal_append_fails() {
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, record::record};
+    let d = root();
+    std::fs::create_dir_all(d.path().join(".phronesis/journey/events.jsonl")).unwrap();
+    let out = record(
+        d.path(),
+        LifecycleEvent::new(Kind::Prompt, Host::Claude).with_mode(Mode::Fresh).with_prompt("abc"),
+    );
+    assert!(out.is_none(), "a failed journal append must report itself");
+    let log = std::fs::read_to_string(d.path().join(".phronesis/log.jsonl")).unwrap();
+    assert!(log.contains(r#""prompt_bytes":3"#), "{log}");
+}
+
+/// The join key between the two files (spec §"Action log").
+#[test]
+fn journal_record_and_log_entry_share_sid_and_seq() {
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, record::record};
+    let d = root();
+    record(d.path(), LifecycleEvent::new(Kind::Stop, Host::Claude)).unwrap();
+    let journal: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(d.path().join(".phronesis/journey/events.jsonl"))
+            .unwrap().lines().next_back().unwrap(),
+    ).unwrap();
+    let log: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(d.path().join(".phronesis/log.jsonl"))
+            .unwrap().lines().next_back().unwrap(),
+    ).unwrap();
+    assert!(!journal["sid"].is_null());
+    assert!(!journal["seq"].is_null());
+    assert_eq!(journal["sid"], log["sid"]);
+    assert_eq!(journal["seq"], log["seq"]);
+}
 ```
 
-Check `TaggerConfig`'s required fields (`tags`, `modules`) so the JSON above parses; adjust to the minimal valid document.
+`TaggerConfig`'s real shape, verified against the current tree, is
+`{ version: u32, taggers: Vec<TaggerEntry>, modules: Vec<ModuleEntry> }` plus a
+`#[serde(skip)] compiled: OnceLock<Vec<Rule>>` — there is no `tags` map. It has a
+hand-written `Default` impl (`tagger.rs:58`) rather than `#[derive(Default)]`, so
+adding the `lifecycle` field means adding `lifecycle: LifecycleConfig::default()` to
+that impl. Grep for `TaggerConfig {` across `src/` and `tests/` and add the field to
+every struct literal the compiler flags.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1527,7 +1792,7 @@ Expected: pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/phronesis-mcp/src/lifecycle/record.rs crates/phronesis-mcp/src/journey/tagger.rs crates/phronesis-mcp/src/hook/mod.rs crates/phronesis-mcp/tests/lifecycle_state.rs
+git add crates/phronesis-mcp/src/lifecycle/record.rs crates/phronesis-mcp/src/journey/tagger.rs crates/phronesis-mcp/tests/lifecycle_state.rs
 git commit -m "feat(lifecycle): record() writes journal and log; prompt_text config"
 ```
 
@@ -1546,11 +1811,27 @@ pub enum InterruptSource { Hook, Inflight, Transcript, OpenTurn }
 impl InterruptSource { pub fn as_str(self) -> &'static str; /* hook | inflight | transcript | open_turn */ }
 pub struct Classification { pub mode: Mode, pub interrupt: Option<InterruptSource> }
 pub fn classify_prompt(root: &Path, ctx: &PromptContext<'_>) -> Classification;
+/// The `kind` of the most recent **lifecycle** record for the current sid.
+/// This is the one definition; Plans 2 and 3 call it rather than deriving it.
+pub fn last_lifecycle_kind(root: &Path) -> Option<String>;
 ```
 
-`last_journal_kind` is the `kind` of the most recent journal record for the current sid, or `None`; callers obtain it with `journey::journal::read_recent(root, 1)` filtered to lifecycle records (Plan 2/3 do this). The Codex branch fires when `last_journal_kind == Some("interrupt")`.
+`last_journal_kind` is what `last_lifecycle_kind` returns. It must **not** be derived
+as `read_recent(root, 1)` plus a filter: the spec says "the last lifecycle record for
+this sid", and a single tool record journaled after the interrupt would make that
+derivation return `None` and silently lose every correction. The helper scans
+backwards over a window instead, and skips records from another session.
 
-Algorithm exactly as spec §Classification. Transcript check: read the last 64 KiB of `transcript_path`, split into lines, parse each as JSON, and consider a hit when any object has `type == "user"` (or a nested `message.role == "user"`) whose text content (string, or first `content[].text`) equals `[Request interrupted by user]` or starts with `[Request interrupted by user for tool use]`, and whose `timestamp` (RFC3339, if present) is after `turn.last_prompt_ts`; if no timestamp is present, accept the hit.
+**Ordering correction.** Spec §Classification numbers the closed-turn short-circuit
+first, but spec §"Host adapters / Codex CLI" also has the `Interrupt` hook set the
+turn *closed*. Taken in the written order the Codex `Hook` branch is unreachable and
+every post-interrupt Codex prompt classifies `fresh`, which contradicts the spec's own
+mode table ("`correction` — an `interrupt` record immediately precedes this prompt in
+the same session"). `classify_prompt` therefore evaluates the `Hook` evidence
+**before** the closed-turn short-circuit. That is the only ordering under which both
+statements hold. Flagged for the spec owner; the plans implement the mode table.
+
+Everything else is exactly as spec §Classification. Transcript check: read the last 64 KiB of `transcript_path`, split into lines, parse each as JSON, and consider a hit when any object has `type == "user"` (or a nested `message.role == "user"`) whose text content (string, or first `content[].text`) equals `[Request interrupted by user]` or starts with `[Request interrupted by user for tool use]`, and whose `timestamp` (RFC3339, if present) is after `turn.last_prompt_ts`; if no timestamp is present, accept the hit.
 
 - [ ] **Step 1: Write the failing tests** in `tests/lifecycle_classify.rs`
 
@@ -1612,6 +1893,46 @@ fn codex_interrupt_record_precedes_prompt() {
     assert_eq!(out.mode, Mode::Correction); assert_eq!(out.interrupt.map(|i| i.as_str()), Some("hook"));
 }
 
+/// Codex's `Interrupt` hook closes the turn before the prompt arrives, so the
+/// Hook branch must survive a closed turn or the correction signal is dead.
+#[test]
+fn codex_interrupt_record_wins_over_a_closed_turn() {
+    let d = root(); open_turn(d.path(), None, 10); close_turn(d.path(), "interrupt");
+    let mut c = ctx(Host::Codex, 100); c.last_journal_kind = Some("interrupt");
+    let out = classify_prompt(d.path(), &c);
+    assert_eq!(out.mode, Mode::Correction); assert_eq!(out.interrupt.map(|i| i.as_str()), Some("hook"));
+    // Claude never writes an `Interrupt` hook record, so the same evidence on
+    // Claude stays fresh.
+    let mut c = ctx(Host::Claude, 100); c.last_journal_kind = Some("interrupt");
+    assert_eq!(classify_prompt(d.path(), &c).mode, Mode::Fresh);
+}
+
+/// `last_lifecycle_kind` must look past tool records and past other sessions.
+#[test]
+fn last_lifecycle_kind_scans_past_tool_records_and_skips_other_sessions() {
+    use phronesis_mcp::journey::journal::{self, JournalRecord};
+    let d = root();
+    set_session(d.path(), "s-a");
+    let lifecycle = |sid: &str, seq: u64, kind: &str| JournalRecord {
+        v: journal::JOURNAL_V, ts: seq, sid: sid.into(), seq,
+        tool: journal::LIFECYCLE_TOOL.into(), path: String::new(),
+        ext: None, module: None, tags: vec![format!("lifecycle:{kind}")],
+        subject: None, command_exit: None,
+        kind: Some(kind.into()), mode: None, host: Some("codex".into()),
+        turn: None, agent: None, agent_type: None, kalpa: None,
+    };
+    let mut tool = lifecycle("s-a", 3, "x");
+    tool.tool = "Edit".into(); tool.path = "src/a.rs".into(); tool.kind = None; tool.host = None;
+
+    assert_eq!(last_lifecycle_kind(d.path()), None);
+    journal::append(d.path(), &lifecycle("s-a", 1, "interrupt")).unwrap();
+    journal::append(d.path(), &tool).unwrap();
+    assert_eq!(last_lifecycle_kind(d.path()).as_deref(), Some("interrupt"));
+    // A later session's records do not answer for this one.
+    journal::append(d.path(), &lifecycle("s-b", 4, "stop")).unwrap();
+    assert_eq!(last_lifecycle_kind(d.path()).as_deref(), Some("interrupt"));
+}
+
 #[test]
 fn claude_transcript_marker_after_last_prompt_is_interrupt() {
     let d = root(); open_turn(d.path(), None, 1_700_000_000);
@@ -1662,11 +1983,29 @@ impl InterruptSource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Classification { pub mode: Mode, pub interrupt: Option<InterruptSource> }
 
+/// How far back `last_lifecycle_kind` looks. Generous enough that a burst of
+/// tool records between an interrupt and the next prompt cannot hide it, and
+/// far below `SUFFIX_HARD_CAP`.
+const LAST_KIND_SCAN: usize = 64;
+
+pub fn last_lifecycle_kind(root: &Path) -> Option<String> {
+    let sid = crate::journey::current_sid(root);
+    crate::journey::journal::read_recent(root, LAST_KIND_SCAN)
+        .ok()?
+        .into_iter()
+        .rev()
+        .find(|r| r.is_lifecycle() && r.sid == sid)
+        .and_then(|r| r.kind)
+}
+
 pub fn classify_prompt(root: &Path, ctx: &PromptContext<'_>) -> Classification {
     let turn = read_turn(root);
-    if !turn.open { return Classification { mode: Mode::Fresh, interrupt: None }; }
     let correction = |src| Classification { mode: Mode::Correction, interrupt: Some(src) };
+    // Before the closed-turn short-circuit: Codex's `Interrupt` hook closes the
+    // turn itself, so an explicit interrupt record is ground truth that outranks
+    // "the turn is closed, therefore this is a reply". See the Interfaces note.
     if ctx.host == Host::Codex && ctx.last_journal_kind == Some("interrupt") { return correction(InterruptSource::Hook); }
+    if !turn.open { return Classification { mode: Mode::Fresh, interrupt: None }; }
     if !take_inflight_for_scope(root, ctx.now, ctx.agent_id).is_empty() { return correction(InterruptSource::Inflight); }
     if ctx.host == Host::Claude
         && let Some(p) = ctx.transcript_path
@@ -1904,7 +2243,62 @@ fn capture_redacts_prompt_and_last_assistant_message() {
 }
 ```
 
-Also add an end-to-end case using the file's existing helper that runs `pre-check` with `PHRONESIS_CAPTURE_DIR` set and a payload containing `"prompt":"zzz-secret"`, asserting `payloads.jsonl` lacks `zzz-secret`.
+The file's existing helpers are `run_hook_with_env(subcommand: &str, payload: &str, envs: &[(&str, &str)]) -> i32` and `read_capture(dir: &Path) -> Vec<serde_json::Value>`; `capture_raw_payload` stamps `phase` as `"pre"` / `"post"` (the value `read_payload` passes), not the subcommand name. The end-to-end case, spelled out because the spec makes it a hard requirement ("A test asserts no prompt text reaches `payloads.jsonl`"):
+
+```rust
+#[test]
+fn prompt_text_never_reaches_the_capture_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let payload = r#"{"hook_event_name":"PreToolUse","session_id":"s","prompt":"zzz-secret","tool_name":"Read","tool_input":{"file_path":"src/main.rs"}}"#;
+    let code = run_hook_with_env(
+        "pre-check",
+        payload,
+        &[("PHRONESIS_CAPTURE_DIR", dir.path().to_str().expect("utf8"))],
+    );
+    assert_eq!(code, 0, "capture must not change hook behavior");
+    let raw = std::fs::read_to_string(dir.path().join("payloads.jsonl")).expect("capture file");
+    assert!(!raw.contains("zzz-secret"), "{raw}");
+    assert!(raw.contains("<redacted:10 bytes>"), "{raw}");
+    let records = read_capture(dir.path());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["phase"], "pre");
+    // Everything else is still captured verbatim.
+    assert_eq!(records[0]["raw"]["tool_name"], "Read");
+    assert_eq!(records[0]["raw"]["session_id"], "s");
+}
+```
+
+The new `HookPayload` fields need their own parse test, because a misspelled serde
+name yields `None` silently and every test in this plan still passes while Plans 2
+and 3 lose correlation entirely. `HookPayload` is `pub(super)`, so this is a unit
+test inside `hook/mod.rs`'s `#[cfg(test)] mod tests`, not an integration test:
+
+```rust
+    #[test]
+    fn hook_payload_parses_the_correlation_fields() {
+        let p: HookPayload = serde_json::from_str(
+            r#"{"tool_name":"Bash","tool_input":{"command":"ls"},
+                "session_id":"s-1","tool_use_id":"tu-1",
+                "hook_event_name":"PreToolUse","agent_id":"a-1"}"#,
+        )
+        .expect("parse");
+        assert_eq!(p.session_id.as_deref(), Some("s-1"));
+        assert_eq!(p.tool_use_id.as_deref(), Some("tu-1"));
+        assert_eq!(p.hook_event_name.as_deref(), Some("PreToolUse"));
+        assert_eq!(p.agent_id.as_deref(), Some("a-1"));
+
+        let bare: HookPayload =
+            serde_json::from_str(r#"{"tool_name":"Bash","tool_input":{}}"#).expect("parse");
+        assert!(bare.session_id.is_none());
+        assert!(bare.tool_use_id.is_none());
+        assert!(bare.hook_event_name.is_none());
+        assert!(bare.agent_id.is_none());
+    }
+```
+
+Existing `tests/payload_capture.rs` assertions read the capture through parsed JSON
+(`records[0]["raw"]["session_id"]`), never as raw bytes, so re-serializing inside
+`redact_for_capture` breaks none of them.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -1998,22 +2392,51 @@ pub fn header_line(root: &Path, now: u64) -> Option<String>;  // "kalpa: <name> 
 
 `Show` prints the header line and nothing else — no "counts: see Plan 5" stub, which would be a placeholder shipped to a user. Plan 5 Task 3 replaces the `Show` arm with one that appends the count block. `run` with `Show` and no name uses the open kalpa; with no open kalpa it returns `Err("no kalpa open")`.
 
-- [ ] **Step 1: Write the failing tests** in `tests/kalpa_integration.rs` (use the same `phr-mcp` binary invocation helper style as `tests/journey_cli_integration.rs`; read that file first and copy its `cargo_bin`/`Command` setup)
+- [ ] **Step 1: Write the failing tests** in `tests/kalpa_integration.rs`
+
+`run` uses `security::project_root()`, which honours `PHRONESIS_PROJECT_ROOT` and
+otherwise falls back to the process cwd, so the helper pins both:
 
 ```rust
+use std::path::Path;
+use std::process::{Command, Output};
+
+/// Run `phr-mcp` against `root` as the project root.
+fn run_phr(root: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(args)
+        .env("PHRONESIS_PROJECT_ROOT", root)
+        .current_dir(root)
+        .output()
+        .expect("spawn phr-mcp")
+}
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
 #[test]
 fn kalpa_start_show_end_round_trip_and_events() {
     let d = tempfile::tempdir().unwrap();
     let out = run_phr(d.path(), &["kalpa", "start", "lifecycle-events"]);
     assert!(out.status.success());
     let show = run_phr(d.path(), &["kalpa"]);
-    assert!(String::from_utf8_lossy(&show.stdout).contains("kalpa: lifecycle-events"));
+    assert!(stdout(&show).contains("kalpa: lifecycle-events"));
     let journal = std::fs::read_to_string(d.path().join(".phronesis/journey/events.jsonl")).unwrap();
     assert!(journal.contains(r#""kind":"kalpa_start""#)); assert!(journal.contains(r#""kalpa":"lifecycle-events""#));
     let end = run_phr(d.path(), &["kalpa", "end"]);
     assert!(end.status.success());
-    let journal = std::fs::read_to_string(d.path().join(".phronesis/journey/events.jsonl")).unwrap();
-    assert!(journal.contains(r#""kind":"kalpa_end""#));
+    // The closing record is attributed to the kalpa it closes.
+    let last: serde_json::Value = serde_json::from_str(
+        std::fs::read_to_string(d.path().join(".phronesis/journey/events.jsonl"))
+            .unwrap().lines().next_back().unwrap(),
+    ).unwrap();
+    assert_eq!(last["kind"], "kalpa_end");
+    assert_eq!(last["kalpa"], "lifecycle-events");
+    assert!(
+        last["tags"].as_array().unwrap().iter().any(|t| t == "kalpa:lifecycle-events"),
+        "{last}"
+    );
     assert!(!d.path().join(".phronesis/journey/kalpa").exists());
 }
 
@@ -2024,6 +2447,39 @@ fn kalpa_rejects_bad_names_and_survives_session_reset() {
     assert!(run_phr(d.path(), &["kalpa", "start", "ok-1"]).status.success());
     phronesis_mcp::lifecycle::state::reset_for_session_start(d.path());
     assert_eq!(phronesis_mcp::lifecycle::state::read_kalpa(d.path()).unwrap().name, "ok-1");
+}
+
+#[test]
+fn kalpa_show_with_none_open_fails_and_starting_a_second_ends_the_first() {
+    let d = tempfile::tempdir().unwrap();
+    let show = run_phr(d.path(), &["kalpa"]);
+    assert!(!show.status.success());
+    assert!(String::from_utf8_lossy(&show.stderr).contains("no kalpa open"));
+
+    assert!(run_phr(d.path(), &["kalpa", "start", "a"]).status.success());
+    let second = run_phr(d.path(), &["kalpa", "start", "b"]);
+    assert!(second.status.success());
+    let text = stdout(&second);
+    assert!(text.contains("ended kalpa a"), "{text}");
+    assert!(text.contains("started kalpa b"), "{text}");
+    assert_eq!(phronesis_mcp::lifecycle::state::read_kalpa(d.path()).unwrap().name, "b");
+}
+
+/// `header_line` takes `now` so the stale marker is testable without waiting a
+/// month. This is the only caller that exercises the 30-day branch.
+#[test]
+fn header_line_marks_a_month_old_kalpa_stale() {
+    use phronesis_mcp::lifecycle::kalpa_cli::header_line;
+    use phronesis_mcp::lifecycle::state::{Kalpa, write_kalpa};
+    let d = tempfile::tempdir().unwrap();
+    let now = 1_800_000_000u64;
+    write_kalpa(d.path(), &Kalpa { name: "old-one".into(), started_ts: now - 31 * 24 * 3600 });
+    let line = header_line(d.path(), now).expect("a header");
+    assert!(line.contains("kalpa: old-one"), "{line}");
+    assert!(line.contains("(stale? run phr-mcp kalpa end)"), "{line}");
+
+    write_kalpa(d.path(), &Kalpa { name: "new-one".into(), started_ts: now - 3600 });
+    assert!(!header_line(d.path(), now).unwrap().contains("stale"));
 }
 ```
 
@@ -2071,10 +2527,16 @@ pub fn header_line(root: &Path, now: u64) -> Option<String> {
     Some(line)
 }
 
+/// Records `kalpa_end` **while the kalpa is still open**, then clears it, so the
+/// boundary record carries `kalpa: "<name>"` and the `kalpa:<name>` tag like
+/// every other record in the kalpa (spec §"Naming the kalpa": "Every lifecycle
+/// record written while a kalpa is open carries `kalpa`"). Clearing first would
+/// leave the one record that closes the theme unattributable to it, which is
+/// exactly the record `phr-mcp kalpa show` needs to find the boundary.
 fn end_open(root: &Path) -> Option<String> {
     let k = state::read_kalpa(root)?;
+    record(root, LifecycleEvent::new(Kind::KalpaEnd, Host::Cli));
     state::clear_kalpa(root);
-    record(root, LifecycleEvent::new(Kind::KalpaEnd, Host::Cli).with_extra("kalpa_name", k.name.clone()));
     Some(k.name)
 }
 
@@ -2100,7 +2562,7 @@ pub fn run(root: &Path, cmd: KalpaCmd) -> anyhow::Result<String> {
 }
 ```
 
-Note `kalpa_end` records after `clear_kalpa`, so the record's `kalpa` field is `None`; the name travels in `extra.kalpa_name`. `kalpa_start` records after `write_kalpa`, so it is stamped with the new name.
+Both boundary records are stamped with the kalpa name: `kalpa_start` records after `write_kalpa`, `kalpa_end` records before `clear_kalpa`. `record` reads the kalpa file itself, so neither needs an `extra` field for the name.
 
 `main.rs`: add to the `Command` enum. **Placement convention for this whole five-plan set:** every new `Command` variant goes in alphabetical position by variant name among the *newly added* lifecycle variants, and the group as a whole sits immediately after the existing `CodexHook` variant (`main.rs:424`). The set adds exactly two: `ClaudeHook` (Plan 2) and `Kalpa` (Plan 1). Alphabetically `ClaudeHook` precedes `Kalpa`, so the final order after both land is `CodexHook`, `ClaudeHook`, `Kalpa`. Plan 1 lands first and puts `Kalpa` directly after `CodexHook`; Plan 2 inserts `ClaudeHook` between them. Same rule in the `match cli.command` dispatch block, so the two edits never touch the same line.
 
@@ -2189,5 +2651,6 @@ git commit -m "docs: journey spec amendment and changelog for lifecycle foundati
 
 - **Spec coverage (steps 1a/1b):** journal v2 (T1), projection + selectors + read bound (T2), compaction (T3), shared type (T4), state files with lock, TTL, scope, session overwrite (T5), scrub_prompt (T6), record + prompt_text (T7), classify (T8), detect_commit (T9), HookPayload widening + comment fix + capture redaction (T10), kalpa subcommand + header (T11), spec amendment + changelog (T12). Not in this plan by design: pre/post inflight push/pop and `invoke_agent` derivation (Plan 2), Codex payload fields (Plan 3), Gemini registrations (Plan 4), stats/metrics/CLI rendering and `kalpa show` counts (Plan 5).
 - **Type consistency:** `LifecycleEvent`, `Stamped`, `PromptText`, `Kind`, `Mode`, `Host` are defined once in T4 and used by T7, T8, T11 with the same names. `Inflight`, `OpenAgent`, `Turn`, `Kalpa`, `PromptContext`, `Classification`, `InterruptSource` are defined in T5/T8. `Commit` in T9. `redact_for_capture` in T10.
+- **Deliberate deviation from the spec's literal text, for the spec owner.** §Classification numbers the closed-turn short-circuit first, while §"Host adapters / Codex CLI" has the `Interrupt` hook close the turn. Together those make the Codex `Hook` branch unreachable and every post-interrupt Codex prompt `fresh`, contradicting the spec's own mode table. Task 8 evaluates the `Hook` evidence before the short-circuit; Plan 3 Task 4 pins the resulting `correction`. The spec should be amended to match, or this ordering revisited.
 - **Placeholders:** none. T11's `Show` intentionally prints only the header until Plan 5 adds counts, and says so. T3's compaction test and T2's `validate_selectors` loop are written out in full against the real `maybe_compact` / `validate_selectors` bodies.
 - **Ownership:** this plan is the sole owner of `hook/mod.rs` for the feature. `HookPayload`'s new fields, `redact_for_capture`, `capture_raw_payload`'s `pub(crate)` visibility, and the corrected `tool_output` comment all land in T10. Plans 2 and 3 consume them and must not re-make those changes; Plan 2 adds only the single `mod lifecycle_wiring;` line to that file.

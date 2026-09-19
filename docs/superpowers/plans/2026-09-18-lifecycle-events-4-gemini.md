@@ -268,7 +268,7 @@ git commit -m "docs(init): note Gemini entity escaping and folder trust in insta
 - Consumes: the `invoke_agent` derivation in `hook/pre.rs` and `hook/post.rs` (Plan 2), `lifecycle::state::{push_agent, pop_agent}` and `lifecycle::event::{Kind, Host}` (Plan 1).
 - Produces: nothing. This is the acceptance test for "Gemini sub-agents are observable".
 
-**Note for the executor:** Plan 2 is a hard prerequisite for this whole plan (see the header), so by the time you run this the derivation exists and the test must pass outright. If you are working ahead of the Plan 2 merge in an isolated worktree, write it, watch it fail with the *right* failure (no lifecycle records), and mark it `#[ignore = "requires plan 2: invoke_agent derivation"]`; remove the attribute in the follow-up commit that confirms it green.
+**Note for the executor:** Plan 2 is a hard prerequisite for this whole plan (see the header), so by the time you run this the derivation exists and the test must pass outright. Do **not** mark it `#[ignore]`: Task 5's full-suite run does not include ignored tests, so an ignore added "temporarily" is an acceptance test that never runs again. If Plan 2 has not merged, stop and merge it first.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -296,6 +296,23 @@ fn run_hook_at(root: &Path, args: &[&str], payload: &str) -> (i32, String, Strin
     )
 }
 
+/// `pre-check` and `post-check` print **nothing** on stdout when they allow —
+/// verified against the current tree: neither `hook/pre.rs` nor `hook/post.rs`
+/// contains a `println!`, and no plan in this set changes that. On Gemini that
+/// empty stdout is benign (Gemini only turns *non-JSON* stdout into a
+/// `systemMessage`), but it is not the `{}` the Gemini section of the spec asks
+/// for, so this helper accepts empty-or-JSON-object and the gap is reported to
+/// the spec owner rather than pinned as if some task implemented it.
+fn assert_allow_stdout(stdout: &str) {
+    let t = stdout.trim();
+    if t.is_empty() {
+        return;
+    }
+    let v: Value = serde_json::from_str(t)
+        .unwrap_or_else(|e| panic!("pre/post stdout must be JSON when non-empty: {t:?}: {e}"));
+    assert!(v.is_object(), "stdout must be a JSON object: {t}");
+}
+
 fn lifecycle_records(root: &Path) -> Vec<Value> {
     let path = root.join(".phronesis/journey/events.jsonl");
     let body = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
@@ -321,12 +338,12 @@ fn gemini_invoke_agent_pairs_a_subagent_start_and_stop() {
     let before = r#"{"hook_event_name":"BeforeTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase_investigator","prompt":"x"}}"#;
     let (code, stdout, stderr) = run_hook_at(root, &["pre-check"], before);
     assert_eq!(code, 0, "pre-check must allow invoke_agent: {stderr}");
-    assert_eq!(stdout.trim(), "{}", "Gemini requires JSON on stdout, never empty");
+    assert_allow_stdout(&stdout);
 
     let after = r#"{"hook_event_name":"AfterTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase_investigator","prompt":"x"},"tool_response":{"output":"done"}}"#;
     let (code, stdout, stderr) = run_hook_at(root, &["post-check"], after);
     assert_eq!(code, 0, "post-check must succeed: {stderr}");
-    assert_eq!(stdout.trim(), "{}");
+    assert_allow_stdout(&stdout);
 
     let recs = lifecycle_records(root);
     let starts: Vec<&Value> = recs.iter().filter(|r| r["kind"] == "subagent_start").collect();
@@ -366,7 +383,7 @@ fn gemini_invoke_agent_pairs_a_subagent_start_and_stop() {
 - [ ] **Step 2: Run it and read the failure**
 
 Run: `cargo test -p phronesis-mcp --test hook_integration gemini_invoke_agent`
-Expected (before Plan 2): FAIL at `lifecycle_records` — `events.jsonl` has no `__lifecycle` record, because `invoke_agent` falls through `exit_ok()` in `pre.rs:30-43`. That is the correct pre-Plan-2 failure. Expected (after Plan 2): PASS.
+Expected (before Plan 2): FAIL at `lifecycle_records` — `events.jsonl` has no `__lifecycle` record, because `invoke_agent` falls through `exit_ok()` in `pre.rs:30-43`. That is the correct pre-Plan-2 failure, and it is the *first* assertion that fails: `assert_allow_stdout` tolerates today's empty stdout, so the failure names the missing behaviour rather than an unrelated stdout shape. Expected (after Plan 2): PASS.
 
 - [ ] **Step 3: Commit**
 
@@ -380,7 +397,7 @@ git commit -m "test(hooks): gemini invoke_agent produces a paired subagent start
 ### Task 4: End-to-end turn, interrupt, and correction on Gemini
 
 **Files:**
-- Test: `crates/phronesis-mcp/tests/hook_integration.rs` (append, reusing Task 4's helpers)
+- Test: `crates/phronesis-mcp/tests/hook_integration.rs` (append, reusing Task 3's helpers)
 
 **Interfaces:**
 - Consumes: Task 3's helpers, `phr-mcp claude-hook {SessionStart,SessionEnd,BeforeAgent,AfterAgent}` (Plan 2), and `lifecycle::state::classify_prompt`'s `open_turn` branch (Plan 1 Task 8).
@@ -439,10 +456,11 @@ fn gemini_second_prompt_without_after_agent_is_an_interrupt_and_correction() {
         "correction tag missing: {}",
         recs[2]
     );
-    assert!(
-        !serde_json::to_string(&recs).unwrap().contains("temp dir"),
-        "the journal must never carry prompt text: {recs:?}"
-    );
+    let journal_json = serde_json::to_string(&recs).unwrap();
+    // Both prompts: they went through different classification paths, and only
+    // checking the second would miss a leak on the `fresh` path.
+    assert!(!journal_json.contains("add a test"), "the journal must never carry prompt text: {recs:?}");
+    assert!(!journal_json.contains("temp dir"), "the journal must never carry prompt text: {recs:?}");
 
     let log = lifecycle_log(root);
     let interrupt = log.iter().find(|e| e["event"] == "interrupt").expect("interrupt entry");
@@ -480,6 +498,42 @@ fn gemini_after_agent_closes_the_turn_so_the_next_prompt_is_fresh() {
     assert!(
         lifecycle_log(root).iter().all(|e| e["event"] != "interrupt"),
         "a completed turn must not infer an interrupt"
+    );
+}
+
+/// Task 1 registers `SessionEnd` but nothing else in this plan invokes it, so a
+/// broken mapping (claude-hook not handling the Gemini registration, or not
+/// recording the stop and truncating the session) would ship green.
+/// Spec: "SessionEnd → if turn is open, record stop; truncate session; set turn
+/// closed."
+#[test]
+fn gemini_session_end_records_a_stop_and_closes_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    const G_SESSION_END: &str = r#"{"hook_event_name":"SessionEnd","session_id":"g1"}"#;
+
+    for (args, payload) in [
+        (["claude-hook", "SessionStart"], G_SESSION_START),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_1),
+        (["claude-hook", "SessionEnd"], G_SESSION_END),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_2),
+    ] {
+        let (code, stdout, stderr) = run_hook_at(root, &args, payload);
+        assert_eq!(code, 0, "{args:?} must exit 0: {stderr}");
+        assert_json_object_stdout(&stdout);
+    }
+
+    let recs = lifecycle_records(root);
+    let kinds: Vec<&str> = recs.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert_eq!(kinds, ["prompt", "stop", "prompt"], "{recs:?}");
+    assert_eq!(recs[1]["host"], "gemini");
+    // The turn was closed by SessionEnd, so the next prompt is fresh and no
+    // interrupt is inferred.
+    assert_eq!(recs[2]["mode"], "fresh");
+    assert!(lifecycle_log(root).iter().all(|e| e["event"] != "interrupt"), "{recs:?}");
+    assert_eq!(
+        std::fs::read_to_string(root.join(".phronesis/journey/session")).unwrap().trim(),
+        ""
     );
 }
 ```
