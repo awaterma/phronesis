@@ -880,7 +880,10 @@ that paired with a stop, and the median is over those durations alone. The
 carries a band, rather than printing zeros. `interventions / commit` is
 computed over the retained window shown in the header, not the kalpa's full
 span; when the `kalpa_start` entry has itself rotated off, the header prints
-`start not retained` in place of the start date. `interventions / commit` is
+`start not retained` in place of the start date. That fallback applies to a
+*closed* kalpa, whose only record of its start is the log; an *open* kalpa
+prints `started_ts` from `.phronesis/journey/kalpa`, which is authoritative
+while the kalpa is open regardless of rotation. `interventions / commit` is
 omitted when commits are zero. No other ratio
 ships in v1 (§Non-goals).
 
