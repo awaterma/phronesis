@@ -445,3 +445,180 @@ pub fn valid_kalpa_name(name: &str) -> bool {
         && b.iter()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
+
+// ---- classification ----
+use crate::lifecycle::event::{Host, Mode};
+
+pub struct PromptContext<'a> {
+    pub host: Host,
+    pub now: u64,
+    /// `Some` when this prompt was delivered **inside** a sub-agent. Such a
+    /// prompt is not the human speaking: it classifies `fresh` and touches no
+    /// state at all.
+    pub agent_id: Option<&'a str>,
+    pub turn_id: Option<&'a str>,
+    pub transcript_path: Option<&'a Path>,
+}
+
+/// How an interrupt was inferred, for the log's `inferred_from`. No `Hook`
+/// variant: the Codex `Interrupt` hook writes its own record and sets
+/// `turn.last_event`, which step 1 reads without inferring anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptSource {
+    Inflight,
+    Transcript,
+    OpenTurn,
+}
+impl InterruptSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inflight => "inflight",
+            Self::Transcript => "transcript",
+            Self::OpenTurn => "open_turn",
+        }
+    }
+}
+
+/// `interrupt: Some(source)` means the caller must write an `interrupt` record
+/// with that `inferred_from` before the prompt record. `interrupt: None` with
+/// `mode: Correction` means the record already exists (step 1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Classification {
+    pub mode: Mode,
+    pub interrupt: Option<InterruptSource>,
+}
+
+/// Spec §"Classification at prompt time", in the spec's own order.
+pub fn classify_prompt(root: &Path, ctx: &PromptContext<'_>) -> Classification {
+    // A prompt carrying an agent_id is a sub-agent's prompt, not the human's.
+    // It reads no state and writes none.
+    if ctx.agent_id.is_some() {
+        return Classification {
+            mode: Mode::Fresh,
+            interrupt: None,
+        };
+    }
+
+    // Step 1. `read_turn` already treats a missing, unparseable or foreign-sid
+    // file as absent, which is `Turn::default()`: closed, last_event empty.
+    let turn = read_turn(root);
+    if turn.last_event == "interrupt" {
+        // The single interrupt-already-recorded path, on every host. Read from
+        // `turn` and not from the journal tail, so a concurrent SubagentStop
+        // record cannot hide it and compaction cannot erase it.
+        return Classification {
+            mode: Mode::Correction,
+            interrupt: None,
+        };
+    }
+    if !turn.open {
+        return Classification {
+            mode: Mode::Fresh,
+            interrupt: None,
+        };
+    }
+
+    // Step 2. Look for evidence that the human aborted the running turn.
+    match detect_interrupt(root, ctx) {
+        Some(source) => Classification {
+            mode: Mode::Correction,
+            interrupt: Some(source),
+        },
+        // Step 3. Reachable on Claude and Codex only; the Gemini branch inside
+        // `detect_interrupt` always fires for an open turn.
+        None => Classification {
+            mode: Mode::MidTurn,
+            interrupt: None,
+        },
+    }
+}
+
+/// Step 2's evidence check, in the spec's order, stopping at the first hit.
+/// Every hit drops the session's `inflight` entries, so one Esc cannot yield
+/// two interrupts and a lingering entry cannot fake a third.
+///
+/// Exposed on its own because `SessionEnd` runs the same check to decide
+/// whether a quit out of an aborted turn is an `interrupt` or a `stop`.
+pub fn detect_interrupt(root: &Path, ctx: &PromptContext<'_>) -> Option<InterruptSource> {
+    let turn = read_turn(root);
+
+    // Transcript marker (Claude only), FIRST: it is direct evidence. A queued
+    // mid-turn message also leaves a live `inflight` entry, and only the marker
+    // distinguishes the two.
+    let source = if ctx.host == Host::Claude
+        && let Some(p) = ctx.transcript_path
+        && transcript_has_interrupt_after(p, turn.last_prompt_ts)
+    {
+        Some(InterruptSource::Transcript)
+    // Inflight: a tool was still running when the human spoke. Not used on
+    // Codex, where the `Interrupt` hook is authoritative and step 1 has already
+    // spoken. `live_inflight` reads without consuming, so a `mid_turn` outcome
+    // leaves a running tool's entry in place for its own post-check.
+    } else if ctx.host != Host::Codex && !live_inflight(root, ctx.now, ctx.agent_id).is_empty() {
+        Some(InterruptSource::Inflight)
+    // Open turn (Gemini only): Gemini never delivers a prompt while a turn is
+    // running, so an open turn here means AfterAgent was skipped, which only
+    // happens on abort.
+    } else if ctx.host == Host::Gemini && turn.open {
+        Some(InterruptSource::OpenTurn)
+    } else {
+        None
+    };
+
+    if source.is_some() {
+        clear_inflight(root);
+    }
+    source
+}
+
+const TRANSCRIPT_TAIL_BYTES: u64 = 64 * 1024;
+const INTERRUPT_MARKER: &str = "[Request interrupted by user";
+
+fn transcript_has_interrupt_after(path: &Path, after_ts: u64) -> bool {
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let start = len.saturating_sub(TRANSCRIPT_TAIL_BYTES);
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return false;
+    }
+    let mut buf = Vec::new();
+    if f.read_to_end(&mut buf).is_err() {
+        return false;
+    }
+    // Lossy rather than `read_to_string`: a 64 KiB seek can land mid-codepoint,
+    // and a transcript that happens to contain one must not disable the branch.
+    let buf = String::from_utf8_lossy(&buf);
+    // Skip the first line when the read was seeked: it is probably a fragment.
+    buf.lines().skip(usize::from(start > 0)).any(|line| {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        let is_user = v.get("type").and_then(|t| t.as_str()) == Some("user")
+            || v.pointer("/message/role").and_then(|r| r.as_str()) == Some("user");
+        if !is_user {
+            return false;
+        }
+        let text = match v.pointer("/message/content").or_else(|| v.get("content")) {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Array(items)) => items
+                .iter()
+                .filter_map(|i| i.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        };
+        if !text.trim_start().starts_with(INTERRUPT_MARKER) {
+            return false;
+        }
+        match v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        {
+            Some(dt) => dt.timestamp() as u64 > after_ts,
+            None => true,
+        }
+    })
+}
