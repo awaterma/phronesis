@@ -121,3 +121,182 @@ fn header_line_marks_a_month_old_kalpa_stale() {
     );
     assert!(!header_line(d.path(), now).unwrap().contains("stale"));
 }
+
+/// Fixture log written through the real projection, so the field names under
+/// test are the ones `to_log_entry` actually writes.
+fn seed_lifecycle_log(root: &std::path::Path, kalpa: &str) {
+    use phronesis_mcp::action_log;
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, PromptText, Stamped};
+
+    let path = action_log::default_path(root);
+    let events: Vec<(u64, LifecycleEvent)> = vec![
+        (
+            1_700_000_000,
+            LifecycleEvent::new(Kind::Prompt, Host::Claude)
+                .with_mode(Mode::Fresh)
+                .with_prompt("do the thing"),
+        ),
+        (
+            1_700_000_100,
+            LifecycleEvent::new(Kind::Interrupt, Host::Claude)
+                .with_extra("inferred_from", "inflight"),
+        ),
+        (
+            1_700_000_110,
+            LifecycleEvent::new(Kind::Prompt, Host::Claude)
+                .with_mode(Mode::Correction)
+                .with_prompt("no, the other thing"),
+        ),
+        (
+            1_700_000_150,
+            LifecycleEvent::new(Kind::SubagentStart, Host::Claude)
+                .with_agent("a1", Some("reviewer".into())),
+        ),
+        (
+            1_700_000_160,
+            LifecycleEvent::new(Kind::SubagentStart, Host::Claude)
+                .with_agent("a2", Some("reviewer".into())),
+        ),
+        (
+            1_700_000_200,
+            LifecycleEvent::new(Kind::SubagentStop, Host::Claude)
+                .with_agent("a1", Some("reviewer".into()))
+                .with_extra("duration_secs", 220u64)
+                .with_extra("matched_start", true),
+        ),
+        (
+            1_700_000_300,
+            LifecycleEvent::new(Kind::SubagentStop, Host::Claude)
+                .with_agent("a2", Some("reviewer".into()))
+                .with_extra("duration_secs", 20u64)
+                .with_extra("matched_start", true),
+        ),
+        (
+            1_700_000_400,
+            LifecycleEvent::new(Kind::Commit, Host::Claude)
+                .with_extra("sha", "0f3c")
+                .with_extra("confidence_band", "high"),
+        ),
+    ];
+    for (i, (ts, ev)) in events.iter().enumerate() {
+        let stamped = Stamped {
+            ts: *ts,
+            sid: "s-1".to_string(),
+            seq: i as u64 + 1,
+            kalpa: Some(kalpa.to_string()),
+            subject: None,
+        };
+        action_log::append(&path, &ev.to_log_entry(&stamped, PromptText::Full)).unwrap();
+    }
+}
+
+#[test]
+fn stats_kalpa_prints_lifecycle_section_with_retention_boundary() {
+    let d = tempfile::tempdir().unwrap();
+    seed_lifecycle_log(d.path(), "lifecycle-events");
+    let out = run_phr(d.path(), &["stats", "--kalpa", "lifecycle-events"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("counts since log entry 20"), "{stdout}");
+    assert!(stdout.contains("correction 1"), "{stdout}");
+    assert!(stdout.contains("median 2m00s"), "{stdout}");
+    assert!(stdout.contains("confidence at commit: high 1"), "{stdout}");
+    assert!(
+        !stdout.contains("do the thing"),
+        "prompt text must never reach stats: {stdout}"
+    );
+}
+
+#[test]
+fn stats_kalpa_filter_excludes_other_kalpas() {
+    let d = tempfile::tempdir().unwrap();
+    seed_lifecycle_log(d.path(), "lifecycle-events");
+    let out = run_phr(d.path(), &["stats", "--kalpa", "other-theme", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lifecycle"]["commits"], 0);
+    assert_eq!(v["lifecycle"]["sessions"], 0);
+    assert_eq!(
+        v["lifecycle"]["oldest_entry_ts"], 1_700_000_000u64,
+        "boundary ignores the filter"
+    );
+}
+
+#[test]
+fn kalpa_show_reports_counts_for_the_named_kalpa() {
+    let d = tempfile::tempdir().unwrap();
+    assert!(
+        run_phr(d.path(), &["kalpa", "start", "lifecycle-events"])
+            .status
+            .success()
+    );
+    seed_lifecycle_log(d.path(), "lifecycle-events");
+
+    let out = run_phr(d.path(), &["kalpa", "show", "lifecycle-events"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(stdout.contains("kalpa: lifecycle-events"), "{stdout}");
+    assert!(stdout.contains("started "), "{stdout}");
+    assert!(stdout.contains("counts since log entry 20"), "{stdout}");
+    assert!(stdout.contains("sessions        1"), "{stdout}");
+    assert!(stdout.contains("prompts         2"), "{stdout}");
+    assert!(stdout.contains("interrupts      1"), "{stdout}");
+    assert!(
+        stdout.contains("sub-agents      2   starts, 2 matched   median 2m00s"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("commits         1   (shell tool calls only)   confidence at commit: high 1  medium 0  low 0"), "{stdout}");
+    assert!(
+        !stdout.contains("do the thing"),
+        "prompt text must never reach kalpa show: {stdout}"
+    );
+}
+
+#[test]
+fn kalpa_show_of_a_closed_kalpa_still_counts_its_entries() {
+    let d = tempfile::tempdir().unwrap();
+    seed_lifecycle_log(d.path(), "old-theme");
+    let out = run_phr(d.path(), &["kalpa", "show", "old-theme"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("kalpa: old-theme (closed)"), "{stdout}");
+    assert!(stdout.contains("commits         1"), "{stdout}");
+    // `seed_lifecycle_log` writes no `kalpa_start` entry, which is exactly the
+    // case where the boundary has rotated off.
+    assert!(stdout.contains("start not retained"), "{stdout}");
+}
+
+/// The other half: when the `kalpa_start` entry is still in the log, the header
+/// prints the date it holds rather than the disclaimer.
+#[test]
+fn kalpa_show_prints_the_start_date_when_the_boundary_is_still_retained() {
+    let d = tempfile::tempdir().unwrap();
+    seed_lifecycle_log(d.path(), "old-theme");
+    {
+        use phronesis_mcp::action_log;
+        use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, PromptText, Stamped};
+        let stamped = Stamped {
+            ts: 1_699_999_000,
+            sid: "s-1".to_string(),
+            seq: 0,
+            kalpa: Some("old-theme".to_string()),
+            subject: None,
+        };
+        action_log::append(
+            &action_log::default_path(d.path()),
+            &LifecycleEvent::new(Kind::KalpaStart, Host::Cli)
+                .to_log_entry(&stamped, PromptText::Full),
+        )
+        .unwrap();
+    }
+    let out = run_phr(d.path(), &["kalpa", "show", "old-theme"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("started 20"), "{stdout}");
+    assert!(!stdout.contains("start not retained"), "{stdout}");
+}

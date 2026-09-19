@@ -282,6 +282,12 @@ pub struct GetJourneyParams {
     /// references. Mirrors the `phr-mcp journey --explain` CLI flag.
     #[serde(default)]
     pub explain_rule: Option<String>,
+    /// When true, return `{"facts": [...], "lifecycle": [...]}` — the derived
+    /// facts plus the recent lifecycle records (sub-agent start/stop, prompts
+    /// with their mode, interrupts, turn stops, commits). Default `false`
+    /// returns the bare array of fact rows, unchanged from earlier versions.
+    #[serde(default)]
+    pub include_lifecycle: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
