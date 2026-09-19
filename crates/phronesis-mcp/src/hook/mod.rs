@@ -460,6 +460,11 @@ pub(super) struct LogEventInput<'a> {
     pub(super) exit: i32,
     pub(super) command_exit: Option<i32>,
     pub(super) consequences: &'a [LoggedConsequence],
+    /// The open work unit (`outcomes::subject::current`), when any. Absent —
+    /// not empty, not null — when no unit is open. This is the join key
+    /// `phr-mcp unit show` and the governed-throughput count use to answer
+    /// "which rules were evaluated against this work item".
+    pub(super) subject: Option<&'a str>,
 }
 
 pub(super) fn log_hook_event(input: &LogEventInput<'_>) {
@@ -470,6 +475,7 @@ pub(super) fn log_hook_event(input: &LogEventInput<'_>) {
         exit,
         command_exit,
         consequences,
+        subject,
     } = input;
     let event = match *phase {
         "pre" => "pre_check",
@@ -485,6 +491,9 @@ pub(super) fn log_hook_event(input: &LogEventInput<'_>) {
         .with("consequences", consequences_value);
     if let Some(ce) = command_exit {
         entry = entry.with("command_exit", *ce);
+    }
+    if let Some(s) = subject {
+        entry = entry.with("subject", (*s).to_string());
     }
     let path = action_log::default_path(&security::project_root());
     let _ = action_log::append(&path, &entry);

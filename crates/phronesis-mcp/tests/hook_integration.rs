@@ -2432,3 +2432,81 @@ fn gemini_session_end_records_a_stop_and_closes_the_turn() {
         "g1"
     );
 }
+
+// --- subject on hook log entries (Task 3) ---
+
+/// Read the last `pre_check` entry from a project's action log.
+fn last_pre_check(dir: &Path) -> serde_json::Value {
+    std::fs::read_to_string(dir.join(".phronesis/log.jsonl"))
+        .expect("action log")
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .rfind(|v| v["event"] == "pre_check")
+        .expect("a pre_check entry")
+}
+
+/// "`pre_check` / `post_check` action-log entries gain `subject` when a unit is
+/// open. Today only journal records carry it, so 'which rules fired for this
+/// work item' is not answerable from the log" (spec §"Work items", 2).
+#[test]
+fn pre_check_log_entry_carries_the_open_work_unit() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"policy","phase":"pre","priority":1,
+            "when":[{"file_path_matches":"vendor/"}],
+            "then":{"block":"vendored code is off limits"}}]}"#,
+    );
+    std::fs::create_dir_all(dir.path().join(".phronesis/outcomes")).unwrap();
+    std::fs::write(dir.path().join(".phronesis/outcomes/current"), "item-7").unwrap();
+
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"a","new_string":"b"}}"#;
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let entry = last_pre_check(dir.path());
+    assert_eq!(entry["subject"], "item-7", "{entry}");
+    assert_eq!(entry["exit"], 0);
+}
+
+/// No open unit → no `subject` key at all. An empty string or a `null` would
+/// make every consumer special-case it; absence is the existing convention for
+/// every other optional field on a log entry.
+#[test]
+fn pre_check_log_entry_omits_subject_when_no_unit_is_open() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"policy","phase":"pre","priority":1,
+            "when":[{"file_path_matches":"vendor/"}],
+            "then":{"block":"vendored code is off limits"}}]}"#,
+    );
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"a","new_string":"b"}}"#;
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let entry = last_pre_check(dir.path());
+    assert!(entry.get("subject").is_none(), "{entry}");
+}
+
+/// The blocked path logs too, and must carry the subject: a block is exactly
+/// the kind of rule evaluation the work-item report exists to show.
+#[test]
+fn a_blocked_pre_check_still_carries_the_subject() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"policy","phase":"pre","priority":1,
+            "when":[{"file_path_matches":"src"}],
+            "then":{"block":"project policy"}}]}"#,
+    );
+    std::fs::create_dir_all(dir.path().join(".phronesis/outcomes")).unwrap();
+    std::fs::write(dir.path().join(".phronesis/outcomes/current"), "item-8").unwrap();
+
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"a","new_string":"b"}}"#;
+    let (code, _stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2);
+    let entry = last_pre_check(dir.path());
+    assert_eq!(entry["subject"], "item-8", "{entry}");
+    assert_eq!(entry["exit"], 2);
+    assert_eq!(entry["consequences"][0]["rule_id"], "policy", "{entry}");
+}
