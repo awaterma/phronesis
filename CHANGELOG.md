@@ -18,6 +18,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   nested `tool_input.prompt` is covered too. No host emits lifecycle events yet
   (adapters follow).
 
+- **Lifecycle events, Codex adapter.** `phr-mcp codex-hook` now records
+  sub-agent start/stop (with pairing and duration), prompts (with `fresh` /
+  `mid_turn` / `correction` mode and the scrubbed text in
+  `.phronesis/log.jsonl`), interrupts, and turn stops. `Interrupt` and
+  `SessionEnd` are handled and registered by `phr-mcp init`; the `SessionStart`
+  matcher is now empty, so compact and fork sessions also get context. Codex
+  tool records take their session id from the shared
+  `.phronesis/journey/session` file, agreeing with the other hosts. Payloads
+  teed to `PHRONESIS_CAPTURE_DIR` have their prompt text redacted.
+
 - Non-destructive `init --rules-only` starter syncing with a recorded baseline,
   local override/deletion preservation, and conflict warnings.
 

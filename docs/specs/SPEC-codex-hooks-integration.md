@@ -69,6 +69,14 @@ hooks. The generated documentation states this boundary plainly.
 | `PostCompact` | session context | re-inject rules + directives |
 | `SubagentStart` | session context | project governance for delegated work |
 | `SubagentStop` / `Stop` | confidence report | block low confidence; warn on medium; no-op when disabled, unopened, or high |
+| `Interrupt` | lifecycle record | record the abort, close the turn, respond `{}`; its schema permits `systemMessage` only |
+| `SessionEnd` | lifecycle record | record a `stop` when a turn is still open, leave the session file in place, respond `{}` |
+
+`Stop` does not fire when a turn is aborted; `Interrupt` does, before
+`TurnAborted` and with the transcript flushed. A missing `Stop` therefore never
+means "the turn completed". `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
+`SubagentStart`, `SubagentStop`, `Stop`, and `Interrupt` also write lifecycle
+records; see `docs/specs/SPEC-agent-lifecycle-events.md`.
 
 Codex can run matching command hooks concurrently. Handlers must be independent and not rely on ordering relative to other hooks. Existing flock-serialized action/journey logs provide write safety.
 
@@ -85,8 +93,9 @@ phr-mcp codex-hook <event>
 Supported events:
 
 ```text
-pre-tool-use | post-tool-use | session-start | user-prompt-submit |
-pre-compact | post-compact | subagent-start | subagent-stop | stop
+pre-tool-use | post-tool-use | session-start | session-end |
+user-prompt-submit | pre-compact | post-compact | subagent-start |
+subagent-stop | stop | interrupt
 ```
 
 The command reads one Codex hook JSON object from stdin and writes only a Codex
