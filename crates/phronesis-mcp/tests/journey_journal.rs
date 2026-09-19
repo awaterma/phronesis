@@ -326,3 +326,137 @@ fn a_v1_reader_sees_a_lifecycle_record_as_a_tool_record() {
     );
     assert_eq!(old.tags, vec!["lifecycle:prompt"]);
 }
+
+// ---------- Compaction retention (Task 3) ----------
+
+/// A lifecycle record, mirroring Task 2's `make_lifecycle` in
+/// `tests/journey_derive.rs`.
+fn lifecycle_record(ts: u64, seq: u64, kind: &str, tags: &[&str]) -> JournalRecord {
+    JournalRecord {
+        v: journal::JOURNAL_V,
+        ts,
+        sid: "s-a".into(),
+        seq,
+        tool: journal::LIFECYCLE_TOOL.into(),
+        path: String::new(),
+        ext: None,
+        module: None,
+        tags: tags.iter().map(|s| s.to_string()).collect(),
+        subject: None,
+        command_exit: None,
+        kind: Some(kind.into()),
+        mode: None,
+        host: Some("claude".into()),
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
+    }
+}
+
+/// A plain tool record, used here only as the compaction tail.
+fn tool_record(ts: u64, seq: u64) -> JournalRecord {
+    JournalRecord {
+        v: journal::JOURNAL_V,
+        ts,
+        sid: "s-a".into(),
+        seq,
+        tool: "Edit".into(),
+        path: format!("src/f{seq}.rs"),
+        ext: Some("rs".into()),
+        module: None,
+        tags: vec!["edits".into()],
+        subject: None,
+        command_exit: None,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
+    }
+}
+
+#[test]
+fn compaction_retains_commit_and_kalpa_records_in_prefix() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut commit = lifecycle_record(1, 1, "commit", &["lifecycle:commit"]);
+    commit.kalpa = Some("demo".into());
+
+    journal::append(
+        dir.path(),
+        &lifecycle_record(
+            0,
+            0,
+            "kalpa_start",
+            &["lifecycle:kalpa_start", "kalpa:demo"],
+        ),
+    )
+    .unwrap();
+    journal::append(dir.path(), &commit).unwrap();
+    journal::append(
+        dir.path(),
+        &lifecycle_record(
+            2,
+            2,
+            "prompt",
+            &["lifecycle:prompt", "lifecycle:prompt:fresh"],
+        ),
+    )
+    .unwrap();
+    // The friction record is the point of the feature: an interrupt and the
+    // correction that follows it must survive compaction, or a rule like "two
+    // corrections this session" stops firing because the journal compacted.
+    journal::append(
+        dir.path(),
+        &lifecycle_record(5, 5, "interrupt", &["lifecycle:interrupt"]),
+    )
+    .unwrap();
+    journal::append(
+        dir.path(),
+        &lifecycle_record(
+            6,
+            6,
+            "prompt",
+            &[
+                "lifecycle:prompt",
+                "lifecycle:prompt:correction",
+                "lifecycle:intervention",
+            ],
+        ),
+    )
+    .unwrap();
+    journal::append(
+        dir.path(),
+        &lifecycle_record(3, 3, "kalpa_end", &["lifecycle:kalpa_end", "kalpa:demo"]),
+    )
+    .unwrap();
+    // The one record the tail keeps, so every lifecycle record above lands in
+    // the compaction prefix and is subject to the retention rule.
+    journal::append(dir.path(), &tool_record(4, 4)).unwrap();
+
+    // max_bytes = 1 forces compaction; tail_records = 1 keeps only the last.
+    assert!(journal::maybe_compact(dir.path(), 1, 1).unwrap());
+
+    let all = journal::read_recent(dir.path(), journal::SUFFIX_HARD_CAP).unwrap();
+    let kinds: Vec<&str> = all.iter().filter_map(|r| r.kind.as_deref()).collect();
+    assert!(kinds.contains(&"commit"), "{kinds:?}");
+    assert!(kinds.contains(&"kalpa_start"), "{kinds:?}");
+    assert!(kinds.contains(&"kalpa_end"), "{kinds:?}");
+    assert!(kinds.contains(&"interrupt"), "{kinds:?}");
+    // Exactly one prompt survives: the correction, not the fresh one.
+    let prompt_tags: Vec<&Vec<String>> = all
+        .iter()
+        .filter(|r| r.kind.as_deref() == Some("prompt"))
+        .map(|r| &r.tags)
+        .collect();
+    assert_eq!(prompt_tags.len(), 1, "{prompt_tags:?}");
+    assert!(
+        prompt_tags[0]
+            .iter()
+            .any(|t| t == "lifecycle:prompt:correction"),
+        "a fresh prompt compacts away, a correction does not: {prompt_tags:?}"
+    );
+    assert!(all.iter().any(|r| r.tool == "Edit"), "the tail survives");
+}

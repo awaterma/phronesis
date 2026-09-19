@@ -294,12 +294,35 @@ fn compacted_content(all: &[JournalRecord], tail_records: usize) -> Result<Strin
     serialize_compaction(prefix, tail, &keep)
 }
 
+/// Lifecycle tags whose records survive compaction of the prefix: the
+/// success signal, the friction pair, and the kalpa boundaries. Commits and
+/// kalpa boundaries are the denominators of every per-kalpa report; the
+/// interrupt/correction pair is the friction record the feature exists for,
+/// and a rule like "two corrections this session" must not stop firing because
+/// the journal compacted (spec §"The journal record, v2", Compaction).
+///
+/// The retained set is bounded by human turns and commits, not by tool calls,
+/// so the growth it adds is an order of magnitude below the tail it lives
+/// beside; no further cap ships in v1.
+const RETAINED_LIFECYCLE_TAGS: [&str; 5] = [
+    "lifecycle:commit",
+    "lifecycle:interrupt",
+    "lifecycle:prompt:correction",
+    "lifecycle:kalpa_start",
+    "lifecycle:kalpa_end",
+];
+
 fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {
-    // Latest *grounded* outcome-bearing record per subject in the prefix, by
-    // index. `outcome:compile_unknown` is not grounded, so it is never a
-    // retention anchor (it must not displace earlier grounded outcomes).
     let mut latest: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut keep: Vec<usize> = Vec::new();
     for (i, r) in prefix.iter().enumerate() {
+        if r.tags
+            .iter()
+            .any(|t| RETAINED_LIFECYCLE_TAGS.contains(&t.as_str()))
+        {
+            keep.push(i);
+            continue;
+        }
         if let Some(s) = r.subject.as_deref()
             && r.tags
                 .iter()
@@ -308,8 +331,9 @@ fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {
             latest.insert(s, i);
         }
     }
-    let mut keep: Vec<usize> = latest.into_values().collect();
+    keep.extend(latest.into_values());
     keep.sort_unstable();
+    keep.dedup();
     keep
 }
 
