@@ -126,6 +126,8 @@ fn aggregate_lifecycle_counts_events_modes_subagents_and_commits() {
     assert_eq!(s.commits, 2);
     assert_eq!(s.confidence_bands.get("high"), Some(&1));
     assert_eq!(s.confidence_bands.get("medium"), Some(&1));
+    assert_eq!(s.interventions, 1, "one correction, no mid_turn, fresh does not count");
+    assert_eq!(s.interventions_per_commit(), Some(0.5));
 }
 
 #[test]
@@ -156,10 +158,18 @@ fn render_lifecycle_matches_the_spec_block() {
     let out = render_lifecycle(&s);
     assert!(out.contains("sessions        1"), "{out}");
     assert!(out.contains("prompts         2   fresh 1   mid_turn 0   correction 1"), "{out}");
+    assert!(out.contains("interventions   1   (mid_turn + correction)"), "{out}");
     assert!(out.contains("interrupts      1"), "{out}");
     assert!(out.contains("sub-agents      3   median 30s"), "{out}");
     assert!(out.contains("commits         2   confidence at commit: high 1  medium 1  low 0"), "{out}");
+    assert!(out.contains("interventions / commit   0.50"), "{out}");
     assert!(!out.contains("prompt_bytes"), "no raw field names leak: {out}");
+}
+
+#[test]
+fn render_lifecycle_omits_ratio_without_commits() {
+    let s = aggregate_lifecycle(&[], &LifecycleOpts { since_secs: None, kalpa: None, now_secs: 1_000 });
+    assert!(!render_lifecycle(&s).contains("interventions / commit"));
 }
 
 #[test]
@@ -224,6 +234,16 @@ pub struct LifecycleStats {
     pub subagent_median_secs: Option<u64>,
     pub commits: u32,
     pub confidence_bands: BTreeMap<String, u32>,
+    /// Prompts with mode `mid_turn` or `correction`: the human changed the
+    /// plan rather than replying. The autonomy signal's numerator.
+    pub interventions: u32,
+}
+
+impl LifecycleStats {
+    /// `interventions / commits`, or `None` when there are no commits.
+    pub fn interventions_per_commit(&self) -> Option<f64> {
+        (self.commits > 0).then(|| f64::from(self.interventions) / f64::from(self.commits))
+    }
 }
 
 /// Count the lifecycle entries of the action log. `entries` may hold any mix of
@@ -260,6 +280,9 @@ pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> Lifecy
             "prompt" => {
                 let mode = e.data.get("mode").and_then(|v| v.as_str()).unwrap_or("fresh");
                 *out.prompt_modes.entry(mode.to_string()).or_insert(0) += 1;
+                if matches!(mode, "mid_turn" | "correction") {
+                    out.interventions += 1;
+                }
             }
             "subagent_stop" => {
                 out.subagents += 1;
@@ -329,12 +352,16 @@ pub fn render_lifecycle(s: &LifecycleStats) -> String {
         "{:<12}{:>4}   fresh {}   mid_turn {}   correction {}\n",
         "prompts", n("prompt"), m("fresh"), m("mid_turn"), m("correction")
     ));
+    out.push_str(&format!("{:<12}{:>4}   (mid_turn + correction)\n", "interventions", s.interventions));
     out.push_str(&format!("{:<12}{:>4}\n", "interrupts", n("interrupt")));
     out.push_str(&format!("{:<12}{:>4}{}\n", "sub-agents", s.subagents, median));
     out.push_str(&format!(
         "{:<12}{:>4}   confidence at commit: high {}  medium {}  low {}\n",
         "commits", s.commits, b("high"), b("medium"), b("low")
     ));
+    if let Some(r) = s.interventions_per_commit() {
+        out.push_str(&format!("interventions / commit   {r:.2}\n"));
+    }
     out
 }
 ```
@@ -370,6 +397,7 @@ pub fn render_json_with_lifecycle(values: &Stats, life: Option<&LifecycleStats>)
             "kalpa": l.kalpa, "oldest_entry_ts": l.oldest_entry_ts, "sessions": l.sessions,
             "events": l.events, "prompts": l.prompt_modes, "subagents": l.subagents,
             "subagent_median_secs": l.subagent_median_secs, "commits": l.commits,
+            "interventions": l.interventions, "interventions_per_commit": l.interventions_per_commit(),
             "confidence_bands": l.confidence_bands,
         }));
     }

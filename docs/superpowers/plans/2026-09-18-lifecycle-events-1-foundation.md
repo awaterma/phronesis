@@ -704,7 +704,16 @@ pub enum PromptText { Full, None }
 #[test]
 fn tags_for_correction_prompt_with_kalpa() {
     let e = LifecycleEvent::new(Kind::Prompt, Host::Claude).with_mode(Mode::Correction);
-    assert_eq!(e.tags(Some("demo")), vec!["lifecycle:prompt", "lifecycle:prompt:correction", "kalpa:demo"]);
+    assert_eq!(e.tags(Some("demo")), vec!["lifecycle:prompt", "lifecycle:prompt:correction", "lifecycle:intervention", "kalpa:demo"]);
+}
+#[test]
+fn intervention_tag_only_on_mid_turn_and_correction() {
+    let fresh = LifecycleEvent::new(Kind::Prompt, Host::Claude).with_mode(Mode::Fresh);
+    assert_eq!(fresh.tags(None), vec!["lifecycle:prompt", "lifecycle:prompt:fresh"]);
+    let mid = LifecycleEvent::new(Kind::Prompt, Host::Codex).with_mode(Mode::MidTurn);
+    assert!(mid.tags(None).contains(&"lifecycle:intervention".to_string()));
+    let stop = LifecycleEvent::new(Kind::Stop, Host::Claude);
+    assert!(!stop.tags(None).iter().any(|t| t.contains("intervention")));
 }
 #[test]
 fn tags_for_subagent_with_type() {
@@ -849,7 +858,12 @@ impl LifecycleEvent {
 
     pub fn tags(&self, kalpa: Option<&str>) -> Vec<String> {
         let mut t = vec![self.kind.tag()];
-        if let Some(m) = self.mode { t.push(format!("lifecycle:prompt:{}", m.as_str())); }
+        if let Some(m) = self.mode {
+            t.push(format!("lifecycle:prompt:{}", m.as_str()));
+            // The autonomy signal: the human changed the plan (steered mid-turn
+            // or corrected after an interrupt), as opposed to replying.
+            if matches!(m, Mode::MidTurn | Mode::Correction) { t.push("lifecycle:intervention".to_string()); }
+        }
         if let Some(at) = self.agent_type.as_deref().filter(|s| !s.is_empty())
             && matches!(self.kind, Kind::SubagentStart | Kind::SubagentStop)
         { t.push(format!("lifecycle:agent:{at}")); }

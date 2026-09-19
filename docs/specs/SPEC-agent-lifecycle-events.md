@@ -82,8 +82,10 @@ Today (`v0.34.0`):
 - Crush and other hosts without a hook protocol.
 - Fixing the Codex `PreCompact`/`PostCompact` response bug (§Adjacent
   findings). It is real and separate.
-- Derived ratios (corrections per commit, interrupts per session). Raw counts
-  ship; ratios over an uncontrolled window mislead.
+- Derived ratios other than one: `interventions / commit` is printed because
+  it is the autonomy signal the feature exists for, and it is printed beside
+  the retention boundary so its window is visible. No other ratio ships; raw
+  counts do.
 
 ## Event model
 
@@ -108,6 +110,22 @@ A `prompt` record carries a `mode`:
 | `mid_turn` | the previous turn is still open and no interrupt was detected: the human added context while the agent worked |
 | `correction` | an `interrupt` record immediately precedes this prompt in the same session |
 
+**Intervention.** The autonomy signal this feature exists to measure is
+*interventions per completed task*, and it only means something if an
+intervention is the human **changing the plan**, not merely replying. The
+mode classification is what separates the two: a `fresh` prompt arrives after
+the agent stopped and is, as far as hooks can tell, a reply; a `mid_turn` or
+`correction` prompt arrives while the agent was still executing its plan, or
+after the human stopped it, and is a steer. A `prompt` record with mode
+`mid_turn` or `correction` therefore also carries the tag
+`lifecycle:intervention`. The definition's limits, stated so the number is
+read honestly: it undercounts plan changes delivered as a fresh prompt after a
+natural stop, and it may count a mid-turn clarification the agent would have
+asked for anyway. Neither can be fixed without reading intent, which is a
+non-goal. Sub-agent start and stop are the `agent-started` / `agent-finished`
+pair; `stop` and `commit` are the completed-task candidates, with `commit` the
+one the kalpa report divides by.
+
 Selectors exposed to rules, all under built-in namespaces and carried in the
 record's `tags` so `matches_selector` needs no change:
 
@@ -119,6 +137,7 @@ lifecycle:prompt
 lifecycle:prompt:fresh
 lifecycle:prompt:mid_turn
 lifecycle:prompt:correction
+lifecycle:intervention              (on prompt records with mode mid_turn or correction)
 lifecycle:interrupt
 lifecycle:stop
 lifecycle:commit
@@ -577,12 +596,15 @@ header, because the log rotates at 50 MiB keeping one predecessor
 kalpa: lifecycle-events      started 2026-09-18 (3d)      counts since log entry 2026-09-17 14:02
 sessions        4
 prompts        61   fresh 44   mid_turn 9   correction 8
+interventions  17   (mid_turn + correction)
 interrupts      8
 sub-agents     12   median 3m40s
 commits         7   confidence at commit: high 5  medium 2  low 0
+interventions / commit   2.43
 ```
 
-No ratios in v1 (§Non-goals).
+`interventions / commit` is omitted when commits are zero. No other ratio
+ships in v1 (§Non-goals).
 
 Rule selectors added: `lifecycle:commit`, `lifecycle:kalpa_start`,
 `lifecycle:kalpa_end`, and `kalpa:<name>`. A kalpa window (`k`) for
@@ -609,6 +631,13 @@ Rule selectors added: `lifecycle:commit`, `lifecycle:kalpa_start`,
     { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:subagent_stop','tests',1]) == 0" }
   ],
   "action": { "type": "warning", "message": "A sub-agent finished this session and no test ran since." } }
+
+{ "id": "warn-many-interventions-since-last-commit",
+  "conditions": [
+    { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:commit','lifecycle:intervention',3]) >= 1" }
+  ],
+  "action": { "type": "warning",
+              "message": "Three interventions since the last commit. Stop and re-plan before continuing." } }
 
 { "id": "suggest-rule-after-two-corrections",
   "conditions": [
