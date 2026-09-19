@@ -155,21 +155,35 @@ pub struct CorrectionRow {
     pub prompt: Option<String>,
 }
 
+/// The corrections list plus the retention boundary it was read over, so the
+/// renderer can say what window the list covers (spec §"CLI and MCP surface").
+pub struct Corrections {
+    pub rows: Vec<CorrectionRow>,
+    /// Timestamp of the oldest *lifecycle* entry still in the log, matching
+    /// `stats::LifecycleStats::oldest_entry_ts`.
+    pub oldest_entry_ts: Option<u64>,
+}
+
 /// Every recorded correction, oldest first, across `.phronesis/log.jsonl` and
 /// its rotated predecessor. Fail-open: an unreadable log yields none.
-pub fn corrections(project_root: &Path) -> Vec<CorrectionRow> {
+pub fn corrections(project_root: &Path) -> Corrections {
     use crate::action_log::{self, ReadOpts};
     let opts = ReadOpts {
         kind: Some("lifecycle".to_string()),
-        event: Some("prompt".to_string()),
         ..ReadOpts::default()
     };
     // `limit: None` reads `.phronesis/log.jsonl` AND its rotated predecessor,
     // oldest first. "The list the feature exists to surface must not silently
     // lose its oldest half to rotation" (spec §"CLI and MCP surface").
-    action_log::read_recent(&action_log::default_path(project_root), &opts)
-        .unwrap_or_default()
+    let entries =
+        action_log::read_recent(&action_log::default_path(project_root), &opts).unwrap_or_default();
+    // Every lifecycle entry, not just the corrections: the boundary is a
+    // property of the log, and it is the same number `stats --kalpa` and
+    // `kalpa show` print.
+    let oldest_entry_ts = entries.iter().map(|e| e.ts).min();
+    let rows = entries
         .iter()
+        .filter(|e| e.event == "prompt")
         .filter(|e| e.data.get("mode").and_then(|v| v.as_str()) == Some("correction"))
         .map(|e| CorrectionRow {
             ts: e.ts,
@@ -184,15 +198,28 @@ pub fn corrections(project_root: &Path) -> Vec<CorrectionRow> {
             // `"full"` as well as text not yet written.
             prompt: crate::lifecycle::record::correction_text(project_root, e),
         })
-        .collect()
+        .collect();
+    Corrections {
+        rows,
+        oldest_entry_ts,
+    }
 }
 
-/// One block per correction: a `ts  sid` line, then the prompt, indented.
-pub fn render_corrections(rows: &[CorrectionRow]) -> String {
+/// A retention-boundary header, then one block per correction: a `ts  sid`
+/// line, then the prompt, indented. The header is the same `retention_line`
+/// `stats --kalpa` and `kalpa show` print — without it the list looks complete
+/// when rotation has trimmed its oldest half (spec §"CLI and MCP surface").
+pub fn render_corrections(c: &Corrections) -> String {
+    let header = format!(
+        "corrections    {}\n",
+        crate::stats::retention_line(c.oldest_entry_ts)
+    );
+    let rows = &c.rows;
     if rows.is_empty() {
-        return "(no corrections recorded)\n".to_string();
+        return format!("{header}(no corrections recorded)\n");
     }
-    let mut out = String::new();
+    let mut out = header;
+    out.push('\n');
     for r in rows {
         let when = chrono::DateTime::from_timestamp(r.ts as i64, 0)
             .map(|dt| {

@@ -997,11 +997,11 @@ async fn handle_journey(
     use phronesis_mcp::journey_cli;
     let root = phronesis_mcp::security::project_root();
     if corrections {
-        let rows = journey_cli::corrections(&root);
+        let found = journey_cli::corrections(&root);
         if json {
-            println!("{}", serde_json::to_string_pretty(&rows)?);
+            println!("{}", serde_json::to_string_pretty(&found.rows)?);
         } else {
-            print!("{}", journey_cli::render_corrections(&rows));
+            print!("{}", journey_cli::render_corrections(&found));
         }
         return Ok(());
     }

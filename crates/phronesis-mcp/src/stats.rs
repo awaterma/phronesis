@@ -340,7 +340,9 @@ pub fn render_lifecycle(s: &LifecycleStats) -> String {
         "commits", s.commits, bands
     ));
     if let Some(r) = s.interventions_per_commit() {
-        out.push_str(&format!("interventions / commit   {r:.2}\n"));
+        out.push_str(&format!(
+            "interventions / commit   {r:.2}   (retained window)\n"
+        ));
     }
     out
 }
@@ -997,7 +999,10 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("commits         2   (shell tool calls only)   confidence at commit: high 1  medium 1  low 0"), "{out}");
-        assert!(out.contains("interventions / commit   0.50"), "{out}");
+        assert!(
+            out.contains("interventions / commit   0.50   (retained window)"),
+            "{out}"
+        );
         assert!(
             !out.contains("prompt_bytes"),
             "no raw field names leak: {out}"

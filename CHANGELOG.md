@@ -62,13 +62,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 - `phr-mcp stats` prints a lifecycle section — sessions, prompts by mode,
   interrupts, sub-agents with median duration, and commits with their
   confidence band — plus the active kalpa and the retention boundary of the
-  action log. `--kalpa <name>` restricts the section to one kalpa.
+  action log. `--kalpa <name>` restricts the section to one kalpa, and
+  `--json` now always carries a `lifecycle` key alongside the rule totals.
 - `phr-mcp kalpa show [name]` reports the same counts for a kalpa, open or
   closed, with the date it started and the retention boundary.
-- `phr-mcp journey` renders lifecycle records inline with a `⟂` marker and the
-  record's kind/mode in place of a path, and prints the active kalpa in its
-  header. `--lifecycle` shows only those records; `--corrections` lists the
-  prompts that followed an interrupt, oldest first, with their scrubbed text.
+- `phr-mcp journey` renders lifecycle records in a lifecycle table below the
+  fact table (`⟂` marker), with the record's kind/mode in place of a path, and
+  prints the active kalpa in its header. `--lifecycle` shows only those
+  records; `--corrections` lists the prompts that followed an interrupt,
+  oldest first, with their scrubbed text, under the same retention boundary
+  the other lifecycle reports print.
 - Prometheus: `phronesis_lifecycle_events_total{host,event,mode}` and
   `phronesis_subagent_duration_seconds{host}` (13 exponential buckets, 1 s to
   ~68 min). No kalpa label and no `agent_type` label — both are free text,

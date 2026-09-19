@@ -309,6 +309,24 @@ fn journey_corrections_lists_scrubbed_prompts_oldest_first() {
 
     let (code, stdout, stderr) = run(&["journey", "--corrections"], dir.path());
     assert_eq!(code, 0, "stderr: {stderr}");
+    // The list says what window it covers, using the same retention boundary
+    // `stats --kalpa` and `kalpa show` print (spec §"CLI and MCP surface").
+    let header = stdout.lines().next().unwrap_or_default();
+    assert!(
+        header.starts_with("corrections    counts since log entry 20"),
+        "retention header first: {stdout}"
+    );
+    // The boundary is the oldest lifecycle entry (the fresh prompt), not the
+    // oldest correction.
+    let boundary = chrono::DateTime::from_timestamp(1_700_000_000, 0)
+        .unwrap()
+        .with_timezone(&chrono::Local)
+        .format("%Y-%m-%d %H:%M")
+        .to_string();
+    assert!(
+        header.ends_with(&boundary),
+        "boundary is the oldest lifecycle entry ({boundary}): {stdout}"
+    );
     let first = stdout
         .find("no, use the repo root")
         .expect("first correction");
@@ -410,5 +428,9 @@ fn journey_corrections_on_an_empty_log_says_so() {
     assert!(
         stdout.contains("(no corrections recorded)"),
         "stdout: {stdout}"
+    );
+    assert!(
+        stdout.starts_with("corrections    counts since log entry (none)"),
+        "the retention header prints even with nothing to list: {stdout}"
     );
 }

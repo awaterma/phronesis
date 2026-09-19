@@ -307,6 +307,8 @@ fn subagent_duration_histogram_has_thirteen_exponential_buckets_and_a_host_label
             })),
             record(serde_json::json!({
                 "ts": 200, "kind": "lifecycle", "event": "subagent_stop", "host": "claude",
+                // Unmatched: it carries a duration, but the start was never
+                // seen, so the number is wrong and must not be observed.
                 "sid": "s-1", "seq": 2, "agent_id": "a2", "duration_secs": 3, "matched_start": false,
             })),
             // No duration (unmatched stop): counted as an event, never observed.
@@ -334,11 +336,11 @@ fn subagent_duration_histogram_has_thirteen_exponential_buckets_and_a_host_label
     // `host` is a label on the histogram too, so one host's slow sub-agents do
     // not smear another's distribution.
     assert!(
-        out.contains(r#"phronesis_subagent_duration_seconds_count{host="claude"} 2"#),
+        out.contains(r#"phronesis_subagent_duration_seconds_count{host="claude"} 1"#),
         "{out}"
     );
     assert!(
-        out.contains(r#"phronesis_subagent_duration_seconds_sum{host="claude"} 223"#),
+        out.contains(r#"phronesis_subagent_duration_seconds_sum{host="claude"} 220"#),
         "{out}"
     );
 }

@@ -294,7 +294,11 @@ pub fn build(read: &LogRead, opts: &Options) -> Registry {
                         mode: rec.str_field("mode").unwrap_or_default().to_string(),
                     })
                     .inc();
+                // Matched stops only: an unmatched stop never saw its start,
+                // so its `duration_secs` is absent or wrong and would poison
+                // the distribution (the same exclusion as `stats.rs`).
                 if rec.event == "subagent_stop"
+                    && rec.data.get("matched_start").and_then(|v| v.as_bool()) == Some(true)
                     && let Some(secs) = rec.num("duration_secs")
                 {
                     subagent_duration
