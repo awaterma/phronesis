@@ -1,6 +1,7 @@
 # SPEC: agent lifecycle events — sub-agent start/stop, interrupts, mid-turn context, corrections, kalpas
 
-**Status:** draft, revised after adversarial review (2026-09-18)
+**Status:** draft, revised after two rounds of adversarial review
+              (2026-09-18, 2026-09-19)
 **Authors:** Claude, Andrew Waterman
 **Date:** 2026-09-18
 **Target release:** phronesis-mcp 0.35.0 (MINOR — new journal record kind and
@@ -11,7 +12,7 @@
 **Affects:** `crates/phronesis-mcp/src/{main.rs, hook/{mod.rs, pre.rs, post.rs,
               seq.rs, journey_record.rs}, codex_hook.rs, codex_hook/renderer.rs,
               context.rs, init.rs, journey/{journal.rs, derive.rs, mod.rs},
-              journey_cli.rs, stats.rs, payload_scrub.rs}`, new
+              journey_cli.rs, stats.rs, payload_scrub.rs, action_log.rs}`, new
               `crates/phronesis-mcp/src/lifecycle/`,
               `crates/phronesis-metrics/src/families.rs`,
               and one amendment paragraph in `docs/specs/SPEC-journey-facts.md`
@@ -67,7 +68,9 @@ Today (`v0.34.0`):
    counts can be reported per theme.
 5. Never break an existing journey rule: every existing selector and every
    existing window computes the same facts before and after this change, for
-   the same tool records.
+   the same tool records. One carve-out, stated in §Correlation state: the
+   session id now rotates per session, so `s` windows scope to a session rather
+   than to the `session` file's lifetime.
 
 ## Non-goals
 
@@ -86,6 +89,13 @@ Today (`v0.34.0`):
   it is the autonomy signal the feature exists for, and it is printed beside
   the retention boundary so its window is visible. No other ratio ships; raw
   counts do.
+- Classifying `HEAD` movement by shape (new commit vs amend vs rebase vs
+  reset). `sha` and `head_before` are recorded so a later version can; v1
+  counts movements and says so in the report.
+- A kalpa history file. `kalpa end` deletes the kalpa file, so `kalpa show` for
+  an ended kalpa reads its boundaries from the log and loses them to rotation.
+- Per-session correlation state. The state files are per-project; two live
+  sessions in one project interfere (§Correlation state).
 
 ## Event model
 
@@ -118,7 +128,10 @@ the agent stopped and is, as far as hooks can tell, a reply; a `mid_turn` or
 `correction` prompt arrives while the agent was still executing its plan, or
 after the human stopped it, and is a steer. A `prompt` record with mode
 `mid_turn` or `correction` therefore also carries the tag
-`lifecycle:intervention`. The definition's limits, stated so the number is
+`lifecycle:intervention`, **but only when the prompt is top-level** — a prompt
+record carrying an `agent_id` (a prompt delivered inside a sub-agent) is never
+tagged `lifecycle:intervention` and never counted as a correction, because the
+human did not speak. The definition's limits, stated so the number is
 read honestly: it undercounts plan changes delivered as a fresh prompt after a
 natural stop, and it may count a mid-turn clarification the agent would have
 asked for anyway. Neither can be fixed without reading intent, which is a
@@ -173,6 +186,16 @@ Rules:
 - `tool` is the fixed sentinel `__lifecycle` and `path` is `""` so every
   existing reader that indexes by tool or path keeps working and no lifecycle
   record can collide with a real tool name.
+- **No tagger, no modules.** A lifecycle record carries exactly the selectors
+  enumerated in §Event model plus `kalpa:<name>`. The tagger and module
+  resolution are not invoked for lifecycle records, so no user-defined tag can
+  ever land on one and no existing tag selector can match one. A determinism
+  test with a catch-all tagger config pins this.
+- `subject` is stamped for joining only. Lifecycle records carry no outcome
+  tag, so `latest_outcome_indices` (`journal.rs:263–283`) never treats one as a
+  retention anchor, and `outcomes::report` ignores records with `kind:
+  Some(_)`. Lifecycle records never contribute to outcome grounding or to a
+  confidence band.
 - No prompt text, ever. `SPEC-journey-facts.md` §"The journal record" fixes the
   journal to tags plus an optional subject, never full content. That constraint
   stands; the text lives in the action log (§Action log).
@@ -184,36 +207,65 @@ Rules:
 
   | aggregator | window `Nc` (positional) | windows `Ns` / `s` | notes |
   |---|---|---|---|
-  | `occurrence`, `count`, `seen` | position among `tool_records` | filter over `all_records` | a `lifecycle:*` selector with an `Nc` window therefore yields no facts; lifecycle selectors use `s` or time windows. Documented in the selector list. |
+  | `occurrence`, `count`, `seen` | position among `tool_records` | filter over `all_records` | a `lifecycle:*` selector with an `Nc` window therefore yields no facts; lifecycle selectors use `s` or time windows. Documented in the selector list, and `validate_selectors` prints one stderr warning naming the rule when it sees the pairing, so a rule that can never fire says so instead of sitting silent. |
   | `since_ge` | n/a | n/a | last match searched over `all_records`; distance = number of **tool** records after it. "Tool calls since the last interrupt" works; existing distances unchanged. |
   | `filtered_since_ge` | n/a | n/a | target searched and `counted` counted over `all_records`, so "corrections since the last commit" works with lifecycle records on both sides. |
   | `distinct` | position among `tool_records` | filter over `tool_records` | lifecycle records have `path: ""` and must never add a distinct path. |
 
   This is what makes Goal 5 true: for the same tool records, every existing
   fact is identical.
-- **Read bound.** When any rule asks for a `Calls(n)` window, the read size
-  computed at `derive.rs:490–503` is the maximum `n` over *tool* records. Since
-  lifecycle records share the file, `read_recent` is asked for
-  `min(SUFFIX_HARD_CAP, 2 * n + 64)` lines and the projection then trims to
-  the last `n` tool records. If fewer than `n` tool records are present after
-  the over-read, the window is whatever was read, which is also today's
-  behavior when the journal is short.
-- `validate_selectors` (`derive.rs:415–467`) exempts any selector with the
-  `lifecycle:` or `kalpa:` prefix from the tagger-tag / module check. The
-  exemption applies when `.phronesis/journey.json` is absent too
+- **Read bound.** Today (`derive.rs:490–503`) the read size is
+  `SUFFIX_HARD_CAP` whenever any rule uses a session window, a time window,
+  `since_ge`, or `filtered_since_ge`, and `max(max_calls, 1)` otherwise. Only
+  the second branch needs changing: a `Calls(n)` window means *n tool records*,
+  and lifecycle records now share the file. The read becomes **iterative**:
+  read `n` lines, count tool records; while fewer than `n` tool records have
+  been read and the file start has not been reached, double the read and read
+  again, stopping at `SUFFIX_HARD_CAP`. The projection then trims to the last
+  `n` tool records. This preserves the window exactly rather than approximating
+  it; the only case where fewer than `n` tool records are returned is a journal
+  that genuinely holds fewer, or a tail so lifecycle-dense that
+  `SUFFIX_HARD_CAP` binds first — that second case is an accepted deviation and
+  is stated here so it is a decision. Reading more lines never changes a fact:
+  the `Nc` branch is positional and trims, and every other branch already reads
+  the hard cap.
+- `validate_selectors` (`derive.rs:415–467`) exempts the **closed set** of
+  lifecycle selectors listed in §Event model, plus the two open-ended patterns
+  `lifecycle:agent:<agent_type>` and `kalpa:<name>`, from the tagger-tag /
+  module check. The set is closed on purpose: a typo like
+  `lifecycle:prompt:corection` must still fail as `UndefinedSelector` rather
+  than validate and silently match nothing. A tagger tag that begins with
+  `lifecycle:` or `kalpa:` is rejected at config load — the namespaces are
+  reserved. The exemption applies when `.phronesis/journey.json` is absent too
   (`TaggerConfig::default()`), so a project with no tagger config can still
   write a lifecycle rule. Everything else still fails closed as
   `UndefinedSelector`.
+- **`seq` is a join key, not a fact.** Lifecycle records share
+  `hook/seq.rs::bump_seq_file`, so a tool record's `seq` advances faster than
+  it did in v1. No `journey_*` aggregator reads `seq`: call windows use record
+  position among `tool_records`, not the counter. `seq` exists to join the
+  journal to the action log and as a debug aid.
 - **Compaction.** `latest_outcome_indices` (`journal.rs:263–283`) retains
   prefix records that carry a subject and a grounded outcome tag. It
-  additionally retains records tagged `lifecycle:commit`, `lifecycle:kalpa_start`,
-  and `lifecycle:kalpa_end`. Other lifecycle records compact like tool records.
+  additionally retains records tagged `lifecycle:commit`, `lifecycle:interrupt`,
+  `lifecycle:prompt:correction`, `lifecycle:kalpa_start`, and
+  `lifecycle:kalpa_end` — the friction record is the point of the feature, and
+  a rule like "two corrections this session" must not stop firing because the
+  journal compacted. Other lifecycle records compact like tool records. The
+  retained set is bounded by human turns and commits, not by tool calls, so the
+  growth it adds is an order of magnitude below the tail it lives beside; no
+  further cap ships in v1.
   Sub-agent pairing does not depend on the journal (§Correlation state), so a
   compacted `subagent_start` is harmless.
 - The determinism test in `tests/journey_derive.rs` gains a fixture whose last
   20 records are 10 tool records interleaved with 10 lifecycle records, and
   asserts every `journey_*` fact equals the fact set computed from the 10 tool
   records alone under `Calls`, `since_ge`, `filtered_since_ge`, and `distinct`.
+  Three further fixtures exercise what a 20-line file cannot: 5 tool records
+  followed by 200 lifecycle records under a `Calls(5)` rule (the iterative
+  re-read must still find all five), a `Seconds` window whose range contains
+  lifecycle records, and a `since_ge` whose last match sits behind more
+  lifecycle records than a single read would cover.
 
 ## Action log
 
@@ -238,9 +290,18 @@ Each lifecycle event also appends one `LogEntry` with `kind: "lifecycle"` and
 ```
 
 - `prompt` is the full text, scrubbed as §Privacy and scrubbing describes. It
-  appears only on `prompt` entries. `.phronesis/log.jsonl` is gitignored at
-  both the root and `**/` levels (`.gitignore:3, 32`), so text never lands in
-  a published tree.
+  appears only on `prompt` entries. `prompt_bytes` is the byte length of the
+  **scrubbed** text; it, and the `<redacted:N bytes>` capture placeholder,
+  deliberately reveal the original length. That is a decision, not an
+  oversight.
+- **The gitignore guarantee covers the rotated file too.** The action log
+  rotates to `<path>.1`, i.e. `.phronesis/log.jsonl.1`
+  (`action_log.rs::rotated_path`). This repo ignores both names at the root and
+  `**/` levels (`.gitignore` lines 3–4 and 31–32). Because this spec is what
+  first puts human prompt text in that file, `phr-mcp init` gains one step: if
+  the project's `.gitignore` does not already ignore `.phronesis/log.jsonl` and
+  `.phronesis/log.jsonl.1`, init appends both and says so in its output. A test
+  runs `git check-ignore` on both names in a temp repo after `phr-mcp init`.
 - `.phronesis/journey.json` gains an optional `lifecycle` block:
 
   ```json
@@ -248,28 +309,44 @@ Each lifecycle event also appends one `LogEntry` with `kind: "lifecycle"` and
   ```
 
   Values: `"full"` (default, the decision recorded for this spec) or `"none"`.
-  Under `"none"` the `prompt` field is omitted everywhere it would appear
-  (action log, payload capture, `--corrections`) and only `prompt_bytes`
-  remains.
+  A missing file or a missing `lifecycle` block means `"full"`. An unreadable
+  `journey.json`, a malformed `lifecycle` block, or any other value is treated
+  as `"none"` with one stderr warning: the switch fails **closed**, never open.
+  Under `"none"` the `prompt` field is omitted from the action log and from
+  `--corrections`, and only `prompt_bytes` remains. Capture redaction is
+  unconditional and independent of the switch, so there is nothing for the
+  switch to change there.
+- **The switch is enforced at read time as well.** Flipping it to `"none"`
+  must also hide prompts already written under `"full"`. Every consumer of
+  correction text — `phr-mcp journey --corrections`, the `extract_rules`
+  hand-off, any future MCP surface — goes through one accessor,
+  `lifecycle::correction_text(root, &entry)`, which consults the current
+  `prompt_text` value and yields `None` under `"none"`. No consumer greps the
+  log directly.
 - `sid` and `seq` on the log entry are the same values written to the journal
   record, so a reader can join the two files.
-- `session_id` and `transcript_path` values in these entries are the host's
-  raw values, as they are in today's `codex_hook` entries. They are scrubbed by
-  `phr-mcp scrub-payload` on the way to any corpus, as today.
+- `session_id` is the host's raw value, as it is in today's `codex_hook`
+  entries; it is scrubbed by `phr-mcp scrub-payload` on the way to any corpus,
+  as today. `transcript_path` and `agent_transcript_path` are **not
+  persisted**: they are read for classification and dropped at the adapter
+  boundary. No lifecycle log entry carries them.
 
 `stats::aggregate` (`stats.rs:71–131`) is rule-centric and ignores
 `kind`/`event`. It gains a `lifecycle` section: counts per event, counts per
 prompt mode, sub-agent count with median duration computed in-process from the
-log, and commit count. When a kalpa is open its name is printed in the stats
+log and its one rotated predecessor (a pair whose start rotated away
+contributes no duration), and commit count. When a kalpa is open its name is printed in the stats
 header.
 
 `families::build` (`phronesis-metrics/src/families.rs:180–265`) gains a
 `"lifecycle"` arm emitting `phronesis_lifecycle_events_total{host,event,mode}`
 (a `Counter` family; `mode` is `""` for non-prompt events) and
-`phronesis_subagent_duration_seconds` as a `Histogram` with
-`exponential_buckets(1.0, 2.0, 12)` (1 s to about 68 min). No `kalpa` label in
-v1: it is user-typed free text and the existing families cap rule-id series
-for exactly this reason (`families.rs:170–172`).
+`phronesis_subagent_duration_seconds{host}` as a `Histogram` with
+`exponential_buckets(1.0, 2.0, 13)` — 13 buckets, so the last finite bucket is
+4096 s, about 68 min. The label set is fixed to `{host, event, mode}`. Neither
+`kalpa` nor `agent_type` is ever a label: both are free text (user-typed and
+model-supplied respectively) and the existing families cap rule-id series for
+exactly this reason (`families.rs:170–172`).
 
 ## Correlation state
 
@@ -283,56 +360,113 @@ failed hook. `hook/seq.rs::bump_seq_file` stays as it is.
 
 | file | written by | read by | contents |
 |---|---|---|---|
-| `session` (exists) | SessionStart, SessionEnd | everything | the session id. New: SessionStart **overwrites** it with the host's `session_id` when present (today `current_sid` is create-on-miss and never overwrites); SessionEnd truncates it. Codex stops using `payload.session_id` directly and reads this file like the other hosts. Migration note: `s` windows do not span the upgrade; the first post-upgrade SessionStart begins a new sid. |
-| `agents` | `subagent_start` push, `subagent_stop` pop | `subagent_stop`, `prompt` | JSON lines `{agent_id, agent_type, ts, seq}` for currently open sub-agents. Pop by `agent_id`; if the stop carries no id, pop LIFO; if nothing is open, the stop record is written with `matched_start: false` and no duration. This file, not the journal, is authoritative for pairing. Truncated at SessionStart. |
-| `inflight` | `pre-check` push, `post-check` pop | `prompt` classification, `post-check` commit detection | JSON lines `{key, tool, ts, agent_id?, head_before?}`. `key` is `tool_use_id` when the host supplies one (Claude, Codex) and otherwise the hex of `std::hash::DefaultHasher` over `tool_name` and the canonical (sorted-key) `tool_input` JSON (Gemini; no new dependency, and `BeforeTool`/`AfterTool` carry identical `tool_input`). `head_before` is `git rev-parse HEAD` in the project root at pre time, only for shell tools. A blocked pre-check (exit 2) pops its own entry before exiting: a block is not an interrupt. Entries older than **900 s** are ignored by classification and dropped on the next write. Truncated at SessionStart. |
-| `turn` | `prompt` sets open; `stop`, `interrupt`, SessionEnd set closed | `prompt` classification | `{open: bool, turn_id?, last_prompt_ts, last_event: "prompt"|"stop"|"interrupt"}` |
+| `session` (exists) | SessionStart, SessionEnd | everything | the session id. New: a **session-begin** SessionStart (source `startup`, `resume`, or `clear`) **overwrites** it with the host's `session_id` when present (today `current_sid` is create-on-miss and never overwrites); a `compact` or `fork` SessionStart leaves it alone. The write is an atomic replace (temp file + rename) so a lock-free `current_sid` reader never observes an empty file and never mints a phantom sid. SessionEnd does **not** truncate it — truncation would let any stray hook between sessions mint a throwaway sid; the next session-begin overwrites instead. Codex stops using `payload.session_id` directly and reads this file like the other hosts. |
+| `agents` | `subagent_start` push, `subagent_stop` pop | `subagent_stop`, `prompt` | JSON lines `{agent_id, agent_type, ts, seq}` for currently open sub-agents. Pop by `agent_id`; if the stop carries no id, pop LIFO; if nothing is open, the stop record is written with `matched_start: false` and no duration. This file, not the journal, is authoritative for pairing. `agent_type` is sanitized before it is written anywhere (below). Truncated at a session-begin SessionStart only. |
+| `inflight` | `pre-check` push, `post-check` pop | `prompt` classification, `post-check` commit detection | JSON lines `{key, tool, ts, agent_id?, head_before?}`, a **multiset**: push appends a line, pop removes the *last* line with a matching key. Two concurrent calls with the same key therefore push two lines and pop two lines instead of clobbering each other. `key` is `tool_use_id` when the host supplies one (Claude, Codex) and otherwise the hex of an FNV-1a hash over `tool_name` and the canonical (sorted-key) `tool_input` JSON (Gemini; `BeforeTool`/`AfterTool` carry identical `tool_input`). The hash is pinned rather than `std::hash::DefaultHasher`, whose algorithm is explicitly unspecified across Rust releases, so a pre/post pair split across a rebuild still matches. `head_before` is `git rev-parse HEAD` in the project root at pre time, only for shell tools whose command passes the commit pre-filter (§Success signal). A blocked pre-check (exit 2) pops its own entry before exiting: a block is not an interrupt. **The TTL applies to classification only:** entries older than **900 s** are ignored when classifying a prompt and are dropped when a *classification* pass rewrites the file, but `post-check` pops by key regardless of age, so a twenty-minute build still gets its commit detected. Truncated at a session-begin SessionStart only. |
+| `turn` | top-level `prompt` sets open; an *unblocked* `stop`, an `interrupt`, and SessionEnd set closed | `prompt` classification | `{sid, open: bool, turn_id?, last_prompt_ts, last_event: "prompt"\|"stop"\|"interrupt"}`. `sid` is carried so a turn left open by a crashed session cannot leak into the next one: a reader whose `current_sid` differs treats the file as absent. A session-begin SessionStart resets it to closed for the same reason. A prompt carrying an `agent_id` never writes this file — a sub-agent's prompt must not move the parent's turn state or its `last_prompt_ts`. If the write that would close the turn fails, the classifier treats the turn as **closed** (the next prompt is `fresh`), so a best-effort failure degrades to the conservative answer rather than to a false intervention. |
 | `kalpa` | `phr-mcp kalpa start/end` | every lifecycle write, `journey`, `stats` | `{name, started_ts}`. Survives SessionStart. |
 
 Sub-agent identity: Claude Code and Codex supply `agent_id` and `agent_type`
 on their sub-agent events. When `agent_id` is absent (Gemini, or a Claude
 internal fork with empty fields) the start synthesizes `agent_id =
 format!("{sid}:{seq}")` and the stop pops LIFO. Nesting depth is not tracked.
+LIFO is an approximation: when two sub-agents without ids finish out of start
+order their durations are swapped. `matched_start` and the ids keep it
+auditable; no better pairing is available from the hook surface.
+
+**`agent_type` is sanitized at the adapter boundary.** On Gemini it is
+`tool_input.agent_name`, model-generated free text, and it reaches a journal
+tag (`lifecycle:agent:<agent_type>`, hence a RETE fact), the action log, and
+the `agents` file. It gets the same treatment the kalpa name gets: lowercased,
+then kept only if it matches `[a-z0-9][a-z0-9-]{0,63}`. Anything else is stored
+as absent and the `lifecycle:agent:*` tag is dropped.
+
+**Migration: `s` windows become per-session.** Today the `session` file is
+create-on-miss and never overwritten, so in practice a project's sid — and
+therefore every `s` window — spans the file's lifetime. After this change each
+session-begin SessionStart mints a new sid, so `s` windows scope to a session,
+which is what the name always claimed. This is a permanent semantic change,
+not a one-time boundary, and it is the one carve-out from Goal 5: existing
+`s`-window rules see shorter windows. Rules using `Nc` or time windows are
+unaffected. The release notes say so and tell users to review `s`-window rules.
+
+**One project, two live sessions.** The correlation files are per-project. Two
+host sessions open in the same project share them: the later SessionStart wins
+the sid, and one session's `stop` can close the other's turn. Classification
+then misattributes some prompts. Accepted for v1 rather than mitigated —
+per-sid state files would multiply the file count by the number of sessions and
+leave the reaping problem unsolved — and recorded here so the misattribution is
+a known limit rather than a surprise.
 
 **Sub-agent tool calls and `inflight`.** A Claude sub-agent's tool calls fire
 the same `PreToolUse`/`PostToolUse` hooks against the same project root. Two
 sub-agents dispatched in one message run concurrently. Because `inflight` is a
-keyed set, their entries do not clobber each other or the parent's. When the
+keyed multiset (§Correlation state), their entries do not clobber each other or
+the parent's even when two calls share a key. When the
 prompt handler evaluates `inflight`, it considers only entries whose `agent_id`
 is absent or equals the prompt's own `agent_id`. A sub-agent's own in-flight
-tool never makes the parent's next prompt a `correction`.
+tool never makes the parent's next prompt a `correction`. This rests on
+`PreToolUse` inside a sub-agent carrying `agent_id`, which step 0's fixture
+settles. If it does not, sub-agent entries are parent-scoped and a mid-turn
+prompt while a sub-agent's tool runs can read as a `correction`; the fallback
+is not a code path but a documented miss, and the fixture decides which world
+we are in before the adapter ships.
 
 **Where the writes happen.** `pre.rs` and `post.rs` today exit early for tools
 outside their allowlist (`pre.rs:30–43`, `post.rs:37–50`) and when no rules of
 that phase exist (`pre.rs:48`). The `inflight` push/pop and the Gemini
 `invoke_agent` sub-agent derivation run immediately after `read_payload`,
 before the tool-name match and before rule loading, in both runners.
-`invoke_agent` is added to both allowlists.
+`invoke_agent` is added to both allowlists. A blocked `invoke_agent` pre-check
+(exit 2) pops the `agents` entry it just pushed and writes no `subagent_start`
+record, mirroring the `inflight` pop: a sub-agent that never ran must not
+leave a dangling entry for the next real stop to pop LIFO. An `invoke_agent`
+tool record uses the synthetic path `<invoke_agent>` — never the sub-agent
+prompt, which would put content in the journal — and that value is the one
+`journey_distinct` on `path` will see.
 
 ## Classification at prompt time
 
 Runs inside the `prompt` handler on every host, before the record is written.
 
-1. Read `turn`. If absent or `open: false`, mode is `fresh`. Write the record,
-   set `turn` open. Done.
-2. Turn is open. Check for an interrupt, in this order, stopping at the first
-   hit:
-   - **Codex:** the last lifecycle record for this `sid` is an `interrupt`
-     (the `Interrupt` hook fired before the prompt). Mode is `correction`.
-   - **Inflight:** `inflight` has a live entry (age under 900 s) visible to
-     this prompt's agent scope. Write an `interrupt` record with
-     `inferred_from: "inflight"`, drop those entries, then the prompt with
-     mode `correction`.
+A prompt carrying an `agent_id` is a sub-agent's prompt, not the human's. It is
+recorded with mode `fresh`, is never tagged `lifecycle:intervention`, and skips
+everything below: it reads no state and writes none.
+
+1. Read `turn`. Treat it as absent when it is missing, unparseable, or carries
+   a `sid` other than the current one.
+   - Absent → mode is `fresh`.
+   - `last_event == "interrupt"` → mode is **`correction`**, on every host.
+     This is the single interrupt-already-recorded path; the Codex `Interrupt`
+     hook, and every inferred interrupt below, sets it. It is read from `turn`
+     and not from the journal tail, so a concurrent `SubagentStop` record
+     cannot hide it and compaction cannot erase it.
+   - Otherwise `open: false` → mode is `fresh`.
+   - Otherwise the turn is open → step 2.
+
+   In the `fresh` and `correction` cases, write the record and set `turn` open
+   with `last_event: "prompt"`. Done.
+2. Turn is open and no interrupt has been recorded yet. Check for one, in this
+   order, stopping at the first hit. Every branch that infers an interrupt
+   writes the `interrupt` record, drops the session's `inflight` entries (so
+   one Esc cannot yield two interrupts), sets `turn.last_event` to
+   `"interrupt"`, and then writes the prompt with mode `correction`.
    - **Transcript marker (Claude only):** `transcript_path` is present and
-     readable. Read at most the last 64 KiB and look for a `user` entry whose
-     text is exactly `[Request interrupted by user]` or begins with
-     `[Request interrupted by user for tool use]` with a timestamp after
-     `turn.last_prompt_ts`. Hit → `interrupt` with `inferred_from:
-     "transcript"`, then `correction`.
+     readable. Read at most the last 64 KiB and look for an entry with
+     `type == "user"` whose text — `message.content` when it is a string, or
+     the `text` of a single text block when it is an array — is exactly
+     `[Request interrupted by user]` or begins with `[Request interrupted by
+     user for tool use]`, with a `timestamp` after `turn.last_prompt_ts`.
+     `inferred_from: "transcript"`. The transcript is checked **before**
+     `inflight` because it is direct evidence: a queued mid-turn message also
+     leaves a live `inflight` entry, and only the marker distinguishes the two.
+   - **Inflight:** `inflight` has a live entry (age under 900 s) visible to
+     this prompt's agent scope, and the transcript was absent or unreadable.
+     `inferred_from: "inflight"`. Not used on Codex, where the `Interrupt` hook
+     is authoritative and step 1 has already spoken.
    - **Open turn (Gemini only):** Gemini never delivers a prompt while a turn
      is running, so an open turn here means `AfterAgent` was skipped, which
-     only happens on abort. Write `interrupt` with `inferred_from:
-     "open_turn"`, then `correction`.
+     only happens on abort. `inferred_from: "open_turn"`.
 3. No interrupt evidence. Mode is `mid_turn`. Reachable on Claude and Codex
    only. On Codex a `turn_id` equal to the open turn's id is a second,
    sufficient signal for `mid_turn`.
@@ -350,6 +484,14 @@ Known limits, stated where they apply:
 - A stale `inflight` entry from a killed hook, a denied permission, or a
   cancelled tool is bounded by the 900 s TTL and the SessionStart truncation.
   Within that window one spurious `correction` is possible.
+- The transcript tail is bounded at 64 KiB. A single very large intervening
+  entry — a big paste — can push the interrupt marker out of the read, and the
+  prompt falls through to the `inflight` branch or to `mid_turn`.
+- The `inflight` branch cannot distinguish an Esc from a message typed while a
+  tool runs; only the transcript marker can. On Claude with an unreadable
+  transcript, a queued mid-turn message is therefore reported as a
+  `correction`. Both modes are interventions, so the headline number is
+  unaffected; the split between `mid_turn` and `correction` is not.
 - A prompt hook that runs concurrently with a still-running `post-check` for
   the previous tool can see that tool's `inflight` entry and infer an
   interrupt. Hosts appear to serialize hook phases, and `post-check` pops the
@@ -370,13 +512,22 @@ Known limits, stated where they apply:
 - `event.rs`: `LifecycleEvent { kind, mode, host, sid, seq, session_id,
   turn_id, agent_id, agent_type, kalpa, prompt, ts, extra }` plus
   `to_journal_record(&self) -> JournalRecord` and `to_log_entry(&self) ->
-  LogEntry`. One place decides both on-disk shapes.
+  LogEntry`. One place decides both on-disk shapes. `extra` is a closed
+  vocabulary — `inferred_from`, `stop_hook_active`, `matched_start`,
+  `duration_secs`, `sha`, `head_before`, `confidence_band`, `tool_use_id` — and
+  never carries message or transcript content. `last_assistant_message`,
+  `prompt_response`, and `agent_transcript_path` are read for decisions and
+  dropped at the adapter boundary; the hook integration tests assert no log
+  entry contains them.
 - `state.rs`: the five correlation files, `with_locked`, and
   `classify_prompt(root, host, agent_id, transcript_path) -> (Mode,
   Option<Interrupt>)`.
 - `record.rs`: `record(root, event)` = bump seq, append journal, append log,
   update state. Failures are swallowed and reported on stderr with the
-  `phronesis:` prefix, matching `metrics::record`.
+  `phronesis:` prefix, matching `metrics::record`. **stderr diagnostics carry
+  event names, paths, and error kinds only** — never payload fields, prompt
+  text, or transcript content; error formatting uses `Display` on the error,
+  not on the input.
 - `outcome.rs`: `detect_commit(root, inflight_entry, command_exit) ->
   Option<Commit>` (§Outcomes and kalpas).
 - `scrub.rs`: `scrub_prompt(root, text) -> String` (§Privacy and scrubbing).
@@ -403,30 +554,56 @@ writes the journal or log directly.
   print `{"decision":"block","reason":"<gate text>"}` when the confidence gate
   blocks, otherwise `{}`. When the payload has `stop_hook_active: true`, both
   print `{}` without evaluating the gate, as the Claude docs require, so a
-  blocking gate cannot loop.
+  blocking gate cannot loop. `SessionEnd` prints `{}`.
+- **A blocked stop is not a stop.** When the gate blocks, Claude continues the
+  same turn. So `Stop` records the `stop` event and closes `turn` **only when
+  its response does not block**; a blocking `Stop` leaves `turn` open and
+  writes no record, and the `stop` is recorded when the turn really ends (the
+  `stop_hook_active: true` re-fire, which prints `{}`, records exactly one
+  `stop`). The same rule applies to `SubagentStop` and its `agents` pop.
+  Without this, a steer during the continuation would classify `fresh` and the
+  intervention would be lost.
 - `UserPromptSubmit` → render interaction context, then record `prompt`.
-- `SessionStart` → overwrite `session` with `session_id` when present,
-  truncate `agents` and `inflight`, then render session context as today.
-- `SessionEnd` → if `turn` is open, record `stop`; truncate `session`; set
-  `turn` closed.
+- `SessionStart` → on a session-begin source (`startup`, `resume`, `clear`)
+  overwrite `session` with `session_id` when present and truncate `agents`,
+  `inflight`, and `turn`; on `compact` or `fork` leave all four alone, because
+  the session is continuing and its open sub-agents and in-flight tools are
+  real. Then render session context as today.
+- `SessionEnd` → if `turn` is open, run the same interrupt detection step 2
+  runs and record `interrupt` when there is evidence, otherwise record `stop`;
+  set `turn` closed. `session` is left in place (§Correlation state). Quitting
+  out of an aborted turn must not be recorded as a completed turn.
 - `SubagentStart` / `SubagentStop` / `Stop` → record. `Stop` and
   `SubagentStop` run `make_completion_decision` as the Codex adapter does.
 - `pre-check` pushes `inflight` (with `head_before` for shell tools);
   `post-check` pops it and runs `detect_commit`. `HookPayload` gains
   `#[serde(default)] session_id`, `tool_use_id`, `hook_event_name`,
   `agent_id`.
-- **Payload capture.** `capture_raw_payload` (`hook/mod.rs:88–112`) tees stdin
-  verbatim to `PHRONESIS_CAPTURE_DIR`, and `docs/payload-corpus-promotion.md`
-  promotes that file into the committed corpus. `claude-hook` and `codex-hook`
-  redact `prompt` and `last_assistant_message` to `"<redacted:N bytes>"` before
-  the tee for every event. A test asserts no prompt text reaches
-  `payloads.jsonl`.
+- **Payload capture.** `capture_raw_payload` (`hook/mod.rs:88–112`) writes
+  stdin to `PHRONESIS_CAPTURE_DIR`, and `docs/payload-corpus-promotion.md`
+  promotes that file into the committed corpus. The redaction moves **into
+  `capture_raw_payload` itself**, so every caller inherits it — `pre-check` and
+  `post-check` included, which is what covers Gemini's `invoke_agent`, whose
+  `tool_input.prompt` is a full sub-agent task. It already parses stdin into a
+  `Value`; it now walks that value and replaces the value of any key named
+  `prompt`, `prompt_response`, or `last_assistant_message`, **at any depth**,
+  with `"<redacted:N bytes>"`, then serializes the redacted value. Stdin that
+  is not valid JSON is not written at all (one stderr line naming the event),
+  since it cannot be redacted. The capture is therefore a redacted
+  re-serialization rather than a verbatim tee, and
+  `docs/payload-corpus-promotion.md` is amended to say so. Redaction applies to
+  the copy written to the capture dir only: the hook parses the original stdin
+  and the action log still receives the full scrubbed prompt. Tests assert both
+  halves — no prompt text in `payloads.jsonl`, real text in the log.
 - `init.rs::write_settings` registers `SubagentStart`, `SubagentStop`, `Stop`,
   and `SessionEnd` with an empty matcher pointing at `phr-mcp claude-hook
   <Event>`, and switches `UserPromptSubmit` and `SessionStart` to
   `claude-hook`. **Replacement is command-keyed**, like `upsert_codex_hook`
-  (`init.rs:1564–1583`): only entries whose command starts with `phr-mcp ` are
-  replaced. Today's `upsert_hook` is matcher-keyed (`init.rs:1544–1559`) and
+  (`init.rs:1564–1583`): an entry is replaced when its command contains the
+  token `phr-mcp` and ends with one of our subcommands (`session-context`,
+  `interaction-context`, `claude-hook <Event>`), so a user who invokes us
+  through an absolute path or a wrapper gets an in-place upgrade rather than a
+  duplicate registration and double context injection. Today's `upsert_hook` is matcher-keyed (`init.rs:1544–1559`) and
   would delete a user's own empty-matcher `Stop` hook; a test pins that a
   foreign hook survives `phr-mcp init`.
 - `session-context` and `interaction-context` remain as aliases that ignore
@@ -436,9 +613,24 @@ writes the journal or log directly.
   `agent_type` are asserted by the Claude docs but appear in no fixture in
   this repo. Before the Claude adapter is implemented, one real payload per
   event (`SubagentStart`, `SubagentStop`, `Stop`, `UserPromptSubmit`,
-  `SessionEnd`) is captured with `PHRONESIS_CAPTURE_DIR`, redacted, and
-  committed under `tests/fixtures/payloads/claude/`. The `agent_id` fallback
-  above covers a missing field, but the fixtures decide what "missing" means.
+  `SessionStart`, `SessionEnd`, `PreToolUse`, `PostToolUse`, and one
+  `PreToolUse` fired *inside* a sub-agent) is captured with
+  `PHRONESIS_CAPTURE_DIR` and committed under
+  `tests/fixtures/payloads/claude/`. The `agent_id` fallback above covers a
+  missing field, but the fixtures decide what "missing" means — and the
+  sub-agent `PreToolUse` is what decides whether `inflight` agent scoping
+  (§Correlation state) works at all; if `agent_id` is absent there, sub-agent
+  tool entries are parent-scoped and the spurious-`correction` case is real
+  rather than theoretical. The tool fixtures also pin `tool_use_id`, which the
+  `inflight` key depends on. "Redacted" means the full pipeline: capture →
+  the recursive redaction above → `phr-mcp scrub-payload` → human review.
+  `tests/payload_contract.rs` asserts no committed fixture contains a
+  UUID-shaped session id, a `.claude`/`.codex`/`.gemini` path, an absolute home
+  path, or the capturing machine's username.
+- A real transcript tail is a fixture too: the last 64 KiB after a real Esc
+  interrupt, committed under `tests/fixtures/transcripts/claude/`, so the
+  marker branch is tested against the format Claude actually writes rather than
+  against a shape this spec guessed.
 
 ### Codex CLI
 
@@ -475,19 +667,35 @@ Changes:
   `agent_transcript_path`, `last_assistant_message`, `stop_hook_active`,
   `prompt`, all optional.
 - `dispatch` adds `"Interrupt"` → record `interrupt` with `inferred_from:
-  "hook"`, set `turn` closed, respond `{}`. Adds `"SessionEnd"` → record
-  `stop` if `turn` is open, truncate `session`, respond `{}`.
+  "hook"`, set `turn` to `{open: false, last_event: "interrupt"}`, drop the
+  session's `inflight` entries (the aborted tools' `PostToolUse` never fires,
+  and a lingering entry would fake an interrupt for 900 s), respond `{}`. The
+  next prompt reads `last_event` and classifies `correction` (§Classification
+  step 1). Adds `"SessionEnd"` → record `stop` if `turn` is open, respond `{}`;
+  `session` is left in place.
 - `SubagentStart`, `SubagentStop`, `Stop`, `UserPromptSubmit` record their
   events in addition to what they do today. `Stop` and `SubagentStop` continue
-  through `make_completion_decision`, whose response already fits the table.
+  through `make_completion_decision` and, as on Claude, skip the gate entirely
+  when `stop_hook_active: true` and record nothing when the response blocks.
+  **`SubagentStop` never closes `turn`; only the main-agent `Stop` does** —
+  the two share a `dispatch` arm, which makes the distinction easy to lose.
+- `make_completion_decision`'s render path for `Stop`/`SubagentStop` must emit
+  no `hookSpecificOutput`: the same `deny_unknown_fields` rule that breaks
+  `PreCompact` (§Adjacent findings 1) would discard every blocking stop. If the
+  renderer emits it today, it is changed here rather than in that follow-up,
+  and the per-event allowed-key test is the pin.
 - `renderer.rs` emits `{}` for `Interrupt` and `SessionEnd`. The
   `SubagentStart` context render stays: its schema permits
   `hookSpecificOutput.additionalContext`.
 - `init.rs::write_codex_hooks` adds `Interrupt` and `SessionEnd` to the
-  registration loop and changes the `SessionStart` matcher from
-  `"startup|resume|clear"` to `""`. The current matcher is exact alternation
-  in Codex's matcher grammar, so `compact` and `fork` sessions get no context
-  today.
+  registration loop, both with the empty matcher `""` as the other new events
+  use, and changes the `SessionStart` matcher from `"startup|resume|clear"` to
+  `""`. The current matcher is exact alternation in Codex's matcher grammar, so
+  `compact` and `fork` sessions get no context today. Widening it is safe only
+  because the SessionStart handler is now gated on the source
+  (§Correlation state): `compact` and `fork` render context but touch no
+  correlation state, so a mid-session compaction cannot orphan an open
+  sub-agent or discard an in-flight tool.
 - The Codex journal write (`codex_hook.rs:1052–1074`) reads `sid` from the
   shared `session` file like every other host.
 
@@ -524,7 +732,16 @@ Changes:
   matcher) → `phr-mcp claude-hook <Event>`, and repoints `SessionStart` and
   `BeforeAgent` at `claude-hook`. The adapter maps Gemini names inside:
   `BeforeAgent` → `prompt`, `AfterAgent` → `stop`. Every response is `{}` or
-  the existing context JSON; never empty stdout.
+  the existing context JSON; never empty stdout. The confidence gate does not
+  run on Gemini-mapped events: Gemini has no documented `decision` semantics
+  for `AfterAgent`, so `stop` is recorded and `{}` is printed. The gate stays
+  Claude- and Codex-only until Gemini's response schema for that event is
+  established.
+- Fixtures are a precondition for this adapter too, on the same terms as the
+  Claude ones and for the same reason — this repo has already misread a Gemini
+  field name once (§Adjacent findings 4). Before step 4: `BeforeAgent`,
+  `AfterAgent`, `SessionStart`, `SessionEnd`, and `BeforeTool`/`AfterTool` for
+  `invoke_agent`, committed under `tests/fixtures/payloads/gemini/`.
 - `subagent_start` / `subagent_stop` on Gemini are derived in `pre-check` /
   `post-check` when `tool_name == "invoke_agent"`, before the allowlist match:
   `agent_type` is `tool_input.agent_name`, `agent_id` is the synthesized
@@ -553,7 +770,13 @@ anything" gets a denominator.
   `kalpa_end`. `phr-mcp kalpa` prints the current name and age.
 - `<name>` is `[a-z0-9][a-z0-9-]{0,63}`; anything else is rejected with a
   message. This bounds label length and stops typos from creating unbounded
-  distinct names by accident.
+  distinct names by accident. **The pattern is a property of the value, not of
+  the CLI:** every reader treats a `kalpa` file whose `name` fails it as absent
+  (one stderr warning), so a stale or hand-edited file cannot reach a journal
+  tag, a log field, or the model-visible context header.
+- `kalpa start <other>` writes in this order: record `kalpa_end` tagged with
+  the **old** name, replace the file, record `kalpa_start` tagged with the
+  **new** name. Each boundary record therefore carries the kalpa it is about.
 - A kalpa outlives sessions. It is not cleared by SessionStart, SessionEnd, or
   compaction. Only `kalpa end` or `kalpa start <other>` (which ends the current
   one first) changes it.
@@ -570,10 +793,14 @@ anything" gets a denominator.
 
 Detected in `post-check` from ground truth, not command text:
 
-1. `pre-check` for a shell tool (`Bash`, `run_shell_command`) runs
-   `git rev-parse HEAD` in the project root with a 2 s timeout and stores the
-   result as `head_before` on the `inflight` entry. Failure (not a repo, git
-   unavailable) stores nothing and disables detection for that call.
+1. `pre-check` for a shell tool (`Bash`, `run_shell_command`) whose command
+   passes the text pre-filter in step 3 runs `git rev-parse HEAD` in the
+   project root with a 2 s timeout and stores the result as `head_before` on
+   the `inflight` entry. Applying the filter at pre as well as at post means a
+   shell call that cannot be a commit spawns no git process at all. Failure
+   (not a repo, git unavailable) stores nothing; a timeout stores
+   `detection: "timeout"` on the entry so the miss is auditable rather than
+   silent. Either way detection is disabled for that call.
 2. `post-check` pops the entry. If `head_before` is present and
    `command_exit == 0`, it runs `git rev-parse HEAD` again. If `HEAD` differs,
    it records `commit` with `sha`, `head_before`, and `confidence_band` (from
@@ -583,12 +810,22 @@ Detected in `post-check` from ground truth, not command text:
    or `git merge` or `git rebase` present in the command) decides whether to
    run step 2's `rev-parse` at all, so most shell calls pay nothing at post.
 
-This is immune to heredocs, `git -C other-repo`, `&& … || true` chains, and
-aliases, because it observes the repository rather than the string. It misses
-a commit made by a tool other than the shell (none exist among the hosted
-tools today) and a commit followed by a reset within the same command (which
-is not a landed commit). Amends and rebases move `HEAD` and are recorded;
-`sha` distinguishes them from a new commit for any consumer that cares.
+Once the pre-filter has matched, the decision is immune to heredocs,
+`git -C other-repo`, and `&& … || true` chains, because it observes the
+repository rather than the string. The pre-filter itself is a string scan, so
+the claim stops there: an alias, an abbreviation (`git com`), a wrapper script
+(`./release.sh`), `git pull`, and `git am` all move `HEAD` without matching,
+and are missed. So is a commit made outside a shell tool call entirely — the
+human committing in another terminal or through a host's commit UI. Commits
+are therefore **undercounted**, never overcounted, and `kalpa show` prints
+`commits counted from shell tool calls only` under the commit line so the
+denominator is read honestly. A commit followed by a reset within the same
+command is also missed, which is correct: it did not land. Amends and rebases
+move `HEAD` and are recorded; `sha` distinguishes them from a new commit for
+any consumer that cares. `command_exit != 0` suppresses the check, which is
+what makes `git commit && false` a non-commit; on a host that sends no
+`command_exit` the check is skipped and the entry records
+`detection: "no_exit_code"`.
 
 Fixture tests in `tests/lifecycle_outcome.rs` run in a temp git repo: a real
 commit is detected; a `--dry-run` is not; a commit in a sibling repo via
@@ -610,12 +847,19 @@ sessions        4
 prompts        61   fresh 44   mid_turn 9   correction 8
 interventions  17   (mid_turn + correction)
 interrupts      8
-sub-agents     12   median 3m40s
-commits         7   confidence at commit: high 5  medium 2  low 0
-interventions / commit   2.43
+sub-agents     12   starts, 11 matched   median 3m40s
+commits         7   (shell tool calls only)   confidence at commit: high 5  medium 2  low 0
+interventions / commit   2.43   (retained window)
 ```
 
-`interventions / commit` is omitted when commits are zero. No other ratio
+`sub-agents` counts `subagent_start` records; the matched count is the subset
+that paired with a stop, and the median is over those durations alone. The
+`confidence at commit` segment is omitted entirely when no commit in the window
+carries a band, rather than printing zeros. `interventions / commit` is
+computed over the retained window shown in the header, not the kalpa's full
+span; when the `kalpa_start` entry has itself rotated off, the header prints
+`start not retained` in place of the start date. `interventions / commit` is
+omitted when commits are zero. No other ratio
 ships in v1 (§Non-goals).
 
 Rule selectors added: `lifecycle:commit`, `lifecycle:kalpa_start`,
@@ -628,8 +872,12 @@ Rule selectors added: `lifecycle:commit`, `lifecycle:kalpa_start`,
   kind/mode instead of a path, and prints the active kalpa in its header.
   `phr-mcp journey --lifecycle` shows only lifecycle records.
 - `phr-mcp journey --corrections` reads `correction` entries from the action
-  log alone (which carry the text) and prints `ts`, `sid`, and the scrubbed
-  prompt, oldest first. This is the input to a human or to `extract_rules`
+  log and its one rotated predecessor (which carry the text, and which
+  `kalpa show` already reads as a pair) through
+  `lifecycle::correction_text`, and prints `ts`, `sid`, and the scrubbed
+  prompt, oldest first, under the same retention-boundary header. The list the
+  feature exists to surface must not silently lose its oldest half to
+  rotation. This is the input to a human or to `extract_rules`
   when turning friction into a proposal.
 - `get_journey` (MCP) includes lifecycle records in its existing output with
   the same fields as the CLI. No new MCP tool.
@@ -671,14 +919,18 @@ Rule selectors added: `lifecycle:commit`, `lifecycle:kalpa_start`,
   `scrub_str` (`payload_scrub.rs:119`, currently private) only handles the
   project-root prefix, `$HOME` paths, and the bare username. Free text can
   contain a session id or transcript path as a substring, so `scrub_prompt`
-  additionally applies two regexes before `scrub_value`: a UUID-shaped token
-  following `session` (case-insensitive) within 20 characters, and any path
-  ending in `.jsonl` under a directory named `.claude`, `.codex`, or
-  `.gemini`. Both are replaced with the same placeholders `scrub_value` uses.
+  additionally applies three regexes before `scrub_value`, all unconditionally:
+  any UUID-shaped token (no `session` context required — a bare id in free text
+  is still an id), the phronesis sid shape `\bs-\d{4}-\d{2}-\d{2}-[0-9a-f]{1,8}\b`,
+  and any path ending in `.jsonl` under a directory named `.claude`, `.codex`,
+  or `.gemini`, accepting both `/` and `\` separators and relative as well as
+  absolute forms. All three are replaced with the same placeholders
+  `scrub_value` uses.
 - `Scrubber::new` is fed `security::project_root()` and `$HOME`. When `$HOME`
   is unset or empty (`Scrubber::new` errors on empty, `payload_scrub.rs:690`)
   the hook falls back to project-root-only scrubbing and logs one stderr
-  warning; it never writes unscrubbed text and never fails the hook.
+  warning; the three regexes above still run, so ids and transcript paths are
+  removed even then. It never writes unscrubbed text and never fails the hook.
 - `scrub_str` becomes `pub(crate)` so `scrub_prompt` can reuse it directly
   for the unwrapped result.
 - Payload capture redaction: §Host adapters / Claude.
@@ -699,14 +951,23 @@ Rule selectors added: `lifecycle:commit`, `lifecycle:kalpa_start`,
   schema" in `SPEC-journey-facts.md` (lines 181–187), fields are added with
   the bump rather than reserved. v1 readers ignore unknown fields
   (`serde(default)` throughout), so a downgrade reads lifecycle records as odd
-  `__lifecycle` tool records with tags it does not match on. Acceptable.
+  `__lifecycle` tool records — but with no tool projection, so they shift
+  positional windows, inflate `since_ge` distances, and add `""` to
+  `journey_distinct` on `path`. A downgraded binary also fails closed with
+  `UndefinedSelector` on the first lifecycle rule, taking every journey fact
+  with it. So: **the hooks and the MCP server upgrade in lockstep, and a
+  project that has written a lifecycle rule requires ≥ 0.35.** That is the
+  rollout gate, stated here rather than discovered; `tests/journey_journal.rs`
+  pins the v1-reader behavior so the hazard stays visible.
 - **Amendment to `SPEC-journey-facts.md`.** Its §"The journal record" states
   "One line per executed tool call. Written at post-check only … only actions
   that actually happened are journaled." This spec adds one paragraph there:
   "From v2, one line per executed tool call **or lifecycle event**. Lifecycle
   records are written by the event's own hook, carry `tool: "__lifecycle"`,
-  and are excluded from every record-position and record-count computation
-  by the tool projection described in `SPEC-agent-lifecycle-events.md`."
+  and are excluded from positional (`Nc`) windows and from `journey_distinct`
+  by the tool projection described in `SPEC-agent-lifecycle-events.md`.
+  Selector-filtered time and session windows enumerate every record, and
+  lifecycle selectors match lifecycle records there."
 - `SUFFIX_HARD_CAP` is unchanged. Lifecycle records are roughly one per human
   turn plus two per sub-agent.
 
@@ -718,40 +979,49 @@ Unit tests live beside the code; integration tests follow AGENTS.md
 | test file | adds |
 |---|---|
 | `tests/journey_journal.rs` | v2 round trip; v1 record read under v2; compaction with mixed records retains `commit`/`kalpa_*`; no-text negative test |
-| `tests/journey_derive.rs` | `lifecycle:*` and `kalpa:*` selector match; validation exemption with a real config and with `TaggerConfig::default()`; tool-projection determinism fixture (10 tool + 10 lifecycle interleaved) for `Calls`, `since_ge`, `filtered_since_ge`, `distinct`; over-read bound |
-| `tests/lifecycle_state.rs` (new) | `with_locked` under 16 concurrent writers; `agents` push/pop by id, LIFO fallback, unmatched stop; `inflight` push/pop by key, blocked-pre pop, TTL expiry, SessionStart truncation, agent-scoped visibility; `turn` transitions; `kalpa` file round trip |
-| `tests/lifecycle_classify.rs` (new) | every branch of §Classification driven by fixture state files and a fake transcript tail; Codex branch driven by a pre-written `interrupt` journal record |
-| `tests/lifecycle_concurrency.rs` (new) | **gate for the Claude adapter step**: spawn N concurrent `pre-check`/`post-check` process pairs (with distinct `tool_use_id`s and mixed `agent_id`s) plus one `claude-hook UserPromptSubmit` for the parent; assert no `interrupt` and a `fresh`/`mid_turn` prompt, never `correction` |
-| `tests/hook_integration.rs` | `claude-hook` for each event with the committed fixtures; failure policy (`{}` exit 0 on bad stdin for non-tool events); `Stop` block/allow shapes and `stop_hook_active` short-circuit; pre pushes inflight, post pops it; `invoke_agent` derivation before the allowlist |
+| `tests/journey_derive.rs` | `lifecycle:*` and `kalpa:*` selector match; validation exemption with a real config and with `TaggerConfig::default()`; a misspelled lifecycle selector still fails as `UndefinedSelector`; a tagger tag in a reserved namespace is rejected at load; a catch-all tagger config stamps nothing on a lifecycle record; tool-projection determinism fixture (10 tool + 10 lifecycle interleaved) for `Calls`, `since_ge`, `filtered_since_ge`, `distinct`; over-read bound |
+| `tests/lifecycle_state.rs` (new) | `with_locked` under 16 concurrent writers; `agents` push/pop by id, LIFO fallback, unmatched stop; `inflight` push/pop by key, blocked-pre pop, TTL expiry, SessionStart truncation, agent-scoped visibility; `turn` transitions; `kalpa` file round trip; `session` overwrite on a session-begin source, no overwrite and no truncation on `compact`/`fork`, atomic replace never exposing an empty file to a concurrent `current_sid`; every state file corrupted (invalid JSON, trailing partial line) still exits 0 and records the event; a read-only `.phronesis/journey` exits 0 |
+| `tests/lifecycle_classify.rs` (new) | every branch of §Classification driven by fixture state files and the committed real transcript tail (both marker strings, the 64 KiB boundary, the `last_prompt_ts` comparison); `last_event: "interrupt"` yields `correction` on every host and survives a simulated compaction; a sub-agent-scoped prompt is `fresh` and untagged; a corrupt or foreign-`sid` `turn` file yields `fresh` |
+| `tests/lifecycle_concurrency.rs` (new) | **gate for the Claude adapter step**: spawn N concurrent `pre-check`/`post-check` pairs all carrying *sub-agent* `agent_id`s, plus one parent pair that completes before the prompt, plus one `claude-hook UserPromptSubmit` for the parent; assert no `interrupt` and a `fresh`/`mid_turn` prompt, never `correction`. A deterministic companion asserts the inverse — one live *parent*-scoped entry with no readable transcript **does** yield `interrupt` + `correction` — so the gate pins agent scoping, not timing. After the storm: `inflight` empty, every journal and log line well-formed |
+| `tests/hook_integration.rs` | `claude-hook` for each event with the committed fixtures; failure policy (`{}` exit 0 on bad stdin for non-tool events); `Stop` block/allow shapes and `stop_hook_active` short-circuit; a blocked `Stop` records nothing and leaves `turn` open, the later re-fire records exactly one `stop`; pre pushes inflight, post pops it regardless of age; `invoke_agent` derivation before the allowlist, its blocked-pre `agents` pop, its `<invoke_agent>` path, and a hostile `agent_name` sanitized away; Gemini `BeforeAgent`/`AfterAgent`/`SessionEnd` against the committed fixtures; a sweep over every event × fixture asserting exit 0 and parseable JSON on stdout; one journal record and one log entry per event with equal `sid`/`seq`; no entry contains `last_assistant_message`, `prompt_response`, or a transcript path |
 | `tests/codex_hook_integration.rs` | `Interrupt` records and responds `{}`; `SubagentStart`/`Stop` record with agent fields; `UserPromptSubmit` records text; every response validated against a per-event allowed-key set mirroring the table |
-| `tests/init_integration.rs` | all three writers register the new events idempotently; Codex `SessionStart` matcher is `""`; Claude `UserPromptSubmit` migrates from `interaction-context` to `claude-hook` in place; a foreign `""`-matcher `Stop` hook survives init; Gemini matcher is anchored |
-| `tests/scrub_payload_integration.rs` | prompt scrubbing cases above; `prompt_text: none`; no prompt text in `payloads.jsonl` under `PHRONESIS_CAPTURE_DIR` |
-| `tests/journey_cli_integration.rs` | `--lifecycle` and `--corrections` rendering; kalpa header |
-| `tests/lifecycle_outcome.rs` (new) | the commit fixture list in a temp git repo |
+| `tests/init_integration.rs` | all three writers register the new events idempotently; Codex `SessionStart` matcher is `""`; Claude `UserPromptSubmit` migrates from `interaction-context` to `claude-hook` in place; a foreign hook survives init per host (Claude `Stop`, Codex `Interrupt`/`SessionEnd`, Gemini `AfterAgent`/`SessionEnd` — the command-keyed upsert applies to all three writers); a `phr-mcp` entry invoked by absolute path is replaced in place, not duplicated; Codex `Interrupt`/`SessionEnd` register with matcher `""`; Gemini matcher is anchored |
+| `tests/scrub_payload_integration.rs` | prompt scrubbing cases above, including a bare UUID and a phronesis sid; `prompt_text: none` at write **and** read time; `HOME` unset and empty (exit 0, entry present, regexes still applied, one warning); no prompt text in `payloads.jsonl` for a Gemini `AfterAgent` (`prompt_response`) or an `invoke_agent` `BeforeTool` (`tool_input.prompt`), while the action log still holds the full scrubbed text; `git check-ignore` covers `log.jsonl` and `log.jsonl.1` after `phr-mcp init` |
+| `tests/journey_cli_integration.rs` | `--lifecycle` and `--corrections` rendering, including the rotated predecessor; kalpa header in `journey`, `stats`, and the session-context render; `stats` per-event and per-mode counts, median sub-agent duration, commit count; MCP `get_journey` returns lifecycle records with `kind`/`mode` and leaves existing consumers' fields unchanged |
+| `tests/lifecycle_outcome.rs` (new) | the commit fixture list in a temp git repo, plus `git -C . commit` in the same repo and a commit made by a wrapper script (both documented misses, pinned so the undercount is known), an amend, and a rebase |
 | `tests/kalpa_integration.rs` (new) | `kalpa start`/`end`/`show`; name validation; stamping on lifecycle records; survival across a simulated SessionStart; `stats --kalpa` counts and retention boundary against a fixture log |
 | `phronesis-metrics/tests/derivation.rs` | lifecycle counter family and duration histogram buckets |
 | `tests/payload_contract.rs` | the committed Claude fixtures and a Codex `Interrupt` fixture pinned to the documented field sets |
 
-Manual evidence before the branch is called done: one Claude Code session and
+Manual evidence, in step 0 before the Claude adapter merges and again before
+the branch is called done: one Claude Code session and
 one Codex session in this repo, each with a sub-agent spawn, a mid-turn
 message, an Esc interrupt followed by a prompt, and a commit, then `phr-mcp
 journey --lifecycle`, `--corrections`, and `kalpa show` showing the expected
-sequence. Gemini as available. Open question 1 is answered from the Claude
-session's log.
+sequence. A Gemini session is the gate for step 4 specifically: without one,
+step 4 does not ship in this release rather than shipping untried. Open
+question 1 is answered from the step-0 Claude session's log.
 
 ## Rollout
 
 Dependency graph, not a chain:
 
 ```
+0  capture and commit host fixtures + the Claude transcript tail (blocks 2 and 4)
 1a shared type + journal v2 + derive projection + selectors + compaction
 1b HookPayload widening + lifecycle/state.rs + inflight/agents/turn/session/kalpa files + scrub_prompt + capture redaction
         │
         ├── 2 Claude adapter (claude-hook, pre/post inflight + commit detection, init writer)   ─┐
         ├── 3 Codex adapter (payload fields, Interrupt/SessionEnd, renderer, init writer)        ├── 5 stats, metrics, journey/kalpa CLI rendering
-        └── 4 Gemini registrations + invoke_agent derivation                                     ─┘
+        └── 4 Gemini registrations                                                               ─┘
 ```
 
+- 0 needs a live host, not a code change, and it gates 2 and 4:
+  `tests/hook_integration.rs` and `tests/payload_contract.rs` cannot be written
+  against invented payloads. It runs alongside 1a/1b. The Claude session in
+  step 0 is also where Open question 1 is answered, so any system-injected
+  `UserPromptSubmit` is captured as a fixture before the intervention metric
+  ships rather than after.
 - 1a and 1b are independent of each other and land first. Nothing emits yet;
   existing rules are unaffected by construction.
 - 2, 3, and 4 are parallel once 1a and 1b have landed. They touch disjoint
@@ -764,6 +1034,14 @@ Dependency graph, not a chain:
   event through the shared module).
 - CHANGELOG `## [Unreleased] → ### Added`, hand-written. `phr-mcp catalogue`
   is unaffected (no pack rules change).
+- **Upgrade note for users**, in the release notes as well as the CHANGELOG:
+  upgrading the binary registers nothing. Run `phr-mcp init` in each project to
+  get the new hook registrations; Codex users then re-trust hooks via `/hooks`.
+  Until then `session-context` and `interaction-context` keep behaving exactly
+  as today and no lifecycle event is recorded. Two further consequences to
+  name there: `s`-window rules now scope to a session (§Correlation state), and
+  Claude users with outcomes enabled get the confidence gate on turn stop for
+  the first time — disabled the same way it is disabled for Codex today.
 
 Each step is a PR against `main` with a conventional-commit title.
 
@@ -794,9 +1072,11 @@ Each step is a PR against `main` with a conventional-commit title.
 ## Open questions
 
 1. **Claude `UserPromptSubmit` for system-injected messages.** Reported by a
-   community write-up, not by the docs. Answered by the manual-evidence
-   session: if system-injected prompts appear as `mid_turn`, a follow-up
-   designs the filter with real payloads in hand.
+   community write-up, not by the docs. Answered in step 0, before the Claude
+   adapter merges: if system-injected prompts appear as `mid_turn`, the
+   captured payloads are the input to a filter designed then, because each such
+   prompt is a false `lifecycle:intervention` in the one number this feature
+   exists to produce.
 2. **Claude `SubagentStop` with empty `agent_type`.** Tracked upstream
    (anthropics/claude-code#87065): internal forks fire it with `agent_type:
    ""`. Records are written as-is with the empty type; a rule scoping to
