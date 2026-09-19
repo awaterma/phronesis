@@ -680,36 +680,33 @@ fn write_gemini_settings(
         json!({"command": "phr-mcp", "args": ["serve"]}),
     );
 
-    // BeforeTool / AfterTool hooks
+    // BeforeTool / AfterTool hooks. Gemini treats `matcher` as an unanchored
+    // regex, so the previous `replace|write_file|run_shell_command` matched
+    // any tool whose name merely contained one of those words. `invoke_agent`
+    // joins the list because Gemini has no sub-agent event: pre-check and
+    // post-check derive subagent_start / subagent_stop from that tool.
     let hook_entry = |cmd: &str| {
         json!({
-            "matcher": "replace|write_file|run_shell_command",
+            "matcher": "^(replace|write_file|run_shell_command|invoke_agent)$",
             "hooks": [{"type": "command", "command": cmd}]
         })
     };
-    upsert_hook(&mut settings, "BeforeTool", hook_entry("phr-mcp pre-check"));
-    upsert_hook(&mut settings, "AfterTool", hook_entry("phr-mcp post-check"));
+    upsert_hook_by_command(&mut settings, "BeforeTool", hook_entry("phr-mcp pre-check"));
+    upsert_hook_by_command(&mut settings, "AfterTool", hook_entry("phr-mcp post-check"));
 
-    // Context-injection hooks. Same shape as the Claude wiring — empty
-    // matcher means fire on every event. SessionStart matches Claude's
-    // event name; BeforeAgent is Gemini's per-turn equivalent of
-    // Claude's UserPromptSubmit.
-    let context_entry = |cmd: &str| {
+    // Lifecycle + context hooks. An empty matcher fires on every event.
+    // BeforeAgent is Gemini's UserPromptSubmit and AfterAgent is its Stop;
+    // AfterAgent does not fire on interrupt, which is exactly what the
+    // `open_turn` inference in `lifecycle::state::classify_prompt` keys on.
+    let lifecycle_entry = |event: &str| {
         json!({
             "matcher": "",
-            "hooks": [{"type": "command", "command": cmd}]
+            "hooks": [{"type": "command", "command": format!("phr-mcp claude-hook {event}")}]
         })
     };
-    upsert_hook(
-        &mut settings,
-        "SessionStart",
-        context_entry("phr-mcp session-context"),
-    );
-    upsert_hook(
-        &mut settings,
-        "BeforeAgent",
-        context_entry("phr-mcp interaction-context"),
-    );
+    for event in ["SessionStart", "SessionEnd", "BeforeAgent", "AfterAgent"] {
+        upsert_hook_by_command(&mut settings, event, lifecycle_entry(event));
+    }
 
     // Clean up legacy BeforeModelRequest hook if present
     if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
@@ -717,6 +714,11 @@ fn write_gemini_settings(
     }
 
     write_json(&path, &settings, opts, ".gemini/settings.json", report)?;
+    report.steps.push(
+        "  note: Gemini HTML-escapes additionalContext (< and > reach the model as entities) \
+         and skips project hooks until the folder is trusted."
+            .to_string(),
+    );
     Ok(())
 }
 
@@ -4449,7 +4451,7 @@ mod tests {
         let cmd = session[0]["hooks"][0]["command"]
             .as_str()
             .expect("command not string");
-        assert_eq!(cmd, "phr-mcp session-context");
+        assert_eq!(cmd, "phr-mcp claude-hook SessionStart");
 
         let before = content["hooks"]["BeforeAgent"]
             .as_array()
@@ -4457,7 +4459,7 @@ mod tests {
         let cmd = before[0]["hooks"][0]["command"]
             .as_str()
             .expect("command not string");
-        assert_eq!(cmd, "phr-mcp interaction-context");
+        assert_eq!(cmd, "phr-mcp claude-hook BeforeAgent");
     }
 
     #[test]
@@ -4740,8 +4742,10 @@ mod risky_call_coverage_tests {
         for (event, cmd) in [
             ("BeforeTool", "phr-mcp pre-check"),
             ("AfterTool", "phr-mcp post-check"),
-            ("SessionStart", "phr-mcp session-context"),
-            ("BeforeAgent", "phr-mcp interaction-context"),
+            ("SessionStart", "phr-mcp claude-hook SessionStart"),
+            ("SessionEnd", "phr-mcp claude-hook SessionEnd"),
+            ("BeforeAgent", "phr-mcp claude-hook BeforeAgent"),
+            ("AfterAgent", "phr-mcp claude-hook AfterAgent"),
         ] {
             let arr = v["hooks"][event]
                 .as_array()
@@ -4751,7 +4755,7 @@ mod risky_call_coverage_tests {
         }
         assert_eq!(
             v["hooks"]["BeforeTool"][0]["matcher"],
-            "replace|write_file|run_shell_command"
+            "^(replace|write_file|run_shell_command|invoke_agent)$"
         );
         assert_eq!(v["hooks"]["SessionStart"][0]["matcher"], "");
     }
@@ -4787,14 +4791,24 @@ mod risky_call_coverage_tests {
             "legacy hook removed"
         );
         let before = v["hooks"]["BeforeTool"].as_array().unwrap();
-        assert_eq!(before.len(), 2);
+        // command-keyed replacement: "stale" is foreign (not `phr-mcp `), so
+        // it survives alongside "mine"; the new `phr-mcp pre-check` entry is
+        // appended.
+        assert_eq!(before.len(), 3);
         assert!(before.iter().any(|e| e["hooks"][0]["command"] == "mine"));
         assert!(
             before
                 .iter()
                 .any(|e| e["hooks"][0]["command"] == "phr-mcp pre-check")
         );
-        assert!(!before.iter().any(|e| e["hooks"][0]["command"] == "stale"));
+        assert!(before.iter().any(|e| e["hooks"][0]["command"] == "stale"));
+        assert_eq!(
+            before
+                .iter()
+                .find(|e| e["hooks"][0]["command"] == "phr-mcp pre-check")
+                .unwrap()["matcher"],
+            "^(replace|write_file|run_shell_command|invoke_agent)$"
+        );
     }
 
     #[test]

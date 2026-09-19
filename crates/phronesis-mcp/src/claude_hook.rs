@@ -157,6 +157,21 @@ pub async fn run(event: &str) -> ! {
         .clone()
         .unwrap_or_else(|| event.to_string());
     let host = host_for(&named);
+    // Gemini-specific event names identify Gemini unambiguously; stamp it so a
+    // later SessionEnd (shared name) can inherit the host. SessionStart and
+    // SessionEnd are shared with Claude, so when host_for defaults to Claude,
+    // check whether a prior Gemini event stamped the host file.
+    let host = if host == Host::Gemini {
+        state::set_host(&root, "gemini");
+        host
+    } else if matches!(named.as_str(), "SessionStart" | "SessionEnd") {
+        match state::read_host(&root).as_deref() {
+            Some("gemini") => Host::Gemini,
+            _ => host,
+        }
+    } else {
+        host
+    };
     let response = dispatch(&root, canonical_event(&named), host, &payload).await;
     println!("{response}");
     process::exit(0);
@@ -369,7 +384,11 @@ async fn handle_session_start(root: &Path, p: &ClaudePayload) -> String {
 fn handle_session_end(root: &Path, host: Host, p: &ClaudePayload) {
     if state::read_turn(root).open {
         let transcript = p.transcript_path.as_deref().map(PathBuf::from);
-        let source = state::detect_interrupt(
+        // SessionEnd is a clean session exit, not a new prompt arriving while a
+        // turn is running, so the Gemini "open turn = abort" heuristic must not
+        // fire; `detect_interrupt_at_session_end` leaves it out while the real
+        // host still gates the transcript and inflight checks.
+        let source = state::detect_interrupt_at_session_end(
             root,
             &state::PromptContext {
                 host,

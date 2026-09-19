@@ -1,3 +1,4 @@
+use serde_json::Value;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -2120,4 +2121,314 @@ fn no_log_entry_carries_a_transcript_path_or_an_assistant_message() {
     let journal =
         std::fs::read_to_string(dir.path().join(".phronesis/journey/events.jsonl")).unwrap();
     assert!(!journal.contains(".jsonl"), "{journal}");
+}
+
+fn run_hook_at(root: &Path, args: &[&str], payload: &str) -> (i32, String, String) {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(args)
+        .env("PHRONESIS_PROJECT_ROOT", root)
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn phr-mcp");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(payload.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("wait");
+    (
+        out.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&out.stdout).to_string(),
+        String::from_utf8_lossy(&out.stderr).to_string(),
+    )
+}
+
+fn assert_allow_stdout(stdout: &str) {
+    let t = stdout.trim();
+    if t.is_empty() {
+        return;
+    }
+    let v: Value = serde_json::from_str(t)
+        .unwrap_or_else(|e| panic!("pre/post stdout must be JSON when non-empty: {t:?}: {e}"));
+    assert!(v.is_object(), "stdout must be a JSON object: {t}");
+}
+
+fn lifecycle_records(root: &Path) -> Vec<Value> {
+    let path = root.join(".phronesis/journey/events.jsonl");
+    let body = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path:?}: {e}"));
+    body.lines()
+        .map(|l| serde_json::from_str::<Value>(l).expect("journal line"))
+        .filter(|r| r["tool"] == "__lifecycle")
+        .collect()
+}
+
+fn lifecycle_log(root: &Path) -> Vec<Value> {
+    let body = std::fs::read_to_string(root.join(".phronesis/log.jsonl")).expect("action log");
+    body.lines()
+        .map(|l| serde_json::from_str::<Value>(l).expect("log line"))
+        .filter(|e| e["kind"] == "lifecycle")
+        .collect()
+}
+
+#[test]
+fn gemini_invoke_agent_pairs_a_subagent_start_and_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    let before = r#"{"hook_event_name":"BeforeTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase-investigator","prompt":"x"}}"#;
+    let (code, stdout, stderr) = run_hook_at(root, &["pre-check"], before);
+    assert_eq!(code, 0, "pre-check must allow invoke_agent: {stderr}");
+    assert_allow_stdout(&stdout);
+
+    let after = r#"{"hook_event_name":"AfterTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase-investigator","prompt":"x"},"tool_response":{"output":"done"}}"#;
+    let (code, stdout, stderr) = run_hook_at(root, &["post-check"], after);
+    assert_eq!(code, 0, "post-check must succeed: {stderr}");
+    assert_allow_stdout(&stdout);
+
+    let recs = lifecycle_records(root);
+    let starts: Vec<&Value> = recs
+        .iter()
+        .filter(|r| r["kind"] == "subagent_start")
+        .collect();
+    let stops: Vec<&Value> = recs
+        .iter()
+        .filter(|r| r["kind"] == "subagent_stop")
+        .collect();
+    assert_eq!(starts.len(), 1, "exactly one subagent_start: {recs:?}");
+    assert_eq!(stops.len(), 1, "exactly one subagent_stop: {recs:?}");
+    for r in [starts[0], stops[0]] {
+        assert_eq!(r["host"], "gemini");
+        assert_eq!(r["path"], "");
+        assert_eq!(r["agent_type"], "codebase-investigator");
+        let tags = r["tags"].as_array().expect("tags");
+        assert!(
+            tags.iter()
+                .any(|t| t == "lifecycle:agent:codebase-investigator"),
+            "agent tag missing: {r}"
+        );
+    }
+    assert_eq!(
+        starts[0]["agent"], stops[0]["agent"],
+        "the stop must pop the id the start pushed"
+    );
+
+    let log = lifecycle_log(root);
+    let stop_entry = log
+        .iter()
+        .find(|e| e["event"] == "subagent_stop")
+        .expect("subagent_stop action-log entry");
+    assert_eq!(stop_entry["agent_type"], "codebase-investigator");
+    assert_eq!(stop_entry["matched_start"], true);
+    assert_eq!(stop_entry["host"], "gemini");
+    assert_eq!(
+        log.iter()
+            .filter(|e| e["event"] == "subagent_start")
+            .count(),
+        1
+    );
+
+    let tool_paths: Vec<String> =
+        std::fs::read_to_string(root.join(".phronesis/journey/events.jsonl"))
+            .unwrap()
+            .lines()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|r| r["tool"] == "invoke_agent")
+            .map(|r| r["path"].as_str().unwrap_or_default().to_string())
+            .collect();
+    assert!(!tool_paths.is_empty(), "invoke_agent is in both allowlists");
+    assert!(
+        tool_paths.iter().all(|p| p == "<invoke_agent>"),
+        "{tool_paths:?}"
+    );
+}
+
+#[test]
+fn a_snake_case_gemini_agent_name_survives_and_a_hostile_one_is_dropped() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let before = r#"{"hook_event_name":"BeforeTool","session_id":"g1","tool_name":"invoke_agent","tool_input":{"agent_name":"codebase_investigator","prompt":"x"}}"#;
+    let (code, _, stderr) = run_hook_at(root, &["pre-check"], before);
+    assert_eq!(code, 0, "{stderr}");
+    let start = lifecycle_records(root)
+        .into_iter()
+        .find(|r| r["kind"] == "subagent_start")
+        .expect("the pair is derived");
+    assert_eq!(start["agent_type"], "codebase_investigator", "{start}");
+    assert!(
+        start["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "lifecycle:agent:codebase_investigator"),
+        "snake_case survives as a tag: {start}"
+    );
+
+    let dir2 = tempfile::tempdir().unwrap();
+    let root2 = dir2.path();
+    let hostile = r#"{"hook_event_name":"BeforeTool","session_id":"g2","tool_name":"invoke_agent","tool_input":{"agent_name":"../../etc/passwd","prompt":"x"}}"#;
+    let (code, _, stderr) = run_hook_at(root2, &["pre-check"], hostile);
+    assert_eq!(code, 0, "{stderr}");
+    let start = lifecycle_records(root2)
+        .into_iter()
+        .find(|r| r["kind"] == "subagent_start")
+        .expect("the pair is still derived");
+    assert!(
+        start.get("agent_type").is_none() || start["agent_type"].is_null(),
+        "an unsanitizable name is stored as absent: {start}"
+    );
+    assert!(
+        !start["tags"].as_array().unwrap().iter().any(|t| {
+            t.as_str()
+                .unwrap_or_default()
+                .starts_with("lifecycle:agent:")
+        }),
+        "and carries no agent tag: {start}"
+    );
+}
+
+const G_SESSION_START: &str =
+    r#"{"hook_event_name":"SessionStart","session_id":"g1","source":"startup"}"#;
+const G_PROMPT_1: &str =
+    r#"{"hook_event_name":"BeforeAgent","session_id":"g1","prompt":"add a test"}"#;
+const G_PROMPT_2: &str =
+    r#"{"hook_event_name":"BeforeAgent","session_id":"g1","prompt":"no, use a temp dir"}"#;
+const G_AFTER_AGENT: &str = r#"{"hook_event_name":"AfterAgent","session_id":"g1","prompt":"add a test","prompt_response":"done","stop_hook_active":false}"#;
+
+fn assert_json_object_stdout(stdout: &str) {
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("Gemini needs JSON on stdout, got {stdout:?}: {e}"));
+    assert!(v.is_object(), "stdout must be a JSON object: {stdout}");
+    assert_eq!(v, serde_json::json!({}), "bare project renders no context");
+}
+
+#[test]
+fn gemini_second_prompt_without_after_agent_is_an_interrupt_and_correction() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    for (args, payload) in [
+        (["claude-hook", "SessionStart"], G_SESSION_START),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_1),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_2),
+    ] {
+        let (code, stdout, stderr) = run_hook_at(root, &args, payload);
+        assert_eq!(code, 0, "{args:?} must exit 0: {stderr}");
+        assert_json_object_stdout(&stdout);
+    }
+
+    let recs = lifecycle_records(root);
+    let kinds: Vec<&str> = recs.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["prompt", "interrupt", "prompt"],
+        "a missing AfterAgent means the turn was aborted: {recs:?}"
+    );
+    assert_eq!(recs[0]["mode"], "fresh");
+    assert_eq!(recs[2]["mode"], "correction");
+    assert_eq!(recs[2]["host"], "gemini");
+    assert!(
+        recs[2]["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|t| t == "lifecycle:prompt:correction"),
+        "correction tag missing: {}",
+        recs[2]
+    );
+    let journal_json = serde_json::to_string(&recs).unwrap();
+    assert!(
+        !journal_json.contains("add a test"),
+        "the journal must never carry prompt text: {recs:?}"
+    );
+    assert!(
+        !journal_json.contains("temp dir"),
+        "the journal must never carry prompt text: {recs:?}"
+    );
+
+    let log = lifecycle_log(root);
+    let interrupt = log
+        .iter()
+        .find(|e| e["event"] == "interrupt")
+        .expect("interrupt entry");
+    assert_eq!(interrupt["inferred_from"], "open_turn");
+    assert_eq!(interrupt["host"], "gemini");
+    let correction = log
+        .iter()
+        .rfind(|e| e["event"] == "prompt")
+        .expect("prompt entry");
+    assert_eq!(correction["mode"], "correction");
+    assert_eq!(correction["prompt"], "no, use a temp dir");
+}
+
+#[test]
+fn gemini_after_agent_closes_the_turn_so_the_next_prompt_is_fresh() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+
+    for (args, payload) in [
+        (["claude-hook", "SessionStart"], G_SESSION_START),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_1),
+        (["claude-hook", "AfterAgent"], G_AFTER_AGENT),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_2),
+    ] {
+        let (code, stdout, stderr) = run_hook_at(root, &args, payload);
+        assert_eq!(code, 0, "{args:?} must exit 0: {stderr}");
+        assert_json_object_stdout(&stdout);
+    }
+
+    let recs = lifecycle_records(root);
+    let kinds: Vec<&str> = recs.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert_eq!(
+        kinds,
+        ["prompt", "stop", "prompt"],
+        "no interrupt: {recs:?}"
+    );
+    assert_eq!(recs[0]["mode"], "fresh");
+    assert_eq!(recs[2]["mode"], "fresh", "AfterAgent must close the turn");
+    assert!(
+        lifecycle_log(root)
+            .iter()
+            .all(|e| e["event"] != "interrupt"),
+        "a completed turn must not infer an interrupt"
+    );
+}
+
+#[test]
+fn gemini_session_end_records_a_stop_and_closes_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    const G_SESSION_END: &str = r#"{"hook_event_name":"SessionEnd","session_id":"g1"}"#;
+
+    for (args, payload) in [
+        (["claude-hook", "SessionStart"], G_SESSION_START),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_1),
+        (["claude-hook", "SessionEnd"], G_SESSION_END),
+        (["claude-hook", "BeforeAgent"], G_PROMPT_2),
+    ] {
+        let (code, stdout, stderr) = run_hook_at(root, &args, payload);
+        assert_eq!(code, 0, "{args:?} must exit 0: {stderr}");
+        assert_json_object_stdout(&stdout);
+    }
+
+    let recs = lifecycle_records(root);
+    let kinds: Vec<&str> = recs.iter().filter_map(|r| r["kind"].as_str()).collect();
+    assert_eq!(kinds, ["prompt", "stop", "prompt"], "{recs:?}");
+    assert_eq!(recs[1]["host"], "gemini");
+    assert_eq!(recs[2]["mode"], "fresh");
+    assert!(
+        lifecycle_log(root)
+            .iter()
+            .all(|e| e["event"] != "interrupt"),
+        "{recs:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join(".phronesis/journey/session"))
+            .unwrap()
+            .trim(),
+        "g1"
+    );
 }
