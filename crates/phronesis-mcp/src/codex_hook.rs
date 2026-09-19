@@ -48,6 +48,41 @@ struct CodexPayload {
     tool_input: Option<serde_json::Value>,
     #[serde(default)]
     tool_response: Option<serde_json::Value>,
+    /// Sub-agent identity on `SubagentStart` / `SubagentStop`.
+    #[serde(default)]
+    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    agent_id: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    agent_type: Option<String>,
+    /// Main-session transcript; carried by `Interrupt` and most events.
+    #[serde(default)]
+    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    transcript_path: Option<String>,
+    /// `SubagentStop` only.
+    #[serde(default)]
+    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    agent_transcript_path: Option<String>,
+    /// `SubagentStop` only. Redacted before capture; never journaled.
+    #[serde(default)]
+    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    last_assistant_message: Option<String>,
+    /// True when the host re-runs a stop hook after a block. `Stop` and
+    /// `SubagentStop`.
+    #[serde(default)]
+    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    stop_hook_active: Option<bool>,
+    /// `UserPromptSubmit` only, verbatim. Scrubbed before it reaches the log.
+    #[serde(default)]
+    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    prompt: Option<String>,
+    /// `SessionStart` only: `startup` | `resume` | `clear` | `compact` | `fork`.
+    /// Task 7 widens the registration matcher to `""`, so `compact` and `fork`
+    /// reach the handler for the first time and the gate is what keeps them
+    /// from orphaning an open sub-agent.
+    #[serde(default)]
+    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    source: Option<String>,
 }
 
 struct PatchFile {
@@ -76,7 +111,7 @@ struct CodexDecision {
 
 pub async fn run(event: &str) -> ! {
     let root = security::project_root();
-    let parsed = parse_payload();
+    let parsed = parse_payload(event);
     let fallback;
     let (event, result) = match parsed.as_ref() {
         Ok(payload) => {
@@ -97,8 +132,11 @@ pub async fn run(event: &str) -> ! {
     process::exit(0);
 }
 
-fn parse_payload() -> anyhow::Result<CodexPayload> {
+fn parse_payload(event: &str) -> anyhow::Result<CodexPayload> {
     let raw = security::read_stdin_capped()?;
+    // Tees to PHRONESIS_CAPTURE_DIR when set, after redacting free-text
+    // fields. Best-effort: never changes the response or the exit code.
+    crate::hook::capture_raw_payload(event, &raw);
     Ok(serde_json::from_str(&raw)?)
 }
 

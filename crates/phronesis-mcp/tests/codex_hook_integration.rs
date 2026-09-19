@@ -646,3 +646,34 @@ fn init_merges_codex_hooks_and_mcp_idempotently_and_dry_run_is_read_only() {
     assert!(output.status.success());
     assert!(!dry.path().join(".codex").exists());
 }
+
+#[test]
+fn codex_hook_captures_payloads_with_prompt_text_redacted() {
+    let project = tempfile::tempdir().expect("temp project");
+    let capture = tempfile::tempdir().expect("capture dir");
+    let payload = json!({
+        "hook_event_name": "UserPromptSubmit", "session_id": "codex-s-1",
+        "turn_id": "codex-t-1", "prompt": "zzz-secret-prompt-text"
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["codex-hook", "UserPromptSubmit"])
+        .env("PHRONESIS_PROJECT_ROOT", project.path())
+        .env("PHRONESIS_CAPTURE_DIR", capture.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn codex hook");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write payload");
+    assert!(child.wait_with_output().expect("wait").status.success());
+    let captured =
+        fs::read_to_string(capture.path().join("payloads.jsonl")).expect("captured payloads");
+    assert!(!captured.contains("zzz-secret-prompt-text"), "{captured}");
+    assert!(captured.contains("<redacted:"), "{captured}");
+    assert!(captured.contains("UserPromptSubmit"), "{captured}");
+}
