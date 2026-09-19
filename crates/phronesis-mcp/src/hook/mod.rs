@@ -95,10 +95,15 @@ pub fn redact_for_capture(raw: &str) -> Option<String> {
         match v {
             serde_json::Value::Object(obj) => {
                 for (k, val) in obj.iter_mut() {
-                    if REDACTED_KEYS.contains(&k.as_str())
-                        && let serde_json::Value::String(s) = val
-                    {
-                        *val = serde_json::Value::String(format!("<redacted:{} bytes>", s.len()));
+                    if REDACTED_KEYS.contains(&k.as_str()) {
+                        // Redact whatever shape the host used: a string, or an
+                        // array of content blocks. Nested text must never reach
+                        // the capture file.
+                        let n = match &*val {
+                            serde_json::Value::String(s) => s.len(),
+                            other => other.to_string().len(),
+                        };
+                        *val = serde_json::Value::String(format!("<redacted:{n} bytes>"));
                     } else {
                         walk(val);
                     }

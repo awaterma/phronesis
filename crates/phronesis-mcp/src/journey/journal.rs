@@ -123,7 +123,9 @@ pub struct JournalRecord {
 impl JournalRecord {
     /// True for records written by a lifecycle event rather than a tool call.
     pub fn is_lifecycle(&self) -> bool {
-        self.kind.is_some()
+        // Either marker suffices: a malformed lifecycle record that lost its
+        // `kind` must still stay out of the tool projection.
+        self.kind.is_some() || self.tool == LIFECYCLE_TOOL
     }
 }
 

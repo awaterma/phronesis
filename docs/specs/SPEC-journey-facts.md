@@ -249,8 +249,9 @@ does the thresholding and absence test; the single-value forms (`*_count`,
 arithmetic-in-conditions is required anywhere.
 
 **Window encoding** (one token, parsed in `derive.rs`): `5c` = last 5 calls,
-`30m`/`2h`/`7d` = wall-time, `s` = current session. `r` (repo lifetime) is
-**phase 2**.
+`45s`/`30m`/`2h`/`7d` = wall-time (the `Ns` seconds form was added with
+lifecycle events; the bare token `s` is still the session window), `s` =
+current session. `r` (repo lifetime) is **phase 2**.
 
 **Thresholding rides the real DSL.** `script_evaluator.rs` supports
 `facts_contain('pred',[...])` and `facts_count('pred',[...]) <op> N` with
@@ -605,7 +606,7 @@ small and the spec doesn't pretend to deliver them.
   occur, or (b) a `not` wrapper at the rule-condition level. Both are
   ergonomics, not capability — explicit so we don't conflate them in a future
   spec.
-- **Window encoding.** Packing `5c`/`30m`/`s` into a string arg is terse and
+- **Window encoding.** Packing `5c`/`45s`/`30m`/`s` into a string arg is terse and
   rides the equality matcher, but it's stringly-typed: typos in the *window*
   pass silently (`5C` vs `5c`). v1 mitigation: `derive.rs` validates every
   window token it sees in a loaded rule at startup (the same selector-

@@ -197,7 +197,9 @@ impl LifecycleEvent {
 
     pub fn tags(&self, kalpa: Option<&str>) -> Vec<String> {
         let mut t = vec![self.kind.tag()];
-        if let Some(m) = self.mode {
+        if let Some(m) = self.mode
+            && matches!(self.kind, Kind::Prompt)
+        {
             t.push(format!("lifecycle:prompt:{}", m.as_str()));
             // The autonomy signal: the human changed the plan (steered mid-turn
             // or corrected after an interrupt), as opposed to replying. Only at

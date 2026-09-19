@@ -22,6 +22,8 @@ fn window_parses_time() {
     assert_eq!(Window::parse("30m").unwrap(), Window::Seconds(30 * 60));
     assert_eq!(Window::parse("2h").unwrap(), Window::Seconds(2 * 3600));
     assert_eq!(Window::parse("7d").unwrap(), Window::Seconds(7 * 86_400));
+    // `Ns` is seconds; the bare token `s` (tested below) is the session window.
+    assert_eq!(Window::parse("60s").unwrap(), Window::Seconds(60));
 }
 
 #[test]
