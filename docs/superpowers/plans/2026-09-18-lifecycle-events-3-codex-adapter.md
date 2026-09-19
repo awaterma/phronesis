@@ -1501,3 +1501,91 @@ Plans 2, 3, and 4 are executed in separate worktrees off the same Plan 1 base. E
 | `CHANGELOG.md` | two bullets under `## [Unreleased]` → `### Added` | one bullet, appended after Plan 2's | one bullet, appended after this plan's |
 
 Ordering: this plan is independent of Plans 2 and 4 and may merge in any position among the three. Plan 4 must merge **after** Plan 2, because it consumes `upsert_hook_by_command` and the `claude-hook` subcommand.
+
+---
+
+### Task 10 (follow-up, after the first merge): `inflight` and commit detection in the Codex tool phases
+
+**Why:** `phr-mcp init` routes Codex `PreToolUse`/`PostToolUse` to `codex-hook`, not to
+`pre-check`/`post-check`, so Plan 2's `inflight` push/pop and `detect_commit` never run for
+Codex (spec §"Host adapters / Codex CLI", last bullet). Without this Codex records no `commit`
+events.
+
+**Files:**
+- Modify: `crates/phronesis-mcp/src/codex_hook.rs` (`handle_pre`, `handle_post`, and the blocking path in `handle_pre`)
+- Test: `crates/phronesis-mcp/tests/codex_hook_integration.rs`
+
+**Interfaces:**
+- Consumes (Plan 1): `lifecycle::state::{push_inflight, pop_inflight, inflight_key_for, Inflight}`, `lifecycle::outcome::{is_shell_tool, command_may_move_head, git_head_probe, HeadProbe, detect_commit, DETECTION_TIMEOUT}`, `lifecycle::record::record`, `lifecycle::{LifecycleEvent, Kind, Host}`.
+- Produces: nothing new.
+
+- [ ] **Step 1: Write the failing tests** (append to `tests/codex_hook_integration.rs`, reusing its `run_codex_hook(root, event, payload)` helper and `lifecycle_records(root)` / `log_entries(root)` readers)
+
+```rust
+#[test]
+fn codex_pre_tool_use_pushes_inflight_and_post_pops_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let pre = r#"{"hook_event_name":"PreToolUse","session_id":"c1","turn_id":"t1","tool_use_id":"tu-1","tool_name":"Bash","tool_input":{"command":"echo hi"}}"#;
+    run_codex_hook(root, "PreToolUse", pre);
+    let inflight = std::fs::read_to_string(root.join(".phronesis/journey/inflight")).unwrap_or_default();
+    assert!(inflight.contains(r#""key":"tu-1""#), "{inflight}");
+    let post = r#"{"hook_event_name":"PostToolUse","session_id":"c1","turn_id":"t1","tool_use_id":"tu-1","tool_name":"Bash","tool_input":{"command":"echo hi"},"tool_response":{"exit_code":0,"output":"hi"}}"#;
+    run_codex_hook(root, "PostToolUse", post);
+    let inflight = std::fs::read_to_string(root.join(".phronesis/journey/inflight")).unwrap_or_default();
+    assert!(!inflight.contains("tu-1"), "popped: {inflight}");
+}
+
+#[test]
+fn codex_bash_commit_is_detected_from_head_movement() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo_with_one_commit(root); // same helper shape as tests/lifecycle_outcome.rs
+    let pre = r#"{"hook_event_name":"PreToolUse","session_id":"c1","turn_id":"t1","tool_use_id":"tu-2","tool_name":"Bash","tool_input":{"command":"git commit -am second"}}"#;
+    run_codex_hook(root, "PreToolUse", pre);
+    std::fs::write(root.join("a"), "2").unwrap();
+    git(root, &["commit", "-q", "-am", "second"]);
+    let post = r#"{"hook_event_name":"PostToolUse","session_id":"c1","turn_id":"t1","tool_use_id":"tu-2","tool_name":"Bash","tool_input":{"command":"git commit -am second"},"tool_response":{"exit_code":0,"output":""}}"#;
+    run_codex_hook(root, "PostToolUse", post);
+    let commit = lifecycle_records(root).into_iter().find(|r| r["kind"] == "commit").expect("commit record");
+    assert_eq!(commit["host"], "codex");
+    let entry = log_entries(root).into_iter().find(|e| e["event"] == "commit").unwrap();
+    assert_eq!(entry["sha"].as_str().unwrap().len(), 40);
+    assert!(entry["head_before"].is_string());
+}
+```
+
+- [ ] **Step 2: Run to verify failure** — `cargo test -p phronesis-mcp --test codex_hook_integration codex_pre_tool_use_pushes codex_bash_commit 2>&1 | tail -20`. Expected: FAIL (inflight file absent; no commit record).
+
+- [ ] **Step 3: Implement** in `codex_hook.rs`. At the top of `handle_pre`, after the payload is parsed and before rule loading:
+
+```rust
+    let key = state::inflight_key_for(payload.tool_use_id.as_deref(), tool_name, payload.tool_input.as_ref().unwrap_or(&serde_json::Value::Null));
+    let head_before = if outcome::is_shell_tool(tool_name) && outcome::command_may_move_head(&command) {
+        match outcome::git_head_probe(root) { HeadProbe::Head(h) => Some(h), _ => None }
+    } else { None };
+    state::push_inflight(root, Inflight { key: key.clone(), tool: tool_name.to_string(), ts: unix_secs_now(), agent_id: payload.agent_id.clone(), head_before, detection: None });
+```
+
+and on the blocking return path of `handle_pre`: `state::pop_inflight(root, &key);`. In `handle_post`, right after parsing:
+
+```rust
+    let popped = state::pop_inflight(root, &key);
+    if let Some(entry) = popped
+        && outcome::is_shell_tool(tool_name)
+        && let Some(c) = outcome::detect_commit(root, entry.head_before.as_deref(), &command, extract_command_exit(payload))
+    {
+        let mut ev = LifecycleEvent::new(Kind::Commit, Host::Codex)
+            .with_extra("sha", c.sha).with_extra("head_before", c.head_before).with_extra("tool_use_id", key.clone());
+        if let Some(sid) = &payload.session_id { ev = ev.with_session(sid.clone()); }
+        if let Some(t) = &payload.turn_id { ev = ev.with_turn(t.clone()); }
+        if let Some(b) = crate::outcomes::report(root, None).map(|r| format!("{:?}", r.band).to_lowercase()) { ev = ev.with_extra("confidence_band", b); }
+        record(root, ev);
+    }
+```
+
+`command` is the string `extract_bash_command(payload)` already computes; `extract_command_exit` exists in this file. Mirror Plan 2 Task 4's Claude wiring for any detail not shown here.
+
+- [ ] **Step 4: Run** the two tests plus the whole `codex_hook_integration` suite. Expected: PASS.
+
+- [ ] **Step 5: Commit** — `git commit -m "feat(codex): inflight tracking and commit detection in codex-hook tool phases"`.

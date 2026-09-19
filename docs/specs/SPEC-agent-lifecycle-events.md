@@ -706,6 +706,17 @@ Changes:
   sub-agent or discard an in-flight tool.
 - The Codex journal write (`codex_hook.rs:1052–1074`) reads `sid` from the
   shared `session` file like every other host.
+- **Codex tool phases own their own `inflight` and commit detection.** Codex
+  routes `PreToolUse`/`PostToolUse` to `codex-hook`, not to `pre-check` /
+  `post-check`, so the push/pop and `detect_commit` wiring the Claude adapter
+  adds to those runners never executes for Codex. The Codex adapter's
+  `handle_pre` / `handle_post` do the same work through the shared module:
+  push `inflight` (with `head_before` for `Bash`) immediately after parsing
+  the payload, pop it in `handle_post` and run `detect_commit`, and pop on a
+  blocking pre decision. Without this, Codex records no `commit` events and
+  interrupt inference on Codex relies on the `Interrupt` hook alone (which is
+  sufficient for interrupts, not for commits). Rollout: a follow-up task on
+  the Codex adapter plan, after its first merge.
 
 ### Gemini CLI
 
