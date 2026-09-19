@@ -59,15 +59,15 @@ struct CodexPayload {
     agent_type: Option<String>,
     /// Main-session transcript; carried by `Interrupt` and most events.
     #[serde(default)]
-    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    #[allow(dead_code)] // deserialized so the capture tee can redact it; never read
     transcript_path: Option<String>,
     /// `SubagentStop` only.
     #[serde(default)]
-    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    #[allow(dead_code)] // deserialized so the capture tee can redact it; never read
     agent_transcript_path: Option<String>,
     /// `SubagentStop` only. Redacted before capture; never journaled.
     #[serde(default)]
-    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
+    #[allow(dead_code)] // deserialized so the capture tee can redact it; never read
     last_assistant_message: Option<String>,
     /// True when the host re-runs a stop hook after a block. `Stop` and
     /// `SubagentStop`.
@@ -289,10 +289,13 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
         // truncating would let any stray hook between sessions mint a throwaway
         // sid (spec §"Host adapters / Codex CLI").
         "SessionEnd" | "session-end" => {
+            // Only an open turn is closed here: an already-closed turn may
+            // carry `last_event: "interrupt"`, which the next prompt's
+            // classification depends on.
             if state::read_turn(root).open {
                 record(root, lifecycle_event(payload, Kind::Stop));
+                state::close_turn(root, "stop");
             }
-            state::close_turn(root, "stop");
             empty_decision()
         }
         _ => empty_decision(),
