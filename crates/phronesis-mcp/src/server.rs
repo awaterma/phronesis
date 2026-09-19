@@ -242,6 +242,16 @@ impl EpistemeMcp {
             )))
         }
     }
+
+    /// Serialize the opt-in `get_journey` envelope: derived facts plus the
+    /// lifecycle records the CLI renders, with the same field names. Only
+    /// reached when the caller passes `include_lifecycle: true`.
+    fn journey_payload(
+        rows: &[crate::journey_cli::JourneyRow],
+        lifecycle: &[crate::journey_cli::LifecycleRow],
+    ) -> String {
+        serde_json::json!({ "facts": rows, "lifecycle": lifecycle }).to_string()
+    }
 }
 
 // Persistence helpers (autoload, autosave) live in server_persistence.rs.
@@ -1432,7 +1442,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Return the journey_* facts that would be asserted right now against `.phronesis/journey/events.jsonl` and the loaded rules — the agent's trajectory at a glance. Optionally pass `explain_rule` to filter to a single rule's referenced facts. Mirrors the `phr-mcp journey` CLI; reads the journey journal + journey.json + rules.json. JSON array of `{predicate, selector, window, extra, rules}` rows."
+        description = "Return the journey_* facts that would be asserted right now against `.phronesis/journey/events.jsonl` and the loaded rules — the agent's trajectory at a glance. Optionally pass `explain_rule` to filter to a single rule's referenced facts. Mirrors the `phr-mcp journey` CLI; reads the journey journal + journey.json + rules.json. JSON array of `{predicate, selector, window, extra, rules}` rows. Pass `include_lifecycle: true` to get `{\"facts\": [...], \"lifecycle\": [...]}` instead, adding the recent lifecycle records (sub-agent start/stop, prompts with `fresh`/`mid_turn`/`correction` mode, interrupts, turn stops, commits); prompt text is never included."
     )]
     async fn get_journey(
         &self,
@@ -1448,12 +1458,23 @@ impl EpistemeMcp {
         let rows = journey_cli::compute(&root, params.explain_rule.as_deref(), now, &sid)
             .await
             .map_err(|e| Self::err(e.to_string()))?;
+        let lifecycle = if params.include_lifecycle {
+            journey_cli::lifecycle_rows(&root, 50).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Self::log_event("get_journey", |e| {
-            e.with("rows", rows.len() as u64).with(
-                "explain_rule",
-                params.explain_rule.clone().unwrap_or_default(),
-            )
+            e.with("rows", rows.len() as u64)
+                .with("lifecycle_rows", lifecycle.len() as u64)
+                .with(
+                    "explain_rule",
+                    params.explain_rule.clone().unwrap_or_default(),
+                )
         });
+        if params.include_lifecycle {
+            return Self::ok_text(Self::journey_payload(&rows, &lifecycle));
+        }
+        // Default: the bare fact array this tool has always returned.
         let json = journey_cli::render_json(&rows).map_err(|e| Self::err(e.to_string()))?;
         Self::ok_text(json)
     }
@@ -2172,5 +2193,80 @@ mod ownership_evidence_tool_tests {
                 .is_some_and(|m| m.contains("not proof")),
             "an empty match must never read as proof the code is clean: {payload}"
         );
+    }
+}
+
+#[cfg(test)]
+mod get_journey_tests {
+    use super::*;
+
+    /// Default shape: the bare fact array `get_journey` has always returned.
+    /// Adding lifecycle records must not move an existing consumer's cheese.
+    #[test]
+    fn get_journey_payload_defaults_to_the_bare_fact_array() {
+        let rows = vec![crate::journey_cli::JourneyRow {
+            predicate: "journey_seen".into(),
+            selector: "auth".into(),
+            window: "s".into(),
+            extra: vec![],
+            rules: vec!["auth-churn".into()],
+        }];
+        let payload = crate::journey_cli::render_json(&rows).expect("render");
+        let v: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+        assert!(
+            v.is_array(),
+            "the default response is still a bare array: {payload}"
+        );
+        assert_eq!(v[0]["predicate"], "journey_seen");
+    }
+
+    /// Opt-in shape: `include_lifecycle: true` wraps the same array under `facts`
+    /// and adds `lifecycle`.
+    #[test]
+    fn get_journey_payload_envelope_carries_facts_and_lifecycle() {
+        let rows = vec![crate::journey_cli::JourneyRow {
+            predicate: "journey_seen".into(),
+            selector: "auth".into(),
+            window: "s".into(),
+            extra: vec![],
+            rules: vec!["auth-churn".into()],
+        }];
+        let life = vec![crate::journey_cli::LifecycleRow {
+            ts: 10,
+            sid: "s-1".into(),
+            seq: 3,
+            kind: "prompt".into(),
+            mode: Some("correction".into()),
+            host: Some("claude".into()),
+            agent_type: None,
+            kalpa: Some("demo".into()),
+        }];
+        let payload = EpistemeMcp::journey_payload(&rows, &life);
+        let v: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(v["facts"][0]["predicate"], "journey_seen");
+        assert_eq!(
+            v["facts"],
+            serde_json::json!(rows),
+            "facts is the unchanged row array"
+        );
+        assert_eq!(v["lifecycle"][0]["kind"], "prompt");
+        assert_eq!(v["lifecycle"][0]["mode"], "correction");
+        assert_eq!(v["lifecycle"][0]["kalpa"], "demo");
+        assert!(
+            !payload.contains("\"prompt\":"),
+            "no prompt text over MCP: {payload}"
+        );
+    }
+
+    /// The parameter itself: absent means false, so an old caller's argument-less
+    /// invocation deserializes and keeps the old shape.
+    #[test]
+    fn get_journey_params_default_include_lifecycle_is_false() {
+        let p: crate::server_params::GetJourneyParams =
+            serde_json::from_str("{}").expect("empty params deserialize");
+        assert!(!p.include_lifecycle);
+        let p: crate::server_params::GetJourneyParams =
+            serde_json::from_str(r#"{"include_lifecycle":true}"#).expect("params deserialize");
+        assert!(p.include_lifecycle);
     }
 }
