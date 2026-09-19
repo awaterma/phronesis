@@ -95,8 +95,6 @@ fn turn_file(root: &std::path::Path) -> Value {
     .expect("turn JSON")
 }
 
-// First used by Task 3's tests; kept here with the other lifecycle helpers.
-#[allow(dead_code)]
 fn prompt_payload(session: &str, turn: &str, text: &str) -> Value {
     json!({"hook_event_name": "UserPromptSubmit",
            "session_id": session, "turn_id": turn, "prompt": text})
@@ -387,6 +385,9 @@ fn codex_hook_cli_single_file_patch_keeps_singular_file_log_shape() {
 #[test]
 fn codex_hook_cli_posttooluse_captures_output_and_journals_executed_call() {
     let project = tempfile::tempdir().expect("temp project");
+    // Session identity now comes from the shared session file, so seed it the
+    // way a session-begin SessionStart would have.
+    state::set_session(project.path(), "codex-s-004");
     let payload = fixture_payload(include_str!(
         "fixtures/payloads/codex/post-bash-cargo-test.json"
     ));
@@ -815,4 +816,47 @@ fn interrupt_drops_the_sessions_inflight_entries() {
     // And the classifier's evidence is `last_event`, so the next prompt is a
     // correction with no second interrupt record.
     assert_eq!(turn_file(project.path())["last_event"], "interrupt");
+}
+
+#[test]
+fn session_start_adopts_the_host_session_id_and_resets_correlation_state() {
+    let project = tempfile::tempdir().expect("temp project");
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-old", "codex-t-old", "before")
+        )
+        .status
+        .success()
+    );
+    let start = json!({
+        "hook_event_name": "SessionStart", "session_id": "codex-s-new", "source": "startup"
+    });
+    assert!(run_hook(project.path(), &start).status.success());
+    assert_eq!(
+        fs::read_to_string(project.path().join(".phronesis/journey/session"))
+            .expect("session file")
+            .trim(),
+        "codex-s-new"
+    );
+    assert_eq!(turn_file(project.path())["open"], false);
+
+    // Tool records now take their sid from the shared session file, not the
+    // payload, so every host agrees on session identity.
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "codex-s-stale",
+        "turn_id": "codex-t-1", "tool_use_id": "u1", "tool_name": "Bash",
+        "tool_input": {"command": "cargo test"},
+        "tool_response": {"output": "ok", "exit_code": 0}
+    });
+    assert!(run_hook(project.path(), &post).status.success());
+    let tool_record = journal_records(project.path())
+        .into_iter()
+        .rfind(|r| r.get("kind").is_none())
+        .expect("a tool record");
+    assert_eq!(tool_record["sid"], "codex-s-new");
+    assert_eq!(
+        tool_record["v"], 2,
+        "Codex tool records share the v2 schema"
+    );
 }

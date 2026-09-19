@@ -82,7 +82,6 @@ struct CodexPayload {
     /// reach the handler for the first time and the gate is what keeps them
     /// from orphaning an open sub-agent.
     #[serde(default)]
-    #[allow(dead_code)] // read by the lifecycle arms added in tasks 2-5
     source: Option<String>,
 }
 
@@ -167,6 +166,24 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
         "PreToolUse" | "pre-tool-use" => handle_pre(payload, root).await,
         "PostToolUse" | "post-tool-use" => handle_post(payload, root).await,
         "SessionStart" | "session-start" => {
+            // Source-gated. The shared `session` file is the single source of
+            // session identity for every host (spec §Correlation state), and a
+            // session-begin source (`startup` / `resume` / `clear`, or an absent
+            // source) overwrites it and truncates agents/inflight, closing any
+            // turn left open by a crashed or aborted previous session.
+            //
+            // `compact` and `fork` continue the current session, so its open
+            // sub-agents and in-flight tools are real. Task 7 widens the
+            // registration matcher from `"startup|resume|clear"` to `""`, which
+            // is safe ONLY because of this gate: without it, a mid-session
+            // compaction would orphan every open sub-agent and discard every
+            // in-flight tool, on a path that did not fire at all before.
+            if state::is_session_begin(payload.source.as_deref()) {
+                if let Some(sid) = payload.session_id.as_deref().filter(|s| !s.is_empty()) {
+                    state::set_session(root, sid);
+                }
+                state::reset_for_session_start(root);
+            }
             make_ctx_decision(root, ContextKind::SessionStart).await
         }
         "UserPromptSubmit" | "user-prompt-submit" => {
@@ -1135,15 +1152,16 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
     };
     let (outcome_tags, subject, command_exit) = extract_post_outcomes(payload, &root, tool);
     let record = journey::journal::JournalRecord {
-        v: 1,
+        // Tool records and lifecycle records share one schema version.
+        v: journey::journal::JOURNAL_V,
         ts: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
-        sid: payload
-            .session_id
-            .clone()
-            .unwrap_or_else(|| journey::current_sid(&root)),
+        // Session identity comes from the shared `session` file, as on every
+        // other host; `payload.session_id` can disagree after a fork or resume
+        // (spec §Premise, "two session-id sources can disagree").
+        sid: journey::current_sid(&root),
         seq: crate::hook::seq::next_seq(&root),
         tool: tool.to_string(),
         path: file_path.to_string(),
