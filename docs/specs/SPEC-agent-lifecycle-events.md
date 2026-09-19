@@ -900,6 +900,37 @@ in this spec already carry it as `subject`. This section adds three things.
    get no `unit_start` record; the report says which units were implicit.
    `extra.implicit: true` is stamped on `unit_end` for a unit that was never
    started explicitly, when the report has to synthesize one.
+
+   **Where the name comes from.** Three sources, all landing in the same
+   `unit_start` record:
+
+   - *The human, on the CLI.* `phr-mcp unit start <id> --spec <path>` as above.
+   - *The known-bug registry.* `phr-mcp unit start --bug <bug_id>` looks the
+     id up in `.phronesis/bugs.json`, names the unit `bug-<bug_id>`, records
+     `extra.test` (the registry's cargo test name) and `extra.spec` when the
+     entry has one. `KnownBug` gains two optional fields, `spec` and `title`,
+     both ignored by the confidence scorer. An unknown id is an error, not a
+     fresh unit: the registry is the source of truth for bug-shaped work.
+   - *The agent, from inside the conversation.* The existing MCP tool
+     `submit_suggestion` already sets the explicit subject. It gains optional
+     `spec` and `bug_id` parameters and, on success, records the same
+     `unit_start` event the CLI does (through `lifecycle::unit_cli::start`, so
+     there is one code path). This is how the human gets asked in the LLM
+     window rather than at a shell: a rule can nudge the agent to name the
+     work item when a turn begins with none open, and the agent asks and
+     calls the tool. No new MCP tool.
+
+   Rule that does the nudging, shipped as an example, not a packaged rule:
+
+   ```json
+   { "id": "suggest-name-the-work-item",
+     "conditions": [
+       { "journey_seen": ["lifecycle:prompt:fresh", "s"] },
+       { "__script__": "facts_count('journey_seen', ['lifecycle:unit_start','s']) == 0" }
+     ],
+     "action": { "type": "suggestion",
+                 "message": "No work item is named this session. Ask which bug or spec this is for, then call submit_suggestion with `bug_id` or `spec`." } }
+   ```
 2. **`subject` on rule evaluations.** `pre_check` / `post_check` action-log
    entries (`hook/mod.rs::log_hook_event`) gain `subject` when a unit is open.
    Today only journal records carry it, so "which rules fired for this work
