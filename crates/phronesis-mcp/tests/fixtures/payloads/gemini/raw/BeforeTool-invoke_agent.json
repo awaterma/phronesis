@@ -1,0 +1,12 @@
+{
+  "session_id": "gemini-s-001",
+  "transcript_path": "/home/dev/.gemini/tmp/scratch/chats/session-redacted.jsonl",
+  "cwd": "/home/dev/scratch",
+  "hook_event_name": "BeforeTool",
+  "timestamp": "2026-09-19T21:49:02.096Z",
+  "tool_name": "invoke_agent",
+  "tool_input": {
+    "agent_name": "codebase_investigator",
+    "prompt": "<redacted:123 bytes>"
+  }
+}
