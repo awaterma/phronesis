@@ -75,6 +75,16 @@ pub fn settle(root: &Path) -> Result<(), SubjectError> {
     }
 }
 
+/// Clear the open subject — the explicit `phr-mcp unit end` path.
+///
+/// Identical in effect to [`settle`] and deliberately a separate name: `settle`
+/// means "a build/test cycle closed this unit", `clear` means "a human said the
+/// work item is done". Callers read differently, and a future change to either
+/// meaning must not silently change the other.
+pub fn clear(root: &Path) -> Result<(), SubjectError> {
+    settle(root)
+}
+
 /// A fresh, monotonic-ish subject id. Nanos give practical uniqueness even when
 /// a settle/open happens within the same wall-clock second.
 fn mint() -> String {
@@ -144,5 +154,17 @@ mod tests {
         std::fs::create_dir_all(&phr).unwrap();
         std::fs::write(phr.join("outcomes"), "blocking file").unwrap();
         assert!(matches!(set(dir.path(), "u"), Err(SubjectError::Io { .. })));
+    }
+
+    #[test]
+    fn clear_closes_the_open_subject_and_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        set(dir.path(), "item-1").unwrap();
+        clear(dir.path()).unwrap();
+        assert!(current(dir.path()).is_none());
+        assert!(
+            clear(dir.path()).is_ok(),
+            "clearing nothing is not an error"
+        );
     }
 }

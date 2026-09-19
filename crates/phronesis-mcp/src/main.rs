@@ -456,6 +456,11 @@ enum Command {
         #[command(subcommand)]
         cmd: Option<phronesis_mcp::lifecycle::kalpa_cli::KalpaCmd>,
     },
+    /// Name the work item (unit) an agent is building, and report on it.
+    Unit {
+        #[command(subcommand)]
+        cmd: phronesis_mcp::lifecycle::unit_cli::UnitCmd,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -694,6 +699,12 @@ async fn main() -> anyhow::Result<()> {
             let cmd =
                 cmd.unwrap_or(phronesis_mcp::lifecycle::kalpa_cli::KalpaCmd::Show { name: None });
             let out = phronesis_mcp::lifecycle::kalpa_cli::run(&root, cmd)?;
+            println!("{out}");
+            Ok(())
+        }
+        Command::Unit { cmd } => {
+            let root = phronesis_mcp::security::project_root();
+            let out = phronesis_mcp::lifecycle::unit_cli::run(&root, cmd)?;
             println!("{out}");
             Ok(())
         }
