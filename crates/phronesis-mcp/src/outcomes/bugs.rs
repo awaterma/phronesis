@@ -29,6 +29,16 @@ pub struct KnownBug {
     /// Only `open` bugs are scored — a `fixed` bug is history.
     #[serde(default = "default_status")]
     pub status: String,
+    /// Repo-relative spec this bug is filed against, when the registry knows
+    /// one. Read by `phr-mcp unit start --bug` to point the work item at its
+    /// spec without a flag; ignored by [`check`] — scoring depends on `test`
+    /// and `status` only.
+    #[serde(default)]
+    pub spec: Option<String>,
+    /// Human-readable one-liner. Recorded nowhere: it exists so a person
+    /// reading `bugs.json` knows what `1042` is. Ignored by [`check`].
+    #[serde(default)]
+    pub title: Option<String>,
 }
 
 fn default_status() -> String {
@@ -80,6 +90,8 @@ mod tests {
             bug_id: id.to_string(),
             test: test.to_string(),
             status: "open".to_string(),
+            spec: None,
+            title: None,
         }
     }
 
@@ -162,5 +174,39 @@ mod tests {
         std::fs::create_dir_all(&phr).unwrap();
         std::fs::write(phr.join("bugs.json"), "{not an array").unwrap();
         assert!(load(dir.path()).is_empty());
+    }
+
+    /// The two new optional fields parse when present and default when absent,
+    /// so every registry written before this change still loads.
+    #[test]
+    fn load_parses_optional_spec_and_title_and_defaults_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let phr = dir.path().join(".phronesis");
+        std::fs::create_dir_all(&phr).unwrap();
+        std::fs::write(
+            phr.join("bugs.json"),
+            r#"[{"bug_id":"7","test":"a::b","spec":"docs/specs/SPEC-x.md","title":"boom"},
+                {"bug_id":"8","test":"c::d"}]"#,
+        )
+        .unwrap();
+        let bugs = load(dir.path());
+        assert_eq!(bugs[0].spec.as_deref(), Some("docs/specs/SPEC-x.md"));
+        assert_eq!(bugs[0].title.as_deref(), Some("boom"));
+        assert_eq!(bugs[1].spec, None);
+        assert_eq!(bugs[1].title, None);
+    }
+
+    /// "both ignored by the confidence scorer" (spec §"Where the name comes
+    /// from"): scoring depends on `test` and `status` only.
+    #[test]
+    fn check_ignores_spec_and_title() {
+        let mut b = bug("1042", "auth::rejects_expired");
+        b.spec = Some("docs/specs/SPEC-x.md".to_string());
+        b.title = Some("boom".to_string());
+        let per_test = vec![("auth::rejects_expired".to_string(), true)];
+        assert_eq!(
+            statuses(&check("u", &[b], &per_test, true)),
+            vec![("1042".to_string(), "fixed".to_string())]
+        );
     }
 }

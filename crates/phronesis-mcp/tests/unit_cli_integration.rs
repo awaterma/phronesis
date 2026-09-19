@@ -203,3 +203,124 @@ fn unit_end_with_nothing_open_fails() {
         stderr(&out)
     );
 }
+
+/// Seed `.phronesis/bugs.json`. `entries` is written verbatim so a test can
+/// exercise an entry with and without the optional `spec`.
+fn write_bugs(root: &Path, entries: serde_json::Value) {
+    let phr = root.join(".phronesis");
+    std::fs::create_dir_all(&phr).unwrap();
+    std::fs::write(phr.join("bugs.json"), entries.to_string()).unwrap();
+}
+
+/// Spec §"Where the name comes from": `--bug` names the unit `bug-<bug_id>`
+/// and records the registry's cargo test name, which is what later joins the
+/// unit to its red→green signal.
+#[test]
+fn unit_start_from_a_known_bug_names_the_unit_and_records_its_test() {
+    let d = tempfile::tempdir().unwrap();
+    write_bugs(
+        d.path(),
+        serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
+    );
+    let out = run_phr(d.path(), &["unit", "start", "--bug", "1042"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("started work unit bug-1042"),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(
+        std::fs::read_to_string(d.path().join(".phronesis/outcomes/current")).unwrap(),
+        "bug-1042"
+    );
+    let entries = lifecycle_entries(d.path());
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(entries[0]["event"], "unit_start");
+    assert_eq!(entries[0]["unit_id"], "bug-1042");
+    assert_eq!(entries[0]["subject"], "bug-1042");
+    assert_eq!(entries[0]["bug_id"], "1042");
+    assert_eq!(entries[0]["test"], "auth::rejects_expired");
+    assert!(
+        entries[0].get("spec").is_none(),
+        "no spec in the entry, none recorded"
+    );
+}
+
+/// An entry carrying a `spec` supplies the pointer without a flag — the
+/// registry answers "which spec is this bug against?" once, for everyone.
+#[test]
+fn unit_start_from_a_known_bug_takes_the_registry_spec() {
+    let d = tempfile::tempdir().unwrap();
+    write_spec(d.path(), "docs/specs/SPEC-auth.md");
+    write_bugs(
+        d.path(),
+        serde_json::json!([{
+            "bug_id": "1042", "test": "auth::rejects_expired", "status": "open",
+            "spec": "docs/specs/SPEC-auth.md", "title": "expired tokens accepted"
+        }]),
+    );
+    let out = run_phr(d.path(), &["unit", "start", "--bug", "1042"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let entries = lifecycle_entries(d.path());
+    assert_eq!(entries[0]["spec"], "docs/specs/SPEC-auth.md");
+    assert!(
+        stdout(&out).contains("docs/specs/SPEC-auth.md"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// "An unknown id is an error, not a fresh unit: the registry is the source of
+/// truth for bug-shaped work" (spec §"Where the name comes from").
+#[test]
+fn unit_start_from_an_unknown_bug_errors_and_opens_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    write_bugs(
+        d.path(),
+        serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
+    );
+    let out = run_phr(d.path(), &["unit", "start", "--bug", "9999"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("unknown bug id `9999` (not in .phronesis/bugs.json)"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        !d.path().join(".phronesis/outcomes/current").exists(),
+        "a rejected start opens no unit"
+    );
+    assert!(
+        lifecycle_entries(d.path()).is_empty(),
+        "and records nothing"
+    );
+}
+
+/// A missing registry is the same error, not a silent fresh unit: `bugs::load`
+/// is fail-open (empty on a missing file), so the lookup has to be the gate.
+#[test]
+fn unit_start_with_bug_and_no_registry_errors() {
+    let d = tempfile::tempdir().unwrap();
+    let out = run_phr(d.path(), &["unit", "start", "--bug", "1042"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("unknown bug id `1042`"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The registry is the name; a second name is a contradiction, and clap
+/// rejects it before anything runs.
+#[test]
+fn unit_start_rejects_bug_together_with_a_positional_id() {
+    let d = tempfile::tempdir().unwrap();
+    let out = run_phr(d.path(), &["unit", "start", "item-1", "--bug", "1042"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("cannot be used with"),
+        "clap's conflict message: {}",
+        stderr(&out)
+    );
+    assert!(!d.path().join(".phronesis/outcomes/current").exists());
+}

@@ -89,7 +89,7 @@ pub enum PromptText {
 /// `last_assistant_message`, `prompt_response`, `transcript_path` and
 /// `agent_transcript_path` are read for decisions and dropped at the adapter
 /// boundary, and `tests/hook_integration.rs` asserts no log entry contains them.
-pub const EXTRA_KEYS: [&str; 12] = [
+pub const EXTRA_KEYS: [&str; 14] = [
     "inferred_from",
     "stop_hook_active",
     "matched_start",
@@ -110,6 +110,10 @@ pub const EXTRA_KEYS: [&str; 12] = [
     "unit_id",
     // `true` on a `unit_end` for a unit that was never explicitly started.
     "implicit",
+    // A unit named from `.phronesis/bugs.json` (spec §"Where the name comes
+    // from"): the registry's cargo test name and the id it was looked up by.
+    "test",
+    "bug_id",
 ];
 
 /// Lowercase, then keep only if the result matches `[a-z0-9][a-z0-9_.:-]{0,63}` —
@@ -500,21 +504,23 @@ mod tests {
         assert!(!e.tags(None).iter().any(|t| t.contains("intervention")));
     }
 
-    /// `extra` gains exactly three keys and no more (spec §"Work items / Storage").
+    /// `extra` gains exactly five keys and no more (spec §"Work items / Storage"
+    /// plus §"Where the name comes from", which adds `test` and `bug_id`).
     #[test]
     fn extra_vocabulary_gains_spec_unit_id_and_implicit() {
-        for k in ["spec", "unit_id", "implicit"] {
+        for k in ["spec", "unit_id", "implicit", "test", "bug_id"] {
             assert!(
                 EXTRA_KEYS.contains(&k),
                 "{k} must be in the closed vocabulary"
             );
         }
-        assert_eq!(EXTRA_KEYS.len(), 12, "three added, nothing else");
+        assert_eq!(EXTRA_KEYS.len(), 14, "five added, nothing else");
         for forbidden in [
             "prompt_response",
             "last_assistant_message",
             "transcript_path",
             "spec_hash",
+            "title",
         ] {
             assert!(!EXTRA_KEYS.contains(&forbidden), "{forbidden}");
         }
