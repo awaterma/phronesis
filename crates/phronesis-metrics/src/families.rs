@@ -18,6 +18,7 @@ use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::metrics::histogram::{Histogram, exponential_buckets};
 use prometheus_client::registry::Registry;
 use std::collections::HashMap;
 
@@ -83,6 +84,22 @@ struct EventLabels {
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 struct OmitKindLabels {
     kind: String,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct LifecycleLabels {
+    host: String,
+    event: String,
+    /// Prompt mode; `""` for every non-prompt event. An empty value keeps the
+    /// label set closed; an absent label would split the series.
+    mode: String,
+}
+
+/// The histogram's label set is `{host}` alone: a duration is a property of the
+/// sub-agent, and `event` is always `subagent_stop` here.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct HostLabel {
+    host: String,
 }
 
 /// One rule's tallies, accumulated before the cardinality cap is applied.
@@ -189,6 +206,13 @@ pub fn build(read: &LogRead, opts: &Options) -> Registry {
     let context_bytes = Family::<EventLabels, Counter>::default();
     let context_latency = Family::<EventLabels, Counter>::default();
     let context_omitted = Family::<OmitKindLabels, Counter>::default();
+    let lifecycle_events = Family::<LifecycleLabels, Counter>::default();
+    // 13 buckets, so the last finite one is 4096 s — about 68 min, the useful
+    // range of a sub-agent's life. A `Family` of histograms needs an explicit
+    // constructor: `Default` would give every series the default bucket set.
+    let subagent_duration = Family::<HostLabel, Histogram>::new_with_constructor(|| {
+        Histogram::new(exponential_buckets(1.0, 2.0, 13))
+    });
     let log_entries = Counter::<u64>::default();
     let log_malformed = Counter::<u64>::default();
     let log_size = Gauge::<i64>::default();
@@ -258,6 +282,26 @@ pub fn build(read: &LogRead, opts: &Options) -> Registry {
                             .get_or_create(&OmitKindLabels { kind: kind.clone() })
                             .inc_by(count.as_u64().unwrap_or(0));
                     }
+                }
+            }
+            "lifecycle" => {
+                // `kalpa` is deliberately not a label: user-typed free text,
+                // the same reason rule ids are capped above.
+                lifecycle_events
+                    .get_or_create(&LifecycleLabels {
+                        host: rec.str_field("host").unwrap_or("unknown").to_string(),
+                        event: rec.event.clone(),
+                        mode: rec.str_field("mode").unwrap_or_default().to_string(),
+                    })
+                    .inc();
+                if rec.event == "subagent_stop"
+                    && let Some(secs) = rec.num("duration_secs")
+                {
+                    subagent_duration
+                        .get_or_create(&HostLabel {
+                            host: rec.str_field("host").unwrap_or("unknown").to_string(),
+                        })
+                        .observe(secs as f64);
                 }
             }
             _ => {}
@@ -336,6 +380,16 @@ pub fn build(read: &LogRead, opts: &Options) -> Registry {
         "phronesis_context_omitted",
         "Context items dropped during packing, by item kind",
         context_omitted,
+    );
+    registry.register(
+        "phronesis_lifecycle_events",
+        "Agent lifecycle events recorded in the action log, by host, event, and prompt mode",
+        lifecycle_events,
+    );
+    registry.register(
+        "phronesis_subagent_duration_seconds",
+        "Wall-clock seconds between a sub-agent's start and its stop, by host",
+        subagent_duration,
     );
     registry.register(
         "phronesis_log_entries",

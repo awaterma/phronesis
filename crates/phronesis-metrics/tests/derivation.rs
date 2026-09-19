@@ -260,3 +260,128 @@ fn malformed_lines_are_counted_not_fatal() {
         "{out}"
     );
 }
+
+#[test]
+fn lifecycle_events_counter_labels_host_event_and_mode() {
+    let out = render(
+        vec![
+            record(serde_json::json!({
+                "ts": 100, "kind": "lifecycle", "event": "prompt", "host": "claude",
+                "sid": "s-1", "seq": 1, "mode": "correction",
+                "kalpa": "lifecycle-events", "prompt": "SECRET", "prompt_bytes": 6,
+            })),
+            record(serde_json::json!({
+                "ts": 110, "kind": "lifecycle", "event": "interrupt", "host": "codex",
+                "sid": "s-1", "seq": 2, "inferred_from": "hook",
+            })),
+        ],
+        &Options::default(),
+    );
+    assert!(
+        out.contains(r#"host="claude",event="prompt",mode="correction""#),
+        "{out}"
+    );
+    // Non-prompt events carry an empty mode label rather than a missing one.
+    assert!(
+        out.contains(r#"host="codex",event="interrupt",mode="""#),
+        "{out}"
+    );
+    assert!(
+        !out.contains("kalpa"),
+        "kalpa is free text and must not be a label: {out}"
+    );
+    assert!(
+        !out.contains("SECRET"),
+        "prompt text must never reach a metric: {out}"
+    );
+}
+
+#[test]
+fn subagent_duration_histogram_has_thirteen_exponential_buckets_and_a_host_label() {
+    let out = render(
+        vec![
+            record(serde_json::json!({
+                "ts": 100, "kind": "lifecycle", "event": "subagent_stop", "host": "claude",
+                "sid": "s-1", "seq": 1, "agent_id": "a1", "agent_type": "reviewer",
+                "duration_secs": 220, "matched_start": true,
+            })),
+            record(serde_json::json!({
+                "ts": 200, "kind": "lifecycle", "event": "subagent_stop", "host": "claude",
+                "sid": "s-1", "seq": 2, "agent_id": "a2", "duration_secs": 3, "matched_start": false,
+            })),
+            // No duration (unmatched stop): counted as an event, never observed.
+            record(serde_json::json!({
+                "ts": 300, "kind": "lifecycle", "event": "subagent_stop", "host": "claude",
+                "sid": "s-1", "seq": 3, "matched_start": false,
+            })),
+        ],
+        &Options::default(),
+    );
+    let buckets = out
+        .lines()
+        .filter(|l| l.starts_with("phronesis_subagent_duration_seconds_bucket"))
+        .count();
+    // `exponential_buckets(1.0, 2.0, 13)` is 13 finite buckets — the last is
+    // 4096 s, about 68 min — plus `+Inf`.
+    assert_eq!(
+        buckets, 14,
+        "exponential_buckets(1.0, 2.0, 13) plus +Inf:\n{out}"
+    );
+    assert!(
+        out.contains(r#"le="4096.0""#),
+        "the last finite bucket is 4096 s: {out}"
+    );
+    // `host` is a label on the histogram too, so one host's slow sub-agents do
+    // not smear another's distribution.
+    assert!(
+        out.contains(r#"phronesis_subagent_duration_seconds_count{host="claude"} 2"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"phronesis_subagent_duration_seconds_sum{host="claude"} 223"#),
+        "{out}"
+    );
+}
+
+/// Two hosts, two series. Without the label they share one distribution and the
+/// median of a mixed fleet means nothing.
+#[test]
+fn subagent_duration_is_split_by_host() {
+    let out = render(
+        vec![
+            record(serde_json::json!({
+                "ts": 100, "kind": "lifecycle", "event": "subagent_stop", "host": "claude",
+                "sid": "s-1", "seq": 1, "duration_secs": 10, "matched_start": true,
+            })),
+            record(serde_json::json!({
+                "ts": 110, "kind": "lifecycle", "event": "subagent_stop", "host": "codex",
+                "sid": "s-1", "seq": 2, "duration_secs": 1000, "matched_start": true,
+            })),
+        ],
+        &Options::default(),
+    );
+    assert!(
+        out.contains(r#"phronesis_subagent_duration_seconds_sum{host="claude"} 10"#),
+        "{out}"
+    );
+    assert!(
+        out.contains(r#"phronesis_subagent_duration_seconds_sum{host="codex"} 1000"#),
+        "{out}"
+    );
+    assert!(!out.contains("kalpa"), "still no kalpa label: {out}");
+}
+
+#[test]
+fn lifecycle_records_respect_the_since_cutoff() {
+    let out = render(
+        vec![record(serde_json::json!({
+            "ts": 10, "kind": "lifecycle", "event": "commit", "host": "claude",
+            "sid": "s-1", "seq": 1, "sha": "0f3c",
+        }))],
+        &Options {
+            since: Some(100),
+            ..Options::default()
+        },
+    );
+    assert!(!out.contains(r#"event="commit""#), "{out}");
+}
