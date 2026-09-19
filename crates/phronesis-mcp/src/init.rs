@@ -735,13 +735,18 @@ fn write_codex_hooks(
     upsert_codex_hook(&mut settings, "PreToolUse", tool_entry("PreToolUse"));
     upsert_codex_hook(&mut settings, "PostToolUse", tool_entry("PostToolUse"));
     for (event, matcher) in [
-        ("SessionStart", "startup|resume|clear"),
+        // Codex matchers are exact alternations; "startup|resume|clear" gave
+        // compact and fork sessions no context. Empty matches every source.
+        ("SessionStart", ""),
+        ("SessionEnd", ""),
         ("UserPromptSubmit", ""),
         ("PreCompact", "manual|auto"),
         ("PostCompact", "manual|auto"),
         ("SubagentStart", ""),
         ("SubagentStop", ""),
         ("Stop", ""),
+        // Interrupt ignores `matcher` entirely; the empty value is documentation.
+        ("Interrupt", ""),
     ] {
         upsert_codex_hook(
             &mut settings,

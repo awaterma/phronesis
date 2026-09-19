@@ -646,8 +646,9 @@ fn init_merges_codex_hooks_and_mcp_idempotently_and_dry_run_is_read_only() {
         .as_array()
         .expect("SessionStart hooks");
     assert!(session.iter().any(|entry| {
-        entry["matcher"] == "startup|resume|clear"
-            && entry["hooks"][0]["command"] == "phr-mcp codex-hook SessionStart"
+        // Codex matchers are exact alternations, so "startup|resume|clear"
+        // silently skipped compact and fork sessions. Empty matches every source.
+        entry["matcher"] == "" && entry["hooks"][0]["command"] == "phr-mcp codex-hook SessionStart"
     }));
     assert_eq!(
         session
@@ -677,6 +678,28 @@ fn init_merges_codex_hooks_and_mcp_idempotently_and_dry_run_is_read_only() {
                     entry["hooks"][0]["command"] == format!("phr-mcp codex-hook {event}")
                 }),
             "{event} completion gate must be wired"
+        );
+    }
+    for event in ["Interrupt", "SessionEnd"] {
+        let entries = hooks["hooks"][event]
+            .as_array()
+            .unwrap_or_else(|| panic!("{event} hooks"));
+        assert!(
+            entries.iter().any(|entry| {
+                entry["matcher"] == ""
+                    && entry["hooks"][0]["command"] == format!("phr-mcp codex-hook {event}")
+            }),
+            "{event} must be registered with an empty matcher"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry["hooks"][0]["command"] == format!("phr-mcp codex-hook {event}")
+                })
+                .count(),
+            1,
+            "{event} must be registered exactly once"
         );
     }
     assert!(first_config.contains("model = \"keep-me\""));
