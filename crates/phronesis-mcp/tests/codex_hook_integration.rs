@@ -1232,3 +1232,55 @@ fn a_blocked_stop_records_nothing_and_the_refire_records_one() {
     );
     assert_eq!(turn_file(project.path())["open"], false);
 }
+
+/// Task 7 widens the SessionStart matcher to `""`, so compact and fork sessions
+/// reach this handler for the first time. They must render context and touch no
+/// correlation state: their open sub-agents and in-flight tools are real.
+#[test]
+fn session_start_on_compact_or_fork_touches_no_correlation_state() {
+    for source in ["compact", "fork"] {
+        let project = tempfile::tempdir().expect("temp project");
+        let begin = json!({
+            "hook_event_name": "SessionStart", "session_id": "codex-s-a", "source": "startup"
+        });
+        assert!(run_hook(project.path(), &begin).status.success());
+        assert!(
+            run_hook(
+                project.path(),
+                &prompt_payload("codex-s-a", "codex-t-a", "go")
+            )
+            .status
+            .success()
+        );
+        let sub = json!({
+            "hook_event_name": "SubagentStart", "session_id": "codex-s-a",
+            "turn_id": "codex-t-a", "agent_id": "codex-a-live", "agent_type": "reviewer"
+        });
+        assert!(run_hook(project.path(), &sub).status.success());
+
+        let continued = json!({
+            "hook_event_name": "SessionStart", "session_id": "codex-s-b", "source": source
+        });
+        assert!(run_hook(project.path(), &continued).status.success());
+
+        assert_eq!(
+            fs::read_to_string(project.path().join(".phronesis/journey/session"))
+                .expect("session file")
+                .trim(),
+            "codex-s-a",
+            "{source} must not mint a new sid"
+        );
+        assert_eq!(
+            turn_file(project.path())["open"],
+            true,
+            "{source}: the turn is still running"
+        );
+        assert!(
+            !fs::read_to_string(project.path().join(".phronesis/journey/agents"))
+                .unwrap_or_default()
+                .trim()
+                .is_empty(),
+            "{source}: the open sub-agent must survive"
+        );
+    }
+}
