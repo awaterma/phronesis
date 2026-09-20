@@ -300,3 +300,104 @@ fn kalpa_show_prints_the_start_date_when_the_boundary_is_still_retained() {
     assert!(stdout.contains("started 20"), "{stdout}");
     assert!(!stdout.contains("start not retained"), "{stdout}");
 }
+
+/// Seed one governed work item and one ungoverned one into `kalpa`.
+fn seed_work_items(root: &std::path::Path, kalpa: &str) {
+    use phronesis_mcp::action_log::{self, LogEntry};
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, PromptText, Stamped};
+
+    let path = action_log::default_path(root);
+    let mut seq = 100u64;
+    let mut push = |ts: u64, subject: &str, ev: LifecycleEvent| {
+        seq += 1;
+        let stamped = Stamped {
+            ts,
+            sid: "s-1".to_string(),
+            seq,
+            kalpa: Some(kalpa.to_string()),
+            subject: Some(subject.to_string()),
+        };
+        action_log::append(&path, &ev.to_log_entry(&stamped, PromptText::Full)).unwrap();
+    };
+    push(
+        1_700_010_000,
+        "w-1",
+        LifecycleEvent::new(Kind::UnitStart, Host::Cli).with_extra("unit_id", "w-1"),
+    );
+    push(
+        1_700_010_100,
+        "w-1",
+        LifecycleEvent::new(Kind::Prompt, Host::Claude)
+            .with_mode(Mode::Correction)
+            .with_prompt("no, the other one"),
+    );
+    push(
+        1_700_010_200,
+        "w-1",
+        LifecycleEvent::new(Kind::Commit, Host::Claude)
+            .with_extra("sha", "0f3c")
+            .with_extra("confidence_band", "high"),
+    );
+    push(
+        1_700_010_300,
+        "w-2",
+        LifecycleEvent::new(Kind::Commit, Host::Claude)
+            .with_extra("sha", "aa11")
+            .with_extra("confidence_band", "low"),
+    );
+
+    for (ts, subject) in [(1_700_010_050u64, "w-1"), (1_700_010_250, "w-2")] {
+        let mut e = LogEntry::new("hook", "pre_check")
+            .with("phase", "pre")
+            .with("tool", "Edit")
+            .with("exit", 0)
+            .with("consequences", serde_json::json!([]))
+            .with("subject", subject);
+        e.ts = ts;
+        action_log::append(&path, &e).unwrap();
+    }
+}
+
+#[test]
+fn kalpa_show_reports_work_items_and_governed_throughput() {
+    let d = tempfile::tempdir().unwrap();
+    seed_work_items(d.path(), "lifecycle-events");
+    let out = run_phr(d.path(), &["kalpa", "show", "lifecycle-events"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        stdout.contains("work items      2   explicit 1   implicit 1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("governed        1   (commit + rules evaluated + band ≥ medium)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("interventions / work item   0.50"),
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("no, the other one"),
+        "prompt text never reaches kalpa show: {stdout}"
+    );
+}
+
+#[test]
+fn stats_kalpa_reports_governed_throughput_as_json() {
+    let d = tempfile::tempdir().unwrap();
+    seed_work_items(d.path(), "lifecycle-events");
+    let out = run_phr(
+        d.path(),
+        &["stats", "--kalpa", "lifecycle-events", "--json"],
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["lifecycle"]["work_items"]["explicit"], 1);
+    assert_eq!(v["lifecycle"]["work_items"]["implicit"], 1);
+    assert_eq!(v["lifecycle"]["work_items"]["completed"], 2);
+    assert_eq!(v["lifecycle"]["governed"], 1);
+}

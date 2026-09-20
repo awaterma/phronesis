@@ -881,14 +881,9 @@ fn handle_stats(
     };
     let values = aggregate(&entries, &values_opts);
 
-    let life_entries = action_log::read_recent(
-        &path,
-        &ReadOpts {
-            kind: Some("lifecycle".to_string()),
-            ..ReadOpts::default()
-        },
-    )
-    .unwrap_or_default();
+    // Unfiltered: `aggregate_lifecycle` needs the `pre_check` / `post_check`
+    // entries for the governed count and ignores everything else itself.
+    let life_entries = action_log::read_recent(&path, &ReadOpts::default()).unwrap_or_default();
     let life = aggregate_lifecycle(
         &life_entries,
         &LifecycleOpts {

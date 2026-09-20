@@ -166,12 +166,37 @@ pub struct LifecycleStats {
     /// Prompts with mode `mid_turn` or `correction`: the human changed the
     /// plan rather than replying. The autonomy signal's numerator.
     pub interventions: u32,
+    /// Work items (= `outcomes::subject` work units) seen on a lifecycle entry
+    /// in this window, split by whether a `unit_start` record exists for them.
+    /// The split is printed because implicit units split on every build/test
+    /// cycle and would otherwise flatter every per-item number.
+    pub work_items_explicit: u32,
+    pub work_items_implicit: u32,
+    /// Work items with at least one `commit` record carrying their subject.
+    pub work_items_completed: u32,
+    /// Completed **and** rule-evaluated **and** band at the last commit not
+    /// `low` — the spec's definition of governed, unabbreviated.
+    pub governed: u32,
+    /// Interventions carrying a `subject`: the per-item ratio's numerator.
+    pub subject_interventions: u32,
 }
 
 impl LifecycleStats {
     /// `interventions / commits`, or `None` when there are no commits.
     pub fn interventions_per_commit(&self) -> Option<f64> {
         (self.commits > 0).then(|| f64::from(self.interventions) / f64::from(self.commits))
+    }
+
+    /// `interventions carrying a subject / completed work items`, or `None`
+    /// when nothing completed. The second and last ratio the spec ships.
+    pub fn interventions_per_work_item(&self) -> Option<f64> {
+        (self.work_items_completed > 0)
+            .then(|| f64::from(self.subject_interventions) / f64::from(self.work_items_completed))
+    }
+
+    /// Any work item at all in this window?
+    pub fn work_items(&self) -> u32 {
+        self.work_items_explicit + self.work_items_implicit
     }
 }
 
@@ -191,7 +216,29 @@ pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> Lifecy
     let mut sids: BTreeSet<&str> = BTreeSet::new();
     let mut durations: Vec<u64> = Vec::new();
 
+    /// Per-work-item state, accumulated over the window.
+    #[derive(Default)]
+    struct UnitAcc {
+        explicit: bool,
+        completed: bool,
+        /// The band on the most recent commit, which is the one the governed
+        /// definition reads.
+        last_commit_band: Option<String>,
+    }
+    let mut units: BTreeMap<String, UnitAcc> = BTreeMap::new();
+    // Subjects with at least one rule evaluation. Hook entries carry no
+    // `kalpa` (the kalpa is a property of the lifecycle stream), so they are
+    // never kalpa-filtered; a subject's membership in the kalpa comes from its
+    // own lifecycle records.
+    let mut evaluated: BTreeSet<String> = BTreeSet::new();
+
     for e in entries {
+        if e.kind == "hook" && matches!(e.event.as_str(), "pre_check" | "post_check") {
+            if let Some(s) = e.data.get("subject").and_then(|v| v.as_str()) {
+                evaluated.insert(s.to_string());
+            }
+            continue;
+        }
         if e.kind != "lifecycle" {
             continue;
         }
@@ -216,6 +263,14 @@ pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> Lifecy
         {
             sids.insert(sid);
         }
+        let subject = e
+            .data
+            .get("subject")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if let Some(s) = &subject {
+            units.entry(s.clone()).or_default();
+        }
         match e.event.as_str() {
             "prompt" => {
                 let mode = e
@@ -226,6 +281,9 @@ pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> Lifecy
                 *out.prompt_modes.entry(mode.to_string()).or_insert(0) += 1;
                 if matches!(mode, "mid_turn" | "correction") {
                     out.interventions += 1;
+                    if subject.is_some() {
+                        out.subject_interventions += 1;
+                    }
                 }
             }
             "subagent_start" => out.subagents += 1,
@@ -245,12 +303,42 @@ pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> Lifecy
                 if let Some(b) = e.data.get("confidence_band").and_then(|v| v.as_str()) {
                     *out.confidence_bands.entry(b.to_string()).or_insert(0) += 1;
                 }
+                if let Some(s) = &subject
+                    && let Some(acc) = units.get_mut(s)
+                {
+                    acc.completed = true;
+                    acc.last_commit_band = e
+                        .data
+                        .get("confidence_band")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string);
+                }
+            }
+            "unit_start" => {
+                if let Some(s) = &subject
+                    && let Some(acc) = units.get_mut(s)
+                {
+                    acc.explicit = true;
+                }
             }
             _ => {}
         }
     }
 
     out.sessions = sids.len() as u32;
+    out.work_items_explicit = units.values().filter(|u| u.explicit).count() as u32;
+    out.work_items_implicit = units.values().filter(|u| !u.explicit).count() as u32;
+    out.work_items_completed = units.values().filter(|u| u.completed).count() as u32;
+    // Spec §"Work items": governed = completed, **and** at least one rule was
+    // evaluated against its edits, **and** the band at its last commit is not
+    // `low`. An absent band is not `low`: it means scoring was off, and the
+    // definition as written admits it.
+    out.governed = units
+        .iter()
+        .filter(|(id, u)| {
+            u.completed && evaluated.contains(*id) && u.last_commit_band.as_deref() != Some("low")
+        })
+        .count() as u32;
     durations.sort_unstable();
     out.subagent_median_secs = match durations.len() {
         0 => None,
@@ -343,6 +431,24 @@ pub fn render_lifecycle(s: &LifecycleStats) -> String {
         out.push_str(&format!(
             "interventions / commit   {r:.2}   (retained window)\n"
         ));
+    }
+    // Omitted entirely on a project that has not adopted work units: three rows
+    // of zeros would read as a measurement of nothing.
+    if s.work_items() > 0 {
+        out.push_str(&format!(
+            "{:<13}{:>4}   explicit {}   implicit {}\n",
+            "work items",
+            s.work_items(),
+            s.work_items_explicit,
+            s.work_items_implicit
+        ));
+        out.push_str(&format!(
+            "{:<13}{:>4}   (commit + rules evaluated + band ≥ medium)\n",
+            "governed", s.governed
+        ));
+        if let Some(r) = s.interventions_per_work_item() {
+            out.push_str(&format!("interventions / work item   {r:.2}\n"));
+        }
     }
     out
 }
@@ -468,6 +574,13 @@ pub fn render_json_with_lifecycle(values: &Stats, life: Option<&LifecycleStats>)
             "subagent_median_secs": l.subagent_median_secs, "commits": l.commits,
             "interventions": l.interventions, "interventions_per_commit": l.interventions_per_commit(),
             "confidence_bands": l.confidence_bands,
+            "work_items": {
+                "explicit": l.work_items_explicit,
+                "implicit": l.work_items_implicit,
+                "completed": l.work_items_completed,
+            },
+            "governed": l.governed,
+            "interventions_per_work_item": l.interventions_per_work_item(),
         }));
     }
     payload.to_string()
@@ -1128,6 +1241,230 @@ mod tests {
         assert!(
             plain.get("lifecycle").is_none(),
             "render_json stays byte-compatible"
+        );
+    }
+
+    /// A `pre_check` entry in `log_hook_event`'s shape, carrying a subject.
+    fn evaluated(ts: u64, subject: &str) -> LogEntry {
+        let mut e = LogEntry::new("hook", "pre_check")
+            .with("phase", "pre")
+            .with("tool", "Edit")
+            .with("exit", 0)
+            .with("consequences", json!([]))
+            .with("subject", subject);
+        e.ts = ts;
+        e
+    }
+
+    /// A lifecycle entry carrying a subject.
+    fn life_for(
+        ts: u64,
+        event: &str,
+        subject: &str,
+        fields: &[(&str, serde_json::Value)],
+    ) -> LogEntry {
+        let mut e = life(ts, event, fields);
+        e.data.insert("subject".to_string(), json!(subject));
+        e
+    }
+
+    /// Four work items in kalpa `k1`:
+    ///   u-a  explicit, committed (band high), rules evaluated  -> governed
+    ///   u-b  implicit, committed (band low),  rules evaluated  -> completed, not governed
+    ///   u-c  explicit, committed (band high), never evaluated  -> completed, not governed
+    ///   u-d  implicit, never committed                         -> neither
+    fn work_item_log() -> Vec<LogEntry> {
+        let k = || ("kalpa", json!("k1"));
+        vec![
+            life_for(100, "unit_start", "u-a", &[k(), ("unit_id", json!("u-a"))]),
+            evaluated(101, "u-a"),
+            life_for(102, "prompt", "u-a", &[k(), ("mode", json!("correction"))]),
+            life_for(
+                103,
+                "commit",
+                "u-a",
+                &[
+                    k(),
+                    ("sha", json!("aaa")),
+                    ("confidence_band", json!("high")),
+                ],
+            ),
+            evaluated(110, "u-b"),
+            life_for(111, "prompt", "u-b", &[k(), ("mode", json!("mid_turn"))]),
+            life_for(
+                112,
+                "commit",
+                "u-b",
+                &[
+                    k(),
+                    ("sha", json!("bbb")),
+                    ("confidence_band", json!("low")),
+                ],
+            ),
+            life_for(120, "unit_start", "u-c", &[k(), ("unit_id", json!("u-c"))]),
+            life_for(
+                121,
+                "commit",
+                "u-c",
+                &[
+                    k(),
+                    ("sha", json!("ccc")),
+                    ("confidence_band", json!("high")),
+                ],
+            ),
+            life_for(130, "prompt", "u-d", &[k(), ("mode", json!("fresh"))]),
+        ]
+    }
+
+    #[test]
+    fn aggregate_lifecycle_counts_work_items_and_governed_throughput() {
+        let s = aggregate_lifecycle(
+            &work_item_log(),
+            &LifecycleOpts {
+                since_secs: None,
+                kalpa: Some("k1".into()),
+                now_secs: 1_000,
+            },
+        );
+        assert_eq!(s.work_items_explicit, 2, "u-a and u-c carry a unit_start");
+        assert_eq!(s.work_items_implicit, 2, "u-b and u-d do not");
+        assert_eq!(
+            s.work_items_completed, 3,
+            "u-a, u-b, u-c each carry a commit"
+        );
+        assert_eq!(
+            s.governed, 1,
+            "u-a alone: u-b's band is low, u-c had no rule evaluated against it"
+        );
+        assert_eq!(
+            s.subject_interventions, 2,
+            "the correction and the mid_turn"
+        );
+        assert_eq!(s.interventions_per_work_item(), Some(2.0 / 3.0));
+    }
+
+    /// The definition is the spec's, word for word: governed means completed,
+    /// with a rule evaluated, and a last-commit band that is **not `low`**. An
+    /// absent band is not `low` — it means confidence scoring was off, and the
+    /// definition as written admits it. Pinned here so the reading is a decision.
+    #[test]
+    fn a_commit_with_no_band_is_not_disqualified_from_governed() {
+        let entries = vec![
+            evaluated(10, "u-x"),
+            life_for(11, "commit", "u-x", &[("sha", json!("ddd"))]),
+        ];
+        let s = aggregate_lifecycle(&entries, &LifecycleOpts::default());
+        assert_eq!(s.work_items_completed, 1);
+        assert_eq!(s.governed, 1);
+    }
+
+    /// The band that counts is the one at the *last* commit, not the best one.
+    #[test]
+    fn governed_uses_the_band_at_the_last_commit() {
+        let entries = vec![
+            evaluated(10, "u-y"),
+            life_for(
+                11,
+                "commit",
+                "u-y",
+                &[("sha", json!("e1")), ("confidence_band", json!("high"))],
+            ),
+            life_for(
+                12,
+                "commit",
+                "u-y",
+                &[("sha", json!("e2")), ("confidence_band", json!("low"))],
+            ),
+        ];
+        let s = aggregate_lifecycle(&entries, &LifecycleOpts::default());
+        assert_eq!(s.work_items_completed, 1);
+        assert_eq!(s.governed, 0, "the last commit's band is low");
+    }
+
+    #[test]
+    fn render_lifecycle_prints_the_three_work_item_lines() {
+        let s = aggregate_lifecycle(
+            &work_item_log(),
+            &LifecycleOpts {
+                since_secs: None,
+                kalpa: Some("k1".into()),
+                now_secs: 1_000,
+            },
+        );
+        let out = render_lifecycle(&s);
+        assert!(
+            out.contains("work items      4   explicit 2   implicit 2"),
+            "{out}"
+        );
+        assert!(
+            out.contains("governed        1   (commit + rules evaluated + band ≥ medium)"),
+            "{out}"
+        );
+        assert!(out.contains("interventions / work item   0.67"), "{out}");
+        // Plan 5's block is unchanged above it.
+        assert!(out.contains("interventions / commit   0.67"), "{out}");
+    }
+
+    /// "omitted when zero completed items" (spec §"Work items"). A kalpa with
+    /// work but no landed commit prints the split and the governed count — both
+    /// are honest zeros — but no ratio, because dividing by zero items is not a
+    /// number.
+    #[test]
+    fn render_lifecycle_omits_the_per_item_ratio_without_completed_items() {
+        let entries = vec![life_for(
+            10,
+            "prompt",
+            "u-z",
+            &[("mode", json!("correction"))],
+        )];
+        let s = aggregate_lifecycle(&entries, &LifecycleOpts::default());
+        let out = render_lifecycle(&s);
+        assert!(
+            out.contains("work items      1   explicit 0   implicit 1"),
+            "{out}"
+        );
+        assert!(out.contains("governed        0"), "{out}");
+        assert!(!out.contains("interventions / work item"), "{out}");
+    }
+
+    /// No subjects anywhere -> no work-item section at all, rather than three
+    /// rows of zeros on every project that has not adopted work units.
+    #[test]
+    fn render_lifecycle_omits_the_work_item_section_when_there_are_no_units() {
+        let s = aggregate_lifecycle(&fixture_log(), &LifecycleOpts::default());
+        let out = render_lifecycle(&s);
+        assert!(!out.contains("work items"), "{out}");
+        assert!(!out.contains("governed"), "{out}");
+    }
+
+    #[test]
+    fn render_json_with_lifecycle_carries_the_work_item_numbers() {
+        let values = Stats {
+            window_label: "7d".into(),
+            generated_at: 1,
+            per_rule: vec![],
+        };
+        let s = aggregate_lifecycle(
+            &work_item_log(),
+            &LifecycleOpts {
+                since_secs: None,
+                kalpa: Some("k1".into()),
+                now_secs: 1_000,
+            },
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(&render_json_with_lifecycle(&values, Some(&s))).unwrap();
+        assert_eq!(v["lifecycle"]["work_items"]["explicit"], 2);
+        assert_eq!(v["lifecycle"]["work_items"]["implicit"], 2);
+        assert_eq!(v["lifecycle"]["work_items"]["completed"], 3);
+        assert_eq!(v["lifecycle"]["governed"], 1);
+        assert!(
+            (v["lifecycle"]["interventions_per_work_item"]
+                .as_f64()
+                .unwrap()
+                - 2.0 / 3.0)
+                .abs()
+                < 1e-9
         );
     }
 }
