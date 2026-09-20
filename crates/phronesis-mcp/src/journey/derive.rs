@@ -74,7 +74,7 @@ struct WindowContext<'a> {
 /// SPEC-agent-lifecycle-events §"Event model". Closed on purpose: a typo like
 /// `lifecycle:prompt:corection` must still fail as `UndefinedSelector` rather
 /// than validate and silently match nothing forever.
-pub(crate) const LIFECYCLE_SELECTORS: [&str; 12] = [
+pub(crate) const LIFECYCLE_SELECTORS: [&str; 14] = [
     "lifecycle:subagent_start",
     "lifecycle:subagent_stop",
     "lifecycle:prompt",
@@ -87,6 +87,8 @@ pub(crate) const LIFECYCLE_SELECTORS: [&str; 12] = [
     "lifecycle:commit",
     "lifecycle:kalpa_start",
     "lifecycle:kalpa_end",
+    "lifecycle:unit_start",
+    "lifecycle:unit_end",
 ];
 
 /// Built-in selectors that need no tagger definition: the closed set above plus

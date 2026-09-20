@@ -1378,12 +1378,19 @@ fn log_event(
         tool_name,
         file_path,
     } = *call;
-    let path = action_log::default_path(&security::project_root());
+    let root = security::project_root();
+    let path = action_log::default_path(&root);
     let mut entry = action_log::LogEntry::new("hook", "codex_hook")
         .with("phase", phase.to_string())
         .with("tool", tool_name.to_string())
         .with("exit", exit)
         .with("host", "codex".to_string());
+    // The open work unit, exactly as `hook/mod.rs::log_hook_event` stamps it on
+    // `pre_check` / `post_check`. Without it a Codex session's rule evaluations
+    // join to no work item and `unit show` reports zero for a governed unit.
+    if let Some(subject) = crate::outcomes::subject::current(&root) {
+        entry = entry.with("subject", subject);
+    }
     let affected_files = if tool_name == "apply_patch" {
         codex_patch::parse_patch(&extract_bash_command(payload))
             .into_iter()

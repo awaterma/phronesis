@@ -93,7 +93,10 @@ pub fn build(root: &Path, unit_id: &str) -> UnitReport {
             r.kalpa = Some(k.to_string());
         }
         match (e.kind.as_str(), e.event.as_str()) {
-            ("hook", "pre_check" | "post_check") => {
+            // `codex_hook` is the Codex host's single pre/post entry; it
+            // carries the same `exit` and `consequences` shape, so a Codex
+            // session's evaluations count exactly like a Claude Code one's.
+            ("hook", "pre_check" | "post_check" | "codex_hook") => {
                 r.rules_evaluated += 1;
                 match e.data.get("exit").and_then(|v| v.as_i64()) {
                     Some(2) => r.blocked += 1,

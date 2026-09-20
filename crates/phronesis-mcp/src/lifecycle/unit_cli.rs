@@ -130,12 +130,42 @@ pub fn start(root: &Path, req: StartRequest) -> anyhow::Result<Started> {
 /// ours, because the value we *record* must stay repo-relative — an absolute
 /// path would leak a machine layout into the action log and would not resolve
 /// on another checkout.
+///
+/// Returns the *normalized* path, not the caller's string: `docs/./x.md` and
+/// `docs/../docs/x.md` must record as `docs/x.md`, because `spec` is a join
+/// key — `unit show` and the per-spec reports group on it, and two spellings
+/// of one file would report as two work streams.
 fn validate_spec(root: &Path, spec: &str) -> anyhow::Result<String> {
     if Path::new(spec).is_absolute() {
         bail!("--spec must be repo-relative, not `{spec}`");
     }
-    security::resolve_safe_path(spec, root).with_context(|| format!("--spec `{spec}`"))?;
-    Ok(spec.to_string())
+    let normalized = normalize_relative(spec);
+    // Validate the normalized form: it is what we record, so it is what must
+    // exist and stay inside the root. A `..` that climbs past the root
+    // survives normalization and `resolve_safe_path` still rejects it.
+    security::resolve_safe_path(&normalized, root).with_context(|| format!("--spec `{spec}`"))?;
+    Ok(normalized)
+}
+
+/// Lexically normalize a relative path to forward-slash form: drop `.` and
+/// empty components, resolve `..` against the preceding component. A leading
+/// `..` that cannot be resolved is kept, so the caller's escape attempt still
+/// reaches `resolve_safe_path` and is rejected there.
+fn normalize_relative(spec: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for part in spec.split(['/', std::path::MAIN_SEPARATOR]) {
+        match part {
+            "" | "." => {}
+            ".." => match out.last() {
+                Some(&last) if last != ".." => {
+                    out.pop();
+                }
+                _ => out.push(".."),
+            },
+            other => out.push(other),
+        }
+    }
+    out.join("/")
 }
 
 /// Was `unit_id` opened by an explicit `unit start`? Read from the action log

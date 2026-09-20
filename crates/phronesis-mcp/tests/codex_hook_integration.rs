@@ -207,6 +207,55 @@ fn codex_hook_cli_decodes_current_pretooluse_and_denies() {
     );
 }
 
+/// A Codex rule evaluation joins to the open work item, exactly as
+/// `pre_check` / `post_check` do (spec §"Work items and governed throughput",
+/// 2). Without `subject` on the entry, a Codex session's work items report
+/// zero rules evaluated and never count as governed.
+#[test]
+fn codex_hook_stamps_the_open_work_unit_on_its_log_entry() {
+    let project = tempfile::tempdir().expect("temp project");
+    write_rules(project.path(), block_rule());
+    fs::create_dir_all(project.path().join(".phronesis/outcomes")).expect("outcomes dir");
+    fs::write(
+        project.path().join(".phronesis/outcomes/current"),
+        "item-42",
+    )
+    .expect("open a work unit");
+    let payload = fixture_payload(include_str!(
+        "fixtures/payloads/codex/pre-bash-unwrap-with-deny.json"
+    ));
+
+    let output = run_hook(project.path(), &payload);
+    assert_eq!(output.status.code(), Some(0));
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl")).expect("action log");
+    let entry: Value = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|e| e["kind"] == "hook" && e["event"] == "codex_hook")
+        .expect("a codex_hook entry");
+    assert_eq!(entry["subject"], "item-42", "{entry}");
+}
+
+/// With no unit open the key is absent — not empty, not null — so a reader
+/// cannot mistake "no work item" for a work item named "".
+#[test]
+fn codex_hook_omits_subject_when_no_work_unit_is_open() {
+    let project = tempfile::tempdir().expect("temp project");
+    write_rules(project.path(), block_rule());
+    let payload = fixture_payload(include_str!(
+        "fixtures/payloads/codex/pre-bash-unwrap-with-deny.json"
+    ));
+
+    run_hook(project.path(), &payload);
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl")).expect("action log");
+    let entry: Value = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|e| e["kind"] == "hook" && e["event"] == "codex_hook")
+        .expect("a codex_hook entry");
+    assert!(entry.get("subject").is_none(), "{entry}");
+}
+
 #[test]
 fn codex_post_advisory_uses_json_with_zero_process_exit_and_logs_logical_one() {
     let project = tempfile::tempdir().expect("temp project");

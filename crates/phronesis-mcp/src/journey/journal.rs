@@ -297,8 +297,11 @@ fn compacted_content(all: &[JournalRecord], tail_records: usize) -> Result<Strin
 }
 
 /// Lifecycle tags whose records survive compaction of the prefix: the
-/// success signal, the friction pair, and the kalpa boundaries. Commits and
-/// kalpa boundaries are the denominators of every per-kalpa report; the
+/// success signal, the friction pair, and the kalpa and work-item boundaries.
+/// Commits and kalpa boundaries are the denominators of every per-kalpa
+/// report; unit boundaries are the denominator of every per-work-item one, and
+/// a compacted-away `unit_start` silently reclassifies an explicit work item as
+/// implicit; the
 /// interrupt/correction pair is the friction record the feature exists for,
 /// and a rule like "two corrections this session" must not stop firing because
 /// the journal compacted (spec §"The journal record, v2", Compaction).
@@ -306,12 +309,14 @@ fn compacted_content(all: &[JournalRecord], tail_records: usize) -> Result<Strin
 /// The retained set is bounded by human turns and commits, not by tool calls,
 /// so the growth it adds is an order of magnitude below the tail it lives
 /// beside; no further cap ships in v1.
-const RETAINED_LIFECYCLE_TAGS: [&str; 5] = [
+const RETAINED_LIFECYCLE_TAGS: [&str; 7] = [
     "lifecycle:commit",
     "lifecycle:interrupt",
     "lifecycle:prompt:correction",
     "lifecycle:kalpa_start",
     "lifecycle:kalpa_end",
+    "lifecycle:unit_start",
+    "lifecycle:unit_end",
 ];
 
 fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {

@@ -379,7 +379,7 @@ fn tool_record(ts: u64, seq: u64) -> JournalRecord {
 }
 
 #[test]
-fn compaction_retains_commit_and_kalpa_records_in_prefix() {
+fn compaction_retains_commit_kalpa_and_unit_records_in_prefix() {
     let dir = tempfile::tempdir().unwrap();
     let mut commit = lifecycle_record(1, 1, "commit", &["lifecycle:commit"]);
     commit.kalpa = Some("demo".into());
@@ -432,6 +432,19 @@ fn compaction_retains_commit_and_kalpa_records_in_prefix() {
         &lifecycle_record(3, 3, "kalpa_end", &["lifecycle:kalpa_end", "kalpa:demo"]),
     )
     .unwrap();
+    // Work-item boundaries are the denominator of every per-work-item report,
+    // and a compacted-away `unit_start` reclassifies an explicit unit as
+    // implicit — so they are retained alongside the kalpa boundaries.
+    journal::append(
+        dir.path(),
+        &lifecycle_record(7, 7, "unit_start", &["lifecycle:unit_start"]),
+    )
+    .unwrap();
+    journal::append(
+        dir.path(),
+        &lifecycle_record(8, 8, "unit_end", &["lifecycle:unit_end"]),
+    )
+    .unwrap();
     // The one record the tail keeps, so every lifecycle record above lands in
     // the compaction prefix and is subject to the retention rule.
     journal::append(dir.path(), &tool_record(4, 4)).unwrap();
@@ -445,6 +458,8 @@ fn compaction_retains_commit_and_kalpa_records_in_prefix() {
     assert!(kinds.contains(&"kalpa_start"), "{kinds:?}");
     assert!(kinds.contains(&"kalpa_end"), "{kinds:?}");
     assert!(kinds.contains(&"interrupt"), "{kinds:?}");
+    assert!(kinds.contains(&"unit_start"), "{kinds:?}");
+    assert!(kinds.contains(&"unit_end"), "{kinds:?}");
     // Exactly one prompt survives: the correction, not the fresh one.
     let prompt_tags: Vec<&Vec<String>> = all
         .iter()

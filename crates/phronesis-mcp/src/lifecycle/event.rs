@@ -495,6 +495,14 @@ mod tests {
         assert_eq!(Kind::UnitEnd.as_str(), "unit_end");
         assert_eq!(Kind::UnitStart.tag(), "lifecycle:unit_start");
         assert_eq!(Kind::UnitEnd.tag(), "lifecycle:unit_end");
+        // The claim above, checked: both tags are in the closed set, so a rule
+        // scoped to them validates instead of failing as `UndefinedSelector`.
+        for tag in [Kind::UnitStart.tag(), Kind::UnitEnd.tag()] {
+            assert!(
+                crate::journey::derive::LIFECYCLE_SELECTORS.contains(&tag.as_str()),
+                "{tag} must be a built-in selector"
+            );
+        }
         let e = LifecycleEvent::new(Kind::UnitStart, Host::Cli);
         assert_eq!(
             e.tags(Some("demo")),

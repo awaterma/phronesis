@@ -226,15 +226,21 @@ pub fn aggregate_lifecycle(entries: &[LogEntry], opts: &LifecycleOpts) -> Lifecy
         last_commit_band: Option<String>,
     }
     let mut units: BTreeMap<String, UnitAcc> = BTreeMap::new();
-    // Subjects with at least one rule evaluation. Hook entries carry no
-    // `kalpa` (the kalpa is a property of the lifecycle stream), so they are
-    // never kalpa-filtered; a subject's membership in the kalpa comes from its
-    // own lifecycle records.
+    // Subjects with at least one rule evaluation inside the window. Hook
+    // entries carry no `kalpa` (the kalpa is a property of the lifecycle
+    // stream), so they are never kalpa-filtered; a subject's membership in the
+    // kalpa comes from its own lifecycle records.
     let mut evaluated: BTreeSet<String> = BTreeSet::new();
 
     for e in entries {
-        if e.kind == "hook" && matches!(e.event.as_str(), "pre_check" | "post_check") {
-            if let Some(s) = e.data.get("subject").and_then(|v| v.as_str()) {
+        if e.kind == "hook" && matches!(e.event.as_str(), "pre_check" | "post_check" | "codex_hook")
+        {
+            // `--since` bounds the hook branch as it bounds the lifecycle
+            // branch below: a subject counts as governed only if a rule ran
+            // against it *inside the reported window*.
+            if e.ts >= cutoff
+                && let Some(s) = e.data.get("subject").and_then(|v| v.as_str())
+            {
                 evaluated.insert(s.to_string());
             }
             continue;

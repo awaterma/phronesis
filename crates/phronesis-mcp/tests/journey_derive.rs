@@ -983,6 +983,71 @@ async fn lifecycle_selectors_validate_without_journey_config() {
     assert!(journey_facts(&net, "journey_occurrence").is_empty());
 }
 
+/// The spec's shipped example rule `suggest-name-the-work-item` (§"Work items
+/// and governed throughput") mixes a `journey_seen` leaf on
+/// `lifecycle:prompt:fresh` with a script counting `lifecycle:unit_start`.
+/// Both selectors must be built-in, or the example rule the spec publishes
+/// fails validation with `UndefinedSelector` for every reader who pastes it.
+#[tokio::test]
+async fn spec_example_work_item_rule_validates_with_default_config() {
+    let c = TaggerConfig::default();
+    let rules = vec![Rule {
+        id: "suggest-name-the-work-item".to_string(),
+        priority: 10,
+        conditions: vec![
+            leaf_cond("journey_seen", &["lifecycle:prompt:fresh", "s"]),
+            script_cond("facts_count('journey_seen', ['lifecycle:unit_start','s']) == 0"),
+        ],
+        actions: Vec::new(),
+    }];
+    let dir = tempfile::tempdir().unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle(
+            (1, 5),
+            ("s-now", &["lifecycle:prompt", "lifecycle:prompt:fresh"]),
+            "prompt",
+        ),
+    )
+    .unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle((2, 6), ("s-now", &["lifecycle:unit_start"]), "unit_start"),
+    )
+    .unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .expect("the spec's example rule must validate against the built-in selectors");
+    let mut seen: Vec<String> = journey_facts(&net, "journey_seen")
+        .iter()
+        .map(|f| f.args[0].clone())
+        .collect();
+    seen.sort();
+    assert_eq!(seen, vec!["lifecycle:prompt:fresh", "lifecycle:unit_start"]);
+}
+
+/// The counterpart boundary: `lifecycle:unit_end` is built in too.
+#[tokio::test]
+async fn unit_end_selector_is_built_in() {
+    let c = TaggerConfig::default();
+    let rules = vec![rule_with_conds(
+        "r",
+        vec![leaf_cond("journey_seen", &["lifecycle:unit_end", "s"])],
+    )];
+    let dir = tempfile::tempdir().unwrap();
+    journal::append(
+        dir.path(),
+        &make_lifecycle((1, 5), ("s-now", &["lifecycle:unit_end"]), "unit_end"),
+    )
+    .unwrap();
+    let mut net = ReteNetwork::new();
+    assert_facts(&mut net, derive_input(dir.path(), &rules, &c, 10))
+        .await
+        .unwrap();
+    assert_eq!(journey_facts(&net, "journey_seen").len(), 1);
+}
+
 /// Fail-closed is unchanged for everything outside the two built-in namespaces.
 #[tokio::test]
 async fn undefined_non_lifecycle_selector_still_fails_closed() {

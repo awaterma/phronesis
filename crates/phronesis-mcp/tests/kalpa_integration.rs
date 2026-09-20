@@ -346,8 +346,14 @@ fn seed_work_items(root: &std::path::Path, kalpa: &str) {
             .with_extra("confidence_band", "low"),
     );
 
-    for (ts, subject) in [(1_700_010_050u64, "w-1"), (1_700_010_250, "w-2")] {
-        let mut e = LogEntry::new("hook", "pre_check")
+    // `w-1`'s evaluation comes from the Codex host and `w-2`'s from Claude
+    // Code: a work item is governed by the rules that ran against it, whatever
+    // host ran them.
+    for (ts, subject, event) in [
+        (1_700_010_050u64, "w-1", "codex_hook"),
+        (1_700_010_250, "w-2", "pre_check"),
+    ] {
+        let mut e = LogEntry::new("hook", event)
             .with("phase", "pre")
             .with("tool", "Edit")
             .with("exit", 0)

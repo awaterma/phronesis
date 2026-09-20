@@ -78,6 +78,25 @@ fn unit_start_sets_the_subject_and_records_unit_start_with_the_spec() {
         std::fs::read_to_string(d.path().join(".phronesis/journey/events.jsonl")).unwrap();
     assert!(journal.contains(r#""kind":"unit_start""#), "{journal}");
     assert!(journal.contains(r#""subject":"item-1""#), "{journal}");
+
+    // `spec` is a join key, so a detoured spelling of the same file records in
+    // its normalized form — two spellings must not read as two work streams.
+    let out = run_phr(
+        d.path(),
+        &[
+            "unit",
+            "start",
+            "item-2",
+            "--spec",
+            "docs/../docs/specs/SPEC-thing.md",
+        ],
+    );
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let started = lifecycle_entries(d.path())
+        .into_iter()
+        .find(|v| v["event"] == "unit_start" && v["unit_id"] == "item-2")
+        .expect("item-2 unit_start");
+    assert_eq!(started["spec"], "docs/specs/SPEC-thing.md");
 }
 
 #[test]
@@ -586,6 +605,40 @@ fn unit_show_renders_the_spec_block() {
         !text.contains("other-unit"),
         "another unit's rule evaluations are not this unit's: {text}"
     );
+}
+
+/// A Codex session's evaluations are this unit's evaluations: `codex_hook` is
+/// the Codex host's single pre/post entry and carries the same `exit` and
+/// `consequences` shape, so it counts exactly like `pre_check`.
+#[test]
+fn unit_show_counts_codex_hook_evaluations() {
+    use phronesis_mcp::action_log::{self, LogEntry};
+    let d = tempfile::tempdir().unwrap();
+    seed_unit(d.path(), "unit-1");
+    let mut e = LogEntry::new("hook", "codex_hook")
+        .with("phase", "pre")
+        .with("tool", "Bash")
+        .with("host", "codex")
+        .with("exit", 2)
+        .with(
+            "consequences",
+            serde_json::json!([{ "rule_id": "block-unwrap", "action_type": "constraint_violation",
+                                 "message": "m", "bindings": {} }]),
+        )
+        .with("subject", "unit-1");
+    e.ts = 1_700_000_450;
+    action_log::append(&action_log::default_path(d.path()), &e).unwrap();
+
+    let out = run_phr(d.path(), &["unit", "show", "unit-1", "--json"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["rules_evaluated"], 5,
+        "four Claude entries plus one Codex"
+    );
+    assert_eq!(v["fired"], 4);
+    assert_eq!(v["blocked"], 2);
+    assert_eq!(v["per_rule"]["block-unwrap"], 1);
 }
 
 #[test]
