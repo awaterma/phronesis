@@ -33,6 +33,14 @@ pub enum UnitCmd {
     },
     /// Close the open work item.
     End,
+    /// Report on a work item: its spec, rules, evidence, interventions, commits.
+    Show {
+        /// The work item to report on. Omitted, the open one.
+        id: Option<String>,
+        /// Emit the report as one JSON object.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// What to name a work item, from any of the spec's three naming sources.
@@ -183,5 +191,19 @@ pub fn run(root: &Path, cmd: UnitCmd) -> anyhow::Result<String> {
             Some(id) => Ok(format!("ended work unit {id}")),
             None => bail!("no work unit open"),
         },
+        UnitCmd::Show { id, json } => {
+            let id = match id.or_else(|| subject::current(root)) {
+                Some(id) => id,
+                None => bail!("no work unit open"),
+            };
+            let report = crate::lifecycle::unit_report::build(root, &id);
+            Ok(if json {
+                crate::lifecycle::unit_report::render_json(&report)
+            } else {
+                crate::lifecycle::unit_report::render(&report)
+                    .trim_end()
+                    .to_string()
+            })
+        }
     }
 }

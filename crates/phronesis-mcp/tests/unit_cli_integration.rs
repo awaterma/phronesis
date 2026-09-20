@@ -441,3 +441,259 @@ fn submit_suggestion_rejects_a_spec_that_does_not_exist() {
     assert!(err.to_string().contains("--spec"), "{err}");
     assert!(!d.path().join(".phronesis/outcomes/current").exists());
 }
+
+/// Seed one work item's worth of evidence: lifecycle entries written through
+/// the real projection (so the field names under test are the ones
+/// `to_log_entry` writes), plus hand-built `pre_check` entries in the shape
+/// `log_hook_event` writes.
+fn seed_unit(root: &Path, unit_id: &str) {
+    use phronesis_mcp::action_log::{self, LogEntry};
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, Mode, PromptText, Stamped};
+
+    let path = action_log::default_path(root);
+    let stamp = |ts: u64, seq: u64| Stamped {
+        ts,
+        sid: "s-1".to_string(),
+        seq,
+        kalpa: Some("lifecycle-events".to_string()),
+        subject: Some(unit_id.to_string()),
+    };
+    let events: Vec<(u64, LifecycleEvent)> = vec![
+        (
+            1_700_000_000,
+            LifecycleEvent::new(Kind::UnitStart, Host::Cli)
+                .with_extra("unit_id", unit_id)
+                .with_extra("spec", "docs/specs/SPEC-thing.md"),
+        ),
+        (
+            1_700_000_600,
+            LifecycleEvent::new(Kind::Prompt, Host::Claude)
+                .with_mode(Mode::MidTurn)
+                .with_prompt("also update the changelog"),
+        ),
+        (
+            1_700_000_900,
+            LifecycleEvent::new(Kind::Prompt, Host::Claude)
+                .with_mode(Mode::Correction)
+                .with_prompt("no, keep the journal free of text"),
+        ),
+        (
+            1_700_001_200,
+            LifecycleEvent::new(Kind::Commit, Host::Claude)
+                .with_extra("sha", "0f3c9a1e")
+                .with_extra("confidence_band", "high"),
+        ),
+    ];
+    for (i, (ts, ev)) in events.iter().enumerate() {
+        action_log::append(
+            &path,
+            &ev.to_log_entry(&stamp(*ts, i as u64 + 1), PromptText::Full),
+        )
+        .unwrap();
+    }
+
+    // Rule evaluations, in `log_hook_event`'s shape.
+    let hook = |ts: u64, exit: i32, cons: serde_json::Value| {
+        let mut e = LogEntry::new("hook", "pre_check")
+            .with("phase", "pre")
+            .with("tool", "Edit")
+            .with("file", "src/lib.rs")
+            .with("exit", exit)
+            .with("consequences", cons)
+            .with("subject", unit_id);
+        e.ts = ts;
+        e
+    };
+    let cons = |id: &str, action: &str| serde_json::json!([{ "rule_id": id, "action_type": action, "message": "m", "bindings": {} }]);
+    for (ts, exit, cons) in [
+        (1_700_000_100u64, 0, serde_json::json!([])),
+        (1_700_000_200, 1, cons("warn-piped-verification", "warning")),
+        (1_700_000_300, 1, cons("warn-piped-verification", "warning")),
+        (
+            1_700_000_400,
+            2,
+            cons("block-await-on-sync", "constraint_violation"),
+        ),
+    ] {
+        action_log::append(&path, &hook(ts, exit, cons)).unwrap();
+    }
+    // A rule evaluation for a *different* unit, which must not be counted.
+    let mut other = hook(1_700_000_500, 1, cons("warn-piped-verification", "warning"));
+    other
+        .data
+        .insert("subject".to_string(), serde_json::json!("other-unit"));
+    action_log::append(&path, &other).unwrap();
+
+    // Grounded outcome signals live in the journey journal, keyed by subject.
+    let journey = root.join(".phronesis/journey");
+    std::fs::create_dir_all(&journey).unwrap();
+    let mut body = String::new();
+    for (i, tag) in ["outcome:compile_ok", "outcome:test_pass"]
+        .iter()
+        .enumerate()
+    {
+        body.push_str(
+            &serde_json::json!({
+                "v": 1, "ts": 1_700_000_050u64 + i as u64, "sid": "s-1", "seq": 900 + i as u64,
+                "tool": "Bash", "path": "<cmd>", "tags": [tag], "subject": unit_id,
+            })
+            .to_string(),
+        );
+        body.push('\n');
+    }
+    std::fs::write(journey.join("events.jsonl"), body).unwrap();
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/confidence.json"), "{}").unwrap();
+}
+
+#[test]
+fn unit_show_renders_the_spec_block() {
+    let d = tempfile::tempdir().unwrap();
+    seed_unit(d.path(), "unit-1789095489589855000");
+    let out = run_phr(d.path(), &["unit", "show", "unit-1789095489589855000"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+
+    assert!(
+        text.contains("unit: unit-1789095489589855000   explicit   spec: docs/specs/SPEC-thing.md"),
+        "{text}"
+    );
+    assert!(text.contains("kalpa: lifecycle-events"), "{text}");
+    assert!(text.contains("window: "), "{text}");
+    assert!(
+        text.contains("rules evaluated   4   fired 3   blocked 1   warned 2"),
+        "{text}"
+    );
+    assert!(text.contains("block-await-on-sync  1"), "{text}");
+    assert!(text.contains("warn-piped-verification  2"), "{text}");
+    assert!(
+        text.contains("evidence         compile pass   tests pass   band: medium"),
+        "{text}"
+    );
+    assert!(
+        text.contains("interventions     2   mid_turn 1   correction 1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("correction  \"no, keep the journal free of text\""),
+        "{text}"
+    );
+    assert!(
+        text.contains("commits           1   0f3c9a1e  band high"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("other-unit"),
+        "another unit's rule evaluations are not this unit's: {text}"
+    );
+}
+
+#[test]
+fn unit_show_json_emits_one_object() {
+    let d = tempfile::tempdir().unwrap();
+    seed_unit(d.path(), "unit-1");
+    let out = run_phr(d.path(), &["unit", "show", "unit-1", "--json"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["unit_id"], "unit-1");
+    assert_eq!(v["explicit"], true);
+    assert_eq!(v["spec"], "docs/specs/SPEC-thing.md");
+    assert_eq!(v["kalpa"], "lifecycle-events");
+    assert_eq!(v["rules_evaluated"], 4);
+    assert_eq!(v["fired"], 3);
+    assert_eq!(v["blocked"], 1);
+    assert_eq!(v["warned"], 2);
+    assert_eq!(v["per_rule"]["warn-piped-verification"], 2);
+    assert_eq!(v["band"], "medium");
+    assert_eq!(v["signals"][0], "compile");
+    assert_eq!(v["interventions"].as_array().unwrap().len(), 2);
+    assert_eq!(v["commits"][0]["sha"], "0f3c9a1e");
+    assert_eq!(v["commits"][0]["band"], "high");
+    assert_eq!(v["first_ts"], 1_700_000_000u64);
+    assert_eq!(v["last_ts"], 1_700_001_200u64);
+}
+
+/// A unit nobody ran `unit start` for is reported as implicit, with no spec.
+/// The split is the point: implicit units split on every build/test cycle and
+/// would otherwise flatter every per-item number (spec §"Work items / Limits").
+#[test]
+fn unit_show_reports_an_implicit_unit_as_implicit() {
+    let d = tempfile::tempdir().unwrap();
+    use phronesis_mcp::action_log;
+    use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, PromptText, Stamped};
+    let stamped = Stamped {
+        ts: 1_700_000_000,
+        sid: "s-1".into(),
+        seq: 1,
+        kalpa: None,
+        subject: Some("unit-implicit".into()),
+    };
+    action_log::append(
+        &action_log::default_path(d.path()),
+        &LifecycleEvent::new(Kind::Commit, Host::Claude)
+            .with_extra("sha", "abc0123")
+            .to_log_entry(&stamped, PromptText::Full),
+    )
+    .unwrap();
+
+    let out = run_phr(d.path(), &["unit", "show", "unit-implicit"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("unit: unit-implicit   implicit"), "{text}");
+    assert!(!text.contains("spec:"), "{text}");
+    assert!(text.contains("commits           1   abc0123"), "{text}");
+    assert!(
+        !text.contains("band "),
+        "no band segment without one: {text}"
+    );
+    assert!(
+        !text.contains("evidence"),
+        "no evidence line without confidence scoring: {text}"
+    );
+}
+
+/// `unit show` with no id reports the open unit; with none open it fails.
+#[test]
+fn unit_show_defaults_to_the_open_unit() {
+    let d = tempfile::tempdir().unwrap();
+    let out = run_phr(d.path(), &["unit", "show"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("no work unit open"),
+        "{}",
+        stderr(&out)
+    );
+
+    assert!(
+        run_phr(d.path(), &["unit", "start", "item-1"])
+            .status
+            .success()
+    );
+    let out = run_phr(d.path(), &["unit", "show"]);
+    assert!(out.status.success(), "stderr: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("unit: item-1   explicit"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// Intervention text is prompt text, so it obeys the `prompt_text` switch at
+/// read time — the same accessor `journey --corrections` goes through.
+#[test]
+fn unit_show_hides_intervention_text_under_prompt_text_none() {
+    let d = tempfile::tempdir().unwrap();
+    seed_unit(d.path(), "unit-1");
+    std::fs::write(
+        d.path().join(".phronesis/journey.json"),
+        r#"{"version":1,"taggers":[],"modules":[],"lifecycle":{"prompt_text":"none"}}"#,
+    )
+    .unwrap();
+    let text = stdout(&run_phr(d.path(), &["unit", "show", "unit-1"]));
+    assert!(
+        text.contains("interventions     2"),
+        "the count survives: {text}"
+    );
+    assert!(!text.contains("keep the journal free of text"), "{text}");
+    assert!(text.contains("correction  (text withheld)"), "{text}");
+}
