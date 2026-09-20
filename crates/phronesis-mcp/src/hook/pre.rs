@@ -226,6 +226,10 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
 
     let (mut logged, violations, warnings) =
         super::collect_logged(&consequences, &security::project_root());
+    // The open work unit, read once for all three exit paths below. Stamping it
+    // on the log entry is what makes "which rules were evaluated for this work
+    // item" a join rather than a guess (spec §"Work items", 2).
+    let subject = crate::outcomes::subject::current(&security::project_root());
     // A drifted graph makes structural verdicts unreliable, so they warn
     // rather than block. The rules themselves are untouched — this is the
     // harness declining to enforce on evidence it cannot vouch for.
@@ -253,6 +257,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             exit: 2,
             command_exit: None,
             consequences: &logged,
+            subject: subject.as_deref(),
         });
         blocked_exit(
             &root,
@@ -272,6 +277,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             exit: 1,
             command_exit: None,
             consequences: &logged,
+            subject: subject.as_deref(),
         });
         process::exit(1);
     }
@@ -283,6 +289,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         exit: 0,
         command_exit: None,
         consequences: &logged,
+        subject: subject.as_deref(),
     });
     super::exit_ok();
 }

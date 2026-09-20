@@ -9,5 +9,7 @@ pub mod outcome;
 pub mod record;
 pub mod scrub;
 pub mod state;
+pub mod unit_cli;
+pub mod unit_report;
 
 pub use event::{Host, Kind, LifecycleEvent, Mode, PromptText, Stamped};

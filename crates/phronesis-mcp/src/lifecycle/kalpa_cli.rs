@@ -98,14 +98,12 @@ fn report(root: &Path, kalpa: &str, now: u64) -> String {
     use crate::action_log::{self, ReadOpts};
     use crate::stats::{LifecycleOpts, aggregate_lifecycle, render_lifecycle, retention_line};
 
-    let entries = action_log::read_recent(
-        &action_log::default_path(root),
-        &ReadOpts {
-            kind: Some("lifecycle".to_string()),
-            ..ReadOpts::default()
-        },
-    )
-    .unwrap_or_default();
+    // Not `kind: Some("lifecycle")`: `aggregate_lifecycle` also reads
+    // `pre_check` / `post_check` entries, because "a rule was evaluated against
+    // this work item" is half the governed definition. It ignores every other
+    // kind itself.
+    let entries = action_log::read_recent(&action_log::default_path(root), &ReadOpts::default())
+        .unwrap_or_default();
     let stats = aggregate_lifecycle(
         &entries,
         &LifecycleOpts {

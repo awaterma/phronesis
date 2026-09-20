@@ -176,6 +176,8 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     // Post-check can't undo the edit, so violations and warnings collapse to
     // the same exit code (1). The single `consequences` array on the log entry
     // preserves which rule emitted which severity for downstream consumers.
+    // Read once for both exit paths below; see `hook/pre.rs` for why.
+    let subject = crate::outcomes::subject::current(&security::project_root());
     if evaluation.violations.is_empty() && evaluation.warnings.is_empty() {
         super::log_hook_event(&super::LogEventInput {
             phase: "post",
@@ -184,6 +186,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
             exit: 0,
             command_exit: evaluation.command_exit,
             consequences: &evaluation.logged,
+            subject: subject.as_deref(),
         });
         // Journal the executed call at the tail — see SPEC §"Where it
         // plugs into the hook" — after the decision is logged, before the
@@ -205,6 +208,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         exit: 1,
         command_exit: evaluation.command_exit,
         consequences: &evaluation.logged,
+        subject: subject.as_deref(),
     });
     super::journey_record::journey_record_post(&payload, &tool_name, &file_path).await;
     process::exit(1);

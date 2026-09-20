@@ -298,6 +298,18 @@ pub struct SubmitSuggestionParams {
     /// Optional human-readable summary of the suggestion.
     #[serde(default)]
     pub summary: Option<String>,
+    /// Optional repo-relative path to the spec this work item is built to
+    /// (e.g. `"docs/specs/SPEC-auth.md"`). The file must exist. Recorded on
+    /// the `unit_start` lifecycle event so reports can answer "which spec was
+    /// this built to?".
+    #[serde(default)]
+    pub spec: Option<String>,
+    /// Optional id from `.phronesis/bugs.json`. When given, the work unit is
+    /// named `bug-<id>` (overriding `subject`) and carries the registry's
+    /// cargo test name, plus its spec when the entry has one. An id that is
+    /// not in the registry is an error.
+    #[serde(default)]
+    pub bug_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

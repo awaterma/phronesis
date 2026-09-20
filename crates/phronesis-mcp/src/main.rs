@@ -456,6 +456,11 @@ enum Command {
         #[command(subcommand)]
         cmd: Option<phronesis_mcp::lifecycle::kalpa_cli::KalpaCmd>,
     },
+    /// Name the work item (unit) an agent is building, and report on it.
+    Unit {
+        #[command(subcommand)]
+        cmd: phronesis_mcp::lifecycle::unit_cli::UnitCmd,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -697,6 +702,12 @@ async fn main() -> anyhow::Result<()> {
             println!("{out}");
             Ok(())
         }
+        Command::Unit { cmd } => {
+            let root = phronesis_mcp::security::project_root();
+            let out = phronesis_mcp::lifecycle::unit_cli::run(&root, cmd)?;
+            println!("{out}");
+            Ok(())
+        }
     }
 }
 
@@ -870,14 +881,9 @@ fn handle_stats(
     };
     let values = aggregate(&entries, &values_opts);
 
-    let life_entries = action_log::read_recent(
-        &path,
-        &ReadOpts {
-            kind: Some("lifecycle".to_string()),
-            ..ReadOpts::default()
-        },
-    )
-    .unwrap_or_default();
+    // Unfiltered: `aggregate_lifecycle` needs the `pre_check` / `post_check`
+    // entries for the governed count and ignores everything else itself.
+    let life_entries = action_log::read_recent(&path, &ReadOpts::default()).unwrap_or_default();
     let life = aggregate_lifecycle(
         &life_entries,
         &LifecycleOpts {
