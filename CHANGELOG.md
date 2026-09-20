@@ -82,6 +82,29 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `{"facts": [...], "lifecycle": [...]}` so lifecycle records travel with the
   facts they explain. Prompt text is never included either way, and
   `phr-mcp journey --json` is unchanged.
+- **Work items and governed throughput.** `phr-mcp unit start [<id>] [--spec
+  <path>]` names the piece of work an agent is building and points it at the
+  spec it is built to; `phr-mcp unit end` closes it. Starting a unit while one
+  is open ends the open one first. `pre_check` and `post_check` action-log
+  entries now carry the open work unit, so `phr-mcp unit show [<id>]` can join
+  the journal and the action log and report one item's spec, window, kalpa,
+  rules evaluated / fired / blocked / warned with per-rule counts, grounded
+  evidence and confidence band, human interventions with their scrubbed text,
+  and commits — as text or `--json`. `phr-mcp kalpa show` and `phr-mcp stats
+  --kalpa <name>` gain a work-item split (explicit vs implicit), a **governed**
+  count (committed, with a rule evaluated against it, and a last-commit
+  confidence band above `low`), and `interventions / work item`. Implicit work
+  units keep working exactly as before and need no new file: the two new
+  lifecycle records carry everything. A work item can be named from any of
+  three places: the CLI, the known-bug registry (`phr-mcp unit start --bug
+  <id>` names it `bug-<id>` and carries the registry's cargo test name and its
+  spec — `.phronesis/bugs.json` entries gain optional `spec` and `title`
+  fields, neither of which affects confidence scoring), or the agent itself,
+  since the `submit_suggestion` MCP tool now takes optional `spec` and `bug_id`
+  and records the same `unit_start` event through the same code path. The spec
+  carries an example rule, `suggest-name-the-work-item`, that nudges an agent
+  to ask which bug or spec a session is for when no work item is open; it is an
+  example to copy, not a packaged rule.
 
 ### Upgrading
 
