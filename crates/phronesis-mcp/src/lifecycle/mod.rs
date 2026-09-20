@@ -4,6 +4,7 @@
 //! See `docs/specs/SPEC-agent-lifecycle-events.md`.
 
 pub mod event;
+pub mod inflight;
 pub mod kalpa_cli;
 pub mod outcome;
 pub mod record;

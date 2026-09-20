@@ -426,9 +426,14 @@ that phase exist (`pre.rs:48`). The `inflight` push/pop and the Gemini
 `invoke_agent` sub-agent derivation run immediately after `read_payload`,
 before the tool-name match and before rule loading, in both runners.
 `invoke_agent` is added to both allowlists. A blocked `invoke_agent` pre-check
-(exit 2) pops the `agents` entry it just pushed and writes no `subagent_start`
-record, mirroring the `inflight` pop: a sub-agent that never ran must not
-leave a dangling entry for the next real stop to pop LIFO. An `invoke_agent`
+(exit 2) pops the `agents` entry it just pushed, mirroring the `inflight` pop:
+a sub-agent that never ran must not leave a dangling entry for the next real
+stop to pop LIFO. Because the `subagent_start` is already durable by then —
+it is recorded before the decision, so an ungoverned tool still pairs — the
+block also records a compensating `subagent_stop` for the popped agent, with
+`matched_start: true`, `duration_secs: 0`, and `blocked: true`. Without it the
+start would never close and every pairing count would show a sub-agent that
+never came back. An `invoke_agent`
 tool record uses the synthetic path `<invoke_agent>` — never the sub-agent
 prompt, which would put content in the journal — and that value is the one
 `journey_distinct` on `path` will see.
@@ -522,8 +527,8 @@ Known limits, stated where they apply:
   `to_journal_record(&self) -> JournalRecord` and `to_log_entry(&self) ->
   LogEntry`. One place decides both on-disk shapes. `extra` is a closed
   vocabulary — `inferred_from`, `stop_hook_active`, `matched_start`,
-  `duration_secs`, `sha`, `head_before`, `confidence_band`, `tool_use_id` — and
-  never carries message or transcript content. `last_assistant_message`,
+  `duration_secs`, `sha`, `head_before`, `confidence_band`, `tool_use_id`,
+  `blocked` — and never carries message or transcript content. `last_assistant_message`,
   `prompt_response`, and `agent_transcript_path` are read for decisions and
   dropped at the adapter boundary; the hook integration tests assert no log
   entry contains them.

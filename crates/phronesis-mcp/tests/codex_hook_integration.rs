@@ -1449,3 +1449,45 @@ fn codex_bash_commit_is_detected_from_head_movement() {
         "entry must be popped"
     );
 }
+
+/// A stop that omits `agent_type` backfills it from the `agents` entry. The
+/// backfill goes through `with_agent`, which is the one place sanitization
+/// happens — a direct field write would let a hostile start type reach a
+/// `lifecycle:agent:*` tag, and therefore a RETE fact, by the back door.
+#[test]
+fn a_backfilled_agent_type_is_sanitized_rather_than_copied() {
+    let project = tempfile::tempdir().expect("temp project");
+    let start = json!({
+        "hook_event_name": "SubagentStart", "session_id": "codex-s-hostile",
+        "turn_id": "codex-t-hostile", "agent_id": "codex-a-hostile",
+        "agent_type": "../../etc; rm"
+    });
+    assert_eq!(response(&run_hook(project.path(), &start)), json!({}));
+    let stop = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-hostile",
+        "turn_id": "codex-t-hostile", "agent_id": "codex-a-hostile",
+        "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+
+    let recs = lifecycle_records(project.path());
+    let stop_rec = recs
+        .iter()
+        .rfind(|r| r["kind"] == "subagent_stop")
+        .expect("subagent_stop");
+    assert!(
+        !stop_rec["tags"].as_array().expect("tags").iter().any(|t| t
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("lifecycle:agent:")),
+        "no tag at all rather than a hostile one: {stop_rec}"
+    );
+    let entry = log_event(project.path(), "subagent_stop");
+    assert!(
+        entry.get("agent_type").is_none() || entry["agent_type"].is_null(),
+        "{entry}"
+    );
+    // The pairing itself still worked; only the type was dropped.
+    assert_eq!(entry["matched_start"], true);
+    assert_eq!(entry["agent_id"], "codex-a-hostile");
+}

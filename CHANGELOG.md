@@ -50,7 +50,9 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `BeforeTool`/`AfterTool` matcher is anchored and now includes `invoke_agent`,
   from which Phronesis derives Gemini sub-agent start/stop pairs. Registrations
   are replaced by command rather than by matcher, so a hook of your own sharing
-  a matcher survives `init`. The install output notes that Gemini HTML-escapes
+  a matcher survives `init`. A blocked `invoke_agent` records a compensating
+  `subagent_stop` (`blocked: true`, zero duration) so the already-durable start
+  never dangles. The install output notes that Gemini HTML-escapes
   injected context and skips project hooks until the folder is trusted.
 
 - Non-destructive `init --rules-only` starter syncing with a recorded baseline,

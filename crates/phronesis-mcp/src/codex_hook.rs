@@ -26,7 +26,7 @@ use crate::action_log;
 use crate::context;
 use crate::journey;
 use crate::lifecycle::event::{Host, Kind, LifecycleEvent, Mode};
-use crate::lifecycle::outcome;
+use crate::lifecycle::inflight;
 use crate::lifecycle::record::record;
 use crate::lifecycle::scrub;
 use crate::lifecycle::state;
@@ -205,7 +205,12 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
                 root,
                 state::OpenAgent {
                     agent_id,
-                    agent_type: payload.agent_type.clone(),
+                    // Sanitized on the way in, so `agents` can never hand a
+                    // hostile type back to a later stop's backfill.
+                    agent_type: payload
+                        .agent_type
+                        .as_deref()
+                        .and_then(crate::lifecycle::event::sanitize_agent_type),
                     ts: stamped.as_ref().map_or_else(unix_secs_now, |s| s.ts),
                     seq: stamped.as_ref().map_or(0, |s| s.seq),
                 },
@@ -235,13 +240,23 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
                     );
                 if let Some(open) = &opened {
                     event = event.with_extra("duration_secs", now.saturating_sub(open.ts));
-                    // Backfill identity the stop payload omitted.
-                    if event.agent_id.is_none() {
-                        event.agent_id = Some(open.agent_id.clone());
-                    }
-                    if event.agent_type.is_none() {
-                        event.agent_type = open.agent_type.clone();
-                    }
+                }
+                // Backfill identity the stop payload omitted. Through
+                // `with_agent`, never by field assignment: that is the one
+                // place `agent_type` is sanitized, and a direct write would
+                // put an unfiltered string into a `lifecycle:agent:*` tag.
+                let agent_id = payload
+                    .agent_id
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| opened.as_ref().map(|o| o.agent_id.clone()));
+                if let Some(id) = agent_id {
+                    let agent_type = payload
+                        .agent_type
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| opened.as_ref().and_then(|o| o.agent_type.clone()));
+                    event = event.with_agent(id, agent_type);
                 }
                 record(root, event);
             }
@@ -603,130 +618,47 @@ async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     if !decision.block_messages.is_empty() {
         // The tool never ran: a block is not an interrupt, so the entry must
         // not survive to fake one for the next 900 s.
-        state::pop_inflight(root, &key);
+        inflight::drop_entry(root, &key);
     }
     decision
+}
+
+/// Read this payload as a shared [`inflight::Call`].
+fn inflight_call<'a>(
+    payload: &'a CodexPayload,
+    tool: &'a str,
+    command: &'a str,
+) -> inflight::Call<'a> {
+    inflight::Call {
+        tool,
+        tool_use_id: payload.tool_use_id.as_deref(),
+        tool_input: payload
+            .tool_input
+            .as_ref()
+            .unwrap_or(&serde_json::Value::Null),
+        command,
+        agent_id: payload.agent_id.as_deref(),
+    }
 }
 
 /// Push the in-flight entry and return its key.
 fn pre_push_inflight(root: &Path, payload: &CodexPayload) -> String {
     let tool = payload.tool_name.clone().unwrap_or_default();
-    let key = state::inflight_key_for(
-        payload.tool_use_id.as_deref(),
-        &tool,
-        payload
-            .tool_input
-            .as_ref()
-            .unwrap_or(&serde_json::Value::Null),
-    );
-    // HEAD is read only for a shell tool whose command passes the text
-    // pre-filter, so a shell call that cannot be a commit spawns no git process
-    // at all. This is the one git call on the pre path.
     let command = extract_bash_command(payload);
-    let (head_before, detection) =
-        if outcome::is_shell_tool(&tool) && outcome::command_may_move_head(&command) {
-            match outcome::git_head_probe(root) {
-                outcome::HeadProbe::Head(sha) => (Some(sha), None),
-                // Only a timeout is worth marking: it means the commit may have
-                // been real but the probe lost a race.
-                outcome::HeadProbe::Timeout => (None, Some(outcome::DETECTION_TIMEOUT.to_string())),
-                outcome::HeadProbe::Unavailable => (None, None),
-            }
-        } else {
-            (None, None)
-        };
-    state::push_inflight(
-        root,
-        state::Inflight {
-            key: key.clone(),
-            tool,
-            ts: unix_secs_now(),
-            agent_id: payload.agent_id.clone().filter(|s| !s.is_empty()),
-            head_before,
-            detection,
-        },
-    );
-    key
+    inflight::push(root, &inflight_call(payload, &tool, &command))
 }
 
 /// Pop the entry this call pushed and, for a shell call that may have moved
-/// HEAD, record a `commit`. The pop is unconditional and ignores the TTL: the
-/// 900 s window is a classification rule, not a retention rule, and a long
-/// build must still get its commit detected.
+/// HEAD, record a `commit`.
 fn post_pop_and_detect(root: &Path, payload: &CodexPayload) {
     let tool = payload.tool_name.clone().unwrap_or_default();
-    let key = state::inflight_key_for(
-        payload.tool_use_id.as_deref(),
-        &tool,
-        payload
-            .tool_input
-            .as_ref()
-            .unwrap_or(&serde_json::Value::Null),
-    );
-    let entry = state::pop_inflight(root, &key);
-    if !outcome::is_shell_tool(&tool) {
-        return;
-    }
-    let Some(entry) = entry else { return };
     let command = extract_bash_command(payload);
-    let exit = extract_command_exit(payload);
-
-    // Why detection was skipped, when it was, named on stderr so the miss is
-    // auditable rather than silent. `detection` came from the pre side;
-    // `no_exit_code` is decided here, because a host that sends no exit code
-    // cannot be given the benefit of the doubt.
-    if outcome::command_may_move_head(&command) {
-        if let Some(marker) = entry.detection.as_deref() {
-            eprintln!("phronesis: commit detection skipped for {tool}: {marker}");
-        } else if exit.is_none() {
-            eprintln!(
-                "phronesis: commit detection skipped for {tool}: {}",
-                outcome::DETECTION_NO_EXIT_CODE
-            );
-        }
-    }
-
-    let Some(commit) = outcome::detect_commit(root, entry.head_before.as_deref(), &command, exit)
-    else {
-        return;
-    };
-    let mut event = lifecycle_event(payload, Kind::Commit)
-        .with_extra("sha", commit.sha)
-        .with_extra("head_before", commit.head_before);
-    if let Some(id) = payload.tool_use_id.as_deref().filter(|s| !s.is_empty()) {
-        event = event.with_extra("tool_use_id", id);
-    }
-    if let Some(band) = confidence_band(root) {
-        event = event.with_extra("confidence_band", band);
-    }
-    if let Some(marker) = entry.detection.as_deref() {
-        event = event.with_extra("detection", marker);
-    }
-    // The pre-side entry is the only witness of which sub-agent ran the call
-    // when the post payload omits `agent_id`.
-    if payload
-        .agent_id
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .is_none()
-        && let Some(agent) = entry.agent_id
-    {
-        event = event.with_agent(agent, None);
-    }
-    record(root, event);
-}
-
-/// The band at commit time, when confidence scoring is enabled and a work unit
-/// is open. Absent otherwise — no band is better than a fabricated one.
-fn confidence_band(root: &Path) -> Option<&'static str> {
-    if !outcomes::enabled(root) {
-        return None;
-    }
-    Some(match outcomes::report(root, None)?.band {
-        outcomes::Band::Low => "low",
-        outcomes::Band::Medium => "medium",
-        outcomes::Band::High => "high",
-    })
+    inflight::pop_and_detect(
+        root,
+        &inflight_call(payload, &tool, &command),
+        extract_command_exit(payload),
+        |kind| lifecycle_event(payload, kind),
+    );
 }
 
 async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {

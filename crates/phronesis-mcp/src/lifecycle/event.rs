@@ -89,7 +89,7 @@ pub enum PromptText {
 /// `last_assistant_message`, `prompt_response`, `transcript_path` and
 /// `agent_transcript_path` are read for decisions and dropped at the adapter
 /// boundary, and `tests/hook_integration.rs` asserts no log entry contains them.
-pub const EXTRA_KEYS: [&str; 14] = [
+pub const EXTRA_KEYS: [&str; 15] = [
     "inferred_from",
     "stop_hook_active",
     "matched_start",
@@ -114,6 +114,9 @@ pub const EXTRA_KEYS: [&str; 14] = [
     // from"): the registry's cargo test name and the id it was looked up by.
     "test",
     "bug_id",
+    // A `subagent_stop` compensating for a `subagent_start` whose tool call was
+    // blocked before it ran: the pair is closed, but nothing ever executed.
+    "blocked",
 ];
 
 /// Lowercase, then keep only if the result matches `[a-z0-9][a-z0-9_.:-]{0,63}` —
@@ -516,13 +519,13 @@ mod tests {
     /// plus §"Where the name comes from", which adds `test` and `bug_id`).
     #[test]
     fn extra_vocabulary_gains_spec_unit_id_and_implicit() {
-        for k in ["spec", "unit_id", "implicit", "test", "bug_id"] {
+        for k in ["spec", "unit_id", "implicit", "test", "bug_id", "blocked"] {
             assert!(
                 EXTRA_KEYS.contains(&k),
                 "{k} must be in the closed vocabulary"
             );
         }
-        assert_eq!(EXTRA_KEYS.len(), 14, "five added, nothing else");
+        assert_eq!(EXTRA_KEYS.len(), 15, "six added, nothing else");
         for forbidden in [
             "prompt_response",
             "last_assistant_message",

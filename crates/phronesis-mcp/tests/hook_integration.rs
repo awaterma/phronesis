@@ -1975,10 +1975,9 @@ fn a_hostile_invoke_agent_name_is_sanitized_away() {
     assert_eq!(second["agent_type"], "code-reviewer");
 }
 
-/// A blocked `invoke_agent` pre-check pops the `agents` entry it just pushed and
-/// writes no `subagent_start`: a sub-agent that never ran must not leave a
-/// dangling entry for the next real stop to pop LIFO (spec §"Where the writes
-/// happen").
+/// A blocked `invoke_agent` pre-check pops the `agents` entry it just pushed:
+/// a sub-agent that never ran must not leave a dangling entry for the next
+/// real stop to pop LIFO (spec §"Where the writes happen").
 #[test]
 fn a_blocked_invoke_agent_pre_check_pops_its_agents_entry() {
     let dir = tempfile::tempdir().unwrap();
@@ -2007,7 +2006,9 @@ fn a_blocked_invoke_agent_pre_check_pops_its_agents_entry() {
     );
 
     // A later real stop must therefore find nothing to pair with, rather than
-    // popping the ghost LIFO and reporting a wrong duration.
+    // popping the ghost LIFO and reporting a wrong duration. `rfind`, because
+    // the block itself already wrote a compensating stop for the start it
+    // popped (see the test below); this is the one after it.
     run_hook_in(
         "post-check",
         r#"{"tool_name":"invoke_agent","tool_input":{"agent_name":"other","prompt":"x"},
@@ -2016,7 +2017,7 @@ fn a_blocked_invoke_agent_pre_check_pops_its_agents_entry() {
     );
     let stop = log_entries(dir.path())
         .into_iter()
-        .find(|e| e["event"] == "subagent_stop")
+        .rfind(|e| e["event"] == "subagent_stop")
         .expect("subagent_stop");
     assert_eq!(stop["matched_start"], false);
 }
@@ -2509,4 +2510,66 @@ fn a_blocked_pre_check_still_carries_the_subject() {
     assert_eq!(entry["subject"], "item-8", "{entry}");
     assert_eq!(entry["exit"], 2);
     assert_eq!(entry["consequences"][0]["rule_id"], "policy", "{entry}");
+}
+
+/// A blocked `invoke_agent` pre-check leaves no half-pair. The
+/// `subagent_start` is durable before the block/allow decision is made, so
+/// popping the `agents` entry alone would strand it: no stop would ever
+/// arrive, and `LifecycleStats` would count a sub-agent that never paired.
+/// The compensating stop closes it at zero duration, marked `blocked`.
+#[test]
+fn a_blocked_invoke_agent_compensates_its_start_with_a_blocked_stop() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"no-agents","phase":"pre","priority":1,
+            "when":[{"change_type":"invoke_agent"}],
+            "then":{"block":"no sub-agents here"}}]}"#,
+    );
+    let (code, stderr) = run_hook_in(
+        "pre-check",
+        r#"{"tool_name":"invoke_agent","tool_input":{"agent_name":"reviewer","prompt":"look"}}"#,
+        Some(dir.path()),
+    );
+    assert_eq!(code, 2, "{stderr}");
+
+    let recs = journal_records(dir.path());
+    let starts: Vec<_> = recs
+        .iter()
+        .filter(|r| r["kind"] == "subagent_start")
+        .collect();
+    let stops: Vec<_> = recs
+        .iter()
+        .filter(|r| r["kind"] == "subagent_stop")
+        .collect();
+    assert_eq!(starts.len(), 1, "exactly one start: {recs:?}");
+    assert_eq!(stops.len(), 1, "exactly one compensating stop: {recs:?}");
+    assert_eq!(starts[0]["agent"], stops[0]["agent"], "the same sub-agent");
+
+    let entry = log_entries(dir.path())
+        .into_iter()
+        .find(|e| e["event"] == "subagent_stop")
+        .expect("subagent_stop");
+    assert_eq!(entry["blocked"], true);
+    assert_eq!(entry["matched_start"], true);
+    assert_eq!(entry["duration_secs"], 0);
+
+    // And the pairing arithmetic reads it as one matched sub-agent, not as an
+    // open one that never came back.
+    let path = phronesis_mcp::action_log::default_path(dir.path());
+    let entries = phronesis_mcp::action_log::read_recent(
+        &path,
+        &phronesis_mcp::action_log::ReadOpts::default(),
+    )
+    .expect("action log");
+    let life = phronesis_mcp::stats::aggregate_lifecycle(
+        &entries,
+        &phronesis_mcp::stats::LifecycleOpts {
+            since_secs: None,
+            kalpa: None,
+            now_secs: u64::MAX / 2,
+        },
+    );
+    assert_eq!(life.subagents, 1);
+    assert_eq!(life.subagents_matched, 1);
 }
