@@ -26,6 +26,7 @@ use crate::action_log;
 use crate::context;
 use crate::journey;
 use crate::lifecycle::event::{Host, Kind, LifecycleEvent, Mode};
+use crate::lifecycle::outcome;
 use crate::lifecycle::record::record;
 use crate::lifecycle::scrub;
 use crate::lifecycle::state;
@@ -592,6 +593,143 @@ async fn fire_verdict(network: &phr::ReteNetwork, root: &Path) -> Result<Verdict
 // ---------------------------------------------------------------------------
 
 async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
+    // `init` routes Codex's tool phases here rather than to `pre-check` /
+    // `post-check`, so the `inflight` correlation entry and commit detection
+    // are this adapter's own (spec §"Host adapters / Codex CLI"). The push
+    // happens before the supported-tool allowlist, so a tool Phronesis does not
+    // govern still makes the next prompt a `correction`.
+    let key = pre_push_inflight(root, payload);
+    let decision = evaluate_pre(payload, root).await;
+    if !decision.block_messages.is_empty() {
+        // The tool never ran: a block is not an interrupt, so the entry must
+        // not survive to fake one for the next 900 s.
+        state::pop_inflight(root, &key);
+    }
+    decision
+}
+
+/// Push the in-flight entry and return its key.
+fn pre_push_inflight(root: &Path, payload: &CodexPayload) -> String {
+    let tool = payload.tool_name.clone().unwrap_or_default();
+    let key = state::inflight_key_for(
+        payload.tool_use_id.as_deref(),
+        &tool,
+        payload
+            .tool_input
+            .as_ref()
+            .unwrap_or(&serde_json::Value::Null),
+    );
+    // HEAD is read only for a shell tool whose command passes the text
+    // pre-filter, so a shell call that cannot be a commit spawns no git process
+    // at all. This is the one git call on the pre path.
+    let command = extract_bash_command(payload);
+    let (head_before, detection) =
+        if outcome::is_shell_tool(&tool) && outcome::command_may_move_head(&command) {
+            match outcome::git_head_probe(root) {
+                outcome::HeadProbe::Head(sha) => (Some(sha), None),
+                // Only a timeout is worth marking: it means the commit may have
+                // been real but the probe lost a race.
+                outcome::HeadProbe::Timeout => (None, Some(outcome::DETECTION_TIMEOUT.to_string())),
+                outcome::HeadProbe::Unavailable => (None, None),
+            }
+        } else {
+            (None, None)
+        };
+    state::push_inflight(
+        root,
+        state::Inflight {
+            key: key.clone(),
+            tool,
+            ts: unix_secs_now(),
+            agent_id: payload.agent_id.clone().filter(|s| !s.is_empty()),
+            head_before,
+            detection,
+        },
+    );
+    key
+}
+
+/// Pop the entry this call pushed and, for a shell call that may have moved
+/// HEAD, record a `commit`. The pop is unconditional and ignores the TTL: the
+/// 900 s window is a classification rule, not a retention rule, and a long
+/// build must still get its commit detected.
+fn post_pop_and_detect(root: &Path, payload: &CodexPayload) {
+    let tool = payload.tool_name.clone().unwrap_or_default();
+    let key = state::inflight_key_for(
+        payload.tool_use_id.as_deref(),
+        &tool,
+        payload
+            .tool_input
+            .as_ref()
+            .unwrap_or(&serde_json::Value::Null),
+    );
+    let entry = state::pop_inflight(root, &key);
+    if !outcome::is_shell_tool(&tool) {
+        return;
+    }
+    let Some(entry) = entry else { return };
+    let command = extract_bash_command(payload);
+    let exit = extract_command_exit(payload);
+
+    // Why detection was skipped, when it was, named on stderr so the miss is
+    // auditable rather than silent. `detection` came from the pre side;
+    // `no_exit_code` is decided here, because a host that sends no exit code
+    // cannot be given the benefit of the doubt.
+    if outcome::command_may_move_head(&command) {
+        if let Some(marker) = entry.detection.as_deref() {
+            eprintln!("phronesis: commit detection skipped for {tool}: {marker}");
+        } else if exit.is_none() {
+            eprintln!(
+                "phronesis: commit detection skipped for {tool}: {}",
+                outcome::DETECTION_NO_EXIT_CODE
+            );
+        }
+    }
+
+    let Some(commit) = outcome::detect_commit(root, entry.head_before.as_deref(), &command, exit)
+    else {
+        return;
+    };
+    let mut event = lifecycle_event(payload, Kind::Commit)
+        .with_extra("sha", commit.sha)
+        .with_extra("head_before", commit.head_before);
+    if let Some(id) = payload.tool_use_id.as_deref().filter(|s| !s.is_empty()) {
+        event = event.with_extra("tool_use_id", id);
+    }
+    if let Some(band) = confidence_band(root) {
+        event = event.with_extra("confidence_band", band);
+    }
+    if let Some(marker) = entry.detection.as_deref() {
+        event = event.with_extra("detection", marker);
+    }
+    // The pre-side entry is the only witness of which sub-agent ran the call
+    // when the post payload omits `agent_id`.
+    if payload
+        .agent_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .is_none()
+        && let Some(agent) = entry.agent_id
+    {
+        event = event.with_agent(agent, None);
+    }
+    record(root, event);
+}
+
+/// The band at commit time, when confidence scoring is enabled and a work unit
+/// is open. Absent otherwise — no band is better than a fabricated one.
+fn confidence_band(root: &Path) -> Option<&'static str> {
+    if !outcomes::enabled(root) {
+        return None;
+    }
+    Some(match outcomes::report(root, None)?.band {
+        outcomes::Band::Low => "low",
+        outcomes::Band::Medium => "medium",
+        outcomes::Band::High => "high",
+    })
+}
+
+async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     let file_path = extract_file_path(payload.tool_input.as_ref());
     let call = ToolCall::from_payload(payload, &file_path);
 
@@ -847,6 +985,10 @@ async fn assert_patch_content(
 // ---------------------------------------------------------------------------
 
 async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
+    // Before the allowlist, mirroring the push in `handle_pre`: every entry
+    // that phase created is popped here, governed tool or not.
+    post_pop_and_detect(root, payload);
+
     let file_path = extract_file_path(payload.tool_input.as_ref());
     let call = ToolCall::from_payload(payload, &file_path);
 

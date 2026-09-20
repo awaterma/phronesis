@@ -1517,9 +1517,9 @@ events.
 
 **Interfaces:**
 - Consumes (Plan 1): `lifecycle::state::{push_inflight, pop_inflight, inflight_key_for, Inflight}`, `lifecycle::outcome::{is_shell_tool, command_may_move_head, git_head_probe, HeadProbe, detect_commit, DETECTION_TIMEOUT}`, `lifecycle::record::record`, `lifecycle::{LifecycleEvent, Kind, Host}`.
-- Produces: nothing new.
+- Produces (as implemented): `fn pre_push_inflight(root: &Path, payload: &CodexPayload) -> String`, `fn post_pop_and_detect(root: &Path, payload: &CodexPayload)`, `fn confidence_band(root: &Path) -> Option<&'static str>`, and `async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> CodexDecision` — the old body of `handle_pre`, extracted so the wrapper can pop the entry on a blocking decision. All private to `codex_hook.rs`.
 
-- [ ] **Step 1: Write the failing tests** (append to `tests/codex_hook_integration.rs`, reusing its `run_codex_hook(root, event, payload)` helper and `lifecycle_records(root)` / `log_entries(root)` readers)
+- [ ] **Step 1: Write the failing tests** (append to `tests/codex_hook_integration.rs`, reusing its actual helpers: `run_hook(root, &Value)` — the event comes from `hook_event_name`, there is no `run_codex_hook` — plus `lifecycle_records(root)` and `log_event(root, "commit")`, and the `git` / repo helpers copied from `tests/lifecycle_outcome.rs`)
 
 ```rust
 #[test]
@@ -1557,34 +1557,36 @@ fn codex_bash_commit_is_detected_from_head_movement() {
 
 - [ ] **Step 2: Run to verify failure** — `cargo test -p phronesis-mcp --test codex_hook_integration codex_pre_tool_use_pushes codex_bash_commit 2>&1 | tail -20`. Expected: FAIL (inflight file absent; no commit record).
 
-- [ ] **Step 3: Implement** in `codex_hook.rs`. At the top of `handle_pre`, after the payload is parsed and before rule loading:
+- [ ] **Step 3: Implement** in `codex_hook.rs`, mirroring `hook::lifecycle_wiring` rather than inlining. `handle_pre` becomes a wrapper — the push runs **before** the supported-tool allowlist, as on Claude, so an ungoverned tool still makes the next prompt a `correction`:
 
 ```rust
-    let key = state::inflight_key_for(payload.tool_use_id.as_deref(), tool_name, payload.tool_input.as_ref().unwrap_or(&serde_json::Value::Null));
-    let head_before = if outcome::is_shell_tool(tool_name) && outcome::command_may_move_head(&command) {
-        match outcome::git_head_probe(root) { HeadProbe::Head(h) => Some(h), _ => None }
-    } else { None };
-    state::push_inflight(root, Inflight { key: key.clone(), tool: tool_name.to_string(), ts: unix_secs_now(), agent_id: payload.agent_id.clone(), head_before, detection: None });
-```
-
-and on the blocking return path of `handle_pre`: `state::pop_inflight(root, &key);`. In `handle_post`, right after parsing:
-
-```rust
-    let popped = state::pop_inflight(root, &key);
-    if let Some(entry) = popped
-        && outcome::is_shell_tool(tool_name)
-        && let Some(c) = outcome::detect_commit(root, entry.head_before.as_deref(), &command, extract_command_exit(payload))
-    {
-        let mut ev = LifecycleEvent::new(Kind::Commit, Host::Codex)
-            .with_extra("sha", c.sha).with_extra("head_before", c.head_before).with_extra("tool_use_id", key.clone());
-        if let Some(sid) = &payload.session_id { ev = ev.with_session(sid.clone()); }
-        if let Some(t) = &payload.turn_id { ev = ev.with_turn(t.clone()); }
-        if let Some(b) = crate::outcomes::report(root, None).map(|r| format!("{:?}", r.band).to_lowercase()) { ev = ev.with_extra("confidence_band", b); }
-        record(root, ev);
+async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
+    let key = pre_push_inflight(root, payload);
+    let decision = evaluate_pre(payload, root).await; // the old handle_pre body
+    if !decision.block_messages.is_empty() {
+        state::pop_inflight(root, &key); // a block is not an interrupt
     }
+    decision
+}
 ```
 
-`command` is the string `extract_bash_command(payload)` already computes; `extract_command_exit` exists in this file. Mirror Plan 2 Task 4's Claude wiring for any detail not shown here.
+`pre_push_inflight` computes the key from `state::inflight_key_for`, probes HEAD
+only when `outcome::is_shell_tool(&tool) && outcome::command_may_move_head(&command)`
+(`command` = `extract_bash_command(payload)`), maps `HeadProbe::Timeout` to
+`detection: Some(DETECTION_TIMEOUT)` and `Unavailable` to `None`, and pushes
+`state::Inflight { key, tool, ts: unix_secs_now(), agent_id: payload.agent_id.clone().filter(|s| !s.is_empty()), head_before, detection }`.
+
+`handle_post` calls `post_pop_and_detect(root, payload)` before the allowlist.
+That pops unconditionally (the TTL is a classification rule, not a retention
+rule), returns unless the tool is a shell tool, prints the
+`commit detection skipped for {tool}: {marker}` / `DETECTION_NO_EXIT_CODE`
+stderr note when `command_may_move_head` held, then on
+`outcome::detect_commit(root, entry.head_before.as_deref(), &command, extract_command_exit(payload))`
+builds the record from the existing `lifecycle_event(payload, Kind::Commit)`
+helper (which already fills session/turn/agent) plus `sha`, `head_before`,
+`tool_use_id`, `confidence_band` (local `confidence_band`, gated on
+`outcomes::enabled`), and `detection`, falling back to `entry.agent_id` when the
+post payload carries none, and writes it through `record`.
 
 - [ ] **Step 4: Run** the two tests plus the whole `codex_hook_integration` suite. Expected: PASS.
 
