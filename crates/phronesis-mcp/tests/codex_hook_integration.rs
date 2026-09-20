@@ -1307,3 +1307,96 @@ fn session_start_on_compact_or_fork_touches_no_correlation_state() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tool-phase `inflight` and commit detection (spec §"Host adapters / Codex CLI")
+// ---------------------------------------------------------------------------
+
+/// Same helper shape as `tests/lifecycle_outcome.rs`: a deterministic identity
+/// so the commit works on a machine with no global git config.
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?}");
+}
+
+fn init_git_repo_with_one_commit(dir: &std::path::Path) {
+    git(dir, &["init", "-q"]);
+    fs::write(dir.join("a"), "1").expect("seed file");
+    git(dir, &["add", "a"]);
+    git(dir, &["commit", "-q", "-m", "init"]);
+}
+
+fn inflight_file(root: &std::path::Path) -> String {
+    fs::read_to_string(root.join(".phronesis/journey/inflight")).unwrap_or_default()
+}
+
+#[test]
+fn codex_pre_tool_use_pushes_inflight_and_post_pops_it() {
+    let project = tempfile::tempdir().expect("temp project");
+    let root = project.path();
+    let pre = json!({
+        "hook_event_name": "PreToolUse", "session_id": "c1", "turn_id": "t1",
+        "tool_use_id": "tu-1", "tool_name": "Bash",
+        "tool_input": {"command": "echo hi"}
+    });
+    assert!(run_hook(root, &pre).status.success());
+    let inflight = inflight_file(root);
+    assert!(inflight.contains(r#""key":"tu-1""#), "{inflight}");
+
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "c1", "turn_id": "t1",
+        "tool_use_id": "tu-1", "tool_name": "Bash",
+        "tool_input": {"command": "echo hi"},
+        "tool_response": {"exit_code": 0, "output": "hi"}
+    });
+    assert!(run_hook(root, &post).status.success());
+    let inflight = inflight_file(root);
+    assert!(!inflight.contains("tu-1"), "popped: {inflight}");
+}
+
+#[test]
+fn codex_bash_commit_is_detected_from_head_movement() {
+    let project = tempfile::tempdir().expect("temp project");
+    let root = project.path();
+    init_git_repo_with_one_commit(root);
+    let pre = json!({
+        "hook_event_name": "PreToolUse", "session_id": "c1", "turn_id": "t1",
+        "tool_use_id": "tu-2", "tool_name": "Bash",
+        "tool_input": {"command": "git commit -am second"}
+    });
+    assert!(run_hook(root, &pre).status.success());
+
+    fs::write(root.join("a"), "2").expect("edit file");
+    git(root, &["commit", "-q", "-am", "second"]);
+
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "c1", "turn_id": "t1",
+        "tool_use_id": "tu-2", "tool_name": "Bash",
+        "tool_input": {"command": "git commit -am second"},
+        "tool_response": {"exit_code": 0, "output": ""}
+    });
+    assert!(run_hook(root, &post).status.success());
+
+    let commit = lifecycle_records(root)
+        .into_iter()
+        .find(|r| r["kind"] == "commit")
+        .expect("commit record");
+    assert_eq!(commit["host"], "codex");
+    assert_eq!(commit["turn"], "t1");
+    let entry = log_event(root, "commit");
+    assert_eq!(entry["sha"].as_str().expect("sha").len(), 40);
+    assert!(entry["head_before"].is_string(), "{entry}");
+    assert_eq!(entry["tool_use_id"], "tu-2");
+    assert!(
+        !inflight_file(root).contains("tu-2"),
+        "entry must be popped"
+    );
+}
