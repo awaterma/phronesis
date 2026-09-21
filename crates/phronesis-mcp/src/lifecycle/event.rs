@@ -89,7 +89,7 @@ pub enum PromptText {
 /// `last_assistant_message`, `prompt_response`, `transcript_path` and
 /// `agent_transcript_path` are read for decisions and dropped at the adapter
 /// boundary, and `tests/hook_integration.rs` asserts no log entry contains them.
-pub const EXTRA_KEYS: [&str; 15] = [
+pub const EXTRA_KEYS: [&str; 16] = [
     "inferred_from",
     "stop_hook_active",
     "matched_start",
@@ -98,9 +98,15 @@ pub const EXTRA_KEYS: [&str; 15] = [
     "head_before",
     "confidence_band",
     "tool_use_id",
-    // Why commit detection was skipped for a shell call: "timeout" or
-    // "no_exit_code" (spec §"Success signal: commit").
+    // Which evidence a `commit` rests on, or why detection was skipped:
+    // "timeout", "no_exit_code", or "host_reported" (spec §"Success signal:
+    // commit"). Absent means the strongest case — HEAD moved and the host
+    // confirmed a zero exit.
     "detection",
+    // The commit sha the host itself reported for the shell call, when its
+    // payload carried one. Corroboration for a HEAD-detected commit, and the
+    // sole evidence behind `detection: "host_reported"`.
+    "host_sha",
     // Work items (spec §"Work items and governed throughput" / Storage). The
     // spec pointer is a repo-relative path, not a hash: if the spec changes
     // after the unit starts, the report shows the path only.
@@ -525,7 +531,7 @@ mod tests {
                 "{k} must be in the closed vocabulary"
             );
         }
-        assert_eq!(EXTRA_KEYS.len(), 15, "six added, nothing else");
+        assert_eq!(EXTRA_KEYS.len(), 16, "six added, nothing else");
         for forbidden in [
             "prompt_response",
             "last_assistant_message",

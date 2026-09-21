@@ -152,3 +152,24 @@ fn prompt_text_never_reaches_the_capture_file() {
     assert_eq!(records[0]["raw"]["tool_name"], "Read");
     assert_eq!(records[0]["raw"]["session_id"], "s");
 }
+
+/// `PHRONESIS_CAPTURE_DIR` names a directory a human just typed; it usually
+/// does not exist yet. Capture must create it rather than fail silently —
+/// a capture session that writes nothing looks exactly like a CLI that sends
+/// nothing.
+#[test]
+fn capture_creates_a_missing_directory() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let dir = base.path().join("not/yet/there");
+    assert!(!dir.exists());
+    let code = run_hook_with_env(
+        "pre-check",
+        r#"{"tool_name": "Read", "tool_input": {"file_path": "src/main.rs"}}"#,
+        &[("PHRONESIS_CAPTURE_DIR", dir.to_str().expect("utf8"))],
+    );
+    assert_eq!(code, 0, "capture must not change hook behavior");
+
+    let records = read_capture(&dir);
+    assert_eq!(records.len(), 1, "one captured record in the created dir");
+    assert_eq!(records[0]["raw"]["tool_name"], "Read");
+}

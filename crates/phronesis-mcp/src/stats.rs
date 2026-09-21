@@ -182,6 +182,14 @@ pub struct LifecycleStats {
 }
 
 impl LifecycleStats {
+    /// True when this window counted no lifecycle entry at all. `events` is
+    /// keyed by kind and gains an entry for every counted record, so it alone
+    /// answers the question; `sessions` is checked too because a record with
+    /// an unrecognized kind still names a session.
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty() && self.sessions == 0
+    }
+
     /// `interventions / commits`, or `None` when there are no commits.
     pub fn interventions_per_commit(&self) -> Option<f64> {
         (self.commits > 0).then(|| f64::from(self.interventions) / f64::from(self.commits))
@@ -474,6 +482,17 @@ fn window_label(since_secs: Option<u64>) -> String {
     } else {
         format!("{}s", s)
     }
+}
+
+/// [`render_table`], but aware of the lifecycle section printed beneath it: an
+/// empty rule table above a populated lifecycle block must not claim there is
+/// "no phronesis activity" — the activity is right there. Rules simply never
+/// fired.
+pub fn render_table_with_lifecycle(values: &Stats, life: &LifecycleStats) -> String {
+    if values.per_rule.is_empty() && !life.is_empty() {
+        return "no rules have fired yet\n".to_string();
+    }
+    render_table(values)
 }
 
 /// Render a human-readable table summary. Columns are width-padded to the

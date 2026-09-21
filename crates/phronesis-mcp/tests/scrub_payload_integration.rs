@@ -520,3 +520,38 @@ fn scrub_prompt_without_home_still_scrubs_project_root() {
     assert!(!out.contains(&root.path().display().to_string()), "{out}");
     assert!(out.contains("src/main.rs"), "{out}");
 }
+
+/// `prompt_id`, `turn_id` and `agent_id` are identity keys like `session_id`:
+/// Claude Code sends a raw per-turn UUID in `prompt_id` on most events, so a
+/// capture committed straight from disk would carry it. One fixed placeholder
+/// per class, in every spelling, at every depth.
+#[test]
+fn identifier_keys_become_fixed_placeholders() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(
+        &capture,
+        r#"{"ts":1,"phase":"pre","raw":{"prompt_id":"6f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f","promptId":"6f1c2d3e-4a5b-6c7d-8e9f-0a1b2c3d4e5f","turn_id":"11112222-3333-4444-5555-666677778888","agent_id":"a36af5c22bb836f19","nested":{"agentId":"a36af5c22bb836f19"}}}"#,
+    )
+    .expect("write capture");
+
+    let (code, stdout, _) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "/Users/alicejones",
+        "--project-root",
+        "/Users/alicejones/Git/myproject",
+    ]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(v["raw"]["prompt_id"], "prompt-00000000");
+    assert_eq!(v["raw"]["promptId"], "prompt-00000000");
+    assert_eq!(v["raw"]["turn_id"], "turn-00000000");
+    assert_eq!(v["raw"]["agent_id"], "agent-00000000");
+    assert_eq!(v["raw"]["nested"]["agentId"], "agent-00000000");
+    assert!(!stdout.contains("6f1c2d3e"), "no UUID survives: {stdout}");
+    assert!(
+        !stdout.contains("a36af5c2"),
+        "no agent id survives: {stdout}"
+    );
+}

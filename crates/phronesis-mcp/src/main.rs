@@ -844,7 +844,7 @@ fn handle_stats(
     use phronesis_mcp::action_log::{self, ReadOpts};
     use phronesis_mcp::stats::{
         LifecycleOpts, StatsOpts, aggregate, aggregate_lifecycle, parse_since,
-        render_json_with_lifecycle, render_lifecycle, render_table, retention_line,
+        render_json_with_lifecycle, render_lifecycle, render_table_with_lifecycle, retention_line,
     };
 
     let now = std::time::SystemTime::now()
@@ -897,7 +897,7 @@ fn handle_stats(
         println!("{}", render_json_with_lifecycle(&values, Some(&life)));
         return Ok(());
     }
-    print!("{}", render_table(&values));
+    print!("{}", render_table_with_lifecycle(&values, &life));
     println!();
     if let Some(header) = phronesis_mcp::lifecycle::kalpa_cli::header_line(&root, now) {
         println!("{header}");

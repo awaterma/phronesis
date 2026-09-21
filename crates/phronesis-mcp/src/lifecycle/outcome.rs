@@ -21,10 +21,31 @@ pub fn command_may_move_head(command: &str) -> bool {
     prefilter().is_match(command)
 }
 
-/// Why detection was disabled for a call. Stored on the `inflight` entry so the
-/// miss is auditable rather than silent (spec §"Success signal: commit").
+/// How, or why not, a `commit` was detected for a call. `timeout` is stored on
+/// the `inflight` entry (the pre-side `git rev-parse` lost its race, so nothing
+/// can be compared); the other two are decided at post and recorded on the
+/// event, so the record says which evidence it rests on (spec §"Success
+/// signal: commit").
 pub const DETECTION_TIMEOUT: &str = "timeout";
+/// HEAD moved, but the host sent no exit code, so the movement is the only
+/// evidence. A marker, not a skip: HEAD is the ground truth either way.
 pub const DETECTION_NO_EXIT_CODE: &str = "no_exit_code";
+/// No usable HEAD comparison (the probe failed or timed out), but the host
+/// itself reported a commit sha for the call.
+pub const DETECTION_HOST_REPORTED: &str = "host_reported";
+
+/// Is `s` a full 40-hex object name? Only a full sha is accepted as a
+/// host-reported commit: an abbreviation is not a stable identifier, and this
+/// value is recorded as one.
+pub fn is_full_sha(s: &str) -> bool {
+    s.len() == 40 && s.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// True when the host's exit code does not veto detection: either it said the
+/// command succeeded, or it said nothing at all.
+pub fn exit_allows_detection(command_exit: Option<i32>) -> bool {
+    command_exit.is_none_or(|c| c == 0)
+}
 
 /// Outcome of one `git rev-parse HEAD`. `Timeout` is separate from
 /// `Unavailable` because only a timeout is worth marking: "not a repo" is a
@@ -100,9 +121,12 @@ pub struct Commit {
     pub head_before: String,
 }
 
-/// `command_exit != Some(0)` suppresses the check, which is what makes
-/// `git commit && false` a non-commit — and what makes a host that sends no
-/// exit code record `DETECTION_NO_EXIT_CODE` on the entry instead of guessing.
+/// HEAD movement is the ground truth; the exit code is only a veto.
+/// `Some(nonzero)` suppresses the check, which is what makes `git commit &&
+/// false` a non-commit. `None` — a host that reports no exit code at all, as
+/// Claude Code's `Bash` `tool_response` does — does **not**: the comparison
+/// still decides, and the caller records `DETECTION_NO_EXIT_CODE` on the event
+/// so the weaker evidence is visible in the record.
 pub fn detect_commit(
     root: &Path,
     head_before: Option<&str>,
@@ -110,7 +134,7 @@ pub fn detect_commit(
     command_exit: Option<i32>,
 ) -> Option<Commit> {
     let before = head_before?;
-    if command_exit != Some(0) || !command_may_move_head(command) {
+    if !exit_allows_detection(command_exit) || !command_may_move_head(command) {
         return None;
     }
     let after = git_head(root)?;

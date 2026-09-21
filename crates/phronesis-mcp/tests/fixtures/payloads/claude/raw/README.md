@@ -43,13 +43,19 @@ than hidden.
    (→ `sess-00000000`) and the transcript path
    (→ `/home/dev/.claude/transcript.jsonl`).
 3. One manual substitution afterwards: the real `prompt_id` UUIDs became
-   `claude-p-001` / `claude-p-002`. **`scrub-payload` does not touch
-   `prompt_id`**, and it is UUID-shaped, so a capture committed straight from
-   the scrubber would carry a real per-turn id. Worth fixing in the scrubber.
+   `claude-p-001` / `claude-p-002`, because `scrub-payload` did not touch
+   `prompt_id` at the time and it is UUID-shaped. **That gap is now closed**:
+   the scrubber treats `prompt_id`, `turn_id` and `agent_id` as identity keys
+   and rewrites them to `prompt-00000000` / `turn-00000000` /
+   `agent-00000000`, so a fresh capture no longer needs the manual step.
 
-`agent_id` (`a36af5c22bb836f19`) and `tool_use_id` (`toolu_01…`) are left
-verbatim: they are opaque, per-session, and their *shape* is exactly what
-these fixtures exist to pin.
+These files keep their hand-substituted values rather than the scrubber's
+placeholders, verified to contain no UUID under any identity key: the
+placeholder is one value per class, and collapsing `claude-p-001` and
+`claude-p-002` into one would erase the two-turn correlation these fixtures
+exist to pin. `agent_id` (`a36af5c22bb836f19`) and `tool_use_id`
+(`toolu_01…`) are likewise left verbatim: they are opaque, per-session, and
+their *shape* is the thing under test.
 
 `git commit` messages and `NOTES.md` content are from the throwaway project
 and carry nothing private.

@@ -20,8 +20,14 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 - **Commit detection from ground truth.** `pre-check` records `HEAD` before a
   shell call and `post-check` compares it after, so a commit is recorded by
-  observing the repository rather than by matching command text. Gemini CLI's
-  `invoke_agent` tool is derived into the same sub-agent start/stop pair.
+  observing the repository rather than by matching command text. `HEAD`
+  movement is the ground truth and the tool's exit code is only a veto, so a
+  host that reports no exit code at all — Claude Code's `Bash` is one — still
+  gets its commits recorded, marked `detection: "no_exit_code"`. A commit sha
+  the host reports itself (Claude Code's `tool_response.gitOperation.commit
+  .sha`) is kept as `host_sha`, and stands in as `detection: "host_reported"`
+  when the `HEAD` probe found no baseline. Gemini CLI's `invoke_agent` tool is
+  derived into the same sub-agent start/stop pair.
 
 - **Lifecycle events, foundation.** `JournalRecord` v2 with optional `kind`,
   `mode`, `host`, `turn`, `agent`, `agent_type`, `kalpa`; the derive pass
@@ -115,6 +121,13 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `/hooks`; Gemini users must trust the folder, or project hooks are skipped.
   Until you run `init`, `session-context` and `interaction-context` keep behaving
   exactly as they do today and no lifecycle event is recorded.
+- **A Codex session that records nothing is the trust gate, not a bug.** Codex
+  skips untrusted project hooks *silently* — no diagnostic, no record — until
+  they are approved in `/hooks` (or, for a headless run,
+  `--dangerously-bypass-hook-trust`). Check that before debugging the adapter.
+- **Agent types are lowercased.** A sub-agent record stores `agent_type` in
+  lower case whatever the host sent, so Claude Code's `Explore` is tagged
+  `lifecycle:agent:explore`. Write rule selectors in lower case.
 - **`s`-window journey rules now scope to a session.** The `.phronesis/journey/session`
   file used to be create-on-miss and never overwritten, so in practice a
   project's session id — and therefore every `s` window — spanned the file's

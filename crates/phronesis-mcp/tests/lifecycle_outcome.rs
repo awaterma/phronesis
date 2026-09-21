@@ -172,14 +172,43 @@ fn head_probe_reports_unavailable_outside_a_repo() {
     assert!(matches!(git_head_probe(r.path()), HeadProbe::Head(sha) if sha.len() == 40));
 }
 
-/// Without an exit code the check is skipped entirely: `git commit && false`
-/// must not count, and a host that sends nothing cannot be given the benefit of
-/// the doubt.
+/// A host that sends no exit code at all (Claude Code's `Bash`
+/// `tool_response`) does not lose detection: HEAD movement still decides.
 #[test]
-fn a_missing_exit_code_skips_detection() {
+fn a_missing_exit_code_does_not_suppress_detection() {
     let d = repo();
     let before = git_head(d.path()).unwrap();
     std::fs::write(d.path().join("a"), "4").unwrap();
     git(d.path(), &["commit", "-q", "-am", "fourth"]);
-    assert!(detect_commit(d.path(), Some(&before), "git commit -am fourth", None).is_none());
+    let c = detect_commit(d.path(), Some(&before), "git commit -am fourth", None).unwrap();
+    assert_eq!(c.head_before, before);
+    assert_ne!(c.sha, before);
+}
+
+/// The other half: no exit code and an unmoved HEAD is still not a commit.
+/// Absent evidence is not evidence of a commit.
+#[test]
+fn a_missing_exit_code_with_unmoved_head_is_not_a_commit() {
+    let d = repo();
+    let before = git_head(d.path()).unwrap();
+    assert!(detect_commit(d.path(), Some(&before), "git commit --dry-run", None).is_none());
+    assert!(detect_commit(d.path(), Some(&before), "git commit -am nothing", None).is_none());
+}
+
+/// Only a full object name counts as a host-reported sha: the abbreviation
+/// Claude Code actually sends is not a stable identifier.
+#[test]
+fn only_a_full_object_name_is_a_host_reported_sha() {
+    assert!(is_full_sha(&"a".repeat(40)));
+    assert!(!is_full_sha("716ee4a"));
+    assert!(!is_full_sha(&"z".repeat(40)));
+    assert!(!is_full_sha(&"a".repeat(64)));
+}
+
+/// The exit code is a veto, not a precondition.
+#[test]
+fn exit_code_vetoes_only_when_it_is_nonzero() {
+    assert!(exit_allows_detection(None));
+    assert!(exit_allows_detection(Some(0)));
+    assert!(!exit_allows_detection(Some(1)));
 }

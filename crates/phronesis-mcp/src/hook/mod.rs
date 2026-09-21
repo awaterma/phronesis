@@ -164,7 +164,12 @@ pub(crate) fn capture_raw_payload(phase: &str, raw: &str) {
         "raw": serde_json::from_str::<serde_json::Value>(&redacted)
             .unwrap_or(serde_json::Value::Null),
     });
-    let path = std::path::Path::new(&dir).join("payloads.jsonl");
+    let dir = std::path::Path::new(&dir);
+    // The capture dir is named by an env var a human just typed; it usually
+    // does not exist yet. Creating it is best-effort like everything else here
+    // — if it fails, the open below fails and capture stays silent.
+    let _ = std::fs::create_dir_all(dir);
+    let path = dir.join("payloads.jsonl");
     let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)

@@ -36,7 +36,21 @@ fn inflight_call<'a>(
         tool_input: payload.tool_input.as_ref().unwrap_or(&Value::Null),
         command,
         agent_id: payload.agent_id.as_deref(),
+        host_sha: host_reported_sha(payload),
     }
+}
+
+/// The commit sha Claude Code reports for a `Bash` call that committed:
+/// `tool_response.gitOperation.commit.sha`. Corroboration only — it is
+/// abbreviated in practice, and [`inflight`] accepts a full object name alone.
+fn host_reported_sha(payload: &HookPayload) -> Option<&str> {
+    payload
+        .tool_output
+        .as_ref()?
+        .get("gitOperation")?
+        .get("commit")?
+        .get("sha")?
+        .as_str()
 }
 
 /// Push the in-flight entry. Runs immediately after `read_payload`, before the

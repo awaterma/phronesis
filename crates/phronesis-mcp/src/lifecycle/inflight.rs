@@ -24,6 +24,10 @@ pub(crate) struct Call<'a> {
     pub command: &'a str,
     /// The sub-agent that made the call, when the payload named one.
     pub agent_id: Option<&'a str>,
+    /// A commit sha the host itself reported for this call, when its post
+    /// payload carries one (Claude Code: `tool_response.gitOperation.commit
+    /// .sha`). Corroboration, and the fallback when the HEAD probe failed.
+    pub host_sha: Option<&'a str>,
 }
 
 impl Call<'_> {
@@ -101,42 +105,62 @@ pub(crate) fn pop_and_detect(
         return;
     }
     let Some(entry) = entry else { return };
-
-    // Why detection was skipped, when it was, named on stderr so the miss is
-    // auditable rather than silent. `detection` on the entry came from the pre
-    // side (a timed-out `git rev-parse`); `no_exit_code` is decided here,
-    // because a host that sends no exit code cannot be given the benefit of the
-    // doubt — that is what makes `git commit && false` a non-commit.
-    if outcome::command_may_move_head(call.command) {
-        let tool = call.tool;
-        if let Some(marker) = entry.detection.as_deref() {
-            eprintln!("phronesis: commit detection skipped for {tool}: {marker}");
-        } else if command_exit.is_none() {
-            eprintln!(
-                "phronesis: commit detection skipped for {tool}: {}",
-                outcome::DETECTION_NO_EXIT_CODE
-            );
-        }
+    if !outcome::command_may_move_head(call.command) {
+        return;
     }
 
-    let Some(commit) = outcome::detect_commit(
+    // Only a full object name is accepted: the host's abbreviation is not a
+    // stable identifier, and this is recorded as one.
+    let host_sha = call.host_sha.filter(|s| outcome::is_full_sha(s));
+
+    // HEAD movement is the ground truth. The exit code only vetoes: absent, it
+    // costs the record a `detection` marker, not the record itself.
+    let detected = outcome::detect_commit(
         root,
         entry.head_before.as_deref(),
         call.command,
         command_exit,
-    ) else {
-        return;
+    );
+    let (sha, head_before, detection) = match detected {
+        Some(commit) => {
+            let marker = command_exit
+                .is_none()
+                .then_some(outcome::DETECTION_NO_EXIT_CODE);
+            (commit.sha, Some(commit.head_before), marker)
+        }
+        // No usable comparison. The pre-side probe failed or timed out, so the
+        // host's own report is the only evidence there is — enough to record
+        // the commit, marked as resting on it. A non-zero exit still vetoes.
+        None if entry.head_before.is_none() && outcome::exit_allows_detection(command_exit) => {
+            match host_sha {
+                Some(sha) => (
+                    sha.to_string(),
+                    None,
+                    Some(outcome::DETECTION_HOST_REPORTED),
+                ),
+                None => return skipped(call.tool, entry.detection.as_deref()),
+            }
+        }
+        None => return skipped(call.tool, entry.detection.as_deref()),
     };
-    let mut ev = base(Kind::Commit)
-        .with_extra("sha", commit.sha)
-        .with_extra("head_before", commit.head_before);
+
+    let mut ev = base(Kind::Commit).with_extra("sha", sha);
+    if let Some(before) = head_before {
+        ev = ev.with_extra("head_before", before);
+    }
+    if let Some(reported) = host_sha {
+        ev = ev.with_extra("host_sha", reported);
+    }
     if let Some(id) = call.tool_use_id.filter(|s| !s.is_empty()) {
         ev = ev.with_extra("tool_use_id", id);
     }
     if let Some(band) = confidence_band(root) {
         ev = ev.with_extra("confidence_band", band);
     }
-    if let Some(marker) = entry.detection.as_deref() {
+    // The post-side marker names the evidence the record actually rests on, so
+    // it wins over the pre-side `timeout`; the latter survives only when the
+    // post side had nothing to say.
+    if let Some(marker) = detection.or(entry.detection.as_deref()) {
         ev = ev.with_extra("detection", marker);
     }
     // The pre-side entry is the only witness of which sub-agent ran the call
@@ -148,6 +172,14 @@ pub(crate) fn pop_and_detect(
         ev = ev.with_agent(agent, None);
     }
     record(root, ev);
+}
+
+/// Name a miss on stderr rather than letting it be silent: the pre-side marker
+/// says the probe never produced a baseline (spec §"Success signal: commit").
+fn skipped(tool: &str, marker: Option<&str>) {
+    if let Some(marker) = marker {
+        eprintln!("phronesis: commit detection skipped for {tool}: {marker}");
+    }
 }
 
 /// The band at commit time, when confidence scoring is enabled and a work

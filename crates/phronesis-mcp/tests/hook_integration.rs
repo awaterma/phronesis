@@ -1770,6 +1770,35 @@ fn blocked_pre_check_pops_its_own_inflight_entry() {
     );
 }
 
+/// A `git` runner bound to one temp dir, asserting success — the three commit
+/// tests below each need a real repository.
+fn git_in(dir: &std::path::Path) -> impl Fn(&[&str]) + use<'_> {
+    move |args: &[&str]| {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+/// One commit of history, with signing off: a developer's global
+/// `commit.gpgsign = true` would otherwise fail every commit here.
+fn init_repo(git: &impl Fn(&[&str]), dir: &std::path::Path) {
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "t@example.com"]);
+    git(&["config", "user.name", "t"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    std::fs::write(dir.join("a.txt"), "one").unwrap();
+    git(&["add", "a.txt"]);
+    git(&["commit", "-qm", "first"]);
+}
+
 #[test]
 fn post_check_records_a_commit_when_head_moved() {
     let dir = tempfile::tempdir().unwrap();
@@ -1823,6 +1852,82 @@ fn post_check_records_a_commit_when_head_moved() {
     assert!(
         entry.get("confidence_band").is_none(),
         "no confidence.json, no band"
+    );
+}
+
+/// The real Claude Code `PostToolUse` shape (captured under
+/// `tests/fixtures/payloads/claude/raw/PostToolUse.json`): `tool_response` is
+/// `{gitOperation, interrupted, isImage, noOutputExpected, stderr, stdout}`
+/// with **no exit code**. HEAD movement is the ground truth, so the commit is
+/// recorded anyway and says so with `detection: "no_exit_code"`; the host's own
+/// sha corroborates it as `host_sha`.
+#[test]
+fn a_claude_post_payload_without_an_exit_code_still_records_the_commit() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = git_in(dir.path());
+    init_repo(&git, dir.path());
+
+    let pre = r#"{"tool_name":"Bash","tool_use_id":"tu-x","tool_input":{"command":"git add -A && git commit -m x"}}"#;
+    run_hook_in("pre-check", pre, Some(dir.path()));
+    std::fs::write(dir.path().join("a.txt"), "two").unwrap();
+    git(&["commit", "-qam", "second"]);
+    let head = String::from_utf8(
+        Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .expect("git")
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+
+    // Verbatim capture shape, with the real sha substituted in.
+    let post = format!(
+        r#"{{"tool_name":"Bash","tool_use_id":"tu-x",
+            "tool_input":{{"command":"git add -A && git commit -m x","description":"Stage and commit"}},
+            "tool_response":{{"gitOperation":{{"commit":{{"branch":"main","kind":"committed","sha":"{head}"}}}},
+              "interrupted":false,"isImage":false,"noOutputExpected":false,
+              "stderr":"","stdout":"[main {head}] x\n 1 file changed, 1 insertion(+)"}}}}"#
+    );
+    run_hook_in("post-check", &post, Some(dir.path()));
+
+    let commits: Vec<_> = log_entries(dir.path())
+        .into_iter()
+        .filter(|e| e["event"] == "commit")
+        .collect();
+    assert_eq!(commits.len(), 1, "exactly one commit record: {commits:?}");
+    let entry = &commits[0];
+    assert_eq!(entry["sha"].as_str().unwrap(), head);
+    assert_ne!(entry["sha"], entry["head_before"]);
+    assert_eq!(entry["detection"], "no_exit_code");
+    assert_eq!(entry["host_sha"].as_str().unwrap(), head);
+}
+
+/// The exit code remains a veto when the host does send one: `git commit &&
+/// false` is not a commit, even though HEAD moved.
+#[test]
+fn a_nonzero_exit_code_still_suppresses_detection() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = git_in(dir.path());
+    init_repo(&git, dir.path());
+
+    let cmd = r#""tool_name":"Bash","tool_use_id":"tu-f","tool_input":{"command":"git commit -am second && false"}"#;
+    run_hook_in("pre-check", &format!("{{{cmd}}}"), Some(dir.path()));
+    std::fs::write(dir.path().join("a.txt"), "two").unwrap();
+    git(&["commit", "-qam", "second"]);
+    run_hook_in(
+        "post-check",
+        &format!(r#"{{{cmd},"tool_response":{{"exit_code":1,"stdout":""}}}}"#),
+        Some(dir.path()),
+    );
+
+    assert!(
+        !log_entries(dir.path())
+            .iter()
+            .any(|e| e["event"] == "commit"),
+        "a failed chain is not a commit"
     );
 }
 

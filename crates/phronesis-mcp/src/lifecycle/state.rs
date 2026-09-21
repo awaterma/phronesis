@@ -241,10 +241,10 @@ pub struct Inflight {
     pub ts: u64,
     pub agent_id: Option<String>,
     pub head_before: Option<String>,
-    /// Why commit detection is disabled for this call, when it is:
-    /// `"timeout"` (the pre-time `git rev-parse` timed out) or
-    /// `"no_exit_code"` (the host sent no `command_exit`). Copied onto the
-    /// record so the miss is auditable rather than silent.
+    /// Why this call has no HEAD baseline, when it has none: `"timeout"` (the
+    /// pre-time `git rev-parse` timed out). Copied onto the record, or named
+    /// on stderr when nothing is recorded, so the miss is auditable rather
+    /// than silent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detection: Option<String>,
 }

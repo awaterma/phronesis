@@ -211,6 +211,38 @@ fn stats_kalpa_prints_lifecycle_section_with_retention_boundary() {
     );
 }
 
+/// The seeded log holds lifecycle entries and no rule firings, which is the
+/// common shape for a session that never tripped a rule. Printing "no
+/// phronesis activity recorded yet" above a populated lifecycle block is a
+/// contradiction: the emptiness check must read both sections.
+#[test]
+fn stats_does_not_claim_no_activity_when_lifecycle_is_populated() {
+    let d = tempfile::tempdir().unwrap();
+    seed_lifecycle_log(d.path(), "lifecycle-events");
+    let out = run_phr(d.path(), &["stats", "--kalpa", "lifecycle-events"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        !stdout.contains("no phronesis activity recorded yet"),
+        "lifecycle entries are activity: {stdout}"
+    );
+    assert!(stdout.contains("no rules have fired yet"), "{stdout}");
+    assert!(stdout.contains("commits"), "{stdout}");
+}
+
+/// The other half: with nothing at all recorded, the original line stands.
+#[test]
+fn stats_still_reports_an_empty_log_as_no_activity() {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
+    std::fs::write(d.path().join(".phronesis/log.jsonl"), "").unwrap();
+    let out = run_phr(d.path(), &["stats"]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("no phronesis activity recorded yet"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn stats_kalpa_filter_excludes_other_kalpas() {
     let d = tempfile::tempdir().unwrap();

@@ -147,7 +147,8 @@ record's `tags` so `matches_selector` needs no change:
 ```
 lifecycle:subagent_start
 lifecycle:subagent_stop
-lifecycle:agent:<agent_type>        (on sub-agent records when the host supplied a type)
+lifecycle:agent:<agent_type>        (on sub-agent records when the host supplied a type;
+                                     lowercased — Claude's `Explore` is `lifecycle:agent:explore`)
 lifecycle:prompt
 lifecycle:prompt:fresh
 lifecycle:prompt:mid_turn
@@ -179,7 +180,7 @@ v2; v1 records simply have `kind: None`.
   "host": "claude",                 // new: claude|codex|gemini|cli
   "turn": "t-…",                    // new: host turn id when supplied
   "agent": "a-…",                   // new: agent id (sub-agent records; prompts inside a sub-agent)
-  "agent_type": "Explore",          // new: host agent type when supplied
+  "agent_type": "explore",          // new: host agent type when supplied, lowercased
   "kalpa": "lifecycle-events",      // new: open kalpa name when any
   "subject": "unit-1789095489589855000"  // existing: open work unit, when any
 }
@@ -381,7 +382,10 @@ auditable; no better pairing is available from the hook surface.
 **`agent_type` is sanitized at the adapter boundary.** On Gemini it is
 `tool_input.agent_name`, model-generated free text, and it reaches a journal
 tag (`lifecycle:agent:<agent_type>`, hence a RETE fact), the action log, and
-the `agents` file. It is lowercased, then kept only if it matches
+the `agents` file. **Every agent type is stored lowercased**, whatever case the
+host sent — Claude Code's `Explore` is stored as `explore` and tagged
+`lifecycle:agent:explore` — so a rule selector is written in lower case once
+and matches every host. It is lowercased, then kept only if it matches
 `[a-z0-9][a-z0-9_.:-]{0,63}`. The set is wider than the kalpa pattern on
 purpose: Gemini's built-ins are snake_case (`codebase_investigator`) and
 Claude's plugin agents are colon-qualified (`code-simplifier:code-simplifier`),
@@ -527,7 +531,8 @@ Known limits, stated where they apply:
   `to_journal_record(&self) -> JournalRecord` and `to_log_entry(&self) ->
   LogEntry`. One place decides both on-disk shapes. `extra` is a closed
   vocabulary — `inferred_from`, `stop_hook_active`, `matched_start`,
-  `duration_secs`, `sha`, `head_before`, `confidence_band`, `tool_use_id`,
+  `duration_secs`, `sha`, `head_before`, `host_sha`, `confidence_band`,
+  `tool_use_id`, `detection`, `spec`, `unit_id`, `implicit`, `test`, `bug_id`,
   `blocked` — and never carries message or transcript content. `last_assistant_message`,
   `prompt_response`, and `agent_transcript_path` are read for decisions and
   dropped at the adapter boundary; the hook integration tests assert no log
@@ -673,6 +678,13 @@ Facts from `openai/codex` (`codex-rs/hooks/schema/generated/*.schema.json`,
   | `PreCompact`, `PostCompact` | `continue`, `stopReason`, `suppressOutput`, `systemMessage`. **No `hookSpecificOutput`** (today's renderer violates this; §Adjacent findings) |
   | `Interrupt` | `systemMessage` only |
   | `SessionEnd`, `PermissionRequest` | advisory / not used by Phronesis |
+
+**Codex will not run a project's hooks until a human trusts them.** Project
+hooks are skipped *silently* — no diagnostic, no record — until they are
+approved via `/hooks`, or, for a headless run, with
+`--dangerously-bypass-hook-trust`. A Codex session that records no lifecycle
+events at all is therefore the trust gate, not a bug in this adapter; check
+`/hooks` before debugging anything else.
 
 Changes:
 
@@ -828,11 +840,11 @@ Detected in `post-check` from ground truth, not command text:
    (not a repo, git unavailable) stores nothing; a timeout stores
    `detection: "timeout"` on the entry so the miss is auditable rather than
    silent. Either way detection is disabled for that call.
-2. `post-check` pops the entry. If `head_before` is present and
-   `command_exit == 0`, it runs `git rev-parse HEAD` again. If `HEAD` differs,
-   it records `commit` with `sha`, `head_before`, and `confidence_band` (from
-   `outcomes::report` when confidence scoring is enabled and a work unit is
-   open).
+2. `post-check` pops the entry. If `head_before` is present and the exit code
+   does not veto (see below), it runs `git rev-parse HEAD` again. If `HEAD`
+   differs, it records `commit` with `sha`, `head_before`, and
+   `confidence_band` (from `outcomes::report` when confidence scoring is
+   enabled and a work unit is open).
 3. A cheap text pre-filter (`git commit` or `git cherry-pick` or `git revert`
    or `git merge` or `git rebase` present in the command) decides whether to
    run step 2's `rev-parse` at all, so most shell calls pay nothing at post.
@@ -857,8 +869,11 @@ what makes `git commit && false` a non-commit; on a host that sends no
 Fixture tests in `tests/lifecycle_outcome.rs` run in a temp git repo: a real
 commit is detected; a `--dry-run` is not; a commit in a sibling repo via
 `git -C` is not; a heredoc containing the words is not; a `git commit &&
-false` chain is not (exit ≠ 0); `confidence_band` is present only when
-`.phronesis/confidence.json` exists.
+false` chain is not (exit ≠ 0); a moved HEAD with **no** exit code is detected
+and an unmoved one is not; `confidence_band` is present only when
+`.phronesis/confidence.json` exists. `tests/hook_integration.rs` drives
+`post-check` with the real captured Claude `PostToolUse` shape and asserts one
+`commit` with `detection: "no_exit_code"` and a `host_sha`.
 
 ### Reporting
 

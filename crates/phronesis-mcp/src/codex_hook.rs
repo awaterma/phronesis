@@ -638,6 +638,8 @@ fn inflight_call<'a>(
             .unwrap_or(&serde_json::Value::Null),
         command,
         agent_id: payload.agent_id.as_deref(),
+        // Codex reports no commit of its own; HEAD is the only witness here.
+        host_sha: None,
     }
 }
 
