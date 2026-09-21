@@ -91,8 +91,10 @@ impl Scrubber {
         })
     }
 
-    /// Recursively rewrite every string in `v` per the scrub rules. Keys
-    /// named `session_id` / `transcript_path` get fixed placeholder values.
+    /// Recursively rewrite every string in `v` per the scrub rules. Identity
+    /// keys (`session_id`, `prompt_id`, `turn_id`, `agent_id`) and
+    /// `transcript_path` get fixed placeholder values, whatever their spelling
+    /// — a host that sends `promptId` must not evade scrubbing either.
     pub fn scrub_value(&mut self, v: &mut Value) {
         match v {
             Value::String(s) => *s = self.scrub_str(s),
@@ -103,8 +105,8 @@ impl Scrubber {
             }
             Value::Object(map) => {
                 for (key, val) in map.iter_mut() {
-                    if is_session_key(key) {
-                        *val = Value::String("sess-00000000".to_string());
+                    if let Some(placeholder) = identifier_placeholder(key) {
+                        *val = Value::String(placeholder.to_string());
                     } else if is_transcript_key(key) {
                         *val = Value::String("/home/dev/.claude/transcript.jsonl".to_string());
                     } else {
@@ -116,7 +118,7 @@ impl Scrubber {
         }
     }
 
-    fn scrub_str(&mut self, s: &str) -> String {
+    pub(crate) fn scrub_str(&mut self, s: &str) -> String {
         // 1. Project-root prefix → canonical fixture root.
         let out = s.replace(&self.project_root, "/home/dev/project");
         // 2. Any remaining $HOME-rooted path → indexed external placeholder.
@@ -480,11 +482,22 @@ fn redacted_hint(matched: &str) -> String {
     }
 }
 
-/// True for session-id-style keys, compared case- and separator-insensitively
-/// (`session_id`, `sessionId`, `SessionID` all match) — finding #3: a CLI
-/// sending `sessionId` must not evade scrubbing.
-fn is_session_key(key: &str) -> bool {
-    normalize_key(key) == "sessionid"
+/// The fixed placeholder for an identity-bearing key, compared case- and
+/// separator-insensitively (`session_id`, `sessionId`, `SessionID` all match)
+/// — finding #3: a CLI sending `sessionId` must not evade scrubbing.
+///
+/// `prompt_id`, `turn_id` and `agent_id` join `session_id` because hosts send
+/// raw UUIDs in them: Claude Code's `prompt_id` is a per-turn UUID present on
+/// most events. One placeholder per class, not per value, so a fixture cannot
+/// re-link two records through an id that survived.
+fn identifier_placeholder(key: &str) -> Option<&'static str> {
+    Some(match normalize_key(key).as_str() {
+        "sessionid" => "sess-00000000",
+        "promptid" => "prompt-00000000",
+        "turnid" => "turn-00000000",
+        "agentid" => "agent-00000000",
+        _ => return None,
+    })
 }
 
 fn is_transcript_key(key: &str) -> bool {

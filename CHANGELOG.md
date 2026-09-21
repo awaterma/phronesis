@@ -8,11 +8,140 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Agent lifecycle events from Claude Code.** A new `phr-mcp claude-hook
+  <Event>` adapter records prompts (with `fresh` / `mid_turn` / `correction`
+  mode), inferred interrupts, turn stops, and sub-agent start/stop into the
+  journey journal and the action log. `phr-mcp init` registers `SubagentStart`,
+  `SubagentStop`, `Stop`, and `SessionEnd`, and repoints `UserPromptSubmit` and
+  `SessionStart` at the adapter; replacement is now keyed on the command, so a
+  hook you wrote yourself on the same event survives `init`. `session-context`
+  and `interaction-context` keep working for settings files written by older
+  versions.
+
+- **Commit detection from ground truth.** `pre-check` records `HEAD` before a
+  shell call and `post-check` compares it after, so a commit is recorded by
+  observing the repository rather than by matching command text. `HEAD`
+  movement is the ground truth and the tool's exit code is only a veto, so a
+  host that reports no exit code at all — Claude Code's `Bash` is one — still
+  gets its commits recorded, marked `detection: "no_exit_code"`. A commit sha
+  the host reports itself (Claude Code's `tool_response.gitOperation.commit
+  .sha`) is kept as `host_sha`, and stands in as `detection: "host_reported"`
+  when the `HEAD` probe found no baseline. Gemini CLI's `invoke_agent` tool is
+  derived into the same sub-agent start/stop pair.
+
+- **Lifecycle events, foundation.** `JournalRecord` v2 with optional `kind`,
+  `mode`, `host`, `turn`, `agent`, `agent_type`, `kalpa`; the derive pass
+  computes positional windows on tool records only, so existing `journey_*`
+  rules are unchanged; built-in `lifecycle:*` and `kalpa:*` selectors; new
+  `lifecycle` module (`LifecycleEvent`, locked state files, `classify_prompt`,
+  `detect_commit`, `scrub_prompt`); `phr-mcp kalpa start|end|show`; prompt
+  text is redacted from `PHRONESIS_CAPTURE_DIR` captures, recursively, so a
+  nested `tool_input.prompt` is covered too. No host emits lifecycle events yet
+  (adapters follow).
+
+- **Lifecycle events, Codex adapter.** `phr-mcp codex-hook` now records
+  sub-agent start/stop (with pairing and duration), prompts (with `fresh` /
+  `mid_turn` / `correction` mode and the scrubbed text in
+  `.phronesis/log.jsonl`), interrupts, and turn stops. `Interrupt` and
+  `SessionEnd` are handled and registered by `phr-mcp init`; the `SessionStart`
+  matcher is now empty, so compact and fork sessions also get context. Codex
+  tool records take their session id from the shared
+  `.phronesis/journey/session` file, agreeing with the other hosts. Payloads
+  teed to `PHRONESIS_CAPTURE_DIR` have their prompt text redacted.
+
+- **Gemini CLI lifecycle hooks.** `phr-mcp init` now registers `BeforeAgent`,
+  `AfterAgent`, `SessionStart`, and `SessionEnd` against
+  `phr-mcp claude-hook <Event>`, so prompts, turn stops, and interrupts
+  (inferred when `AfterAgent` is skipped by an abort) are recorded. The
+  `BeforeTool`/`AfterTool` matcher is anchored and now includes `invoke_agent`,
+  from which Phronesis derives Gemini sub-agent start/stop pairs. Registrations
+  are replaced by command rather than by matcher, so a hook of your own sharing
+  a matcher survives `init`. A blocked `invoke_agent` records a compensating
+  `subagent_stop` (`blocked: true`, zero duration) so the already-durable start
+  never dangles. The install output notes that Gemini HTML-escapes
+  injected context and skips project hooks until the folder is trusted.
+
 - Non-destructive `init --rules-only` starter syncing with a recorded baseline,
   local override/deletion preservation, and conflict warnings.
 
 - Structural Rhai registration extraction and conservative forwarding-closure
   backing detection. Graph format 21 invalidates older extraction caches.
+
+- `phr-mcp stats` prints a lifecycle section — sessions, prompts by mode,
+  interrupts, sub-agents with median duration, and commits with their
+  confidence band — plus the active kalpa and the retention boundary of the
+  action log. `--kalpa <name>` restricts the section to one kalpa, and
+  `--json` now always carries a `lifecycle` key alongside the rule totals.
+- `phr-mcp kalpa show [name]` reports the same counts for a kalpa, open or
+  closed, with the date it started and the retention boundary.
+- `phr-mcp journey` renders lifecycle records in a lifecycle table below the
+  fact table (`⟂` marker), with the record's kind/mode in place of a path, and
+  prints the active kalpa in its header. `--lifecycle` shows only those
+  records; `--corrections` lists the prompts that followed an interrupt,
+  oldest first, with their scrubbed text, under the same retention boundary
+  the other lifecycle reports print.
+- Prometheus: `phronesis_lifecycle_events_total{host,event,mode}` and
+  `phronesis_subagent_duration_seconds{host}` (13 exponential buckets, 1 s to
+  ~68 min). No kalpa label and no `agent_type` label — both are free text,
+  user-typed and model-supplied respectively.
+- The `get_journey` MCP tool takes an optional `include_lifecycle` boolean
+  (default `false`). Left off, it returns exactly the bare array of fact rows
+  it always has. Set to `true`, it returns
+  `{"facts": [...], "lifecycle": [...]}` so lifecycle records travel with the
+  facts they explain. Prompt text is never included either way, and
+  `phr-mcp journey --json` is unchanged.
+- **Work items and governed throughput.** `phr-mcp unit start [<id>] [--spec
+  <path>]` names the piece of work an agent is building and points it at the
+  spec it is built to; `phr-mcp unit end` closes it. Starting a unit while one
+  is open ends the open one first. `pre_check` and `post_check` action-log
+  entries now carry the open work unit, so `phr-mcp unit show [<id>]` can join
+  the journal and the action log and report one item's spec, window, kalpa,
+  rules evaluated / fired / blocked / warned with per-rule counts, grounded
+  evidence and confidence band, human interventions with their scrubbed text,
+  and commits — as text or `--json`. `phr-mcp kalpa show` and `phr-mcp stats
+  --kalpa <name>` gain a work-item split (explicit vs implicit), a **governed**
+  count (committed, with a rule evaluated against it, and a last-commit
+  confidence band above `low`), and `interventions / work item`. Implicit work
+  units keep working exactly as before and need no new file: the two new
+  lifecycle records carry everything. A work item can be named from any of
+  three places: the CLI, the known-bug registry (`phr-mcp unit start --bug
+  <id>` names it `bug-<id>` and carries the registry's cargo test name and its
+  spec — `.phronesis/bugs.json` entries gain optional `spec` and `title`
+  fields, neither of which affects confidence scoring), or the agent itself,
+  since the `submit_suggestion` MCP tool now takes optional `spec` and `bug_id`
+  and records the same `unit_start` event through the same code path. The spec
+  carries an example rule, `suggest-name-the-work-item`, that nudges an agent
+  to ask which bug or spec a session is for when no work item is open; it is an
+  example to copy, not a packaged rule.
+
+### Upgrading
+
+- **Upgrading the binary registers nothing.** Run `phr-mcp init` in each project
+  to get the new hook registrations. Codex users then re-trust hooks via
+  `/hooks`; Gemini users must trust the folder, or project hooks are skipped.
+  Until you run `init`, `session-context` and `interaction-context` keep behaving
+  exactly as they do today and no lifecycle event is recorded.
+- **A Codex session that records nothing is the trust gate, not a bug.** Codex
+  skips untrusted project hooks *silently* — no diagnostic, no record — until
+  they are approved in `/hooks` (or, for a headless run,
+  `--dangerously-bypass-hook-trust`). Check that before debugging the adapter.
+- **Agent types are lowercased.** A sub-agent record stores `agent_type` in
+  lower case whatever the host sent, so Claude Code's `Explore` is tagged
+  `lifecycle:agent:explore`. Write rule selectors in lower case.
+- **`s`-window journey rules now scope to a session.** The `.phronesis/journey/session`
+  file used to be create-on-miss and never overwritten, so in practice a
+  project's session id — and therefore every `s` window — spanned the file's
+  lifetime. Each session-begin `SessionStart` now mints a new id, which is what
+  the window name always claimed. This is a permanent semantic change, not a
+  one-time boundary: review your `s`-window rules, which now see shorter windows.
+  Rules using `Nc` or time windows are unaffected.
+- **Claude users with outcomes enabled get the confidence gate on turn stop for
+  the first time.** It is disabled the same way it is disabled for Codex today.
+- **The hooks and the MCP server upgrade in lockstep.** A project that has
+  written a `lifecycle:*` rule requires ≥ 0.35: an older binary fails closed with
+  `UndefinedSelector` on the first such rule, taking every journey fact with it,
+  and reads lifecycle records as odd `__lifecycle` tool records that shift
+  positional windows.
 
 ## [0.33.0] - 2026-09-11
 

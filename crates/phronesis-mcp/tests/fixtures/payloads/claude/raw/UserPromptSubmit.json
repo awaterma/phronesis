@@ -1,0 +1,9 @@
+{
+  "cwd": "/home/dev/project",
+  "hook_event_name": "UserPromptSubmit",
+  "permission_mode": "bypassPermissions",
+  "prompt": "<redacted:157 bytes>",
+  "prompt_id": "claude-p-002",
+  "session_id": "sess-00000000",
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
+}

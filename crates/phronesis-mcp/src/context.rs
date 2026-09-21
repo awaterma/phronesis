@@ -274,11 +274,24 @@ pub fn run_session_context(project_root: &Path, max_bytes: usize) -> String {
 
     let durable = build_durable_section(&read_durable_directives(project_root));
 
+    // Same line the token-aware path emits as `state:kalpa`, so a project with
+    // no context.json is not the one place a forgotten kalpa stays invisible.
+    let kalpa = crate::lifecycle::kalpa_cli::header_line(
+        project_root,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    )
+    .map(|line| format!("- {line}\n"))
+    .unwrap_or_default();
+
     let body = match (durable.is_empty(), rules_body.is_empty()) {
-        (true, true) => return String::new(),
-        (true, false) => rules_body,
-        (false, true) => durable,
-        (false, false) => format!("{}\n{}", durable, rules_body),
+        (true, true) if kalpa.is_empty() => return String::new(),
+        (true, true) => kalpa,
+        (true, false) => format!("{kalpa}{rules_body}"),
+        (false, true) => format!("{kalpa}{durable}"),
+        (false, false) => format!("{kalpa}{durable}\n{rules_body}"),
     };
     wrap_additional_context("SessionStart", &body, max_bytes)
 }

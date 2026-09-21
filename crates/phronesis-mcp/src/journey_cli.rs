@@ -38,6 +38,8 @@ pub enum JourneyCliError {
     UnknownRule(String),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("journal: {0}")]
+    Journal(#[from] journey::journal::JournalError),
 }
 
 /// A row in the rendered table / JSON: one asserted `journey_*` fact, plus
@@ -54,6 +56,190 @@ pub struct JourneyRow {
     pub extra: Vec<String>,
     /// Rule ids whose `when` references this (predicate, selector) pair.
     pub rules: Vec<String>,
+}
+
+/// One lifecycle journal record, as `phr-mcp journey` and `get_journey` render
+/// it. Lifecycle records have no path, so the `kind`/`mode` pair takes the path
+/// column and a `⟂` marker flags the row as not-a-tool-call.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LifecycleRow {
+    pub ts: u64,
+    pub sid: String,
+    pub seq: u64,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kalpa: Option<String>,
+}
+
+/// The most recent `limit` lifecycle records, oldest first. Never prompt text:
+/// the journal has none (spec §Privacy and scrubbing).
+pub fn lifecycle_rows(
+    project_root: &Path,
+    limit: usize,
+) -> Result<Vec<LifecycleRow>, JourneyCliError> {
+    use crate::journey::journal;
+    // Over-read: lifecycle records share the file with tool records, so asking
+    // for exactly `limit` lines would under-fill this view.
+    let read_n = (limit.saturating_mul(4) + 64).min(journal::SUFFIX_HARD_CAP);
+    let records = journal::read_recent(project_root, read_n)?;
+    let mut rows: Vec<LifecycleRow> = records
+        .iter()
+        .filter(|r| r.is_lifecycle())
+        .map(|r| LifecycleRow {
+            ts: r.ts,
+            sid: r.sid.clone(),
+            seq: r.seq,
+            kind: r.kind.clone().unwrap_or_default(),
+            mode: r.mode.clone(),
+            host: r.host.clone(),
+            agent_type: r.agent_type.clone(),
+            kalpa: r.kalpa.clone(),
+        })
+        .collect();
+    if rows.len() > limit {
+        rows.drain(..rows.len() - limit);
+    }
+    Ok(rows)
+}
+
+fn kind_mode(row: &LifecycleRow) -> String {
+    match row.mode.as_deref() {
+        Some(m) => format!("{}/{}", row.kind, m),
+        None => row.kind.clone(),
+    }
+}
+
+/// Table rendering for lifecycle records; `⟂` marks every row.
+pub fn render_lifecycle_table(rows: &[LifecycleRow]) -> String {
+    let mut out = format!(
+        "{:<2}  {:<14}  {:<8}  {:<22}  {}\n",
+        "", "SID", "SEQ", "KIND/MODE", "HOST"
+    );
+    if rows.is_empty() {
+        out.push_str("(no lifecycle records)\n");
+        return out;
+    }
+    for r in rows {
+        out.push_str(&format!(
+            "{:<2}  {:<14}  {:<8}  {:<22}  {}\n",
+            "⟂",
+            r.sid,
+            r.seq,
+            kind_mode(r),
+            r.host.as_deref().unwrap_or("-")
+        ));
+    }
+    out
+}
+
+/// JSON rendering — flat array, schema mirrors `LifecycleRow`.
+pub fn render_lifecycle_json(rows: &[LifecycleRow]) -> Result<String, JourneyCliError> {
+    Ok(serde_json::to_string_pretty(rows)?)
+}
+
+/// One `prompt` entry with `mode: "correction"` from the action log — the only
+/// surface that prints prompt text, and only because the text was scrubbed by
+/// `lifecycle::scrub::scrub_prompt` at write time.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CorrectionRow {
+    pub ts: u64,
+    pub sid: String,
+    /// `None` under `lifecycle.prompt_text: "none"`. The row still shows *when*
+    /// the correction happened, which is the part the switch does not hide.
+    pub prompt: Option<String>,
+}
+
+/// The corrections list plus the retention boundary it was read over, so the
+/// renderer can say what window the list covers (spec §"CLI and MCP surface").
+pub struct Corrections {
+    pub rows: Vec<CorrectionRow>,
+    /// Timestamp of the oldest *lifecycle* entry still in the log, matching
+    /// `stats::LifecycleStats::oldest_entry_ts`.
+    pub oldest_entry_ts: Option<u64>,
+}
+
+/// Every recorded correction, oldest first, across `.phronesis/log.jsonl` and
+/// its rotated predecessor. Fail-open: an unreadable log yields none.
+pub fn corrections(project_root: &Path) -> Corrections {
+    use crate::action_log::{self, ReadOpts};
+    let opts = ReadOpts {
+        kind: Some("lifecycle".to_string()),
+        ..ReadOpts::default()
+    };
+    // `limit: None` reads `.phronesis/log.jsonl` AND its rotated predecessor,
+    // oldest first. "The list the feature exists to surface must not silently
+    // lose its oldest half to rotation" (spec §"CLI and MCP surface").
+    let entries =
+        action_log::read_recent(&action_log::default_path(project_root), &opts).unwrap_or_default();
+    // Every lifecycle entry, not just the corrections: the boundary is a
+    // property of the log, and it is the same number `stats --kalpa` and
+    // `kalpa show` print.
+    let oldest_entry_ts = entries.iter().map(|e| e.ts).min();
+    let rows = entries
+        .iter()
+        .filter(|e| e.event == "prompt")
+        .filter(|e| e.data.get("mode").and_then(|v| v.as_str()) == Some("correction"))
+        .map(|e| CorrectionRow {
+            ts: e.ts,
+            sid: e
+                .data
+                .get("sid")
+                .and_then(|v| v.as_str())
+                .unwrap_or("-")
+                .to_string(),
+            // The ONE accessor. It consults the current `prompt_text` value, so
+            // flipping the switch to `"none"` hides text already written under
+            // `"full"` as well as text not yet written.
+            prompt: crate::lifecycle::record::correction_text(project_root, e),
+        })
+        .collect();
+    Corrections {
+        rows,
+        oldest_entry_ts,
+    }
+}
+
+/// A retention-boundary header, then one block per correction: a `ts  sid`
+/// line, then the prompt, indented. The header is the same `retention_line`
+/// `stats --kalpa` and `kalpa show` print — without it the list looks complete
+/// when rotation has trimmed its oldest half (spec §"CLI and MCP surface").
+pub fn render_corrections(c: &Corrections) -> String {
+    let header = format!(
+        "corrections    {}\n",
+        crate::stats::retention_line(c.oldest_entry_ts)
+    );
+    let rows = &c.rows;
+    if rows.is_empty() {
+        return format!("{header}(no corrections recorded)\n");
+    }
+    let mut out = header;
+    out.push('\n');
+    for r in rows {
+        let when = chrono::DateTime::from_timestamp(r.ts as i64, 0)
+            .map(|dt| {
+                dt.with_timezone(&chrono::Local)
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string()
+            })
+            .unwrap_or_else(|| r.ts.to_string());
+        out.push_str(&format!("{when}  {}\n", r.sid));
+        match &r.prompt {
+            Some(text) => {
+                for line in text.lines() {
+                    out.push_str(&format!("    {line}\n"));
+                }
+            }
+            None => out.push_str("    (prompt text disabled)\n"),
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Compute the rows the CLI / MCP surface render. Async because the engine

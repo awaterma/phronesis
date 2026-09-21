@@ -1,0 +1,9 @@
+{
+  "agent_id": "a36af5c22bb836f19",
+  "agent_type": "Explore",
+  "cwd": "/home/dev/project",
+  "hook_event_name": "SubagentStart",
+  "prompt_id": "claude-p-002",
+  "session_id": "sess-00000000",
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
+}

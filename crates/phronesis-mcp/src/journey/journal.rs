@@ -53,9 +53,17 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+/// Current on-disk record schema version. v1 = tool records only; v2 adds
+/// the optional lifecycle fields below. Readers accept both.
+pub const JOURNAL_V: u32 = 2;
+
+/// `tool` value on every lifecycle record. Never a real tool name.
+pub const LIFECYCLE_TOOL: &str = "__lifecycle";
+
 /// One line of the journey journal. Field order here is the serialization
 /// order: `v`, `ts`, `sid`, `seq`, `tool`, `path`, `ext?`, `module?`,
-/// `tags[]`, `subject?`, `command_exit?`. See SPEC §"The journal record".
+/// `tags[]`, `subject?`, `command_exit?`, `kind?`, `mode?`, `host?`, `turn?`,
+/// `agent?`, `agent_type?`, `kalpa?`. See SPEC §"The journal record".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JournalRecord {
     /// Record schema version. Bump when the on-disk shape changes.
@@ -88,6 +96,37 @@ pub struct JournalRecord {
     /// collide. Absent means the CLI genuinely didn't send one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_exit: Option<i32>,
+    /// Lifecycle kind (`prompt`, `interrupt`, `subagent_start`, …). `None` on
+    /// tool records. See SPEC-agent-lifecycle-events §"The journal record".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Prompt mode (`fresh` | `mid_turn` | `correction`); prompt records only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// Emitting host (`claude` | `codex` | `gemini` | `cli`); lifecycle only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Host turn id when the payload carried one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<String>,
+    /// Agent id on sub-agent records and on prompts made inside a sub-agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    /// Host agent type when supplied.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// Open kalpa name at write time; lifecycle records only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kalpa: Option<String>,
+}
+
+impl JournalRecord {
+    /// True for records written by a lifecycle event rather than a tool call.
+    pub fn is_lifecycle(&self) -> bool {
+        // Either marker suffices: a malformed lifecycle record that lost its
+        // `kind` must still stay out of the tool projection.
+        self.kind.is_some() || self.tool == LIFECYCLE_TOOL
+    }
 }
 
 #[derive(Debug, Error)]
@@ -257,12 +296,40 @@ fn compacted_content(all: &[JournalRecord], tail_records: usize) -> Result<Strin
     serialize_compaction(prefix, tail, &keep)
 }
 
+/// Lifecycle tags whose records survive compaction of the prefix: the
+/// success signal, the friction pair, and the kalpa and work-item boundaries.
+/// Commits and kalpa boundaries are the denominators of every per-kalpa
+/// report; unit boundaries are the denominator of every per-work-item one, and
+/// a compacted-away `unit_start` silently reclassifies an explicit work item as
+/// implicit; the
+/// interrupt/correction pair is the friction record the feature exists for,
+/// and a rule like "two corrections this session" must not stop firing because
+/// the journal compacted (spec §"The journal record, v2", Compaction).
+///
+/// The retained set is bounded by human turns and commits, not by tool calls,
+/// so the growth it adds is an order of magnitude below the tail it lives
+/// beside; no further cap ships in v1.
+const RETAINED_LIFECYCLE_TAGS: [&str; 7] = [
+    "lifecycle:commit",
+    "lifecycle:interrupt",
+    "lifecycle:prompt:correction",
+    "lifecycle:kalpa_start",
+    "lifecycle:kalpa_end",
+    "lifecycle:unit_start",
+    "lifecycle:unit_end",
+];
+
 fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {
-    // Latest *grounded* outcome-bearing record per subject in the prefix, by
-    // index. `outcome:compile_unknown` is not grounded, so it is never a
-    // retention anchor (it must not displace earlier grounded outcomes).
     let mut latest: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    let mut keep: Vec<usize> = Vec::new();
     for (i, r) in prefix.iter().enumerate() {
+        if r.tags
+            .iter()
+            .any(|t| RETAINED_LIFECYCLE_TAGS.contains(&t.as_str()))
+        {
+            keep.push(i);
+            continue;
+        }
         if let Some(s) = r.subject.as_deref()
             && r.tags
                 .iter()
@@ -271,8 +338,9 @@ fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {
             latest.insert(s, i);
         }
     }
-    let mut keep: Vec<usize> = latest.into_values().collect();
+    keep.extend(latest.into_values());
     keep.sort_unstable();
+    keep.dedup();
     keep
 }
 
@@ -420,6 +488,13 @@ mod tests {
             tags: vec![],
             subject: None,
             command_exit,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
         }
     }
 

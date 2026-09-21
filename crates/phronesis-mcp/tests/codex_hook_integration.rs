@@ -4,6 +4,8 @@ use std::process::{Command, Output, Stdio};
 
 use serde_json::{Value, json};
 
+use phronesis_mcp::lifecycle::state;
+
 fn run_hook(root: &std::path::Path, payload: &Value) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .arg("codex-hook")
@@ -46,6 +48,56 @@ fn response(output: &Output) -> Value {
 
 fn fixture_payload(raw: &str) -> Value {
     serde_json::from_str::<Value>(raw).expect("fixture JSON")["payload"].clone()
+}
+
+fn journal_records(root: &std::path::Path) -> Vec<Value> {
+    fs::read_to_string(root.join(".phronesis/journey/events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect()
+}
+
+fn lifecycle_records(root: &std::path::Path) -> Vec<Value> {
+    journal_records(root)
+        .into_iter()
+        .filter(|r| r.get("kind").is_some())
+        .collect()
+}
+
+fn lifecycle_kinds(root: &std::path::Path) -> Vec<String> {
+    lifecycle_records(root)
+        .iter()
+        .map(|r| r["kind"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn lifecycle_log(root: &std::path::Path) -> Vec<Value> {
+    fs::read_to_string(root.join(".phronesis/log.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .filter(|e| e["kind"] == "lifecycle")
+        .collect()
+}
+
+fn log_event(root: &std::path::Path, event: &str) -> Value {
+    lifecycle_log(root)
+        .into_iter()
+        .find(|e| e["event"] == event)
+        .unwrap_or_else(|| panic!("no {event} log entry"))
+}
+
+fn turn_file(root: &std::path::Path) -> Value {
+    serde_json::from_str(
+        &fs::read_to_string(root.join(".phronesis/journey/turn")).expect("turn file"),
+    )
+    .expect("turn JSON")
+}
+
+fn prompt_payload(session: &str, turn: &str, text: &str) -> Value {
+    json!({"hook_event_name": "UserPromptSubmit",
+           "session_id": session, "turn_id": turn, "prompt": text})
 }
 
 fn write_rules(root: &std::path::Path, rules: Value) {
@@ -153,6 +205,55 @@ fn codex_hook_cli_decodes_current_pretooluse_and_denies() {
         entry["exit"], 2,
         "action log preserves the logical block code"
     );
+}
+
+/// A Codex rule evaluation joins to the open work item, exactly as
+/// `pre_check` / `post_check` do (spec §"Work items and governed throughput",
+/// 2). Without `subject` on the entry, a Codex session's work items report
+/// zero rules evaluated and never count as governed.
+#[test]
+fn codex_hook_stamps_the_open_work_unit_on_its_log_entry() {
+    let project = tempfile::tempdir().expect("temp project");
+    write_rules(project.path(), block_rule());
+    fs::create_dir_all(project.path().join(".phronesis/outcomes")).expect("outcomes dir");
+    fs::write(
+        project.path().join(".phronesis/outcomes/current"),
+        "item-42",
+    )
+    .expect("open a work unit");
+    let payload = fixture_payload(include_str!(
+        "fixtures/payloads/codex/pre-bash-unwrap-with-deny.json"
+    ));
+
+    let output = run_hook(project.path(), &payload);
+    assert_eq!(output.status.code(), Some(0));
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl")).expect("action log");
+    let entry: Value = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|e| e["kind"] == "hook" && e["event"] == "codex_hook")
+        .expect("a codex_hook entry");
+    assert_eq!(entry["subject"], "item-42", "{entry}");
+}
+
+/// With no unit open the key is absent — not empty, not null — so a reader
+/// cannot mistake "no work item" for a work item named "".
+#[test]
+fn codex_hook_omits_subject_when_no_work_unit_is_open() {
+    let project = tempfile::tempdir().expect("temp project");
+    write_rules(project.path(), block_rule());
+    let payload = fixture_payload(include_str!(
+        "fixtures/payloads/codex/pre-bash-unwrap-with-deny.json"
+    ));
+
+    run_hook(project.path(), &payload);
+    let log = fs::read_to_string(project.path().join(".phronesis/log.jsonl")).expect("action log");
+    let entry: Value = log
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .find(|e| e["kind"] == "hook" && e["event"] == "codex_hook")
+        .expect("a codex_hook entry");
+    assert!(entry.get("subject").is_none(), "{entry}");
 }
 
 #[test]
@@ -333,6 +434,9 @@ fn codex_hook_cli_single_file_patch_keeps_singular_file_log_shape() {
 #[test]
 fn codex_hook_cli_posttooluse_captures_output_and_journals_executed_call() {
     let project = tempfile::tempdir().expect("temp project");
+    // Session identity now comes from the shared session file, so seed it the
+    // way a session-begin SessionStart would have.
+    state::set_session(project.path(), "codex-s-004");
     let payload = fixture_payload(include_str!(
         "fixtures/payloads/codex/post-bash-cargo-test.json"
     ));
@@ -591,8 +695,9 @@ fn init_merges_codex_hooks_and_mcp_idempotently_and_dry_run_is_read_only() {
         .as_array()
         .expect("SessionStart hooks");
     assert!(session.iter().any(|entry| {
-        entry["matcher"] == "startup|resume|clear"
-            && entry["hooks"][0]["command"] == "phr-mcp codex-hook SessionStart"
+        // Codex matchers are exact alternations, so "startup|resume|clear"
+        // silently skipped compact and fork sessions. Empty matches every source.
+        entry["matcher"] == "" && entry["hooks"][0]["command"] == "phr-mcp codex-hook SessionStart"
     }));
     assert_eq!(
         session
@@ -624,6 +729,28 @@ fn init_merges_codex_hooks_and_mcp_idempotently_and_dry_run_is_read_only() {
             "{event} completion gate must be wired"
         );
     }
+    for event in ["Interrupt", "SessionEnd"] {
+        let entries = hooks["hooks"][event]
+            .as_array()
+            .unwrap_or_else(|| panic!("{event} hooks"));
+        assert!(
+            entries.iter().any(|entry| {
+                entry["matcher"] == ""
+                    && entry["hooks"][0]["command"] == format!("phr-mcp codex-hook {event}")
+            }),
+            "{event} must be registered with an empty matcher"
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| {
+                    entry["hooks"][0]["command"] == format!("phr-mcp codex-hook {event}")
+                })
+                .count(),
+            1,
+            "{event} must be registered exactly once"
+        );
+    }
     assert!(first_config.contains("model = \"keep-me\""));
     assert!(first_config.contains("[mcp_servers.phronesis]"));
 
@@ -645,4 +772,722 @@ fn init_merges_codex_hooks_and_mcp_idempotently_and_dry_run_is_read_only() {
         .expect("dry init");
     assert!(output.status.success());
     assert!(!dry.path().join(".codex").exists());
+}
+
+#[test]
+fn codex_hook_captures_payloads_with_prompt_text_redacted() {
+    let project = tempfile::tempdir().expect("temp project");
+    let capture = tempfile::tempdir().expect("capture dir");
+    let payload = json!({
+        "hook_event_name": "UserPromptSubmit", "session_id": "codex-s-1",
+        "turn_id": "codex-t-1", "prompt": "zzz-secret-prompt-text"
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["codex-hook", "UserPromptSubmit"])
+        .env("PHRONESIS_PROJECT_ROOT", project.path())
+        .env("PHRONESIS_CAPTURE_DIR", capture.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn codex hook");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write payload");
+    assert!(child.wait_with_output().expect("wait").status.success());
+    let captured =
+        fs::read_to_string(capture.path().join("payloads.jsonl")).expect("captured payloads");
+    assert!(!captured.contains("zzz-secret-prompt-text"), "{captured}");
+    assert!(captured.contains("<redacted:"), "{captured}");
+    assert!(captured.contains("UserPromptSubmit"), "{captured}");
+}
+
+#[test]
+fn interrupt_records_and_closes_the_turn() {
+    let project = tempfile::tempdir().expect("temp project");
+    state::open_turn(project.path(), Some("codex-t-2"), 10);
+    let interrupt = json!({
+        "hook_event_name": "Interrupt", "cwd": "/tmp/p", "model": "gpt-5",
+        "permission_mode": "on-request", "session_id": "codex-s-2", "turn_id": "codex-t-2",
+        "transcript_path": "/tmp/p/.codex/sessions/codex-s-2.jsonl"
+    });
+    assert_eq!(response(&run_hook(project.path(), &interrupt)), json!({}));
+
+    // Exactly one record, and it is the interrupt: an abort must never also
+    // manufacture a `stop`, which would mean "the turn completed".
+    assert_eq!(lifecycle_kinds(project.path()), vec!["interrupt"]);
+    let last = lifecycle_records(project.path())
+        .pop()
+        .expect("an interrupt record");
+    assert_eq!(last["host"], "codex");
+    assert_eq!(last["turn"], "codex-t-2");
+    assert!(
+        last["tags"]
+            .as_array()
+            .expect("tags")
+            .contains(&json!("lifecycle:interrupt"))
+    );
+    let entry = log_event(project.path(), "interrupt");
+    assert_eq!(entry["inferred_from"], "hook");
+    assert_eq!(entry["session_id"], "codex-s-2");
+    assert_eq!(turn_file(project.path())["open"], false);
+    assert_eq!(turn_file(project.path())["last_event"], "interrupt");
+}
+
+#[test]
+fn session_end_stops_an_open_turn_and_leaves_the_session_file() {
+    let project = tempfile::tempdir().expect("temp project");
+    state::set_session(project.path(), "codex-s-3");
+    state::open_turn(project.path(), Some("codex-t-3"), 10);
+    let end = json!({"hook_event_name": "SessionEnd", "session_id": "codex-s-3"});
+    assert_eq!(response(&run_hook(project.path(), &end)), json!({}));
+    assert_eq!(lifecycle_kinds(project.path()), vec!["stop"]);
+    // SessionEnd does NOT truncate the session file: truncation would let any
+    // stray hook between sessions mint a throwaway sid, and the next
+    // session-begin SessionStart overwrites it anyway (spec §Correlation state).
+    assert_eq!(
+        fs::read_to_string(project.path().join(".phronesis/journey/session"))
+            .expect("session file")
+            .trim(),
+        "codex-s-3"
+    );
+    // A second SessionEnd with no open turn records nothing further.
+    assert_eq!(response(&run_hook(project.path(), &end)), json!({}));
+    assert_eq!(lifecycle_records(project.path()).len(), 1);
+}
+
+/// The aborted tools' `PostToolUse` never fires, so their `inflight` entries
+/// would sit there faking an interrupt for the next 900 s. `Interrupt` drops
+/// them.
+#[test]
+fn interrupt_drops_the_sessions_inflight_entries() {
+    let project = tempfile::tempdir().expect("temp project");
+    state::open_turn(project.path(), Some("codex-t-7"), 10);
+    state::push_inflight(
+        project.path(),
+        state::Inflight {
+            key: "u-aborted".into(),
+            tool: "Bash".into(),
+            ts: 10,
+            agent_id: None,
+            head_before: None,
+            detection: None,
+        },
+    );
+    let interrupt = json!({
+        "hook_event_name": "Interrupt", "session_id": "codex-s-7", "turn_id": "codex-t-7"
+    });
+    assert_eq!(response(&run_hook(project.path(), &interrupt)), json!({}));
+    assert!(
+        state::pop_inflight(project.path(), "u-aborted").is_none(),
+        "an aborted tool's entry must not survive its own turn"
+    );
+    // And the classifier's evidence is `last_event`, so the next prompt is a
+    // correction with no second interrupt record.
+    assert_eq!(turn_file(project.path())["last_event"], "interrupt");
+}
+
+#[test]
+fn session_start_adopts_the_host_session_id_and_resets_correlation_state() {
+    let project = tempfile::tempdir().expect("temp project");
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-old", "codex-t-old", "before")
+        )
+        .status
+        .success()
+    );
+    let start = json!({
+        "hook_event_name": "SessionStart", "session_id": "codex-s-new", "source": "startup"
+    });
+    assert!(run_hook(project.path(), &start).status.success());
+    assert_eq!(
+        fs::read_to_string(project.path().join(".phronesis/journey/session"))
+            .expect("session file")
+            .trim(),
+        "codex-s-new"
+    );
+    assert_eq!(turn_file(project.path())["open"], false);
+
+    // Tool records now take their sid from the shared session file, not the
+    // payload, so every host agrees on session identity.
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "codex-s-stale",
+        "turn_id": "codex-t-1", "tool_use_id": "u1", "tool_name": "Bash",
+        "tool_input": {"command": "cargo test"},
+        "tool_response": {"output": "ok", "exit_code": 0}
+    });
+    assert!(run_hook(project.path(), &post).status.success());
+    let tool_record = journal_records(project.path())
+        .into_iter()
+        .rfind(|r| r.get("kind").is_none())
+        .expect("a tool record");
+    assert_eq!(tool_record["sid"], "codex-s-new");
+    assert_eq!(
+        tool_record["v"], 2,
+        "Codex tool records share the v2 schema"
+    );
+}
+
+#[test]
+fn prompt_modes_are_fresh_mid_turn_and_never_double_interrupt() {
+    let project = tempfile::tempdir().expect("temp project");
+    // 1. No open turn → fresh.
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-4", "codex-t-1", "first")
+        )
+        .status
+        .success()
+    );
+    // 2. Same turn id while the turn is open → a queued mid-turn message.
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-4", "codex-t-1", "also this")
+        )
+        .status
+        .success()
+    );
+    // 3. Interrupt closes the turn and writes the only interrupt record.
+    let interrupt =
+        json!({"hook_event_name": "Interrupt", "session_id": "codex-s-4", "turn_id": "codex-t-1"});
+    assert!(run_hook(project.path(), &interrupt).status.success());
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-4", "codex-t-2", "instead do")
+        )
+        .status
+        .success()
+    );
+
+    assert_eq!(
+        lifecycle_kinds(project.path()),
+        vec!["prompt", "prompt", "interrupt", "prompt"],
+        "the Hook branch must not write a second interrupt record"
+    );
+    let recs = lifecycle_records(project.path());
+    let modes: Vec<String> = recs
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    // The third prompt follows an `interrupt` in the same session, which is the
+    // spec's definition of `correction`. The Interrupt arm closed the turn, and
+    // this holds because classification step 1 checks
+    // `turn.last_event == "interrupt"` BEFORE declaring `fresh` (Plan 1 Task 8).
+    assert_eq!(modes, vec!["fresh", "mid_turn", "correction"]);
+    let correction = recs
+        .iter()
+        .rfind(|r| r["kind"] == "prompt")
+        .expect("a prompt");
+    let tags = correction["tags"].as_array().expect("tags");
+    assert!(
+        tags.contains(&json!("lifecycle:prompt:correction")),
+        "{correction}"
+    );
+    assert!(
+        tags.contains(&json!("lifecycle:intervention")),
+        "{correction}"
+    );
+}
+
+/// A tool record journaled between the interrupt and the prompt must not hide
+/// the interrupt — it cannot, because the evidence is `turn.last_event` and not
+/// a journal scan — and another session's interrupt must not answer for this
+/// one, because the turn file carries its own `sid`.
+#[test]
+fn correction_survives_an_intervening_tool_record_and_is_session_scoped() {
+    let project = tempfile::tempdir().expect("temp project");
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-9", "codex-t-9", "go")
+        )
+        .status
+        .success()
+    );
+    let interrupt =
+        json!({"hook_event_name": "Interrupt", "session_id": "codex-s-9", "turn_id": "codex-t-9"});
+    assert!(run_hook(project.path(), &interrupt).status.success());
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "codex-s-9", "tool_use_id": "u9",
+        "tool_name": "Bash", "tool_input": {"command": "echo hi"},
+        "tool_response": {"output": "hi", "exit_code": 0}
+    });
+    assert!(run_hook(project.path(), &post).status.success());
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-9", "codex-t-10", "instead")
+        )
+        .status
+        .success()
+    );
+    let modes: Vec<String> = lifecycle_records(project.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "correction"]);
+
+    // A new session starts clean: the previous session's interrupt is not its
+    // evidence.
+    let start = json!({"hook_event_name": "SessionStart", "session_id": "codex-s-10"});
+    assert!(run_hook(project.path(), &start).status.success());
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-10", "codex-t-11", "new")
+        )
+        .status
+        .success()
+    );
+    let modes: Vec<String> = lifecycle_records(project.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "correction", "fresh"]);
+}
+
+#[test]
+fn prompt_text_is_scrubbed_into_the_log_and_never_the_journal() {
+    let project = tempfile::tempdir().expect("temp project");
+    // A temp `$HOME` set on the *child* process only: the parent's environment
+    // is never mutated, so this test cannot race the rest of the binary, and it
+    // does not require the ambient HOME to exist (CI sandboxes sometimes unset
+    // it). `run_hook` does not take env overrides, so spawn directly.
+    let home = tempfile::tempdir().expect("fake home");
+    let home_str = home.path().display().to_string();
+    let payload = prompt_payload(
+        "codex-s-5",
+        "codex-t-5",
+        &format!("fix {home_str}/work/notes.txt then run tests"),
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["codex-hook", "UserPromptSubmit"])
+        .env("PHRONESIS_PROJECT_ROOT", project.path())
+        .env("HOME", home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn codex hook");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write payload");
+    let out = child.wait_with_output().expect("wait");
+    assert!(out.status.success());
+
+    let journal = fs::read_to_string(project.path().join(".phronesis/journey/events.jsonl"))
+        .expect("journal");
+    // Both halves: the raw path, and the part of the text that *survives*
+    // scrubbing. Asserting only the path would pass even if the whole scrubbed
+    // prompt were journaled.
+    assert!(!journal.contains("notes.txt"), "{journal}");
+    assert!(!journal.contains("then run tests"), "{journal}");
+    // Nor may it reach stdout, where it would become injected context.
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(!stdout.contains("then run tests"), "{stdout}");
+
+    let entry = log_event(project.path(), "prompt");
+    let text = entry["prompt"].as_str().expect("prompt text");
+    assert!(text.contains("then run tests"), "{text}");
+    assert!(!text.contains(&home_str), "{text}");
+    assert!(entry["prompt_bytes"].as_u64().expect("bytes") > 0);
+    assert_eq!(entry["mode"], "fresh");
+    assert_eq!(entry["turn_id"], "codex-t-5");
+
+    // The two files join on (sid, seq) — spec §"Action log".
+    let record = lifecycle_records(project.path())
+        .into_iter()
+        .rfind(|r| r["kind"] == "prompt")
+        .expect("a prompt record");
+    assert_eq!(record["sid"], entry["sid"]);
+    assert_eq!(record["seq"], entry["seq"]);
+}
+
+#[test]
+fn subagent_start_and_stop_pair_with_duration_and_unmatched_stop_does_not() {
+    let project = tempfile::tempdir().expect("temp project");
+    let start = json!({
+        "hook_event_name": "SubagentStart", "session_id": "codex-s-6",
+        "turn_id": "codex-t-6", "agent_id": "codex-a-1", "agent_type": "reviewer"
+    });
+    assert_eq!(response(&run_hook(project.path(), &start)), json!({}));
+    let stop = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-6",
+        "turn_id": "codex-t-6", "agent_id": "codex-a-1", "agent_type": "reviewer",
+        "agent_transcript_path": "/tmp/p/.codex/agents/codex-a-1.jsonl",
+        "last_assistant_message": "done reviewing", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+
+    let recs = lifecycle_records(project.path());
+    assert_eq!(recs[0]["kind"], "subagent_start");
+    assert_eq!(recs[0]["agent"], "codex-a-1");
+    assert_eq!(recs[0]["agent_type"], "reviewer");
+    assert!(
+        recs[0]["tags"]
+            .as_array()
+            .expect("tags")
+            .contains(&json!("lifecycle:agent:reviewer"))
+    );
+    assert_eq!(recs[1]["kind"], "subagent_stop");
+
+    let entry = log_event(project.path(), "subagent_stop");
+    assert_eq!(entry["matched_start"], true);
+    assert_eq!(entry["stop_hook_active"], false);
+    assert!(entry["duration_secs"].is_u64());
+    assert_eq!(entry["agent_id"], "codex-a-1");
+    // The journal never carries the sub-agent's last assistant message.
+    let journal = fs::read_to_string(project.path().join(".phronesis/journey/events.jsonl"))
+        .expect("journal");
+    assert!(!journal.contains("done reviewing"), "{journal}");
+
+    // A stop with no matching start is still recorded, without a duration.
+    let ghost = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-6",
+        "agent_id": "codex-a-ghost", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &ghost)), json!({}));
+    let unmatched = lifecycle_log(project.path())
+        .into_iter()
+        .rfind(|e| e["event"] == "subagent_stop")
+        .expect("second stop");
+    assert_eq!(unmatched["matched_start"], false);
+    assert!(unmatched.get("duration_secs").is_none());
+}
+
+/// A bare project has no confidence scoring, so `make_completion_decision`
+/// never blocks and both invocations record. The blocking case is the test
+/// below this one.
+#[test]
+fn stop_closes_the_turn_and_records_stop_hook_active() {
+    let project = tempfile::tempdir().expect("temp project");
+    let prompt = prompt_payload("codex-s-8", "codex-t-8", "go");
+    assert!(run_hook(project.path(), &prompt).status.success());
+    let stop = json!({
+        "hook_event_name": "Stop", "session_id": "codex-s-8",
+        "turn_id": "codex-t-8", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+    assert_eq!(turn_file(project.path())["open"], false);
+    assert_eq!(turn_file(project.path())["last_event"], "stop");
+
+    let mut reentrant = stop.clone();
+    reentrant["stop_hook_active"] = json!(true);
+    assert_eq!(response(&run_hook(project.path(), &reentrant)), json!({}));
+    let flags: Vec<Value> = lifecycle_log(project.path())
+        .into_iter()
+        .filter(|e| e["event"] == "stop")
+        .map(|e| e["stop_hook_active"].clone())
+        .collect();
+    assert_eq!(flags, vec![json!(false), json!(true)]);
+
+    // A prompt after a Stop starts a fresh turn.
+    assert!(run_hook(project.path(), &prompt).status.success());
+    let modes: Vec<String> = lifecycle_records(project.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "fresh"]);
+}
+
+/// A sub-agent finishing does not end the human's turn. The two events share a
+/// dispatch arm in the code this task rewrites, so the distinction is one merge
+/// away from being lost — and losing it means every prompt after a sub-agent
+/// returns classifies `fresh`, erasing the intervention count.
+#[test]
+fn subagent_stop_never_closes_the_turn() {
+    let project = tempfile::tempdir().expect("temp project");
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-11", "codex-t-11", "go")
+        )
+        .status
+        .success()
+    );
+    let start = json!({
+        "hook_event_name": "SubagentStart", "session_id": "codex-s-11",
+        "turn_id": "codex-t-11", "agent_id": "codex-a-2", "agent_type": "reviewer"
+    });
+    assert!(run_hook(project.path(), &start).status.success());
+    let stop = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-11",
+        "turn_id": "codex-t-11", "agent_id": "codex-a-2", "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+
+    assert_eq!(
+        turn_file(project.path())["open"],
+        true,
+        "the human's turn is still running"
+    );
+    assert_eq!(turn_file(project.path())["last_event"], "prompt");
+    // Which is what makes the next prompt an intervention rather than a reply.
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-11", "codex-t-11", "also")
+        )
+        .status
+        .success()
+    );
+    let modes: Vec<String> = lifecycle_records(project.path())
+        .iter()
+        .filter(|r| r["kind"] == "prompt")
+        .map(|r| r["mode"].as_str().unwrap_or_default().to_string())
+        .collect();
+    assert_eq!(modes, vec!["fresh", "mid_turn"]);
+}
+
+/// A blocked stop is not a stop: it records nothing, leaves the turn open, and
+/// leaves the `agents` entry for the real stop to pop. The re-fire, which skips
+/// the gate because `stop_hook_active` is true, records exactly one.
+#[test]
+fn a_blocked_stop_records_nothing_and_the_refire_records_one() {
+    let project = tempfile::tempdir().expect("temp project");
+    fs::create_dir_all(project.path().join(".phronesis/outcomes")).expect("outcomes dir");
+    fs::write(project.path().join(".phronesis/confidence.json"), "{}").expect("confidence");
+    fs::write(project.path().join(".phronesis/outcomes/current"), "unit-1").expect("current");
+    assert!(
+        run_hook(
+            project.path(),
+            &prompt_payload("codex-s-12", "codex-t-12", "go")
+        )
+        .status
+        .success()
+    );
+
+    let stop = json!({
+        "hook_event_name": "Stop", "session_id": "codex-s-12",
+        "turn_id": "codex-t-12", "stop_hook_active": false
+    });
+    let blocked = response(&run_hook(project.path(), &stop));
+    assert_eq!(blocked["decision"], "block", "{blocked}");
+    assert!(
+        !lifecycle_kinds(project.path()).contains(&"stop".to_string()),
+        "a blocked stop records nothing"
+    );
+    assert_eq!(
+        turn_file(project.path())["open"],
+        true,
+        "the turn continues"
+    );
+
+    let mut refire = stop.clone();
+    refire["stop_hook_active"] = json!(true);
+    assert_eq!(
+        response(&run_hook(project.path(), &refire)),
+        json!({}),
+        "the gate is skipped"
+    );
+    assert_eq!(
+        lifecycle_kinds(project.path())
+            .iter()
+            .filter(|k| *k == "stop")
+            .count(),
+        1
+    );
+    assert_eq!(turn_file(project.path())["open"], false);
+}
+
+/// Task 7 widens the SessionStart matcher to `""`, so compact and fork sessions
+/// reach this handler for the first time. They must render context and touch no
+/// correlation state: their open sub-agents and in-flight tools are real.
+#[test]
+fn session_start_on_compact_or_fork_touches_no_correlation_state() {
+    for source in ["compact", "fork"] {
+        let project = tempfile::tempdir().expect("temp project");
+        let begin = json!({
+            "hook_event_name": "SessionStart", "session_id": "codex-s-a", "source": "startup"
+        });
+        assert!(run_hook(project.path(), &begin).status.success());
+        assert!(
+            run_hook(
+                project.path(),
+                &prompt_payload("codex-s-a", "codex-t-a", "go")
+            )
+            .status
+            .success()
+        );
+        let sub = json!({
+            "hook_event_name": "SubagentStart", "session_id": "codex-s-a",
+            "turn_id": "codex-t-a", "agent_id": "codex-a-live", "agent_type": "reviewer"
+        });
+        assert!(run_hook(project.path(), &sub).status.success());
+
+        let continued = json!({
+            "hook_event_name": "SessionStart", "session_id": "codex-s-b", "source": source
+        });
+        assert!(run_hook(project.path(), &continued).status.success());
+
+        assert_eq!(
+            fs::read_to_string(project.path().join(".phronesis/journey/session"))
+                .expect("session file")
+                .trim(),
+            "codex-s-a",
+            "{source} must not mint a new sid"
+        );
+        assert_eq!(
+            turn_file(project.path())["open"],
+            true,
+            "{source}: the turn is still running"
+        );
+        assert!(
+            !fs::read_to_string(project.path().join(".phronesis/journey/agents"))
+                .unwrap_or_default()
+                .trim()
+                .is_empty(),
+            "{source}: the open sub-agent must survive"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tool-phase `inflight` and commit detection (spec §"Host adapters / Codex CLI")
+// ---------------------------------------------------------------------------
+
+/// Same helper shape as `tests/lifecycle_outcome.rs`: a deterministic identity
+/// so the commit works on a machine with no global git config.
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?}");
+}
+
+fn init_git_repo_with_one_commit(dir: &std::path::Path) {
+    git(dir, &["init", "-q"]);
+    fs::write(dir.join("a"), "1").expect("seed file");
+    git(dir, &["add", "a"]);
+    git(dir, &["commit", "-q", "-m", "init"]);
+}
+
+fn inflight_file(root: &std::path::Path) -> String {
+    fs::read_to_string(root.join(".phronesis/journey/inflight")).unwrap_or_default()
+}
+
+#[test]
+fn codex_pre_tool_use_pushes_inflight_and_post_pops_it() {
+    let project = tempfile::tempdir().expect("temp project");
+    let root = project.path();
+    let pre = json!({
+        "hook_event_name": "PreToolUse", "session_id": "c1", "turn_id": "t1",
+        "tool_use_id": "tu-1", "tool_name": "Bash",
+        "tool_input": {"command": "echo hi"}
+    });
+    assert!(run_hook(root, &pre).status.success());
+    let inflight = inflight_file(root);
+    assert!(inflight.contains(r#""key":"tu-1""#), "{inflight}");
+
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "c1", "turn_id": "t1",
+        "tool_use_id": "tu-1", "tool_name": "Bash",
+        "tool_input": {"command": "echo hi"},
+        "tool_response": {"exit_code": 0, "output": "hi"}
+    });
+    assert!(run_hook(root, &post).status.success());
+    let inflight = inflight_file(root);
+    assert!(!inflight.contains("tu-1"), "popped: {inflight}");
+}
+
+#[test]
+fn codex_bash_commit_is_detected_from_head_movement() {
+    let project = tempfile::tempdir().expect("temp project");
+    let root = project.path();
+    init_git_repo_with_one_commit(root);
+    let pre = json!({
+        "hook_event_name": "PreToolUse", "session_id": "c1", "turn_id": "t1",
+        "tool_use_id": "tu-2", "tool_name": "Bash",
+        "tool_input": {"command": "git commit -am second"}
+    });
+    assert!(run_hook(root, &pre).status.success());
+
+    fs::write(root.join("a"), "2").expect("edit file");
+    git(root, &["commit", "-q", "-am", "second"]);
+
+    let post = json!({
+        "hook_event_name": "PostToolUse", "session_id": "c1", "turn_id": "t1",
+        "tool_use_id": "tu-2", "tool_name": "Bash",
+        "tool_input": {"command": "git commit -am second"},
+        "tool_response": {"exit_code": 0, "output": ""}
+    });
+    assert!(run_hook(root, &post).status.success());
+
+    let commit = lifecycle_records(root)
+        .into_iter()
+        .find(|r| r["kind"] == "commit")
+        .expect("commit record");
+    assert_eq!(commit["host"], "codex");
+    assert_eq!(commit["turn"], "t1");
+    let entry = log_event(root, "commit");
+    assert_eq!(entry["sha"].as_str().expect("sha").len(), 40);
+    assert!(entry["head_before"].is_string(), "{entry}");
+    assert_eq!(entry["tool_use_id"], "tu-2");
+    assert!(
+        !inflight_file(root).contains("tu-2"),
+        "entry must be popped"
+    );
+}
+
+/// A stop that omits `agent_type` backfills it from the `agents` entry. The
+/// backfill goes through `with_agent`, which is the one place sanitization
+/// happens — a direct field write would let a hostile start type reach a
+/// `lifecycle:agent:*` tag, and therefore a RETE fact, by the back door.
+#[test]
+fn a_backfilled_agent_type_is_sanitized_rather_than_copied() {
+    let project = tempfile::tempdir().expect("temp project");
+    let start = json!({
+        "hook_event_name": "SubagentStart", "session_id": "codex-s-hostile",
+        "turn_id": "codex-t-hostile", "agent_id": "codex-a-hostile",
+        "agent_type": "../../etc; rm"
+    });
+    assert_eq!(response(&run_hook(project.path(), &start)), json!({}));
+    let stop = json!({
+        "hook_event_name": "SubagentStop", "session_id": "codex-s-hostile",
+        "turn_id": "codex-t-hostile", "agent_id": "codex-a-hostile",
+        "stop_hook_active": false
+    });
+    assert_eq!(response(&run_hook(project.path(), &stop)), json!({}));
+
+    let recs = lifecycle_records(project.path());
+    let stop_rec = recs
+        .iter()
+        .rfind(|r| r["kind"] == "subagent_stop")
+        .expect("subagent_stop");
+    assert!(
+        !stop_rec["tags"].as_array().expect("tags").iter().any(|t| t
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("lifecycle:agent:")),
+        "no tag at all rather than a hostile one: {stop_rec}"
+    );
+    let entry = log_event(project.path(), "subagent_stop");
+    assert!(
+        entry.get("agent_type").is_none() || entry["agent_type"].is_null(),
+        "{entry}"
+    );
+    // The pairing itself still worked; only the type was dropped.
+    assert_eq!(entry["matched_start"], true);
+    assert_eq!(entry["agent_id"], "codex-a-hostile");
 }

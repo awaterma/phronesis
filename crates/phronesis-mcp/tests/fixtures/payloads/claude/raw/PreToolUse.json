@@ -1,0 +1,17 @@
+{
+  "cwd": "/home/dev/project",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "bypassPermissions",
+  "prompt_id": "claude-p-001",
+  "session_id": "sess-00000000",
+  "tool_input": {
+    "command": "git add -A && git commit -m \"evidence: notes 2\"",
+    "description": "Stage and commit NOTES.md update"
+  },
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_01HHG8YJ5hfoW1fNRpmZ8PGE",
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
+}

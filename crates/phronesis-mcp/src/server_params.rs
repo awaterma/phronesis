@@ -282,6 +282,12 @@ pub struct GetJourneyParams {
     /// references. Mirrors the `phr-mcp journey --explain` CLI flag.
     #[serde(default)]
     pub explain_rule: Option<String>,
+    /// When true, return `{"facts": [...], "lifecycle": [...]}` — the derived
+    /// facts plus the recent lifecycle records (sub-agent start/stop, prompts
+    /// with their mode, interrupts, turn stops, commits). Default `false`
+    /// returns the bare array of fact rows, unchanged from earlier versions.
+    #[serde(default)]
+    pub include_lifecycle: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
@@ -292,6 +298,18 @@ pub struct SubmitSuggestionParams {
     /// Optional human-readable summary of the suggestion.
     #[serde(default)]
     pub summary: Option<String>,
+    /// Optional repo-relative path to the spec this work item is built to
+    /// (e.g. `"docs/specs/SPEC-auth.md"`). The file must exist. Recorded on
+    /// the `unit_start` lifecycle event so reports can answer "which spec was
+    /// this built to?".
+    #[serde(default)]
+    pub spec: Option<String>,
+    /// Optional id from `.phronesis/bugs.json`. When given, the work unit is
+    /// named `bug-<id>` (overriding `subject`) and carries the registry's
+    /// cargo test name, plus its spec when the entry has one. An id that is
+    /// not in the registry is an error.
+    #[serde(default)]
+    pub bug_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]

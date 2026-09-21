@@ -1,0 +1,15 @@
+{
+  "background_tasks": [],
+  "cwd": "/home/dev/project",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "Stop",
+  "last_assistant_message": "<redacted:147 bytes>",
+  "permission_mode": "bypassPermissions",
+  "prompt_id": "claude-p-002",
+  "session_crons": [],
+  "session_id": "sess-00000000",
+  "stop_hook_active": false,
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
+}

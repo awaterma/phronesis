@@ -1,0 +1,10 @@
+{
+  "session_id": "gemini-s-001",
+  "transcript_path": "/home/dev/.gemini/tmp/scratch/chats/session-redacted.jsonl",
+  "cwd": "/home/dev/scratch",
+  "hook_event_name": "AfterAgent",
+  "timestamp": "2026-09-19T21:50:38.560Z",
+  "prompt": "<redacted:82 bytes>",
+  "prompt_response": "<redacted:144 bytes>",
+  "stop_hook_active": false
+}

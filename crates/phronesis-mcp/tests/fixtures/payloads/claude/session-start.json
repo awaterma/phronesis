@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "source": {
+    "cli": "claude-code",
+    "event": "SessionStart",
+    "provenance": "authored",
+    "description": "Synthetic payload assembled from the Claude Code hooks reference field lists. NOT a real capture; version and capture date unknown. To be replaced by a real capture per Plan 2 Task 1."
+  },
+  "subcommand": "claude-hook",
+  "packs": "rust",
+  "payload": {
+    "session_id": "claude-s-001",
+    "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
+    "cwd": "/home/dev/project",
+    "hook_event_name": "SessionStart",
+    "source": "startup"
+  },
+  "expect": {
+    "exit": 0,
+    "stdout_json": true,
+    "log_rule_fired": null,
+    "journal_tag_new": [],
+    "journal_tag_from_output": [],
+    "stderr_contains": []
+  }
+}

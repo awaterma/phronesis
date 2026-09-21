@@ -242,6 +242,16 @@ impl EpistemeMcp {
             )))
         }
     }
+
+    /// Serialize the opt-in `get_journey` envelope: derived facts plus the
+    /// lifecycle records the CLI renders, with the same field names. Only
+    /// reached when the caller passes `include_lifecycle: true`.
+    fn journey_payload(
+        rows: &[crate::journey_cli::JourneyRow],
+        lifecycle: &[crate::journey_cli::LifecycleRow],
+    ) -> String {
+        serde_json::json!({ "facts": rows, "lifecycle": lifecycle }).to_string()
+    }
 }
 
 // Persistence helpers (autoload, autosave) live in server_persistence.rs.
@@ -1432,7 +1442,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Return the journey_* facts that would be asserted right now against `.phronesis/journey/events.jsonl` and the loaded rules — the agent's trajectory at a glance. Optionally pass `explain_rule` to filter to a single rule's referenced facts. Mirrors the `phr-mcp journey` CLI; reads the journey journal + journey.json + rules.json. JSON array of `{predicate, selector, window, extra, rules}` rows."
+        description = "Return the journey_* facts that would be asserted right now against `.phronesis/journey/events.jsonl` and the loaded rules — the agent's trajectory at a glance. Optionally pass `explain_rule` to filter to a single rule's referenced facts. Mirrors the `phr-mcp journey` CLI; reads the journey journal + journey.json + rules.json. JSON array of `{predicate, selector, window, extra, rules}` rows. Pass `include_lifecycle: true` to get `{\"facts\": [...], \"lifecycle\": [...]}` instead, adding the recent lifecycle records (sub-agent start/stop, prompts with `fresh`/`mid_turn`/`correction` mode, interrupts, turn stops, commits); prompt text is never included."
     )]
     async fn get_journey(
         &self,
@@ -1448,37 +1458,76 @@ impl EpistemeMcp {
         let rows = journey_cli::compute(&root, params.explain_rule.as_deref(), now, &sid)
             .await
             .map_err(|e| Self::err(e.to_string()))?;
+        let lifecycle = if params.include_lifecycle {
+            journey_cli::lifecycle_rows(&root, 50).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         Self::log_event("get_journey", |e| {
-            e.with("rows", rows.len() as u64).with(
-                "explain_rule",
-                params.explain_rule.clone().unwrap_or_default(),
-            )
+            e.with("rows", rows.len() as u64)
+                .with("lifecycle_rows", lifecycle.len() as u64)
+                .with(
+                    "explain_rule",
+                    params.explain_rule.clone().unwrap_or_default(),
+                )
         });
+        if params.include_lifecycle {
+            return Self::ok_text(Self::journey_payload(&rows, &lifecycle));
+        }
+        // Default: the bare fact array this tool has always returned.
         let json = journey_cli::render_json(&rows).map_err(|e| Self::err(e.to_string()))?;
         Self::ok_text(json)
     }
 
+    /// The `submit_suggestion` body, minus MCP plumbing: open the work item
+    /// through the one shared code path and return the response object.
+    ///
+    /// Takes `root` explicitly rather than calling `security::project_root`
+    /// so it is testable without an environment variable.
+    pub fn submit_suggestion_report(
+        root: &std::path::Path,
+        params: &SubmitSuggestionParams,
+    ) -> anyhow::Result<serde_json::Value> {
+        // `start` sets the subject itself, ending any open unit first, and
+        // records exactly one `unit_start` (spec §"Where the name comes
+        // from": "so there is one code path").
+        let started = crate::lifecycle::unit_cli::start(
+            root,
+            crate::lifecycle::unit_cli::StartRequest {
+                id: Some(params.subject.clone()),
+                spec: params.spec.clone(),
+                bug_id: params.bug_id.clone(),
+            },
+        )?;
+        let report = crate::outcomes::report(root, Some(&started.unit_id));
+        let band = report.as_ref().map(|r| r.band.as_str()).unwrap_or("low");
+        let signals = report.map(|r| r.signals).unwrap_or_default();
+        Ok(serde_json::json!({
+            // `subject` is the id that was actually opened, which differs from
+            // the caller's when `bug_id` renamed it.
+            "subject": started.unit_id,
+            "unit_id": started.unit_id,
+            "summary": params.summary,
+            "spec": started.spec,
+            "band": band,
+            "signals": signals,
+        }))
+    }
+
     #[tool(
-        description = "Declare a confidence work unit ('subject') — e.g. a cross-language translation or a discrete suggestion — and return its current confidence report. Sets the open subject so subsequent build/test runs accrue grounded signals to it (the explicit-subject path; the implicit path mints a unit automatically). Returns JSON `{subject, summary, band, signals}`. Confidence is opt-in per project via `.phronesis/confidence.json`."
+        description = "Declare a confidence work unit ('subject') — e.g. a cross-language translation or a discrete suggestion — and return its current confidence report. Sets the open subject so subsequent build/test runs accrue grounded signals to it, and records a `unit_start` lifecycle event naming the work item. Optionally pass `spec` (a repo-relative path to the spec this work is built to; it must exist) or `bug_id` (an id from `.phronesis/bugs.json`, which names the unit `bug-<id>` and carries the bug's test name; an unknown id is an error). Returns JSON `{subject, unit_id, summary, spec, band, signals}`; `subject` is the id actually opened, which `bug_id` may rename. Confidence is opt-in per project via `.phronesis/confidence.json`."
     )]
     async fn submit_suggestion(
         &self,
         Parameters(params): Parameters<SubmitSuggestionParams>,
     ) -> Result<CallToolResult, McpError> {
         let root = security::project_root();
-        crate::outcomes::subject::set(&root, &params.subject)
-            .map_err(|e| Self::err(e.to_string()))?;
-        let report = crate::outcomes::report(&root, Some(&params.subject));
-        let band = report.as_ref().map(|r| r.band.as_str()).unwrap_or("low");
-        let signals = report.map(|r| r.signals).unwrap_or_default();
+        let out =
+            Self::submit_suggestion_report(&root, &params).map_err(|e| Self::err(e.to_string()))?;
+        let subject = out["subject"].as_str().unwrap_or_default().to_string();
+        let band = out["band"].as_str().unwrap_or("low").to_string();
         Self::log_event("submit_suggestion", |e| {
-            e.with("subject", params.subject.clone()).with("band", band)
-        });
-        let out = serde_json::json!({
-            "subject": params.subject,
-            "summary": params.summary,
-            "band": band,
-            "signals": signals,
+            e.with("subject", subject).with("band", band)
         });
         Self::ok_text(serde_json::to_string_pretty(&out).map_err(|e| Self::err(e.to_string()))?)
     }
@@ -2172,5 +2221,80 @@ mod ownership_evidence_tool_tests {
                 .is_some_and(|m| m.contains("not proof")),
             "an empty match must never read as proof the code is clean: {payload}"
         );
+    }
+}
+
+#[cfg(test)]
+mod get_journey_tests {
+    use super::*;
+
+    /// Default shape: the bare fact array `get_journey` has always returned.
+    /// Adding lifecycle records must not move an existing consumer's cheese.
+    #[test]
+    fn get_journey_payload_defaults_to_the_bare_fact_array() {
+        let rows = vec![crate::journey_cli::JourneyRow {
+            predicate: "journey_seen".into(),
+            selector: "auth".into(),
+            window: "s".into(),
+            extra: vec![],
+            rules: vec!["auth-churn".into()],
+        }];
+        let payload = crate::journey_cli::render_json(&rows).expect("render");
+        let v: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+        assert!(
+            v.is_array(),
+            "the default response is still a bare array: {payload}"
+        );
+        assert_eq!(v[0]["predicate"], "journey_seen");
+    }
+
+    /// Opt-in shape: `include_lifecycle: true` wraps the same array under `facts`
+    /// and adds `lifecycle`.
+    #[test]
+    fn get_journey_payload_envelope_carries_facts_and_lifecycle() {
+        let rows = vec![crate::journey_cli::JourneyRow {
+            predicate: "journey_seen".into(),
+            selector: "auth".into(),
+            window: "s".into(),
+            extra: vec![],
+            rules: vec!["auth-churn".into()],
+        }];
+        let life = vec![crate::journey_cli::LifecycleRow {
+            ts: 10,
+            sid: "s-1".into(),
+            seq: 3,
+            kind: "prompt".into(),
+            mode: Some("correction".into()),
+            host: Some("claude".into()),
+            agent_type: None,
+            kalpa: Some("demo".into()),
+        }];
+        let payload = EpistemeMcp::journey_payload(&rows, &life);
+        let v: serde_json::Value = serde_json::from_str(&payload).expect("valid json");
+        assert_eq!(v["facts"][0]["predicate"], "journey_seen");
+        assert_eq!(
+            v["facts"],
+            serde_json::json!(rows),
+            "facts is the unchanged row array"
+        );
+        assert_eq!(v["lifecycle"][0]["kind"], "prompt");
+        assert_eq!(v["lifecycle"][0]["mode"], "correction");
+        assert_eq!(v["lifecycle"][0]["kalpa"], "demo");
+        assert!(
+            !payload.contains("\"prompt\":"),
+            "no prompt text over MCP: {payload}"
+        );
+    }
+
+    /// The parameter itself: absent means false, so an old caller's argument-less
+    /// invocation deserializes and keeps the old shape.
+    #[test]
+    fn get_journey_params_default_include_lifecycle_is_false() {
+        let p: crate::server_params::GetJourneyParams =
+            serde_json::from_str("{}").expect("empty params deserialize");
+        assert!(!p.include_lifecycle);
+        let p: crate::server_params::GetJourneyParams =
+            serde_json::from_str(r#"{"include_lifecycle":true}"#).expect("params deserialize");
+        assert!(p.include_lifecycle);
     }
 }

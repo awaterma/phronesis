@@ -656,3 +656,131 @@ fn captured_missing_scrubber_version_is_rejected() {
         "unexpected message: {err}"
     );
 }
+
+/// Pin the field sets the Claude adapter reads. These are the keys the
+/// documented Claude Code hook reference lists (Task 1 of the Claude adapter plan); a
+/// host that stops sending one must fail here rather than silently degrade
+/// classification. `agent_type` may be the empty string
+/// (anthropics/claude-code#87065) but the key must exist.
+///
+/// NOTE: the fixtures under `claude/raw/` are currently synthetic (see
+/// `raw/README.md`), assembled from the documented Claude Code hook field
+/// lists. This pin test validates the synthetic corpus against the documented
+/// field sets; the human should replace them with real captures per Task 1 and
+/// re-run this test against the captures.
+#[test]
+fn synthetic_claude_payloads_carry_the_documented_fields() {
+    let raw_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/payloads/claude/raw");
+    let expected: &[(&str, &[&str])] = &[
+        (
+            "UserPromptSubmit",
+            &["hook_event_name", "session_id", "transcript_path", "prompt"],
+        ),
+        (
+            "SessionStart",
+            &["hook_event_name", "session_id", "transcript_path"],
+        ),
+        ("SessionEnd", &["hook_event_name", "session_id"]),
+        (
+            "SubagentStart",
+            &["hook_event_name", "session_id", "agent_id", "agent_type"],
+        ),
+        (
+            "SubagentStop",
+            &[
+                "hook_event_name",
+                "session_id",
+                "agent_id",
+                "stop_hook_active",
+            ],
+        ),
+        (
+            "Stop",
+            &["hook_event_name", "session_id", "stop_hook_active"],
+        ),
+    ];
+    for (event, keys) in expected {
+        let path = raw_dir.join(format!("{event}.json"));
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "{}: {e} — add a fixture per the plan's Task 1",
+                path.display()
+            )
+        });
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for key in *keys {
+            assert!(v.get(key).is_some(), "{event}.json is missing {key}");
+        }
+        assert!(
+            !raw.contains("/Users/"),
+            "{event}.json still holds an unredacted home path"
+        );
+    }
+}
+
+/// Pin the Gemini field sets the adapter reads. This repo has already misread
+/// one of them (`tool_output` vs `tool_response`, spec Adjacent finding 4), so
+/// a host that renames a field must fail here rather than silently stop
+/// recording.
+#[test]
+fn captured_gemini_payloads_carry_the_documented_fields() {
+    let raw_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/payloads/gemini/raw");
+    let expected: &[(&str, &[&str])] = &[
+        ("BeforeAgent", &["hook_event_name", "session_id", "prompt"]),
+        (
+            "AfterAgent",
+            &["hook_event_name", "session_id", "prompt", "prompt_response"],
+        ),
+        ("SessionStart", &["hook_event_name", "session_id"]),
+        ("SessionEnd", &["hook_event_name", "session_id"]),
+        (
+            "BeforeTool-invoke_agent",
+            &["hook_event_name", "tool_name", "tool_input"],
+        ),
+        (
+            "AfterTool-invoke_agent",
+            &[
+                "hook_event_name",
+                "tool_name",
+                "tool_input",
+                "tool_response",
+            ],
+        ),
+    ];
+    for (name, keys) in expected {
+        let path = raw_dir.join(format!("{name}.json"));
+        let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+            panic!(
+                "{}: {e} — capture it per this plan's Task 0",
+                path.display()
+            )
+        });
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        for key in *keys {
+            assert!(v.get(key).is_some(), "{name}.json is missing {key}");
+        }
+        assert!(
+            !raw.contains("/Users/"),
+            "{name}.json still holds an unredacted home path"
+        );
+    }
+    // The misread field name, pinned from the other side.
+    let after: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(raw_dir.join("AfterTool-invoke_agent.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        after.get("tool_output").is_none(),
+        "Gemini sends tool_response, not tool_output"
+    );
+    // And the sub-agent's name, whatever it turned out to be, must be a string.
+    assert!(
+        after
+            .pointer("/tool_input/agent_name")
+            .and_then(|v| v.as_str())
+            .is_some(),
+        "invoke_agent carries tool_input.agent_name"
+    );
+}

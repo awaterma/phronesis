@@ -82,18 +82,94 @@ fn capture_unset_writes_nothing() {
 }
 
 #[test]
-fn capture_preserves_non_json_stdin_as_string() {
+fn capture_skips_non_json_stdin_entirely() {
     let dir = tempfile::tempdir().expect("tempdir");
-    // Malformed payload: hook exits 0 (allow) per existing behavior, but the
-    // capture must still record the raw bytes — broken payloads are exactly
-    // what we want ground truth on.
+    // Malformed payload: the hook still fails closed (exit 2), but the capture
+    // cannot redact what it cannot parse, so it writes nothing rather than a
+    // verbatim copy of what may be truncated free text.
     let code = run_hook_with_env(
         "pre-check",
         "not json at all",
         &[("PHRONESIS_CAPTURE_DIR", dir.path().to_str().expect("utf8"))],
     );
     let records = read_capture(dir.path());
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0]["raw"], "not json at all");
+    assert!(records.is_empty(), "non-JSON stdin is never captured");
     assert_eq!(code, 2, "pre-check fails closed on malformed JSON");
+}
+
+#[test]
+fn capture_redacts_every_free_text_key_at_any_depth() {
+    let raw = r#"{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt":"top secret words","tool_name":"Bash","tool_input":{"command":"ls"}}"#;
+    let out = phronesis_mcp::hook::redact_for_capture(raw).expect("valid JSON is captured");
+    assert!(!out.contains("top secret"));
+    assert!(out.contains(r#""prompt":"<redacted:16 bytes>""#));
+    assert!(out.contains(r#""tool_input":{"command":"ls"}"#));
+
+    // Nested: Gemini's invoke_agent carries the whole sub-agent task under
+    // `tool_input.prompt`, which a top-level-only redaction would miss.
+    let nested = r#"{"hook_event_name":"BeforeTool","tool_name":"invoke_agent","tool_input":{"agent_name":"reviewer","prompt":"review the auth module"}}"#;
+    let out = phronesis_mcp::hook::redact_for_capture(nested).expect("valid JSON");
+    assert!(!out.contains("review the auth"), "{out}");
+    assert!(out.contains(r#""prompt":"<redacted:22 bytes>""#), "{out}");
+    assert!(out.contains(r#""agent_name":"reviewer""#), "{out}");
+
+    // Inside an array, too.
+    let deep =
+        r#"{"messages":[{"role":"user","prompt":"abc"},{"nested":{"prompt_response":"defg"}}]}"#;
+    let out = phronesis_mcp::hook::redact_for_capture(deep).expect("valid JSON");
+    assert!(out.contains(r#""prompt":"<redacted:3 bytes>""#), "{out}");
+    assert!(
+        out.contains(r#""prompt_response":"<redacted:4 bytes>""#),
+        "{out}"
+    );
+
+    // Gemini AfterAgent: `prompt_response` is the model's whole answer.
+    let after = r#"{"hook_event_name":"AfterAgent","prompt":"hi","prompt_response":"a long answer","stop_hook_active":false}"#;
+    let out = phronesis_mcp::hook::redact_for_capture(after).expect("valid JSON");
+    assert!(!out.contains("a long answer"), "{out}");
+
+    // Not valid JSON: it cannot be redacted, so it is not captured at all.
+    assert_eq!(phronesis_mcp::hook::redact_for_capture("not json"), None);
+}
+
+#[test]
+fn prompt_text_never_reaches_the_capture_file() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let payload = r#"{"hook_event_name":"PreToolUse","session_id":"s","prompt":"zzz-secret","tool_name":"Read","tool_input":{"file_path":"src/main.rs"}}"#;
+    let code = run_hook_with_env(
+        "pre-check",
+        payload,
+        &[("PHRONESIS_CAPTURE_DIR", dir.path().to_str().expect("utf8"))],
+    );
+    assert_eq!(code, 0, "capture must not change hook behavior");
+    let raw = std::fs::read_to_string(dir.path().join("payloads.jsonl")).expect("capture file");
+    assert!(!raw.contains("zzz-secret"), "{raw}");
+    assert!(raw.contains("<redacted:10 bytes>"), "{raw}");
+    let records = read_capture(dir.path());
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["phase"], "pre");
+    // Everything else is still captured verbatim.
+    assert_eq!(records[0]["raw"]["tool_name"], "Read");
+    assert_eq!(records[0]["raw"]["session_id"], "s");
+}
+
+/// `PHRONESIS_CAPTURE_DIR` names a directory a human just typed; it usually
+/// does not exist yet. Capture must create it rather than fail silently —
+/// a capture session that writes nothing looks exactly like a CLI that sends
+/// nothing.
+#[test]
+fn capture_creates_a_missing_directory() {
+    let base = tempfile::tempdir().expect("tempdir");
+    let dir = base.path().join("not/yet/there");
+    assert!(!dir.exists());
+    let code = run_hook_with_env(
+        "pre-check",
+        r#"{"tool_name": "Read", "tool_input": {"file_path": "src/main.rs"}}"#,
+        &[("PHRONESIS_CAPTURE_DIR", dir.to_str().expect("utf8"))],
+    );
+    assert_eq!(code, 0, "capture must not change hook behavior");
+
+    let records = read_capture(&dir);
+    assert_eq!(records.len(), 1, "one captured record in the created dir");
+    assert_eq!(records[0]["raw"]["tool_name"], "Read");
 }

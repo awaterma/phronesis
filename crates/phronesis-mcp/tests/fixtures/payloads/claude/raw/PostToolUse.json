@@ -1,0 +1,32 @@
+{
+  "cwd": "/home/dev/project",
+  "duration_ms": 130,
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "permission_mode": "bypassPermissions",
+  "prompt_id": "claude-p-001",
+  "session_id": "sess-00000000",
+  "tool_input": {
+    "command": "git add -A && git commit -m \"evidence: notes 2\"",
+    "description": "Stage and commit NOTES.md update"
+  },
+  "tool_name": "Bash",
+  "tool_response": {
+    "gitOperation": {
+      "commit": {
+        "branch": "main",
+        "kind": "committed",
+        "sha": "716ee4a"
+      }
+    },
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false,
+    "stderr": "",
+    "stdout": "[main 716ee4a] evidence: notes 2\n 1 file changed, 1 insertion(+)"
+  },
+  "tool_use_id": "toolu_01HHG8YJ5hfoW1fNRpmZ8PGE",
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
+}

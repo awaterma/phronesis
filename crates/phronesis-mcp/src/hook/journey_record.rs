@@ -116,18 +116,33 @@ fn build_journal_record(input: JournalRecordInput<'_>) -> journey::journal::Jour
         .map(|s| s.to_string());
     let mut all_tags = input.tag_result.tags;
     all_tags.extend(input.outcome_tags);
+    // `invoke_agent` has no file path; its `tool_input.prompt` is a sub-agent
+    // task and must never become one. The synthetic value is what
+    // `journey_distinct` on `path` sees (spec §"Where the writes happen").
+    let path = if input.tool_name == "invoke_agent" {
+        crate::hook::lifecycle_wiring::INVOKE_AGENT_PATH.to_string()
+    } else {
+        input.file_path.to_string()
+    };
     journey::journal::JournalRecord {
-        v: 1,
+        v: journey::journal::JOURNAL_V,
         ts: super::unix_secs_now(),
         sid: journey::current_sid(input.project_root),
         seq: super::seq::next_seq(input.project_root),
         tool: input.tool_name.to_string(),
-        path: input.file_path.to_string(),
+        path,
         ext,
         module: input.module,
         tags: all_tags,
         subject: input.subject,
         command_exit: input.command_exit,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     }
 }
 
@@ -309,6 +324,10 @@ mod tests {
             tool_name: Some(tool_name.to_string()),
             tool_input: Some(input),
             tool_output: None,
+            session_id: None,
+            tool_use_id: None,
+            hook_event_name: None,
+            agent_id: None,
         }
     }
 
@@ -460,6 +479,10 @@ mod tests {
             tool_name: Some("Bash".to_string()),
             tool_input: Some(serde_json::json!({ "command": "cargo build --workspace" })),
             tool_output: Some(output),
+            session_id: None,
+            tool_use_id: None,
+            hook_event_name: None,
+            agent_id: None,
         }
     }
 

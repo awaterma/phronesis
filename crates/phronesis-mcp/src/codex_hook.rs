@@ -25,6 +25,11 @@ use serde::Deserialize;
 use crate::action_log;
 use crate::context;
 use crate::journey;
+use crate::lifecycle::event::{Host, Kind, LifecycleEvent, Mode};
+use crate::lifecycle::inflight;
+use crate::lifecycle::record::record;
+use crate::lifecycle::scrub;
+use crate::lifecycle::state;
 use crate::outcomes;
 use crate::security;
 
@@ -48,6 +53,36 @@ struct CodexPayload {
     tool_input: Option<serde_json::Value>,
     #[serde(default)]
     tool_response: Option<serde_json::Value>,
+    /// Sub-agent identity on `SubagentStart` / `SubagentStop`.
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    agent_type: Option<String>,
+    /// Main-session transcript; carried by `Interrupt` and most events.
+    #[serde(default)]
+    #[allow(dead_code)] // deserialized so the capture tee can redact it; never read
+    transcript_path: Option<String>,
+    /// `SubagentStop` only.
+    #[serde(default)]
+    #[allow(dead_code)] // deserialized so the capture tee can redact it; never read
+    agent_transcript_path: Option<String>,
+    /// `SubagentStop` only. Redacted before capture; never journaled.
+    #[serde(default)]
+    #[allow(dead_code)] // deserialized so the capture tee can redact it; never read
+    last_assistant_message: Option<String>,
+    /// True when the host re-runs a stop hook after a block. `Stop` and
+    /// `SubagentStop`.
+    #[serde(default)]
+    stop_hook_active: Option<bool>,
+    /// `UserPromptSubmit` only, verbatim. Scrubbed before it reaches the log.
+    #[serde(default)]
+    prompt: Option<String>,
+    /// `SessionStart` only: `startup` | `resume` | `clear` | `compact` | `fork`.
+    /// Task 7 widens the registration matcher to `""`, so `compact` and `fork`
+    /// reach the handler for the first time and the gate is what keeps them
+    /// from orphaning an open sub-agent.
+    #[serde(default)]
+    source: Option<String>,
 }
 
 struct PatchFile {
@@ -76,7 +111,7 @@ struct CodexDecision {
 
 pub async fn run(event: &str) -> ! {
     let root = security::project_root();
-    let parsed = parse_payload();
+    let parsed = parse_payload(event);
     let fallback;
     let (event, result) = match parsed.as_ref() {
         Ok(payload) => {
@@ -97,8 +132,11 @@ pub async fn run(event: &str) -> ! {
     process::exit(0);
 }
 
-fn parse_payload() -> anyhow::Result<CodexPayload> {
+fn parse_payload(event: &str) -> anyhow::Result<CodexPayload> {
     let raw = security::read_stdin_capped()?;
+    // Tees to PHRONESIS_CAPTURE_DIR when set, after redacting free-text
+    // fields. Best-effort: never changes the response or the exit code.
+    crate::hook::capture_raw_payload(event, &raw);
     Ok(serde_json::from_str(&raw)?)
 }
 
@@ -128,17 +166,154 @@ async fn dispatch(payload: &CodexPayload, event: &str, root: &Path) -> CodexDeci
         "PreToolUse" | "pre-tool-use" => handle_pre(payload, root).await,
         "PostToolUse" | "post-tool-use" => handle_post(payload, root).await,
         "SessionStart" | "session-start" => {
+            // Source-gated. The shared `session` file is the single source of
+            // session identity for every host (spec §Correlation state), and a
+            // session-begin source (`startup` / `resume` / `clear`, or an absent
+            // source) overwrites it and truncates agents/inflight, closing any
+            // turn left open by a crashed or aborted previous session.
+            //
+            // `compact` and `fork` continue the current session, so its open
+            // sub-agents and in-flight tools are real. Task 7 widens the
+            // registration matcher from `"startup|resume|clear"` to `""`, which
+            // is safe ONLY because of this gate: without it, a mid-session
+            // compaction would orphan every open sub-agent and discard every
+            // in-flight tool, on a path that did not fire at all before.
+            if state::is_session_begin(payload.source.as_deref()) {
+                if let Some(sid) = payload.session_id.as_deref().filter(|s| !s.is_empty()) {
+                    state::set_session(root, sid);
+                }
+                state::reset_for_session_start(root);
+            }
             make_ctx_decision(root, ContextKind::SessionStart).await
         }
         "UserPromptSubmit" | "user-prompt-submit" => {
+            record_prompt(payload, root);
             make_ctx_decision(root, ContextKind::InteractionContext).await
         }
         "PreCompact" | "pre-compact" => make_compact_decision(root, true),
         "PostCompact" | "post-compact" => make_ctx_decision(root, ContextKind::PostCompact).await,
         "SubagentStart" | "subagent-start" => {
+            // Record first so the Stamped seq is available for the synthesized
+            // id fallback (spec §Correlation state). Codex always supplies
+            // agent_id today; the fallback keeps `agents` poppable if it stops.
+            let stamped = record(root, lifecycle_event(payload, Kind::SubagentStart));
+            let agent_id = payload.agent_id.clone().unwrap_or_else(|| match &stamped {
+                Some(s) => format!("{}:{}", s.sid, s.seq),
+                None => format!("codex:{}", unix_secs_now()),
+            });
+            state::push_agent(
+                root,
+                state::OpenAgent {
+                    agent_id,
+                    // Sanitized on the way in, so `agents` can never hand a
+                    // hostile type back to a later stop's backfill.
+                    agent_type: payload
+                        .agent_type
+                        .as_deref()
+                        .and_then(crate::lifecycle::event::sanitize_agent_type),
+                    ts: stamped.as_ref().map_or_else(unix_secs_now, |s| s.ts),
+                    seq: stamped.as_ref().map_or(0, |s| s.seq),
+                },
+            );
             make_ctx_decision(root, ContextKind::SubagentStart).await
         }
-        "SubagentStop" | "subagent-stop" | "Stop" | "stop" => make_completion_decision(root),
+        // NOTE the shape of both arms: the decision is made FIRST, and the
+        // record is written only when it does not block. A blocked stop means
+        // the host continues the same turn, so it is not a stop — recording one
+        // would close a turn that is still running and the next steer would
+        // classify `fresh`, losing the intervention (spec §"Host adapters /
+        // Codex CLI", and the same rule as on Claude).
+        //
+        // `stop_hook_active: true` skips the gate entirely, as the docs require,
+        // so a blocking gate cannot loop; the re-fire is the invocation that
+        // records.
+        "SubagentStop" | "subagent-stop" => {
+            let decision = completion_decision_for_stop(root, payload);
+            if !blocks(&decision) {
+                let opened = state::pop_agent(root, payload.agent_id.as_deref());
+                let now = unix_secs_now();
+                let mut event = lifecycle_event(payload, Kind::SubagentStop)
+                    .with_extra("matched_start", opened.is_some())
+                    .with_extra(
+                        "stop_hook_active",
+                        payload.stop_hook_active.unwrap_or(false),
+                    );
+                if let Some(open) = &opened {
+                    event = event.with_extra("duration_secs", now.saturating_sub(open.ts));
+                }
+                // Backfill identity the stop payload omitted. Through
+                // `with_agent`, never by field assignment: that is the one
+                // place `agent_type` is sanitized, and a direct write would
+                // put an unfiltered string into a `lifecycle:agent:*` tag.
+                let agent_id = payload
+                    .agent_id
+                    .clone()
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| opened.as_ref().map(|o| o.agent_id.clone()));
+                if let Some(id) = agent_id {
+                    let agent_type = payload
+                        .agent_type
+                        .clone()
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| opened.as_ref().and_then(|o| o.agent_type.clone()));
+                    event = event.with_agent(id, agent_type);
+                }
+                record(root, event);
+            }
+            // **`SubagentStop` never closes `turn`.** A sub-agent finishing does
+            // not end the human's turn; only the main-agent `Stop` does. The two
+            // arms used to share a body, which is exactly how this gets lost.
+            decision
+        }
+        "Stop" | "stop" => {
+            let decision = completion_decision_for_stop(root, payload);
+            if !blocks(&decision) {
+                // Close before recording so a concurrent prompt hook cannot read
+                // the turn as still open.
+                state::close_turn(root, "stop");
+                record(
+                    root,
+                    lifecycle_event(payload, Kind::Stop).with_extra(
+                        "stop_hook_active",
+                        payload.stop_hook_active.unwrap_or(false),
+                    ),
+                );
+            }
+            decision
+        }
+        // Codex fires Interrupt on abort, before TurnAborted, with the
+        // transcript flushed. Stop does not fire, so this is the only end of
+        // an aborted turn. Its schema permits `systemMessage` only.
+        "Interrupt" | "interrupt" => {
+            record(
+                root,
+                lifecycle_event(payload, Kind::Interrupt).with_extra("inferred_from", "hook"),
+            );
+            // `{open: false, last_event: "interrupt"}`. The next prompt reads
+            // `last_event` in classification step 1 and comes out `correction`
+            // with no second interrupt record — the single
+            // interrupt-already-recorded path, on every host.
+            state::close_turn(root, "interrupt");
+            // The aborted tools' PostToolUse never fires; a lingering entry
+            // would fake an interrupt for 900 s.
+            state::clear_inflight(root);
+            empty_decision()
+        }
+        // A session ending with a turn still open ended without a Stop:
+        // record the stop so the turn is closed in the journal too. `session` is
+        // left in place — the next session-begin SessionStart overwrites it, and
+        // truncating would let any stray hook between sessions mint a throwaway
+        // sid (spec §"Host adapters / Codex CLI").
+        "SessionEnd" | "session-end" => {
+            // Only an open turn is closed here: an already-closed turn may
+            // carry `last_event: "interrupt"`, which the next prompt's
+            // classification depends on.
+            if state::read_turn(root).open {
+                record(root, lifecycle_event(payload, Kind::Stop));
+                state::close_turn(root, "stop");
+            }
+            empty_decision()
+        }
         _ => empty_decision(),
     }
 }
@@ -149,6 +324,110 @@ fn empty_decision() -> CodexDecision {
         warn_messages: Vec::new(),
         additional_context: String::new(),
         files: Vec::new(),
+    }
+}
+
+/// A `LifecycleEvent` pre-filled from the identity fields any Codex payload
+/// may carry. Callers add the kind-specific mode, prompt, and extras.
+fn lifecycle_event(payload: &CodexPayload, kind: Kind) -> LifecycleEvent {
+    let mut event = LifecycleEvent::new(kind, Host::Codex);
+    if let Some(sid) = payload.session_id.as_deref().filter(|s| !s.is_empty()) {
+        event = event.with_session(sid);
+    }
+    if let Some(tid) = payload.turn_id.as_deref().filter(|s| !s.is_empty()) {
+        event = event.with_turn(tid);
+    }
+    if let Some(aid) = payload.agent_id.as_deref().filter(|s| !s.is_empty()) {
+        event = event.with_agent(aid, payload.agent_type.clone());
+    }
+    event
+}
+
+fn unix_secs_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// The completion decision for a stop event. `stop_hook_active: true` skips the
+/// gate entirely and responds `{}`, as the host docs require: without it a
+/// blocking gate re-fires forever.
+fn completion_decision_for_stop(root: &Path, payload: &CodexPayload) -> CodexDecision {
+    if payload.stop_hook_active.unwrap_or(false) {
+        return empty_decision();
+    }
+    make_completion_decision(root)
+}
+
+/// Did the decision block? `render_completion` emits the block shape exactly
+/// when `block_messages` is non-empty, so this is the same predicate the
+/// response speaks — structural, not a substring test.
+fn blocks(decision: &CodexDecision) -> bool {
+    !decision.block_messages.is_empty()
+}
+
+/// Classify the prompt, record any inferred interrupt, record the prompt with
+/// its scrubbed text, and open the turn. Spec §Classification.
+fn record_prompt(payload: &CodexPayload, root: &Path) {
+    let now = unix_secs_now();
+    // Read before `classify_prompt`, which may rewrite the file.
+    let turn = state::read_turn(root);
+    let context = state::PromptContext {
+        host: Host::Codex,
+        now,
+        agent_id: payload.agent_id.as_deref(),
+        turn_id: payload.turn_id.as_deref(),
+        // Codex needs no transcript scan: its Interrupt hook is ground truth,
+        // and step 1 reads the result from `turn.last_event`.
+        transcript_path: None,
+    };
+    let classification = state::classify_prompt(root, &context);
+
+    // Codex fires UserPromptSubmit with the *running* turn's id for a message
+    // queued mid-turn, which is spec step 3's second sufficient signal for
+    // `mid_turn`. The `inflight` branch is off on Codex, so an open turn with no
+    // interrupt evidence already classifies `mid_turn` and the two signals
+    // agree; the assertion is here rather than an override, so a future
+    // divergence is loud instead of silently papered over.
+    debug_assert!(
+        !(turn.open
+            && payload.turn_id.is_some()
+            && turn.turn_id.as_deref() == payload.turn_id.as_deref()
+            && classification.mode != Mode::MidTurn
+            && classification.interrupt.is_none()),
+        "a message queued in the running turn classified as {:?}",
+        classification.mode
+    );
+
+    // `Some(source)` means this handler must write the record. `None` with mode
+    // `Correction` means the `Interrupt` arm already wrote it, and a second
+    // record would double-count the friction. On Codex today only the second
+    // case occurs.
+    if let Some(source) = classification.interrupt {
+        record(
+            root,
+            lifecycle_event(payload, Kind::Interrupt).with_extra("inferred_from", source.as_str()),
+        );
+    }
+
+    let mut event = lifecycle_event(payload, Kind::Prompt).with_mode(classification.mode);
+    if let Some(text) = payload.prompt.as_deref().filter(|t| !t.is_empty()) {
+        event = event.with_prompt(scrub::scrub_prompt(root, text));
+    }
+    record(root, event);
+
+    // A prompt carrying an `agent_id` never writes `turn` — a sub-agent's prompt
+    // must not move the parent's turn state (spec §Correlation state). Codex
+    // does not deliver prompts inside sub-agents today; the guard costs one line
+    // and means this adapter does not have to be revisited if it starts.
+    if payload
+        .agent_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .is_none()
+    {
+        state::open_turn(root, payload.turn_id.as_deref(), now);
     }
 }
 
@@ -329,6 +608,62 @@ async fn fire_verdict(network: &phr::ReteNetwork, root: &Path) -> Result<Verdict
 // ---------------------------------------------------------------------------
 
 async fn handle_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
+    // `init` routes Codex's tool phases here rather than to `pre-check` /
+    // `post-check`, so the `inflight` correlation entry and commit detection
+    // are this adapter's own (spec §"Host adapters / Codex CLI"). The push
+    // happens before the supported-tool allowlist, so a tool Phronesis does not
+    // govern still makes the next prompt a `correction`.
+    let key = pre_push_inflight(root, payload);
+    let decision = evaluate_pre(payload, root).await;
+    if !decision.block_messages.is_empty() {
+        // The tool never ran: a block is not an interrupt, so the entry must
+        // not survive to fake one for the next 900 s.
+        inflight::drop_entry(root, &key);
+    }
+    decision
+}
+
+/// Read this payload as a shared [`inflight::Call`].
+fn inflight_call<'a>(
+    payload: &'a CodexPayload,
+    tool: &'a str,
+    command: &'a str,
+) -> inflight::Call<'a> {
+    inflight::Call {
+        tool,
+        tool_use_id: payload.tool_use_id.as_deref(),
+        tool_input: payload
+            .tool_input
+            .as_ref()
+            .unwrap_or(&serde_json::Value::Null),
+        command,
+        agent_id: payload.agent_id.as_deref(),
+        // Codex reports no commit of its own; HEAD is the only witness here.
+        host_sha: None,
+    }
+}
+
+/// Push the in-flight entry and return its key.
+fn pre_push_inflight(root: &Path, payload: &CodexPayload) -> String {
+    let tool = payload.tool_name.clone().unwrap_or_default();
+    let command = extract_bash_command(payload);
+    inflight::push(root, &inflight_call(payload, &tool, &command))
+}
+
+/// Pop the entry this call pushed and, for a shell call that may have moved
+/// HEAD, record a `commit`.
+fn post_pop_and_detect(root: &Path, payload: &CodexPayload) {
+    let tool = payload.tool_name.clone().unwrap_or_default();
+    let command = extract_bash_command(payload);
+    inflight::pop_and_detect(
+        root,
+        &inflight_call(payload, &tool, &command),
+        extract_command_exit(payload),
+        |kind| lifecycle_event(payload, kind),
+    );
+}
+
+async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     let file_path = extract_file_path(payload.tool_input.as_ref());
     let call = ToolCall::from_payload(payload, &file_path);
 
@@ -584,6 +919,10 @@ async fn assert_patch_content(
 // ---------------------------------------------------------------------------
 
 async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
+    // Before the allowlist, mirroring the push in `handle_pre`: every entry
+    // that phase created is popped here, governed tool or not.
+    post_pop_and_detect(root, payload);
+
     let file_path = extract_file_path(payload.tool_input.as_ref());
     let call = ToolCall::from_payload(payload, &file_path);
 
@@ -973,12 +1312,19 @@ fn log_event(
         tool_name,
         file_path,
     } = *call;
-    let path = action_log::default_path(&security::project_root());
+    let root = security::project_root();
+    let path = action_log::default_path(&root);
     let mut entry = action_log::LogEntry::new("hook", "codex_hook")
         .with("phase", phase.to_string())
         .with("tool", tool_name.to_string())
         .with("exit", exit)
         .with("host", "codex".to_string());
+    // The open work unit, exactly as `hook/mod.rs::log_hook_event` stamps it on
+    // `pre_check` / `post_check`. Without it a Codex session's rule evaluations
+    // join to no work item and `unit show` reports zero for a governed unit.
+    if let Some(subject) = crate::outcomes::subject::current(&root) {
+        entry = entry.with("subject", subject);
+    }
     let affected_files = if tool_name == "apply_patch" {
         codex_patch::parse_patch(&extract_bash_command(payload))
             .into_iter()
@@ -1050,15 +1396,16 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
     };
     let (outcome_tags, subject, command_exit) = extract_post_outcomes(payload, &root, tool);
     let record = journey::journal::JournalRecord {
-        v: 1,
+        // Tool records and lifecycle records share one schema version.
+        v: journey::journal::JOURNAL_V,
         ts: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0),
-        sid: payload
-            .session_id
-            .clone()
-            .unwrap_or_else(|| journey::current_sid(&root)),
+        // Session identity comes from the shared `session` file, as on every
+        // other host; `payload.session_id` can disagree after a fork or resume
+        // (spec §Premise, "two session-id sources can disagree").
+        sid: journey::current_sid(&root),
         seq: crate::hook::seq::next_seq(&root),
         tool: tool.to_string(),
         path: file_path.to_string(),
@@ -1070,6 +1417,13 @@ async fn journal_post(payload: &CodexPayload, file_path: &str) {
         tags: tag_result.tags.into_iter().chain(outcome_tags).collect(),
         subject,
         command_exit,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
     };
     let _ = journey::journal::append(&root, &record);
 }

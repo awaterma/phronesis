@@ -34,6 +34,13 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         }
     };
 
+    let root = security::project_root();
+    let raw_tool = payload.tool_name.clone().unwrap_or_default();
+    super::lifecycle_wiring::post_pop_and_detect(&root, &payload, &raw_tool);
+    if raw_tool == "invoke_agent" {
+        super::lifecycle_wiring::gemini_subagent_stop(&root);
+    }
+
     let tool_name = match &payload.tool_name {
         Some(name)
             if name == "Edit"
@@ -42,7 +49,8 @@ pub async fn run_post_check() -> anyhow::Result<()> {
                 || name == "Bash"
                 || name == "replace"
                 || name == "write_file"
-                || name == "run_shell_command" =>
+                || name == "run_shell_command"
+                || name == "invoke_agent" =>
         {
             name.clone()
         }
@@ -60,7 +68,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     // warnings permanently. Best-effort: the edit already happened, so a
     // graph write failure must not interrupt the user (see `graph::sync`).
     if !file_path.is_empty() {
-        crate::graph::sync::record_from_disk(&security::project_root(), &file_path);
+        crate::graph::sync::record_from_disk(&root, &file_path);
     }
 
     let (rules, override_facts, content_patterns, bash_command_patterns, missing_patterns) = {
@@ -111,19 +119,14 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         // before update_agenda. Fail-open on transient I/O; surface config
         // errors as a post-check warning (the action already happened — the
         // next pre-check will block until the config is fixed).
-        if let Err(e) = super::assert_journey_facts_into(
-            &mut net,
-            &security::project_root(),
-            &rules_for_journey,
-        )
-        .await
+        if let Err(e) = super::assert_journey_facts_into(&mut net, &root, &rules_for_journey).await
         {
             eprintln!("phronesis: WARNING — {}", e);
             process::exit(1);
         }
         // Pack-marker facts (e.g. `confidence_enabled`) — let rules from one
         // pack self-deactivate when a superseding pack is opted in.
-        super::assert_pack_marker_facts(&net, &security::project_root()).await;
+        super::assert_pack_marker_facts(&net, &root).await;
         net
     };
 
@@ -157,12 +160,8 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     }
 
     let provider_event = super::provider_event(&payload, &tool_name, &file_path, "post");
-    if let Err(error) = crate::predicate_provider::assert_facts(
-        &network,
-        &security::project_root(),
-        &provider_event,
-    )
-    .await
+    if let Err(error) =
+        crate::predicate_provider::assert_facts(&network, &root, &provider_event).await
     {
         eprintln!("phronesis: WARNING — {error}");
         process::exit(1);
@@ -177,6 +176,8 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     // Post-check can't undo the edit, so violations and warnings collapse to
     // the same exit code (1). The single `consequences` array on the log entry
     // preserves which rule emitted which severity for downstream consumers.
+    // Read once for both exit paths below; see `hook/pre.rs` for why.
+    let subject = crate::outcomes::subject::current(&security::project_root());
     if evaluation.violations.is_empty() && evaluation.warnings.is_empty() {
         super::log_hook_event(&super::LogEventInput {
             phase: "post",
@@ -185,6 +186,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
             exit: 0,
             command_exit: evaluation.command_exit,
             consequences: &evaluation.logged,
+            subject: subject.as_deref(),
         });
         // Journal the executed call at the tail — see SPEC §"Where it
         // plugs into the hook" — after the decision is logged, before the
@@ -206,6 +208,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         exit: 1,
         command_exit: evaluation.command_exit,
         consequences: &evaluation.logged,
+        subject: subject.as_deref(),
     });
     super::journey_record::journey_record_post(&payload, &tool_name, &file_path).await;
     process::exit(1);

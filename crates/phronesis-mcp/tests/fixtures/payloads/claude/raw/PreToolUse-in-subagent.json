@@ -1,0 +1,19 @@
+{
+  "agent_id": "a36af5c22bb836f19",
+  "agent_type": "Explore",
+  "cwd": "/home/dev/project",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "permission_mode": "bypassPermissions",
+  "prompt_id": "claude-p-002",
+  "session_id": "sess-00000000",
+  "tool_input": {
+    "command": "git log --oneline | head -3",
+    "description": "Show last 3 git log entries"
+  },
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_01WvZxHiNZg94J15Ck2Er6iG",
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
+}

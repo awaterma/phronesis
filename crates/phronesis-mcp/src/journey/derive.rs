@@ -62,8 +62,78 @@ pub struct DeriveInput<'a> {
 }
 
 struct WindowContext<'a> {
+    /// Every record read, in append order. Time and session windows filter this.
     records: &'a [JournalRecord],
+    /// `records` with lifecycle records removed. Positional (`Nc`) windows and
+    /// `journey_distinct` use this so existing rules keep identical facts.
+    tool_records: &'a [JournalRecord],
     scope: WindowScope<'a>,
+}
+
+/// The **closed** set of built-in lifecycle selectors, verbatim from
+/// SPEC-agent-lifecycle-events §"Event model". Closed on purpose: a typo like
+/// `lifecycle:prompt:corection` must still fail as `UndefinedSelector` rather
+/// than validate and silently match nothing forever.
+pub(crate) const LIFECYCLE_SELECTORS: [&str; 14] = [
+    "lifecycle:subagent_start",
+    "lifecycle:subagent_stop",
+    "lifecycle:prompt",
+    "lifecycle:prompt:fresh",
+    "lifecycle:prompt:mid_turn",
+    "lifecycle:prompt:correction",
+    "lifecycle:intervention",
+    "lifecycle:interrupt",
+    "lifecycle:stop",
+    "lifecycle:commit",
+    "lifecycle:kalpa_start",
+    "lifecycle:kalpa_end",
+    "lifecycle:unit_start",
+    "lifecycle:unit_end",
+];
+
+/// Built-in selectors that need no tagger definition: the closed set above plus
+/// the two open-ended patterns `lifecycle:agent:<agent_type>` and
+/// `kalpa:<name>`, both of which must carry a non-empty suffix.
+fn is_builtin_selector(selector: &str) -> bool {
+    LIFECYCLE_SELECTORS.contains(&selector)
+        || selector
+            .strip_prefix("lifecycle:agent:")
+            .is_some_and(|rest| !rest.is_empty())
+        || selector
+            .strip_prefix("kalpa:")
+            .is_some_and(|rest| !rest.is_empty())
+}
+
+/// One warning per rule that pairs a built-in lifecycle selector with a
+/// positional (`Nc`) window. Positional windows run over the tool projection,
+/// so such a pair yields no facts and the rule can never fire; the spec asks
+/// that this say so instead of sitting silent. Returned as strings rather than
+/// printed so a test can assert the text.
+pub fn lifecycle_window_warnings(rules: &[Rule], scan: &RuleScan) -> Vec<String> {
+    let mut out = Vec::new();
+    let pairs = scan
+        .occurrence_pairs
+        .iter()
+        .chain(scan.count_pairs.iter())
+        .chain(scan.seen_pairs.iter());
+    for (sel, win) in pairs {
+        if !is_builtin_selector(sel) || !matches!(Window::parse(win), Ok(Window::Calls(_))) {
+            continue;
+        }
+        let rule_id = rules
+            .iter()
+            .find(|r| rule_refs_selector(r, sel))
+            .map(|r| r.id.clone())
+            .unwrap_or_else(|| "<unknown>".to_string());
+        out.push(format!(
+            "phronesis: rule `{rule_id}` pairs lifecycle selector `{sel}` with call window \
+             `{win}`; positional windows count tool calls only, so this condition can never \
+             match — use an `s` or time window instead"
+        ));
+    }
+    out.sort();
+    out.dedup();
+    out
 }
 
 // ===== Window =====
@@ -108,6 +178,7 @@ impl Window {
             .map_err(|_| DeriveError::BadWindow(token.to_string()))?;
         match last {
             'c' => Ok(Window::Calls(n as u32)),
+            's' => Ok(Window::Seconds(n)),
             'm' => Ok(Window::Seconds(n * 60)),
             'h' => Ok(Window::Seconds(n * 3600)),
             'd' => Ok(Window::Seconds(n * 86_400)),
@@ -445,7 +516,17 @@ pub fn validate_selectors(
         referenced.insert(counted.clone());
     }
 
+    for warning in lifecycle_window_warnings(rules, scan) {
+        eprintln!("{warning}");
+    }
+
     for selector in &referenced {
+        // `lifecycle:` and `kalpa:` are built-in namespaces written by the
+        // lifecycle module itself, not by a tagger, so they have no entry in
+        // `journey.json` and must not fail closed. Everything else still does.
+        if is_builtin_selector(selector) {
+            continue;
+        }
         let ok = if let Some(name) = selector.strip_prefix("module:") {
             defined_modules.contains(selector) || cfg.modules.iter().any(|m| m.name == name)
         } else {
@@ -501,31 +582,30 @@ pub async fn assert_facts(
     let scan = scan_rules(input.rules)?;
     validate_selectors(input.rules, &scan, input.config)?;
 
-    // Read bound: pick the widest. If any rule needs the session window we
-    // read up to the hard cap and let the per-window filter drop the rest;
-    // the alternative (true reverse-scan until sid changes) is a future
-    // optimization, not a v1 contract.
-    let read_n = {
-        let max_calls = scan.max_call_window();
-        let max_seconds = scan.max_time_seconds();
-        let needs_session = scan.references_session();
-        let needs_since = !scan.since_max_k.is_empty();
-        let needs_filtered_since = !scan.filtered_since_max_k.is_empty();
-        if needs_session || needs_since || needs_filtered_since || max_seconds > 0 {
-            // session floor / time window / distance-since-last all need an
-            // open-ended look-back; let the hard cap bound the cost and let
-            // the per-record filter drop the rest.
-            journal::SUFFIX_HARD_CAP
-        } else {
-            // Calls-only window: read exactly enough records to satisfy the
-            // largest call window.
-            (max_calls as usize).max(1)
-        }
+    let max_calls = scan.max_call_window();
+    let max_seconds = scan.max_time_seconds();
+    let needs_wide = scan.references_session()
+        || !scan.since_max_k.is_empty()
+        || !scan.filtered_since_max_k.is_empty()
+        || max_seconds > 0;
+
+    let records = if needs_wide {
+        // Session floor / time window / distance-since-last all need an
+        // open-ended look-back; the hard cap bounds the cost and the
+        // per-record filter drops the rest. Unchanged from v1.
+        journal::read_recent(input.project_root, journal::SUFFIX_HARD_CAP)?
+    } else {
+        read_for_call_window(input.project_root, (max_calls as usize).max(1))?
     };
 
-    let records = journal::read_recent(input.project_root, read_n)?;
+    let tool_records: Vec<JournalRecord> = records
+        .iter()
+        .filter(|r| !r.is_lifecycle())
+        .cloned()
+        .collect();
     let context = WindowContext {
         records: &records,
+        tool_records: &tool_records,
         scope: input.scope,
     };
 
@@ -538,27 +618,60 @@ pub async fn assert_facts(
     Ok(())
 }
 
+/// Read until `want` **tool** records are in hand. A `Calls(n)` window means
+/// *n tool records*, and lifecycle records now share the file, so reading `n`
+/// lines can return fewer than `n` tool records. Double the read until the
+/// window is satisfied, the file start is reached, or `SUFFIX_HARD_CAP` binds.
+/// Reading more lines never changes a fact: the `Nc` branch is positional and
+/// the projection trims to the last `n` tool records.
+///
+/// The hard-cap stop is the one deviation the spec names and accepts: a tail so
+/// lifecycle-dense that `SUFFIX_HARD_CAP` binds first returns fewer than `want`
+/// tool records.
+fn read_for_call_window(
+    project_root: &Path,
+    want: usize,
+) -> Result<Vec<JournalRecord>, DeriveError> {
+    let mut n = want.max(1);
+    loop {
+        let records = journal::read_recent(project_root, n)?;
+        let tools = records.iter().filter(|r| !r.is_lifecycle()).count();
+        // `records.len() < n` means the read reached the start of the file, so
+        // no further doubling can find another record. Without that check a
+        // short journal doubles all the way to the hard cap on every hook.
+        if tools >= want || records.len() < n || n >= journal::SUFFIX_HARD_CAP {
+            return Ok(records);
+        }
+        n = n.saturating_mul(2).min(journal::SUFFIX_HARD_CAP);
+    }
+}
+
 // ===== Filtering helpers =====
+
+/// Records a window token evaluates over: positional windows use the tool
+/// projection, time and session windows use every record.
+fn window_records<'a>(context: &WindowContext<'a>, window_tok: &str) -> &'a [JournalRecord] {
+    match Window::parse(window_tok) {
+        Ok(Window::Calls(_)) => context.tool_records,
+        _ => context.records,
+    }
+}
 
 fn record_in_window(
     rec: &JournalRecord,
     window_tok: &str,
     rec_idx: usize,
-    context: &WindowContext<'_>,
+    total: usize,
+    scope: &WindowScope<'_>,
 ) -> bool {
     let window = match Window::parse(window_tok) {
         Ok(w) => w,
         Err(_) => return false,
     };
     match window {
-        Window::Calls(n) => {
-            // Last n records (by position in `records`, which is append order).
-            let total = context.records.len();
-            let start = total.saturating_sub(n as usize);
-            rec_idx >= start
-        }
-        Window::Seconds(s) => rec.ts + s >= context.scope.now_ts,
-        Window::Session => rec.sid == context.scope.current_sid,
+        Window::Calls(n) => rec_idx >= total.saturating_sub(n as usize),
+        Window::Seconds(s) => rec.ts + s >= scope.now_ts,
+        Window::Session => rec.sid == scope.current_sid,
     }
 }
 
@@ -574,12 +687,13 @@ fn matches_selector(rec: &JournalRecord, selector: &str) -> bool {
 
 async fn emit_occurrence(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
     for (sel, win) in &scan.occurrence_pairs {
+        let view = window_records(context, win);
         let mut n = 0u64;
-        for (i, rec) in context.records.iter().enumerate() {
+        for (i, rec) in view.iter().enumerate() {
             if !matches_selector(rec, sel) {
                 continue;
             }
-            if !record_in_window(rec, win, i, context) {
+            if !record_in_window(rec, win, i, view.len(), &context.scope) {
                 continue;
             }
             n += 1;
@@ -593,9 +707,6 @@ async fn emit_occurrence(network: &ReteNetwork, context: &WindowContext<'_>, sca
                     source: Some("journey".to_string()),
                 })
                 .await;
-            // Avoid unbounded blow-up if windows are degenerate; the hard
-            // cap on suffix already bounds `records.len()`, but be
-            // defensive.
             if n > journal::SUFFIX_HARD_CAP as u64 {
                 break;
             }
@@ -605,12 +716,13 @@ async fn emit_occurrence(network: &ReteNetwork, context: &WindowContext<'_>, sca
 
 async fn emit_count(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
     for (sel, win) in &scan.count_pairs {
+        let view = window_records(context, win);
         let mut count = 0u64;
-        for (i, rec) in context.records.iter().enumerate() {
+        for (i, rec) in view.iter().enumerate() {
             if !matches_selector(rec, sel) {
                 continue;
             }
-            if !record_in_window(rec, win, i, context) {
+            if !record_in_window(rec, win, i, view.len(), &context.scope) {
                 continue;
             }
             count += 1;
@@ -630,10 +742,10 @@ async fn emit_count(network: &ReteNetwork, context: &WindowContext<'_>, scan: &R
 
 async fn emit_seen(network: &ReteNetwork, context: &WindowContext<'_>, scan: &RuleScan) {
     for (sel, win) in &scan.seen_pairs {
-        let any =
-            context.records.iter().enumerate().any(|(i, rec)| {
-                matches_selector(rec, sel) && record_in_window(rec, win, i, context)
-            });
+        let view = window_records(context, win);
+        let any = view.iter().enumerate().any(|(i, rec)| {
+            matches_selector(rec, sel) && record_in_window(rec, win, i, view.len(), &context.scope)
+        });
         if !any {
             continue;
         }
@@ -657,8 +769,11 @@ async fn emit_since_ge(network: &ReteNetwork, records: &[JournalRecord], scan: &
         let mut distance: Option<u32> = None;
         for (i, rec) in records.iter().enumerate().rev() {
             if matches_selector(rec, sel) {
-                // distance counts non-matching records *after* the matching one.
-                distance = Some((records.len() - 1 - i) as u32);
+                let after = records[i + 1..]
+                    .iter()
+                    .filter(|r| !r.is_lifecycle())
+                    .count();
+                distance = Some(after as u32);
                 break;
             }
         }
@@ -692,9 +807,12 @@ async fn emit_distinct(network: &ReteNetwork, context: &WindowContext<'_>, scan:
         if field != "path" {
             continue;
         }
+        // A lifecycle record's `path` is `""` and must never add a distinct
+        // path, so distinct always runs over the tool projection.
+        let view = context.tool_records;
         let mut seen: BTreeSet<String> = BTreeSet::new();
-        for (i, rec) in context.records.iter().enumerate() {
-            if !record_in_window(rec, win, i, context) {
+        for (i, rec) in view.iter().enumerate() {
+            if !record_in_window(rec, win, i, view.len(), &context.scope) {
                 continue;
             }
             seen.insert(rec.path.clone());
@@ -780,10 +898,18 @@ mod tests {
             tags: vec![],
             subject: None,
             command_exit: None,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
         };
         let records = std::slice::from_ref(&rec);
         let current = WindowContext {
             records,
+            tool_records: records,
             scope: WindowScope {
                 current_sid: "s-a",
                 now_ts: 0,
@@ -791,13 +917,20 @@ mod tests {
         };
         let other = WindowContext {
             records,
+            tool_records: records,
             scope: WindowScope {
                 current_sid: "s-b",
                 now_ts: 0,
             },
         };
-        assert!(record_in_window(&rec, "s", 0, &current));
-        assert!(!record_in_window(&rec, "s", 0, &other));
+        assert!(record_in_window(
+            &rec,
+            "s",
+            0,
+            records.len(),
+            &current.scope
+        ));
+        assert!(!record_in_window(&rec, "s", 0, records.len(), &other.scope));
     }
 
     #[test]
@@ -816,18 +949,44 @@ mod tests {
                 tags: vec!["t".to_string()],
                 subject: None,
                 command_exit: None,
+                kind: None,
+                mode: None,
+                host: None,
+                turn: None,
+                agent: None,
+                agent_type: None,
+                kalpa: None,
             })
             .collect();
         let context = WindowContext {
             records: &recs,
+            tool_records: &recs,
             scope: WindowScope {
                 current_sid: "s",
                 now_ts: 0,
             },
         };
-        assert!(!record_in_window(&recs[2], "2c", 2, &context));
-        assert!(record_in_window(&recs[3], "2c", 3, &context));
-        assert!(record_in_window(&recs[4], "2c", 4, &context));
+        assert!(!record_in_window(
+            &recs[2],
+            "2c",
+            2,
+            recs.len(),
+            &context.scope
+        ));
+        assert!(record_in_window(
+            &recs[3],
+            "2c",
+            3,
+            recs.len(),
+            &context.scope
+        ));
+        assert!(record_in_window(
+            &recs[4],
+            "2c",
+            4,
+            recs.len(),
+            &context.scope
+        ));
     }
 
     #[test]
@@ -844,6 +1003,13 @@ mod tests {
             tags: vec!["sql".to_string()],
             subject: None,
             command_exit: None,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
         };
         assert!(matches_selector(&rec, "sql"));
         assert!(matches_selector(&rec, "module:payments"));
