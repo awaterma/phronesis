@@ -6,6 +6,8 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.35.0] - 2026-09-21
+
 ### Added
 
 - **Agent lifecycle events from Claude Code.** A new `phr-mcp claude-hook
@@ -60,12 +62,6 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `subagent_stop` (`blocked: true`, zero duration) so the already-durable start
   never dangles. The install output notes that Gemini HTML-escapes
   injected context and skips project hooks until the folder is trusted.
-
-- Non-destructive `init --rules-only` starter syncing with a recorded baseline,
-  local override/deletion preservation, and conflict warnings.
-
-- Structural Rhai registration extraction and conservative forwarding-closure
-  backing detection. Graph format 21 invalidates older extraction caches.
 
 - `phr-mcp stats` prints a lifecycle section — sessions, prompts by mode,
   interrupts, sub-agents with median duration, and commits with their
@@ -150,6 +146,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `UndefinedSelector` on the first such rule, taking every journey fact with it,
   and reads lifecycle records as odd `__lifecycle` tool records that shift
   positional windows.
+
+## [0.34.0] - 2026-09-17
+
+### Added
+
+- Non-destructive `init --rules-only` starter syncing with a recorded baseline,
+  local override/deletion preservation, and conflict warnings.
+
+- Structural Rhai registration extraction and conservative forwarding-closure
+  backing detection. Graph format 21 invalidates older extraction caches.
 
 ## [0.33.0] - 2026-09-11
 
