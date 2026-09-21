@@ -549,6 +549,13 @@ Known limits, stated where they apply:
 - `outcome.rs`: `detect_commit(root, inflight_entry, command_exit) ->
   Option<Commit>` (§Outcomes and kalpas).
 - `scrub.rs`: `scrub_prompt(root, text) -> String` (§Privacy and scrubbing).
+- `inflight.rs`: the tool-phase wiring shared by the Claude/Gemini runners
+  (`hook/lifecycle_wiring.rs`) and the Codex adapter: push an `inflight`
+  entry before the allowlist, pop it in post, run `detect_commit`, record
+  `commit` with its markers. One implementation, two callers.
+- `kalpa_cli.rs`, `unit_cli.rs`, `unit_report.rs`: the `kalpa` and `unit`
+  subcommands and the per-work-item report (§Outcomes and kalpas, §Work
+  items). `submit_suggestion` delegates to `unit_cli::start`.
 
 All three adapters build a `LifecycleEvent` and call `record`. No adapter
 writes the journal or log directly.
@@ -806,7 +813,8 @@ anything" gets a denominator.
 - `phr-mcp kalpa start <name>` writes `{name, started_ts}` to
   `.phronesis/journey/kalpa` and records a `kalpa_start` lifecycle event with
   `host: "cli"`. `phr-mcp kalpa end` removes the file and records
-  `kalpa_end`. `phr-mcp kalpa` prints the current name and age.
+  `kalpa_end`. `phr-mcp kalpa show` prints the current name, age, and the
+  report block in §Reporting; the subcommand is required (no bare `kalpa`).
 - `<name>` is `[a-z0-9][a-z0-9-]{0,63}`; anything else is rejected with a
   message. This bounds label length and stops typos from creating unbounded
   distinct names by accident. **The pattern is a property of the value, not of
@@ -994,7 +1002,10 @@ in this spec already carry it as `subject`. This section adds three things.
 - It is **governed** when it is completed and, in addition, at least one
   `pre_check` or `post_check` entry carries its `subject` (a rule was actually
   evaluated against its edits) and the confidence band at its last commit is
-  not `low`.
+  not `low`. An absent band (confidence scoring disabled, or no signals for
+  the unit) counts as not `low`, because scoring is opt-in and its absence
+  is not evidence of failure. `kalpa show` prints this test as `band ≥ medium`
+  for brevity.
 - **Governed throughput** of a kalpa is the count of governed work items whose
   records fall inside the retention window. It is printed with the boundary,
   like every other kalpa number.
@@ -1036,8 +1047,11 @@ vocabulary. Rollout node 6 owns this section (§Rollout).
   feature exists to surface must not silently lose its oldest half to
   rotation. This is the input to a human or to `extract_rules`
   when turning friction into a proposal.
-- `get_journey` (MCP) includes lifecycle records in its existing output with
-  the same fields as the CLI. No new MCP tool.
+- `get_journey` (MCP) gains an optional `include_lifecycle` parameter
+  (default `false`). Without it the tool returns exactly the bare fact array
+  it returns today; with it the result is `{"facts": [...], "lifecycle":
+  [...]}` where the lifecycle rows carry the same fields as the CLI, never
+  prompt text. Existing consumers see no change. No new MCP tool.
 
 ## Rule examples
 
