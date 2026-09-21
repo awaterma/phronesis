@@ -410,6 +410,13 @@ fn is_allowed_absolute(path: &str) -> bool {
 /// rendered JSON a newline/tab is the two-character escape `\n` / `\t` /
 /// `\r`, so a path right after one IS at a line boundary.
 fn is_path_boundary(before: &str) -> bool {
+    // The third slash in `file:///path` starts a local absolute path, so a
+    // file URL is a boundary even though the preceding character is `/`.
+    // Other URL path tails (`https://host/Users/...`) stay excluded by the
+    // generic preceding-slash rule below.
+    if before.ends_with("file://") {
+        return true;
+    }
     let Some(prev) = before.chars().next_back() else {
         return true;
     };
@@ -1021,6 +1028,66 @@ mod tests {
             !abs_findings.is_empty(),
             "`/Users/alice/leak.txt` MUST be flagged as an Error"
         );
+    }
+
+    #[test]
+    fn file_url_absolute_path_is_flagged_as_error() {
+        let v = json!({"data": "file:///Users/alice/leak.txt"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings.iter().any(|f| {
+                f.severity == Severity::Error
+                    && f.what == "absolute path outside the project placeholder roots"
+            }),
+            "a local absolute path in a file URL must be flagged; got {findings:?}"
+        );
+    }
+
+    #[test]
+    fn http_url_path_tail_is_not_flagged_as_absolute() {
+        let v = json!({"data": "https://example.com/Users/alice/page.html"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.what != "absolute path outside the project placeholder roots"),
+            "an HTTP URL path tail is not a local absolute path; got {findings:?}"
+        );
+    }
+
+    /// The same contrast over a handful of path shapes, so a future change to
+    /// the boundary rule cannot fix one scheme by breaking the other.
+    #[test]
+    fn file_url_paths_are_detected_without_flagging_http_url_tails() {
+        for path in [
+            "/Users/alice/x",
+            "/home/bob/.ssh/id",
+            "/work/repo-2/file.txt",
+            "/a/b",
+        ] {
+            assert!(
+                !is_allowed_absolute(path),
+                "{path} must not be an allowed placeholder root for this test"
+            );
+            let file_findings = detect_residual_risks(&json!({"data": format!("file://{path}")}))
+                .expect("detectors run");
+            assert!(
+                file_findings.iter().any(|f| {
+                    f.severity == Severity::Error
+                        && f.what == "absolute path outside the project placeholder roots"
+                }),
+                "file://{path} not flagged: {file_findings:?}"
+            );
+            let http_findings =
+                detect_residual_risks(&json!({"data": format!("https://example.com{path}")}))
+                    .expect("detectors run");
+            assert!(
+                http_findings
+                    .iter()
+                    .all(|f| f.what != "absolute path outside the project placeholder roots"),
+                "https://example.com{path} wrongly flagged: {http_findings:?}"
+            );
+        }
     }
 
     #[test]

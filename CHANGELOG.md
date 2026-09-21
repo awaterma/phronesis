@@ -114,6 +114,14 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   to ask which bug or spec a session is for when no work item is open; it is an
   example to copy, not a packaged rule.
 
+### Fixed
+
+- `scrub-payload` residual-risk detection now treats the third slash of a
+  `file:///absolute/path` URL as a path boundary, so a local absolute path
+  inside a file URL is flagged as an error. HTTP URL path tails
+  (`https://host/Users/...`) are still not flagged. Rescued from an
+  unregistered July worktree.
+
 ### Upgrading
 
 - **Upgrading the binary registers nothing.** Run `phr-mcp init` in each project
