@@ -152,11 +152,15 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `post-check` | Warn about edits that violate rules |
 | `session-context` | Inject active rules summary on SessionStart |
 | `interaction-context` | Inject recent hook activity on UserPromptSubmit (`turn-context` is a legacy alias) |
-| `stats` | Read `.phronesis/log.jsonl`, show per-rule summary |
+| `codex-hook <Event>` | Codex CLI hook adapter (structured-JSON decision contract) |
+| `claude-hook <Event>` | Claude Code / Gemini CLI lifecycle adapter — prompts, interrupts, turn stops, sub-agent start/stop; tool phases delegate to `pre-check`/`post-check` |
+| `kalpa start\|end\|show` | Name the theme (kalpa) a run of sessions belongs to, and report its counts |
+| `unit start\|end\|show` | Name the work item being built (`--spec`, `--bug`) and report on it |
+| `stats` | Read `.phronesis/log.jsonl`, show per-rule summary plus a lifecycle section (`--kalpa <name>`) |
 | `audit` | Scan whole tree for rule violations |
 | `trend` | Debt-over-time from audit snapshots |
 | `confidence` | Confidence band + grounded signals for the open work unit |
-| `journey` | `journey_*` facts asserted right now (`--json`/`--explain`) |
+| `journey` | `journey_*` facts asserted right now (`--json`/`--explain`/`--lifecycle`/`--corrections`) |
 | `drift` | Consolidated guidance/rule drift across `claude_md`, `memory`, `wiki`, and `code` sources |
 | `claude-md-drift`, `memory-drift`, `wiki-drift` | Frozen compatibility commands for the original single-source reports |
 | `decision new <slug>` | Scaffold an ADR page under `.phronesis/wiki/decisions/` |
@@ -170,6 +174,10 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 **`post-check`**: Warns about violations → exit 1
 **`session-context`**: Emits JSON with active rules + durable directives
 **`interaction-context`**: Emits JSON with last N hook decisions
+**`claude-hook <Event>`**: One adapter for the Claude Code and Gemini CLI
+lifecycle surface. Always prints one JSON object and, on a non-tool event,
+fails open (exit 0 even on a stdin read/parse failure) — a `UserPromptSubmit`
+hook exiting non-zero would discard the human's prompt.
 
 #### Rules File (`.phronesis/rules.json`)
 
@@ -284,6 +292,9 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/lib.rs` | Library root, module exports |
 | `crates/phronesis-mcp/src/server.rs` | `EpistemeMcp` struct, MCP tools (rmcp macros) |
 | `crates/phronesis-mcp/src/hook.rs` | `pre-check`/`post-check` hooks, rule evaluation |
+| `crates/phronesis-mcp/src/hook/lifecycle_wiring.rs` | Shared pre/post lifecycle wiring — in-flight push/pop, Gemini `invoke_agent` sub-agent derivation, commit recording |
+| `crates/phronesis-mcp/src/claude_hook.rs` | `phr-mcp claude-hook <Event>` — Claude Code / Gemini lifecycle adapter |
+| `crates/phronesis-mcp/src/lifecycle/` | Lifecycle events — `event` (the one place both on-disk shapes are decided), `state` (locked correlation files, `classify_prompt`), `record` (the only writer), `outcome` (`detect_commit`), `scrub` (`scrub_prompt`), `inflight`, `kalpa_cli`, `unit_cli`, `unit_report` |
 | `crates/phronesis-mcp/src/init.rs` | `phr-mcp init` project setup |
 | `crates/phronesis-mcp/src/context.rs` | SessionStart/BeforeAgent payload formatters; `ensure_session_id` |
 | `crates/phronesis-mcp/src/stats.rs` | Aggregate log entries per rule |
@@ -361,6 +372,29 @@ Optional file. Contents are re-injected at every `SessionStart` AND `BeforeAgent
 **UserPromptSubmit** (Claude) / **BeforeAgent** (Gemini):
 - Injects last N hook decisions + durable directives
 - Helps LLM understand what's been blocked/warned recently
+
+**Lifecycle events** (`phr-mcp init` registers them all):
+- Claude Code: `SessionStart`, `SessionEnd`, `UserPromptSubmit`,
+  `SubagentStart`, `SubagentStop`, `Stop` → `phr-mcp claude-hook <Event>`,
+  all empty-matcher. Replacement is keyed on the **command**, not the
+  matcher, so a hook of your own on the same event survives `init`.
+- Gemini CLI: `SessionStart`, `SessionEnd`, `BeforeAgent`, `AfterAgent` →
+  the same adapter; the `BeforeTool`/`AfterTool` matcher is now anchored
+  (`^(replace|write_file|run_shell_command|invoke_agent)$`) and includes
+  `invoke_agent`, from which the sub-agent start/stop pair is derived.
+  Gemini skips project hooks until the folder is trusted.
+- Codex CLI: `Interrupt` and `SessionEnd` join the existing events, and the
+  `SessionStart` matcher is empty so compact and fork sessions get context.
+  Codex **silently** skips new or changed project hooks until they are
+  trusted via `/hooks` — a Codex session that records nothing is the trust
+  gate, not a bug.
+- Records land in the journey journal (v2: optional `kind`, `mode`, `host`,
+  `turn`, `agent`, `agent_type`, `kalpa`) and in `.phronesis/log.jsonl` with
+  `kind: "lifecycle"`. Prompt text goes **only** to the log, scrubbed;
+  the journal never receives it. Agent types are lowercased, so Claude
+  Code's `Explore` is tagged `lifecycle:agent:explore`. Commits are
+  detected by `HEAD` movement with the exit code as a veto only, so a host
+  that sends no exit code still records them (`detection: "no_exit_code"`).
 
 ### 4. Pattern-Guide Rules (`extract_rules`)
 
@@ -520,6 +554,12 @@ crates/phronesis-mcp/tests/     # MCP server tests
 ├── action_log_integration.rs   # Log file operations
 ├── hook_integration.rs         # Hook behavior
 ├── init_integration.rs         # Project initialization
+├── kalpa_integration.rs        # `phr-mcp kalpa` start/end/show and its counts
+├── lifecycle_state.rs          # Correlation state files, locking, session rotation
+├── lifecycle_classify.rs       # Prompt mode classification (fresh/mid_turn/correction), interrupt inference
+├── lifecycle_concurrency.rs    # Concurrent hook processes against the shared state files
+├── lifecycle_outcome.rs        # Commit detection from HEAD movement in a temp git repo
+├── unit_cli_integration.rs     # `phr-mcp unit` start/end/show, --spec and --bug
 ├── save_rules_integration.rs   # Rule persistence
 ├── section_context_integration.rs # Section context flow
 ├── values_integration.rs       # AST predicates
@@ -635,6 +675,8 @@ The `phr-mcp serve` command exposes these tools:
 | `query_code_graph` | Query structural graph relations | `{ "results": [...] }` |
 | `get_code_graph_status` | Inspect graph freshness, generation, and binding state | `{ "status": "fresh|stale|outdated|missing", ... }` |
 | `rebuild_code_graph` | Rebuild the server-rooted derived graph and reconcile bindings | `{ "status": "fresh", "generation": N, ... }` |
+| `get_journey` | Journey facts; optional `include_lifecycle` (default `false`) adds lifecycle records, never prompt text | `[...]`, or `{ "facts": [...], "lifecycle": [...] }` |
+| `submit_suggestion` | Set the explicit work item; optional `spec` / `bug_id` record a `unit_start` through the same path as `phr-mcp unit start` | `CallToolResult` |
 
 ---
 

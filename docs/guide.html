@@ -1131,6 +1131,64 @@ rules dedupe on rule id, which is the right semantics for “≥3
 occurrences” — you get one warning per condition, not one per matching
 call.</p>
 </blockquote>
+<h3 id="lifecycle-events-and-governed-throughput">Lifecycle events and
+governed throughput</h3>
+<p>Taggers stamp <em>tool calls</em>. Two further selector namespaces are
+built in and need no tagger config at all, because they come from the
+records the hooks write about the conversation itself — sub-agent start
+and stop, human prompts, interrupts, turn stops, and commits:</p>
+<pre><code>lifecycle:subagent_start   lifecycle:subagent_stop
+lifecycle:prompt           lifecycle:prompt:fresh
+lifecycle:prompt:mid_turn  lifecycle:prompt:correction
+lifecycle:intervention     lifecycle:interrupt
+lifecycle:stop             lifecycle:commit
+lifecycle:unit_start       lifecycle:unit_end
+lifecycle:kalpa_start      lifecycle:kalpa_end
+lifecycle:agent:&lt;agent_type&gt;   kalpa:&lt;name&gt;</code></pre>
+<p><code>lifecycle:intervention</code> is the one to reach for first. It
+sits on a prompt that arrived <em>while the agent was still working</em>
+(<code>mid_turn</code>) or <em>after the human stopped it</em>
+(<code>correction</code>) — the human changing the plan, not merely
+replying to a finished turn. A <code>fresh</code> prompt is not an
+intervention, and neither is a prompt delivered inside a sub-agent.
+Agent types are lowercased, so Claude Code’s <code>Explore</code> is
+<code>lifecycle:agent:explore</code>. Two rules worth copying:</p>
+<pre><code>{ "id": "warn-many-interventions-since-last-commit",
+  "when": [ { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:commit','lifecycle:intervention',3]) &gt;= 1" } ],
+  "then": { "warn": "Three interventions since the last commit. Stop and re-plan before continuing." } }
+
+{ "id": "suggest-rule-after-two-corrections",
+  "when": [ { "__script__": "facts_count('journey_count', ['lifecycle:prompt:correction','s']) &gt;= 2" } ],
+  "then": { "suggestion": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }</code></pre>
+<blockquote>
+<p><strong>Lifecycle selectors need <code>s</code> or a time window, not
+<code>Nc</code>.</strong> Positional call windows count <em>tool</em>
+records only — which is exactly what keeps every pre-existing journey
+rule computing the fact it always did. A <code>lifecycle:*</code>
+selector paired with <code>5c</code> yields nothing, and Phronesis warns
+on stderr naming the rule rather than letting it sit silent.</p>
+</blockquote>
+<p>The counting surfaces sit beside the rules.
+<code>phr-mcp kalpa start &lt;name&gt;</code> names a theme spanning
+sessions; <code>phr-mcp unit start --spec &lt;path&gt;</code> (or
+<code>--bug &lt;id&gt;</code>) names the work item an agent is building.
+<code>phr-mcp kalpa show</code> and <code>phr-mcp stats</code> then
+report sessions, prompts by mode, interrupts, sub-agents with a median
+duration, commits with their confidence band, and two ratios —
+interventions per commit and interventions per work item — alongside a
+<strong>governed</strong> count: work items that were committed, had a
+rule evaluated against their edits, and carried a confidence band above
+<code>low</code>. That is “software factory” stated as a measurement
+rather than a metaphor. Read every number against the header: the action
+log rotates, so the counts are over a retained window and the header
+says where it begins. Commits are detected by observing <code>HEAD</code>
+rather than matching command text, so they are undercounted — never
+overcounted — and the report says that too.</p>
+<p>Prompt text lives only in the gitignored
+<code>.phronesis/log.jsonl</code>, scrubbed; the journal never receives
+it. <code>phr-mcp journey --corrections</code> is how you read it back.
+Full design:
+<a href="https://github.com/awaterma/phronesis/blob/main/docs/specs/SPEC-agent-lifecycle-events.md">SPEC-agent-lifecycle-events</a>.</p>
 </section>
 <div class="dingbat">⁘ ⁘ ⁘</div>
 <section class="chunk" id="watching-the-loop">

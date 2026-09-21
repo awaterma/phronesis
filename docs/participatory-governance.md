@@ -37,8 +37,32 @@ When the user says "remember X" or "make a rule for X":
 
 ## Friction-driven proposals
 
-When a rule blocks you 3+ times in the same session for the same
-pattern, pause and assess:
+Friction has two shapes. The first is a rule blocking you; the second is
+a human stopping you.
+
+**The human stopped you.** A prompt that arrives while the agent is still
+working, or right after an interrupt, is recorded as an *intervention* and
+tagged `lifecycle:intervention` — the human changing the plan, not merely
+replying to a finished turn. `phr-mcp journey --corrections` lists the
+post-interrupt prompts, oldest first, with their scrubbed text; `phr-mcp
+unit show` shows them against one work item; `phr-mcp stats` and `phr-mcp
+kalpa show` count them, including interventions per commit. That list is
+the input to a proposal: read what was actually said, and if the same steer
+recurs, it is a rule waiting to be written. A rule can raise the question
+itself: `facts_count('journey_count',
+['lifecycle:prompt:correction','s']) >= 2` is two corrections in a
+session, which is enough to ask whether one of them should have been
+enforcement.
+
+The same channel works before the work starts. When no work item is open,
+the example rule `suggest-name-the-work-item` nudges the agent to ask which
+bug or spec the session is for and to call `submit_suggestion` with
+`bug_id` or `spec` — so the human is asked in the LLM window rather than at
+a shell, and every later intervention and commit is attributable to a named
+piece of work. It is an example to copy, not a packaged rule.
+
+**A rule blocked you.** When a rule blocks you 3+ times in the same session
+for the same pattern, pause and assess:
 
 - Use `get_action_log` with `only_nonzero_exit: true` to review
 - If the rule scope is too broad (legitimate code keeps tripping

@@ -257,6 +257,7 @@ The aggregator family:
 | `journey_since_ge` | `[selector, k]` | distance since last occurrence ≥ k |
 | `journey_count` | `[selector, window, count]` | the count as a bindable value |
 | `journey_distinct` | `[field, window, count]` | distinct values of a field in a window |
+| `journey_filtered_since_ge` | `[target, counted, k]` | ≥ k occurrences of `counted` since the last `target` |
 
 **Window tokens:** `5c` = last 5 calls · `45s`/`30m`/`2h`/`7d` = wall time · `s` =
 current session (bare `s`; `45s` with a number is seconds).
@@ -349,6 +350,68 @@ clause tells you *this* is the call where intervention helps.
 > **Threshold rules fire once per session.** Pure-script rules dedupe on rule
 > id, which is the right semantics for "≥3 occurrences" — you get one warning
 > per condition, not one per matching call.
+
+### The `lifecycle:` and `kalpa:` selectors
+
+Taggers stamp *tool calls*. Two further selector namespaces are built in and
+need no tagger config at all, because they come from the lifecycle records
+the hooks write for the conversation itself — sub-agent start and stop,
+human prompts, interrupts, turn stops, and commits:
+
+```
+lifecycle:subagent_start   lifecycle:subagent_stop
+lifecycle:prompt           lifecycle:prompt:fresh
+lifecycle:prompt:mid_turn  lifecycle:prompt:correction
+lifecycle:intervention     lifecycle:interrupt
+lifecycle:stop             lifecycle:commit
+lifecycle:unit_start       lifecycle:unit_end
+lifecycle:kalpa_start      lifecycle:kalpa_end
+lifecycle:agent:<agent_type>   kalpa:<name>
+```
+
+`lifecycle:intervention` is the one to reach for first: it is on a prompt
+that arrived *while the agent was still working* (`mid_turn`) or *after the
+human stopped it* (`correction`) — the human changing the plan, not merely
+replying to a finished turn. Agent types are lowercased, so Claude Code's
+`Explore` sub-agent is `lifecycle:agent:explore`. The rest of the list is a
+**closed set**: a typo like `lifecycle:prompt:corection` fails loudly as
+`UndefinedSelector` rather than validating and silently matching nothing.
+
+> **Lifecycle selectors need `s` or a time window, not `Nc`.** Positional
+> call windows (`5c`) count *tool* records only — that is what keeps every
+> pre-existing journey rule computing exactly the fact it always did. A
+> `lifecycle:*` selector paired with `5c` therefore yields nothing;
+> Phronesis prints one stderr warning naming the rule so it says so instead
+> of sitting silent. Use `s`, or `45s`/`30m`/`2h`/`7d`.
+
+**Too many interventions since the last commit (filtered distance):**
+
+```json
+{
+  "id": "warn-many-interventions-since-last-commit",
+  "when": [
+    { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:commit','lifecycle:intervention',3]) >= 1" }
+  ],
+  "then": { "warn": "Three interventions since the last commit. Stop and re-plan before continuing." }
+}
+```
+
+**Two corrections in a session (the friction signal):**
+
+```json
+{
+  "id": "suggest-rule-after-two-corrections",
+  "when": [
+    { "__script__": "facts_count('journey_count', ['lifecycle:prompt:correction','s']) >= 2" }
+  ],
+  "then": { "suggestion": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." }
+}
+```
+
+The second rule is the hinge between this section and §7: two corrections
+is friction the loop can *see*, and `phr-mcp journey --corrections` prints
+the prompts themselves so the proposal that follows is grounded in what was
+actually said.
 
 ---
 
@@ -603,6 +666,10 @@ agent loop. Run `phr-mcp <command> --help` for every option.
 | `phr-mcp trend` | Inspect debt over time from audit snapshots |
 | `phr-mcp confidence` | Show the grounded confidence band for the open work unit |
 | `phr-mcp journey --explain` | Show current trajectory facts and their derivation |
+| `phr-mcp journey --lifecycle` | Show only the lifecycle records — prompts, interrupts, sub-agents, stops, commits |
+| `phr-mcp journey --corrections` | List the prompts that followed an interrupt, oldest first, with their text |
+| `phr-mcp kalpa start <name>` | Name the theme this run of sessions belongs to (`end`, `show`) |
+| `phr-mcp unit start --spec <path>` | Name the work item being built (`--bug <id>`, `end`, `show`) |
 | `phr-mcp drift` | Compare rules with durable guidance, memory, ADRs, and bound code |
 | `phr-mcp graph status --json` | Inspect structural graph freshness and generation |
 | `phr-mcp graph rebuild --json` | Rebuild the graph and reconcile rule-to-code bindings |
@@ -622,6 +689,7 @@ same boundary.
 - [README](../README.md) — project overview and the premise
 - [Command Reference](../crates/phronesis-mcp/CLAUDE.md) — full CLI + pack details
 - [SPEC-journey-facts](specs/SPEC-journey-facts.md) — the trajectory layer in depth
+- [SPEC-agent-lifecycle-events](specs/SPEC-agent-lifecycle-events.md) — sub-agents, interrupts, corrections, kalpas
 - [SPEC-confidence-scoring](specs/SPEC-confidence-scoring.md) — grounded closure gating
 - [The Explainer](https://awaterma.github.io/phronesis/explainer.html) — the RETE engine and design intent
 - [The Catalogue](https://awaterma.github.io/phronesis/catalogue.html) — visual reference of starter rules

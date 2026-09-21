@@ -10,6 +10,7 @@ cargo run -- serve       # MCP stdio server (default)
 cargo run -- pre-check   # PreToolUse hook (blocks violations)
 cargo run -- post-check  # PostToolUse hook (warns on violations)
 cargo run -- codex-hook PreToolUse  # Codex protocol adapter (event varies by hook)
+cargo run -- claude-hook UserPromptSubmit  # Claude Code / Gemini CLI lifecycle adapter (event varies by hook)
 cargo run -- init             # One-command setup for a project
 cargo run -- session-context  # SessionStart hook (injects active rules + durable directives)
 cargo run -- interaction-context # UserPromptSubmit / BeforeAgent hook (injects recent activity + durable directives)
@@ -17,11 +18,16 @@ cargo run -- context inspect   # dry-run the configured context payload (writes 
 cargo run -- context predicates # allowlisted predicates for nudge capsules
 cargo run -- context stats     # observed context cost, omissions, latency
 cargo run -- stats             # Read-only per-rule summary of .phronesis/log.jsonl
+cargo run -- stats --kalpa lifecycle-events  # ...with the lifecycle section restricted to one kalpa
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- confidence       # Confidence band + grounded signals for the open work unit
 cargo run -- toolchains        # List active toolchain defs (built-in + project); --json for machine output
 cargo run -- journey   # what journey_* facts assert right now
+cargo run -- journey --lifecycle    # only the lifecycle records (sub-agent start/stop, prompts, interrupts, stops, commits)
+cargo run -- journey --corrections  # the prompts that followed an interrupt, oldest first, with their scrubbed text
+cargo run -- kalpa start <name>     # Name the theme this run of sessions belongs to (also: kalpa end, kalpa show [name])
+cargo run -- unit start [<id>] [--spec <path>|--bug <id>]  # Name the work item being built (also: unit end, unit show [<id>])
 cargo run -- drift            # Multi-source drift across CLAUDE.md, memory, wiki decisions, and code
 cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
 cargo run -- graph rebuild        # Rescan every Rust file into .phronesis/graph.jsonl (resync after git checkout/rebase)
@@ -46,16 +52,30 @@ journey-journal tags (with a freshness guard so `init` scaffolding can't
 produce false-greens, and a non-empty-corpus assert so a missing fixture
 tree can't pass vacuously). Each fixture is self-describing with `source`
 (cli, event, provenance) and `expect` (exit, stdout_json, log_rule_fired,
-journal_tag_new, journal_tag_from_output, stderr_contains). All current
-fixtures are `provenance: "authored"` — hand-written approximations of
-the real envelopes, to be superseded by real captures.
+journal_tag_new, journal_tag_from_output, stderr_contains). The replayable
+fixtures are still `provenance: "authored"`, but they are no longer
+guesses: `payloads/claude/raw/` holds **real** headless Claude Code
+captures (2.1.270, taken through `PHRONESIS_CAPTURE_DIR` and scrubbed) and
+`payloads/gemini/raw/` real Gemini CLI captures, and the authored
+envelopes are modelled on them. `raw/` is evidence, not contract —
+`collect_fixtures` walks exactly one level, so nothing under `raw/` is
+replayed; `payload_contract.rs` pins its *field sets* instead. One
+lifecycle fixture is deliberately not a capture:
+`tests/fixtures/transcripts/claude/interrupted-tail.jsonl` is
+hand-written to Claude Code's transcript line shape so the
+interrupt-marker branch of `classify_prompt` has the exact
+`[Request interrupted by user]` text to match. Its README says so; replace
+it if a scrubbed real tail is ever captured.
 
 The same test file consumes `tests/fixtures/hook_events.json`, the
 hook-event-name registry: `init_wires_hooks_only_under_event_names_that_exist`
 checks every event name `init` wires (Claude Code and Gemini) against the
 registry, and `before_model_request_never_reappears` pins the 0.17.1
 `BeforeModelRequest` incident by name. New host events must be added to
-the registry in the same PR that adds wiring.
+the registry in the same PR that adds wiring. The lifecycle work grew it:
+`SubagentStart`, `SubagentStop`, `Stop`, and `SessionEnd` for
+`claude-code`; `AfterAgent` and `SessionEnd` for `gemini`; `Interrupt` and
+`SessionEnd` for `codex`.
 
 **Refresh workflow** (when a CLI changes its payload shape):
 1. Set `PHRONESIS_CAPTURE_DIR=/tmp/cap` in the shell that launches the CLI.
@@ -399,13 +419,37 @@ rule fires on Rust's `: anyhow::Error`, for instance. Name the language
 you actually want.
 
 `init` writes/merges seven files:
-- `.claude/settings.local.json` — hook config (preserves existing permissions/hooks)
+- `.claude/settings.local.json` — hook config (preserves existing permissions/hooks).
+  `PreToolUse`/`PostToolUse` keep the `Edit|Write|MultiEdit|Bash` matcher.
+  `SessionStart`, `SessionEnd`, `UserPromptSubmit`, `SubagentStart`,
+  `SubagentStop`, and `Stop` are registered empty-matcher against
+  `phr-mcp claude-hook <Event>` — one adapter for the whole lifecycle
+  surface. Replacement on those events is keyed on the **command**, not the
+  matcher, so a hook of your own on the same event survives `init`; an entry
+  counts as ours whether the binary is invoked bare, by absolute path, or
+  through a wrapper. Settings files written by older versions keep working:
+  `session-context` and `interaction-context` are unchanged subcommands.
 - `.mcp.json` — MCP server registration
 - `.phronesis/rules.json` — starter rule pack (left alone on re-run unless --force)
 - `.phronesis/durable.md` — default re-injected directives, including drift-discipline nudges that point the model at `get_drift`. Left alone on re-run; edit in place to customize.
 - `.phronesis/wiki/decisions/README.md` — wiki scaffold; the directory is un-ignored from the broad `.phronesis/` gitignore. Left alone on re-run.
-- `.gemini/settings.json` — MCP server registration + BeforeTool/AfterTool hooks for Gemini CLI
+- `.gemini/settings.json` — MCP server registration; `BeforeTool`/`AfterTool`
+  hooks, whose matcher is now **anchored**
+  (`^(replace|write_file|run_shell_command|invoke_agent)$`) because Gemini
+  treats it as an unanchored regex, and which now include `invoke_agent`
+  because that is where Gemini sub-agent start/stop pairs are derived from;
+  plus `SessionStart`, `SessionEnd`, `BeforeAgent`, and `AfterAgent` against
+  `phr-mcp claude-hook <Event>`. `init` notes that Gemini HTML-escapes
+  injected context and skips project hooks until the folder is trusted.
 - `.gitignore` — log/backup paths + `!.phronesis/wiki/**` exception so the decisions tree is versioned
+
+`.codex/hooks.json` and `.codex/config.toml` are merged as well (see
+*One-time global install* above). Codex now gets `Interrupt` and
+`SessionEnd` alongside the tool phases, and the `SessionStart` matcher is
+empty rather than `startup|resume|clear`, so compact and fork sessions get
+context too. Codex skips new or changed project hooks **silently** until
+you review and trust them with `/hooks` — a Codex session that records no
+lifecycle events is the trust gate, not a bug.
 
 Re-running is idempotent: existing config is preserved; only our entries are added.
 
@@ -465,6 +509,178 @@ phr-mcp stats --json          # machine-readable, pipeable into jq
 Read-only. Useful for spotting noisy rules to silence (`silent: true` on
 the rule), dead rules to delete, or for confirming a tuning change had the
 effect you wanted.
+
+### Lifecycle events
+
+Journey facts record what the agent did to files and shells. Lifecycle
+events record the shape of the conversation around them: when a sub-agent
+was spawned and when it returned, when the human spoke while the agent was
+still working, when a turn was aborted, and when `HEAD` moved. That is
+where the governance signal is densest — an interrupt followed by a new
+prompt is a correction, and corrections are the raw material for
+friction-driven rule proposals. Full design:
+[SPEC-agent-lifecycle-events](../../docs/specs/SPEC-agent-lifecycle-events.md).
+
+Ten record kinds reach both the journey journal and `.phronesis/log.jsonl`:
+`subagent_start`, `subagent_stop`, `prompt`, `interrupt`, `stop`, `commit`,
+`unit_start`, `unit_end`, `kalpa_start`, `kalpa_end`. Claude Code and Gemini
+CLI feed them through `phr-mcp claude-hook <Event>`, Codex through
+`phr-mcp codex-hook <Event>`; Gemini has no sub-agent event, so its pair is
+derived from the `invoke_agent` tool at pre-check and post-check.
+
+A `prompt` record carries a **mode**:
+
+| mode | meaning |
+|---|---|
+| `fresh` | the previous turn ended with a `stop`, or this is the session's first prompt |
+| `mid_turn` | the turn is still open and no interrupt was seen — the human added context while the agent worked |
+| `correction` | an `interrupt` immediately precedes this prompt in the same session |
+
+**An intervention is the human changing the plan, not merely replying.**
+That is why `fresh` is not one: it arrives after the agent stopped, and as
+far as a hook can tell it is a reply. `mid_turn` and `correction` arrive
+while the agent was executing its plan, or after the human stopped it, so
+those records also carry the tag `lifecycle:intervention` — **but only when
+the prompt is top-level**. A prompt record carrying an `agent_id` (a prompt
+delivered inside a sub-agent) is never tagged and never counted as a
+correction, because the human did not speak. The number undercounts plan
+changes delivered as a fresh prompt after a natural stop; reading intent is
+a non-goal.
+
+`commit` is detected from ground truth rather than command text:
+`pre-check` records `HEAD` before a shell call that passes a cheap text
+pre-filter, `post-check` compares it after. **`HEAD` movement is the ground
+truth and the exit code is only a veto**, so a host that reports no exit
+code at all — Claude Code's `Bash` is one — still gets its commits, marked
+`detection: "no_exit_code"`. A sha the host reports itself is kept as
+`host_sha` and stands in as `detection: "host_reported"` when the probe
+found no baseline. Commits are undercounted, never overcounted: an alias, a
+wrapper script, `git pull`, or a commit made outside a tool call is missed,
+and the reports say so.
+
+**Kalpas and work items.** A *kalpa* is a named theme spanning sessions
+(`[a-z0-9][a-z0-9-]{0,63}`); a *work item* is the existing work unit
+(`outcomes::subject`) made explicit.
+
+```
+phr-mcp kalpa start lifecycle-events   # ends any open kalpa first
+phr-mcp kalpa show [name]              # open kalpa, or a named one
+phr-mcp kalpa end
+
+phr-mcp unit start --spec docs/specs/SPEC-agent-lifecycle-events.md
+phr-mcp unit start --bug 42            # names it bug-42 from .phronesis/bugs.json
+phr-mcp unit start                     # mints a fresh unit-<nanos>
+phr-mcp unit end
+phr-mcp unit show [<id>] [--json]
+```
+
+`--bug` resolves against the known-bug registry and carries that entry's
+cargo test name (and its spec, if it has one); an unknown id is an error,
+not a fresh unit. The agent can name the item from inside the conversation
+instead: `submit_suggestion` gained optional `spec` and `bug_id` parameters
+and records the same `unit_start` through the same code path, so a rule can
+nudge it to ask which bug or spec the session is for. Implicit units keep
+working exactly as before and get no `unit_start` record; the reports show
+the explicit/implicit split rather than hiding it.
+
+**Reports.** `phr-mcp stats` grows a lifecycle section (and `--kalpa <name>`
+restricts it); `phr-mcp kalpa show` prints the same counts for one kalpa:
+
+```
+kalpa: lifecycle-events      started 2026-09-18 (3d)      counts since log entry 2026-09-17 14:02
+sessions        4
+prompts        61   fresh 44   mid_turn 9   correction 8
+interventions  17   (mid_turn + correction)
+interrupts      8
+sub-agents     12   starts, 11 matched   median 3m40s
+commits         7   (shell tool calls only)   confidence at commit: high 5  medium 2  low 0
+interventions / commit   2.43   (retained window)
+work items      9   explicit 6   implicit 3
+governed        7   (commit + rules evaluated + band ≥ medium)
+interventions / work item   1.89
+```
+
+`phr-mcp unit show` joins the journal and the action log on `subject` and
+prints one item's spec, window, kalpa, rules evaluated/fired/blocked/warned
+with per-rule counts, grounded evidence and band, interventions with their
+scrubbed text, and commits. Read every ratio against the header: the action
+log rotates at 50 MiB keeping one predecessor, so **`interventions / commit`
+is computed over the retained window, not the kalpa's full span**, and a
+closed kalpa whose `kalpa_start` has rotated off prints `start not
+retained`. `phr-mcp journey` renders lifecycle records in a table below the
+facts (`⟂` marker); `--lifecycle` shows only those, `--corrections` lists
+the post-interrupt prompts oldest first with their text.
+
+**Selectors.** Lifecycle records carry a closed set of built-in tags, plus
+two open-ended patterns:
+
+```
+lifecycle:subagent_start   lifecycle:subagent_stop
+lifecycle:prompt           lifecycle:prompt:fresh
+lifecycle:prompt:mid_turn  lifecycle:prompt:correction
+lifecycle:intervention     lifecycle:interrupt
+lifecycle:stop             lifecycle:commit
+lifecycle:unit_start       lifecycle:unit_end
+lifecycle:kalpa_start      lifecycle:kalpa_end
+lifecycle:agent:<agent_type>   kalpa:<name>
+```
+
+**Agent types are lowercased**, whatever the host sent: Claude Code's
+`Explore` is `lifecycle:agent:explore`. Write selectors in lower case. The
+set is closed on purpose — `lifecycle:prompt:corection` still fails as
+`UndefinedSelector` rather than validating and matching nothing — and both
+namespaces are reserved, so a tagger tag beginning `lifecycle:` or `kalpa:`
+is rejected at config load. Two rules worth copying:
+
+```json
+{ "id": "warn-many-interventions-since-last-commit",
+  "when": [
+    { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:commit','lifecycle:intervention',3]) >= 1" }
+  ],
+  "then": { "warn": "Three interventions since the last commit. Stop and re-plan before continuing." } }
+
+{ "id": "suggest-rule-after-two-corrections",
+  "when": [
+    { "__script__": "facts_count('journey_count', ['lifecycle:prompt:correction','s']) >= 2" }
+  ],
+  "then": { "suggestion": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }
+```
+
+**Journal v2 and the tool projection.** `JournalRecord` bumps `v` to 2 and
+gains optional `kind`, `mode`, `host`, `turn`, `agent`, `agent_type`, and
+`kalpa`; readers accept v1 and v2. A lifecycle record uses the sentinel
+`tool: "__lifecycle"` and `path: ""`, and the tagger and module resolution
+are **not** invoked for it, so no user-defined tag can land on one. The
+derive pass splits the records it read into `tool_records` (`kind` absent)
+and `all_records`: positional `Nc` windows and `distinct` count tool
+records only, while `s`/time windows, `since_ge`, and `filtered_since_ge`
+filter over everything. **Existing journey rules are therefore byte-identical
+before and after** — that is the point of the split, and a determinism test
+pins it. The corollary for new rules: a `lifecycle:*` selector paired with
+an `Nc` window yields no facts, so use `s` or a time window;
+`validate_selectors` prints one stderr warning naming a rule that does it.
+Compaction additionally retains `lifecycle:commit`, `lifecycle:interrupt`,
+`lifecycle:prompt:correction`, `lifecycle:kalpa_start`, and
+`lifecycle:kalpa_end`, so "two corrections this session" cannot stop firing
+because the journal compacted.
+
+**Privacy.** Prompt text goes **only** to `.phronesis/log.jsonl` (gitignored,
+along with its rotated `.1` predecessor, which `init` now appends if the
+project's `.gitignore` is missing them), and only through
+`lifecycle::scrub::scrub_prompt`, which strips UUIDs, phronesis sids, and
+host transcript paths before the ordinary payload scrubber runs. The
+journal never receives it, and no fact, context render, or stats line
+carries it. Set `"lifecycle": { "prompt_text": "none" }` in
+`.phronesis/journey.json` to suppress it; the switch is enforced at read
+time too, so it also hides prompts already written, and it fails **closed**
+— an unreadable or malformed block is treated as `"none"`.
+`get_journey` never returns prompt text either way.
+
+**Metrics.** Two bounded families, behind `--features metrics`:
+`phronesis_lifecycle_events_total{host,event,mode}` and
+`phronesis_subagent_duration_seconds{host}` (13 exponential buckets, 1 s to
+~68 min). No kalpa label and no `agent_type` label — both are free text,
+user-typed and model-supplied respectively.
 
 ### Sweeping the existing tree
 
@@ -715,13 +931,15 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `drift`, `claude-md-drift`, `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`.
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, predicate-provider create/read/test/list/remove, graph query/status/rebuild, get_stats, audit_codebase, get_debt_trend, get_drift, get_confidence, submit_suggestion, get_journey)
+- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `drift`, `claude-md-drift`, `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`, `codex-hook`, `claude-hook`, `kalpa`, `unit`.
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, predicate-provider create/read/test/list/remove, graph query/status/rebuild, get_stats, audit_codebase, get_debt_trend, get_drift, get_confidence, submit_suggestion — which takes optional `spec` / `bug_id` and records a `unit_start` through `lifecycle::unit_cli::start` — and get_journey, whose optional `include_lifecycle` (default `false`) switches the bare fact array for `{"facts": [...], "lifecycle": [...]}`; prompt text is never included)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.
 - `src/memory_drift.rs` — Walks the Claude Code auto-memory directory, classifies entries by `metadata.type`, and scores them against rules.json + durable.md.
-- `src/hook/{mod,pre,post,journey_record,seq}.rs` — Pre/post hook subcommands; reads `.phronesis/rules.json`, fires rules, exits 0/1/2. Split: `pre`/`post` are the hook runners, `journey_record` stamps the journey journal, `seq` sequences the pre-check pipeline.
+- `src/hook/{mod,pre,post,journey_record,seq,lifecycle_wiring}.rs` — Pre/post hook subcommands; reads `.phronesis/rules.json`, fires rules, exits 0/1/2. Split: `pre`/`post` are the hook runners, `journey_record` stamps the journey journal, `seq` sequences the pre-check pipeline, `lifecycle_wiring` is the one place pre and post share for pushing/popping the in-flight entry, deriving Gemini's `invoke_agent` sub-agent pair, and recording commits.
+- `src/claude_hook.rs` — `phr-mcp claude-hook <Event>`, the Claude Code and Gemini CLI lifecycle adapter. Tool phases delegate to `pre-check`/`post-check` unchanged. Non-tool events fail open: a stdin read or parse failure prints `{}` and exits 0, because a `UserPromptSubmit` hook exiting 2 would discard the human's prompt. A *blocked* `Stop`/`SubagentStop` is not a stop — the turn stays open and the record is written when the turn really ends.
+- `src/lifecycle/` — Agent lifecycle events (SPEC-agent-lifecycle-events). `event.rs` is the single place that decides both on-disk shapes (`LifecycleEvent::to_journal_record` / `to_log_entry`, with a closed `extra` vocabulary that never carries message or transcript content); `state.rs` holds the locked correlation files and `classify_prompt`; `record.rs` is the only writer (bump seq, append journal, append log, update state; failures are swallowed onto stderr with event names and error kinds only); `outcome.rs` is `detect_commit`; `scrub.rs` is `scrub_prompt`; `inflight.rs` pairs a pre-check with its post-check; `kalpa_cli.rs`, `unit_cli.rs`, and `unit_report.rs` back `phr-mcp kalpa`, `phr-mcp unit start|end`, and `phr-mcp unit show`.
 - `src/init.rs` — `phr-mcp init` one-command project setup
 - `src/context.rs` — Formatters for SessionStart / UserPromptSubmit hook payloads (active-rules summary, recent-activity summary) plus legacy renderers for projects initialized before context support became the default
 - `src/context/` — Token-aware context (SPEC-token-aware-durable-context).

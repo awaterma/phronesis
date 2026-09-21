@@ -42,6 +42,20 @@ still belongs in rules.
 
 **Journey facts** ([SPEC-journey-facts](docs/specs/SPEC-journey-facts.md)) keep a durable per-call journal under `.phronesis/journey/` and let project-defined taggers in `.phronesis/journey.json` stamp executed tool calls. `journey_*` aggregator facts (occurrence, count, seen, since-last, distinct) over `c`/`m`/`h`/`d`/`s` windows let rules match cross-call temporal patterns — auth churn over a session, recent SQL in the last five calls, build staleness — without any in-memory accumulation. Surfaces: `phr-mcp journey` and the `get_journey` MCP tool.
 
+**Lifecycle events** ([SPEC-agent-lifecycle-events](docs/specs/SPEC-agent-lifecycle-events.md))
+record the shape of the conversation around those tool calls — sub-agent
+start and stop, human prompts classified `fresh` / `mid_turn` /
+`correction`, interrupts, turn stops, and commits detected from `HEAD`
+movement rather than command text. A `mid_turn` or `correction` prompt is
+an **intervention**: the human changing the plan, not merely replying.
+Rules match them through `lifecycle:*` and `kalpa:*` selectors in the same
+`journey_*` family; existing journey rules are unchanged. `phr-mcp kalpa`
+names a theme spanning sessions and `phr-mcp unit` names the work item an
+agent is building, so `phr-mcp stats`, `phr-mcp kalpa show`, and
+`phr-mcp unit show` can report interventions per commit and governed
+throughput against a stated retention window. Prompt text lives only in
+the gitignored action log, never in the journal.
+
 **Structural code graph** parses Rust, Python, TypeScript, Swift, and Java into queryable
 relations such as `defines_fn`, `calls_api`, `tested_by`, and `no_direct_test`.
 Rules can bind to concrete code referents, structural packs can reason over
