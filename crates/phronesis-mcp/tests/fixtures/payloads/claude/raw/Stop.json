@@ -1,15 +1,15 @@
 {
-  "session_id": "claude-s-001",
-  "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
+  "background_tasks": [],
   "cwd": "/home/dev/project",
-  "prompt_id": "claude-p-002",
-  "permission_mode": "auto",
   "effort": {
-    "level": "high"
+    "level": "medium"
   },
   "hook_event_name": "Stop",
+  "last_assistant_message": "<redacted:147 bytes>",
+  "permission_mode": "bypassPermissions",
+  "prompt_id": "claude-p-002",
+  "session_crons": [],
+  "session_id": "sess-00000000",
   "stop_hook_active": false,
-  "last_assistant_message": "<redacted:360 bytes>",
-  "background_tasks": [],
-  "session_crons": []
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
 }

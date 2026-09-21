@@ -1,65 +1,90 @@
-# Claude Code lifecycle payload fixtures (raw, synthetic)
+# Claude Code lifecycle payload fixtures (raw)
 
-The JSON files in this directory are **synthetic**, assembled from the field
-lists in the Claude Code hooks reference. They are **not** captures from a live
-Claude Code session. The Claude Code version and the capture date are both
-**unknown**. These are evidence, not contract fixtures:
+Every `*.json` file in this directory is a **real capture** from a live Claude
+Code session, redacted and scrubbed as described below. Nothing here is
+synthetic any more.
+
+These are evidence, not contract fixtures:
 `tests/payload_contract.rs::collect_fixtures` walks exactly one level
 (`payloads/<cli>/*.json`), so nothing in `raw/` is replayed by the contract
-runner. Task 7 of the Claude adapter plan promotes them into
-`payloads/claude/*.json` envelopes.
+runner. `payload_contract.rs` pins the *field sets* of these files;
+`payloads/claude/*.json` holds the replayable envelopes.
 
-The human should replace these synthetic files with real captures per Task 1 of
-the plan before merging. The steps below are the plan's Task 1 procedure, kept
-here so the replacement is repeatable.
+## Provenance
 
-## How to capture real payloads (Plan 2 Task 1)
+| item | value |
+|---|---|
+| Claude Code version | `2.1.270 (Claude Code)` |
+| capture date | 2026-09-20 |
+| mode | headless, `claude -p --permission-mode bypassPermissions --model sonnet` |
+| project | a throwaway git repo in `/tmp` with a README, one source file, `NOTES.md`, initialised with `phr-mcp init --packs none` |
+| capture mechanism | `PHRONESIS_CAPTURE_DIR=/tmp/phr-capture-claude`, i.e. `hook/mod.rs::capture_raw_payload` — **not** the ad-hoc `cat >` hooks the previous version of this file described |
+| scrubber | `phr-mcp scrub-payload` 0.34.0, `--project-root <the temp project>` |
 
-1. Add these hooks to `.claude/settings.local.json` in this repo, merging
-   into the existing `hooks` object:
+Two consecutive headless sessions contributed:
 
-   ```json
-   {
-     "hooks": {
-       "UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/UserPromptSubmit.json; echo {}'"}]}],
-       "SessionStart":     [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/SessionStart.json; echo {}'"}]}],
-       "SessionEnd":       [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/SessionEnd.json; echo {}'"}]}],
-       "SubagentStart":    [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/SubagentStart.json; echo {}'"}]}],
-       "SubagentStop":     [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/SubagentStop.json; echo {}'"}]}],
-       "Stop":             [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat > /tmp/phr-capture/Stop.json; echo {}'"}]}],
-       "PreToolUse":       [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat >> /tmp/phr-capture/PreToolUse.jsonl; echo {}'"}]}],
-       "PostToolUse":      [{"matcher": "", "hooks": [{"type": "command", "command": "sh -c 'mkdir -p /tmp/phr-capture && cat >> /tmp/phr-capture/PostToolUse.jsonl; echo {}'"}]}]
-     }
-   }
-   ```
+- `PreToolUse.json` / `PostToolUse.json` — session A (`prompt_id` →
+  `claude-p-001`).
+- everything else, including `PreToolUse-in-subagent.json` — session B
+  (`prompt_id` → `claude-p-002`).
 
-   The two tool hooks **append** (`>>`); everything else overwrites, so the
-   last writer wins.
+Both sessions' `session_id` scrubbed to the same `sess-00000000`, so the
+corpus reads as one session. That is a scrubber artefact, stated here rather
+than hidden.
 
-2. Quit and restart Claude Code in this repo (hooks load at startup).
-3. Drive one session: a plain turn, a sub-agent dispatch, and an Esc
-   interrupt, per Plan 2 Task 1.
-4. Redact every file: `prompt`, `prompt_response` and
-   `last_assistant_message` values become `"<redacted:N bytes>"`,
-   absolute home paths become `/home/dev`, and real
-   session/transcript/prompt/agent/tool ids become obviously-synthetic
-   ones. Keep every key, including keys with empty-string values.
-5. From `PreToolUse.jsonl`, pick one main-agent and one sub-agent line; save
-   them as `PreToolUse.json` and `PreToolUse-in-subagent.json`.
-6. Copy the last 64 KiB of the transcript as
-   `tests/fixtures/transcripts/claude/interrupted-tail.jsonl`, redacting
-   prose but leaving the `[Request interrupted by user]` marker lines
-   verbatim.
-7. Record the real `claude --version`, the capture date, the observed
-   `SessionStart` `source` value, and whether sub-agent `PreToolUse`
-   carries `agent_id` in this README.
-8. Remove the temporary capture hooks
-   (`git checkout -- .claude/settings.local.json`).
+## What the redaction did
 
-## Status
+1. `capture_raw_payload` replaced every `prompt`, `prompt_response` and
+   `last_assistant_message` value, at any depth, with
+   `"<redacted:N bytes>"` **before** the payload ever reached disk. The
+   byte counts in these files are the real lengths of real text.
+2. `phr-mcp scrub-payload` then rewrote `$HOME` → `/home/dev`, the project
+   root → `/home/dev/project`, the username, the session id
+   (→ `sess-00000000`) and the transcript path
+   (→ `/home/dev/.claude/transcript.jsonl`).
+3. One manual substitution afterwards: the real `prompt_id` UUIDs became
+   `claude-p-001` / `claude-p-002`. **`scrub-payload` does not touch
+   `prompt_id`**, and it is UUID-shaped, so a capture committed straight from
+   the scrubber would carry a real per-turn id. Worth fixing in the scrubber.
 
-- [ ] **Not yet captured.** The files present are synthetic placeholders
-      built from the documented Claude Code hook field lists. The version,
-      capture date, `SessionStart` `source` value, and the sub-agent
-      `agent_id` question are all unknown until the human performs the
-      capture above and replaces them.
+`agent_id` (`a36af5c22bb836f19`) and `tool_use_id` (`toolu_01…`) are left
+verbatim: they are opaque, per-session, and their *shape* is exactly what
+these fixtures exist to pin.
+
+`git commit` messages and `NOTES.md` content are from the throwaway project
+and carry nothing private.
+
+## What the captures settled
+
+- **`prompt_id` is present** on `UserPromptSubmit`, `SubagentStart`,
+  `SubagentStop`, `Stop`, `SessionEnd`, `PreToolUse` and `PostToolUse`. It is
+  a UUID and is stable for the whole turn — it is the adapter's `turn_id`.
+- **`SessionStart` `source` is `"startup"`** for a headless `-p` run.
+  `SessionEnd` `reason` is `"other"`.
+- **Sub-agent `PreToolUse`/`PostToolUse` do carry `agent_id` *and*
+  `agent_type`** (`PreToolUse-in-subagent.json`). `inflight` agent scoping
+  therefore works against the real host, and the spurious-`correction` case
+  the spec worries about is theoretical rather than real.
+- **`agent_type` is `"Explore"`**, non-empty — the empty-`agent_type` case of
+  Open question 2 did not reproduce for a first-party sub-agent type.
+- **Claude sends no exit code for `Bash`.** `tool_response` is
+  `{gitOperation, interrupted, isImage, noOutputExpected, stderr, stdout}`.
+  It does, however, carry `gitOperation.commit.{branch,kind,sha}` on a
+  commit — ground truth the adapter currently ignores.
+- Fields present in the real payloads that the spec's documented list does
+  not mention: `effort`, `permission_mode`, `background_tasks`,
+  `session_crons`, `duration_ms`, `cwd`, `noOutputExpected`, `gitOperation`.
+
+## Still synthetic / still missing
+
+- **The interrupted transcript tail**
+  (`tests/fixtures/transcripts/claude/interrupted-tail.jsonl`) is **not**
+  captured. It needs an interactive Esc during a running turn, which a
+  headless `-p` run cannot produce. Capture it from an interactive session
+  before the marker branch is trusted.
+- **No `SubagentStop` with an empty `agent_type`** (Open question 2) and no
+  `SessionStart` with `source` `resume` / `clear` / `compact` / `fork`.
+- **No `UserPromptSubmit` with `mode: mid_turn`**, and therefore no answer to
+  Open question 1 from this corpus: a headless run submits exactly one prompt
+  per session, so a system-injected `UserPromptSubmit` could neither be
+  provoked nor ruled out. That question still needs an interactive session.

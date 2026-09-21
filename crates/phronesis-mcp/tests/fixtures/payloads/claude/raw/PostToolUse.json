@@ -1,25 +1,32 @@
 {
-  "session_id": "claude-s-001",
-  "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
   "cwd": "/home/dev/project",
-  "prompt_id": "claude-p-001",
-  "permission_mode": "auto",
+  "duration_ms": 130,
   "effort": {
-    "level": "high"
+    "level": "medium"
   },
   "hook_event_name": "PostToolUse",
-  "tool_name": "Bash",
+  "permission_mode": "bypassPermissions",
+  "prompt_id": "claude-p-001",
+  "session_id": "sess-00000000",
   "tool_input": {
-    "command": "ls -la /home/dev/project/crates/phronesis-mcp/src",
-    "description": "List files in phronesis-mcp src directory"
+    "command": "git add -A && git commit -m \"evidence: notes 2\"",
+    "description": "Stage and commit NOTES.md update"
   },
+  "tool_name": "Bash",
   "tool_response": {
-    "stdout": "total 2176\ndrwxr-xr-x@ 44 dev  staff    1408 Sep 19 13:29 .\ndrwxr-xr-x@ 13 dev  staff     416 Sep 19 13:29 ..\n-rw-r--r--@  1 dev  staff   25081 Sep 19 13:29 action_log.rs\n-rw-r--r--@  1 dev  staff  139692 Sep 19 13:29 audit.rs\n-rw-r--r--@  1 dev  staff   34835 Sep 19 13:29 capsule.rs\n-rw-r--r--@  1 dev  staff    9406 Sep 19 13:29 catalogue.rs\n-rw-r--r--@  1 dev  staff   24224 Sep 19 13:29 claude_md_drift.rs\n-rw-r--r--@  1 dev  staff    7165 Sep 19 13:29 clock_facts.rs\ndrwxr-xr-x@  4 dev  staff     128 Sep 19 13:29 codex_hook\n-rw-r--r--@  1 dev  staff   40845 Sep 19 13:29 codex_hook.rs\ndrwxr-xr-x@  7 dev  staff     224 Sep 19 13:29 context\n-rw-r--r--@  1 dev  staff   39057 Sep 19 13:29 context.rs\n-rw-r--r--@  1 dev  staff   28930 Sep 19 13:29 diff_extract.rs\ndrwxr-xr-x@  6 dev  staff     192 Sep 19 13:29 drift\n-rw-r--r--@  1 dev  staff   19667 Sep 19 13:29 durable_migrate.rs\ndrwxr-xr-x@ 27 dev  staff     864 Sep 19 13:29 graph\ndrwxr-xr-x@  7 dev  staff     224 Sep 19 13:29 hook\n-rw-r--r--@  1 dev  staff   17496 Sep 19 13:29 hook_facts.rs\n-rw-r--r--@  1 dev  staff    6072 Sep 19 13:29 hook_logged.rs\ndrwxr-xr-x@  3 dev  staff      96 Sep 19 13:29 init\n-rw-r--r--@  1 dev  staff  196118 Sep 19 13:29 init.rs\ndrwxr-xr-x@  6 dev  staff     192 Sep 19 13:29 journey\n-rw-r--r--@  1 dev  staff   14750 Sep 19 13:29 journey_cli.rs\n-rw-r--r--@  1 dev  staff     738 Sep 19 13:29 lib.rs\ndrwxr-xr-x@  9 dev  staff     288 Sep 19 13:29 lifecycle\n-rw-r--r--@  1 dev  staff   74405 Sep 19 13:29 main.rs\n-rw-r--r--@  1 dev  staff   44221 Sep 19 13:29 memory_drift.rs\n-rw-r--r--@  1 dev  staff    6845 Sep 19 13:29 migrate_extracted.rs\n-rw-r--r--@  1 dev  staff    1297 Sep 19 13:29 net.rs\ndrwxr-xr-x@ 10 dev  staff     320 Sep 19 13:29 outcomes\n-rw-r--r--@  1 dev  staff   40834 Sep 19 13:29 payload_scrub.rs\n-rw-r--r--@  1 dev  staff   12409 Sep 19 13:29 predicate_provider.rs\n-rw-r--r--@  1 dev  staff   10400 Sep 19 13:29 rule_layers.rs\n-rw-r--r--@  1 dev  staff   59347 Sep 19 13:29 rules_file.rs\n-rw-r--r--@  1 dev  staff    7251 Sep 19 13:29 scrub_payload.rs\n-rw-r--r--@  1 dev  staff   14008 Sep 19 13:29 security.rs\n-rw-r--r--@  1 dev  staff   89353 Sep 19 13:29 server.rs\n-rw-r--r--@  1 dev  staff   12080 Sep 19 13:29 server_params.rs\n-rw-r--r--@  1 dev  staff    6040 Sep 19 13:29 server_persistence.rs\n-rw-r--r--@  1 dev  staff    5039 Sep 19 13:29 state.rs\n-rw-r--r--@  1 dev  staff   19394 Sep 19 13:29 stats.rs\ndrwxr-xr-x@  9 dev  staff     288 Sep 19 13:29 syntax\n-rw-r--r--@  1 dev  staff   16399 Sep 19 13:29 wiki.rs\n-rw-r--r--@  1 dev  staff   27388 Sep 19 13:29 wiki_drift.rs",
-    "stderr": "",
+    "gitOperation": {
+      "commit": {
+        "branch": "main",
+        "kind": "committed",
+        "sha": "716ee4a"
+      }
+    },
     "interrupted": false,
     "isImage": false,
-    "noOutputExpected": false
+    "noOutputExpected": false,
+    "stderr": "",
+    "stdout": "[main 716ee4a] evidence: notes 2\n 1 file changed, 1 insertion(+)"
   },
-  "tool_use_id": "toolu_01SyntheticPreToolUse0001",
-  "duration_ms": 1423
+  "tool_use_id": "toolu_01HHG8YJ5hfoW1fNRpmZ8PGE",
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
 }

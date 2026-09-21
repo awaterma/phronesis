@@ -1,18 +1,18 @@
 {
-  "session_id": "claude-s-001",
-  "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
-  "cwd": "/home/dev/project",
-  "prompt_id": "claude-p-002",
-  "permission_mode": "auto",
-  "agent_id": "claude-a-001",
+  "agent_id": "a36af5c22bb836f19",
+  "agent_transcript_path": "/home/dev/external/p0",
   "agent_type": "Explore",
+  "background_tasks": [],
+  "cwd": "/home/dev/project",
   "effort": {
     "level": "medium"
   },
   "hook_event_name": "SubagentStop",
+  "last_assistant_message": "<redacted:129 bytes>",
+  "permission_mode": "bypassPermissions",
+  "prompt_id": "claude-p-002",
+  "session_crons": [],
+  "session_id": "sess-00000000",
   "stop_hook_active": false,
-  "agent_transcript_path": "/home/dev/.claude/projects/p/claude-s-001/subagents/agent-claude-a-001.jsonl",
-  "last_assistant_message": "<redacted:1507 bytes>",
-  "background_tasks": [],
-  "session_crons": []
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
 }

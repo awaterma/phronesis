@@ -1,20 +1,19 @@
 {
-  "session_id": "claude-s-001",
-  "transcript_path": "/home/dev/.claude/projects/p/claude-s-001.jsonl",
-  "cwd": "/home/dev/project",
-  "prompt_id": "claude-p-002",
-  "permission_mode": "auto",
-  "agent_id": "claude-a-001",
+  "agent_id": "a36af5c22bb836f19",
   "agent_type": "Explore",
+  "cwd": "/home/dev/project",
   "effort": {
     "level": "medium"
   },
   "hook_event_name": "PreToolUse",
-  "tool_name": "Grep",
+  "permission_mode": "bypassPermissions",
+  "prompt_id": "claude-p-002",
+  "session_id": "sess-00000000",
   "tool_input": {
-    "pattern": "(?i)in_?flight",
-    "path": "/home/dev/project/crates/phronesis-mcp/src",
-    "output_mode": "files_with_matches"
+    "command": "git log --oneline | head -3",
+    "description": "Show last 3 git log entries"
   },
-  "tool_use_id": "toolu_01SyntheticToolUseId000000000"
+  "tool_name": "Bash",
+  "tool_use_id": "toolu_01WvZxHiNZg94J15Ck2Er6iG",
+  "transcript_path": "/home/dev/.claude/transcript.jsonl"
 }
