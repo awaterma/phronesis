@@ -2,12 +2,14 @@ use std::process;
 
 use phr::Fact;
 
+use std::collections::HashSet;
+
 use crate::diff_extract;
 use crate::hook_facts::{
-    assert_common_facts, assert_diff_facts, assert_language_pack_facts, assert_test_facts,
-    assert_values_facts, check_bash_command_patterns, check_content_patterns,
+    assert_common_facts, assert_coverage_facts, assert_diff_facts, assert_language_pack_facts,
+    assert_test_facts, assert_values_facts, check_bash_command_patterns, check_content_patterns,
     check_missing_patterns, collect_bash_command_patterns, collect_content_patterns,
-    collect_missing_patterns,
+    collect_missing_patterns, collect_rule_predicates,
 };
 use crate::security::{self, MAX_FACT_CONTENT_BYTES, read_file_capped, resolve_safe_path};
 
@@ -71,7 +73,14 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         crate::graph::sync::record_from_disk(&root, &file_path);
     }
 
-    let (rules, override_facts, content_patterns, bash_command_patterns, missing_patterns) = {
+    let (
+        rules,
+        override_facts,
+        content_patterns,
+        bash_command_patterns,
+        missing_patterns,
+        rule_predicates,
+    ) = {
         let loaded = match super::load_rules("post") {
             Ok(Some(r)) => r,
             Ok(None) => {
@@ -91,9 +100,10 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         };
         let rules = loaded.rules;
         let cp = collect_content_patterns(&rules);
+        let rp = collect_rule_predicates(&rules);
         let bcp = collect_bash_command_patterns(&rules);
         let mp = collect_missing_patterns(&rules);
-        (rules, loaded.override_facts, cp, bcp, mp)
+        (rules, loaded.override_facts, cp, bcp, mp, rp)
     };
 
     let network = {
@@ -143,6 +153,10 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         process::exit(1);
     }
 
+    // Coverage hydration wants the event's old content (the payload's
+    // old_string) so changed-region mapping can see both sides even though
+    // disk already holds the new content.
+    let old_content = super::extract_old_content(&payload, &tool_name);
     // Validate the file path is inside the project root before reading.
     // An empty file_path means the hook input didn't include one — skip file read.
     if let Some(content) = read_disk_content(&file_path).unwrap_or_else(|_| process::exit(1)) {
@@ -153,6 +167,8 @@ pub async fn run_post_check() -> anyhow::Result<()> {
                 content: &content,
                 content_patterns: &content_patterns,
                 missing_patterns: &missing_patterns,
+                rule_predicates: &rule_predicates,
+                old_content: old_content.as_deref(),
             },
         )
         .await
@@ -284,6 +300,8 @@ struct PostContentInput<'a> {
     content: &'a str,
     content_patterns: &'a [String],
     missing_patterns: &'a [String],
+    rule_predicates: &'a HashSet<String>,
+    old_content: Option<&'a str>,
 }
 
 async fn assert_post_content_facts(
@@ -295,6 +313,8 @@ async fn assert_post_content_facts(
         content,
         content_patterns,
         missing_patterns,
+        rule_predicates,
+        old_content,
     } = input;
     // Only assert the full content as a fact when small enough to keep
     // working-memory growth bounded. Pattern checks below still operate on
@@ -373,6 +393,22 @@ async fn assert_post_content_facts(
             eprintln!("phronesis: WARNING — test-fact assertion failed: {}", e);
             e
         })?;
+
+    // Coverage-evidence hydration: demand-gated, fail-open, opt-out via
+    // PHRONESIS_NO_COVERAGE. At post-check the edit has already applied, so
+    // disk holds the new content and old content is unavailable — the
+    // changed-region computation still maps both sides from the payload's
+    // old_string when the event carried one.
+    let edited: Vec<(String, Option<String>, String)> = if file_path.is_empty() {
+        Vec::new()
+    } else {
+        vec![(
+            file_path.to_string(),
+            old_content.map(str::to_string),
+            content.to_string(),
+        )]
+    };
+    assert_coverage_facts(network, &project_root, rule_predicates, &edited).await?;
 
     Ok(())
 }

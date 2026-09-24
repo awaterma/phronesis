@@ -15,6 +15,8 @@ pub const RELATIONS: &[&str] = &[
     "changed_region",
     "changed_function",
     "head_revision",
+    "region_without_dynamic_evidence",
+    "region_without_formal_evidence",
 ];
 
 /// `(predicate, args)` in the clock_facts / outcomes::facts shape — the hook
@@ -74,7 +76,16 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
         facts.push(fact("coverage_stale", Vec::new()));
     }
 
-    if wants("changed_region") || wants("changed_function") {
+    // Closed-world gap evidence, bounded by the change: collect the changed
+    // region identities first (the `no_direct_test` precedent — the host
+    // computes absence, since RETE conditions do not implement
+    // negation-as-failure).
+    let mut changed_regions_out: Vec<String> = Vec::new();
+    if wants("changed_region")
+        || wants("changed_function")
+        || wants("region_without_dynamic_evidence")
+        || wants("region_without_formal_evidence")
+    {
         let change_id = input
             .head_sha
             .as_ref()
@@ -84,6 +95,7 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
         for edit in &input.edited {
             let regions = changed_regions(edit.old.unwrap_or(""), edit.new)?;
             for region in regions.functions.iter().chain(regions.branches.iter()) {
+                changed_regions_out.push(region.clone());
                 if wants("changed_region") {
                     facts.push(fact(
                         "changed_region",
@@ -96,6 +108,33 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
                         vec![change_id.clone(), region.clone()],
                     ));
                 }
+            }
+        }
+        changed_regions_out.sort();
+        changed_regions_out.dedup();
+
+        if wants("region_without_dynamic_evidence") {
+            // Closed world over the WHOLE store (not the change-scoped
+            // subset): "has any test ever executed this region?" is a
+            // question about the imported evidence, not about this event.
+            let hits = load_hits(input.root)?;
+            let hit_regions: HashSet<&str> = hits.iter().map(|h| h.region.as_str()).collect();
+            for region in &changed_regions_out {
+                if !hit_regions.contains(region.as_str()) {
+                    facts.push(fact(
+                        "region_without_dynamic_evidence",
+                        vec![region.clone()],
+                    ));
+                }
+            }
+        }
+        if wants("region_without_formal_evidence") {
+            // SPEC-property-ontology seam: until its results index lands,
+            // formal evidence is unconditionally absent — the resolver has
+            // no proof results to query. The spec makes this seam explicit
+            // rather than silent (§6, gap detection precedent).
+            for region in &changed_regions_out {
+                facts.push(fact("region_without_formal_evidence", vec![region.clone()]));
             }
         }
     }
