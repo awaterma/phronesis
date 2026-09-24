@@ -30,7 +30,16 @@ fn fnv1a_64(data: &[u8]) -> u64 {
 }
 
 fn compute_anchor(condition: &str) -> String {
-    let hash = fnv1a_64(condition.as_bytes());
+    // Whitespace-normalized before hashing: rustfmt reflowing a condition
+    // (default-on in Rust workflows) must not orphan the anchor — the
+    // semantic-preserving transformation survives, per the cross-revision
+    // persistence requirement (review finding #5; full token-stream
+    // normalization is the follow-up, operand reorder still re-anchors).
+    let normalized: String = condition
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let hash = fnv1a_64(normalized.as_bytes());
     format!("{hash:016x}")[..12].to_string()
 }
 

@@ -58,3 +58,20 @@ fn test_condition_change_moves_anchor() {
     let b = extract_branch_sites(&new_cond).unwrap()[0].anchor.clone();
     assert_ne!(a, b);
 }
+
+// Review finding #5 gate (cross-revision persistence): a rustfmt reflow of a
+// condition is a semantic-preserving transformation — the branch anchor must
+// survive it so imported evidence keeps joining.
+#[test]
+fn test_branch_anchor_survives_formatting_reflow() {
+    const REFLOWED: &str = "pub fn safe_divide(numerator: i32, denominator: i32) -> Result<i32, &'static str> {\n    if denominator\n        == 0\n    {\n        return Err(\"division by zero\");\n    }\n\n    Ok(numerator / denominator)\n}\n";
+    let base = extract_branch_sites(OLD_SRC).unwrap();
+    let reflowed = extract_branch_sites(REFLOWED).unwrap();
+    assert_eq!(base.len(), 1);
+    assert_eq!(reflowed.len(), 1, "reflow must not change the site count");
+    assert_eq!(
+        base[0].anchor, reflowed[0].anchor,
+        "whitespace-only reflow must not re-anchor the branch: {} vs {}",
+        base[0].anchor, reflowed[0].anchor
+    );
+}
