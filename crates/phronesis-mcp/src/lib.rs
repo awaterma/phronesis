@@ -5,6 +5,7 @@ pub mod catalogue;
 pub mod claude_hook;
 pub mod claude_md_drift;
 pub mod clock_facts;
+pub mod coverage;
 pub mod codex_hook;
 pub mod context;
 pub mod diff_extract;
