@@ -305,6 +305,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/security.rs` | Path canonicalization, size caps, validators |
 | `crates/phronesis-mcp/src/diff_extract.rs` | Regex-based diff facts (function_added, import_added, etc.) |
 | `crates/phronesis-mcp/src/syntax/` | Tree-sitter AST predicates (rust, swift, python, typescript) |
+| `crates/phronesis-mcp/src/coverage/` | Coverage evidence store, importer, region mapping, demand-gated hydration (SPEC-coverage-evidence.md) |
 | `crates/phronesis-mcp/src/outcomes/` | Confidence scoring — per-toolchain adapter (`cargo` first), per-subject signal derivation, gate-rule input |
 | `crates/phronesis-mcp/src/journey/` | Journey facts — append-only journal, project-defined taggers, rule-driven aggregator derivation |
 | `crates/phronesis-mcp/src/journey_cli.rs` | `phr-mcp journey` rendering glue (table + JSON + `--explain`) |
