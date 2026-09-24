@@ -21,6 +21,7 @@ cargo run -- stats             # Read-only per-rule summary of .phronesis/log.js
 cargo run -- stats --kalpa lifecycle-events  # ...with the lifecycle section restricted to one kalpa
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
+cargo run -- coverage import <export.jsonl>  # ingest a per-test coverage export into the evidence store
 cargo run -- confidence       # Confidence band + grounded signals for the open work unit
 cargo run -- toolchains        # List active toolchain defs (built-in + project); --json for machine output
 cargo run -- journey   # what journey_* facts assert right now
