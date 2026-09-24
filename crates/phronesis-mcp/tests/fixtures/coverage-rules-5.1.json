@@ -1,0 +1,15 @@
+{
+  "rules": [
+    {
+      "id": "log-relevant-test-for-change",
+      "phase": "post",
+      "priority": 30,
+      "audit": true,
+      "when": [
+        { "changed_region": ["?change", "?region"] },
+        { "test_hits_region": ["?test", "?region"] }
+      ],
+      "then": { "log": "change ?change touches region ?region exercised by test ?test" }
+    }
+  ]
+}

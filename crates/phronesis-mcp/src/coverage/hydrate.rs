@@ -146,13 +146,20 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
             if !edited_paths.contains(hit.file.as_str()) {
                 continue;
             }
-            let predicate = if hit.hit_kind == "branch" {
-                "test_hits_branch"
-            } else {
-                "test_hits_region"
-            };
-            if wants(predicate) {
-                facts.push(fact(predicate, vec![hit.test, hit.region]));
+            // Generic join relation (spec §5.1): every hit participates in
+            // test_hits_region, branch sites included — the relevant-test
+            // join must distinguish branch_relevant from function_relevant
+            // through the region identity, not through a separate predicate.
+            if wants("test_hits_region") {
+                facts.push(fact(
+                    "test_hits_region",
+                    vec![hit.test.clone(), hit.region.clone()],
+                ));
+            }
+            // Branch specialization for branch-only rules (spec §5.1's
+            // `test_hits_branch` family, e.g. selection and gap rules).
+            if wants("test_hits_branch") && hit.hit_kind == "branch" {
+                facts.push(fact("test_hits_branch", vec![hit.test, hit.region]));
             }
         }
     }
