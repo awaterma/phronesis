@@ -461,6 +461,42 @@ enum Command {
         #[command(subcommand)]
         cmd: phronesis_mcp::lifecycle::unit_cli::UnitCmd,
     },
+    /// Manage the coverage evidence store (SPEC-coverage-evidence).
+    Coverage {
+        #[command(subcommand)]
+        cmd: CoverageCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum CoverageCmd {
+    /// Import a normalized per-test coverage export into the evidence store.
+    Import {
+        /// Path to the export JSONL file.
+        export: PathBuf,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+}
+
+fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
+    match cmd {
+        CoverageCmd::Import { export, path } => {
+            let root = std::env::current_dir()?.join(&path);
+            let root = root.canonicalize().unwrap_or(root);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let summary = phronesis_mcp::coverage::import::import_export(&root, &export, now)?;
+            println!(
+                "imported {} hits across {} tests at revision {}",
+                summary.records, summary.tests, summary.revision
+            );
+            Ok(())
+        }
+    }
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -620,6 +656,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Confidence { subject, json } => handle_confidence(subject, json),
         Command::Signal { name, outcome } => handle_signal(&name, outcome == "pass"),
         Command::Toolchains { json } => handle_toolchains(json),
+        Command::Coverage { cmd } => handle_coverage(cmd),
         Command::Journey {
             json,
             explain,
