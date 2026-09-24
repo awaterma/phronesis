@@ -1187,6 +1187,88 @@ mod tests {
     }
 
     #[test]
+    fn a_both_generated_and_consumed_artifact_is_not_a_gap() {
+        // The complement of the gap: an artifact with both a producer and a
+        // consumer is connected, so neither closed-world relation may fire.
+        let base = vec![
+            Edge::base(
+                "generates",
+                &["rust:app::emit", "json:app::shared"],
+                "graph.toml",
+            ),
+            Edge::base(
+                "consumes_data",
+                &["rust:app::load", "json:app::shared"],
+                "graph.toml",
+            ),
+        ];
+        let derived = derive_all(&base);
+        assert!(args_of(&derived, "generated_without_consumer").is_empty());
+        assert!(args_of(&derived, "consumed_without_producer").is_empty());
+    }
+
+    #[test]
+    fn multiple_producers_and_consumers_produce_no_false_gap() {
+        // Several producers and several consumers for one artifact must not
+        // invent a gap: the set difference is over artifact identities, so a
+        // matched artifact is excluded regardless of how many edges name it.
+        let base = vec![
+            Edge::base(
+                "generates",
+                &["rust:app::emit_a", "yaml:app::bundle"],
+                "graph.toml",
+            ),
+            Edge::base(
+                "generates",
+                &["cue:app::emit_b", "yaml:app::bundle"],
+                "graph.toml",
+            ),
+            Edge::base(
+                "consumes_data",
+                &["rust:app::load_a", "yaml:app::bundle"],
+                "graph.toml",
+            ),
+            Edge::base(
+                "consumes_data",
+                &["python:app::load_b", "yaml:app::bundle"],
+                "graph.toml",
+            ),
+        ];
+        let derived = derive_all(&base);
+        assert!(args_of(&derived, "generated_without_consumer").is_empty());
+        assert!(args_of(&derived, "consumed_without_producer").is_empty());
+    }
+
+    #[test]
+    fn deployment_export_and_hand_authored_config_fire_as_evidence() {
+        // The spec's legitimate exceptions are not exclusions: a deployment
+        // export with no indexed consumer and a hand-authored config with no
+        // indexed producer both surface as closed-world evidence. The policy
+        // of warning on them is the deferred, project-specific decision, not
+        // the derivation — the derivation only reports the gap.
+        let base = vec![
+            Edge::base(
+                "generates",
+                &["rust:app::deploy::export", "yaml:app::release_manifest"],
+                "graph.toml",
+            ),
+            Edge::base(
+                "consumes_data",
+                &["rust:app::runtime::load", "json:app::hand_authored_config"],
+                "graph.toml",
+            ),
+        ];
+        let derived = derive_all(&base);
+        let generated: Vec<_> = args_of(&derived, "generated_without_consumer");
+        let consumed: Vec<_> = args_of(&derived, "consumed_without_producer");
+        assert_eq!(generated, vec![&["yaml:app::release_manifest".to_string()]]);
+        assert_eq!(
+            consumed,
+            vec![&["json:app::hand_authored_config".to_string()]]
+        );
+    }
+
+    #[test]
     fn derive_all_ignores_preexisting_derived_edges() {
         // Derived edges are regenerated wholesale; stale ones must not feed back.
         let base = vec![
