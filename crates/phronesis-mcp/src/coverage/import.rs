@@ -1,10 +1,10 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use crate::coverage::store::{write_store, CoverageIndex, HitRecord, COVERAGE_FORMAT};
+use crate::coverage::store::{COVERAGE_FORMAT, CoverageIndex, HitRecord, write_store};
 
 #[derive(Debug)]
 pub struct ImportSummary {
@@ -17,7 +17,10 @@ const MAX_EXPORT_SIZE: u64 = 5 * 1024 * 1024;
 
 pub fn validate_record(rec: &HitRecord) -> Result<()> {
     if rec.v != COVERAGE_FORMAT {
-        return Err(anyhow!("invalid format version: expected {}", COVERAGE_FORMAT));
+        return Err(anyhow!(
+            "invalid format version: expected {}",
+            COVERAGE_FORMAT
+        ));
     }
     if rec.kind != "hit" {
         return Err(anyhow!("invalid kind: expected 'hit'"));
@@ -67,56 +70,68 @@ fn validate_identifier_field(field: &str, name: &str) -> Result<()> {
 /// the whole export passes (including single-revision consistency) is the
 /// store replaced (SPEC-coverage-evidence §8).
 pub fn import_export(root: &Path, export_path: &Path, now_unix: u64) -> Result<ImportSummary> {
+    let records = read_records(export_path)?;
+    let revision = single_revision(&records)?;
+    write_store(
+        root,
+        &records,
+        &CoverageIndex {
+            format: COVERAGE_FORMAT,
+            revision: revision.clone(),
+            imported_at: now_unix,
+            tool: records[0].tool.clone(),
+        },
+    )?;
+    Ok(ImportSummary {
+        records: records.len(),
+        tests: records
+            .iter()
+            .map(|r| r.test.as_str())
+            .collect::<HashSet<_>>()
+            .len(),
+        revision,
+    })
+}
+
+fn read_records(export_path: &Path) -> Result<Vec<HitRecord>> {
     let metadata = fs::metadata(export_path)
         .with_context(|| format!("export file not found: {}", export_path.display()))?;
     if metadata.len() > MAX_EXPORT_SIZE {
-        return Err(anyhow!("export file exceeds {} byte limit", MAX_EXPORT_SIZE));
+        return Err(anyhow!(
+            "export file exceeds {} byte limit",
+            MAX_EXPORT_SIZE
+        ));
     }
+    read_lines(export_path)?
+        .iter()
+        .enumerate()
+        .map(|(i, line)| parse_record(i, line))
+        .collect()
+}
 
-    let file = File::open(export_path)?;
-    let reader = BufReader::new(file);
-    let mut records: Vec<HitRecord> = Vec::new();
-    let mut revision: Option<String> = None;
-    let mut test_names: HashSet<String> = HashSet::new();
+fn read_lines(export_path: &Path) -> Result<Vec<String>> {
+    let raw: Vec<String> = BufReader::new(File::open(export_path)?)
+        .lines()
+        .collect::<std::io::Result<_>>()?;
+    Ok(raw.into_iter().filter(|l| !l.trim().is_empty()).collect())
+}
 
-    for (i, line_result) in reader.lines().enumerate() {
-        let line_num = i + 1;
-        let line = line_result.with_context(|| format!("failed to read export line {line_num}"))?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let rec: HitRecord = serde_json::from_str(&line)
-            .with_context(|| format!("malformed JSON at export line {line_num}"))?;
-        if let Err(e) = validate_record(&rec) {
-            return Err(anyhow!("export line {line_num}: {e}"));
-        }
-
-        match &revision {
-            None => revision = Some(rec.revision.clone()),
-            Some(prev) if *prev != rec.revision => {
-                return Err(anyhow!("export mixes revisions"));
-            }
-            _ => {}
-        }
-
-        test_names.insert(rec.test.clone());
-        records.push(rec);
+fn parse_record(index: usize, line: &str) -> Result<HitRecord> {
+    let line_num = index + 1;
+    let rec: HitRecord = serde_json::from_str(line)
+        .with_context(|| format!("malformed JSON at export line {line_num}"))?;
+    match validate_record(&rec) {
+        Ok(()) => Ok(rec),
+        Err(e) => Err(anyhow!("export line {line_num}: {e}")),
     }
+}
 
-    let revision = revision.ok_or_else(|| anyhow!("no records found in export"))?;
-    let tool = records[0].tool.clone();
-
-    let index = CoverageIndex {
-        format: COVERAGE_FORMAT,
-        revision: revision.clone(),
-        imported_at: now_unix,
-        tool,
-    };
-    write_store(root, &records, &index)?;
-
-    Ok(ImportSummary {
-        records: records.len(),
-        tests: test_names.len(),
-        revision,
-    })
+fn single_revision(records: &[HitRecord]) -> Result<String> {
+    let first = records
+        .first()
+        .ok_or_else(|| anyhow!("no records found in export"))?;
+    if records.iter().any(|r| r.revision != first.revision) {
+        return Err(anyhow!("export mixes revisions"));
+    }
+    Ok(first.revision.clone())
 }

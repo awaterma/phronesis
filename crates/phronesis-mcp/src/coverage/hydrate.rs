@@ -55,24 +55,23 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
 
     let mut facts: Vec<CoverageFact> = Vec::new();
 
-    if wants("head_revision") {
-        if let Some(sha) = &input.head_sha {
-            facts.push(fact("head_revision", vec![sha.clone()]));
-        }
+    if wants("head_revision")
+        && let Some(sha) = &input.head_sha
+    {
+        facts.push(fact("head_revision", vec![sha.clone()]));
     }
 
     let index = load_index(input.root);
-    if wants("coverage_revision") {
-        if let Some(idx) = &index {
-            facts.push(fact("coverage_revision", vec![idx.revision.clone()]));
-        }
+    if wants("coverage_revision")
+        && let Some(idx) = &index
+    {
+        facts.push(fact("coverage_revision", vec![idx.revision.clone()]));
     }
-    if wants("coverage_stale") {
-        if let (Some(idx), Some(sha)) = (&index, &input.head_sha) {
-            if idx.revision != *sha {
-                facts.push(fact("coverage_stale", Vec::new()));
-            }
-        }
+    if wants("coverage_stale")
+        && let (Some(idx), Some(sha)) = (&index, &input.head_sha)
+        && idx.revision != *sha
+    {
+        facts.push(fact("coverage_stale", Vec::new()));
     }
 
     if wants("changed_region") || wants("changed_function") {
@@ -86,10 +85,16 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
             let regions = changed_regions(edit.old.unwrap_or(""), edit.new)?;
             for region in regions.functions.iter().chain(regions.branches.iter()) {
                 if wants("changed_region") {
-                    facts.push(fact("changed_region", vec![change_id.clone(), region.clone()]));
+                    facts.push(fact(
+                        "changed_region",
+                        vec![change_id.clone(), region.clone()],
+                    ));
                 }
                 if wants("changed_function") && region.starts_with("fn:") {
-                    facts.push(fact("changed_function", vec![change_id.clone(), region.clone()]));
+                    facts.push(fact(
+                        "changed_function",
+                        vec![change_id.clone(), region.clone()],
+                    ));
                 }
             }
         }

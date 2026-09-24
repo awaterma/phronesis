@@ -39,7 +39,9 @@ pub fn store_paths(root: &Path) -> (PathBuf, PathBuf) {
 /// rather than corrupt).
 pub fn write_store(root: &Path, records: &[HitRecord], index: &CoverageIndex) -> Result<()> {
     let (records_path, index_path) = store_paths(root);
-    let dir = records_path.parent().context("coverage path has no parent")?;
+    let dir = records_path
+        .parent()
+        .context("coverage path has no parent")?;
     fs::create_dir_all(dir)?;
 
     let tmp_records = records_path.with_file_name("coverage.jsonl.tmp");
@@ -87,8 +89,8 @@ pub fn load_hits(root: &Path) -> Result<Vec<HitRecord>> {
         if line.trim().is_empty() {
             continue;
         }
-        let rec: HitRecord = serde_json::from_str(&line)
-            .context(format!("coverage store line {}", i + 1))?;
+        let rec: HitRecord =
+            serde_json::from_str(&line).context(format!("coverage store line {}", i + 1))?;
         if rec.v != COVERAGE_FORMAT {
             return Err(anyhow::anyhow!(
                 "unsupported coverage format at line {}: expected {}",

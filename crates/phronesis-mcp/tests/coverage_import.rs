@@ -1,5 +1,5 @@
 use phronesis_mcp::coverage::import::import_export;
-use phronesis_mcp::coverage::store::{load_hits, load_index, HitRecord, COVERAGE_FORMAT};
+use phronesis_mcp::coverage::store::{COVERAGE_FORMAT, HitRecord, load_hits, load_index};
 
 fn rec(test: &str, region: &str, file: &str, rev: &str) -> HitRecord {
     HitRecord {
@@ -23,7 +23,9 @@ fn write_export(dir: &std::path::Path, lines: &[String]) -> std::path::PathBuf {
 }
 
 fn jsonl(recs: &[HitRecord]) -> Vec<String> {
-    recs.iter().map(|r| serde_json::to_string(r).unwrap()).collect()
+    recs.iter()
+        .map(|r| serde_json::to_string(r).unwrap())
+        .collect()
 }
 
 #[test]
@@ -33,7 +35,10 @@ fn test_import_happy_path_writes_store_and_index() {
     let rev = "a".repeat(40);
     let export = write_export(
         expdir.path(),
-        &jsonl(&[rec("test_a", "fn:foo", "src/lib.rs", &rev), rec("test_b", "fn:bar", "src/main.rs", &rev)]),
+        &jsonl(&[
+            rec("test_a", "fn:foo", "src/lib.rs", &rev),
+            rec("test_b", "fn:bar", "src/main.rs", &rev),
+        ]),
     );
 
     let summary = import_export(root.path(), &export, 1_234_567_890).unwrap();
@@ -53,10 +58,15 @@ fn test_import_rejects_malformed_line() {
     let root = tempfile::tempdir().unwrap();
     let expdir = tempfile::tempdir().unwrap();
     let rev = "a".repeat(40);
-    let lines = vec![serde_json::to_string(&rec("t", "fn:foo", "src/lib.rs", &rev)).unwrap(), "not json".to_string()];
+    let lines = vec![
+        serde_json::to_string(&rec("t", "fn:foo", "src/lib.rs", &rev)).unwrap(),
+        "not json".to_string(),
+    ];
     let export = write_export(expdir.path(), &lines);
 
-    let err = import_export(root.path(), &export, 1).unwrap_err().to_string();
+    let err = import_export(root.path(), &export, 1)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("malformed JSON"), "got: {err}");
     // All-or-nothing: nothing was written.
     assert_eq!(load_index(root.path()), None);
@@ -68,9 +78,14 @@ fn test_import_rejects_absolute_file_path() {
     let root = tempfile::tempdir().unwrap();
     let expdir = tempfile::tempdir().unwrap();
     let rev = "a".repeat(40);
-    let export = write_export(expdir.path(), &jsonl(&[rec("t", "fn:foo", "/abs/lib.rs", &rev)]));
+    let export = write_export(
+        expdir.path(),
+        &jsonl(&[rec("t", "fn:foo", "/abs/lib.rs", &rev)]),
+    );
 
-    let err = import_export(root.path(), &export, 1).unwrap_err().to_string();
+    let err = import_export(root.path(), &export, 1)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("repo-relative"), "got: {err}");
     assert_eq!(load_index(root.path()), None);
 }
@@ -87,7 +102,9 @@ fn test_import_rejects_mixed_revisions() {
         ]),
     );
 
-    let err = import_export(root.path(), &export, 1).unwrap_err().to_string();
+    let err = import_export(root.path(), &export, 1)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("mixes revisions"), "got: {err}");
     assert_eq!(load_index(root.path()), None);
 }
@@ -97,7 +114,10 @@ fn test_import_is_idempotent_per_revision() {
     let root = tempfile::tempdir().unwrap();
     let expdir = tempfile::tempdir().unwrap();
     let rev = "a".repeat(40);
-    let export = write_export(expdir.path(), &jsonl(&[rec("t1", "fn:foo", "src/lib.rs", &rev)]));
+    let export = write_export(
+        expdir.path(),
+        &jsonl(&[rec("t1", "fn:foo", "src/lib.rs", &rev)]),
+    );
 
     let s1 = import_export(root.path(), &export, 1000).unwrap();
     let h1 = load_hits(root.path()).unwrap();

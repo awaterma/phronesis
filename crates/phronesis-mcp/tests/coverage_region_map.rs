@@ -26,7 +26,10 @@ fn test_branch_anchor_survives_message_edit() {
     assert_eq!(old.len(), 1);
     assert_eq!(old[0].anchor, new[0].anchor);
     let ch = changed_regions(OLD_SRC, NEW_SRC).unwrap();
-    assert!(ch.branches.contains(&branch_region_id("safe_divide", &old[0].anchor)));
+    assert!(
+        ch.branches
+            .contains(&branch_region_id("safe_divide", &old[0].anchor))
+    );
     assert!(ch.functions.contains(&function_region_id("safe_divide")));
 }
 

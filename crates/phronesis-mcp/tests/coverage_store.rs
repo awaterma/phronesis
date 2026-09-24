@@ -1,5 +1,5 @@
 use phronesis_mcp::coverage::store::{
-    load_hits, load_index, write_store, CoverageIndex, HitRecord, COVERAGE_FORMAT,
+    COVERAGE_FORMAT, CoverageIndex, HitRecord, load_hits, load_index, write_store,
 };
 
 fn temp_root() -> tempfile::TempDir {
@@ -30,7 +30,12 @@ fn round_trips_records_and_index() {
         imported_at: 1,
         tool: "cargo-llvm-cov".into(),
     };
-    write_store(root.path(), &[hit("t1", "fn:safe_divide", &"a".repeat(40))], &idx).unwrap();
+    write_store(
+        root.path(),
+        &[hit("t1", "fn:safe_divide", &"a".repeat(40))],
+        &idx,
+    )
+    .unwrap();
     assert_eq!(load_index(root.path()), Some(idx));
     assert_eq!(load_hits(root.path()).unwrap().len(), 1);
 }

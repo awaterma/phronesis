@@ -41,10 +41,7 @@ fn all_nodes<'t>(root: Node<'t>) -> Vec<Node<'t>> {
     let mut stack = vec![root];
     while let Some(node) = stack.pop() {
         out.push(node);
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            stack.push(child);
-        }
+        stack.extend(node.children(&mut node.walk()));
     }
     out
 }
@@ -52,12 +49,11 @@ fn all_nodes<'t>(root: Node<'t>) -> Vec<Node<'t>> {
 fn find_function_name(node: Node, source: &str) -> String {
     let mut current = node;
     while let Some(parent) = current.parent() {
-        if parent.kind() == "function_item" {
-            if let Some(name_node) = parent.child_by_field_name("name") {
-                if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
-                    return name.to_string();
-                }
-            }
+        if parent.kind() == "function_item"
+            && let Some(name_node) = parent.child_by_field_name("name")
+            && let Ok(name) = name_node.utf8_text(source.as_bytes())
+        {
+            return name.to_string();
         }
         current = parent;
     }
@@ -103,63 +99,111 @@ fn extract_functions(source: &str) -> Result<Vec<(String, u64, u64)>> {
         if node.kind() != "function_item" {
             continue;
         }
-        if let Some(name_node) = node.child_by_field_name("name") {
-            if let Ok(name) = name_node.utf8_text(source.as_bytes()) {
-                functions.push((
-                    name.to_string(),
-                    node.start_position().row as u64 + 1,
-                    node.end_position().row as u64 + 1,
-                ));
-            }
+        if let Some(name_node) = node.child_by_field_name("name")
+            && let Ok(name) = name_node.utf8_text(source.as_bytes())
+        {
+            functions.push((
+                name.to_string(),
+                node.start_position().row as u64 + 1,
+                node.end_position().row as u64 + 1,
+            ));
         }
     }
     Ok(functions)
 }
 
-/// LCS over lines; returns the 1-based line numbers absent from the LCS on
-/// each side.
-fn changed_lines(old: &str, new: &str) -> (HashSet<u64>, HashSet<u64>) {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
-    let m = old_lines.len();
-    let n = new_lines.len();
+/// One step of the LCS walk: a matched pair (old line, new line), a
+/// deletion from old, or an insertion into new. Line numbers are 1-based;
+/// only `Match` carries consumed line numbers — changed lines are derived
+/// from the complement of the matched set.
+enum WalkStep {
+    Match(usize, usize),
+    Delete,
+    Insert,
+}
 
-    let mut dp = vec![vec![0usize; n + 1]; m + 1];
-    for i in 1..=m {
-        for j in 1..=n {
-            dp[i][j] = if old_lines[i - 1] == new_lines[j - 1] {
-                dp[i - 1][j - 1] + 1
+struct LcsWalk<'a> {
+    dp: &'a [Vec<usize>],
+    old: &'a [&'a str],
+    new: &'a [&'a str],
+    i: usize,
+    j: usize,
+}
+
+impl Iterator for LcsWalk<'_> {
+    type Item = WalkStep;
+    fn next(&mut self) -> Option<WalkStep> {
+        if self.i > 0 && self.j > 0 {
+            if self.old[self.i - 1] == self.new[self.j - 1] {
+                let step = WalkStep::Match(self.i, self.j);
+                self.i -= 1;
+                self.j -= 1;
+                return Some(step);
+            }
+            if self.dp[self.i - 1][self.j] >= self.dp[self.i][self.j - 1] {
+                self.i -= 1;
+                return Some(WalkStep::Delete);
+            }
+            self.j -= 1;
+            return Some(WalkStep::Insert);
+        }
+        if self.i > 0 {
+            self.i -= 1;
+            return Some(WalkStep::Delete);
+        }
+        if self.j > 0 {
+            self.j -= 1;
+            return Some(WalkStep::Insert);
+        }
+        None
+    }
+}
+
+fn lcs_table(old: &[&str], new: &[&str]) -> Vec<Vec<usize>> {
+    let mut dp = vec![vec![0usize; new.len() + 1]; old.len() + 1];
+    for (i, a) in old.iter().enumerate() {
+        for (j, b) in new.iter().enumerate() {
+            dp[i + 1][j + 1] = if a == b {
+                dp[i][j] + 1
             } else {
-                dp[i - 1][j].max(dp[i][j - 1])
+                dp[i][j + 1].max(dp[i + 1][j])
             };
         }
     }
+    dp
+}
 
-    let mut changed_old = HashSet::new();
-    let mut changed_new = HashSet::new();
-    let mut i = m;
-    let mut j = n;
-    while i > 0 && j > 0 {
-        if old_lines[i - 1] == new_lines[j - 1] {
-            i -= 1;
-            j -= 1;
-        } else if dp[i - 1][j] >= dp[i][j - 1] {
-            changed_old.insert(i as u64);
-            i -= 1;
-        } else {
-            changed_new.insert(j as u64);
-            j -= 1;
-        }
+/// LCS over lines; returns the 1-based line numbers absent from the LCS on
+/// each side (matched pairs from the walk are the complement of the change
+/// set on each side).
+fn changed_lines(old: &str, new: &str) -> (HashSet<u64>, HashSet<u64>) {
+    let old_lines: Vec<&str> = old.lines().collect();
+    let new_lines: Vec<&str> = new.lines().collect();
+    let steps: Vec<WalkStep> = LcsWalk {
+        dp: &lcs_table(&old_lines, &new_lines),
+        old: &old_lines,
+        new: &new_lines,
+        i: old_lines.len(),
+        j: new_lines.len(),
     }
-    while i > 0 {
-        changed_old.insert(i as u64);
-        i -= 1;
-    }
-    while j > 0 {
-        changed_new.insert(j as u64);
-        j -= 1;
-    }
-
+    .collect();
+    let matched = steps
+        .iter()
+        .fold((HashSet::new(), HashSet::new()), |mut acc, step| {
+            if let WalkStep::Match(a, b) = step {
+                acc.0.insert(*a);
+                acc.1.insert(*b);
+            }
+            acc
+        });
+    let changed_old = (1..=old_lines.len())
+        .filter(|i| !matched.0.contains(i))
+        .map(|i| i as u64)
+        .collect();
+    let changed_new = (1..=new_lines.len())
+        .filter(|j| !matched.1.contains(j))
+        .map(|j| j as u64)
+        .collect();
     (changed_old, changed_new)
 }
 
