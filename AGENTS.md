@@ -311,6 +311,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/journey_cli.rs` | `phr-mcp journey` rendering glue (table + JSON + `--explain`) |
 | `crates/phronesis-mcp/src/{claude_md,memory,wiki}_drift.rs` | Three heuristic drift detectors (Jaccard overlap, no LLM call) |
 | `crates/phronesis-mcp/src/wiki.rs` | ADR page primitives shared by wiki_drift + decision scaffolding |
+| `crates/phronesis-mcp/verification/` | Verus-verified harness for coverage-store invariants (standalone, outside main workspace) |
 
 ### Action Log (`.phronesis/log.jsonl`)
 
