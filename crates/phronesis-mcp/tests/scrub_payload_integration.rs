@@ -451,9 +451,10 @@ impl HomeGuard {
             previous: std::env::var("HOME").ok(),
             _lock: home_lock(),
         };
-        // SAFETY: edition 2024 requires `unsafe` for env mutation because it is
+        // edition 2024 requires `unsafe` for env mutation because it is
         // not thread-safe; `home_lock` is what makes it safe here, and every
         // other `$HOME` mutation in this file goes through this guard.
+        // SAFETY: `home_lock` serializes all `$HOME` env mutation in this file, so no concurrent test can race with this set_var/remove_var.
         unsafe {
             match value {
                 Some(v) => std::env::set_var("HOME", v),
@@ -466,6 +467,7 @@ impl HomeGuard {
 
 impl Drop for HomeGuard {
     fn drop(&mut self) {
+        // SAFETY: `_lock` still holds `home_lock`, so no concurrent test can race with this restore of `$HOME`.
         unsafe {
             match &self.previous {
                 Some(v) => std::env::set_var("HOME", v),
