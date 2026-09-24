@@ -134,10 +134,10 @@ pub fn resolve_project_root(start: &Path) -> PathBuf {
         if has_phronesis(&dir) {
             return dir;
         }
-        if let Some(main_root) = main_checkout_root(&dir) {
-            if has_phronesis(&main_root) {
-                return main_root;
-            }
+        if let Some(main_root) = main_checkout_root(&dir)
+            && has_phronesis(&main_root)
+        {
+            return main_root;
         }
         current = dir.parent().map(|p| Path::new(p).to_path_buf());
     }
