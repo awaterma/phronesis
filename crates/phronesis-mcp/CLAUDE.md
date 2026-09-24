@@ -39,6 +39,8 @@ cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shap
 cargo run -- migrate-extracted-rules <path>  # Salvage pre-0.14.0 extract_rules output: strip prefixes, demote actions
 cargo run -- catalogue        # Regenerate docs/catalogue.html from the shipped packs (run from repo root)
 cargo run -- scrub-payload <path> [--write] [--home DIR] [--project-root DIR]  # Anonymize captured payloads for committing as fixtures
+cargo run -- coverage import <export.jsonl>  # Import a normalized per-test coverage export into the evidence store
+cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 
 ### Payload-contract corpus
@@ -931,7 +933,7 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `drift`, `claude-md-drift`, `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`, `codex-hook`, `claude-hook`, `kalpa`, `unit`.
+- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `drift`, `claude-md-drift`, `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`, `codex-hook`, `claude-hook`, `kalpa`, `unit`, `coverage` (import, select).
 - `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, predicate-provider create/read/test/list/remove, graph query/status/rebuild, get_stats, audit_codebase, get_debt_trend, get_drift, get_confidence, submit_suggestion — which takes optional `spec` / `bug_id` and records a `unit_start` through `lifecycle::unit_cli::start` — and get_journey, whose optional `include_lifecycle` (default `false`) switches the bare fact array for `{"facts": [...], "lifecycle": [...]}`; prompt text is never included)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
