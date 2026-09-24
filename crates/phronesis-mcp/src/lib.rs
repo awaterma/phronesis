@@ -25,6 +25,7 @@ pub mod net;
 pub mod outcomes;
 pub mod payload_scrub;
 pub mod predicate_provider;
+pub mod properties;
 pub mod rule_layers;
 pub mod rules_file;
 pub mod scrub_payload;

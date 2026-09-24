@@ -536,6 +536,71 @@ pub(crate) async fn assert_coverage_facts(
     Ok(())
 }
 
+/// Hydrate property-ontology facts (SPEC-property-ontology.md) — the
+/// coverage hydration pattern: demand-gated on rule predicates, fail-open,
+/// `PHRONESIS_NO_PROPERTIES` opt-out.
+pub(crate) async fn assert_properties_facts(
+    network: &ReteNetwork,
+    project_root: &Path,
+    rule_predicates: &HashSet<String>,
+    edited: &[(String, Option<String>, String)],
+) -> Result<(), HookError> {
+    use crate::properties::hydrate::{
+        EditedFile, PropertyHydrationInput, RELATIONS, facts_for_event,
+    };
+
+    if std::env::var_os("PHRONESIS_NO_PROPERTIES").is_some() {
+        return Ok(());
+    }
+    if !RELATIONS.iter().any(|r| rule_predicates.contains(*r)) {
+        return Ok(());
+    }
+    let edited_files: Vec<EditedFile> = edited
+        .iter()
+        .map(|(path, old, new)| EditedFile {
+            path: path.clone(),
+            old: old.as_deref(),
+            new,
+        })
+        .collect();
+    let head_sha = match crate::lifecycle::outcome::git_head_probe(project_root) {
+        crate::lifecycle::outcome::HeadProbe::Head(sha) => Some(sha),
+        _ => None,
+    };
+    let input = PropertyHydrationInput {
+        root: project_root,
+        rule_relations: rule_predicates.clone(),
+        edited: edited_files,
+        head_sha,
+    };
+    let facts = match facts_for_event(&input) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("phronesis: WARNING — property hydration failed: {}", e);
+            return Ok(());
+        }
+    };
+    for f in facts {
+        let joined = f.args.join("\u{1f}");
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in joined.as_bytes() {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let fact = Fact {
+            id: format!("property:{}:{hash:012x}", f.predicate),
+            predicate: f.predicate.clone(),
+            args: f.args,
+            timestamp: 0,
+            source: Some("properties".to_string()),
+        };
+        if let Err(e) = network.assert_fact(fact).await {
+            eprintln!("phronesis: WARNING — property fact rejected: {}", e);
+        }
+    }
+    Ok(())
+}
+
 /// Collect every distinct `args[0]` from rules' `new_content_contains`
 /// conditions. The hook scans for exactly these patterns; any rule whose
 /// condition references a pattern automatically gets it checked.
