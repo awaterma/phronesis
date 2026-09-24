@@ -478,6 +478,23 @@ enum CoverageCmd {
         #[arg(long, default_value = ".")]
         path: PathBuf,
     },
+    /// Select tests relevant to the current change (SPEC §7 / A6).
+    ///
+    /// Union of tests hitting changed regions (dynamic coverage store) and
+    /// tests statically reaching changed functions (graph tested_by /
+    /// test_reaches edges, when the graph is fresh). Each entry is labeled
+    /// by evidence kind and carries its justifying regions.
+    Select {
+        /// Select by a specific change id (defaults to head:<short-sha>).
+        #[arg(long)]
+        change: Option<String>,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Emit JSON instead of a human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
@@ -494,6 +511,17 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                 "imported {} hits across {} tests at revision {}",
                 summary.records, summary.tests, summary.revision
             );
+            Ok(())
+        }
+        CoverageCmd::Select { change, path, json } => {
+            let root = std::env::current_dir()?.join(&path);
+            let root = root.canonicalize().unwrap_or(root);
+            let sel = phronesis_mcp::coverage::select::select(&root, change.as_deref())?;
+            if json {
+                println!("{}", phronesis_mcp::coverage::select::render_json(&sel));
+            } else {
+                print!("{}", phronesis_mcp::coverage::select::render_table(&sel));
+            }
             Ok(())
         }
     }
