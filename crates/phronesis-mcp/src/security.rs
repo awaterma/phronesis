@@ -96,14 +96,79 @@ pub enum SecurityError {
 
 /// Return the project root directory.
 ///
-/// Honors `PHRONESIS_PROJECT_ROOT` if set, otherwise falls back to the current
-/// working directory. The returned path is not guaranteed to exist or be canonical.
+/// Honors `PHRONESIS_PROJECT_ROOT` as an explicit override (returned verbatim,
+/// no discovery). Otherwise walks up from the current working directory to find
+/// the governing root via [`resolve_project_root`]. The returned path is not
+/// guaranteed to exist or be canonical.
 pub fn project_root() -> PathBuf {
-    std::env::var("PHRONESIS_PROJECT_ROOT")
+    if let Some(override_root) = std::env::var("PHRONESIS_PROJECT_ROOT")
         .ok()
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("."))
+    {
+        return override_root;
+    }
+    let start = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    resolve_project_root(&start)
+}
+
+/// Walk up from `start` to find the governing project root — the nearest
+/// ancestor (or its main checkout) that actually carries `.phronesis` state.
+///
+/// Discovery precedence at each ancestor, nearest first:
+/// - an ancestor carrying `.phronesis/` governs — a worktree that
+///   copy-initialized its own `.phronesis` is governed by its own state, not the
+///   main checkout's;
+/// - otherwise, when the ancestor is a git *worktree* (its `.git` is a file
+///   pointer) and lacks its own `.phronesis`, the main checkout's `.phronesis`
+///   is probed via the `gitdir:` pointer and governs when present;
+/// - a git root without `.phronesis` (and whose main checkout has none) does
+///   not govern — the walk continues, so a repo with no phronesis state anywhere
+///   falls through to `start`, reproducing the pre-discovery fail-open behavior.
+///
+/// Exposed separately from [`project_root`] so the worktree-aware discovery can
+/// be exercised without changing the process working directory.
+pub fn resolve_project_root(start: &Path) -> PathBuf {
+    let mut current = Some(start.to_path_buf());
+    while let Some(dir) = current.take() {
+        if has_phronesis(&dir) {
+            return dir;
+        }
+        if let Some(main_root) = main_checkout_root(&dir) {
+            if has_phronesis(&main_root) {
+                return main_root;
+            }
+        }
+        current = dir.parent().map(|p| Path::new(p).to_path_buf());
+    }
+    start.to_path_buf()
+}
+
+/// True when `root` carries a `.phronesis` directory (the phronesis state root).
+fn has_phronesis(root: &Path) -> bool {
+    root.join(".phronesis").is_dir()
+}
+
+/// If `root` is a git worktree (its `.git` is a file pointer), return the main
+/// checkout's root derived from the `gitdir:` line. Returns `None` when `.git`
+/// is a directory (a normal repo) or the pointer is absent/malformed — the
+/// caller then treats `root` as a non-governing ancestor and keeps walking up.
+///
+/// The pointer format is `gitdir: <main>/.git/worktrees/<name>`, so the main
+/// checkout root is three components up from the value (name, worktrees, .git).
+fn main_checkout_root(root: &Path) -> Option<PathBuf> {
+    let git = root.join(".git");
+    if !git.is_file() {
+        return None;
+    }
+    let contents = std::fs::read_to_string(&git).ok()?;
+    let value = contents.lines().find_map(|line| {
+        line.strip_prefix("gitdir:")
+            .map(str::trim)
+            .map(|v| v.to_string())
+    })?;
+    let main_root = Path::new(&value).parent()?.parent()?.parent()?;
+    Some(main_root.to_path_buf())
 }
 
 /// Resolve a user-supplied path against `project_root`, ensuring the canonical
