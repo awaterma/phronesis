@@ -175,11 +175,6 @@ fn b1_staleness_join_names_only_the_branch_property() {
             head_sha: Some(head.clone()),
         })
         .expect("coverage hydrate");
-        let assert_all = |facts: &[phr::Fact]| {
-            async |f: &phr::Fact| {
-                net.assert_fact(f.clone()).await.expect("assert");
-            }
-        };
         // Coverage facts + property facts, both with stable IDs and sources.
         for f in &cov {
             net.assert_fact(phr::Fact {
