@@ -251,6 +251,19 @@ mod tests {
         }
     }
 
+    fn consumed_without_producer_rule() -> Rule {
+        Rule {
+            id: "unvalidated-consumed-without-producer".into(),
+            priority: 1,
+            conditions: vec![cond("consumed_without_producer", &["?artifact"])],
+            actions: vec![Action {
+                action_type: "constraint_warning".into(),
+                params: vec!["consumed config without producer".into()],
+                data: None,
+            }],
+        }
+    }
+
     /// Two flaggable files plus one clean, so a whole-tree sweep has to find
     /// more than the single file a hook would look at.
     fn project() -> TempDir {
@@ -286,6 +299,19 @@ mod tests {
         let rule = query_only_diagnostic_rule();
         assert!(is_graph_rule(&rule));
         assert!(!is_audit_eligible_graph_rule(&rule));
+    }
+
+    #[test]
+    fn both_lifecycle_relations_are_queryable_but_excluded_from_audit() {
+        // The query-only mandate: a warning over *either* lifecycle relation is
+        // a graph rule (so a hook could bind it) but is excluded from
+        // whole-tree audit, so it can never become an audit headline. The
+        // excluded relation is the predicate, not the action or phase.
+        assert!(is_graph_rule(&query_only_diagnostic_rule()));
+        assert!(!is_audit_eligible_graph_rule(&query_only_diagnostic_rule()));
+        let consumed = consumed_without_producer_rule();
+        assert!(is_graph_rule(&consumed));
+        assert!(!is_audit_eligible_graph_rule(&consumed));
     }
 
     #[tokio::test]
