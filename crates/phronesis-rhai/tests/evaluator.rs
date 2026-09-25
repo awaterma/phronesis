@@ -205,7 +205,6 @@ fn check(input: int)
     }
 
     #[test]
-    #[test]
     fn render_scope_freeze_forbidden_capabilities_are_absent() {
         let mut m = Map::new();
         m.insert("id".into(), "x".into());
@@ -234,6 +233,7 @@ fn check(input: int)
         );
     }
 
+    #[test]
     fn render_is_deterministic_over_the_frozen_input() {
         let mut facts = vec![];
         for (k, v) in [
@@ -259,9 +259,11 @@ fn check(input: int)
             },
         );
         let a = phronesis_rhai::render(verus_template(), &input).unwrap();
-        let b = phronesis_rhai::render(verus_template(), &input).unwrap();
-        assert_eq!(a, b, "same inputs must be byte-identical across runs");
-        let _ = b;
+        let b = phronesis_rhai::render(verus_template(), &input2).unwrap();
+        assert_eq!(
+            a, b,
+            "byte-identical across runs AND across insertion order"
+        );
     }
 
     #[test]
