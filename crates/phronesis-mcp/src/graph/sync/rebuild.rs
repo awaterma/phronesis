@@ -9,7 +9,10 @@ use super::index::{decision_input_files, is_tracked, load_index, save_index, tra
 use super::rules::{
     migrate_graph_rule_predicates, reconcile_bindings_best_effort, rule_predicate_edges,
 };
-use super::{GRAPH_FORMAT, Index, SaveOutcome, hash_content, index_path};
+use super::{
+    GRAPH_FORMAT, Index, PerFileResolution, SaveOutcome, hash_content, index_path,
+    save_resolution_stats,
+};
 use crate::graph;
 use crate::graph::derive::{canonicalize_function_edges, derive_all};
 use crate::graph::model::Edge;
@@ -57,8 +60,11 @@ fn verify_persisted(path: &Path, n_base: usize, n_derived: usize) -> std::io::Re
 }
 
 /// Recompute derived edges over `base` and persist both sets.
-fn persist(root: &Path, mut base: Vec<Edge>) -> std::io::Result<(usize, usize, usize, usize)> {
-    let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+fn persist(
+    root: &Path,
+    mut base: Vec<Edge>,
+) -> std::io::Result<(usize, usize, usize, usize, PerFileResolution)> {
+    let (unresolved, ambiguous, per_file) = canonicalize_function_edges(&mut base);
     check_tested_by_targets(&base)?;
     let derived = derive_all(&base);
     let (n_base, n_derived) = (base.len(), derived.len());
@@ -70,7 +76,8 @@ fn persist(root: &Path, mut base: Vec<Edge>) -> std::io::Result<(usize, usize, u
     let path = store::graph_path(root);
     store::write_atomic(&path, &all)?;
     verify_persisted(&path, n_base, n_derived)?;
-    Ok((n_base, n_derived, unresolved, ambiguous))
+    save_resolution_stats(root, &per_file)?;
+    Ok((n_base, n_derived, unresolved, ambiguous, per_file))
 }
 
 /// Whether editing `file_path` invalidates the data-contract edges.
@@ -165,6 +172,7 @@ fn untouched_outcome(existing: &[Edge], skipped: usize) -> SaveOutcome {
         diagnostics: Vec::new(),
         unresolved_calls: 0,
         ambiguous_calls: 0,
+        per_file_resolution: PerFileResolution::new(),
     }
 }
 
@@ -196,6 +204,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             diagnostics: Vec::new(),
             unresolved_calls: 0,
             ambiguous_calls: 0,
+            per_file_resolution: PerFileResolution::new(),
         });
     }
     let ipath = index_path(root);
@@ -219,7 +228,8 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
         base.extend(incremental_compiler_staleness(&ownership, file_path));
         base
     };
-    let (n_base, n_derived, unresolved_calls, ambiguous_calls) = persist(root, base)?;
+    let (n_base, n_derived, unresolved_calls, ambiguous_calls, per_file_resolution) =
+        persist(root, base)?;
 
     index.generation = index.generation.saturating_add(1);
     index
@@ -236,6 +246,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
         diagnostics: Vec::new(),
         unresolved_calls,
         ambiguous_calls,
+        per_file_resolution,
     })
 }
 
@@ -463,7 +474,8 @@ fn rebuild_with_overlay(
         }
     }
 
-    let (n_base, n_derived, unresolved_calls, ambiguous_calls) = persist(root, base)?;
+    let (n_base, n_derived, unresolved_calls, ambiguous_calls, per_file_resolution) =
+        persist(root, base)?;
     save_index(&index_path(root), &index)?;
     reconcile_bindings_best_effort(root, index.generation);
     for diagnostic in &diagnostics {
@@ -477,5 +489,6 @@ fn rebuild_with_overlay(
         diagnostics,
         unresolved_calls,
         ambiguous_calls,
+        per_file_resolution,
     })
 }

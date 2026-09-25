@@ -24,6 +24,15 @@ use std::path::{Path, PathBuf};
 /// Location of the staleness index, relative to project root.
 pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 
+/// Location of the per-file resolution-stats sidecar, relative to project root.
+///
+/// Stored as a JSON object mapping file paths to `[unresolved, ambiguous]`.
+/// A sidecar keeps the index format (plain text hashes) untouched and avoids
+/// embedding a JSON blob inside a line-oriented file. The stats are rebuilt
+/// from scratch on every `rebuild`/`persist`, so a missing or stale sidecar
+/// is never dangerous — the next rebuild restores it.
+pub const RESOLUTION_STATS_REL_PATH: &str = ".phronesis/graph.resolution.json";
+
 /// Version of what the extractor writes. Bumped whenever entity naming *or*
 /// the closed relation set changes, because either invalidates edges already
 /// on disk while leaving file contents — and therefore content hashes —
@@ -65,6 +74,45 @@ pub struct Index {
     /// Monotonic graph-write generation shared with `bindings.json`.
     pub generation: u64,
     pub entries: BTreeMap<String, u64>,
+}
+
+/// Per-file resolution breakdown: `(unresolved, ambiguous)` counts keyed by
+/// the source-file provenance of the dropped edge.
+pub type PerFileResolution = BTreeMap<String, (usize, usize)>;
+
+/// Resolve the resolution-stats sidecar path for a project root.
+pub fn resolution_stats_path(root: &Path) -> PathBuf {
+    root.join(RESOLUTION_STATS_REL_PATH)
+}
+
+/// Persist the per-file resolution breakdown as a JSON sidecar.
+/// Missing files or empty maps are written as `{}`.
+pub fn save_resolution_stats(root: &Path, per_file: &PerFileResolution) -> std::io::Result<()> {
+    let path = resolution_stats_path(root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string(per_file).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, body)?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Load the per-file resolution breakdown from the sidecar.
+/// A missing file returns an empty map (no error): the stats are derived
+/// state, regenerated on every rebuild.
+pub fn load_resolution_stats(root: &Path) -> std::io::Result<PerFileResolution> {
+    let path = resolution_stats_path(root);
+    match std::fs::read_to_string(&path) {
+        Ok(body) => {
+            if body.trim().is_empty() {
+                return Ok(PerFileResolution::new());
+            }
+            serde_json::from_str(&body).map_err(|e| std::io::Error::other(e.to_string()))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(PerFileResolution::new()),
+        Err(e) => Err(e),
+    }
 }
 
 /// Whether the graph still reflects what is on disk.
@@ -114,6 +162,10 @@ pub struct SaveOutcome {
     /// `calls`/`tested_by` edges whose callee matched more than one definition
     /// after filtering, so were dropped rather than guessed.
     pub ambiguous_calls: usize,
+    /// Per-file breakdown of unresolved and ambiguous call counts, keyed by
+    /// the dropped edge's source-file provenance. Sum of all per-file
+    /// unresolved counts equals `unresolved_calls`; same for ambiguous.
+    pub per_file_resolution: PerFileResolution,
 }
 
 /// Deterministic content hash (FNV-1a, 64-bit).

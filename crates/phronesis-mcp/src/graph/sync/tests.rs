@@ -1170,4 +1170,49 @@ fn a_method_in_a_path_qualified_impl_resolves_its_self_calls() {
                 .collect::<Vec<_>>()
         );
     }
+#[test]
+fn per_file_resolution_stats_survive_a_double_rebuild() {
+    // src/a.rs calls `missing` (no definition → unresolved) and `dup`
+    // (defined in both src/b.rs and src/c.rs, both visible via `use`
+    // → ambiguous).  src/b.rs calls `ghost` (no definition → unresolved).
+    let d = project();
+    write(
+        d.path(),
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod c;\n",
+    );
+    write(
+        d.path(),
+        "src/a.rs",
+        "use crate::b::dup;\nuse crate::c::dup;\npub fn entry() { missing(); dup(); }\n",
+    );
+    write(
+        d.path(),
+        "src/b.rs",
+        "pub fn dup() {}\npub fn b_entry() { ghost(); }\n",
+    );
+    write(d.path(), "src/c.rs", "pub fn dup() {}\n");
+
+    rebuild(d.path()).expect("first rebuild");
+    let stats1 = load_resolution_stats(d.path()).expect("load stats 1");
+
+    let outcome2 = rebuild(d.path()).expect("second rebuild");
+    let stats2 = load_resolution_stats(d.path()).expect("load stats 2");
+
+    // A second rebuild over unchanged sources must produce identical stats.
+    assert_eq!(stats1, stats2);
+    // The in-memory SaveOutcome must agree with the persisted sidecar.
+    assert_eq!(stats2, outcome2.per_file_resolution);
+
+    // Sum over files equals the global SaveOutcome totals.
+    let total_u: usize = stats2.values().map(|(u, _)| u).sum();
+    let total_a: usize = stats2.values().map(|(_, a)| a).sum();
+    assert_eq!(total_u, outcome2.unresolved_calls);
+    assert_eq!(total_a, outcome2.ambiguous_calls);
+
+    // At least one unresolved edge was attributed.
+    assert!(
+        stats2.values().any(|(u, _)| *u > 0),
+        "expected at least one unresolved edge, got {stats2:?}"
+    );
 }

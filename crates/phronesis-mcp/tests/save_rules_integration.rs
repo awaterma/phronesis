@@ -330,6 +330,50 @@ fn mcp_reports_and_rebuilds_the_code_graph_lifecycle() {
     assert_eq!(log["entries"].as_array().unwrap().len(), 2);
 }
 
+#[test]
+fn mcp_code_graph_status_includes_per_file_resolution() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "pub mod a;\npub mod b;\npub mod c;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/a.rs"),
+        "use crate::b::dup;\nuse crate::c::dup;\npub fn entry() { missing(); dup(); }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("src/b.rs"),
+        "pub fn dup() {}\npub fn b_entry() { ghost(); }\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("src/c.rs"), "pub fn dup() {}\n").unwrap();
+
+    let mut client = McpClient::spawn(dir.path());
+
+    let rebuilt = structured_object_tool(&mut client, "rebuild_code_graph", serde_json::json!({}));
+    assert_eq!(rebuilt["status"], "fresh");
+    let per_file = rebuilt["per_file_resolution"]
+        .as_object()
+        .expect("per_file_resolution is an object");
+    assert!(
+        per_file
+            .values()
+            .any(|v| v["unresolved"].as_u64().unwrap_or(0) > 0),
+        "expected at least one file with unresolved calls, got {per_file:?}"
+    );
+
+    let status =
+        structured_object_tool(&mut client, "get_code_graph_status", serde_json::json!({}));
+    assert_eq!(status["status"], "fresh");
+    assert!(
+        status["per_file_resolution"].is_object(),
+        "get_code_graph_status must include per_file_resolution"
+    );
+}
+
 fn rules_path(root: &Path) -> PathBuf {
     root.join(".phronesis").join("rules.json")
 }
