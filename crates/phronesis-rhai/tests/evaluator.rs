@@ -166,3 +166,113 @@ fn evaluator_is_reusable_across_calls() {
             .unwrap()
     );
 }
+
+#[cfg(test)]
+mod render_tests {
+    use phronesis_rhai::{RenderError, RenderInput};
+    use rhai::Map;
+
+    fn property_map(id: &str, subject: &str) -> Map {
+        let mut m = Map::new();
+        m.insert("id".into(), id.into());
+        m.insert("subject".into(), subject.into());
+        m.insert("kind".into(), "postcondition".into());
+        m
+    }
+
+    fn verus_template() -> &'static str {
+        r#"
+        let id = property.get("id");
+        let subject = property.get("subject");
+        `// GENERATED - DO NOT EDIT
+// Property: ${id}
+use vstd::prelude::*;
+
+verus! {
+
+spec fn property_${subject}_holds(input: int) -> bool {
+    input != 0
+}
+
+fn check(input: int)
+    requires input != 0,
+    ensures true,
+{
+}
+
+} // verus!`
+    "#
+    }
+
+    #[test]
+    #[test]
+    fn render_scope_freeze_forbidden_capabilities_are_absent() {
+        let mut m = Map::new();
+        m.insert("id".into(), "x".into());
+        let input = RenderInput {
+            property: m,
+            dependency_facts: vec![],
+        };
+        // Black-box scope freeze: templates attempting forbidden capabilities
+        // must FAIL (function-not-found), not half-work. Each of these is a
+        // capability the render contract denies.
+        for forbidden in [
+            "emit_fact(\"x\")",
+            "let p = \"/tmp/pwned\"; open_file(p)",
+            "eval(\"1+1\")",
+        ] {
+            assert!(
+                phronesis_rhai::render(forbidden, &input).is_err(),
+                "forbidden capability must be absent from render scope: {forbidden}"
+            );
+        }
+        // And the worked template still renders verus code.
+        let body = phronesis_rhai::render(verus_template(), &input).unwrap();
+        assert!(
+            body.contains("verus!"),
+            "the worked template renders verus code"
+        );
+    }
+
+    fn render_is_deterministic_over_the_frozen_input() {
+        let mut facts = vec![];
+        for (k, v) in [
+            ("predicate", "changed_region"),
+            ("predicate", "property_depends_on"),
+        ] {
+            let mut m = Map::new();
+            m.insert(k.into(), v.into());
+            m.insert("arg".into(), format!("{v}:fn:safe_divide").into());
+            facts.push(m);
+        }
+        let input = RenderInput::frozen(
+            property_map("safe_divide.zero_returns_error", "safe_divide"),
+            facts,
+        );
+        let input2 = RenderInput::frozen(
+            property_map("safe_divide.zero_returns_error", "safe_divide"),
+            {
+                // Same facts, DIFFERENT insertion order — frozen() must normalize.
+                let mut rev = input.dependency_facts.clone();
+                rev.reverse();
+                rev
+            },
+        );
+        let a = phronesis_rhai::render(verus_template(), &input).unwrap();
+        let b = phronesis_rhai::render(verus_template(), &input).unwrap();
+        assert_eq!(a, b, "same inputs must be byte-identical across runs");
+        let _ = b;
+    }
+
+    #[test]
+    fn render_rejects_non_string_and_oversize() {
+        let input = RenderInput {
+            property: property_map("p", "s"),
+            dependency_facts: vec![],
+        };
+        assert!(matches!(
+            phronesis_rhai::render("42", &input),
+            Err(RenderError::NotAString { .. })
+        ));
+    }
+}

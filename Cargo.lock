@@ -1292,6 +1292,7 @@ version = "0.35.0"
 dependencies = [
  "phronesis",
  "rhai",
+ "thiserror 2.0.18",
  "tokio",
 ]
 
