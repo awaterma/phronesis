@@ -722,8 +722,6 @@ fn d2_artifact(d: &TempDir) -> std::path::PathBuf {
 
 #[test]
 fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
-    use phronesis_mcp::coverage::import::import_export;
-    use phronesis_mcp::coverage::store::{CoverageIndex, HitRecord, write_store};
     use std::path::PathBuf;
 
     // The committed fixture export IS the real evidence from commit A.
@@ -809,7 +807,7 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
     // the real network, using the hydrated facts.
     let rt = tokio::runtime::Runtime::new().unwrap();
     let consequences = rt.block_on(async {
-        let mut net = phronesis_mcp::net::build_network();
+        let net = phronesis_mcp::net::build_network();
         let rules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/coverage-rules-5.1.json");
         let file = phronesis_mcp::rules_file::read(&rules).expect("read rules fixture");
