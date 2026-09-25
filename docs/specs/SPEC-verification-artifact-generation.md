@@ -21,9 +21,20 @@ Templates are `.rhai` scripts (`kani-postcondition.rhai`, `verus-postcondition.r
 
 Known limits: emitted bodies are capped (see S5 for the measured cap); a template needing more becomes an explicit host-side Rust template, recorded as an exception in review.
 
-### Artifact kind: standalone Verus-native (decided)
+### Language neutrality (the architectural frame)
 
-The proven 10-VC Verus harness on this machine is **standalone `verus!`-native code** (spec fns + `requires`/`ensures` over dedicated harness functions), not in-tree annotated production code. Phase 1's artifact kind is therefore a **standalone Verus-native module** — no in-tree spec-insertion kind is required yet. A standalone harness proving a *plain-Rust* function would need `assume`d specs — a faked proof — so C1's subject is a Verus-native function. Kani remains a later adapter (its plain-Rust-external-harness model differs; the skip-if-absent CI pattern applies to both).
+The pipeline is **(language, verifier)-parameterized** and language-neutral by construction — the same discipline as the rules engine (language-neutral; per-language predicates) and the tree-sitter extractors (per-language parsers behind one interface). Nothing in S1–S9 is Rust-specific:
+
+- **Property records** are language-neutral (SPEC B); `depends_on` regions carry language-prefixed graph identity.
+- **Encodings** are declared per pair on the property record: `{ language, verifier, artifact }` — a property may carry encodings in several (language, verifier) pairs.
+- **Templates** are registered per `(language, verifier, kind)` — `verus-postcondition.rhai`, `kani-postcondition.rhai`, later `dafny-*`/`lean-*`; the template registry maps the encoding triple, never the pipeline.
+- **ToolchainDefs** are already declarative and language-neutral (`matches`, `per_test`, `outcome_kind: "proof"`); S9's sandbox applies to whatever process the def runs.
+
+The safety contract is the invariant across instantiations; only encodings, templates, and ToolchainDefs vary per language.
+
+### Phase-1 artifact kind: standalone Verus-native (the first instantiation)
+
+The proven 10-VC Verus harness on this machine is **standalone `verus!`-native code** (spec fns + `requires`/`ensures` over dedicated harness functions), not in-tree annotated production code. Phase 1 instantiates the generic pipeline with the (rust, verus) encoding — a **standalone Verus-native module**. A standalone harness proving a *plain-Rust* function would need `assume`d specs — a faked proof — so C1's subject is a Verus-native function. Kani remains the next (rust, kani) adapter (its plain-Rust-external-harness model differs; the skip-if-absent CI pattern applies to both). Other (language, verifier) pairs follow the same registration path: an encoding on the property record, a template, a ToolchainDef.
 
 ## Problem
 
@@ -76,13 +87,13 @@ Proofs are minutes-long; the post-check seam never blocks the current call. Exec
 ## Non-goals
 
 1. No verifier bundling — the toolchain provides Verus/Kani; we recognize and parse their output.
-2. Verus-first (standalone Verus-native harness); Kani as a later adapter. No Verus harness that leans on `assume` to go green.
+2. One (language, verifier) instantiation first — (rust, verus), the proven toolchain on this machine; Kani as the next; other languages (python/dafny, lean, …) follow the identical registration path (encoding + template + ToolchainDef) after SPEC A Phase 3 per-language adapters exist. No harness of any language that leans on `assume` to go green.
 3. No LLM free-form codegen. Templates only — deterministic, reviewable, diffable.
 4. No automatic execution of unreviewed artifacts, ever, including "just this once" exceptions — and the same-fire prohibition holds even when content matches an allowlisted hash.
 
 ## Acceptance criteria
 
-**C1 — Real proof, no simulation (verus-native).** A Verus-native `safe_divide` postcondition property renders a compiling Verus harness that proves it with real `cargo-verus`/`verus` (opt-in integration test; skipped when the toolchain is absent, never faked, never `assume`d green).
+**C1 — Real proof, no simulation (first instantiation: verus-native).** A Verus-native `safe_divide` postcondition property renders a compiling Verus harness that proves it with real `cargo-verus`/`verus` (opt-in integration test; skipped when the toolchain is absent, never faked, never `assume`d green). The test doubles as the template for later (language, verifier) pairs — a python/dafny instantiation repeats this criterion with its own def, unchanged in shape.
 **C2 — S2 refusal.** A `candidate` property's generation request is refused and journaled; the refusal reads the record, not the fact stream (a fact stream claiming `accepted` while the record says `candidate` is refused — C8).
 **C3 — Same-fire prohibition.** An artifact created in this fire is not executed in that fire — even when it matches an allowlisted hash.
 **C4 — Provenance.** Execution appends `verification_result` with source, revision, and evidence kind; a failed proof does not lift the confidence Band.
