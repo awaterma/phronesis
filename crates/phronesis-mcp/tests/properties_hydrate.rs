@@ -598,6 +598,7 @@ fn test_property_map() -> Map {
 fn sha256_of(path: &std::path::Path) -> String {
     // The store binds by whatever digest the caller computed; the test uses
     // a DefaultHasher digest (a real sha256 lands with the execution ledger).
+    use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::fs::read(path)
         .expect("read artifact")
