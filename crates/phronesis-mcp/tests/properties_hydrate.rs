@@ -2,6 +2,7 @@
 //! promotion discipline, and the staleness join through the real pipeline.
 
 use std::collections::HashSet;
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
@@ -527,7 +528,7 @@ fn main() {}
 
 } // verus!`
     "#;
-    let mut property = Map_for_test();
+    let mut property = test_property_map();
     property.insert("subject".into(), "safe_divide".into());
     property.insert("id".into(), "safe_divide.zero_returns_error".into());
     let body = phronesis_rhai::render(
@@ -590,7 +591,7 @@ fn main() {}
     }
 }
 
-fn Map_for_test() -> Map {
+fn test_property_map() -> Map {
     let mut m = Map::new();
     m.insert("subject".into(), "safe_divide".into());
     m
@@ -661,7 +662,7 @@ fn main() {}
     "#;
     let body = phronesis_rhai::render(
         mutated_template,
-        &phronesis_rhai::RenderInput::frozen(Map_for_test(), vec![]),
+        &phronesis_rhai::RenderInput::frozen(test_property_map(), vec![]),
     )
     .expect("render mutated harness");
 
