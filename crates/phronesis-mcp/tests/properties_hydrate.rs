@@ -1,8 +1,7 @@
 //! SPEC-property-ontology.md acceptance B1/B2/B4 — property hydration,
 //! promotion discipline, and the staleness join through the real pipeline.
 
-use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
+use std::hash::Hasher;
 use std::path::PathBuf;
 
 use serde_json::json;
@@ -10,7 +9,6 @@ use serde_json::json;
 use phronesis_mcp::coverage::hydrate as coverage_hydrate;
 use phronesis_mcp::properties::hydrate::{EditedFile, PropertyHydrationInput, facts_for_event};
 use phronesis_mcp::properties::store::{Property, PropertySource, PropertyStatus};
-use phronesis_rhai::RenderInput;
 use phronesis_rhai::rhai::Map;
 use tempfile::TempDir;
 
@@ -490,7 +488,7 @@ fn c9_first_proof_obligation_fires_without_a_prior_result() {
 #[test]
 fn c1_render_validate_gate_execute_prove_end_to_end() {
     use phronesis_mcp::properties::allowlist;
-    use phronesis_mcp::properties::execute::{ConfinementTier, execute};
+    use phronesis_mcp::properties::execute::execute;
 
     // The verus toolchain gate: skip (never fake) when absent.
     let verify_bin = std::env::var("VERUS_BIN").ok().or_else(which_verus);
@@ -600,7 +598,7 @@ fn Map_for_test() -> Map {
 fn sha256_of(path: &std::path::Path) -> String {
     // The store binds by whatever digest the caller computed; the test uses
     // a DefaultHasher digest (a real sha256 lands with the execution ledger).
-    use std::hash::{Hash, Hasher};
+    use std::hash::Hasher;
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::fs::read(path)
         .expect("read artifact")
@@ -627,7 +625,7 @@ fn which_verus() -> Option<String> {
 #[test]
 fn c6_introducing_the_forbidden_bug_flips_the_proof_to_failed() {
     use phronesis_mcp::properties::allowlist;
-    use phronesis_mcp::properties::execute::{execute, parse_verus_result};
+    use phronesis_mcp::properties::execute::execute;
 
     let Some(verify_bin) = std::env::var("VERUS_BIN").ok().or_else(which_verus) else {
         return;
