@@ -20,6 +20,10 @@ pub enum ConfinementTier {
     /// macOS native Seatbelt profile (sandbox-exec): no network, writes
     /// confined to `verification/`.
     SandboxExec,
+    /// Explicitly configured, human-set: no confinement. A downgraded trust
+    /// tier — the S3 allowlist gate still applies, and the tier is recorded
+    /// so raw-everywhere drift is visible (S9 disciplines).
+    Raw,
     /// No confinement available — execution refused.
     Refused,
 }
@@ -34,9 +38,11 @@ pub enum ExecutionError {
     NotApproved { hash: String },
 }
 
-/// Which tier this host can provide right now. Resolution order: container
-/// runtime (docker/podman) → macOS sandbox-exec → refused.
-pub fn detect_tier() -> Option<ConfinementTier> {
+/// Which tier this host can provide right now. Resolution order (S9 ladder):
+/// container runtime (docker/podman) → macOS sandbox-exec → raw (only when
+/// the human-set config allows) → refused. Host-enforced: the strongest
+/// available tier wins; raw is never a default.
+pub fn detect_tier(root: &Path) -> Option<ConfinementTier> {
     for runtime in ["docker", "podman"] {
         if std::process::Command::new(runtime)
             .arg("--version")
@@ -57,7 +63,30 @@ pub fn detect_tier() -> Option<ConfinementTier> {
     {
         return Some(ConfinementTier::SandboxExec);
     }
+    if raw_execution_allowed(root) {
+        // The raw tier: the human set the config (S1 marker discipline).
+        // Selection still records it (S7) — raw-everywhere drift is visible.
+        return Some(ConfinementTier::Raw);
+    }
     None
+}
+
+/// The human-set raw-execution config (S9 discipline 1): reads
+/// `.phronesis/verification.json` field `raw_execution`. Fail-closed on
+/// parse errors — a malformed config never grants raw.
+fn raw_execution_allowed(root: &Path) -> bool {
+    let path = root.join(".phronesis").join("verification.json");
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    #[derive(serde::Deserialize)]
+    struct VerificationConfig {
+        #[serde(default)]
+        raw_execution: bool,
+    }
+    serde_json::from_str::<VerificationConfig>(&raw)
+        .map(|c| c.raw_execution)
+        .unwrap_or(false)
 }
 
 /// The (artifact hash, tree revision) dedup key (spec §Execution discipline):
@@ -101,6 +130,16 @@ pub fn verifier_argv(
                 profile.to_string(),
             ];
             argv.extend(verifier_command.split_whitespace().map(str::to_string));
+            argv.push(artifact_str);
+            argv
+        }
+        ConfinementTier::Raw => {
+            // No confinement — the S3 allowlist gate still applied upstream.
+            // Argv composition holds even raw (S4).
+            let mut argv = verifier_command
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>();
             argv.push(artifact_str);
             argv
         }
@@ -183,7 +222,7 @@ pub fn execute(
             hash: artifact_sha256.to_string(),
         });
     }
-    let Some(tier) = detect_tier() else {
+    let Some(tier) = detect_tier(root) else {
         // S9 fail-closed: no confinement available, execution refused.
         tracing_like("execution refused: no confinement tier available");
         return Err(ExecutionError::Failed {
@@ -238,10 +277,12 @@ mod tests {
     use super::*;
 
     /// S9 tier resolution: this host has docker AND sandbox-exec — the
-    /// container tier wins. On a host with neither, execution refuses.
+    /// container tier wins. On a host with neither, raw applies only when
+    /// the human-set config allows it; otherwise refusal.
     #[test]
     fn s9_tier_resolution_prefers_the_container() {
-        let tier = detect_tier();
+        let root = tempfile::tempdir().unwrap();
+        let tier = detect_tier(root.path());
         assert!(
             matches!(
                 tier,
@@ -251,37 +292,48 @@ mod tests {
         );
     }
 
-    /// S4: the invocation is argv, never shell strings, and the forced
-    /// confinement flags are the HOST's — the devcontainer file cannot weaken
-    /// them (S9).
+    /// S9 discipline 1: raw is never a default — without the human-set config
+    /// a host with no container/seatbelt refuses execution (fail-closed); a
+    /// malformed config never grants raw.
     #[test]
-    fn verifier_argv_carries_forced_confinement_flags() {
+    fn raw_tier_requires_the_human_set_config() {
+        let root = tempfile::tempdir().unwrap();
+        assert!(
+            !raw_execution_allowed(root.path()),
+            "no config file: raw denied"
+        );
+        std::fs::create_dir_all(root.path().join(".phronesis")).unwrap();
+        std::fs::write(
+            root.path().join(".phronesis/verification.json"),
+            r#"{"raw_execution": true}"#,
+        )
+        .unwrap();
+        assert!(raw_execution_allowed(root.path()));
+        std::fs::write(
+            root.path().join(".phronesis/verification.json"),
+            r#"{"raw_execution": "yes"}"#,
+        )
+        .unwrap();
+        assert!(
+            !raw_execution_allowed(root.path()),
+            "malformed config never grants raw"
+        );
+    }
+
+    /// S9: raw argv composes plainly (still argv, never shell strings) —
+    /// the S3 gate applied upstream is what keeps raw defensible.
+    #[test]
+    fn raw_argv_is_plain_verifier_composition() {
         let argv = verifier_argv(
-            ConfinementTier::Devcontainer,
+            ConfinementTier::Raw,
             Path::new("verification/unreviewed/h.rs"),
             "verus",
         );
+        assert_eq!(argv.first(), Some(&"verus".to_string()));
+        assert!(argv.last().is_some_and(|a| a.ends_with("h.rs")));
         assert!(
-            argv.contains(&"--network=none".to_string()),
-            "no network: {argv:?}"
-        );
-        assert!(
-            argv.contains(&"--read-only".to_string()),
-            "read-only rootfs: {argv:?}"
-        );
-        assert!(
-            argv.last().is_some_and(|a| a.ends_with("h.rs")),
-            "the artifact is host-injected: {argv:?}"
-        );
-        let argv = verifier_argv(
-            ConfinementTier::SandboxExec,
-            Path::new("verification/unreviewed/h.rs"),
-            "verus",
-        );
-        assert!(argv[0] == "sandbox-exec", "tier 2 wrapper: {argv:?}");
-        assert!(
-            argv.iter().any(|a| a.contains("deny network")),
-            "seatbelt denies network"
+            !argv.iter().any(|a| a == "docker" || a == "sandbox-exec"),
+            "raw wraps nothing: {argv:?}"
         );
     }
 
