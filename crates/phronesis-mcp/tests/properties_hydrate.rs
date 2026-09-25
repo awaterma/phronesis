@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use serde_json::json;
+
 use phronesis_mcp::coverage::hydrate as coverage_hydrate;
 use phronesis_mcp::properties::hydrate::{EditedFile, PropertyHydrationInput, facts_for_event};
 use phronesis_mcp::properties::store::{Property, PropertySource, PropertyStatus};
@@ -400,4 +402,53 @@ fn c5_hostile_property_payload_renders_inert_or_refuses() {
     // A body that somehow contains a denied construct is refused.
     let body_with_injection = format!("fn h() {{ {} }}", hostile);
     assert!(validate_body("rust", &body_with_injection, &[]).is_err());
+}
+
+// ---- SPEC-C §S3 / acceptance C7: trust-anchor tamper refusal ----
+
+#[test]
+fn c7_agent_seam_writes_to_trust_anchor_paths_are_blocked_by_the_hook() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("verification")).unwrap();
+    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
+    // The rules fixture, loaded live: the refusal rule is an ordinary pre-phase rule.
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/properties-rules.json");
+    std::fs::copy(&fixture, d.path().join(".phronesis/rules.json")).unwrap();
+
+    let payload = json!({
+        "session_id": "s-agent",
+        "cwd": d.path().display().to_string(),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "verification/allowlist/entries.json",
+            "content": "{\"version\":1,\"entries\":[{\"artifact_sha256\":\"self-added\"}]}"
+        }
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(d.path())
+        .arg("pre-check")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn pre-check");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write payload");
+    let out = child.wait_with_output().expect("wait");
+    let code = out.status.code().unwrap_or(-1);
+    assert_eq!(
+        code,
+        2,
+        "agent write to a trust-anchor path must be BLOCKED: {code} {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

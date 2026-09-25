@@ -6,11 +6,25 @@
       "priority": 30,
       "audit": true,
       "when": [
-        { "property_source": ["?p", "runtime_observation"] },
-        { "property_status": ["?p", "candidate"] },
-        { "__script__": "facts_count('property_corroborated_by', ['?p', '*']) >= 2" }
+        {
+          "property_source": [
+            "?p",
+            "runtime_observation"
+          ]
+        },
+        {
+          "property_status": [
+            "?p",
+            "candidate"
+          ]
+        },
+        {
+          "__script__": "facts_count('property_corroborated_by', ['?p', '*']) >= 2"
+        }
       ],
-      "then": { "log": "property ?p has 2+ corroborating sources and is eligible for promotion review" }
+      "then": {
+        "log": "property ?p has 2+ corroborating sources and is eligible for promotion review"
+      }
     },
     {
       "id": "warn-unpromoted-observation-property",
@@ -18,10 +32,19 @@
       "priority": 20,
       "audit": true,
       "when": [
-        { "property_source": ["?p", "runtime_observation"] },
-        { "__script__": "!facts_contain('property_status', ['?p', 'accepted']) && !facts_contain('property_status', ['?p', 'verified'])" }
+        {
+          "property_source": [
+            "?p",
+            "runtime_observation"
+          ]
+        },
+        {
+          "__script__": "!facts_contain('property_status', ['?p', 'accepted']) && !facts_contain('property_status', ['?p', 'verified'])"
+        }
       ],
-      "then": { "warn": "property ?p is sourced from runtime observation and not promoted; it is evidence, not intent" }
+      "then": {
+        "warn": "property ?p is sourced from runtime observation and not promoted; it is evidence, not intent"
+      }
     },
     {
       "id": "warn-stale-proof-for-changed-region",
@@ -29,11 +52,44 @@
       "priority": 20,
       "audit": true,
       "when": [
-        { "changed_region": ["?change", "?region"] },
-        { "property_depends_on": ["?p", "?region"] },
-        { "stale_evidence": ["?p", "?v"] }
+        {
+          "changed_region": [
+            "?change",
+            "?region"
+          ]
+        },
+        {
+          "property_depends_on": [
+            "?p",
+            "?region"
+          ]
+        },
+        {
+          "stale_evidence": [
+            "?p",
+            "?v"
+          ]
+        }
       ],
-      "then": { "warn": "property ?p depends on changed region ?region; proof by ?v is stale — reprove" }
+      "then": {
+        "warn": "property ?p depends on changed region ?region; proof by ?v is stale \u2014 reprove"
+      }
+    },
+    {
+      "id": "block-agent-write-to-trust-anchors",
+      "phase": "pre",
+      "priority": 100,
+      "audit": true,
+      "when": [
+        {
+          "file_path_matches": [
+            "verification/"
+          ]
+        }
+      ],
+      "then": {
+        "constraint_violation": "trust-anchor paths (verification allowlist/templates) are human-principal acts - agent-seam writes are refused (SPEC-C S3/C7)"
+      }
     }
   ]
 }

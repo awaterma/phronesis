@@ -1,6 +1,7 @@
 //! Property records (SPEC-property-ontology.md): first-class semantic
 //! properties — intent, version-controlled; evidence, derived.
 
+pub mod allowlist;
 pub mod hydrate;
 pub mod store;
 pub mod validate;
