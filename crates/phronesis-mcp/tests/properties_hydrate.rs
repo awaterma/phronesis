@@ -351,3 +351,53 @@ fn b4_gap_rule_still_warns_for_unpromoted_properties() {
         "the coverage gap must still fire despite property records + passing results: {gaps:?}"
     );
 }
+
+// ---- SPEC-C §S5 / acceptance C5: injection containment ----
+
+#[test]
+fn c5_hostile_property_payload_renders_inert_or_refuses() {
+    use phronesis_mcp::properties::validate::{escape_rust_string_literal, validate_body};
+
+    let hostile = "\"); std::process::Command::new(\"touch /tmp/pwned\"); //";
+    let id_hostile = "safe_divide.zero\"; std::process::exit(1); //";
+
+    // Layer 1: the identifier charset rejects the hostile id at ingest.
+    let props = vec![Property {
+        id: id_hostile.into(),
+        subject: "safe_divide".into(),
+        kind: "postcondition".into(),
+        condition: None,
+        guarantee: None,
+        depends_on: vec!["fn:safe_divide".into()],
+        source: PropertySource::ExplicitSpec,
+        status: PropertyStatus::Accepted,
+        corroborated_by: vec![],
+        encodings: vec![],
+    }];
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(".phronesis")).unwrap();
+    let file = phronesis_mcp::properties::store::PropertiesFile {
+        version: phronesis_mcp::properties::store::PROPERTIES_FORMAT,
+        properties: props.clone(),
+    };
+    std::fs::write(
+        phronesis_mcp::properties::store::properties_path(root.path()),
+        serde_json::to_string(&file).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        phronesis_mcp::properties::store::load_properties(root.path()).is_err(),
+        "the hostile id must fail ingest validation (nothing loads)"
+    );
+
+    // Layer 2: even if a hostile free-text field is rendered, the HOST escapes
+    // it before Rhai scope, and the body validator rejects denied constructs.
+    let escaped = phronesis_mcp::properties::validate::escape_rust_string_literal(&hostile);
+    assert!(
+        !escaped.contains("std::process::Command::new(\""),
+        "escaped form must not carry live delimiters: {escaped:?}"
+    );
+    // A body that somehow contains a denied construct is refused.
+    let body_with_injection = format!("fn h() {{ {} }}", hostile);
+    assert!(validate_body("rust", &body_with_injection, &[]).is_err());
+}
