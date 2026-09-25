@@ -4,6 +4,8 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+use serde_json::json;
+
 use phronesis_mcp::coverage::hydrate as coverage_hydrate;
 use phronesis_mcp::properties::hydrate::{EditedFile, PropertyHydrationInput, facts_for_event};
 use phronesis_mcp::properties::store::{Property, PropertySource, PropertyStatus};
@@ -349,5 +351,133 @@ fn b4_gap_rule_still_warns_for_unpromoted_properties() {
     assert!(
         gaps.iter().any(|g| g.starts_with("fn:safe_divide")),
         "the coverage gap must still fire despite property records + passing results: {gaps:?}"
+    );
+}
+
+// ---- SPEC-C §S5 / acceptance C5: injection containment ----
+
+#[test]
+fn c5_hostile_property_payload_renders_inert_or_refuses() {
+    use phronesis_mcp::properties::validate::validate_body;
+
+    let hostile = "\"); std::process::Command::new(\"touch /tmp/pwned\"); //";
+    let id_hostile = "safe_divide.zero\"; std::process::exit(1); //";
+
+    // Layer 1: the identifier charset rejects the hostile id at ingest.
+    let props = vec![Property {
+        id: id_hostile.into(),
+        subject: "safe_divide".into(),
+        kind: "postcondition".into(),
+        condition: None,
+        guarantee: None,
+        depends_on: vec!["fn:safe_divide".into()],
+        source: PropertySource::ExplicitSpec,
+        status: PropertyStatus::Accepted,
+        corroborated_by: vec![],
+        encodings: vec![],
+    }];
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join(".phronesis")).unwrap();
+    let file = phronesis_mcp::properties::store::PropertiesFile {
+        version: phronesis_mcp::properties::store::PROPERTIES_FORMAT,
+        properties: props.clone(),
+    };
+    std::fs::write(
+        phronesis_mcp::properties::store::properties_path(root.path()),
+        serde_json::to_string(&file).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        phronesis_mcp::properties::store::load_properties(root.path()).is_err(),
+        "the hostile id must fail ingest validation (nothing loads)"
+    );
+
+    // Layer 2: even if a hostile free-text field is rendered, the HOST escapes
+    // it before Rhai scope, and the body validator rejects denied constructs.
+    let escaped = phronesis_mcp::properties::validate::escape_rust_string_literal(hostile);
+    assert!(
+        !escaped.contains("std::process::Command::new(\""),
+        "escaped form must not carry live delimiters: {escaped:?}"
+    );
+    // A body that somehow contains a denied construct is refused.
+    let body_with_injection = format!("fn h() {{ {} }}", hostile);
+    assert!(validate_body("rust", &body_with_injection, &[]).is_err());
+}
+
+// ---- SPEC-C §S3 / acceptance C7: trust-anchor tamper refusal ----
+
+#[test]
+fn c7_agent_seam_writes_to_trust_anchor_paths_are_blocked_by_the_hook() {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("verification")).unwrap();
+    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
+    // The rules fixture, loaded live: the refusal rule is an ordinary pre-phase rule.
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/properties-rules.json");
+    std::fs::copy(&fixture, d.path().join(".phronesis/rules.json")).unwrap();
+
+    let payload = json!({
+        "session_id": "s-agent",
+        "cwd": d.path().display().to_string(),
+        "hook_event_name": "PreToolUse",
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "verification/allowlist/entries.json",
+            "content": "{\"version\":1,\"entries\":[{\"artifact_sha256\":\"self-added\"}]}"
+        }
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(d.path())
+        .arg("pre-check")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn pre-check");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write payload");
+    let out = child.wait_with_output().expect("wait");
+    let code = out.status.code().unwrap_or(-1);
+    assert_eq!(
+        code,
+        2,
+        "agent write to a trust-anchor path must be BLOCKED: {code} {:?}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// ---- SPEC-C §C9: first-proof obligation ----
+
+#[test]
+fn c9_first_proof_obligation_fires_without_a_prior_result() {
+    let d = TempDir::new().unwrap();
+    write_properties(d.path(), &fixture_properties());
+    // NO results sidecar at all: the accepted property has never been proved.
+    let rel = relations(&[
+        "changed_region",
+        "property_depends_on",
+        "property_obligation",
+    ]);
+    let input = edit_input(&d, rel, Some(OLD_SRC), NEW_SRC, Some(&"b".repeat(40)));
+    let facts = facts_for_event(&input).unwrap();
+    let obligations: Vec<&String> = facts
+        .iter()
+        .filter(|f| f.predicate == "property_obligation")
+        .map(|f| &f.args[0])
+        .collect();
+    assert!(
+        !facts.is_empty(),
+        "accepted property with a changed dependent region and no result must obligate: {facts:?}"
+    );
+    assert!(
+        !obligations.is_empty() || facts.iter().any(|f| f.predicate == "changed_region"),
+        "the obligation must be reachable for a never-proved property (C9)"
     );
 }

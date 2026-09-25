@@ -20,6 +20,7 @@ pub const RELATIONS: &[&str] = &[
     "verification_result",
     "result_revision",
     "stale_evidence",
+    "property_obligation",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -168,6 +169,43 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
             }
         }
         facts.append(&mut stale);
+    }
+
+    // First-proof obligation (acceptance C9): the obligation is an OR —
+    // (no verification_result at HEAD) OR (stale). An accepted property whose
+    // dependent region changed and that has NO result record at all must
+    // still fire: the first proof is reachable. Gated separately from the
+    // staleness branch so the OR never collapses to an AND.
+    if wants("property_obligation") {
+        let mut changed: HashSet<String> = HashSet::new();
+        for edit in &input.edited {
+            if let Ok(regions) =
+                crate::coverage::region_map::changed_regions(edit.old.unwrap_or(""), edit.new)
+            {
+                changed.extend(regions.functions.iter().cloned());
+                changed.extend(regions.branches.iter().cloned());
+            }
+        }
+        let head = input.head_sha.clone().unwrap_or_default();
+        for p in &properties {
+            if !matches!(
+                p.status,
+                crate::properties::store::PropertyStatus::Accepted
+                    | crate::properties::store::PropertyStatus::Verified
+            ) {
+                continue;
+            }
+            let depends_on_changed = p.depends_on.iter().any(|region| changed.contains(region));
+            let has_result = results
+                .iter()
+                .any(|r| r.property == p.id && r.revision == head);
+            if depends_on_changed && !has_result {
+                facts.push(fact(
+                    "property_obligation",
+                    vec![p.id.clone(), "first_proof".to_string()],
+                ));
+            }
+        }
     }
 
     facts.sort();

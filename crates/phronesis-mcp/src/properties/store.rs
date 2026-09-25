@@ -124,6 +124,24 @@ pub enum PropertyStoreError {
     InvalidResult { line: usize, message: String },
 }
 
+/// Identifier-shaped field check (S5): the coverage charset only — quotes,
+/// backslashes, and shell delimiters rejected at ingest, so injected content
+/// can never reach a rendered artifact through an id.
+fn identifier_field_problem(value: &str, field: &str) -> Option<String> {
+    if let Some(problem) = string_field_problem(value, field) {
+        return Some(problem);
+    }
+    if let Some(bad) = value
+        .chars()
+        .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '.' | '/' | '-')))
+    {
+        return Some(format!(
+            "{field} carries non-identifier character {bad:?} (S5 field-class contract)"
+        ));
+    }
+    None
+}
+
 /// Field-level string check; the caller maps the problem onto the record
 /// error so field validation never produces a bare-`String` error path.
 fn string_field_problem(value: &str, field: &str) -> Option<String> {
@@ -144,10 +162,14 @@ fn validate_property(p: &Property) -> Result<(), PropertyStoreError> {
         id: p.id.clone(),
         message,
     };
-    for (value, field) in [(&p.id, "id"), (&p.subject, "subject"), (&p.kind, "kind")] {
-        if let Some(problem) = string_field_problem(value, field) {
+    // Identifier-shaped fields get the tighter charset (S5 field-class contract).
+    for (value, field) in [(&p.id, "id"), (&p.subject, "subject")] {
+        if let Some(problem) = identifier_field_problem(value, field) {
             return Err(invalid(problem));
         }
+    }
+    if let Some(problem) = string_field_problem(&p.kind, "kind") {
+        return Err(invalid(problem));
     }
     if p.depends_on.is_empty() {
         return Err(invalid(
