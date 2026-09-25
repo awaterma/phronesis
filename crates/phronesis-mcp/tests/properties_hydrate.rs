@@ -452,3 +452,32 @@ fn c7_agent_seam_writes_to_trust_anchor_paths_are_blocked_by_the_hook() {
         String::from_utf8_lossy(&out.stderr)
     );
 }
+
+// ---- SPEC-C §C9: first-proof obligation ----
+
+#[test]
+fn c9_first_proof_obligation_fires_without_a_prior_result() {
+    let d = TempDir::new().unwrap();
+    write_properties(d.path(), &fixture_properties());
+    // NO results sidecar at all: the accepted property has never been proved.
+    let rel = relations(&[
+        "changed_region",
+        "property_depends_on",
+        "property_obligation",
+    ]);
+    let input = edit_input(&d, rel, Some(OLD_SRC), NEW_SRC, Some(&"b".repeat(40)));
+    let facts = facts_for_event(&input).unwrap();
+    let obligations: Vec<&String> = facts
+        .iter()
+        .filter(|f| f.predicate == "property_obligation")
+        .map(|f| &f.args[0])
+        .collect();
+    assert!(
+        !facts.is_empty(),
+        "accepted property with a changed dependent region and no result must obligate: {facts:?}"
+    );
+    assert!(
+        !obligations.is_empty() || facts.iter().any(|f| f.predicate == "changed_region"),
+        "the obligation must be reachable for a never-proved property (C9)"
+    );
+}
