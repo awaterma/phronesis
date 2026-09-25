@@ -215,7 +215,7 @@ pub fn inconclusive_from(
 /// Parse verus output into a result status (the verus instantiation's
 /// adapter). Returns None when the verifier's marker line is absent — the
 /// zero-parse rule routes to `inconclusive` (S8), never a silent pass.
-fn parse_verus_result(raw: &str, exit_code: Option<i32>) -> Option<String> {
+pub fn parse_verus_result(raw: &str, exit_code: Option<i32>) -> Option<String> {
     let marker = raw.lines().find(|l| l.contains("verification results::"))?;
     // `verification results:: N verified, M errors`
     let errors = marker

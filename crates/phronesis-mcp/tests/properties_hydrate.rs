@@ -620,3 +620,98 @@ fn which_verus() -> Option<String> {
         .into_iter()
         .find(|p| std::path::Path::new(p).exists())
 }
+
+// ---- SPEC-C §C6: mutation detection — introduce the forbidden bug, the
+// proof must fail. The only test that catches claim-binding drift. ----
+
+#[test]
+fn c6_introducing_the_forbidden_bug_flips_the_proof_to_failed() {
+    use phronesis_mcp::properties::allowlist;
+    use phronesis_mcp::properties::execute::{execute, parse_verus_result};
+
+    let Some(verify_bin) = std::env::var("VERUS_BIN").ok().or_else(which_verus) else {
+        return;
+    };
+
+    // The mutated claim: the property forbids "zero returns Ok" — introduce
+    // exactly that bug into the rendered harness.
+    let mutated_template = r#"
+        let subject = property.get("subject");
+        `// GENERATED - DO NOT EDIT (MUTATED — C6 test)
+use vstd::prelude::*;
+
+verus! {
+
+pub enum DivResult { Ok(i32), Err(i32) }
+
+pub open spec fn zero_returns_error(res: DivResult) -> bool {
+    matches!(res, DivResult::Err(_))
+}
+
+pub fn divide_zero() -> (res: DivResult)
+    ensures zero_returns_error(res),
+{
+    // THE FORBIDDEN BUG: zero now returns Ok — the property forbids this.
+    DivResult::Ok(0)
+}
+
+fn main() {}
+
+} // verus!`
+    "#;
+    let body = phronesis_rhai::render(
+        mutated_template,
+        &phronesis_rhai::RenderInput::frozen(Map_for_test(), vec![]),
+    )
+    .expect("render mutated harness");
+
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join("verification/unreviewed")).unwrap();
+    let artifact = d2_artifact(&d);
+    std::fs::write(&artifact, &body).expect("write mutated artifact");
+
+    // The S5 rendered-body validator CANNOT see this mutation: the body is
+    // valid, safe Rust whose LOGIC violates the property. That is the point —
+    // claim-binding drift is caught by verification, not by validators.
+    phronesis_mcp::properties::validate::validate_body(
+        "rust",
+        &body,
+        &["safe_divide.zero_returns_error", "safe_divide"],
+    )
+    .expect("the mutated body passes static validation (this is why C6 exists)");
+
+    // The proof must FAIL against the mutated claim.
+    let sha = sha256_of(&artifact);
+    allowlist::record(
+        d.path(),
+        allowlist::AllowlistEntry {
+            artifact_sha256: sha.clone(),
+            template_sha256: "template-hash-mutated".into(),
+            property_id: "safe_divide.zero_returns_error".into(),
+            property_revision: "r1-mutated".into(),
+            approver_principal: "awaterma (human, session-sanctioned run)".into(),
+            date: "2026-09-24".into(),
+        },
+    )
+    .expect("record approval");
+    let result = execute(
+        d.path(),
+        &artifact,
+        &sha,
+        &verify_bin,
+        "b".repeat(40).as_str(),
+    );
+    match result {
+        Ok(outcome) => assert_eq!(
+            outcome.status, "failed",
+            "C6: the proof against the forbidden bug MUST fail: {outcome:?}"
+        ),
+        Err(e) => panic!("C6 execution failed: {e:?}"),
+    }
+}
+
+fn d2_artifact(d: &TempDir) -> std::path::PathBuf {
+    std::fs::create_dir_all(d.path().join("verification/unreviewed")).expect("mkdir");
+    d.path()
+        .join("verification/unreviewed/safe_divide_zero_returns_error_c6.rs")
+}
