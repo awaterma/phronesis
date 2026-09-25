@@ -1605,7 +1605,7 @@ mod tests {
         // bracket-aware. Ground truth: `self.baz()` in
         // `impl Foo<std::vec::Vec<T>>` should resolve to `Foo::baz`.
         let caller = "rust:app::foo::Foo::bar";
-        let target = "rust:app::foo::Foo::baz";
+        let _target = "rust:app::foo::Foo::baz";
         // Simulate a candidate whose module path contains generic args
         // with `::` inside the brackets. The defines_method identity is
         // the fully-qualified path including generics.
@@ -1788,6 +1788,10 @@ mod tests {
         base.push(Edge::base("calls", &[b1, "@method:A:c"], "src/a.rs"));
         let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
         assert_eq!(ambiguous, 1, "Case H: a->b is ambiguous (2 candidates)");
+        assert_eq!(
+            unresolved, 0,
+            "Case H: the typed b->c edge still resolves, so nothing is unresolved"
+        );
         let derived = derive_all(&base);
         let reaches: BTreeSet<String> = derived
             .iter()
