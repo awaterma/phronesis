@@ -62,6 +62,26 @@ impl OutcomeFact {
         }
     }
 
+    /// `proof_outcome(subject, property, "passed" | "failed")` — one verifier
+    /// result for one property (SPEC-property-ontology.md §3). Proof defs
+    /// journal `outcome:proof_pass:<property>` / `outcome:proof_fail:<property>`;
+    /// the three-state discipline rides the build outcome (an unknown build
+    /// produces no proof evidence).
+    pub fn proof(subject: &str, property: &str, passed: bool) -> Self {
+        Self {
+            predicate: "proof_outcome",
+            args: vec![
+                subject.to_string(),
+                property.to_string(),
+                if passed {
+                    "passed".to_string()
+                } else {
+                    "failed".to_string()
+                },
+            ],
+        }
+    }
+
     /// `bug_check_outcome(subject, bug_id, status)` — the TDD known-bug signal.
     /// `status` ∈ `fixed` (the bug's test went green with no regressions) /
     /// `open` (still red) / `regressed`.
