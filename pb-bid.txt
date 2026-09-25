@@ -1,0 +1,3 @@
+Let me analyze the requested features for implementing a new MCP tool and gitignore carve-out functionality.
+
+First, I'll search for current property-related tools to understand how they're implemented:Let me check the tool definitions in the server.rs file for properties:Let me check the tool definitions at the end of server.rs to see how tools are defined:
