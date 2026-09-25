@@ -1,3 +1,4 @@
+pub mod collect;
 pub mod hydrate;
 pub mod import;
 pub mod region_map;

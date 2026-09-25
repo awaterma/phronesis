@@ -98,7 +98,7 @@ pub fn extract_branch_sites(source: &str) -> Result<Vec<BranchSite>> {
     Ok(sites)
 }
 
-fn extract_functions(source: &str) -> Result<Vec<(String, u64, u64)>> {
+pub fn extract_functions(source: &str) -> Result<Vec<(String, u64, u64)>> {
     let tree = parse(source)?;
     let mut functions = Vec::new();
     for node in all_nodes(tree.root_node()) {

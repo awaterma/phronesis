@@ -305,7 +305,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/security.rs` | Path canonicalization, size caps, validators |
 | `crates/phronesis-mcp/src/diff_extract.rs` | Regex-based diff facts (function_added, import_added, etc.) |
 | `crates/phronesis-mcp/src/syntax/` | Tree-sitter AST predicates (rust, swift, python, typescript) |
-| `crates/phronesis-mcp/src/coverage/` | Coverage evidence store, importer, region mapping, demand-gated hydration (SPEC-coverage-evidence.md) |
+| `crates/phronesis-mcp/src/coverage/` | Coverage evidence store, importer, region mapping, demand-gated hydration, collector (`collect.rs`: llvm-cov JSON → per-test hits, validated against the region map) (SPEC-coverage-evidence.md) |
 | `crates/phronesis-mcp/src/outcomes/` | Confidence scoring — per-toolchain adapter (`cargo` first), per-subject signal derivation, gate-rule input |
 | `crates/phronesis-mcp/src/journey/` | Journey facts — append-only journal, project-defined taggers, rule-driven aggregator derivation |
 | `crates/phronesis-mcp/src/journey_cli.rs` | `phr-mcp journey` rendering glue (table + JSON + `--explain`) |
@@ -459,6 +459,21 @@ Three files exceed 800 LOC with intentional exemptions (see `SPEC-god-file-decom
 ## Workflow Patterns
 
 ### Common Agent Workflows
+
+#### 1. Coverage collection (cargo-llvm-cov, NOT tarpaulin)
+
+```bash
+# Per-test isolated collection over the machinery test set, then import at HEAD.
+# tarpaulin cannot instrument on macOS — it produces reports with zero covered
+# traces. The collector validates every record against the region map, so
+# emitted identities always match what hydration will join.
+phr-mcp coverage collect                     # run machinery tests in isolation
+phr-mcp coverage collect --from-dir /tmp/x   # normalize already-collected JSONs
+phr-mcp coverage import <export.jsonl>       # import a normalized export
+phr-mcp coverage select                      # relevant tests for changed regions
+```
+
+Requires cargo-llvm-cov 0.8.x and a nightly toolchain (rust-version >= 1.90).
 
 #### 1. Adding a New Rule
 
