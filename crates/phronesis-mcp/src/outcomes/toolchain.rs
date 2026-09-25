@@ -67,6 +67,13 @@ pub struct ToolchainDef {
     /// Which `status` tokens mean "pass".
     #[serde(default = "default_pass_tokens")]
     pub pass_tokens: Vec<String>,
+    /// What the per-test lines mean: `None`/`"test"` (the default — the
+    /// known-bug registry and test_outcome counts) or `"proof"` (verifier
+    /// results for properties, SPEC-property-ontology.md §3). Proof defs
+    /// journal `outcome:proof_pass:<property>` / `outcome:proof_fail:<property>`
+    /// instead of test tags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_kind: Option<String>,
 }
 
 /// One regex or several, in a field that historically held exactly one.
@@ -137,6 +144,9 @@ pub enum ToolchainError {
 pub struct CompiledDef {
     pub def: ToolchainDef,
     pub source: DefSource,
+    /// `true` when this def's per-test results are verifier proofs for
+    /// properties, not test results (SPEC-property-ontology.md §3).
+    pub is_proof: bool,
     matches: Regex,
     compile_fail: Vec<Regex>,
     compile_success: Vec<Regex>,
@@ -177,6 +187,7 @@ fn require_groups(required: RequiredGroups<'_>) -> Result<(), ToolchainError> {
 
 impl CompiledDef {
     pub fn compile(def: ToolchainDef, source: DefSource) -> Result<Self, ToolchainError> {
+        let is_proof = def.outcome_kind.as_deref() == Some("proof");
         let matches = compile_field(&def.id, "matches", &def.matches)?;
         let compile_fail = def
             .compile_fail
@@ -227,6 +238,7 @@ impl CompiledDef {
             compile_success,
             test_summary,
             per_test,
+            is_proof,
         })
     }
 
@@ -359,10 +371,18 @@ impl CompiledDef {
             BuildStatus::Fail => OutcomeFact::build(subject, false),
             BuildStatus::Unknown => OutcomeFact::build_unknown(subject),
         }];
-        if status == BuildStatus::Pass
-            && let Some(c) = counts
-        {
-            facts.push(OutcomeFact::test(subject, c.passed, c.failed));
+        if status == BuildStatus::Pass {
+            if self.is_proof {
+                // Proof defs (SPEC-property-ontology.md §3): each per-test
+                // line is a verifier result for one property. The three-state
+                // discipline rides the build outcome — an unknown build
+                // produces no proof evidence, never a silent pass.
+                for (property, passed) in self.per_test_results(output) {
+                    facts.push(OutcomeFact::proof(subject, &property, passed));
+                }
+            } else if let Some(c) = counts {
+                facts.push(OutcomeFact::test(subject, c.passed, c.failed));
+            }
         }
         facts
     }
@@ -426,6 +446,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             test_summary: swift_summaries(),
             per_test: None,
             pass_tokens: default_pass_tokens(),
+            outcome_kind: None,
         },
         ToolchainDef {
             id: "swift".to_string(),
@@ -435,6 +456,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             test_summary: swift_summaries(),
             per_test: None,
             pass_tokens: default_pass_tokens(),
+            outcome_kind: None,
         },
     ]
 }
@@ -462,6 +484,7 @@ fn cargo_builtin() -> ToolchainDef {
         ])),
         per_test: Some(r"(?m)^test (?P<name>\S+) \.\.\. (?P<status>ok|FAILED)".to_string()),
         pass_tokens: default_pass_tokens(),
+        outcome_kind: None,
     }
 }
 

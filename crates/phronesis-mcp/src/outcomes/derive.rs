@@ -78,6 +78,28 @@ pub fn entries_from(subject: &str, records: &[JournalRecord]) -> Vec<DerivedEntr
                         "1".to_string(),
                     ],
                 }),
+                t if t.starts_with("outcome:proof_pass:") => {
+                    let property = &t["outcome:proof_pass:".len()..];
+                    out.push(DerivedEntry {
+                        predicate: "proof_outcome".to_string(),
+                        args: vec![
+                            subject.to_string(),
+                            property.to_string(),
+                            "passed".to_string(),
+                        ],
+                    });
+                }
+                t if t.starts_with("outcome:proof_fail:") => {
+                    let property = &t["outcome:proof_fail:".len()..];
+                    out.push(DerivedEntry {
+                        predicate: "proof_outcome".to_string(),
+                        args: vec![
+                            subject.to_string(),
+                            property.to_string(),
+                            "failed".to_string(),
+                        ],
+                    });
+                }
                 t if t.starts_with("outcome:bug_caught:") => {
                     let id = &t["outcome:bug_caught:".len()..];
                     out.push(DerivedEntry {
@@ -131,6 +153,21 @@ pub fn signals_from(subject: &str, entries: &[DerivedEntry]) -> Vec<OutcomeFact>
         if failed == 0 && total > 0 {
             out.push(OutcomeFact::signal(subject, "tests"));
         }
+    }
+
+    // proof — per-property latest verifier result (SPEC-property-ontology.md
+    // §3): the signal grounds only when at least one property has a proof and
+    // every latest result is `passed` — failed/timeout/inconclusive never
+    // count, matching the three-state discipline. BTreeMap keeps determinism.
+    let mut proof_latest: std::collections::BTreeMap<&str, &str> =
+        std::collections::BTreeMap::new();
+    for e in entries.iter().filter(|e| e.predicate == "proof_outcome") {
+        if let (Some(property), Some(status)) = (e.args.get(1), e.args.get(2)) {
+            proof_latest.insert(property.as_str(), status.as_str());
+        }
+    }
+    if !proof_latest.is_empty() && proof_latest.values().all(|s| *s == "passed") {
+        out.push(OutcomeFact::signal(subject, "proof"));
     }
 
     // bug:<id> — each known bug whose latest check is "fixed". BTreeMap keeps
@@ -346,5 +383,97 @@ mod tests {
         journal::append(dir.path(), &rec(1, "u", &["outcome:compile_unknown"])).unwrap();
         assert!(signals(dir.path(), "u").unwrap().is_empty());
         assert_eq!(band(dir.path(), "u").unwrap(), Band::Low);
+    }
+}
+
+// ---- SPEC-property-ontology.md §3 / B3: proof signal through a declarative
+// proof toolchain ----
+
+#[cfg(test)]
+mod proof_tests {
+    use super::*;
+    use crate::outcomes::adapter::outcome_tags;
+    use crate::outcomes::toolchain::{CompiledDef, DefSource, ToolchainDef};
+
+    fn kani_def() -> ToolchainDef {
+        serde_json::from_str(
+            r#"{
+                "id": "kani",
+                "matches": "^cargo kani",
+                "compile_fail": ["error\\[E\\d+\\]"],
+                "compile_success": ["Verification complete"],
+                "per_test": "(?m)Checks for property (?P<name>\\S+): (?P<status>SUCCESS|FAILURE)",
+                "pass_tokens": ["SUCCESS"],
+                "outcome_kind": "proof"
+            }"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn b3_proof_pass_through_a_toolchain_def_grounds_the_proof_signal() {
+        let compiled = CompiledDef::compile(kani_def(), DefSource::Project).unwrap();
+        assert!(
+            compiled.is_proof,
+            "the def must register as a proof toolchain"
+        );
+
+        let subject = "u";
+        let output = "Checks for property safe_divide.zero_returns_error: SUCCESS\n\
+                      Checks for property safe_divide.nonzero_returns_quotient: SUCCESS";
+        let facts = compiled.parse(subject, "cargo kani --harness verify_zero", output, Some(0));
+
+        let proof_facts: Vec<_> = facts
+            .iter()
+            .filter(|f| f.predicate == "proof_outcome")
+            .collect();
+        assert_eq!(proof_facts.len(), 2, "two properties proved: {facts:?}");
+
+        let tags = outcome_tags(&facts);
+        assert!(
+            tags.iter()
+                .any(|t| t == "outcome:proof_pass:safe_divide.zero_returns_error"),
+            "proof pass tag must journal: {tags:?}"
+        );
+
+        let records: Vec<JournalRecord> = tags
+            .iter()
+            .enumerate()
+            .map(|(i, t)| JournalRecord {
+                v: 1,
+                ts: i as u64,
+                sid: "s".to_string(),
+                seq: i as u64,
+                tool: "Bash".to_string(),
+                path: "<cmd>".to_string(),
+                ext: None,
+                module: None,
+                tags: vec![t.clone()],
+                subject: Some(subject.to_string()),
+                command_exit: Some(0),
+                kind: None,
+                mode: None,
+                host: None,
+                turn: None,
+                agent: None,
+                agent_type: None,
+                kalpa: None,
+            })
+            .collect();
+        let entries = entries_from(subject, &records);
+        let signals = signals_from(subject, &entries);
+        assert!(
+            signals
+                .iter()
+                .any(|f| f.predicate == "signal_pass" && f.args[1] == "proof"),
+            "signal_pass(subject, \"proof\") must ground: {signals:?}"
+        );
+
+        // The Band lifts: proof joins compile and tests in the signal count.
+        let band = Band::from_signal_count(signals.len());
+        assert!(
+            matches!(band, Band::Medium | Band::High),
+            "a band grounded on proof signals must lift beyond low: {band:?}"
+        );
     }
 }

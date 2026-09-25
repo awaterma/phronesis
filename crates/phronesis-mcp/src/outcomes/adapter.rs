@@ -112,12 +112,25 @@ fn test_tag(fact: &OutcomeFact) -> Option<&'static str> {
 /// Translate a slice of outcome facts into their journal tag strings.
 /// Only `build_outcome` and `test_outcome` predicates produce tags; all
 /// others are silently skipped.
-fn outcome_tags(facts: &[OutcomeFact]) -> Vec<String> {
+/// `outcome:proof_pass:<property>` / `outcome:proof_fail:<property>` —
+/// SPEC-property-ontology.md §3's tag naming for verifier results.
+fn proof_tag(f: &OutcomeFact) -> Option<String> {
+    let property = f.args.get(1)?;
+    let status = f.args.get(2)?;
+    Some(match status.as_str() {
+        "passed" => format!("outcome:proof_pass:{property}"),
+        "failed" => format!("outcome:proof_fail:{property}"),
+        _ => return None,
+    })
+}
+
+pub(crate) fn outcome_tags(facts: &[OutcomeFact]) -> Vec<String> {
     facts
         .iter()
         .filter_map(|f| match f.predicate {
-            "build_outcome" => build_tag(f),
-            "test_outcome" => test_tag(f),
+            "build_outcome" => build_tag(f).map(str::to_string),
+            "test_outcome" => test_tag(f).map(str::to_string),
+            "proof_outcome" => proof_tag(f),
             _ => None,
         })
         .map(|s| s.to_string())

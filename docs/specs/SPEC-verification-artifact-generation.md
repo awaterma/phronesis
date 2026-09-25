@@ -1,8 +1,8 @@
 # SPEC: Property-driven verification artifact generation (safety-gated)
 
-**Status:** Deferred — do not implement before `SPEC-coverage-evidence.md` (A) and `SPEC-property-ontology.md` (B) land. Concept approved for design; schedule is not.
-**Author:** awaterma (agent-drafted, adapted from `REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md`)
-**Created:** 2026-09-23
+**Status:** Approved for implementation — revised per `REVIEW-c-spec-design.md` (cross-model design review: deepseek-v4-pro + glm-5.3). Preconditions met: `SPEC-coverage-evidence.md` (A) and `SPEC-property-ontology.md` (B) are landed.
+**Author:** awaterma (agent-drafted, adapted from `REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md`); revised per the pre-implementation cross-model review
+**Created:** 2026-09-23; revised 2026-09-24
 **Scope:** `crates/phronesis-mcp` host only
 **Derives from:** `REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md` §15–§16, §19, §22–§24
 **Companions:** `SPEC-coverage-evidence.md` (A), `SPEC-property-ontology.md` (B)
@@ -10,74 +10,115 @@
 
 ## Summary
 
-Sketch §15 is the valuable idea: one semantic property should derive both a proof harness and a conventional test. This spec's primary content is **not** the rendering mechanism — it is the **safety contract**, because executing generated code is arbitrary code execution and the sketch has no model for that.
+One semantic property should derive both a proof harness and a conventional test (sketch §15). The spec's primary content is the **safety contract**, because executing generated code is arbitrary code execution. This revision incorporates the pre-implementation cross-model review: human-principal trust anchors, an explicit first-proof obligation, a decided render seam, a verifier sandbox, and the C5–C10 acceptance criteria.
 
 ### The sketch's "Phronesis-Rye" is `phronesis-rhai`
 
-The sketch's §16 template layer ("Phronesis-Rye") is `phronesis-rhai` — naming corrected. Its templates are the `.rhai` scripts the sketch already names (`kani-postcondition.rhai`, `verus-postcondition.rhai`, …): each template receives the property record and computes the verifier artifact body.
+Templates are `.rhai` scripts (`kani-postcondition.rhai`, `verus-postcondition.rhai`, …): each receives the property record and relevant facts in scope and emits the rendered artifact body. Division of labor:
 
-The sandbox boundary shapes — and this spec keeps — the division of labor:
+- **Rhai renders.** Through a **dedicated render entry point** (decided here, resolving the spec's former open question 2 — do NOT reuse provider evaluation with a synthetic event: the artifact body must never enter the fact stream, where any rule could match it or another template re-embed it). The entry: read-only access to the property record and a **frozen, sorted input set**; returns a string; `emit_fact` is absent from render scope; `eval` and dynamic script evaluation are disabled (already the raw-engine default — enforced by a scope-freeze test).
+- **Rust acts.** The host validates the emitted body (S5), writes it into `verification/unreviewed/` (S3, S6), invokes the verifier through the post-check seam (S4), and records the structured result.
 
-- **Rhai renders.** A template script runs in the existing sandbox (`Engine::new_raw()`: no file I/O, no module imports, no closures; op and size limits), receives the property record and relevant facts in scope, and emits the rendered artifact body. One small extension to the existing entry points: guards already provide `facts` + `bindings` in scope and providers already provide `emit_fact`; a render invocation combines the two. No new engine machinery.
-- **Rust acts.** The host validates the emitted body (S5), writes it into `verification/unreviewed/` (S3, S6 — the sandbox cannot write files, deliberately), invokes the verifier through the post-check seam (S4), and records the structured result.
+Known limits: emitted bodies are capped (see S5 for the measured cap); a template needing more becomes an explicit host-side Rust template, recorded as an exception in review.
 
-Known limits, stated rather than hidden: emitted strings are capped (~4 KiB, `phronesis-rhai` limits) — fine for harness-sized artifacts. A template that needs more becomes an explicit host-side Rust template, recorded as an exception in review, never a silent fallback.
+### Language neutrality (the architectural frame)
+
+The pipeline is **(language, verifier)-parameterized** and language-neutral by construction — the same discipline as the rules engine (language-neutral; per-language predicates) and the tree-sitter extractors (per-language parsers behind one interface). Nothing in S1–S9 is Rust-specific:
+
+- **Property records** are language-neutral (SPEC B); `depends_on` regions carry language-prefixed graph identity.
+- **Encodings** are declared per pair on the property record: `{ language, verifier, artifact }` — a property may carry encodings in several (language, verifier) pairs.
+- **Templates** are registered per `(language, verifier, kind)` — `verus-postcondition.rhai`, `kani-postcondition.rhai`, later `dafny-*`/`lean-*`; the template registry maps the encoding triple, never the pipeline.
+- **ToolchainDefs** are already declarative and language-neutral (`matches`, `per_test`, `outcome_kind: "proof"`); S9's sandbox applies to whatever process the def runs.
+
+The safety contract is the invariant across instantiations; only encodings, templates, and ToolchainDefs vary per language.
+
+### Phase-1 artifact kind: standalone Verus-native (the first instantiation)
+
+The proven 10-VC Verus harness on this machine is **standalone `verus!`-native code** (spec fns + `requires`/`ensures` over dedicated harness functions), not in-tree annotated production code. Phase 1 instantiates the generic pipeline with the (rust, verus) encoding — a **standalone Verus-native module**. A standalone harness proving a *plain-Rust* function would need `assume`d specs — a faked proof — so C1's subject is a Verus-native function. Kani remains the next (rust, kani) adapter (its plain-Rust-external-harness model differs; the skip-if-absent CI pattern applies to both). Other (language, verifier) pairs follow the same registration path: an encoding on the property record, a template, a ToolchainDef.
 
 ## Problem
 
-A property (SPEC B) plus a changed region (SPEC A) yields an obligation: the claim must be re-established. Today the only way to satisfy it is hand-written harnesses. Sketch §15 correctly observes the harness is *derivable* from the normalized property. What the sketch omits: generated artifacts are code, verifiers execute code, and an agent-driven pipeline that generates-then-executes without a review boundary is a machine that turns prompt-adjacent data into arbitrary execution.
+A property plus a changed region yields an obligation: the claim must be re-established. Today the only way to satisfy it is hand-written harnesses. The omitted risk: an agent-driven pipeline that generates-then-executes without a review boundary is a machine that turns prompt-adjacent data into arbitrary execution — and the trust anchors (opt-in marker, allowlist, approval records, templates) are themselves files an agent can actuate. The safety contract below therefore treats **trust anchors as human-principal acts**, not merely "audited" ones: an audit trail that records the agent approving the agent is not a review gate.
 
 ## Pipeline
 
 ```text
-accepted property (SPEC B)
-        ↓  obligation: changed_region ⋈ property_depends_on + stale_evidence
-Rhai template script (language × verifier × kind → e.g. kani-postcondition.rhai; version-controlled repo content)
-        ↓  emits the rendered artifact body
-host validates (S5) and writes verification/unreviewed/<artifact>.rs
-        ↓  review gate (S3)
-execution via registered ToolchainDef (post-check Bash seam only — S4)
+accepted property (record read host-side at generation time — facts trigger, they never authorize)
+        ↓  obligation = (no verification_result at HEAD) OR (stale: dependent-region content hash changed)
+           [journaled as durable facts, recomputable from the journal — never fire-ephemeral RETE state]
+           [coalesced per fire; render idempotent by content hash; executions deduped by (artifact hash, tree revision)]
+Rhai template script (version-controlled, human-principal-owned repo content)
+        ↓  emits the rendered artifact body via the dedicated render entry
+host validates (S5: field-class contract + rendered-body re-parse) and writes verification/unreviewed/<artifact>.rs
+        ↓  review gate (S3: human-principal approval, content-hash-bound)
+execution via registered ToolchainDefs — composed as argv, never interpolated shell strings (S4, sandboxed per S9)
         ↓  structured result
-verification_result fact + result_revision + journey tag + provenance (SPEC B §3)
+verification_result fact + result_revision + journey tag + provenance (SPEC B §3); band lift per S8
 ```
 
 ## Safety requirements
 
-**S1 — Opt-in only.** Nothing is generated or executed unless the project opts in (marker-file pattern, as `confidence.json` gates the outcomes machinery). Default installs generate nothing.
+**S1 — Opt-in only, and the opt-in is a trust anchor.** Nothing is generated or executed unless the project opts in (marker-file pattern). The opt-in marker, the allowlist, approval records, and `verification/templates/` are **trust anchors**: the host refuses agent-seam writes to all four (journaled refusal); if the host cannot enforce write refusal, the spec's review-gate claim downgrades to "advisory" and this spec says so — it does not ship silently. Default installs generate nothing.
 
-**S2 — Generation precondition: accepted intent.** Generation requires `property_status ∈ {accepted, verified}`. Never `candidate`, never `observed`. Sketch §17's promotion discipline, applied to execution: unreviewed observations do not get compiled into obligations.
+**S2 — Generation precondition: accepted status read from the record.** Generation requires `property_status ∈ {accepted, verified}` **read host-side from `properties.json` at generation time** — facts trigger the obligation, they never authorize it (a fact stream claiming `accepted` while the record says `candidate` is refused and journaled). Any edit to a property record bumps its revision; artifact provenance binds (template hash, property id, property revision), which invalidates allowlisted artifacts after property edits. Never `candidate`, never `observed`.
 
-**S3 — Generated artifacts are untrusted until reviewed.** They land in a clearly-marked `verification/unreviewed/` directory and are **never executed in the same hook fire that created them**. Execution requires either an explicit recorded approval (`set_property_status`-style audited act) or a policy allowlist keyed on content hash (a re-render identical to a previously approved artifact may skip re-review — see open questions).
+**S3 — Trust anchors and the review gate.** Generated artifacts are untrusted until reviewed: they land in `verification/unreviewed/` and are **never executed in the same fire that created them** — the prohibition holds even when the bytes match an allowlisted hash, because that file was written *this* fire. The **content-hash allowlist** is sound for re-renders under three conditions: (i) allowlist mutations are **human-principal acts** — additions rejected if attributable to the hooked session; (ii) each entry records the provenance tuple (artifact hash → template hash, property id + revision, approver principal, date); (iii) execution re-hashes the on-disk file at execution time and refuses on mismatch — approval binds to bytes, not paths. The first render of any (template, property) pair always requires human review; only re-renders skip. Approval registry is **hash-keyed** (an approved artifact may move to `verification/reviewed/`; execution keys on hash, never directory location — "unreviewed/" must not become a lie).
 
-**S4 — Execution only via the existing post-check seam.** Verifiers run through registered ToolchainDefs on `Bash`-class tools, post-check, never pre-check (verifiers are slow; nothing blocks on them), always journaled with revision and exit code.
+**S4 — Execution only via the post-check seam, composed as argv.** Verifiers run through registered ToolchainDefs on `Bash`-class tools, post-check, never pre-check, always journaled with revision and exit code. Verifier invocations are composed as **argv, never interpolated shell strings** — the artifact path is host-injected, never user-supplied. The S4 seam does not itself confine the verifier process — that is S9.
 
-**S5 — Templates are trusted; property data and rendered output are not.** Template scripts are version-controlled repo content, loaded under the same constraints as predicate providers (path canonicalization inside the project root, size caps). Property fields flowing into them are untrusted input, and the emitted artifact body is untrusted *output*: both must survive the `security.rs` validators before the host writes anything. No string reaches a written artifact unvalidated.
+**S9 — Verifier process sandbox (devcontainers preferred).** The verifier executes generated code with full user privileges — the process must be confined. Confinement is **devcontainer-based** for portability: the (language, verifier) instantiation ships a `devcontainer.json` declaring the verifier's environment, and the **host composes the container forcing the confinement flags itself** — no network, read-only mounts except the artifact, no secret mounts, CPU/time limits — regardless of what the file says, so a weakening edit to the devcontainer config cannot unsandbox execution. (The devcontainer file is human-principal-owned repo content — a trust anchor under S3 — but the host never trusts it for confinement.) Fallbacks: macOS `sandbox-exec` (Seatbelt profile denying network + writes outside `verification/`) where a runtime is absent; **fail-closed refusal** where neither exists. The tier used is recorded in the audit trail (S7).
 
-**S6 — Containment.** Artifact paths canonicalize inside the project root (`security.rs`); sizes capped; no template output escapes `verification/`.
+**S5 — Templates are trusted; property data and rendered output are not.** Template scripts are version-controlled, **human-principal-owned** repo content, loaded under the same constraints as predicate providers. Two validation layers: (1) the **field-class contract** at property ingest *and* render — identifier-shaped fields (id, subject) validated against an identifier charset; free-text fields embedded only through host-side escaped-literal encoding (escape *before* the value enters Rhai scope); property ids containing quotes/delimiters rejected at ingest; (2) the rendered body is re-parsed and every interpolated value asserted to appear only in its sanctioned syntactic position; dangerous constructs are rejected from a **per-language deny-list** registered with the template (rust: `include!`/`include_str!`/`include_bytes!`, `#[path]`, `extern crate`, `unsafe`, `std::process`/`fs`/`net`; python: `eval`/`exec`/`os.system`/`subprocess`; etc.) — the deny-lists are part of the (language, verifier) instantiation, not the pipeline. Validation failure journals the refusal and writes nothing. No string reaches a written artifact unvalidated.
 
-**S7 — Full audit trail.** Every generation and execution appends: `log.jsonl` entry, journey tag, and the resulting facts with `Fact.source` and revision — sufficient to answer "who decided this artifact could run, and on what evidence?"
+**S6 — Containment.** Artifact paths canonicalize inside `verification/` (host-generated slug + short content-hash filenames — two properties must never clobber one file; differing content at the same name creates a new file requiring fresh review); sizes capped; no template output escapes `verification/`. Verifier invocations are composed as argv, never interpolated shell strings.
 
-**S8 — Failures never silently count.** `failed` / `inconclusive` / `timeout` results never upgrade confidence; the three-state discipline from `outcomes/` is mandatory.
+**S7 — Full audit trail.** Every generation and execution appends: `log.jsonl` entry, journey tag, and the resulting facts with `Fact.source` and revision — sufficient to answer "who decided this artifact could run, and on what evidence?" Artifact bodies journal as hash + path, never inline.
+
+**S8 — Failures never silently count — and silence is a state.** Result statuses are `passed` | `failed` | `inconclusive` | `timeout` | `unknown`. Failed/inconclusive/timeout never upgrade confidence. **A run whose output parses to zero outcomes emits `verification_result` with status `inconclusive` plus the raw output tail in the journal and never lifts the proof signal** — verifier version drift changing output format must degrade to loud silence, not a green light.
+
+## Known-bug precedence
+
+An open known-bug entry referencing a property blocks band lift from `signal_pass(…, "proof")`, flags the `verification_result` as contradicted, and journals both facts. A passing proof must not lift confidence over a documented contradicting bug.
+
+## Execution discipline
+
+Proofs are minutes-long; the post-check seam never blocks the current call. Executions dedup by **(artifact content hash, tree revision)** — at most one execution per revision; `result_revision` and the dirty flag are recorded at *run start*. Queue executions to a once-per-revision drain rather than per-fire.
 
 ## Non-goals
 
-1. No verifier bundling — the user's toolchain provides Kani/Verus; we only recognize and parse their output.
-2. Rust + Kani first; Verus second; other languages only after SPEC A Phase 3 adapters exist.
+1. No verifier bundling — the toolchain provides Verus/Kani; we recognize and parse their output.
+2. One (language, verifier) instantiation first — (rust, verus), the proven toolchain on this machine; Kani as the next; other languages (python/dafny, lean, …) follow the identical registration path (encoding + template + ToolchainDef) after SPEC A Phase 3 per-language adapters exist. No harness of any language that leans on `assume` to go green.
 3. No LLM free-form codegen. Templates only — deterministic, reviewable, diffable.
-4. No automatic execution of unreviewed artifacts, ever, including "just this once" policy exceptions.
+4. No automatic execution of unreviewed artifacts, ever, including "just this once" exceptions — and the same-fire prohibition holds even when content matches an allowlisted hash.
 
-## Acceptance criteria (evaluated when unblocked)
+## Acceptance criteria
 
-**C1 — Real proof, no simulation.** `safe_divide.zero_returns_error` renders a compiling Kani harness that proves the property. The end-to-end test runs real `cargo kani` (opt-in integration test; skipped when kani is absent, never faked).
-
-**C2 — S2 refusal.** A `candidate` property's generation request is refused, and the refusal is journaled.
-
-**C3 — Same-fire prohibition.** An artifact created in this hook fire is not executed in that fire (test).
-
+**C1 — Real proof, no simulation (first instantiation: verus-native).** A Verus-native `safe_divide` postcondition property renders a compiling Verus harness that proves it with real `cargo-verus`/`verus` (opt-in integration test; skipped when the toolchain is absent, never faked, never `assume`d green). The test doubles as the template for later (language, verifier) pairs — a python/dafny instantiation repeats this criterion with its own def, unchanged in shape.
+**C2 — S2 refusal.** A `candidate` property's generation request is refused and journaled; the refusal reads the record, not the fact stream (a fact stream claiming `accepted` while the record says `candidate` is refused — C8).
+**C3 — Same-fire prohibition.** An artifact created in this fire is not executed in that fire — even when it matches an allowlisted hash.
 **C4 — Provenance.** Execution appends `verification_result` with source, revision, and evidence kind; a failed proof does not lift the confidence Band.
+**C5 — Injection containment.** A property record carrying hostile Rust payloads renders inert (escaped) or generation refuses — journaled either way; nothing is written unvalidated.
+**C6 — Mutation detection.** Introduce the exact bug the property forbids into the subject function, re-run the pipeline: the proof must fail. (The only test that catches claim-binding drift.)
+**C7 — Trust-anchor tamper.** Agent-seam writes to the allowlist/opt-in/templates are refused; an artifact whose hash was self-added is refused execution.
+**C8 — Status source-of-truth.** A fact stream claiming `accepted` while the record says `candidate` → refusal, journaled.
+**C9 — First-proof obligation.** Accepted property, changed dependent region, no prior result → generation fires. (The obligation's OR, not the staleness AND.)
+**C10 — Empty-parse.** Garbage verifier output → `inconclusive` fact exists, no band lift.
 
-## Open questions
+## Open questions — resolved
 
-1. Review-gate UX: human review per artifact vs. content-hash allowlist for identical re-renders (lean: allowlist, since templates + property hash determine the artifact deterministically).
-2. Render-seam shape: extend `phronesis-rhai` with a render entry point (property record + facts in scope, `emit_fact` out) vs. reuse provider evaluation with a synthetic event — decided at implementation time; the sandbox limits bind either way.
-3. Where obligations surface to the agent: an `Affordance` consequence ("reprove ?p via ?v") vs. a capsule. Lean Affordance at hook time, capsule for durable context.
+1. **Review-gate UX:** content-hash allowlist, with the three S3 conditions (human-only mutations; provenance tuples; disk re-hash at execution). First render of any (template, property) pair requires human review; re-renders of identical bytes skip — the same-fire prohibition still holds for the file written this fire.
+2. **Render-seam shape:** the **dedicated render entry point**, decided now. Scope: read-only property record + frozen sorted dependency facts; one typed return (the body) with exactly one consumer (validator → write); `emit_fact` absent; `eval` disabled; scope-freeze test (zero host functions in render scope) and a determinism test (same inputs → byte-identical output, twice).
+3. **Obligation surfacing:** an `Affordance` at hook time presenting the review-relevant fields (property id + revision, template id + hash, artifact path, content hash, diff vs last approved artifact) and a capsule for durable context. Accepting the Affordance is not the approval — approval remains the human-principal act (S3).
+
+## Post-implementation calibration
+
+The emitted-body cap is set by measurement against the proven 10-VC harness (209 lines); the review proposes 64 KiB + a 512-line absolute cap — commit the number only after measuring. The host-stamped provenance header (`GENERATED — DO NOT EDIT`, property id + revision, template hash) is budgeted outside the render cap. The host-side Rust template path is first-class (for Verus inductive proofs it is the common path — a frequent exception must be a design smell the spec acknowledges, which this paragraph does).
+
+## Resolved decisions (review follow-up)
+
+1. **Encoding artifact paths participate in graph relations.** Each property encoding carrying an `artifact` path emits an `includes_file`-style graph edge at rebuild (the `graph/bindings.rs` stale-rule-binding precedent): deleted artifact, content drift, or path escape surfaces through the graph's existing drift machinery and feeds `stale_evidence` the same way. The edge is demand-gated like other graph relations — a rule must mention it before it asserts.
+
+2. **S9 confinement tiers (macOS reality, resolved).** The threat S9 answers: the verifier executes generated code with full user privileges, so something must confine that process. Which mechanism is available is host-dependent, so S9 resolves confinement by **tier at execution time, recording the tier in the audit trail (S7)**:
+   - **Tier 1 — devcontainer** (portable across docker/podman and across Linux/macOS hosts with a runtime; the same `devcontainer.json` carries the environment to CI): host-enforced no-network, read-only mounts except the artifact, resource limits.
+   - **Tier 2 — macOS native**: `sandbox-exec` (Seatbelt) profile denying network and denying writes outside `verification/` — the deprecated-but-functional Apple API, zero dependencies.
+   - **Tier 3 — fail-closed**: no confinement available → execution refused, journaled as refused-sandbox, and the S9 claim is downgraded in that host's audit trail rather than silently.
