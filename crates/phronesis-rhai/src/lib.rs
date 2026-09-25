@@ -41,6 +41,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use phronesis::{BuiltinScriptEvaluator, Fact, ScriptEval};
+pub use rhai;
 use rhai::packages::{Package, StandardPackage};
 use rhai::{Array, Dynamic, Engine, ImmutableString, Map, Scope};
 use thiserror::Error;
