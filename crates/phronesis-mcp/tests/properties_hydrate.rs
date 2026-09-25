@@ -2,6 +2,7 @@
 //! promotion discipline, and the staleness join through the real pipeline.
 
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use serde_json::json;
@@ -9,6 +10,8 @@ use serde_json::json;
 use phronesis_mcp::coverage::hydrate as coverage_hydrate;
 use phronesis_mcp::properties::hydrate::{EditedFile, PropertyHydrationInput, facts_for_event};
 use phronesis_mcp::properties::store::{Property, PropertySource, PropertyStatus};
+use phronesis_rhai::RenderInput;
+use phronesis_rhai::rhai::Map;
 use tempfile::TempDir;
 
 const OLD_SRC: &str = r#"pub fn safe_divide(numerator: i32, denominator: i32) -> Result<i32, &'static str> {
@@ -480,4 +483,140 @@ fn c9_first_proof_obligation_fires_without_a_prior_result() {
         !obligations.is_empty() || facts.iter().any(|f| f.predicate == "changed_region"),
         "the obligation must be reachable for a never-proved property (C9)"
     );
+}
+
+// ---- SPEC-C §C1: real proof, no simulation (sandbox-exec tier, verus-native) ----
+
+#[test]
+fn c1_render_validate_gate_execute_prove_end_to_end() {
+    use phronesis_mcp::properties::allowlist;
+    use phronesis_mcp::properties::execute::{ConfinementTier, execute};
+
+    // The verus toolchain gate: skip (never fake) when absent.
+    let verify_bin = std::env::var("VERUS_BIN").ok().or_else(which_verus);
+    let Some(verify_bin) = verify_bin else {
+        eprintln!("skipping C1: no verus toolchain on this host");
+        return;
+    };
+
+    let d = TempDir::new().unwrap();
+    std::fs::create_dir_all(d.path().join("verification")).unwrap();
+    write_properties(d.path(), &fixture_properties());
+
+    // 1. RENDER — the verus-postcondition template through the dedicated seam.
+    let template = r#"
+        let subject = property.get("subject");
+        `// GENERATED - DO NOT EDIT
+// Property: safe_divide.zero_returns_error (verus-native)
+use vstd::prelude::*;
+
+verus! {
+
+pub enum DivResult { Ok(i32), Err(i32) }
+
+pub open spec fn zero_returns_error(res: DivResult) -> bool {
+    matches!(res, DivResult::Err(_))
+}
+
+pub fn divide_zero() -> (res: DivResult)
+    ensures zero_returns_error(res),
+{
+    DivResult::Err(0)
+}
+
+fn main() {}
+
+} // verus!`
+    "#;
+    let mut property = Map_for_test();
+    property.insert("subject".into(), "safe_divide".into());
+    property.insert("id".into(), "safe_divide.zero_returns_error".into());
+    let body = phronesis_rhai::render(
+        template,
+        &phronesis_rhai::RenderInput::frozen(property, vec![]),
+    )
+    .expect("render");
+
+    // 2. Validate the rendered body (S5): rust deny-list + interpolation.
+    phronesis_mcp::properties::validate::validate_body(
+        "rust",
+        &body,
+        &["safe_divide.zero_returns_error", "safe_divide"],
+    )
+    .expect("rendered body validates");
+    std::fs::create_dir_all(d.path().join("verification/unreviewed")).expect("mkdir verification");
+    let artifact = d
+        .path()
+        .join("verification/unreviewed/safe_divide_zero_returns_error.rs");
+    std::fs::write(&artifact, &body).expect("write artifact");
+
+    // 3. Review gate: the approval binds the artifact bytes (C-T3 store).
+    let sha = sha256_of(&artifact);
+    allowlist::record(
+        d.path(),
+        allowlist::AllowlistEntry {
+            artifact_sha256: sha.clone(),
+            template_sha256: "template-hash".into(),
+            property_id: "safe_divide.zero_returns_error".into(),
+            property_revision: "r1".into(),
+            approver_principal: "awaterma (human, session-sanctioned run)".into(),
+            date: "2026-09-24".into(),
+        },
+    )
+    .expect("record approval");
+    assert!(allowlist::contains(d.path(), &sha).unwrap());
+
+    // 4. Execute confined (sandbox-exec tier, host-forced no-network) with
+    //    the PROVEN local verus binary.
+    let result = execute(
+        d.path(),
+        &artifact,
+        &sha,
+        &verify_bin,
+        "b".repeat(40).as_str(),
+    );
+    // The tiered runner resolves sandbox-exec on macOS; assert the proof.
+    match result {
+        Ok(outcome) => {
+            assert_eq!(
+                outcome.status, "passed",
+                "the rendered property must PROVE: {outcome:?}"
+            );
+            assert_eq!(
+                outcome.tier, "SandboxExec",
+                "tier recorded in the audit trail"
+            );
+        }
+        Err(e) => panic!("C1 end-to-end failed: {e:?}"),
+    }
+}
+
+fn Map_for_test() -> Map {
+    let mut m = Map::new();
+    m.insert("subject".into(), "safe_divide".into());
+    m
+}
+
+fn sha256_of(path: &std::path::Path) -> String {
+    // The store binds by whatever digest the caller computed; the test uses
+    // a DefaultHasher digest (a real sha256 lands with the execution ledger).
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::fs::read(path)
+        .expect("read artifact")
+        .hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+fn which_verus() -> Option<String> {
+    let candidates = [
+        "/Users/andrewwaterman/.cargo/bin/verus".to_string(),
+        format!(
+            "{}/.cargo/bin/verus",
+            std::env::var("HOME").unwrap_or_default()
+        ),
+    ];
+    candidates
+        .into_iter()
+        .find(|p| std::path::Path::new(p).exists())
 }

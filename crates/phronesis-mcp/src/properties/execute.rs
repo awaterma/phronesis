@@ -43,24 +43,27 @@ pub enum ExecutionError {
 /// the human-set config allows) → refused. Host-enforced: the strongest
 /// available tier wins; raw is never a default.
 pub fn detect_tier(root: &Path) -> Option<ConfinementTier> {
-    for runtime in ["docker", "podman"] {
-        if std::process::Command::new(runtime)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-        {
-            return Some(ConfinementTier::Devcontainer);
+    // The devcontainer tier requires the (language, verifier) instantiation to
+    // ship its devcontainer.json — a running daemon without a declared image
+    // is not a Tier-1 claim (S9: the host composes the container from the
+    // instantiation's declaration).
+    let has_devcontainer = root
+        .join("verification/templates/devcontainer.json")
+        .is_file();
+    if has_devcontainer {
+        for runtime in ["docker", "podman"] {
+            if std::process::Command::new(runtime)
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+            {
+                return Some(ConfinementTier::Devcontainer);
+            }
         }
     }
-    if std::process::Command::new("sandbox-exec")
-        .arg("-h")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-    {
+    if sandbox_exec_available() {
         return Some(ConfinementTier::SandboxExec);
     }
     if raw_execution_allowed(root) {
@@ -69,6 +72,18 @@ pub fn detect_tier(root: &Path) -> Option<ConfinementTier> {
         return Some(ConfinementTier::Raw);
     }
     None
+}
+
+/// Tier-2 availability: the macOS Seatbelt frontend.
+fn sandbox_exec_available() -> bool {
+    // `-h` exits 64 (usage error) — probe with a trivial allow-all profile
+    // instead: a real run is the only honest availability check.
+    std::process::Command::new("sandbox-exec")
+        .args(["-p", "(version 1)(allow default)", "/usr/bin/true"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// The human-set raw-execution config (S9 discipline 1): reads
@@ -197,6 +212,39 @@ pub fn inconclusive_from(
     }
 }
 
+/// Parse verus output into a result status (the verus instantiation's
+/// adapter). Returns None when the verifier's marker line is absent — the
+/// zero-parse rule routes to `inconclusive` (S8), never a silent pass.
+fn parse_verus_result(raw: &str, exit_code: Option<i32>) -> Option<String> {
+    let marker = raw.lines().find(|l| l.contains("verification results::"))?;
+    // `verification results:: N verified, M errors`
+    let errors = marker
+        .split(',')
+        .find_map(|part| {
+            let p = part.trim().split(' ').collect::<Vec<_>>();
+            if p.windows(2).any(|w| w[1] == "errors") {
+                p.first().and_then(|n| n.parse::<usize>().ok())
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
+    let verified = marker
+        .split("::")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse::<usize>().ok())
+        .unwrap_or(0);
+    if exit_code != Some(0) {
+        return Some("failed".to_string());
+    }
+    Some(if errors == 0 && verified > 0 {
+        "passed".to_string()
+    } else {
+        "failed".to_string()
+    })
+}
+
 fn tracing_like(message: &str) {
     // The outcomes fold-in seam journals via the journey; the raw tail rides
     // the journal payload, not the RETE args (three-state discipline).
@@ -244,13 +292,12 @@ pub fn execute(
     let raw = format!("{stdout}{stderr}");
     let _ = raw; // journaled with the result record by the caller
 
-    // Parse through the proof ToolchainDef machinery: zero proof outcomes →
-    // inconclusive (S8's fourth state).
-    let proof_facts: Vec<_> = raw
-        .lines()
-        .filter(|l| l.contains("SUCCESS") || l.contains("FAILURE"))
-        .collect();
-    if proof_facts.is_empty() {
+    // Per-toolchain result parse (SPEC-C: the verus instantiation). Verus
+    // prints `verification results:: N verified, M errors` — the aggregate is
+    // the property's status for single-property harnesses (phase 1 shape).
+    let status = parse_verus_result(&raw, output.status.code());
+    let Some(status) = status else {
+        // S8's fourth state: the parser matched nothing — loud silence.
         return Ok(inconclusive_from(
             "unknown-property",
             verifier_command,
@@ -258,14 +305,13 @@ pub fn execute(
             tier,
             &raw,
         ));
-    }
-    let passed = proof_facts.iter().all(|l| l.contains("SUCCESS"));
+    };
     Ok(ProofOutcome {
         v: 1,
         kind: "verification_result".to_string(),
         property: String::new(),
         verifier: verifier_command.to_string(),
-        status: if passed { "passed" } else { "failed" }.to_string(),
+        status,
         revision: String::new(),
         tool: verifier_command.to_string(),
         tier: format!("{tier:?}"),
@@ -280,15 +326,25 @@ mod tests {
     /// container tier wins. On a host with neither, raw applies only when
     /// the human-set config allows it; otherwise refusal.
     #[test]
-    fn s9_tier_resolution_prefers_the_container() {
+    fn s9_tier_resolution_ladder() {
         let root = tempfile::tempdir().unwrap();
+        // Without a declared devcontainer, the ladder falls to sandbox-exec.
         let tier = detect_tier(root.path());
         assert!(
-            matches!(
-                tier,
-                Some(ConfinementTier::Devcontainer) | Some(ConfinementTier::SandboxExec)
-            ),
-            "this host must resolve a confinement tier: {tier:?}"
+            matches!(tier, Some(ConfinementTier::SandboxExec)),
+            "no devcontainer declared -> sandbox-exec tier: {tier:?}"
+        );
+        // With one declared, the container tier claims it.
+        std::fs::create_dir_all(root.path().join("verification/templates")).unwrap();
+        std::fs::write(
+            root.path().join("verification/templates/devcontainer.json"),
+            "{}",
+        )
+        .unwrap();
+        let tier = detect_tier(root.path());
+        assert!(
+            matches!(tier, Some(ConfinementTier::Devcontainer)),
+            "{tier:?}"
         );
     }
 
@@ -361,5 +417,25 @@ mod tests {
         std::fs::write(&artifact, "fn h() {}").unwrap();
         let result = execute(root.path(), &artifact, "unapproved-hash", "verus", "r1");
         assert!(matches!(result, Err(ExecutionError::NotApproved { .. })));
+    }
+}
+
+#[cfg(test)]
+mod verus_tests {
+    use super::*;
+
+    #[test]
+    fn verus_parser_reads_the_marker_line() {
+        let raw = "verification results:: 10 verified, 0 errors\n";
+        assert_eq!(parse_verus_result(raw, Some(0)), Some("passed".to_string()));
+        let raw = "verification results:: 9 verified, 1 errors\n";
+        assert_eq!(parse_verus_result(raw, Some(1)), Some("failed".to_string()));
+        assert_eq!(parse_verus_result(raw, Some(0)), Some("failed".to_string()));
+    }
+
+    /// S8: no marker line → the zero-parse rule routes to inconclusive.
+    #[test]
+    fn verus_parser_absent_marker_routes_to_inconclusive() {
+        assert_eq!(parse_verus_result("nothing recognizable", Some(0)), None);
     }
 }
