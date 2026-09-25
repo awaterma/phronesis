@@ -114,7 +114,11 @@ Proofs are minutes-long; the post-check seam never blocks the current call. Exec
 
 The emitted-body cap is set by measurement against the proven 10-VC harness (209 lines); the review proposes 64 KiB + a 512-line absolute cap — commit the number only after measuring. The host-stamped provenance header (`GENERATED — DO NOT EDIT`, property id + revision, template hash) is budgeted outside the render cap. The host-side Rust template path is first-class (for Verus inductive proofs it is the common path — a frequent exception must be a design smell the spec acknowledges, which this paragraph does).
 
-## Open questions (new, from review)
+## Resolved decisions (review follow-up)
 
-1. Do encoding artifact paths participate in graph relations (`includes_file`-style edges) so stale encodings are detectable like stale rule bindings?
-2. Is the container sandbox (S9) available on macOS hosts without Docker? If not, S9 degrades to: verifier runs with a scrubbed env, no network access via sandbox-exec profile, and the spec says so.
+1. **Encoding artifact paths participate in graph relations.** Each property encoding carrying an `artifact` path emits an `includes_file`-style graph edge at rebuild (the `graph/bindings.rs` stale-rule-binding precedent): deleted artifact, content drift, or path escape surfaces through the graph's existing drift machinery and feeds `stale_evidence` the same way. The edge is demand-gated like other graph relations — a rule must mention it before it asserts.
+
+2. **S9 confinement tiers (macOS reality, resolved).** The threat S9 answers: the verifier executes generated code with full user privileges, so something must confine that process. Which mechanism is available is host-dependent, so S9 resolves confinement by **tier at execution time, recording the tier in the audit trail (S7)**:
+   - **Tier 1 — container** (docker/podman): no network, read-only filesystem except the artifact, resource limits. Linux hosts; macOS hosts with a container runtime.
+   - **Tier 2 — macOS native**: `sandbox-exec` (Seatbelt) profile denying network and denying writes outside `verification/` — the deprecated-but-functional Apple API, zero dependencies.
+   - **Tier 3 — fail-closed**: no confinement available → execution refused, journaled as refused-sandbox, and the S9 claim is downgraded in that host's audit trail rather than silently.
