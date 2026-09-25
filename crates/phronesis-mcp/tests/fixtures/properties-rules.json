@@ -83,7 +83,7 @@
       "when": [
         {
           "file_path_matches": [
-            "verification/"
+            "verification"
           ]
         }
       ],

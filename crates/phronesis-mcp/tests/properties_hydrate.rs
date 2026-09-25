@@ -358,7 +358,7 @@ fn b4_gap_rule_still_warns_for_unpromoted_properties() {
 
 #[test]
 fn c5_hostile_property_payload_renders_inert_or_refuses() {
-    use phronesis_mcp::properties::validate::{escape_rust_string_literal, validate_body};
+    use phronesis_mcp::properties::validate::validate_body;
 
     let hostile = "\"); std::process::Command::new(\"touch /tmp/pwned\"); //";
     let id_hostile = "safe_divide.zero\"; std::process::exit(1); //";
@@ -394,7 +394,7 @@ fn c5_hostile_property_payload_renders_inert_or_refuses() {
 
     // Layer 2: even if a hostile free-text field is rendered, the HOST escapes
     // it before Rhai scope, and the body validator rejects denied constructs.
-    let escaped = phronesis_mcp::properties::validate::escape_rust_string_literal(&hostile);
+    let escaped = phronesis_mcp::properties::validate::escape_rust_string_literal(hostile);
     assert!(
         !escaped.contains("std::process::Command::new(\""),
         "escaped form must not carry live delimiters: {escaped:?}"
