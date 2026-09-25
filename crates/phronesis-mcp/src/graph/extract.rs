@@ -1787,6 +1787,242 @@ mod tests {
         );
     }
 
+    // ─── adversarial self-receiver resolution (T4) ────────────────
+
+    #[test]
+    fn t4_a_same_impl_self_call_emits_typed_hint() {
+        // Case A: `self.b()` inside `impl Foo` must produce `@method:Foo:b`,
+        // the receiver evidence that lets derive resolve to Foo::b.
+        let out = run(
+            "src/foo.rs",
+            "struct Foo; impl Foo { fn a(&self) { self.b(); } fn b(&self) {} }",
+        );
+        let calls = edges_of(&out, "calls");
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:Foo:b"),
+            "Case A: self.b() in impl Foo should emit @method:Foo:b, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_b_same_leaf_on_two_types_keeps_typed_hint_per_impl() {
+        // Case B: Foo and Bar both define `b`. A call `self.b()` inside
+        // `impl Foo` must carry `@method:Foo:b`, NOT `@method:Bar:b`.
+        // The extractor cannot know which type wins; it only records the
+        // enclosing impl as receiver evidence.
+        let src = "
+            struct Foo; struct Bar;
+            impl Foo { fn a(&self) { self.b(); } fn b(&self) {} }
+            impl Bar { fn b(&self) {} }
+        ";
+        let out = run("src/foo.rs", src);
+        let calls = edges_of(&out, "calls");
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:Foo:b"),
+            "Case B: self.b() in impl Foo should emit @method:Foo:b, got: {:?}",
+            calls
+        );
+        assert!(
+            !calls.iter().any(|args| args[1] == "@method:Bar:b"),
+            "Case B: self.b() in impl Foo must NOT emit @method:Bar:b, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_c_generic_impl_self_call_strips_type_args_in_hint() {
+        // Case C: `self.b()` inside `impl<T> Foo<T>` must produce
+        // `@method:Foo:b` (generics stripped), so derive can match a
+        // candidate whose module last segment is `Foo`.
+        let out = run(
+            "src/foo.rs",
+            "struct Foo<T>(T); impl<T> Foo<T> { fn a(&self) { self.b(); } fn b(&self) {} }",
+        );
+        let calls = edges_of(&out, "calls");
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:Foo:b"),
+            "Case C: self.b() in impl<T> Foo<T> should emit @method:Foo:b, got: {:?}",
+            calls
+        );
+        assert!(
+            !calls.iter().any(|args| args[1] == "@method:Foo<T>:b"),
+            "Case C: hint must not retain generic args, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_d_self_assoc_fn_call_emits_typed_hint() {
+        // Case D: `Self::b()` inside `impl Foo` must produce
+        // `@method:Foo:b`.
+        let out = run(
+            "src/foo.rs",
+            "struct Foo; impl Foo { fn a(&self) { Self::b(); } fn b() {} }",
+        );
+        let calls = edges_of(&out, "calls");
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:Foo:b"),
+            "Case D: Self::b() in impl Foo should emit @method:Foo:b, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_e_unknown_receiver_emits_bare_hint_no_guessing() {
+        // Case E: a method call on an unknown receiver (not `self`, no
+        // inferred type) must emit a BARE `@method:b` hint with no type,
+        // so derive cannot guess a type by name alone.
+        let out = run(
+            "src/foo.rs",
+            "struct Foo; impl Foo { fn a(&self) { let x = unknown(); x.b(); } }",
+        );
+        let calls = edges_of(&out, "calls");
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:b"),
+            "Case E: unknown receiver should emit bare @method:b, got: {:?}",
+            calls
+        );
+        // No typed hint should be invented for an unknown receiver.
+        assert!(
+            !calls.iter().any(|args| args[1].starts_with("@method:Foo:b")
+                || args[1].starts_with("@method:unknown")),
+            "Case E: must not invent a type for unknown receiver, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_f_collision_across_unrelated_types_keeps_bare_hint() {
+        // Case F: `.contains`-style collision — a call on a receiver whose
+        // type is not known at extract time must NOT be attributed to any
+        // specific type by name alone. Two unrelated types both define
+        // `contains`; the call on an opaque receiver stays bare.
+        let src = "
+            struct Bag { items: Vec<u32> }
+            struct StrWrap { s: String }
+            impl Bag { fn contains(&self, n: u32) -> bool { false } }
+            impl StrWrap { fn contains(&self, c: char) -> bool { false } }
+            fn checker(bag: Bag) -> bool {
+                let s = get_str();
+                s.contains('x')
+            }
+            fn get_str() -> String { String::new() }
+        ";
+        let out = run("src/bag.rs", src);
+        let calls = edges_of(&out, "calls");
+        // The receiver `s` has no inferred type here, so the hint is bare.
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:contains"),
+            "Case F: opaque receiver should emit bare @method:contains, got: {:?}",
+            calls
+        );
+        assert!(
+            !calls
+                .iter()
+                .any(|args| args[1] == "@method:Bag:contains"
+                    || args[1] == "@method:StrWrap:contains"),
+            "Case F: must not attribute call to Bag or StrWrap by name, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_f1_qualified_impl_path_self_call_emits_last_segment_hint() {
+        // F1: `impl<T> a::Foo<T>` — the extractor reads the impl type node
+        // text, which is `a::Foo<T>`. After strip_generic_args the hint
+        // is `@method:a::Foo:baz`. This is the raw extract output; derive
+        // must handle the qualified receiver. We assert the hint shape
+        // that extract actually emits so the derive test can falsify
+        // whether it resolves.
+        let out = run(
+            "src/a.rs",
+            "mod a { pub struct Foo<T>(T); } impl<T> a::Foo<T> { fn baz(&self) {} fn bar(&self) { self.baz(); } }",
+        );
+        let calls = edges_of(&out, "calls");
+        // The impl type node text is `a::Foo<T>`; strip_generic_args
+        // yields `a::Foo`. So the hint is `@method:a::Foo:baz`.
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:a::Foo:baz"),
+            "F1: self.baz() in impl<T> a::Foo<T> should emit @method:a::Foo:baz, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_f2_bracket_aware_impl_type_with_path_in_generic_args() {
+        // F2: `impl Foo<std::vec::Vec<T>>` — the impl type node text is
+        // `Foo<std::vec::Vec<T>>`. strip_generic_args (find '<') yields
+        // `Foo`. So the hint is `@method:Foo:baz`. The concern in F2 is
+        // whether *derive's* rsplit is bracket-aware; here we verify the
+        // extract side produces a clean `Foo` receiver.
+        let out = run(
+            "src/foo.rs",
+            "struct Foo<C> { col: C } impl<T> Foo<std::vec::Vec<T>> { fn baz(&self) {} fn bar(&self) { self.baz(); } }",
+        );
+        let calls = edges_of(&out, "calls");
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:Foo:baz"),
+            "F2: self.baz() in impl Foo<std::vec::Vec<T>> should emit @method:Foo:baz, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_f3_deref_autoderef_self_call_emits_wrapper_hint() {
+        // F3: `impl Wrapper` with `Deref<Target=Inner>`, `self.foo()` from
+        // `Wrapper::bar`. The extractor sees the enclosing impl type as
+        // `Wrapper`, so it emits `@method:Wrapper:foo`. This is the
+        // extract-side truth: the hint is `Wrapper`, NOT `Inner`. Whether
+        // derive can still reach `Inner::foo` is a derive-side question
+        // (and the review finding predicts it now blocks that). We assert
+        // the hint shape here so the derive test can check the
+        // consequence.
+        let src = "
+            struct Inner; impl Inner { fn foo(&self) {} }
+            struct Wrapper { inner: Inner }
+            impl std::ops::Deref for Wrapper {
+                type Target = Inner;
+                fn deref(&self) -> &Inner { &self.inner }
+            }
+            impl Wrapper { fn bar(&self) { self.foo(); } }
+        ";
+        let out = run("src/wrap.rs", src);
+        let calls = edges_of(&out, "calls");
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:Wrapper:foo"),
+            "F3: self.foo() in impl Wrapper should emit @method:Wrapper:foo, got: {:?}",
+            calls
+        );
+        // The extractor must NOT magically emit Inner — it has no Deref
+        // knowledge.
+        assert!(
+            !calls.iter().any(|args| args[1] == "@method:Inner:foo"),
+            "F3: extractor must not invent Inner via Deref, got: {:?}",
+            calls
+        );
+    }
+
+    #[test]
+    fn t4_f4_self_assoc_fn_with_same_leaf_as_method_emits_typed_hint() {
+        // F4: `Self::dup()` where the same type has both `fn dup() -> Foo`
+        // (assoc fn) and `fn dup(&self)` (method). The extractor emits
+        // `@method:Foo:dup` for `Self::dup()` — it does not distinguish
+        // assoc-fn from method at the hint level. Whether derive can
+        // resolve correctly is the derive-side question. We assert the
+        // hint shape here.
+        let out = run(
+            "src/foo.rs",
+            "struct Foo; impl Foo { fn dup() -> Foo { Foo } fn dup(&self) {} fn make(&self) -> Foo { Self::dup() } }",
+        );
+        let calls = edges_of(&out, "calls");
+        assert!(
+            calls.iter().any(|args| args[1] == "@method:Foo:dup"),
+            "F4: Self::dup() in impl Foo should emit @method:Foo:dup, got: {:?}",
+            calls
+        );
+    }
+
     #[test]
     fn a_test_call_inside_an_assertion_macro_is_coverage_evidence() {
         let out = run(
