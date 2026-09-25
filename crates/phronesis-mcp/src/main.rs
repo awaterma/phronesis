@@ -1746,7 +1746,7 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                 }
                 println!("Run `phr-mcp graph rebuild` to resync.");
             }
-            if !top.is_empty() {
+            if !json && !top.is_empty() {
                 println!("Resolution hotspots (unresolved then ambiguous):");
                 for (file, (u, a)) in &top {
                     println!("  {file}: {u} unresolved, {a} ambiguous");
