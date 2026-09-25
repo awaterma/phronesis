@@ -108,6 +108,12 @@ pub struct SaveOutcome {
     /// every path that runs no provider, which is every path except an
     /// explicit rebuild with `provider = "rust-analyzer"`.
     pub diagnostics: Vec<String>,
+    /// `calls`/`tested_by` edges whose callee could not be resolved to any
+    /// definition after module and import evidence filtering.
+    pub unresolved_calls: usize,
+    /// `calls`/`tested_by` edges whose callee matched more than one definition
+    /// after filtering, so were dropped rather than guessed.
+    pub ambiguous_calls: usize,
 }
 
 /// Deterministic content hash (FNV-1a, 64-bit).

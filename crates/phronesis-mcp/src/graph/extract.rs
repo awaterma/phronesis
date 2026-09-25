@@ -371,7 +371,7 @@ impl Sensor<'_> {
         if has_test_attribute(node, self.source) || within_test_module(node, self.source) {
             let file_path = self.file_path.to_string();
             self.emit("defines_test", &[&file_path, &qualified]);
-            for callee in self.called_names(body) {
+            for callee in self.called_names(body, scope) {
                 self.emit("tested_by", &[&callee, &qualified]);
             }
             return;
@@ -382,7 +382,7 @@ impl Sensor<'_> {
         if scope.impl_type.is_some() {
             self.emit("defines_method", &[&file_path, &qualified]);
         }
-        for callee in self.called_names(body) {
+        for callee in self.called_names(body, scope) {
             self.emit("calls", &[&qualified, &callee]);
         }
         for api in self.watched_calls(body) {
@@ -406,7 +406,7 @@ impl Sensor<'_> {
 
     /// Bare names of functions invoked in a body. Persistence resolves these
     /// against canonical definitions using same-module/import evidence.
-    fn called_names(&self, body: Node) -> BTreeSet<String> {
+    fn called_names(&self, body: Node, scope: &Scope) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
         let receiver_types = self.receiver_types(body);
         let mut stack = vec![body];
@@ -414,7 +414,7 @@ impl Sensor<'_> {
             if n.kind() == "call_expression"
                 && let Some(f) = n.child_by_field_name("function")
             {
-                let name = self.call_name(f, &receiver_types);
+                let name = self.call_name(f, &receiver_types, scope);
                 if !name.is_empty() {
                     found.insert(name);
                 }
@@ -467,24 +467,46 @@ impl Sensor<'_> {
         &self,
         f: Node,
         receiver_types: &std::collections::BTreeMap<String, String>,
+        scope: &Scope,
     ) -> String {
         match f.kind() {
             "identifier" => text(f, self.source).to_string(),
-            "scoped_identifier" => f
-                .child_by_field_name("name")
-                .map(|x| text(x, self.source).to_string())
-                .unwrap_or_default(),
+            "scoped_identifier" => {
+                let name = f
+                    .child_by_field_name("name")
+                    .map(|x| text(x, self.source).to_string())
+                    .unwrap_or_default();
+                // `Self::assoc_fn()` inside an impl: the path is `Self`, and
+                // the enclosing impl type turns the bare name into a
+                // resolvable method hint. Unknown impl type keeps the bare
+                // name — no guessing.
+                let path_is_self = f
+                    .child_by_field_name("path")
+                    .map(|p| text(p, self.source).to_string())
+                    .is_some_and(|p| p.rsplit("::").next() == Some("Self"));
+                if path_is_self && let Some(impl_type) = scope.impl_type.as_deref() {
+                    return format!("@method:{}:{name}", strip_generic_args(impl_type));
+                }
+                name
+            }
             "field_expression" => f
                 .child_by_field_name("field")
                 .map(|x| {
                     let method = text(x, self.source);
-                    let receiver_type = f
-                        .child_by_field_name("value")
-                        .filter(|receiver| receiver.kind() == "identifier")
-                        .and_then(|receiver| receiver_types.get(text(receiver, self.source)));
+                    let receiver = f.child_by_field_name("value");
+                    let receiver_type = receiver.and_then(|r| {
+                        if r.kind() == "self" {
+                            scope.impl_type.as_deref().map(str::to_string)
+                        } else if r.kind() == "identifier" {
+                            let name = text(r, self.source);
+                            receiver_types.get::<str>(name.as_ref()).cloned()
+                        } else {
+                            None
+                        }
+                    });
                     receiver_type.map_or_else(
                         || format!("@method:{method}"),
-                        |ty| format!("@method:{ty}:{method}"),
+                        |ty| format!("@method:{}:{method}", strip_generic_args(&ty)),
                     )
                 })
                 .unwrap_or_default(),
@@ -707,6 +729,16 @@ impl Sensor<'_> {
 fn push_children<'t>(node: Node<'t>, pending: &mut Vec<Node<'t>>) {
     let mut cursor = node.walk();
     pending.extend(node.children(&mut cursor));
+}
+
+/// Strip generic type parameters from a type name so `Vec<T>` becomes `Vec`.
+/// This normalizes receiver-type hints so that `let v: Vec<u32> = …; v.push()`
+/// matches a method defined on `Vec`, not `Vec<u32>`.
+fn strip_generic_args(ty: &str) -> &str {
+    match ty.find('<') {
+        Some(idx) => &ty[..idx],
+        None => ty,
+    }
 }
 
 /// Extract every base relation from one Rust file.
@@ -1707,6 +1739,51 @@ mod tests {
             edges_of(&out, "calls")
                 .iter()
                 .any(|args| args[1] == "@method:apply")
+        );
+    }
+
+    #[test]
+    fn self_method_call_carries_enclosing_impl_type() {
+        let out = run(
+            "src/foo.rs",
+            "struct Foo; impl Foo { fn baz(&self) {} fn call_it(&self) { self.baz(); } }",
+        );
+        assert!(
+            edges_of(&out, "calls")
+                .iter()
+                .any(|args| args[1] == "@method:Foo:baz"),
+            "self.baz() inside impl Foo should produce @method:Foo:baz, got: {:?}",
+            edges_of(&out, "calls")
+        );
+    }
+
+    #[test]
+    fn self_method_call_in_generic_impl_strips_type_args() {
+        let out = run(
+            "src/vec.rs",
+            "struct Vec<T> { items: Box<[T]> } impl<T> Vec<T> { fn push(&mut self, v: T) {} fn grow(&mut self) { self.push(self.items[0]); } }",
+        );
+        assert!(
+            edges_of(&out, "calls")
+                .iter()
+                .any(|args| args[1] == "@method:Vec:push"),
+            "self.push() inside impl<T> Vec<T> should produce @method:Vec:push, got: {:?}",
+            edges_of(&out, "calls")
+        );
+    }
+
+    #[test]
+    fn self_assoc_fn_call_carries_enclosing_impl_type() {
+        let out = run(
+            "src/foo.rs",
+            "struct Foo; impl Foo { fn new() -> Self { Foo } fn make(&self) -> Self { Self::new() } }",
+        );
+        assert!(
+            edges_of(&out, "calls")
+                .iter()
+                .any(|args| args[1] == "@method:Foo:new"),
+            "Self::new() inside impl Foo should produce @method:Foo:new, got: {:?}",
+            edges_of(&out, "calls")
         );
     }
 

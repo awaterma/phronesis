@@ -14,7 +14,9 @@ use std::collections::{BTreeMap, BTreeSet};
 /// `defines_fn` identities using only same-module or explicit-import evidence.
 /// Unresolved and ambiguous calls are discarded rather than attributed to
 /// every definition sharing a leaf name.
-pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
+pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize) {
+    let mut unresolved = 0usize;
+    let mut ambiguous = 0usize;
     let definitions = base_edges(base, "defines_fn")
         .filter_map(|edge| edge.a.get(1).cloned())
         .collect::<BTreeSet<_>>();
@@ -152,6 +154,7 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
         }
         let caller_module = caller.rsplit_once("::").map(|(module, _)| module);
         let Some(candidates) = candidates_by_leaf.get(callee) else {
+            unresolved += 1;
             continue;
         };
         let resolved = candidates
@@ -161,9 +164,10 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
                     return false;
                 };
                 let method_scope = method_call.then(|| module.rsplit_once("::")).flatten();
-                if receiver_type
-                    .is_some_and(|receiver| module.rsplit("::").next() != Some(receiver))
-                {
+                if receiver_type.is_some_and(|receiver| {
+                    let module_last = module.rsplit("::").next().unwrap_or(module);
+                    strip_generic_args(module_last) != strip_generic_args(receiver)
+                }) {
                     return false;
                 }
                 let visible_imports = caller_module.into_iter().flat_map(|caller| {
@@ -205,9 +209,22 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
         if resolved.len() == 1 {
             edge.a[callee_index] = (*resolved[0]).clone();
             normalized.push(edge);
+        } else if resolved.is_empty() {
+            unresolved += 1;
+        } else {
+            ambiguous += 1;
         }
     }
     *base = normalized;
+    (unresolved, ambiguous)
+}
+
+/// Strip `<...>` generic arguments from a type name, returning the base name.
+fn strip_generic_args(ty: &str) -> &str {
+    match ty.find('<') {
+        Some(idx) => &ty[..idx],
+        None => ty,
+    }
 }
 
 /// Whether a function identity belongs to a language whose extractor emits
@@ -846,7 +863,7 @@ mod tests {
             imports("rust:app#test:integration", "rust:app::a"),
             tested("fire", "rust:app#test:integration::test_fire"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert_eq!(args_of(&base, "tested_by")[0][0], "rust:app::a::fire");
         assert!(no_direct_test(&base).is_empty());
     }
@@ -860,7 +877,7 @@ mod tests {
             imports("swift:project::AppTests::ATests", "swift:project"),
             tested("tap", "swift:project::AppTests::ATests::ATests::testTap"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert_eq!(
             args_of(&base, "tested_by")[0][0],
             "swift:project::App::A::Overlay::tap"
@@ -875,7 +892,7 @@ mod tests {
             defines("b.rs", "rust:app::b::fire"),
             tested("fire", "rust:app#test:integration::test_fire"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(args_of(&base, "tested_by").is_empty());
         assert_eq!(no_direct_test(&base).len(), 2);
     }
@@ -888,7 +905,7 @@ mod tests {
             defines("b.rs", "rust:app::b::helper"),
             Edge::base("calls", &["rust:app::a::entry", "helper"], "a.rs"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(base.iter().any(|edge| {
             edge.p == "calls" && edge.a == ["rust:app::a::entry", "rust:app::a::helper"]
         }));
@@ -904,7 +921,7 @@ mod tests {
             imports("swift:project::App::A", "swift:project"),
             Edge::base("calls", &[caller, "helper"], "App/A.swift"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(
             base.iter()
                 .any(|edge| edge.p == "calls" && edge.a == [caller, helper]),
@@ -924,7 +941,7 @@ mod tests {
             imports("rust:app::state::tests", "rust:app::state"),
             tested("@method:apply_damage", test),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(
             base.iter()
                 .any(|edge| { edge.p == "tested_by" && edge.a == [method, test] })
@@ -951,7 +968,7 @@ mod tests {
             imports("rust:app::state::tests", "rust:app::state"),
             tested("@method:refresh", "rust:app::state::tests::works"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(args_of(&base, "tested_by").is_empty());
     }
 
@@ -1195,5 +1212,92 @@ mod tests {
             Edge::derived("no_direct_test", &["crate::a"]),
         ];
         assert!(args_of(&derive_all(&base), "no_direct_test").is_empty());
+    }
+
+    #[test]
+    fn generic_receiver_type_matches_non_generic_method_definition() {
+        // The extractor emits `@method:Vec<u32>:push` when a `let v: Vec<u32>`
+        // variable calls `.push()`. The method is defined under
+        // `rust:app::Vec::push` — the last module segment is `Vec` (no generics).
+        // Generics normalization should strip `<u32>` from the receiver hint
+        // so the comparison `Vec == Vec` succeeds.
+        let method = "rust:app::Vec::push";
+        let caller = "rust:app::container::fill";
+        let mut base = vec![
+            defines("src/vec.rs", method),
+            Edge::base("defines_method", &["src/vec.rs", method], "src/vec.rs"),
+            defines("src/container.rs", caller),
+            Edge::base("file_type", &["src/vec.rs", "production"], "src/vec.rs"),
+            Edge::base(
+                "file_type",
+                &["src/container.rs", "production"],
+                "src/container.rs",
+            ),
+            Edge::base(
+                "calls",
+                &[caller, "@method:Vec<u32>:push"],
+                "src/container.rs",
+            ),
+        ];
+        let _ = canonicalize_function_edges(&mut base);
+        assert!(
+            base.iter()
+                .any(|edge| { edge.p == "calls" && edge.a == [caller, method] }),
+            "generic receiver should resolve to non-generic method def: {base:?}"
+        );
+    }
+
+    #[test]
+    fn self_receiver_hint_resolves_same_impl_among_same_leaf_methods() {
+        // DoD case: two types in different modules define the same method
+        // leaf (`dup`), both visible to the caller via imports. A call
+        // emitted from inside `impl A` as `@method:A:dup` (the `self`
+        // receiver hint from the extractor) must resolve to A's method —
+        // receiver evidence decides, the leaf name alone stays ambiguous.
+        let caller = "rust:app::a::entry";
+        let a_method = "rust:app::a::A::dup";
+        let mut base = vec![
+            defines("src/a.rs", caller),
+            defines("src/a.rs", a_method),
+            Edge::base("defines_method", &["src/a.rs", a_method], "src/a.rs"),
+            defines("src/b.rs", "rust:app::b::B::dup"),
+            Edge::base(
+                "defines_method",
+                &["src/b.rs", "rust:app::b::B::dup"],
+                "src/b.rs",
+            ),
+            Edge::base("file_type", &["src/a.rs", "production"], "src/a.rs"),
+            Edge::base("file_type", &["src/b.rs", "production"], "src/b.rs"),
+            imports("rust:app::a", "rust:app::b"),
+            Edge::base("calls", &[caller, "@method:A:dup"], "src/a.rs"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(
+            base.iter()
+                .any(|edge| edge.p == "calls" && edge.a == [caller, a_method]),
+            "typed self hint should resolve to the same-impl candidate: {base:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_and_ambiguous_counts_are_reported() {
+        // One call to `missing` (no definition at all → unresolved),
+        // one call to `dup` where two definitions share the leaf name and
+        // both are visible to the caller via imports (→ ambiguous).
+        let mut base = vec![
+            defines("src/a.rs", "rust:app::a::entry"),
+            defines("src/b.rs", "rust:app::b::dup"),
+            defines("src/c.rs", "rust:app::c::dup"),
+            Edge::base("file_type", &["src/a.rs", "production"], "src/a.rs"),
+            Edge::base("file_type", &["src/b.rs", "production"], "src/b.rs"),
+            Edge::base("file_type", &["src/c.rs", "production"], "src/c.rs"),
+            imports("rust:app::a", "rust:app::b"),
+            imports("rust:app::a", "rust:app::c"),
+            Edge::base("calls", &["rust:app::a::entry", "missing"], "src/a.rs"),
+            Edge::base("calls", &["rust:app::a::entry", "dup"], "src/a.rs"),
+        ];
+        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 1, "one unresolved call expected");
+        assert_eq!(ambiguous, 1, "one ambiguous call expected");
     }
 }

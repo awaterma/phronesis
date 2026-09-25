@@ -57,8 +57,8 @@ fn verify_persisted(path: &Path, n_base: usize, n_derived: usize) -> std::io::Re
 }
 
 /// Recompute derived edges over `base` and persist both sets.
-fn persist(root: &Path, mut base: Vec<Edge>) -> std::io::Result<(usize, usize)> {
-    canonicalize_function_edges(&mut base);
+fn persist(root: &Path, mut base: Vec<Edge>) -> std::io::Result<(usize, usize, usize, usize)> {
+    let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
     check_tested_by_targets(&base)?;
     let derived = derive_all(&base);
     let (n_base, n_derived) = (base.len(), derived.len());
@@ -70,7 +70,7 @@ fn persist(root: &Path, mut base: Vec<Edge>) -> std::io::Result<(usize, usize)> 
     let path = store::graph_path(root);
     store::write_atomic(&path, &all)?;
     verify_persisted(&path, n_base, n_derived)?;
-    Ok((n_base, n_derived))
+    Ok((n_base, n_derived, unresolved, ambiguous))
 }
 
 /// Whether editing `file_path` invalidates the data-contract edges.
@@ -163,6 +163,8 @@ fn untouched_outcome(existing: &[Edge], skipped: usize) -> SaveOutcome {
         skipped,
         migrated_rules: 0,
         diagnostics: Vec::new(),
+        unresolved_calls: 0,
+        ambiguous_calls: 0,
     }
 }
 
@@ -192,6 +194,8 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
             skipped: 0,
             migrated_rules: 0,
             diagnostics: Vec::new(),
+            unresolved_calls: 0,
+            ambiguous_calls: 0,
         });
     }
     let ipath = index_path(root);
@@ -215,7 +219,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
         base.extend(incremental_compiler_staleness(&ownership, file_path));
         base
     };
-    let (n_base, n_derived) = persist(root, base)?;
+    let (n_base, n_derived, unresolved_calls, ambiguous_calls) = persist(root, base)?;
 
     index.generation = index.generation.saturating_add(1);
     index
@@ -230,6 +234,8 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
         skipped: extracted.skipped,
         migrated_rules: 0,
         diagnostics: Vec::new(),
+        unresolved_calls,
+        ambiguous_calls,
     })
 }
 
@@ -457,7 +463,7 @@ fn rebuild_with_overlay(
         }
     }
 
-    let (n_base, n_derived) = persist(root, base)?;
+    let (n_base, n_derived, unresolved_calls, ambiguous_calls) = persist(root, base)?;
     save_index(&index_path(root), &index)?;
     reconcile_bindings_best_effort(root, index.generation);
     for diagnostic in &diagnostics {
@@ -469,5 +475,7 @@ fn rebuild_with_overlay(
         skipped,
         migrated_rules,
         diagnostics,
+        unresolved_calls,
+        ambiguous_calls,
     })
 }
