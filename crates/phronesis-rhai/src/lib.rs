@@ -429,7 +429,7 @@ pub const MAX_RENDER_BYTES: usize = 64 * 1024;
 /// beyond the sandbox package — no `emit_fact`, no file I/O (the raw engine
 /// already denies it), no eval of dynamic strings.
 pub fn render(template: &str, input: &RenderInput) -> Result<String, RenderError> {
-    let mut engine = sandbox_engine();
+    let engine = sandbox_engine();
     // Render has no op budget for runaway logic either — same limits as
     // guards/providers (sandbox_engine sets them).
     let mut scope = Scope::new();
@@ -447,26 +447,21 @@ pub fn render(template: &str, input: &RenderInput) -> Result<String, RenderError
             .map_err(|e| RenderError::Eval {
                 message: e.to_string(),
             })?;
-    if out.is_string() {
-        let s = out.into_string().map_err(|e| RenderError::Eval {
-            message: e.to_string(),
-        })?;
-        if s.len() > MAX_RENDER_BYTES {
-            return Err(RenderError::TooLarge {
-                limit: MAX_RENDER_BYTES,
-            });
-        }
-        Ok(s)
-    } else if out.is_unit() {
+    if !out.is_string() {
         // A template that produces nothing is a template bug — loud, not silent.
-        Err(RenderError::NotAString { found: "()" })
-    } else if out.is_string() {
-        unreachable!("string handled above")
-    } else {
-        Err(RenderError::NotAString {
+        return Err(RenderError::NotAString {
             found: "non-string",
-        })
+        });
     }
+    let s = out.into_string().map_err(|e| RenderError::Eval {
+        message: e.to_string(),
+    })?;
+    if s.len() > MAX_RENDER_BYTES {
+        return Err(RenderError::TooLarge {
+            limit: MAX_RENDER_BYTES,
+        });
+    }
+    Ok(s)
 }
 
 /// The scope-freeze check, callable: inside the render scope, forbidden
