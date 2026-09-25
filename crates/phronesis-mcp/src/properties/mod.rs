@@ -2,6 +2,7 @@
 //! properties — intent, version-controlled; evidence, derived.
 
 pub mod allowlist;
+pub mod execute;
 pub mod hydrate;
 pub mod store;
 pub mod validate;
