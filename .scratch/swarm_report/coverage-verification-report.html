@@ -88,11 +88,13 @@ between fires, so the verdict at 3am is computed from exactly the state on disk 
 
 <section>
   <h2>Coverage evidence store</h2>
-  <p class="prose">The store is the foundation everything else stands on. It holds <b>4 hits across 3
-tests</b>, imported from a real <code>cargo-llvm-cov</code> per-test export at revision
-<code>0ef2e37d</code> — which is stale relative to current HEAD, and rule 5.3 says so
-automatically on every commit. That staleness warning is not a bug in the report; it is the
-system doing precisely what it was built to do.</p>
+  <p class="prose">The store is the foundation everything else stands on, and as of tonight it runs on
+real evidence: the Rust collector (<code>phr-mcp coverage collect</code>) ran 40 machinery tests
+in isolation under cargo-llvm-cov and imported <b>2,274 region-validated records</b> — 1,632
+function hits plus 642 branch hits over 75 source files — at the current HEAD. Region identity
+is self-validating: every record must be independently produced by <code>region_map</code>, so
+what lands in the store is exactly what hydration will join. The fixture below remains the
+cleanest teaching example of why the identity design matters.</p>
   <h3>Which tests hit which regions</h3>
   <table><thead><tr><th>test</th><th>regions</th><th>granularity</th></tr></thead><tbody><tr><td><code>divides_positive_values</code></td><td><code>fn:safe_divide</code></td><td>region</td></tr><tr><td><code>divides_negative_values</code></td><td><code>fn:safe_divide</code></td><td>region</td></tr><tr><td><code>rejects_zero_denominator</code></td><td><code>fn:safe_divide</code>, <code>branch:safe_divide:cd6054b02dde</code></td><td>region + branch</td></tr></tbody></table>
   <div class="note"><b>The key asymmetry.</b> All three tests exercise <code>fn:safe_divide</code> — but
@@ -102,24 +104,28 @@ system doing precisely what it was built to do.</p>
   <i>branch-relevant</i> is distinct from <i>function-relevant</i>, and the distinction falls out of the
   region identity rather than from any special-case code.</div>
   <h3>Selection CLI output</h3>
-  <pre class="mono small" style="white-space:pre-wrap;background:#0b0e13;border:1px solid var(--line);border-radius:9px;padding:10px">Change: head:abb591c94bb2
-Changed functions: fn:rejects_zero_denominator, fn:safe_divide
-Changed branches: branch:safe_divide:cd6054b02dde
+  <pre class="mono small" style="white-space:pre-wrap;background:#0b0e13;border:1px solid var(--line);border-radius:9px;padding:10px">Change: head:d1e35c47851a
+Changed functions: fn:extract_functions, fn:handle_coverage
+Changed branches: branch:handle_coverage:2464de760b5a, ...
 
 coverage_observation (dynamic):
 TEST                                     REGIONS
-divides_negative_values                  fn:safe_divide
-divides_positive_values                  fn:safe_divide
-rejects_zero_denominator                 fn:safe_divide, branch:safe_divide:cd6054b02dde
+a_evidence_gap_rule_warns_on_empty_store fn:extract_functions
+test_branch_anchor_survives_message_edit fn:extract_functions
+golden_relevant_test_join_fires_for_the_right_pairs fn:extract_functions
+... (16 more dynamic entries)
 
-static reach: no graph found; run `phr-mcp graph rebuild`
+static_reach (graph tested_by / test_reaches):
+rust:phronesis-mcp#test:coverage_hydrate::test_head_revision_uses_probe_value fn:extract_functions
+... (17 more)
 
-3 test(s) selected.</pre>
-  <p class="prose small">Reproduce it yourself: a temp git repo holding the committed fixture crate
-(crates/phronesis-mcp/tests/fixtures/coverage-sample/), one import, one edit
-touching both functions, then `phr-mcp coverage select` in that directory.
-The transcript above was captured live by a swarm fact-check pass, not pasted
-from an earlier run.</p>
+37 test(s) selected.</pre>
+  <p class="prose small">This is the real CLI answering against the real working tree at HEAD:
+the uncommitted edits to `region_map.rs` and `main.rs` produce the changed
+regions, the dynamic half joins them against the 2,274-record store, and the
+static half reaches through the rebuilt graph. Reproduce with
+`phr-mcp coverage select` after any edit — the union of dynamic hits and
+static reach, labeled by evidence kind.</p>
 </section>
 
 <section>
@@ -215,6 +221,29 @@ that doubles as grading evidence.</p>
 </section>
 
 <section>
+  <h2>Coverage — the real numbers</h2>
+  <p class="prose">The tarpaulin chapter is worth one honest paragraph: tarpaulin cannot instrument on
+macOS, and its failure mode is <i>silent</i> — it writes a plausible 6.4&nbsp;MB HTML report over
+23,181 traces with zero coverage inside. A coverage tool that lies by rendering is worse than
+one that crashes, so tarpaulin is gone and the collector is cargo-llvm-cov. The numbers below
+are from one real instrumented workspace run (nightly, <code>--branch</code>): the machinery's
+own modules — the code this report is about — land at 77–96% lines, with <code>select.rs</code>
+(67.9%) the honest low point. After the collector was ported into Rust, 40 machinery tests ran
+in isolation under coverage and their <b>2,274 region-validated records</b> were imported into
+the evidence store at the current HEAD — so the gap rules and <code>coverage select</code> now
+run on real evidence, not the toy fixture. The collector is self-validating: every emitted
+identity must be independently produced by <code>region_map</code>, so nothing it imports can
+drift from what hydration joins.</p>
+  <table><thead><tr><th>machinery module (lines)</th><th>line coverage</th></tr></thead><tbody><tr><td><code>coverage/hydrate.rs</code></td><td>95.7%</td></tr><tr><td><code>coverage/region_map.rs</code></td><td>94.3%</td></tr><tr><td><code>coverage/store.rs</code></td><td>86.8%</td></tr><tr><td><code>coverage/import.rs</code></td><td>78.7%</td></tr><tr><td><code>coverage/select.rs</code></td><td>67.9%</td></tr><tr><td><code>properties/status.rs</code></td><td>84.8%</td></tr><tr><td><code>properties/allowlist.rs</code></td><td>83.2%</td></tr><tr><td><code>properties/execute.rs</code></td><td>82.2%</td></tr><tr><td><code>properties/hydrate.rs</code></td><td>76.8%</td></tr><tr><td><code>properties/validate.rs</code></td><td>75.3%</td></tr><tr><td><code>properties/store.rs</code></td><td>72.1%</td></tr></tbody></table>
+  <div class="note"><b>Workspace totals (one llvm-cov run, full suite).</b> 51,257/55,891 lines =
+  <b>91.7%</b> &middot; functions 90.1% &middot; branches 77.0% &middot; regions 90.8%. Evidence store:
+  <b>2,274 records across 40 tests</b> (1,632 fn + 642 branch hits over 75 source files), imported
+  at HEAD <code>d1e35c47851a</code> — the staleness warning is finally quiet. A live change
+  joined against that store selects <b>37 tests</b>: 19 dynamic observations + 18 static-reach
+  entries from the rebuilt graph (14,792 base edges).</div>
+</section>
+
+<section>
   <h2>What's validated — and what isn't</h2>
   <p class="prose">The accounting, stated plainly. What is validated is validated by
 execution — real exports, real hook binaries, real Z3 runs, a golden trace through the real
@@ -227,7 +256,8 @@ system that overclaims its own coverage would be the funniest possible failure m
         <li><b>2635 tests</b> green across phronesis-mcp + phronesis-rhai; clippy <code>-D warnings</code> clean</li>
         <li><b>40 coverage/property tests</b> across 8 files + 1 BDD feature</li>
         <li><b>10 verus conditions</b> verified (Z3, 0 errors) — identifier charset, FNV-1a determinism, line ordering</li>
-        <li><b>4 coverage hits</b> imported from a real cargo-llvm-cov per-test export</li>
+        <li><b>2,274 coverage hits</b> imported — 40 machinery tests collected in isolation by the Rust collector, validated against the region map, fresh at HEAD</li>
+        <li><b>Aggregate workspace coverage measured</b> — 91.7% lines, 77.0% branches over 55,891 lines</li>
         <li><b>1 golden trace</b> through the real RETE network — 4 exact join pairs</li>
         <li><b>3 real-binary rule tests</b> — rules 5.2 / 5.3 through the actual hook</li>
         <li><b>1 cross-revision persistence test</b> — evidence survives semantic-preserving edits</li>
@@ -261,7 +291,7 @@ system that overclaims its own coverage would be the funniest possible failure m
 
 <script>
 const DIAG = {"arch": "flowchart TD\n  subgraph HOOKS[\"Governance hooks \u2014 fire on every tool call\"]\n    PRE[\"pre-check<br/>(before edit applies)\"]\n    POST[\"post-check<br/>(after edit applies)\"]\n  end\n  subgraph COV[\"Coverage evidence \u2014 SPEC A\"]\n    STORE[\"coverage.jsonl + coverage.index<br/>durable, gitignored\"]\n    IMP[\"import.rs<br/>normalized cargo-llvm-cov export<br/>all-or-nothing validation\"]\n    RM[\"region_map.rs<br/>tree-sitter function spans<br/>branch anchors: FNV-1a-12\"]\n    HYD[\"hydrate.rs<br/>demand-gated fact production\"]\n  end\n  subgraph PROP[\"Property ontology \u2014 SPEC B\"]\n    PJ[\"properties.json<br/>curated intent, version-controlled\"]\n    PH[\"properties/hydrate.rs<br/>10 relations, demand-gated\"]\n    AS[\"allowlist.rs<br/>hash-keyed review gate\"]\n    ST[\"status.rs<br/>set_property_status<br/>audited transitions\"]\n  end\n  subgraph VER[\"Verification artifacts \u2014 SPEC C\"]\n    EX[\"execute.rs<br/>tiered confinement<br/>devcontainer, sandbox-exec, raw, fail-closed\"]\n    RES[\"property-results.jsonl<br/>verifier results sidecar\"]\n  end\n  NET[\"RETE network<br/>fresh per fire\"]\n  RULES[\"rules 5.1 log-relevant-test<br/>5.2 warn-evidence-gap<br/>5.3 warn-stale-on-commit\"]\n  OUT[\"consequences<br/>log / warn / block\"]\n\n  POST --> HYD\n  POST --> PH\n  POST --> NET\n  IMP --> STORE\n  RM --> IMP\n  STORE --> HYD\n  EX --> RES\n  RES --> PH\n  PJ --> PH\n  AS --> PJ\n  ST --> PJ\n  HYD --> NET\n  PH --> NET\n  NET --> RULES\n  RULES --> OUT\n", "seq": "sequenceDiagram\n  participant A as Agent (crush / opencode / human)\n  participant H as phr-mcp post-check\n  participant C as Coverage hydrate\n  participant P as Properties hydrate\n  participant N as RETE network (fresh)\n  participant R as Rules 5.1 / 5.2 / 5.3\n  A->>H: Edit event (file, old, new)\n  H->>H: demand gate \u2014 no rule mentions coverage? zero work\n  H->>C: changed regions via tree-sitter\n  C-->>H: test_hits_region facts + gap facts + staleness\n  H->>P: region join against properties.json\n  P-->>H: property_depends_on + property_obligation facts\n  H->>N: assert rules + facts\n  N->>R: join\n  R-->>H: log: change touched region exercised by test T\n  R-->>H: warn: region R has neither dynamic nor formal evidence\n  H-->>A: exit 0 pass / exit 1 warn / exit 2 block\n  Note over A,R: the agent sees exactly what the rules said:<br/>the violation message is the tool's error\n", "state": "stateDiagram-v2\n  [*] --> observed : runtime_observation / agent_inference\n  observed --> candidate : explicit_spec corroborates\n  candidate --> corroborated : 2+ independent sources\n  corroborated --> accepted : human review via set_property_status\n  accepted --> verified : formal proof passes at HEAD\n  verified --> accepted : property record edited (revision bump)\n  accepted --> rejected : adversarial review finds defect\n  verified --> superseded : property redefined\n  note right of observed\n    rules report eligibility, never promote.\n    status changes ONLY via the recorded\n    MCP act with a required reason.\n  end note\n", "pie": "pie showData\n  title Coverage/property test distribution by layer\n  \"durable store\" : 3\n  \"importer\" : 5\n  \"region map\" : 5\n  \"hydration\" : 9\n  \"gap rules (real binary)\" : 3\n  \"golden trace\" : 1\n  \"selection CLI\" : 5\n  \"property hydration\" : 9\n  \"injection containment\" : 1\n  \"cross-revision persistence\" : 1\n", "xchart": "xychart-beta\n  title \"Test counts by layer\"\n  x-axis [\"store\", \"importer\", \"region-map\", \"hydrate\", \"gap-rules\", \"golden\", \"select\", \"properties\"]\n  y-axis \"tests\" 0 --> 12\n  bar [3, 5, 5, 9, 3, 1, 5, 9]\n", "gantt": "gantt\n  title Swarm task lifecycles \u2014 the overnight run that built this (minutes from init, axis in wall clock)\n  dateFormat X\n  axisFormat %H:%M\n  \"T6 golden (failed, stalled)\" :crit, 0, 2640\n  \"T7 docs (done)\" :done, 0, 2280\n  \"V1 dogfood (done)\" :done, 0, 720\n  \"R report (done)\" :done, 600, 7260\n  \"WT root-discovery (failed)\" :crit, 720, 2640\n  \"VERUS 10 VCs (done)\" :done, 780, 1980\n  \"AUDIT-FIX (done)\" :done, 1380, 2280\n  \"A6 select CLI (done)\" :done, 1560, 2640\n  \"T6b re-open (failed again)\" :crit, 2640, 5460\n  \"credit wall kills WTb/DS1/DS2\" :crit, 4800, 6000\n  \"A3 integration (orch takeover)\" :done, 4380, 4440\n  \"V2 stronger-model review (done)\" :done, 6300, 7080\n  \"T6-orch takeover (done)\" :done, 7080, 7140\n", "swarmseq": "sequenceDiagram\n  participant O as Orchestrator\n  participant W as Harness worker (crush / opencode)\n  participant G as Phronesis governance\n  participant L as phronesis logs + journal\n  O->>O: worktree governance init<br/>copy rules.json + durable.md\n  O->>W: spawn CLI in worktree with brief\n  W->>G: every Edit / Bash fires pre-check + post-check\n  G-->>W: exit 2 block on violation \u2014 worker sees it as tool error\n  W->>L: hook events land in log.jsonl per source<br/>worktree:wt-root, orchestrator-main-checkout\n  O->>L: read phr_by_source to grade the worker<br/>without scraping a transcript\n  Note over O,L: the governance machinery is the swarm's<br/>flight recorder \u2014 read it, don't guess\n"};
-const CARDS = [["tests green", "2635 / 2635"], ["verus conditions", "10 verified, 0 errors"], ["properties", "2 accepted"], ["coverage hits", "4 across 3 tests"], ["hook events (run window)", "1758"], ["audit src/coverage", "0 blocked"], ["confinement tiers", "3 live + fail-closed"], ["swarm spend (overnight)", "$71.93"]];
+const CARDS = [["tests green", "2639 / 2639"], ["verus conditions", "10 verified, 0 errors"], ["properties", "2 accepted"], ["coverage hits", "2274 across 40 tests"], ["workspace line cov", "91.7%"], ["audit src/coverage", "0 blocked"], ["confinement tiers", "3 live + fail-closed"], ["swarm spend (overnight)", "$71.93"]];
 const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
 const q = s => document.querySelector(s);
 q("#cards").innerHTML = CARDS.map(([k, v]) =>
