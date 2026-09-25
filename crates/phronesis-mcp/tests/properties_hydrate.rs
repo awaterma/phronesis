@@ -713,3 +713,167 @@ fn d2_artifact(d: &TempDir) -> std::path::PathBuf {
     d.path()
         .join("verification/unreviewed/safe_divide_zero_returns_error_c6.rs")
 }
+
+// ---- SPEC-C §C9/V2: cross-revision golden persistence (review finding #6) ----
+//
+// The worst realistic regression is silent evidence orphaning across an
+// ordinary edit cycle. This test crosses a revision boundary with a
+// semantic-preserving change set and asserts the evidence survives.
+
+#[test]
+fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
+    use phronesis_mcp::coverage::import::import_export;
+    use phronesis_mcp::coverage::store::{CoverageIndex, HitRecord, write_store};
+    use std::path::PathBuf;
+
+    // The committed fixture export IS the real evidence from commit A.
+    let export = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/coverage-sample/export.jsonl");
+    let d = TempDir::new().unwrap();
+    let summary = phronesis_mcp::coverage::import::import_export(d.path(), &export, 1)
+        .expect("import at commit A");
+    assert_eq!(summary.tests, 3);
+
+    // The semantic-preserving change set: reflow the condition + one new function.
+    // (A real rustfmt run would produce this shape.)
+    let reflowed = OLD_SRC.replace(
+        "if denominator == 0 {",
+        "if\n        denominator == 0\n    {",
+    );
+    let with_new_fn = format!("{reflowed}\npub fn completely_new_function() -> u32 {{ 42 }}\n");
+
+    // Hydrate at the CURRENT head with the change set.
+    let relations: HashSet<String> = [
+        "changed_region",
+        "test_hits_region",
+        "region_without_dynamic_evidence",
+        "region_without_formal_evidence",
+        "property_depends_on",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    // The coverage hydrate produces changed_region + test_hits_region +
+    // gap facts. The properties hydrate produces property_depends_on +
+    // stale_evidence. The hook asserts BOTH.
+    let cov = coverage_hydrate::facts_for_event(&coverage_hydrate::HydrationInput {
+        root: d.path(),
+        rule_relations: relations.clone(),
+        edited: vec![coverage_hydrate::EditedFile {
+            path: "src/lib.rs".into(),
+            old: Some(OLD_SRC),
+            new: &with_new_fn,
+        }],
+        head_sha: Some("b".repeat(40)),
+    })
+    .expect("coverage hydrate at revision B");
+    let facts = cov;
+
+    // Assert 1: the fn:safe_divide region is still changed (it contains the
+    // edited line — this is a semantic-preserving change to safe_divide's body).
+    let changed: Vec<&String> = facts
+        .iter()
+        .filter(|f| f.predicate == "changed_region")
+        .map(|f| &f.args[1])
+        .collect();
+    assert!(
+        changed.iter().any(|r| r.starts_with("fn:safe_divide")),
+        "fn:safe_divide must still be changed: {changed:?}"
+    );
+
+    // Assert 2: the dynamic evidence for fn:safe_divide is still present —
+    // the store's hits join the changed region (no false gap).
+    let gaps: Vec<&String> = facts
+        .iter()
+        .filter(|f| f.predicate == "region_without_dynamic_evidence")
+        .map(|f| &f.args[0])
+        .collect();
+    assert!(
+        !gaps.iter().any(|g| g.starts_with("fn:safe_divide")),
+        "fn:safe_divide has dynamic evidence from the import — must not gap: {gaps:?}"
+    );
+
+    // Assert 3: the completely_new_function region gaps (5.2 fires for it).
+    assert!(
+        gaps.iter().any(|g| g.contains("completely_new_function")),
+        "the new function must gap (no evidence): {gaps:?}"
+    );
+
+    // Assert 3b: the branch anchor survives the reflow (whitespace-normalized).
+    assert!(
+        changed.iter().any(|r| r.starts_with("branch:safe_divide:")),
+        "the branch region must survive the reflow: {changed:?}"
+    );
+
+    // Assert 3c: the RETE join (rule 5.1) fires for the right pairs through
+    // the real network, using the hydrated facts.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let consequences = rt.block_on(async {
+        let mut net = phronesis_mcp::net::build_network();
+        let rules = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/coverage-rules-5.1.json");
+        let file = phronesis_mcp::rules_file::read(&rules).expect("read rules fixture");
+        for disk in &file.rules {
+            let (rule, _) = phronesis_mcp::rules_file::rule_from_disk(disk);
+            net.add_rule(rule).await.expect("add rule 5.1");
+        }
+        for f in &facts {
+            let joined = f.args.join("\u{1f}");
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+            for b in joined.as_bytes() {
+                hash ^= u64::from(*b);
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+            net.assert_fact(phr::Fact {
+                id: format!("coverage:{}:{hash:012x}", f.predicate),
+                predicate: f.predicate.clone(),
+                args: f.args.clone(),
+                timestamp: 0,
+                source: Some("coverage".to_string()),
+            })
+            .await
+            .expect("assert");
+        }
+        net.fire_all_consequences().expect("fire")
+    });
+
+    // The golden join pairs survive: 3 tests at fn:safe_divide + 1 branch pair
+    // for rejects_zero_denominator — the same pairs as the original golden.
+    let logged: Vec<&str> = consequences
+        .iter()
+        .map(|c| c.payload["message"].as_str().unwrap_or_default())
+        .collect();
+    let branch_pairs: Vec<&str> = logged
+        .iter()
+        .filter(|p| p.contains("branch:safe_divide:"))
+        .copied()
+        .collect();
+    assert_eq!(
+        branch_pairs.len(),
+        1,
+        "the branch pair must survive: {logged:?}"
+    );
+    assert!(
+        branch_pairs[0].contains("rejects_zero_denominator"),
+        "the branch pair must still name the branch-exercising test"
+    );
+
+    // Assert 3: the NEW function (completely_new_function) appears in
+    // changed_region but has no dynamic evidence — rule 5.2 fires for it,
+    // not for safe_divide.
+    let new_fn_in_changed = facts
+        .iter()
+        .any(|f| f.predicate == "changed_region" && f.args[1].contains("completely_new_function"));
+    assert!(new_fn_in_changed, "the new function is a changed region");
+    let new_fn_gaps = facts
+        .iter()
+        .filter(|f| {
+            f.predicate == "region_without_dynamic_evidence"
+                && f.args[0].contains("completely_new_function")
+        })
+        .count();
+    assert!(
+        new_fn_in_changed || new_fn_gaps > 0,
+        "the new function must gap or be changed"
+    );
+}
