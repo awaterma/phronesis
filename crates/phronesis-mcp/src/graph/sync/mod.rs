@@ -31,7 +31,9 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 /// embedding a JSON blob inside a line-oriented file. Every rebuild writes
 /// the stats from scratch; an incremental save merges its file's counts into
 /// them. A missing or stale sidecar is never dangerous — the next rebuild
-/// restores it.
+/// restores it. Unlike the graph file, its hash is not recorded in the index:
+/// it feeds only `graph status` hotspots, never facts, so damage to it
+/// degrades diagnostics rather than enforcement.
 pub const RESOLUTION_STATS_REL_PATH: &str = ".phronesis/graph.resolution.json";
 
 /// Version of what the extractor writes. Bumped whenever entity naming *or*
@@ -129,6 +131,18 @@ pub enum Freshness {
         found: u32,
         expected: u32,
     },
+}
+
+/// Whether a stale verdict's drift list names the graph file itself: the
+/// graph on disk is missing, truncated, garbled, or was written by something
+/// other than the rebuild/save that last stamped the index (including an
+/// index from before the graph hash was recorded). Callers use it to say
+/// *why* the graph is untrusted; the enforcement consequence — structural
+/// rules warn, not block — is the same as for any other drift.
+pub fn graph_file_unverified(drifted: &[String]) -> bool {
+    drifted
+        .iter()
+        .any(|file| file == crate::graph::store::GRAPH_REL_PATH)
 }
 
 /// Outcome of a single-file save.

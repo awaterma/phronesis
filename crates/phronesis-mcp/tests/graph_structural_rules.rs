@@ -155,6 +155,84 @@ fn rebuilding_restores_block_authority() {
     assert_eq!(code, 2, "resync must restore enforcement: {stderr}");
 }
 
+/// `graph status` output, stdout and stderr together.
+fn graph_status_text(dir: &Path) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(dir)
+        .args(["graph", "status", "--path", "."])
+        .output()
+        .expect("run graph status");
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    )
+}
+
+/// Damage `.phronesis/graph.jsonl` without touching any source file, so the
+/// per-file hashes alone still claim the graph is current.
+fn damage_graph(dir: &Path, how: &str) {
+    let path = dir.join(".phronesis/graph.jsonl");
+    let body = std::fs::read_to_string(&path).expect("read graph");
+    match how {
+        // Cut mid-line: the tail edge is lost, the rest still parses.
+        "truncated" => std::fs::write(&path, &body[..body.len() - 7]).expect("truncate"),
+        // Every edge survives, plus a line no parser accepts.
+        "garbled" => std::fs::write(&path, format!("{body}{{not json at all\n")).expect("garble"),
+        "emptied" => std::fs::write(&path, "").expect("empty"),
+        "deleted" => std::fs::remove_file(&path).expect("delete"),
+        other => panic!("unknown damage {other}"),
+    }
+}
+
+#[test]
+fn a_damaged_graph_file_is_never_reported_fresh_and_never_blocks() {
+    for how in ["truncated", "garbled", "emptied", "deleted"] {
+        let d = project("block");
+        assert_eq!(pre_check(d.path()).0, 2, "precondition: blocks while fresh");
+        assert!(
+            graph_status_text(d.path()).contains("Graph is fresh."),
+            "precondition: a normal rebuild reports fresh"
+        );
+        damage_graph(d.path(), how);
+
+        let status = graph_status_text(d.path());
+        assert!(
+            !status.contains("Graph is fresh."),
+            "{how} graph reported fresh: {status}"
+        );
+        assert!(status.contains("graph rebuild"), "{how}: {status}");
+
+        let (code, stderr) = pre_check(d.path());
+        assert_ne!(
+            code, 2,
+            "{how} graph must not carry block authority: {stderr}"
+        );
+        assert!(!stderr.contains("BLOCKED"), "{how}: {stderr}");
+        assert!(
+            stderr.contains("structural rules will warn, not block"),
+            "{how} graph must announce the demotion: {stderr}"
+        );
+    }
+}
+
+#[test]
+fn a_garbled_graph_demotes_a_blocking_rule_to_a_warning() {
+    // Garbling leaves every real edge in place, so the rule still matches;
+    // only the integrity check stands between it and a block.
+    let d = project("block");
+    damage_graph(d.path(), "garbled");
+    let (code, stderr) = pre_check(d.path());
+    assert_eq!(code, 1, "unverified graph must warn, not block: {stderr}");
+    assert!(stderr.contains("WARNING"), "{stderr}");
+    rebuild_graph(d.path());
+    assert_eq!(
+        pre_check(d.path()).0,
+        2,
+        "rebuild must restore block authority"
+    );
+}
+
 #[test]
 fn a_warn_severity_rule_warns_on_a_fresh_graph() {
     let d = project("warn");

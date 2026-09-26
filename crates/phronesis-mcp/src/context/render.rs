@@ -794,6 +794,10 @@ fn graph_freshness_line(root: &Path) -> Option<String> {
     let index = load_index(&path).ok()?;
     Some(match check_freshness(root, &index) {
         Freshness::Fresh => "- Code graph: current".to_string(),
+        Freshness::Stale(files) if crate::graph::sync::graph_file_unverified(&files) => {
+            "- Code graph: unverified (graph file missing, truncated, or altered since it was indexed); structural rules warn, not block; run `phr-mcp graph rebuild`"
+                .to_string()
+        }
         Freshness::Stale(files) => format!(
             "- Code graph: stale ({} file(s) changed outside the hook); run `phr-mcp graph rebuild`",
             files.len()
@@ -1345,5 +1349,21 @@ mod tests {
         .unwrap();
         let out = crate::context::run_session_context(d.path(), crate::context::DEFAULT_MAX_BYTES);
         assert!(out.contains("kalpa: demo"), "{out}");
+    }
+
+    #[test]
+    fn a_damaged_graph_file_is_not_reported_current() {
+        let d = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(d.path().join("src")).expect("src");
+        std::fs::write(d.path().join("src/a.rs"), "fn f() {}\n").expect("source");
+        crate::graph::sync::rebuild(d.path()).expect("rebuild");
+        assert_eq!(
+            graph_freshness_line(d.path()).as_deref(),
+            Some("- Code graph: current")
+        );
+        std::fs::write(crate::graph::store::graph_path(d.path()), "").expect("empty graph");
+        let line = graph_freshness_line(d.path()).expect("line");
+        assert!(line.contains("unverified"), "{line}");
+        assert!(line.contains("graph rebuild"), "{line}");
     }
 }

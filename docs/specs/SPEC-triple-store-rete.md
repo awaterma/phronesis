@@ -155,6 +155,7 @@ Read-filter-rewrite of the entire file on every save is not log-structured merge
 `git checkout`, `git mv`, branch switches, rebases, and plain shell edits never reach `PostToolUse`. The graph silently drifts, and drift in an enforcement layer means false blocks. Phase One mitigations:
 
 * **Content hash per source file** stored alongside the graph (`.phronesis/graph.index`). At hydrate time, cheaply stat/hash tracked files; if any hash mismatches, mark the graph **stale**.
+* **Content hash of the graph file itself**, recorded in the same index by the rebuild or save that wrote `.phronesis/graph.jsonl` (graph first, index last). Source hashes only prove the graph *should* match the tree; this one proves the graph on disk is the one that was written. A missing, truncated, garbled, or emptied graph — or an index written before this entry existed — lists `.phronesis/graph.jsonl` as drifted and is never fresh. Hydration hashes the same bytes it asserts, so a write racing the check cannot pass unvouched edges under a fresh verdict. The resolution-stats sidecar (`.phronesis/graph.resolution.json`) is deliberately *not* covered: it only feeds diagnostics (`graph status` hotspots), never facts, so a damaged sidecar degrades reporting, not enforcement.
 * **Stale graph downgrades enforcement to warn**, never block. The downgrade is applied by the harness to the rules that read graph relations (§5.4), with a one-line stderr notice naming the resync command.
 * **`phr-mcp graph rebuild`** performs a full scan. Recommended as a `post-checkout` / `post-merge` git hook; documented, not auto-installed.
 
@@ -593,7 +594,7 @@ Structural rules therefore set `audit: true`. Findings carry no line number (the
 ## 8. Phase-One Implementation Requirements
 
 1. **Graph reader/writer:** JSONL stream parse + provenance-keyed rewrite compaction with atomic rename, in `crates/phronesis-mcp/src/graph/`.
-2. **Staleness index:** per-file content hashes in `.phronesis/graph.index`; freshness check on hydrate; `phr-mcp graph rebuild` for full scan.
+2. **Staleness index:** per-file content hashes, plus the graph file's own hash, in `.phronesis/graph.index`; freshness check on hydrate; `phr-mcp graph rebuild` for full scan.
 3. **Rust extractor:** `tree-sitter-rust` over the closed relation set (§1.2), with the watched-API list, test mapping, Tarjan SCC, and skip-and-count on ambiguity.
 4. **Hydration:** load graph lines as `Fact { predicate, args }` at PreToolUse. No engine changes.
 5. **Derivation pass:** `no_direct_test` by set difference and `in_cycle` by Tarjan SCC over the full edge set, run on every save (§4.5), with derived edges flagged and regenerated wholesale.

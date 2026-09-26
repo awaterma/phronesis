@@ -323,11 +323,23 @@ fn mcp_reports_and_rebuilds_the_code_graph_lifecycle() {
     assert_eq!(rebuilt["status"], "fresh");
     assert_eq!(rebuilt["drifted_files"], serde_json::json!([]));
 
+    // A damaged graph file with every source unchanged is not fresh.
+    std::fs::write(dir.path().join(".phronesis/graph.jsonl"), "").unwrap();
+    let damaged = client.tool("get_code_graph_status", serde_json::json!({}));
+    assert_eq!(damaged["status"], "stale");
+    assert_eq!(damaged["fresh"], false);
+    assert_eq!(
+        damaged["drifted_files"],
+        serde_json::json!([".phronesis/graph.jsonl"])
+    );
+    let rebuilt = client.tool("rebuild_code_graph", serde_json::json!({}));
+    assert_eq!(rebuilt["status"], "fresh");
+
     let log = client.tool(
         "get_action_log",
         serde_json::json!({"event": "rebuild_code_graph"}),
     );
-    assert_eq!(log["entries"].as_array().unwrap().len(), 2);
+    assert_eq!(log["entries"].as_array().unwrap().len(), 3);
 }
 
 #[test]

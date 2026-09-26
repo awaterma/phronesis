@@ -47,8 +47,13 @@ fn check_tested_by_targets(base: &[Edge]) -> std::io::Result<()> {
 }
 
 /// Read the graph back and confirm the counts written are the counts stored.
-fn verify_persisted(path: &Path, n_base: usize, n_derived: usize) -> std::io::Result<()> {
-    let persisted = store::load(path)?;
+///
+/// Returns the content hash of the bytes read back, which the caller records
+/// in the index so freshness can later prove the graph file is still exactly
+/// what this write produced.
+fn verify_persisted(path: &Path, n_base: usize, n_derived: usize) -> std::io::Result<u64> {
+    let body = std::fs::read_to_string(path)?;
+    let persisted = graph::model::parse_jsonl(&body).0;
     let persisted_base = persisted.iter().filter(|edge| !edge.d).count();
     let persisted_derived = persisted.len().saturating_sub(persisted_base);
     if (persisted_base, persisted_derived) != (n_base, n_derived) {
@@ -56,7 +61,27 @@ fn verify_persisted(path: &Path, n_base: usize, n_derived: usize) -> std::io::Re
             "graph persistence verification failed: wrote {n_base} base/{n_derived} derived, read {persisted_base} base/{persisted_derived} derived"
         )));
     }
-    Ok(())
+    Ok(hash_content(&body))
+}
+
+/// What `persist` wrote: edge counts, call-resolution totals, and the graph
+/// file's content hash for the index.
+struct Persisted {
+    base: usize,
+    derived: usize,
+    unresolved: usize,
+    ambiguous: usize,
+    per_file: PerFileResolution,
+    graph_hash: u64,
+}
+
+/// Stamp the written graph's hash into `index`. Callers save the index only
+/// after the graph write, so a crash between the two leaves the old hash —
+/// which no longer matches — and the graph reads as stale, never as fresh.
+fn record_graph_hash(index: &mut Index, graph_hash: u64) {
+    index
+        .entries
+        .insert(store::GRAPH_REL_PATH.to_string(), graph_hash);
 }
 
 /// Recompute derived edges over `base` and persist both sets.
@@ -72,7 +97,7 @@ fn persist(
     root: &Path,
     mut base: Vec<Edge>,
     saved_file: Option<&str>,
-) -> std::io::Result<(usize, usize, usize, usize, PerFileResolution)> {
+) -> std::io::Result<Persisted> {
     let (mut unresolved, mut ambiguous, mut per_file) = canonicalize_function_edges(&mut base);
     if let Some(saved_file) = saved_file {
         let mut merged = load_resolution_stats(root).unwrap_or_default();
@@ -96,9 +121,16 @@ fn persist(
     };
     let path = store::graph_path(root);
     store::write_atomic(&path, &all)?;
-    verify_persisted(&path, n_base, n_derived)?;
+    let graph_hash = verify_persisted(&path, n_base, n_derived)?;
     save_resolution_stats(root, &per_file)?;
-    Ok((n_base, n_derived, unresolved, ambiguous, per_file))
+    Ok(Persisted {
+        base: n_base,
+        derived: n_derived,
+        unresolved,
+        ambiguous,
+        per_file,
+        graph_hash,
+    })
 }
 
 /// Whether editing `file_path` invalidates the data-contract edges.
@@ -249,25 +281,25 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
         base.extend(incremental_compiler_staleness(&ownership, file_path));
         base
     };
-    let (n_base, n_derived, unresolved_calls, ambiguous_calls, per_file_resolution) =
-        persist(root, base, Some(file_path))?;
+    let persisted = persist(root, base, Some(file_path))?;
 
     index.generation = index.generation.saturating_add(1);
     index
         .entries
         .insert(file_path.to_string(), hash_content(content));
+    record_graph_hash(&mut index, persisted.graph_hash);
     save_index(&ipath, &index)?;
     reconcile_bindings_best_effort(root, index.generation);
 
     Ok(SaveOutcome {
-        base: n_base,
-        derived: n_derived,
+        base: persisted.base,
+        derived: persisted.derived,
         skipped: extracted.skipped,
         migrated_rules: 0,
         diagnostics: Vec::new(),
-        unresolved_calls,
-        ambiguous_calls,
-        per_file_resolution,
+        unresolved_calls: persisted.unresolved,
+        ambiguous_calls: persisted.ambiguous,
+        per_file_resolution: persisted.per_file,
     })
 }
 
@@ -495,21 +527,21 @@ fn rebuild_with_overlay(
         }
     }
 
-    let (n_base, n_derived, unresolved_calls, ambiguous_calls, per_file_resolution) =
-        persist(root, base, None)?;
+    let persisted = persist(root, base, None)?;
+    record_graph_hash(&mut index, persisted.graph_hash);
     save_index(&index_path(root), &index)?;
     reconcile_bindings_best_effort(root, index.generation);
     for diagnostic in &diagnostics {
         tracing::info!("graph analysis diagnostic: {diagnostic}");
     }
     Ok(SaveOutcome {
-        base: n_base,
-        derived: n_derived,
+        base: persisted.base,
+        derived: persisted.derived,
         skipped,
         migrated_rules,
         diagnostics,
-        unresolved_calls,
-        ambiguous_calls,
-        per_file_resolution,
+        unresolved_calls: persisted.unresolved,
+        ambiguous_calls: persisted.ambiguous,
+        per_file_resolution: persisted.per_file,
     })
 }

@@ -2,6 +2,7 @@
 //! files it covers, and the freshness comparison.
 
 use super::{FORMAT_KEY, Freshness, GENERATION_KEY, GRAPH_FORMAT, Index, hash_content};
+use crate::graph::store;
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -158,7 +159,8 @@ pub(super) fn decision_input_files(root: &Path) -> Vec<String> {
     out
 }
 
-/// Compare the index against what is on disk under `root`.
+/// Compare the index against what is on disk under `root`, including the
+/// graph file (`store::GRAPH_REL_PATH`), whose hash the writer records last.
 pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     // An empty index is "nothing built yet", which the per-file loop below
     // already reports as wholly stale. Only an index that actually describes
@@ -176,6 +178,12 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
         on_disk.push(".phronesis/graph.toml".to_string());
     }
     on_disk.extend(decision_input_files(root));
+    // The graph file itself. Source hashes only prove the graph *should*
+    // match the tree; this hash proves the graph on disk is the one the last
+    // rebuild or save wrote. A truncated, garbled, emptied, or deleted graph —
+    // and an index written before this entry existed — therefore reads as
+    // drift instead of vouching for facts no rule will ever see.
+    on_disk.push(store::GRAPH_REL_PATH.to_string());
 
     for rel in &on_disk {
         let current = std::fs::read_to_string(root.join(rel))
