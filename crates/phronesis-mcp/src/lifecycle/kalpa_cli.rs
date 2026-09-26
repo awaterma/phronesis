@@ -62,6 +62,7 @@ pub fn run(root: &Path, cmd: KalpaCmd) -> anyhow::Result<String> {
             if !state::valid_kalpa_name(&name) {
                 anyhow::bail!("invalid kalpa name `{name}`: use [a-z0-9][a-z0-9-]{{0,63}}");
             }
+            crate::lifecycle::require_governed(root, "kalpa start")?;
             let ended = end_open(root);
             state::write_kalpa(
                 root,

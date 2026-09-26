@@ -148,3 +148,43 @@ fn ungoverned_hooks_keep_their_exit_and_output_contract() {
             .unwrap_or_else(|e| panic!("{args:?} stdout is not one JSON object ({e}): {stdout}"));
     }
 }
+
+/// `kalpa start` / `unit start` in an ungoverned directory used to create
+/// `.phronesis/{journey,log.jsonl}` — the stray shape — and report success
+/// though no hook would ever record against it. They now refuse.
+#[test]
+fn kalpa_and_unit_start_refuse_in_an_ungoverned_directory() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    for args in [&["kalpa", "start", "k1"][..], &["unit", "start", "u1"][..]] {
+        let out = run(tmp.path(), args, "");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "`phr-mcp {}` must fail in an ungoverned dir: {stderr}",
+            args.join(" ")
+        );
+        assert!(
+            stderr.contains("phr-mcp init"),
+            "`phr-mcp {}` must point at `phr-mcp init`: {stderr}",
+            args.join(" ")
+        );
+        let stray = phronesis_dirs(tmp.path());
+        assert!(
+            stray.is_empty(),
+            "`phr-mcp {}` created {stray:?}",
+            args.join(" ")
+        );
+    }
+}
+
+#[test]
+fn submit_suggestion_refuses_in_an_ungoverned_directory() {
+    let tmp = tempfile::tempdir().expect("tmp");
+    let params: phronesis_mcp::server_params::SubmitSuggestionParams =
+        serde_json::from_value(serde_json::json!({"subject": "s1", "summary": "x"}))
+            .expect("params");
+    let err = phronesis_mcp::server::EpistemeMcp::submit_suggestion_report(tmp.path(), &params)
+        .expect_err("ungoverned submit_suggestion must refuse");
+    assert!(err.to_string().contains("phr-mcp init"), "{err}");
+    assert!(phronesis_dirs(tmp.path()).is_empty());
+}
