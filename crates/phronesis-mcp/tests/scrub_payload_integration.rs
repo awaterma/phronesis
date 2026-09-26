@@ -426,6 +426,68 @@ fn benign_password_prose_passes() {
     );
 }
 
+/// Leak repro 1: a `$HOME` path containing spaces used to lose only its
+/// first word to the placeholder (`/home/dev/external/p0 Secret Plans/q3.txt`)
+/// and still exit 0.
+#[test]
+fn home_path_with_spaces_is_rewritten_whole() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(
+        &capture,
+        r#"{"ts":1,"phase":"pre","raw":{"tool_input":{"file_path":"/Users/zed/My Secret Plans/q3.txt","command":"cat \"/Users/zed/My Secret Plans/q3.txt\""}}}"#,
+    )
+    .expect("write capture");
+
+    let (code, stdout, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "/Users/zed",
+        "--project-root",
+        "/Users/zed/project",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(v["raw"]["tool_input"]["file_path"], "/home/dev/external/p0");
+    assert_eq!(
+        v["raw"]["tool_input"]["command"],
+        "cat \"/home/dev/external/p0\""
+    );
+    for leaked in ["Secret", "Plans", "q3.txt"] {
+        assert!(!stdout.contains(leaked), "{leaked} survived: {stdout}");
+    }
+}
+
+/// Leak repro 2: JSON-escaped slashes inside a string value (a tool's JSON
+/// output captured verbatim) used to pass completely unscrubbed.
+#[test]
+fn json_escaped_home_path_is_scrubbed() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let capture = dir.path().join("payloads.jsonl");
+    std::fs::write(
+        &capture,
+        r#"{"ts":1,"phase":"post","raw":{"tool_response":{"stdout":"\\/Users\\/al\\/clients\\/acme\\/key.txt"}}}"#,
+    )
+    .expect("write capture");
+
+    let (code, stdout, stderr) = run_scrub(&[
+        capture.to_str().expect("utf8"),
+        "--home",
+        "/Users/al",
+        "--project-root",
+        "/Users/al/proj",
+    ]);
+    assert_eq!(code, 0, "{stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("stdout is JSON");
+    assert_eq!(
+        v["raw"]["tool_response"]["stdout"],
+        r"\/home\/dev\/external\/p0"
+    );
+    for leaked in ["clients", "acme", "key.txt", "Users"] {
+        assert!(!stdout.contains(leaked), "{leaked} survived: {stdout}");
+    }
+}
+
 // ---------- lifecycle::scrub::scrub_prompt (Task 6) ----------
 
 use std::sync::{Mutex, MutexGuard, OnceLock};

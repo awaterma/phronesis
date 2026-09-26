@@ -31,6 +31,17 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   rule network through one shared function, so Codex denies (and PostToolUse
   warns) wherever Claude does.
 
+- **`scrub-payload` no longer leaks `$HOME` paths that contain spaces or
+  JSON-escaped slashes.** A path such as `/Users/<name>/My Plans/q3.txt` used to
+  lose only its first word to the placeholder, and `\/Users\/<name>\/…` inside a
+  captured tool output passed through untouched; both exited 0. Path extent now
+  follows a documented rule per context (path-keyed value, quoted, bare free
+  text with `/`-continuation), separators match at any escaping depth with the
+  placeholder written back in the same spelling, and `verify` plus residual
+  detection run over separator-normalized text so an escaped residual fails the
+  run. The project root is matched as a whole component, so a sibling
+  `…/project2` is no longer rewritten to `/home/dev/project2`.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
