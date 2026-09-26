@@ -24,6 +24,13 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   subject's reader can see, and a randomized test checks that signals are
   identical before and after.
 
+- **The Codex hook allowed tool calls that Claude's `pre-check` blocked.** On a
+  configuration error — a rule naming an undefined journey selector, or a
+  malformed `journey.json` that a rule depends on — `codex-hook PreToolUse`
+  returned `{}` (allow) while `pre-check` blocked. Both hooks now build their
+  rule network through one shared function, so Codex denies (and PostToolUse
+  warns) wherever Claude does.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
