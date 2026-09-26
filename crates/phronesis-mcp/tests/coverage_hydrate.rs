@@ -404,3 +404,28 @@ fn test_legacy_leaf_name_store_is_stale_and_never_joined() {
         "a legacy hit is not evidence for the qualified site: {facts:?}"
     );
 }
+
+// An edit outside the project root names no region of this project.
+#[test]
+fn test_edit_outside_root_changes_no_region() {
+    let root = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = elsewhere.path().join("lib.rs");
+    std::fs::write(&outside, NEW_SRC).unwrap();
+    let path = outside.display().to_string();
+    let input = HydrationInput {
+        root: root.path(),
+        rule_relations: relations(&["changed_region", "region_without_dynamic_evidence"]),
+        edited: vec![EditedFile {
+            path,
+            old: Some(OLD_SRC),
+            new: NEW_SRC,
+        }],
+        head_sha: Some("a".repeat(40)),
+    };
+    let facts = facts_for_event(&input).unwrap();
+    assert!(
+        facts.is_empty(),
+        "outside-root edit must not hydrate: {facts:?}"
+    );
+}

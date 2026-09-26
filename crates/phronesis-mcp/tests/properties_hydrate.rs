@@ -515,6 +515,38 @@ fn legacy_leaf_name_depends_on_still_raises_obligations() {
     );
 }
 
+// Hooks hand over Claude Code's absolute `file_path`. Qualified depends_on
+// entries (`fn:src/lib.rs::safe_divide`) must still match, or obligations
+// and stale_evidence silently stop.
+#[test]
+fn absolute_edit_path_still_matches_qualified_depends_on() {
+    let d = TempDir::new().unwrap();
+    write_properties(d.path(), &fixture_properties());
+    std::fs::create_dir_all(d.path().join("src")).unwrap();
+    std::fs::write(d.path().join("src/lib.rs"), NEW_SRC).unwrap();
+    let abs = d.path().join("src/lib.rs").display().to_string();
+    let input = PropertyHydrationInput {
+        root: d.path(),
+        rule_relations: relations(&["property_obligation"]),
+        edited: vec![EditedFile {
+            path: abs,
+            old: Some(OLD_SRC),
+            new: NEW_SRC,
+        }],
+        head_sha: Some("b".repeat(40)),
+    };
+    let obligated: HashSet<String> = facts_for_event(&input)
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.predicate == "property_obligation")
+        .map(|f| f.args[0].clone())
+        .collect();
+    assert!(
+        obligated.contains("safe_divide.zero_returns_error"),
+        "absolute path must relativize before matching: {obligated:?}"
+    );
+}
+
 // ---- SPEC-C §C1: real proof, no simulation (sandbox-exec tier, verus-native) ----
 
 #[test]

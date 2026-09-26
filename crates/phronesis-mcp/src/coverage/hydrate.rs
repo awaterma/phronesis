@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::coverage::region_map::{changed_regions, is_qualified_region_id};
+use crate::coverage::region_map::{changed_regions, is_qualified_region_id, repo_relative_path};
 use crate::coverage::store::{load_hits, load_index};
 
 /// Every relation this module can assert. The hook demand-gates on this
@@ -57,6 +57,15 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
 
     let mut facts: Vec<CoverageFact> = Vec::new();
 
+    // Region ids and hit records name files repo-relative (SPEC §3.2); the
+    // hook passes the host's path, which may be absolute. An edit outside
+    // the root names nothing in this project and drops out here.
+    let edited: Vec<(String, &EditedFile)> = input
+        .edited
+        .iter()
+        .filter_map(|e| repo_relative_path(input.root, &e.path).map(|rel| (rel, e)))
+        .collect();
+
     if wants("head_revision")
         && let Some(sha) = &input.head_sha
     {
@@ -111,8 +120,8 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
             .map(|sha| format!("head:{}", &sha[..12]))
             .unwrap_or_else(|| "head:unknown".to_string());
 
-        for edit in &input.edited {
-            let regions = changed_regions(&edit.path, edit.old.unwrap_or(""), edit.new)?;
+        for (rel, edit) in &edited {
+            let regions = changed_regions(rel, edit.old.unwrap_or(""), edit.new)?;
             for region in regions.functions.iter().chain(regions.branches.iter()) {
                 changed_regions_out.push(region.clone());
                 if wants("changed_region") {
@@ -159,7 +168,7 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
 
     if wants("test_hits_region") || wants("test_hits_branch") {
         // Change scope: only hits whose file is part of this event.
-        let edited_paths: HashSet<&str> = input.edited.iter().map(|e| e.path.as_str()).collect();
+        let edited_paths: HashSet<&str> = edited.iter().map(|(rel, _)| rel.as_str()).collect();
         for hit in hits {
             if !edited_paths.contains(hit.file.as_str()) {
                 continue;

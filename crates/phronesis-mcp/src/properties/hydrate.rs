@@ -49,6 +49,26 @@ fn fact(predicate: &str, args: Vec<String>) -> PropertyFact {
     }
 }
 
+/// Region ids changed by this event. Edited paths are made repo-relative
+/// first (hooks pass Claude Code's absolute `file_path`); an edit outside
+/// the root changes no region of this project.
+fn changed_region_ids(input: &PropertyHydrationInput) -> HashSet<String> {
+    let mut changed = HashSet::new();
+    for edit in &input.edited {
+        let Some(rel) = crate::coverage::region_map::repo_relative_path(input.root, &edit.path)
+        else {
+            continue;
+        };
+        if let Ok(regions) =
+            crate::coverage::region_map::changed_regions(&rel, edit.old.unwrap_or(""), edit.new)
+        {
+            changed.extend(regions.functions);
+            changed.extend(regions.branches);
+        }
+    }
+    changed
+}
+
 /// Whether a `depends_on` entry names a region changed in this event.
 /// Entries are region ids (SPEC-coverage-evidence §3.2); an entry written
 /// before ids were qualified per site matches every changed site with its
@@ -157,16 +177,7 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
     let wants_stale = wants("stale_evidence");
     if wants_stale {
         let mut changed: HashSet<String> = HashSet::new();
-        for edit in &input.edited {
-            if let Ok(regions) = crate::coverage::region_map::changed_regions(
-                &edit.path,
-                edit.old.unwrap_or(""),
-                edit.new,
-            ) {
-                changed.extend(regions.functions.iter().cloned());
-                changed.extend(regions.branches.iter().cloned());
-            }
-        }
+        changed.extend(changed_region_ids(input));
         let head = input.head_sha.clone().unwrap_or_default();
         let mut stale: Vec<PropertyFact> = Vec::new();
         for r in &results {
@@ -192,16 +203,7 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
     // staleness branch so the OR never collapses to an AND.
     if wants("property_obligation") {
         let mut changed: HashSet<String> = HashSet::new();
-        for edit in &input.edited {
-            if let Ok(regions) = crate::coverage::region_map::changed_regions(
-                &edit.path,
-                edit.old.unwrap_or(""),
-                edit.new,
-            ) {
-                changed.extend(regions.functions.iter().cloned());
-                changed.extend(regions.branches.iter().cloned());
-            }
-        }
+        changed.extend(changed_region_ids(input));
         let head = input.head_sha.clone().unwrap_or_default();
         for p in &properties {
             if !matches!(

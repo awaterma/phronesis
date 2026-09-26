@@ -18,6 +18,9 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `fn:<file>::<item-path>` and `branch:<file>::<item-path>:<anchor>[.<n>]`,
   qualified by file, module, impl type (generics included), and trait, with a
   source-order ordinal for repeated conditions (SPEC-coverage-evidence §3.2).
+  Hooks make the edited path repo-relative first, so the absolute
+  `file_path` Claude Code sends — including one through a symlinked project
+  root — joins the store; an edit outside the project root names no region.
   The importer rejects the old ids; a store collected by an earlier version is
   reported as `coverage_stale` and its hits are never joined, so run
   `phr-mcp coverage collect` again. Property `depends_on` entries still using

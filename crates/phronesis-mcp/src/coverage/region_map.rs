@@ -35,6 +35,7 @@
 
 use anyhow::{Context, Result};
 use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 use tree_sitter::{Node, Parser};
 
 /// The importer's identifier cap (`validate_identifier_field`).
@@ -57,6 +58,52 @@ pub fn branch_region_id(file: &str, item_path: &str, anchor: &str, ordinal: u32)
         "branch:{}::{item_path}:{anchor}{suffix}",
         file_segment(file)
     ))
+}
+
+/// The repo-relative spelling of an edited path — the `file` every region id
+/// is qualified with. Hooks pass the host's `file_path` through unmodified,
+/// and Claude Code sends it absolute, so an absolute path is made relative
+/// to `root`: lexically first, then with both sides canonicalized (symlinked
+/// roots, `/var` vs `/private/var`); a file that does not exist yet
+/// canonicalizes through its parent. A relative path is already
+/// root-relative. `None` when the path lies outside the root (or climbs out
+/// with `..`): such an edit names no region of this project.
+pub fn repo_relative_path(root: &Path, path: &str) -> Option<String> {
+    let p = Path::new(path);
+    let rel = if p.is_absolute() {
+        match p.strip_prefix(root) {
+            Ok(rel) => rel.to_path_buf(),
+            Err(_) => {
+                let canonical_root = root.canonicalize().ok()?;
+                canonicalize_lenient(p)?
+                    .strip_prefix(&canonical_root)
+                    .ok()?
+                    .to_path_buf()
+            }
+        }
+    } else {
+        p.to_path_buf()
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for component in rel.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_str()?.to_string()),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+fn canonicalize_lenient(path: &Path) -> Option<PathBuf> {
+    if let Ok(canonical) = path.canonicalize() {
+        return Some(canonical);
+    }
+    let parent = path.parent()?.canonicalize().ok()?;
+    Some(parent.join(path.file_name()?))
 }
 
 /// The `file` production of the grammar: the path itself when it is already

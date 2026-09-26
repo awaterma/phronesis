@@ -218,3 +218,39 @@ fn legacy_ids_are_detected_and_references_over_approximate() {
         "branch:src/lib.rs::safe_divide:000000000000"
     ));
 }
+
+#[test]
+fn edited_paths_are_made_repo_relative() {
+    use phronesis_mcp::coverage::region_map::repo_relative_path;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("src")).unwrap();
+    std::fs::write(root.path().join("src/lib.rs"), "").unwrap();
+    let abs = root.path().join("src/lib.rs");
+    assert_eq!(
+        repo_relative_path(root.path(), &abs.display().to_string()).as_deref(),
+        Some("src/lib.rs")
+    );
+    let canonical = abs.canonicalize().unwrap();
+    assert_eq!(
+        repo_relative_path(root.path(), &canonical.display().to_string()).as_deref(),
+        Some("src/lib.rs")
+    );
+    // A file the edit is about to create does not exist yet.
+    let new_file = root.path().canonicalize().unwrap().join("src/new.rs");
+    assert_eq!(
+        repo_relative_path(root.path(), &new_file.display().to_string()).as_deref(),
+        Some("src/new.rs")
+    );
+    assert_eq!(
+        repo_relative_path(root.path(), "./src/lib.rs").as_deref(),
+        Some("src/lib.rs")
+    );
+    assert_eq!(repo_relative_path(root.path(), "../other/src/lib.rs"), None);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = elsewhere.path().join("lib.rs");
+    std::fs::write(&outside, "").unwrap();
+    assert_eq!(
+        repo_relative_path(root.path(), &outside.display().to_string()),
+        None
+    );
+}

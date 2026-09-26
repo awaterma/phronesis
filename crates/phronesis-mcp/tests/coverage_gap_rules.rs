@@ -113,10 +113,16 @@ fn hook(dir: &Path, phase: &str, payload: String) -> (i32, String) {
 }
 
 fn edit_event(dir: &Path) -> String {
+    edit_event_at(dir, "src/lib.rs")
+}
+
+/// Same event with an explicit `file_path` — Claude Code sends absolute ones.
+fn edit_event_at(dir: &Path, file_path: &str) -> String {
     format!(
         r#"{{"session_id":"s","cwd":"{}","hook_event_name":"PostToolUse","tool_name":"Edit",
-            "tool_input":{{"file_path":"src/lib.rs","old_string":{},"new_string":{}}}}}"#,
+            "tool_input":{{"file_path":{},"old_string":{},"new_string":{}}}}}"#,
         dir.display(),
+        serde_json::to_string(file_path).expect("json"),
         serde_json::to_string(OLD_SRC).expect("json"),
         serde_json::to_string(NEW_SRC).expect("json"),
     )
@@ -194,5 +200,89 @@ fn stale_coverage_warns_before_a_commit() {
     assert!(
         stderr.contains("coverage evidence is stale"),
         "expected the §5.3 stale message: {stderr}"
+    );
+}
+
+fn import_fixture(dir: &Path) {
+    let export = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/coverage-sample/export.jsonl");
+    phronesis_mcp::coverage::import::import_export(dir, &export, 1).expect("import fixture export");
+}
+
+// Claude Code sends `tool_input.file_path` absolute. Region ids are qualified
+// with the repo-relative path (SPEC §3.2), so the hook must relativize before
+// computing changed regions — otherwise `fn:/abs/.../src/lib.rs::safe_divide`
+// never matches the store's `fn:src/lib.rs::safe_divide` and every covered
+// region reports a false gap.
+#[test]
+fn absolute_file_path_joins_the_store_like_a_relative_one() {
+    let d = project();
+    import_fixture(d.path());
+    std::fs::write(d.path().join("src/lib.rs"), NEW_SRC).expect("apply edit");
+    let abs = d.path().join("src/lib.rs");
+    let (code, stderr) = hook(
+        d.path(),
+        "post",
+        edit_event_at(d.path(), &abs.display().to_string()),
+    );
+    assert_eq!(
+        code, 0,
+        "covered regions must not gap for an absolute path: {stderr}"
+    );
+
+    // The canonical spelling of the same file (macOS temp dirs live behind
+    // the /var -> /private/var symlink) must join too.
+    let canonical = abs.canonicalize().expect("canonicalize");
+    let (code, stderr) = hook(
+        d.path(),
+        "post",
+        edit_event_at(d.path(), &canonical.display().to_string()),
+    );
+    assert_eq!(code, 0, "canonical absolute path must join: {stderr}");
+}
+
+// The project reached through a symlink: cwd is the link, the payload path
+// goes through the link or through the real directory — both must join.
+#[cfg(unix)]
+#[test]
+fn absolute_file_path_through_a_symlinked_root_joins_the_store() {
+    let d = project();
+    import_fixture(d.path());
+    std::fs::write(d.path().join("src/lib.rs"), NEW_SRC).expect("apply edit");
+    let outer = TempDir::new().expect("tempdir");
+    let link = outer.path().join("proj");
+    std::os::unix::fs::symlink(d.path(), &link).expect("symlink");
+    for file in [link.join("src/lib.rs"), d.path().join("src/lib.rs")] {
+        let (code, stderr) = hook(
+            &link,
+            "post",
+            edit_event_at(&link, &file.display().to_string()),
+        );
+        assert_eq!(
+            code,
+            0,
+            "{} via symlinked root must join: {stderr}",
+            file.display()
+        );
+    }
+}
+
+// An absolute path outside the project root names no region of this
+// project: no changed regions, so no gap warning.
+#[test]
+fn absolute_file_path_outside_the_root_produces_no_regions() {
+    let d = project();
+    let elsewhere = TempDir::new().expect("tempdir");
+    std::fs::create_dir_all(elsewhere.path().join("src")).expect("mkdir");
+    let outside = elsewhere.path().join("src/lib.rs");
+    std::fs::write(&outside, NEW_SRC).expect("write outside");
+    let (code, stderr) = hook(
+        d.path(),
+        "post",
+        edit_event_at(d.path(), &outside.display().to_string()),
+    );
+    assert!(
+        !stderr.contains("has neither dynamic test evidence"),
+        "an edit outside the root must not produce gap facts (exit {code}): {stderr}"
     );
 }
