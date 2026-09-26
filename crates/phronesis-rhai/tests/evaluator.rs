@@ -354,3 +354,12 @@ fn guard_string_limit_is_unchanged_by_render_budget() {
     assert!(eval(r#"let s = ""; s.pad(4096, "a"); s.len() == 4096"#, &[], &b).unwrap());
     assert!(eval(r#"let s = ""; s.pad(4097, "a"); true"#, &[], &b).is_err());
 }
+
+#[test]
+fn guard_engine_rejects_eval() {
+    // Guards run in the D7 sandbox: `eval` is disabled in every engine, so a
+    // string-returning `eval` is a parse error (a blocked guard), not `true`.
+    let b = HashMap::new();
+    assert!(eval(r#"eval("\"x\"") == "x""#, &[], &b).is_err());
+    assert!(eval(r#"let code = "true"; eval(code)"#, &[], &b).is_err());
+}

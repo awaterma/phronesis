@@ -44,7 +44,8 @@ and receives a read-only `event` map:
 
 `emit_fact(predicate, args)` accepts a validated predicate name and an array of
 string arguments. Providers cannot access the filesystem, network, modules,
-`eval`, closures, or engine mutation. Limits bound script size, operations,
+`eval`, closures, or engine mutation (`eval` is disabled explicitly: the raw
+Rhai engine keeps it as a keyword). Limits bound script size, operations,
 call depth, emitted facts, arguments, and strings.
 
 `__script__` remains a pure Boolean LHS guard. Fact emission is a separate

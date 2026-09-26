@@ -8,6 +8,11 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **Guard and provider scripts could call `eval`.** Only the artifact render
+  engine disabled it, although the crate documentation said none of the
+  engines allowed it. `eval` is now disabled in every Rhai engine, so a guard
+  or provider that uses it fails to parse (a guard fails closed).
+
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
   `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose

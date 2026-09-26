@@ -45,8 +45,10 @@ never silently passes.
 
 The engine is built from `Engine::new_raw()` with only Rhai's standard
 package registered (arithmetic, logic, strings, arrays, maps — no file,
-network, `eval`, modules, or closures) plus hard limits: 100k operations, a
-call depth of 16, and a 4 KiB string cap. Scripts run on every rule
+network, modules, or closures) plus hard limits: 100k operations, a
+call depth of 16, and a 4 KiB string cap. `eval` is a Rhai keyword the raw
+engine keeps, so every engine this crate builds (guard, provider, render)
+disables it explicitly — any use is a parse error. Scripts run on every rule
 evaluation, so a malformed or hostile script can neither hang the engine nor
 reach the host.
 

@@ -148,3 +148,19 @@ fn the_event_exposes_a_repo_relative_path_for_joining_graph_facts() {
         .expect("provider evaluates");
     assert_eq!(facts[0].args, ["src/parser/mod.rs"]);
 }
+
+#[test]
+fn provider_engine_rejects_eval() {
+    // `eval` of a string-returning expression would otherwise build a
+    // predicate name the static check cannot see.
+    let provider = RhaiFactProvider::new();
+    let script = r#"emit_fact(eval("\"parser\" + \"_changed\""), []);"#;
+    assert!(
+        provider.validate(script).is_err(),
+        "validate must reject eval"
+    );
+    assert!(
+        provider.evaluate(script, &edit_event()).is_err(),
+        "evaluate must reject eval"
+    );
+}

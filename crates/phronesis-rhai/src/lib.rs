@@ -32,8 +32,11 @@
 //!
 //! The engine is built from [`rhai::Engine::new_raw`] with only the
 //! standard package registered (arithmetic, logic, strings, arrays, maps —
-//! no file, network, `eval`, modules, or closures) and hard limits on
-//! operations, call depth, and string size. Scripts run on every rule
+//! no file, network, modules, or closures) and hard limits on operations,
+//! call depth, and string size. `eval` is a Rhai keyword rather than a
+//! package function, so the raw engine does not remove it on its own; every
+//! engine this crate builds (guard, provider, render) disables it
+//! explicitly, making any use of it a parse error. Scripts run on every rule
 //! evaluation, so a malformed or hostile script must not hang the engine
 //! or touch the host.
 
@@ -56,6 +59,15 @@ const MAX_STRING_SIZE: usize = 4096;
 const MAX_EMITTED_FACTS: usize = 128;
 const MAX_EMITTED_ARGS: usize = 32;
 
+/// Symbols disabled in every engine this crate builds. `eval` is a built-in
+/// keyword, not a package function, so [`Engine::new_raw`] keeps it;
+/// disabling the symbol makes every spelling (`eval(...)`, `x.eval()`,
+/// `let e = eval`) a parse error, and Rhai itself refuses `Fn("eval")`, so
+/// no function pointer reaches it either. SPEC-C (render) and D7
+/// (guards/providers) both require it: a string-built script would bypass
+/// every static check over the source.
+const DISABLED_SYMBOLS: &[&str] = &["eval"];
+
 fn sandbox_engine() -> Engine {
     let mut engine = Engine::new_raw();
     let package = StandardPackage::new();
@@ -65,6 +77,9 @@ fn sandbox_engine() -> Engine {
     engine.set_max_string_size(MAX_STRING_SIZE);
     engine.set_max_array_size(4096);
     engine.set_max_map_size(4096);
+    for symbol in DISABLED_SYMBOLS {
+        engine.disable_symbol(*symbol);
+    }
     engine
 }
 
@@ -424,23 +439,13 @@ pub enum RenderError {
 /// budgeted outside this by the caller.
 pub const MAX_RENDER_BYTES: usize = 64 * 1024;
 
-/// Symbols removed from the render engine at parse time. SPEC-C: "`eval`
-/// and dynamic script evaluation are disabled". The raw engine does NOT
-/// disable `eval` on its own — it is a built-in keyword, not a package
-/// function — so it must be disabled explicitly. Disabling the symbol makes
-/// every spelling (`eval(...)`, `x.eval()`, `let e = eval`) a parse error,
-/// and Rhai itself refuses `Fn("eval")`, so no function pointer reaches it.
-const RENDER_DISABLED_SYMBOLS: &[&str] = &["eval"];
-
-/// The render engine: the guard/provider sandbox plus (1) `eval` disabled
-/// and (2) a string budget equal to the rendered-body cap. Guards and
+/// The render engine: the guard/provider sandbox (which already disables
+/// `eval` — SPEC-C: "`eval` and dynamic script evaluation are disabled")
+/// plus a string budget equal to the rendered-body cap. Guards and
 /// providers keep their own 4 KiB string limit — this budget is render-only.
 fn render_engine() -> Engine {
     let mut engine = sandbox_engine();
     engine.set_max_string_size(MAX_RENDER_BYTES);
-    for symbol in RENDER_DISABLED_SYMBOLS {
-        engine.disable_symbol(*symbol);
-    }
     engine
 }
 
