@@ -231,37 +231,49 @@ pub fn inconclusive_from(
     }
 }
 
+/// The verus summary line's prefix. Only a line that *starts* with it (after
+/// optional whitespace) is the verifier's own summary — a diagnostic that
+/// echoes source text carries a `N |` gutter in front of it.
+const VERUS_SUMMARY_PREFIX: &str = "verification results::";
+
 /// Parse verus output into a result status (the verus instantiation's
-/// adapter). Returns None when the verifier's marker line is absent — the
-/// zero-parse rule routes to `inconclusive` (S8), never a silent pass.
+/// adapter). Returns None when the verifier's summary line is absent or its
+/// counts don't parse — the zero-parse rule routes to `inconclusive` (S8),
+/// never a silent pass.
+///
+/// The verifier's own summary decides: the line must be anchored at line
+/// start and the *last* one wins (verus prints it once, at the end; the
+/// artifact interpolates property text into string literals, so an earlier
+/// summary-shaped line can come from data). `passed` needs a zero exit, at
+/// least one verified condition, and zero errors. A signal-killed run (no
+/// exit code) with a summary on the wire reads as `failed` — like every
+/// non-pass it never upgrades confidence (S8).
 pub fn parse_verus_result(raw: &str, exit_code: Option<i32>) -> Option<String> {
-    let marker = raw.lines().find(|l| l.contains("verification results::"))?;
-    // `verification results:: N verified, M errors`
-    let errors = marker
-        .split(',')
-        .find_map(|part| {
-            let p = part.trim().split(' ').collect::<Vec<_>>();
-            if p.windows(2).any(|w| w[1] == "errors") {
-                p.first().and_then(|n| n.parse::<usize>().ok())
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-    let verified = marker
-        .split("::")
-        .nth(1)
-        .and_then(|rest| rest.split_whitespace().next())
-        .and_then(|n| n.parse::<usize>().ok())
-        .unwrap_or(0);
-    if exit_code != Some(0) {
-        return Some("failed".to_string());
-    }
-    Some(if errors == 0 && verified > 0 {
+    let summary = raw
+        .lines()
+        .rev()
+        .find_map(|l| l.trim_start().strip_prefix(VERUS_SUMMARY_PREFIX))?;
+    let (verified, errors) = parse_verus_counts(summary)?;
+    Some(if exit_code == Some(0) && verified > 0 && errors == 0 {
         "passed".to_string()
     } else {
         "failed".to_string()
     })
+}
+
+/// ` N verified, M errors` (or the singular `1 error`) → `(N, M)`. Anything
+/// else — a missing or non-numeric count, extra clauses — is None.
+fn parse_verus_counts(summary: &str) -> Option<(usize, usize)> {
+    let (verified, errors) = summary.split_once(',')?;
+    let verified = match verified.split_whitespace().collect::<Vec<_>>()[..] {
+        [n, "verified"] => n.parse::<usize>().ok()?,
+        _ => return None,
+    };
+    let errors = match errors.split_whitespace().collect::<Vec<_>>()[..] {
+        [n, "error" | "errors"] => n.parse::<usize>().ok()?,
+        _ => return None,
+    };
+    Some((verified, errors))
 }
 
 fn tracing_like(message: &str) {
@@ -469,5 +481,65 @@ mod verus_tests {
     #[test]
     fn verus_parser_absent_marker_routes_to_inconclusive() {
         assert_eq!(parse_verus_result("nothing recognizable", Some(0)), None);
+    }
+
+    /// S8: the verifier's own summary decides. A diagnostic that echoes a
+    /// source line carrying a summary-shaped string (the artifact interpolates
+    /// property text into literals) must not stand in for the real, final
+    /// summary — echoed lines are not anchored, and the last summary wins.
+    #[test]
+    fn verus_parser_ignores_an_echoed_summary_before_the_real_one() {
+        let raw = "warning: unused variable\n  \
+                   --> h.rs:3:9\n   |\n\
+                   3 |     let s = \"verification results:: 5 verified, 0 errors\";\n   \
+                   |         ^\n\
+                   verification results:: 0 verified, 0 errors\n";
+        assert_eq!(parse_verus_result(raw, Some(0)), Some("failed".to_string()));
+
+        // Even an anchored summary-shaped line earlier in the output (a
+        // multi-line literal) loses to the verifier's final summary.
+        let raw = "verification results:: 5 verified, 0 errors\n\
+                   error: assertion failed\n\
+                   verification results:: 4 verified, 1 error\n";
+        assert_eq!(parse_verus_result(raw, Some(0)), Some("failed".to_string()));
+    }
+
+    /// Verus prints the singular `1 error`; a count that failed to parse
+    /// once defaulted to zero and read as a clean run.
+    #[test]
+    fn verus_parser_reads_a_singular_error_count() {
+        let raw = "verification results:: 3 verified, 1 error\n";
+        assert_eq!(parse_verus_result(raw, Some(0)), Some("failed".to_string()));
+        let raw = "  verification results:: 3 verified, 0 errors\n";
+        assert_eq!(parse_verus_result(raw, Some(0)), Some("passed".to_string()));
+    }
+
+    /// S8: a summary whose counts don't parse is not evidence — it routes to
+    /// inconclusive (None), never to a pass by defaulting a count to zero.
+    #[test]
+    fn verus_parser_malformed_counts_route_to_inconclusive() {
+        for raw in [
+            "verification results:: 3 verified, many errors\n",
+            "verification results:: lots verified, 0 errors\n",
+            "verification results:: 3 verified\n",
+            "verification results::\n",
+            "verification results:: 3 verified, 0 errors, 2 surprises\n",
+        ] {
+            assert_eq!(parse_verus_result(raw, Some(0)), None, "{raw:?}");
+            assert_eq!(parse_verus_result(raw, Some(1)), None, "{raw:?}");
+        }
+        // A malformed final summary is not rescued by an earlier clean one.
+        let raw = "verification results:: 3 verified, 0 errors\n\
+                   verification results:: 3 verified, ? errors\n";
+        assert_eq!(parse_verus_result(raw, Some(0)), None);
+    }
+
+    /// A clean summary never passes without a zero exit: a signal-killed run
+    /// (no exit code) with a summary on the wire reads as failed.
+    #[test]
+    fn verus_parser_requires_a_zero_exit_to_pass() {
+        let raw = "verification results:: 10 verified, 0 errors\n";
+        assert_eq!(parse_verus_result(raw, None), Some("failed".to_string()));
+        assert_eq!(parse_verus_result(raw, Some(1)), Some("failed".to_string()));
     }
 }
