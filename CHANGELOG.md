@@ -74,6 +74,26 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `crates/phronesis-metrics/` and its `src/`, `tests/` and `examples/`,
   `docs/specs/`, and `.worktrees/`.
 
+  Three behaviors change with the new definition of a governed root:
+  - A nested project whose `.phronesis/` holds real state (a `durable.md`,
+    say) but no `rules.json` used to govern itself with no rules, so hooks
+    under it allowed everything. It is now skipped, and the nearest governed
+    parent's rules apply — an edit there that the parent forbids is now
+    blocked. Add a `rules.json` (`phr-mcp init --rules-only --packs none`)
+    to keep the nested project separate.
+  - A project set up only with `phr-mcp init --hooks-only`, which writes no
+    `.phronesis/`, is ungoverned: lifecycle events are no longer recorded
+    there and `durable.md` is no longer injected. Run `phr-mcp init` without
+    `--hooks-only` to govern it.
+  - In an ungoverned root, `codex-hook PreToolUse` with a malformed
+    `apply_patch` now answers `{}` (allow) instead of denying, matching every
+    other ungoverned tool call. A payload that is not valid JSON still denies.
+- **`phr-mcp kalpa start`, `phr-mcp unit start` and the MCP
+  `submit_suggestion` tool reported success in a directory no project
+  governed**, creating `.phronesis/journey/` and `log.jsonl` there — the
+  stray shape above — for a boundary no hook would ever record against. They
+  now fail with a message pointing at `phr-mcp init` and write nothing.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
