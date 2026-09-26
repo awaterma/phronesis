@@ -27,6 +27,31 @@ use crate::script_evaluator::{BuiltinScriptEvaluator, ScriptEval};
 use crate::wme::{WmeManager, WorkingMemoryElement};
 use tracing::{debug, warn};
 
+/// Refraction key: one activation of a rule over an ordered WME id list.
+///
+/// Typed rather than a delimiter-joined string so the key is injective:
+/// rule and fact ids are free-form and routinely contain `:` and `,`
+/// (`coverage:...`, `provider:x:0`), which a `"rule:w1,w2"` encoding
+/// would collide on and mis-parse at retraction time.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ActivationKey {
+    rule_id: String,
+    wme_ids: Vec<String>,
+}
+
+impl ActivationKey {
+    fn new<'a>(rule_id: &str, wme_ids: impl IntoIterator<Item = &'a str>) -> Self {
+        ActivationKey {
+            rule_id: rule_id.to_owned(),
+            wme_ids: wme_ids.into_iter().map(str::to_owned).collect(),
+        }
+    }
+
+    fn references(&self, wme_id: &str) -> bool {
+        self.wme_ids.iter().any(|w| w == wme_id)
+    }
+}
+
 #[derive(Debug)]
 pub struct ReteNetwork {
     wme_manager: Arc<Mutex<WmeManager>>,
@@ -37,7 +62,7 @@ pub struct ReteNetwork {
     /// Performance tracking (interior mutability via Mutex)
     performance_stats: Arc<Mutex<PerformanceStats>>,
     /// Track activations that have already been added to the agenda to avoid duplicates
-    fired_activations: Arc<Mutex<HashSet<String>>>,
+    fired_activations: Arc<Mutex<HashSet<ActivationKey>>>,
     /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-xp-progression).
     /// Defaults to [`BuiltinScriptEvaluator`]; swap via [`ReteNetwork::with_script_evaluator`].
     script_evaluator: Box<dyn ScriptEval>,
@@ -164,12 +189,14 @@ impl ReteNetwork {
             .map_err(|_| ReteError::poisoned("agenda"))?;
 
         for activation in activations {
-            let wme_ids: Vec<String> = activation.token.wmes.iter().map(|w| w.id.clone()).collect();
-            let activation_key = format!("{}:{}", activation.rule_id, wme_ids.join(","));
+            let activation_key = ActivationKey::new(
+                activation.rule_id.as_str(),
+                activation.token.wmes.iter().map(|w| w.id.as_str()),
+            );
 
             if fired_activations.contains(&activation_key) {
                 debug!(
-                    "Skipping already-fired p-state activation: {}",
+                    "Skipping already-fired p-state activation: {:?}",
                     activation_key
                 );
                 continue;
@@ -255,18 +282,14 @@ impl ReteNetwork {
         }
 
         // Clean up fired_activations that reference this WME so rules can
-        // fire again if the same fact is re-asserted later. Keys have the
-        // shape "rule_id:wme1,wme2,..." — compare exact id components, not
-        // substrings: retracting "f1" must not clobber the key for "f10".
+        // fire again if the same fact is re-asserted later. Compare exact
+        // ids, not substrings: retracting "f1" must not clobber "f10".
         {
             let mut fired_activations = self
                 .fired_activations
                 .lock()
                 .map_err(|_| ReteError::poisoned("fired_activations"))?;
-            fired_activations.retain(|key| match key.split_once(':') {
-                Some((_, wmes)) => !wmes.split(',').any(|w| w == wme_id),
-                None => true,
-            });
+            fired_activations.retain(|key| !key.references(wme_id));
         }
 
         // Purge pending agenda items that reference the retracted WME — a
@@ -420,9 +443,9 @@ impl ReteNetwork {
             if !entry.condition.matches(&wme.fact) {
                 continue;
             }
-            let activation_key = format!("{}:{}", entry.rule.id, wme.id);
+            let activation_key = ActivationKey::new(&entry.rule.id, [wme.id.as_str()]);
             if fired_activations.contains(&activation_key) {
-                debug!("Skipping already-fired activation: {}", activation_key);
+                debug!("Skipping already-fired activation: {:?}", activation_key);
                 continue;
             }
 
@@ -498,7 +521,7 @@ impl ReteNetwork {
     fn update_single_condition_agenda(
         &self,
         state: &ProductionState,
-        fired: &mut HashSet<String>,
+        fired: &mut HashSet<ActivationKey>,
     ) -> Result<(), ReteError> {
         let rule = &state.rule;
         let condition = Self::real_conditions(rule)[0];
@@ -512,9 +535,9 @@ impl ReteNetwork {
             .collect::<Vec<_>>();
 
         for wme in matches {
-            let activation_key = format!("{}:{}", rule.id, wme.id);
+            let activation_key = ActivationKey::new(&rule.id, [wme.id.as_str()]);
             if fired.contains(&activation_key) {
-                debug!("Skipping duplicate activation: {}", activation_key);
+                debug!("Skipping duplicate activation: {:?}", activation_key);
                 continue;
             }
             let bindings =
@@ -542,16 +565,16 @@ impl ReteNetwork {
     fn update_pure_script_agenda(
         &self,
         state: &ProductionState,
-        fired: &mut HashSet<String>,
+        fired: &mut HashSet<ActivationKey>,
     ) -> Result<(), ReteError> {
         let rule = &state.rule;
         if rule.conditions.is_empty() {
             return Ok(());
         }
-        let activation_key = format!("{}:", rule.id);
+        let activation_key = ActivationKey::new(&rule.id, []);
         if fired.contains(&activation_key) {
             debug!(
-                "Skipping duplicate pure-script activation: {}",
+                "Skipping duplicate pure-script activation: {:?}",
                 activation_key
             );
             return Ok(());
@@ -576,7 +599,7 @@ impl ReteNetwork {
     fn update_multi_condition_agenda(
         &self,
         state: &ProductionState,
-        fired: &mut HashSet<String>,
+        fired: &mut HashSet<ActivationKey>,
     ) -> Result<(), ReteError> {
         let Some(terminal_id) = state.terminal_state_id.as_ref() else {
             return Ok(());
@@ -590,18 +613,10 @@ impl ReteNetwork {
             .map(|terminal| terminal.beta_memory.clone())
             .unwrap_or_default();
         for token in tokens {
-            let activation_key = format!(
-                "{}:{}",
-                state.rule.id,
-                token
-                    .wmes
-                    .iter()
-                    .map(|wme| wme.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            );
+            let activation_key =
+                ActivationKey::new(&state.rule.id, token.wmes.iter().map(|wme| wme.id.as_str()));
             if fired.contains(&activation_key) {
-                debug!("Skipping duplicate activation: {}", activation_key);
+                debug!("Skipping duplicate activation: {:?}", activation_key);
                 continue;
             }
             if !self.evaluate_script_conditions(&state.rule, &token.bindings)? {
