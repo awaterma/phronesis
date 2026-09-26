@@ -139,11 +139,12 @@ impl Band {
     }
 }
 
-/// An outcome tag that carries a grounded signal. `outcome:compile_unknown`
-/// is deliberately excluded: absent evidence must not displace grounded
-/// evidence — in derivation OR in compaction retention.
+/// An outcome tag that carries a grounded signal — exactly the tags
+/// derivation reads (`derive::signal_key`), so the two share one vocabulary.
+/// `outcome:compile_unknown` is deliberately excluded: absent evidence must
+/// not displace grounded evidence — in derivation OR in compaction retention.
 pub fn is_grounded_outcome_tag(tag: &str) -> bool {
-    tag.starts_with("outcome:") && tag != "outcome:compile_unknown"
+    super::derive::signal_key(tag).is_some()
 }
 
 #[cfg(test)]
@@ -197,6 +198,26 @@ mod tests {
         let f = OutcomeFact::signal("u", "compile");
         assert_eq!(f.predicate, "signal_pass");
         assert_eq!(f.args, vec!["u".to_string(), "compile".to_string()]);
+    }
+
+    #[test]
+    fn grounded_outcome_tags_are_exactly_the_derivation_vocabulary() {
+        for tag in [
+            "outcome:compile_ok",
+            "outcome:compile_error",
+            "outcome:test_pass",
+            "outcome:test_fail",
+            "outcome:proof_pass:p.a",
+            "outcome:proof_fail:p.a",
+            "outcome:proof_run_fail",
+            "outcome:proof_run_inconclusive",
+            "outcome:bug_caught:1042",
+        ] {
+            assert!(is_grounded_outcome_tag(tag), "{tag} grounds a signal");
+        }
+        for tag in ["outcome:compile_unknown", "outcome:unrecognized", "build"] {
+            assert!(!is_grounded_outcome_tag(tag), "{tag} grounds nothing");
+        }
     }
 
     #[test]

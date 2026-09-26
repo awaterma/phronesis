@@ -17,6 +17,15 @@ fn run_phr(root: &Path, args: &[&str]) -> Output {
         .expect("spawn phr-mcp")
 }
 
+/// A temp project with an empty rule set: `kalpa start` / `unit start` refuse
+/// an ungoverned root, and these tests exercise the governed behavior.
+fn governed_tempdir() -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
+    std::fs::write(d.path().join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    d
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
@@ -43,7 +52,7 @@ fn write_spec(root: &Path, rel: &str) {
 
 #[test]
 fn unit_start_sets_the_subject_and_records_unit_start_with_the_spec() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     write_spec(d.path(), "docs/specs/SPEC-thing.md");
     let out = run_phr(
         d.path(),
@@ -101,7 +110,7 @@ fn unit_start_sets_the_subject_and_records_unit_start_with_the_spec() {
 
 #[test]
 fn unit_start_without_an_id_mints_one() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let out = run_phr(d.path(), &["unit", "start"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
     let id = std::fs::read_to_string(d.path().join(".phronesis/outcomes/current")).unwrap();
@@ -118,7 +127,7 @@ fn unit_start_without_an_id_mints_one() {
 /// reader cannot open.
 #[test]
 fn unit_start_rejects_a_bad_spec_and_leaves_the_subject_untouched() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     for bad in ["docs/specs/NOPE.md", "../outside.md", "/etc/passwd"] {
         let out = run_phr(d.path(), &["unit", "start", "x", "--spec", bad]);
         assert!(!out.status.success(), "{bad} should be rejected");
@@ -138,7 +147,7 @@ fn unit_start_rejects_a_bad_spec_and_leaves_the_subject_untouched() {
 /// §"Work items", 1). The closing record must carry the *old* subject.
 #[test]
 fn unit_start_ends_an_open_unit_first() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     assert!(
         run_phr(d.path(), &["unit", "start", "first"])
             .status
@@ -175,7 +184,7 @@ fn unit_start_ends_an_open_unit_first() {
 
 #[test]
 fn unit_end_records_and_clears_the_subject() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     assert!(
         run_phr(d.path(), &["unit", "start", "item-1"])
             .status
@@ -201,7 +210,7 @@ fn unit_end_records_and_clears_the_subject() {
 /// is closed with `implicit: true` so the report can split the two populations.
 #[test]
 fn unit_end_marks_a_never_started_unit_implicit() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     std::fs::create_dir_all(d.path().join(".phronesis/outcomes")).unwrap();
     std::fs::write(d.path().join(".phronesis/outcomes/current"), "unit-999").unwrap();
     let out = run_phr(d.path(), &["unit", "end"]);
@@ -213,7 +222,7 @@ fn unit_end_marks_a_never_started_unit_implicit() {
 
 #[test]
 fn unit_end_with_nothing_open_fails() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let out = run_phr(d.path(), &["unit", "end"]);
     assert!(!out.status.success());
     assert!(
@@ -236,7 +245,7 @@ fn write_bugs(root: &Path, entries: serde_json::Value) {
 /// unit to its red→green signal.
 #[test]
 fn unit_start_from_a_known_bug_names_the_unit_and_records_its_test() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     write_bugs(
         d.path(),
         serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
@@ -269,7 +278,7 @@ fn unit_start_from_a_known_bug_names_the_unit_and_records_its_test() {
 /// registry answers "which spec is this bug against?" once, for everyone.
 #[test]
 fn unit_start_from_a_known_bug_takes_the_registry_spec() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     write_spec(d.path(), "docs/specs/SPEC-auth.md");
     write_bugs(
         d.path(),
@@ -293,7 +302,7 @@ fn unit_start_from_a_known_bug_takes_the_registry_spec() {
 /// truth for bug-shaped work" (spec §"Where the name comes from").
 #[test]
 fn unit_start_from_an_unknown_bug_errors_and_opens_nothing() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     write_bugs(
         d.path(),
         serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
@@ -319,7 +328,7 @@ fn unit_start_from_an_unknown_bug_errors_and_opens_nothing() {
 /// is fail-open (empty on a missing file), so the lookup has to be the gate.
 #[test]
 fn unit_start_with_bug_and_no_registry_errors() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let out = run_phr(d.path(), &["unit", "start", "--bug", "1042"]);
     assert!(!out.status.success());
     assert!(
@@ -333,7 +342,7 @@ fn unit_start_with_bug_and_no_registry_errors() {
 /// rejects it before anything runs.
 #[test]
 fn unit_start_rejects_bug_together_with_a_positional_id() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let out = run_phr(d.path(), &["unit", "start", "item-1", "--bug", "1042"]);
     assert!(!out.status.success());
     assert!(
@@ -363,7 +372,7 @@ fn suggestion(subject: &str, spec: Option<&str>, bug_id: Option<&str>) -> Submit
 /// LLM window is indistinguishable from one named at a shell.
 #[test]
 fn submit_suggestion_records_unit_start_for_a_plain_subject() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     write_spec(d.path(), "docs/specs/SPEC-thing.md");
     let out = EpistemeMcp::submit_suggestion_report(
         d.path(),
@@ -398,7 +407,7 @@ fn submit_suggestion_records_unit_start_for_a_plain_subject() {
 /// response says so — the agent must report the id the reports will use.
 #[test]
 fn submit_suggestion_with_a_bug_id_names_the_unit_and_records_the_test() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     write_bugs(
         d.path(),
         serde_json::json!([{"bug_id": "1042", "test": "auth::rejects_expired", "status": "open"}]),
@@ -428,7 +437,7 @@ fn submit_suggestion_with_a_bug_id_names_the_unit_and_records_the_test() {
 /// CLI enforces, reached through the same function.
 #[test]
 fn submit_suggestion_with_an_unknown_bug_id_errors_and_sets_no_subject() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let err = EpistemeMcp::submit_suggestion_report(
         d.path(),
         &suggestion("my-guess", None, Some("9999")),
@@ -451,7 +460,7 @@ fn submit_suggestion_with_an_unknown_bug_id_errors_and_sets_no_subject() {
 /// CLI would refuse.
 #[test]
 fn submit_suggestion_rejects_a_spec_that_does_not_exist() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let err = EpistemeMcp::submit_suggestion_report(
         d.path(),
         &suggestion("xlate-7", Some("docs/specs/NOPE.md"), None),
@@ -567,7 +576,7 @@ fn seed_unit(root: &Path, unit_id: &str) {
 
 #[test]
 fn unit_show_renders_the_spec_block() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_unit(d.path(), "unit-1789095489589855000");
     let out = run_phr(d.path(), &["unit", "show", "unit-1789095489589855000"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
@@ -613,7 +622,7 @@ fn unit_show_renders_the_spec_block() {
 #[test]
 fn unit_show_counts_codex_hook_evaluations() {
     use phronesis_mcp::action_log::{self, LogEntry};
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_unit(d.path(), "unit-1");
     let mut e = LogEntry::new("hook", "codex_hook")
         .with("phase", "pre")
@@ -643,7 +652,7 @@ fn unit_show_counts_codex_hook_evaluations() {
 
 #[test]
 fn unit_show_json_emits_one_object() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_unit(d.path(), "unit-1");
     let out = run_phr(d.path(), &["unit", "show", "unit-1", "--json"]);
     assert!(out.status.success(), "stderr: {}", stderr(&out));
@@ -671,7 +680,7 @@ fn unit_show_json_emits_one_object() {
 /// would otherwise flatter every per-item number (spec §"Work items / Limits").
 #[test]
 fn unit_show_reports_an_implicit_unit_as_implicit() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     use phronesis_mcp::action_log;
     use phronesis_mcp::lifecycle::{Host, Kind, LifecycleEvent, PromptText, Stamped};
     let stamped = Stamped {
@@ -708,7 +717,7 @@ fn unit_show_reports_an_implicit_unit_as_implicit() {
 /// `unit show` with no id reports the open unit; with none open it fails.
 #[test]
 fn unit_show_defaults_to_the_open_unit() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let out = run_phr(d.path(), &["unit", "show"]);
     assert!(!out.status.success());
     assert!(
@@ -735,7 +744,7 @@ fn unit_show_defaults_to_the_open_unit() {
 /// read time — the same accessor `journey --corrections` goes through.
 #[test]
 fn unit_show_hides_intervention_text_under_prompt_text_none() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_unit(d.path(), "unit-1");
     std::fs::write(
         d.path().join(".phronesis/journey.json"),

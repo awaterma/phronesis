@@ -116,7 +116,14 @@ pub async fn run(event: &str) -> ! {
     let (event, result) = match parsed.as_ref() {
         Ok(payload) => {
             let event = payload.hook_event_name.as_deref().unwrap_or(event);
-            (event, dispatch(payload, event, &root).await)
+            // An ungoverned root has no rules and records nothing: every
+            // lifecycle write would create a stray `<cwd>/.phronesis/journey/`
+            // that later stops the project-root walk.
+            if security::is_governed(&root) {
+                (event, dispatch(payload, event, &root).await)
+            } else {
+                (event, empty_decision())
+            }
         }
         Err(error) => {
             fallback = invalid_payload_decision(event, error);
@@ -683,7 +690,10 @@ async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> CodexDecision {
     };
 
     let (network, stale_graph_rules) =
-        build_pre_network(&loaded.rules, &loaded.override_facts, &file_path, root).await;
+        match build_pre_network(&loaded.rules, &loaded.override_facts, &file_path, root).await {
+            Ok(built) => built,
+            Err(decision) => return decision,
+        };
     let command = extract_bash_command(payload);
 
     // Assert content fact
@@ -844,7 +854,7 @@ async fn evaluate_patch_batch(
     root: &Path,
 ) -> Result<Verdict, CodexDecision> {
     let (batch_network, _) =
-        build_pre_network(&loaded.rules, &loaded.override_facts, "", root).await;
+        build_pre_network(&loaded.rules, &loaded.override_facts, "", root).await?;
     let mut batch_event = codex_provider_event(call, "pre", "");
     batch_event.files = paths.to_vec();
     crate::predicate_provider::assert_facts(&batch_network, root, &batch_event)
@@ -875,7 +885,7 @@ async fn evaluate_patch_file(
     };
 
     let (network, stale_graph_rules) =
-        build_pre_network(&loaded.rules, &loaded.override_facts, &pf.path, root).await;
+        build_pre_network(&loaded.rules, &loaded.override_facts, &pf.path, root).await?;
     if !content.is_empty() {
         assert_patch_content(&network, &loaded.rules, &pf.path, &content).await?;
     }
@@ -945,7 +955,16 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
         }
     };
 
-    let network = build_post_network(&loaded.rules, &loaded.override_facts, &file_path, root).await;
+    let network =
+        match build_post_network(&loaded.rules, &loaded.override_facts, &file_path, root).await {
+            Ok(network) => network,
+            Err(message) => {
+                // Advisory, as `post-check` warns: the tool already ran.
+                eprintln!("phronesis: WARNING — {message}");
+                journal_supported_post(payload, &file_path).await;
+                return warn_decision(message);
+            }
+        };
 
     let command = if call.tool_name == "Bash" {
         extract_bash_command(payload)
@@ -1090,20 +1109,28 @@ async fn build_pre_network(
     override_facts: &[phr::Fact],
     file_path: &str,
     root: &Path,
-) -> (phr::ReteNetwork, std::collections::BTreeSet<phr::RuleId>) {
-    let mut net = crate::net::build_network();
-    for rule in rules {
-        let _ = net.add_rule(rule.clone()).await;
-    }
-    let _ = crate::hook_facts::assert_common_facts(&net, file_path, "Bash", "pre").await;
-    for fact in override_facts {
-        let _ = net.assert_fact(fact.clone()).await;
-    }
-    let _ = assert_journey_facts_into(&mut net, root, rules).await;
+) -> Result<(phr::ReteNetwork, std::collections::BTreeSet<phr::RuleId>), CodexDecision> {
+    let net = crate::hook::build_rule_network(crate::hook::RuleNetworkInput {
+        rules,
+        override_facts,
+        file_path,
+        tool_name: "Bash",
+        phase: "pre",
+        project_root: root,
+    })
+    .await
+    .map_err(|e| {
+        // Fail closed, as `pre-check` does: a rule set that cannot be loaded
+        // or evaluated (an undefined journey selector, say) must not let the
+        // tool call through.
+        let reason = e.to_string();
+        eprintln!("phronesis: BLOCKED — {reason}");
+        block_decision(reason)
+    })?;
     crate::hook::assert_pack_marker_facts(&net, root).await;
     crate::hook::assert_confidence_signals(&net).await;
     let stale_graph_rules = assert_structural_facts(&net, root, rules, file_path).await;
-    (net, stale_graph_rules)
+    Ok((net, stale_graph_rules))
 }
 
 /// Hydrate the structural graph into `net`, returning the rules whose
@@ -1152,55 +1179,19 @@ async fn build_post_network(
     override_facts: &[phr::Fact],
     file_path: &str,
     root: &Path,
-) -> phr::ReteNetwork {
-    let mut net = crate::net::build_network();
-    for rule in rules {
-        let _ = net.add_rule(rule.clone()).await;
-    }
-    let _ = crate::hook_facts::assert_common_facts(&net, file_path, "Bash", "post").await;
-    for fact in override_facts {
-        let _ = net.assert_fact(fact.clone()).await;
-    }
-    let _ = assert_journey_facts_into(&mut net, root, rules).await;
-    crate::hook::assert_pack_marker_facts(&net, root).await;
-    net
-}
-
-async fn assert_journey_facts_into(
-    network: &mut phr::ReteNetwork,
-    project_root: &Path,
-    rules: &[phr::Rule],
-) -> Result<(), journey::derive::DeriveError> {
-    if std::env::var("PHRONESIS_NO_JOURNEY").is_ok() {
-        return Ok(());
-    }
-    let cfg = match journey::load_config(project_root) {
-        Ok(c) => c,
-        Err(journey::ConfigError::NotFound(_)) => journey::tagger::TaggerConfig::default(),
-        Err(e) => {
-            eprintln!("phronesis: journey config skipped: {}", e);
-            return Ok(());
-        }
-    };
-    let sid = journey::current_sid(project_root);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let scope = journey::derive::WindowScope {
-        current_sid: &sid,
-        now_ts: now,
-    };
-    journey::derive::assert_facts(
-        network,
-        journey::derive::DeriveInput {
-            project_root,
-            rules,
-            config: &cfg,
-            scope,
-        },
-    )
+) -> Result<phr::ReteNetwork, String> {
+    let net = crate::hook::build_rule_network(crate::hook::RuleNetworkInput {
+        rules,
+        override_facts,
+        file_path,
+        tool_name: "Bash",
+        phase: "post",
+        project_root: root,
+    })
     .await
+    .map_err(|e| e.to_string())?;
+    crate::hook::assert_pack_marker_facts(&net, root).await;
+    Ok(net)
 }
 
 // ---------------------------------------------------------------------------

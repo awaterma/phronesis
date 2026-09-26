@@ -18,6 +18,38 @@
 //!   [`Severity::Warning`]; diagnostics truncate the matched text so a
 //!   suspected secret is never echoed in full.
 //!
+//! ## Where a `$HOME`-rooted path ends
+//!
+//! Path extent is ambiguous in free text once names may contain spaces, so
+//! the rewrite follows one rule per context and resolves any remaining
+//! ambiguity toward over-scrubbing (losing a neighbouring word) rather than
+//! leaking a path component:
+//!
+//! 1. **Path-keyed values** (`file_path`, `cwd`, `*_dir`, `*_root`, …; see
+//!    `is_path_key`): the string *is* a path, so the path runs to the end of
+//!    the line.
+//! 2. **Quoted**: a path opened by `"` or `'` (including the `\"` of embedded
+//!    JSON) runs to the next quote of the same kind on the line.
+//! 3. **Bare free text**: the path runs to whitespace or `"` `'` `:` `,`, with
+//!    shell-escaped spaces (`My\ Plans`) kept inside it. It then extends across
+//!    following space-separated words while one of the next
+//!    `MAX_CONTINUATION_WORDS` words still contains a `/` (`My Secret
+//!    Plans/q3.txt`); a word starting a new path, flag, or shell operator
+//!    stops the extension. A bare path whose *last* segment contains a space
+//!    cannot be told apart from prose and is the one documented residual.
+//!
+//! ## Escaped separators
+//!
+//! Captured tool output often holds JSON with escaped slashes (`\/Users\/x`),
+//! sometimes escaped again (`\\\/`). Rather than unescaping the content and
+//! re-escaping it (which must guess which slashes were escaped and breaks
+//! byte-for-byte passthrough), the matchers accept a separator at any
+//! escaping depth — zero or more backslashes then `/` — and every placeholder
+//! is written back with the separator spelling of the path it replaces, so
+//! embedded JSON stays valid. Verification and residual-risk detection run
+//! over a separator-normalized rendering, so an escaped residual fails the
+//! run exactly as a plain one does.
+//!
 //! scrub-payload performs deterministic anonymization and detects several
 //! common leak classes. It is not a proof that arbitrary source or command
 //! content contains no secrets. Review scrubbed fixtures before committing
@@ -59,10 +91,21 @@ const PLACEHOLDER_PREFIXES: [&str; 3] = [
     "/home/dev/.claude/",
 ];
 
+/// How many space-separated words a bare path may look ahead for a word that
+/// continues it with a `/` (extent rule 3 in the module docs). Bounds the
+/// over-scrubbing of prose that merely follows a path.
+const MAX_CONTINUATION_WORDS: usize = 6;
+
+/// A quoted path longer than this is not treated as quote-delimited; the bare
+/// rule applies instead. Bounds how much text an unbalanced quote can swallow.
+const MAX_QUOTED_PATH_LEN: usize = 4096;
+
 pub struct Scrubber {
     home: String,
     user: String,
-    project_root: String,
+    /// `home` / the project root with every `/` accepting any escaping depth.
+    home_re: Regex,
+    project_re: Regex,
     /// Unique external paths seen so far; index = placeholder number, so
     /// the same path always maps to the same `/home/dev/external/pN`.
     external: Vec<String>,
@@ -83,10 +126,13 @@ impl Scrubber {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let home_re = root_regex("home directory", &home)?;
+        let project_re = root_regex("project root", &project_root)?;
         Ok(Self {
             home,
             user,
-            project_root,
+            home_re,
+            project_re,
             external: Vec::new(),
         })
     }
@@ -96,11 +142,17 @@ impl Scrubber {
     /// `transcript_path` get fixed placeholder values, whatever their spelling
     /// — a host that sends `promptId` must not evade scrubbing either.
     pub fn scrub_value(&mut self, v: &mut Value) {
+        self.scrub_value_in(v, false);
+    }
+
+    /// `path_keyed`: the value sits under a path-naming key (extent rule 1).
+    /// Arrays inherit their key, so `"dirs": [...]` elements are paths too.
+    fn scrub_value_in(&mut self, v: &mut Value, path_keyed: bool) {
         match v {
-            Value::String(s) => *s = self.scrub_str(s),
+            Value::String(s) => *s = self.scrub_str(s, path_keyed),
             Value::Array(items) => {
                 for item in items {
-                    self.scrub_value(item);
+                    self.scrub_value_in(item, path_keyed);
                 }
             }
             Value::Object(map) => {
@@ -110,7 +162,7 @@ impl Scrubber {
                     } else if is_transcript_key(key) {
                         *val = Value::String("/home/dev/.claude/transcript.jsonl".to_string());
                     } else {
-                        self.scrub_value(val);
+                        self.scrub_value_in(val, is_path_key(key));
                     }
                 }
             }
@@ -118,11 +170,11 @@ impl Scrubber {
         }
     }
 
-    pub(crate) fn scrub_str(&mut self, s: &str) -> String {
+    pub(crate) fn scrub_str(&mut self, s: &str, path_keyed: bool) -> String {
         // 1. Project-root prefix → canonical fixture root.
-        let out = s.replace(&self.project_root, "/home/dev/project");
+        let out = self.scrub_project_root(s);
         // 2. Any remaining $HOME-rooted path → indexed external placeholder.
-        let mut out = self.scrub_external_paths(out);
+        let mut out = self.scrub_external_paths(out, path_keyed);
         // 3. Bare username anywhere else (long enough to be unambiguous).
         if self.user.len() >= MIN_BARE_USERNAME_LEN {
             out = out.replace(&self.user, "dev");
@@ -130,34 +182,54 @@ impl Scrubber {
         out
     }
 
-    fn scrub_external_paths(&mut self, mut out: String) -> String {
+    /// Rewrite the project root to `/home/dev/project`, in whatever separator
+    /// spelling it appears. Only a whole root counts: `/…/project2` is a
+    /// sibling directory, not the project, and falls through to the `$HOME`
+    /// rule. Canonical placeholders are left alone (fixpoint).
+    fn scrub_project_root(&self, s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut last = 0;
+        for m in self.project_re.find_iter(s) {
+            if !is_root_boundary(&s[m.end()..]) || starts_with_placeholder(&s[m.start()..]) {
+                continue;
+            }
+            out.push_str(&s[last..m.start()]);
+            out.push_str(&respell("/home/dev/project", separator_of(m.as_str())));
+            last = m.end();
+        }
+        out.push_str(&s[last..]);
+        out
+    }
+
+    fn scrub_external_paths(&mut self, mut out: String, path_keyed: bool) -> String {
         // The cursor only moves forward — each iteration resumes past the
         // text it just inserted — and canonical placeholder paths are skipped
         // outright, so replacement terminates and is a fixpoint even when
         // `home` is a prefix of the placeholder root (e.g. `/home/dev`).
         let mut search_from = 0;
-        while let Some(start) = self.home_match_start(&out, search_from) {
-            if PLACEHOLDER_PREFIXES
-                .iter()
-                .any(|p| out[start..].starts_with(p))
-            {
-                search_from = start + self.home.len();
+        while let Some((start, home_end)) = self
+            .home_re
+            .find_at(&out, search_from)
+            .map(|m| (m.start(), m.end()))
+        {
+            if starts_with_placeholder(&out[start..]) {
+                search_from = home_end;
                 continue;
             }
-            let end = external_path_end(&out, start);
-            let path = out[start..end].to_string();
-            let replacement = self.external_replacement(path);
-            let replacement_len = replacement.len();
+            let end = if path_keyed {
+                keyed_path_end(&out, home_end)
+            } else {
+                external_path_end(&out, start, home_end)
+            };
+            let separator = separator_of(&out[start..home_end]).to_string();
+            // One placeholder per path whatever its spelling: `\/a\/b` and
+            // `/a/b` name the same file.
+            let placeholder = self.external_replacement(normalize_separators(&out[start..end]));
+            let replacement = respell(&placeholder, &separator);
             out.replace_range(start..end, &replacement);
-            search_from = start + replacement_len;
+            search_from = start + replacement.len();
         }
         out
-    }
-
-    fn home_match_start(&self, out: &str, search_from: usize) -> Option<usize> {
-        out[search_from..]
-            .find(&self.home)
-            .map(|relative| search_from + relative)
     }
 
     fn external_replacement(&mut self, path: String) -> String {
@@ -178,8 +250,11 @@ impl Scrubber {
     /// [`warnings`](Self::warnings) for a human to adjudicate — so a
     /// legitimately-scrubbed fixture whose content happens to contain the
     /// username as a word stays idempotent and exits 0.
+    ///
+    /// Runs over a separator-normalized rendering, so a JSON-escaped residual
+    /// (`\\/Users\\/…` in the rendered text) is caught like a plain one.
     pub fn verify(&self, v: &Value) -> Result<(), ScrubError> {
-        let rendered = v.to_string();
+        let rendered = normalize_separators(&v.to_string());
         if rendered.contains(&self.home) {
             return Err(ScrubError::Residual {
                 what: "home directory",
@@ -215,11 +290,174 @@ impl Scrubber {
     }
 }
 
-fn external_path_end(out: &str, start: usize) -> usize {
-    out[start..]
-        .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ':' | ','))
-        .map(|offset| start + offset)
-        .unwrap_or(out.len())
+/// End of a path-keyed value's path (extent rule 1): the end of the line.
+fn keyed_path_end(s: &str, home_end: usize) -> usize {
+    s[home_end..]
+        .find(['\n', '\r'])
+        .map_or(s.len(), |offset| home_end + offset)
+}
+
+/// End of a `$HOME`-rooted path in free text (extent rules 2 and 3 in the
+/// module docs). `start..home_end` is the matched home prefix.
+fn external_path_end(s: &str, start: usize, home_end: usize) -> usize {
+    if let Some(end) = quoted_path_end(s, start, home_end) {
+        return end;
+    }
+    let mut end = token_end(s, home_end);
+    while let Some(next) = continuation_end(s, end) {
+        end = next;
+    }
+    end
+}
+
+/// Extent rule 2: a path opened by a quote runs to the next quote of the same
+/// kind on the same line. The backslash run right before that quote escapes
+/// the quote itself (embedded JSON's `\"`), so it stays outside the path.
+fn quoted_path_end(s: &str, start: usize, home_end: usize) -> Option<usize> {
+    let quote = s[..start]
+        .chars()
+        .next_back()
+        .filter(|c| matches!(c, '"' | '\''))?;
+    let rest = &s[home_end..];
+    let body = &rest[..rest.find(quote)?];
+    if body.len() > MAX_QUOTED_PATH_LEN || body.contains(['\n', '\r']) {
+        return None;
+    }
+    Some(home_end + body.trim_end_matches('\\').len())
+}
+
+/// End of one whitespace-free path token starting at `from`: whitespace or
+/// `"` `'` `:` `,` ends it. A backslash run belongs to the token only as an
+/// escaped separator (`\/`, `\\\/`) or a shell-escaped space (`\ `); any other
+/// backslash run (the `\"` closing embedded JSON, a `\n` escape) ends it.
+fn token_end(s: &str, from: usize) -> usize {
+    let mut chars = s[from..].char_indices().peekable();
+    while let Some((offset, c)) = chars.next() {
+        if c == '\\' {
+            while chars.next_if(|&(_, n)| n == '\\').is_some() {}
+            if chars.next_if(|&(_, n)| n == '/' || n == ' ').is_none() {
+                return from + offset;
+            }
+        } else if c.is_whitespace() || matches!(c, '"' | '\'' | ':' | ',') {
+            return from + offset;
+        }
+    }
+    s.len()
+}
+
+/// Extent rule 3's continuation step: when the path at `..end` is followed by
+/// space-separated words and one of the next [`MAX_CONTINUATION_WORDS`]
+/// contains a `/`, the path continues through that word (`My Secret
+/// Plans/q3.txt`). A word that starts a new path, flag, variable, or shell
+/// operator — or a non-space separator such as a tab or newline — stops it.
+fn continuation_end(s: &str, end: usize) -> Option<usize> {
+    let mut pos = end;
+    for _ in 0..MAX_CONTINUATION_WORDS {
+        let rest = &s[pos..];
+        let gap = rest.len() - rest.trim_start_matches(' ').len();
+        if gap == 0 {
+            return None;
+        }
+        let word_start = pos + gap;
+        let first = s[word_start..].chars().next()?;
+        if matches!(
+            first,
+            '/' | '\\' | '-' | '~' | '$' | '|' | '&' | ';' | '<' | '>' | '(' | ')' | '`' | '#'
+        ) {
+            return None;
+        }
+        let word_end = token_end(s, word_start);
+        if word_end == word_start {
+            return None;
+        }
+        if s[word_start..word_end].contains('/') {
+            return Some(word_end);
+        }
+        pos = word_end;
+    }
+    None
+}
+
+/// Separator at any JSON-escaping depth: zero or more backslashes, then `/`.
+const ESCAPABLE_SEPARATOR: &str = r"\\*/";
+
+/// A matcher for `root` whose every `/` also matches its escaped spellings,
+/// so `\/Users\/zed` is found as readily as `/Users/zed`.
+fn root_regex(which: &'static str, root: &str) -> Result<Regex, ScrubError> {
+    let pattern: String = root
+        .split('/')
+        .skip(1)
+        .map(|segment| format!("{ESCAPABLE_SEPARATOR}{}", regex::escape(segment)))
+        .collect();
+    Regex::new(&pattern).map_err(|e| ScrubError::InvalidRoot {
+        which,
+        reason: format!("cannot build a matcher: {e}"),
+    })
+}
+
+/// The separator spelling a matched root opens with (`/`, `\/`, `\\\/`, …).
+fn separator_of(matched: &str) -> &str {
+    matched.find('/').map_or("/", |i| &matched[..=i])
+}
+
+/// `placeholder` written with `separator` in place of every `/`, so an
+/// escaped path is replaced by an equally escaped placeholder.
+fn respell(placeholder: &str, separator: &str) -> String {
+    if separator == "/" {
+        placeholder.to_string()
+    } else {
+        placeholder.replace('/', separator)
+    }
+}
+
+/// Collapse every escaped separator (`\/`, `\\\/`, …) to a plain `/`. Other
+/// backslashes pass through unchanged.
+fn normalize_separators(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut backslashes = 0usize;
+    for c in s.chars() {
+        if c == '\\' {
+            backslashes += 1;
+            continue;
+        }
+        if c != '/' {
+            out.extend(std::iter::repeat_n('\\', backslashes));
+        }
+        backslashes = 0;
+        out.push(c);
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes));
+    out
+}
+
+/// Does `s` open with one of the scrubber's own placeholder roots, in any
+/// separator spelling? `/home/dev/project` counts only as a whole component,
+/// so a real `/home/dev/projectX` is still scrubbed.
+fn starts_with_placeholder(s: &str) -> bool {
+    let mut window_end = s.len().min(64);
+    while !s.is_char_boundary(window_end) {
+        window_end -= 1;
+    }
+    let window = normalize_separators(&s[..window_end]);
+    PLACEHOLDER_PREFIXES.iter().any(|p| {
+        window.starts_with(p) && (p.ends_with('/') || is_root_boundary(&window[p.len()..]))
+    })
+}
+
+/// Is `rest` (the text right after a matched root) a component boundary?
+/// `/root2` or `/root.bak` names a different directory; `/root/`, `/root"`,
+/// `/root.` at the end of a sentence, and `\/` / `\"` escapes do not.
+fn is_root_boundary(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    match chars.next() {
+        None | Some('/' | '\\') => true,
+        Some('.') => !chars.next().is_some_and(is_name_char),
+        Some(c) => !is_name_char(c),
+    }
+}
+
+fn is_name_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '_' | '-' | '+' | '@' | '~' | '.')
 }
 
 /// Validate and normalize one scrub root (evidence-integrity spec, Task 1).
@@ -453,7 +691,9 @@ fn collect_disallowed_absolute_paths(
 
 /// Residual-risk detection over an already-scrubbed record. Returns every
 /// finding; the caller decides how to surface them ([`Severity`] documents
-/// the CLI policy).
+/// the CLI policy). The absolute-path check runs over a separator-normalized
+/// rendering, so a JSON-escaped path (`\\/Users\\/x`) is judged exactly like
+/// its plain spelling.
 pub fn detect_residual_risks(v: &Value) -> Result<Vec<Finding>, ScrubError> {
     let rendered = v.to_string();
     let mut findings = Vec::new();
@@ -472,7 +712,7 @@ pub fn detect_residual_risks(v: &Value) -> Result<Vec<Finding>, ScrubError> {
             });
         }
     }
-    collect_disallowed_absolute_paths(&rendered, &mut findings)?;
+    collect_disallowed_absolute_paths(&normalize_separators(&rendered), &mut findings)?;
     Ok(findings)
 }
 
@@ -509,6 +749,18 @@ fn identifier_placeholder(key: &str) -> Option<&'static str> {
 
 fn is_transcript_key(key: &str) -> bool {
     normalize_key(key) == "transcriptpath"
+}
+
+/// Keys whose string values are paths in their entirety (extent rule 1):
+/// `cwd` and anything ending in `path`, `dir`, `directory` or `root`, in any
+/// spelling and optionally plural (`file_path`, `workingDirectory`, `dirs`).
+fn is_path_key(key: &str) -> bool {
+    let normalized = normalize_key(key);
+    let key = normalized.strip_suffix('s').unwrap_or(&normalized);
+    key == "cwd"
+        || ["path", "dir", "directory", "root"]
+            .iter()
+            .any(|s| key.ends_with(s))
 }
 
 /// Lowercase and strip `_`/`-` so key-name variants collapse to one form.
@@ -1124,5 +1376,250 @@ mod tests {
             abs_findings.is_empty(),
             "concatenated typo with `.` is relative-path-shaped; got {abs_findings:?}"
         );
+    }
+
+    // ── Path extent and escaped separators (scrub-leaks fix) ──
+
+    /// Mirror of the CLI's `scrub_one` exit decision: `true` when the run
+    /// would exit 0 for this record.
+    fn cli_would_pass(s: &Scrubber, v: &Value) -> bool {
+        s.verify(v).is_ok()
+            && detect_residual_risks(v)
+                .expect("detectors run")
+                .iter()
+                .all(|f| f.severity != Severity::Error)
+    }
+
+    fn zed() -> Scrubber {
+        Scrubber::new("/Users/zed", "/Users/zed/project").expect("valid roots")
+    }
+
+    #[test]
+    fn path_keyed_value_with_spaces_is_rewritten_whole() {
+        let mut s = zed();
+        let mut v = json!({"file_path": "/Users/zed/My Secret Plans/q3.txt"});
+        s.scrub_value(&mut v);
+        assert_eq!(v["file_path"], "/home/dev/external/p0");
+        assert!(cli_would_pass(&s, &v));
+    }
+
+    #[test]
+    fn free_text_path_with_spaces_extends_while_a_later_word_continues_it() {
+        let mut s = zed();
+        let mut v = json!({"note": "moved /Users/zed/My Secret Plans/q3.txt yesterday"});
+        s.scrub_value(&mut v);
+        assert_eq!(v["note"], "moved /home/dev/external/p0 yesterday");
+        assert!(!v.to_string().contains("Secret"), "{v}");
+    }
+
+    #[test]
+    fn quoted_path_with_spaces_extends_to_the_closing_quote() {
+        let mut s = zed();
+        let mut v = json!({
+            "command": "cat \"/Users/zed/My Secret Plans/q 3.txt\" | wc -l",
+            "other": "open '/Users/zed/Tax Docs 2025' now"
+        });
+        s.scrub_value(&mut v);
+        assert_eq!(v["command"], "cat \"/home/dev/external/p0\" | wc -l");
+        assert_eq!(v["other"], "open '/home/dev/external/p1' now");
+    }
+
+    #[test]
+    fn shell_escaped_spaces_stay_inside_the_path() {
+        let mut s = zed();
+        let mut v = json!({"command": "ls /Users/zed/My\\ Secret\\ Plans && pwd"});
+        s.scrub_value(&mut v);
+        assert_eq!(v["command"], "ls /home/dev/external/p0 && pwd");
+    }
+
+    #[test]
+    fn separate_paths_and_flags_are_not_swallowed() {
+        let mut s = zed();
+        let mut v = json!({"command": "cp /Users/zed/a.txt /Users/zed/b.txt -v"});
+        s.scrub_value(&mut v);
+        assert_eq!(
+            v["command"],
+            "cp /home/dev/external/p0 /home/dev/external/p1 -v"
+        );
+    }
+
+    #[test]
+    fn json_escaped_slashes_are_scrubbed_and_keep_their_escaping() {
+        let mut s = Scrubber::new("/Users/al", "/Users/al/proj").expect("valid roots");
+        let mut v = json!({"stdout": r"\/Users\/al\/clients\/acme\/key.txt"});
+        s.scrub_value(&mut v);
+        assert_eq!(v["stdout"], r"\/home\/dev\/external\/p0");
+        let out = v.to_string();
+        for leaked in ["clients", "acme", "key.txt"] {
+            assert!(!out.contains(leaked), "{leaked} survived: {out}");
+        }
+        assert!(cli_would_pass(&s, &v));
+    }
+
+    #[test]
+    fn json_escaped_path_inside_embedded_json_keeps_the_document_valid() {
+        let mut s = zed();
+        let mut v = json!({
+            "stdout": r#"{"p":"\/Users\/zed\/My Plans\/k.txt","q":"\/Users\/zed\/project\/src\/a.rs"}"#
+        });
+        s.scrub_value(&mut v);
+        let inner = v["stdout"].as_str().expect("string");
+        assert_eq!(
+            inner,
+            r#"{"p":"\/home\/dev\/external\/p0","q":"\/home\/dev\/project\/src\/a.rs"}"#
+        );
+        let parsed: Value = serde_json::from_str(inner).expect("embedded JSON still parses");
+        assert_eq!(parsed["p"], "/home/dev/external/p0");
+    }
+
+    #[test]
+    fn escaped_and_plain_spellings_share_one_placeholder() {
+        let mut s = zed();
+        let mut v = json!({"a": "/Users/zed/x/y.txt", "b": r"\/Users\/zed\/x\/y.txt"});
+        s.scrub_value(&mut v);
+        assert_eq!(v["a"], "/home/dev/external/p0");
+        assert_eq!(v["b"], r"\/home\/dev\/external\/p0");
+    }
+
+    #[test]
+    fn escaped_placeholders_are_a_fixpoint() {
+        let mut s = Scrubber::new("/home/dev", "/tmp/someproject").expect("valid roots");
+        let mut v = json!({"stdout": r"\/home\/dev\/external\/p0 and \/home\/dev\/project\/x"});
+        let before = v.clone();
+        s.scrub_value(&mut v);
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn verify_flags_json_escaped_home_path() {
+        let s = Scrubber::new("/Users/al", "/Users/al/proj").expect("valid roots");
+        let v = json!({"stdout": r"\/Users\/al\/clients\/acme\/key.txt"});
+        assert!(s.verify(&v).is_err(), "escaped residual must fail verify");
+        let doubled = json!({"stdout": r"\\\/Users\\\/al\\\/k"});
+        assert!(s.verify(&doubled).is_err());
+    }
+
+    #[test]
+    fn residual_detector_flags_json_escaped_absolute_path() {
+        let v = json!({"stdout": r"\/Users\/someone\/clients\/key.txt"});
+        let findings = detect_residual_risks(&v).expect("detectors run");
+        assert!(
+            findings.iter().any(|f| f.severity == Severity::Error
+                && f.what == "absolute path outside the project placeholder roots"),
+            "got {findings:?}"
+        );
+        // An escaped URL tail is still a URL tail, not a local path.
+        let url = json!({"stdout": r"https:\/\/example.com\/a\/b"});
+        let findings = detect_residual_risks(&url).expect("detectors run");
+        assert!(
+            findings
+                .iter()
+                .all(|f| f.what != "absolute path outside the project placeholder roots"),
+            "got {findings:?}"
+        );
+        // Escaped placeholder roots are allowed like the plain ones.
+        let ok = json!({"stdout": r"\/home\/dev\/external\/p0 \/home\/dev\/project\/a"});
+        assert!(
+            detect_residual_risks(&ok)
+                .expect("detectors run")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn project_root_prefix_collision_is_not_treated_as_the_project() {
+        let mut s = zed();
+        let mut v = json!({
+            "a": "/Users/zed/project/src/lib.rs",
+            "b": "/Users/zed/project2/src/lib.rs",
+            "c": "/Users/zed/project"
+        });
+        s.scrub_value(&mut v);
+        assert_eq!(v["a"], "/home/dev/project/src/lib.rs");
+        assert_eq!(v["c"], "/home/dev/project");
+        assert_eq!(v["b"], "/home/dev/external/p0");
+        assert!(cli_would_pass(&s, &v), "{v}");
+    }
+
+    /// Property / differential test: generated `$HOME`-rooted paths with
+    /// spaces, unicode and escaped separators, embedded in every context the
+    /// extent rule defines. Whenever the record would exit 0, no generated
+    /// path component may survive in any spelling — and every defined
+    /// context must in fact exit 0 (the rewrite, not the failure path, is
+    /// what keeps it clean).
+    #[test]
+    fn generated_home_paths_never_survive_a_passing_scrub() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        const WORDS: &[&str] = &[
+            "Qplans",
+            "Xreport",
+            "naïve",
+            "Überblick",
+            "プラン",
+            "résumé",
+            "Kvault",
+            "Wq3",
+            "Mb-7",
+            "notes_v2",
+            "Ωmega",
+            "Jxx.tar",
+            "🗂Box",
+        ];
+        fn segment(rng: &mut StdRng, allow_spaces: bool) -> String {
+            let n = if allow_spaces {
+                rng.gen_range(1..=3)
+            } else {
+                1
+            };
+            (0..n)
+                .map(|_| WORDS[rng.gen_range(0..WORDS.len())])
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+
+        let mut rng = StdRng::seed_from_u64(0x5c0b_1eaf);
+        for case in 0..400 {
+            let depth = rng.gen_range(1..=4);
+            let mut segs: Vec<String> = (0..depth).map(|_| segment(&mut rng, true)).collect();
+            // Bare free text needs the last segment space-free (see the
+            // documented extent rule); other contexts take anything.
+            let last_plain = segment(&mut rng, false);
+            let path = format!("/Users/zed/{}", segs.join("/"));
+            segs.push(last_plain.clone());
+            let bare_path = format!("/Users/zed/{}", segs.join("/"));
+            let escaped = path.replace('/', r"\/");
+            let double_escaped = path.replace('/', r"\\\/");
+            let bare_escaped = bare_path.replace('/', r"\/");
+            let records = [
+                json!({"file_path": path}),
+                json!({"cwd": escaped}),
+                json!({"command": format!("cat \"{path}\" | wc -l")}),
+                json!({"command": format!("open '{path}' now")}),
+                json!({"stdout": format!(r#"{{"p":"{escaped}"}}"#)}),
+                json!({"stdout": format!(r#"{{\"p\":\"{double_escaped}\"}}"#)}),
+                json!({"note": format!("edited {bare_path} then stopped")}),
+                json!({"note": format!("edited {bare_escaped} then stopped")}),
+            ];
+            let mut s = zed();
+            for mut v in records {
+                let original = v.to_string();
+                s.scrub_value(&mut v);
+                let out = v.to_string();
+                assert!(
+                    cli_would_pass(&s, &v),
+                    "case {case}: defined context must exit 0: {original} -> {out}"
+                );
+                for seg in &segs {
+                    for word in seg.split(' ') {
+                        assert!(
+                            !out.contains(word),
+                            "case {case}: component {word:?} survived: {original} -> {out}"
+                        );
+                    }
+                }
+            }
+        }
     }
 }

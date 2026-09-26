@@ -79,6 +79,7 @@ pub struct Started {
 /// the MCP server is the same `phr-mcp` process, and `Host` names the host
 /// that produced the event, not the transport that asked for it.
 pub fn start(root: &Path, req: StartRequest) -> anyhow::Result<Started> {
+    crate::lifecycle::require_governed(root, "unit start")?;
     let mut spec = req.spec.map(|s| validate_spec(root, &s)).transpose()?;
     let mut test = None;
     let mut chosen = req.id;

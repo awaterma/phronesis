@@ -6,10 +6,10 @@ use std::collections::HashSet;
 
 use crate::diff_extract;
 use crate::hook_facts::{
-    assert_common_facts, assert_coverage_facts, assert_diff_facts, assert_language_pack_facts,
-    assert_properties_facts, assert_test_facts, assert_values_facts, check_bash_command_patterns,
-    check_content_patterns, check_missing_patterns, collect_bash_command_patterns,
-    collect_content_patterns, collect_missing_patterns, collect_rule_predicates,
+    assert_coverage_facts, assert_diff_facts, assert_language_pack_facts, assert_properties_facts,
+    assert_test_facts, assert_values_facts, check_bash_command_patterns, check_content_patterns,
+    check_missing_patterns, collect_bash_command_patterns, collect_content_patterns,
+    collect_missing_patterns, collect_rule_predicates,
 };
 use crate::security::{self, MAX_FACT_CONTENT_BYTES, read_file_capped, resolve_safe_path};
 
@@ -37,6 +37,11 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     };
 
     let root = security::project_root();
+    // Ungoverned: nothing to check, and no lifecycle or graph write may
+    // create a stray `<cwd>/.phronesis/` (see `security::is_governed`).
+    if !security::is_governed(&root) {
+        super::exit_ok();
+    }
     let raw_tool = payload.tool_name.clone().unwrap_or_default();
     super::lifecycle_wiring::post_pop_and_detect(&root, &payload, &raw_tool);
     if raw_tool == "invoke_agent" {
@@ -107,33 +112,26 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     };
 
     let network = {
-        let rules_for_journey = rules.clone();
-        let mut net = crate::net::build_network();
-        for rule in rules {
-            if let Err(e) = net.add_rule(rule).await {
-                eprintln!("phronesis: WARNING — failed to load rule: {}", e);
-                process::exit(1);
-            }
-        }
-        if let Err(e) = assert_common_facts(&net, &file_path, &tool_name, "post").await {
-            eprintln!("phronesis: WARNING — failed to assert facts: {}", e);
-            process::exit(1);
-        }
-        for fact in override_facts {
-            if let Err(e) = net.assert_fact(fact).await {
-                eprintln!("phronesis: WARNING — failed to assert rule override provenance: {e}");
-                process::exit(1);
-            }
-        }
-        // Journey facts: recomputed every invocation from the durable journal,
-        // before update_agenda. Fail-open on transient I/O; surface config
-        // errors as a post-check warning (the action already happened — the
-        // next pre-check will block until the config is fixed).
-        if let Err(e) = super::assert_journey_facts_into(&mut net, &root, &rules_for_journey).await
+        // Journey facts are recomputed every invocation from the durable
+        // journal, before update_agenda. Transient I/O fails open; a
+        // configuration error surfaces as a post-check warning (the action
+        // already happened — the next pre-check blocks until it is fixed).
+        let net = match super::build_rule_network(super::RuleNetworkInput {
+            rules: &rules,
+            override_facts: &override_facts,
+            file_path: &file_path,
+            tool_name: &tool_name,
+            phase: "post",
+            project_root: &root,
+        })
+        .await
         {
-            eprintln!("phronesis: WARNING — {}", e);
-            process::exit(1);
-        }
+            Ok(net) => net,
+            Err(e) => {
+                eprintln!("phronesis: WARNING — {e}");
+                process::exit(1);
+            }
+        };
         // Pack-marker facts (e.g. `confidence_enabled`) — let rules from one
         // pack self-deactivate when a superseding pack is opted in.
         super::assert_pack_marker_facts(&net, &root).await;

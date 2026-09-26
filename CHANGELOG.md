@@ -65,6 +65,138 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   (it re-imports; an export collected elsewhere then goes through
   `phr-mcp coverage import`).
 
+- **A predicate provider could forge the evidence a gate rule trusts.**
+  Providers in `.phronesis/predicates/` — which an agent can write through
+  `add_predicate_provider` — could `emit_fact` any predicate, so a two-line
+  script emitting `signal_pass` turned a low-confidence block into a pass.
+  Host-owned predicates (`signal_*`, `journey_*`, `rule_overridden`, outcome,
+  clock, coverage, property, graph, AST, and hook content facts,
+  `store_corrupt`) are now reserved: a provider that emits one fails, all of
+  its facts for that event are dropped, and the pre-hook blocks with a
+  diagnostic naming the provider and predicate. `add_predicate_provider`
+  refuses a literal reserved emit up front. Project vocabularies such as
+  `change_set_*` are unaffected. Only `signal_*` and `journey_*` are reserved
+  as whole namespaces; every other host name (`store_corrupt`,
+  `context_confidence_band`, `proof_outcome`, …) is reserved exactly, so a
+  provider's own `store_opened` or `context_switch` keeps working.
+  **Upgrade note:** an existing provider that emits a reserved host-owned
+  name now fails, which blocks every pre-hook (post-hooks warn) until the
+  provider is changed to emit a name of its own — rename it.
+
+- **Guard and provider scripts could call `eval`.** Only the artifact render
+  engine disabled it, although the crate documentation said none of the
+  engines allowed it. `eval` is now disabled in every Rhai engine, so a guard
+  or provider that uses it fails to parse (a guard fails closed).
+
+- **Rules could silently stop firing when an id contained `:` or `,`.** The
+  engine remembered fired activations as `rule:fact1,fact2` strings, so rule
+  `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose
+  id contained `:` never fired again after its fact was retracted and
+  re-asserted. Fired activations are now typed `(rule, facts)` keys, and a
+  retraction clears exactly the activations that used the retracted fact.
+
+- **Journal compaction could change the confidence band.** Compaction kept only
+  each subject's latest outcome record, but confidence signals are "latest per
+  kind" (compile, tests, each proof property, each bug). Dropping an older
+  record could grant a proof signal that had been withheld (an older failing
+  property vanished while a newer passing one survived) or drop a compile
+  signal. Compaction now keeps the latest record for every signal each
+  subject's reader can see, and a randomized test checks that signals are
+  identical before and after.
+
+- **The Codex hook allowed tool calls that Claude's `pre-check` blocked.** On a
+  configuration error — a rule naming an undefined journey selector, or a
+  malformed `journey.json` that a rule depends on — `codex-hook PreToolUse`
+  returned `{}` (allow) while `pre-check` blocked. Both hooks now build their
+  rule network through one shared function, so Codex denies (and PostToolUse
+  warns) wherever Claude does.
+
+- **`scrub-payload` no longer leaks `$HOME` paths that contain spaces or
+  JSON-escaped slashes.** A path such as `/Users/<name>/My Plans/q3.txt` used to
+  lose only its first word to the placeholder, and `\/Users\/<name>\/…` inside a
+  captured tool output passed through untouched; both exited 0. Path extent now
+  follows a documented rule per context (path-keyed value, quoted, bare free
+  text with `/`-continuation), separators match at any escaping depth with the
+  placeholder written back in the same spelling, and `verify` plus residual
+  detection run over separator-normalized text so an escaped residual fails the
+  run. The project root is matched as a whole component, so a sibling
+  `…/project2` is no longer rewritten to `/home/dev/project2`.
+
+- **Governance switched off inside some git worktrees.** For a worktree created
+  with `git worktree add --relative-paths`, a hook run from a subdirectory
+  resolved the worktree's relative `gitdir` against the current directory, so
+  it either found no `.phronesis` (every rule skipped) or, in a nested
+  checkout, found an unrelated project's rules. The `gitdir` is now resolved
+  against the directory holding the `.git` file, and the main checkout root is
+  canonicalized.
+- **Stray `.phronesis/journey/` directories switched governance off for their
+  subtree.** Hooks fired from a directory no project governed (and, before
+  project-root discovery walked up, from any subdirectory) created
+  `<cwd>/.phronesis/journey/` holding only `inflight.lock`, `seq`,
+  `events.jsonl` and `events.lock`. Root discovery stopped at the first
+  `.phronesis/` it met, so every hook run from under one of those strays found
+  no rules and allowed everything, even with blocking rules in the real
+  project root. A root now counts as governed only when `.phronesis/rules.json`
+  (which `phr-mcp init` always writes, `--packs none` included) or
+  `.phronesis/loader.json` exists; discovery skips anything else, and
+  `pre-check`, `post-check`, `claude-hook`, `codex-hook`, `session-context` and
+  `interaction-context` neither write nor inject anything in an ungoverned
+  root (a `durable.md` without a rules file is no longer injected). Existing strays
+  are not removed for you. To find them, run from your repository root:
+  `find . -type d -path '*/.phronesis/journey' -not -path './.phronesis/*' -exec sh -c 'p=$(dirname "$1"); [ -e "$p/rules.json" ] || [ -e "$p/loader.json" ] || echo "$p"' _ {} \;`
+  and delete each printed `.phronesis` directory once you have checked it
+  holds nothing but `journey/` (older builds also left a `log.jsonl`). A
+  printed directory with more state than that is a copy-initialized worktree
+  missing its `rules.json`; it is now governed by its main checkout, so restore
+  `rules.json` there if it should govern itself. The Phronesis repository had
+  fourteen strays, among them `crates/`, `crates/phronesis/`,
+  `crates/phronesis-mcp/src/`, `crates/phronesis-mcp/tests/`,
+  `crates/phronesis-metrics/` and its `src/`, `tests/` and `examples/`,
+  `docs/specs/`, and `.worktrees/`.
+
+  Three behaviors change with the new definition of a governed root:
+  - A nested project whose `.phronesis/` holds real state (a `durable.md`,
+    say) but no `rules.json` used to govern itself with no rules, so hooks
+    under it allowed everything. It is now skipped, and the nearest governed
+    parent's rules apply — an edit there that the parent forbids is now
+    blocked. Add a `rules.json` (`phr-mcp init --rules-only --packs none`)
+    to keep the nested project separate.
+  - A project set up only with `phr-mcp init --hooks-only`, which writes no
+    `.phronesis/`, is ungoverned: lifecycle events are no longer recorded
+    there and `durable.md` is no longer injected. Run `phr-mcp init` without
+    `--hooks-only` to govern it.
+  - In an ungoverned root, `codex-hook PreToolUse` with a malformed
+    `apply_patch` now answers `{}` (allow) instead of denying, matching every
+    other ungoverned tool call. A payload that is not valid JSON still denies.
+- **`phr-mcp kalpa start`, `phr-mcp unit start` and the MCP
+  `submit_suggestion` tool reported success in a directory no project
+  governed**, creating `.phronesis/journey/` and `log.jsonl` there — the
+  stray shape above — for a boundary no hook would ever record against. They
+  now fail with a message pointing at `phr-mcp init` and write nothing.
+
+- **The macOS verifier sandbox let the verifier write anywhere.** The
+  sandbox-exec profile allowed every write and named `verification/` as a
+  relative path Seatbelt never matches, so a verifier run could write any file
+  the user could — directly, or through a daemon such as `defaults write` or
+  `pbcopy` — and could signal any of the user's processes. Writes are now
+  denied except under a fresh per-run directory (the artifact copy and
+  `TMPDIR`), daemon lookups are denied, signals may target only the verifier
+  itself, and network is still denied; the real Verus harness still proves
+  under it.
+- **The devcontainer tier ran whatever image the verifier command named.** The
+  `docker run` line had no image and no mount, so the first verifier word was
+  pulled from a registry as the image and any image that printed the summary
+  line recorded `passed`. The image now comes from
+  `verification/templates/devcontainer.json`, must be pinned by digest (the
+  tier is refused otherwise), is never pulled, and sees only the artifact's
+  run directory, mounted read-only.
+- **A tampered artifact ran as approved.** Verifier execution trusted the hash
+  the caller passed in, so edited bytes ran under an old approval, and a
+  hand-edited allowlist entry with an empty hash or principal was accepted.
+  Execution now computes the artifact's SHA-256 from disk and refuses on a
+  mismatch or when that hash is not approved, and the allowlist refuses to load
+  when any entry is invalid, naming the entry.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
