@@ -11,13 +11,22 @@ fn run_phr(root: &Path, args: &[&str]) -> Output {
         .expect("spawn phr-mcp")
 }
 
+/// A temp project with an empty rule set: `kalpa start` / `unit start` refuse
+/// an ungoverned root, and these tests exercise the governed behavior.
+fn governed_tempdir() -> tempfile::TempDir {
+    let d = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
+    std::fs::write(d.path().join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    d
+}
+
 fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
 #[test]
 fn kalpa_start_show_end_round_trip_and_events() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let out = run_phr(d.path(), &["kalpa", "start", "lifecycle-events"]);
     assert!(out.status.success());
     let show = run_phr(d.path(), &["kalpa"]);
@@ -52,7 +61,7 @@ fn kalpa_start_show_end_round_trip_and_events() {
 
 #[test]
 fn kalpa_rejects_bad_names_and_survives_session_reset() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     assert!(
         !run_phr(d.path(), &["kalpa", "start", "Bad Name"])
             .status
@@ -74,7 +83,7 @@ fn kalpa_rejects_bad_names_and_survives_session_reset() {
 
 #[test]
 fn kalpa_show_with_none_open_fails_and_starting_a_second_ends_the_first() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let show = run_phr(d.path(), &["kalpa"]);
     assert!(!show.status.success());
     assert!(String::from_utf8_lossy(&show.stderr).contains("no kalpa open"));
@@ -99,7 +108,7 @@ fn kalpa_show_with_none_open_fails_and_starting_a_second_ends_the_first() {
 fn header_line_marks_a_month_old_kalpa_stale() {
     use phronesis_mcp::lifecycle::kalpa_cli::header_line;
     use phronesis_mcp::lifecycle::state::{Kalpa, write_kalpa};
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     let now = 1_800_000_000u64;
     write_kalpa(
         d.path(),
@@ -192,7 +201,7 @@ fn seed_lifecycle_log(root: &std::path::Path, kalpa: &str) {
 
 #[test]
 fn stats_kalpa_prints_lifecycle_section_with_retention_boundary() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_lifecycle_log(d.path(), "lifecycle-events");
     let out = run_phr(d.path(), &["stats", "--kalpa", "lifecycle-events"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -217,7 +226,7 @@ fn stats_kalpa_prints_lifecycle_section_with_retention_boundary() {
 /// contradiction: the emptiness check must read both sections.
 #[test]
 fn stats_does_not_claim_no_activity_when_lifecycle_is_populated() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_lifecycle_log(d.path(), "lifecycle-events");
     let out = run_phr(d.path(), &["stats", "--kalpa", "lifecycle-events"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -232,7 +241,7 @@ fn stats_does_not_claim_no_activity_when_lifecycle_is_populated() {
 /// The other half: with nothing at all recorded, the original line stands.
 #[test]
 fn stats_still_reports_an_empty_log_as_no_activity() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
     std::fs::write(d.path().join(".phronesis/log.jsonl"), "").unwrap();
     let out = run_phr(d.path(), &["stats"]);
@@ -245,7 +254,7 @@ fn stats_still_reports_an_empty_log_as_no_activity() {
 
 #[test]
 fn stats_kalpa_filter_excludes_other_kalpas() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_lifecycle_log(d.path(), "lifecycle-events");
     let out = run_phr(d.path(), &["stats", "--kalpa", "other-theme", "--json"]);
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -259,7 +268,7 @@ fn stats_kalpa_filter_excludes_other_kalpas() {
 
 #[test]
 fn kalpa_show_reports_counts_for_the_named_kalpa() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     assert!(
         run_phr(d.path(), &["kalpa", "start", "lifecycle-events"])
             .status
@@ -293,7 +302,7 @@ fn kalpa_show_reports_counts_for_the_named_kalpa() {
 
 #[test]
 fn kalpa_show_of_a_closed_kalpa_still_counts_its_entries() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_lifecycle_log(d.path(), "old-theme");
     let out = run_phr(d.path(), &["kalpa", "show", "old-theme"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -308,7 +317,7 @@ fn kalpa_show_of_a_closed_kalpa_still_counts_its_entries() {
 /// prints the date it holds rather than the disclaimer.
 #[test]
 fn kalpa_show_prints_the_start_date_when_the_boundary_is_still_retained() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_lifecycle_log(d.path(), "old-theme");
     {
         use phronesis_mcp::action_log;
@@ -398,7 +407,7 @@ fn seed_work_items(root: &std::path::Path, kalpa: &str) {
 
 #[test]
 fn kalpa_show_reports_work_items_and_governed_throughput() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_work_items(d.path(), "lifecycle-events");
     let out = run_phr(d.path(), &["kalpa", "show", "lifecycle-events"]);
     let stdout = String::from_utf8_lossy(&out.stdout);
@@ -427,7 +436,7 @@ fn kalpa_show_reports_work_items_and_governed_throughput() {
 
 #[test]
 fn stats_kalpa_reports_governed_throughput_as_json() {
-    let d = tempfile::tempdir().unwrap();
+    let d = governed_tempdir();
     seed_work_items(d.path(), "lifecycle-events");
     let out = run_phr(
         d.path(),

@@ -42,6 +42,58 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   run. The project root is matched as a whole component, so a sibling
   `…/project2` is no longer rewritten to `/home/dev/project2`.
 
+- **Governance switched off inside some git worktrees.** For a worktree created
+  with `git worktree add --relative-paths`, a hook run from a subdirectory
+  resolved the worktree's relative `gitdir` against the current directory, so
+  it either found no `.phronesis` (every rule skipped) or, in a nested
+  checkout, found an unrelated project's rules. The `gitdir` is now resolved
+  against the directory holding the `.git` file, and the main checkout root is
+  canonicalized.
+- **Stray `.phronesis/journey/` directories switched governance off for their
+  subtree.** Hooks fired from a directory no project governed (and, before
+  project-root discovery walked up, from any subdirectory) created
+  `<cwd>/.phronesis/journey/` holding only `inflight.lock`, `seq`,
+  `events.jsonl` and `events.lock`. Root discovery stopped at the first
+  `.phronesis/` it met, so every hook run from under one of those strays found
+  no rules and allowed everything, even with blocking rules in the real
+  project root. A root now counts as governed only when `.phronesis/rules.json`
+  (which `phr-mcp init` always writes, `--packs none` included) or
+  `.phronesis/loader.json` exists; discovery skips anything else, and
+  `pre-check`, `post-check`, `claude-hook`, `codex-hook`, `session-context` and
+  `interaction-context` neither write nor inject anything in an ungoverned
+  root (a `durable.md` without a rules file is no longer injected). Existing strays
+  are not removed for you. To find them, run from your repository root:
+  `find . -type d -path '*/.phronesis/journey' -not -path './.phronesis/*' -exec sh -c 'p=$(dirname "$1"); [ -e "$p/rules.json" ] || [ -e "$p/loader.json" ] || echo "$p"' _ {} \;`
+  and delete each printed `.phronesis` directory once you have checked it
+  holds nothing but `journey/` (older builds also left a `log.jsonl`). A
+  printed directory with more state than that is a copy-initialized worktree
+  missing its `rules.json`; it is now governed by its main checkout, so restore
+  `rules.json` there if it should govern itself. The Phronesis repository had
+  fourteen strays, among them `crates/`, `crates/phronesis/`,
+  `crates/phronesis-mcp/src/`, `crates/phronesis-mcp/tests/`,
+  `crates/phronesis-metrics/` and its `src/`, `tests/` and `examples/`,
+  `docs/specs/`, and `.worktrees/`.
+
+  Three behaviors change with the new definition of a governed root:
+  - A nested project whose `.phronesis/` holds real state (a `durable.md`,
+    say) but no `rules.json` used to govern itself with no rules, so hooks
+    under it allowed everything. It is now skipped, and the nearest governed
+    parent's rules apply — an edit there that the parent forbids is now
+    blocked. Add a `rules.json` (`phr-mcp init --rules-only --packs none`)
+    to keep the nested project separate.
+  - A project set up only with `phr-mcp init --hooks-only`, which writes no
+    `.phronesis/`, is ungoverned: lifecycle events are no longer recorded
+    there and `durable.md` is no longer injected. Run `phr-mcp init` without
+    `--hooks-only` to govern it.
+  - In an ungoverned root, `codex-hook PreToolUse` with a malformed
+    `apply_patch` now answers `{}` (allow) instead of denying, matching every
+    other ungoverned tool call. A payload that is not valid JSON still denies.
+- **`phr-mcp kalpa start`, `phr-mcp unit start` and the MCP
+  `submit_suggestion` tool reported success in a directory no project
+  governed**, creating `.phronesis/journey/` and `log.jsonl` there — the
+  stray shape above — for a boundary no hook would ever record against. They
+  now fail with a message pointing at `phr-mcp init` and write nothing.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added

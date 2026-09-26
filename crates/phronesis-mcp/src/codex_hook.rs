@@ -116,7 +116,14 @@ pub async fn run(event: &str) -> ! {
     let (event, result) = match parsed.as_ref() {
         Ok(payload) => {
             let event = payload.hook_event_name.as_deref().unwrap_or(event);
-            (event, dispatch(payload, event, &root).await)
+            // An ungoverned root has no rules and records nothing: every
+            // lifecycle write would create a stray `<cwd>/.phronesis/journey/`
+            // that later stops the project-root walk.
+            if security::is_governed(&root) {
+                (event, dispatch(payload, event, &root).await)
+            } else {
+                (event, empty_decision())
+            }
         }
         Err(error) => {
             fallback = invalid_payload_decision(event, error);
