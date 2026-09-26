@@ -124,10 +124,13 @@ existing convention. Note the resolution limit already documented at
 `graph/derive.rs:27-35`: the extractor cannot resolve a callee to its defining
 module without whole-crate name resolution, so `tested_by` carries bare callee
 names while `defines_fn` carries qualified ones, and matching bridges them on
-the final path segment. `calls_fn` inherits that limitation. It
-over-approximates — two functions sharing a short name are conflated — and
-that direction is deliberate for the same reason `no_direct_test` chose it: a missed
-warning is recoverable, a false accusation blocks legitimate work.
+the final path segment. `calls_fn` inherits that limitation. It no longer
+over-approximates: whole-graph canonicalization resolves a callee only when
+exactly one definition is visible to the caller, bare calls never bind to
+methods, untyped method receivers stay unresolved, and typed receivers must
+name a visible type (SPEC-triple-store-rete §4.4). Unresolved and ambiguous
+calls are dropped and counted rather than conflated by short name, so the
+graph under-reports calls instead of inventing them.
 
 `tested_by` becomes derivable from `calls_fn` plus a test-function marker.
 Deriving it is not required by this spec and should not be bundled into it:

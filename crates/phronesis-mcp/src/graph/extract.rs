@@ -18,9 +18,24 @@ use std::collections::BTreeSet;
 use std::sync::LazyLock;
 use tree_sitter::Node;
 
+/// A call inside a macro token tree, with the receiver syntax in front of
+/// the name: 1 = a `.` before the receiver (the receiver is a field, so its
+/// type is unknown), 2 = a receiver identifier before `.`, 3 = a `.` after an
+/// expression that is not a plain identifier, 4 = a `Path::` prefix, 5 = the
+/// called name.
 static MACRO_CALL_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"\b([_A-Za-z][_A-Za-z0-9]*)\s*\(").expect("static Rust macro call regex")
+    regex::Regex::new(
+        r"(?:(\.\s*)?\b([_A-Za-z]\w*)\s*\.\s*|(\.)\s*|\b((?:[_A-Za-z]\w*\s*::\s*)+))?\b([_A-Za-z][_A-Za-z0-9]*)\s*\(",
+    )
+    .expect("static Rust macro call regex")
 });
+
+/// Primitive types, whose associated functions are called through a
+/// lowercase path (`str::from_utf8`, `u64::from`) like a module's.
+const PRIMITIVE_TYPES: &[&str] = &[
+    "bool", "char", "str", "u8", "u16", "u32", "u64", "u128", "usize", "i8", "i16", "i32", "i64",
+    "i128", "isize", "f32", "f64",
+];
 
 /// Default watched-API list. Deliberately small and explicit: `calls_api` is
 /// resolved syntactically by method name, so a broad list would over-match
@@ -299,9 +314,24 @@ struct Sensor<'a> {
     /// re-deriving function ids, per decision D13.
     ownership: Option<FileOwnership<'a>>,
     skipped: usize,
+    /// `use a::b as c;` aliases in this file, `c` → `a::b`, so a call
+    /// written `c::f()` keeps the module (or type) path it really names.
+    use_aliases: std::collections::BTreeMap<String, String>,
 }
 
 impl Sensor<'_> {
+    /// `path` with a leading `use … as` alias replaced by what it names.
+    fn unalias(&self, path: &str) -> String {
+        let (head, rest) = path
+            .split_once("::")
+            .map_or((path, None), |(h, r)| (h, Some(r)));
+        match (self.use_aliases.get(head.trim()), rest) {
+            (Some(target), Some(rest)) => format!("{target}::{rest}"),
+            (Some(target), None) => target.clone(),
+            (None, _) => path.to_string(),
+        }
+    }
+
     fn emit(&mut self, p: &str, args: &[&str]) {
         self.out
             .insert((p.to_string(), args.iter().map(|s| s.to_string()).collect()));
@@ -408,7 +438,7 @@ impl Sensor<'_> {
     /// against canonical definitions using same-module/import evidence.
     fn called_names(&self, body: Node, scope: &Scope) -> BTreeSet<String> {
         let mut found = BTreeSet::new();
-        let receiver_types = self.receiver_types(body);
+        let receiver_types = self.receiver_types(body, scope);
         let mut stack = vec![body];
         while let Some(n) = stack.pop() {
             if n.kind() == "call_expression"
@@ -419,7 +449,7 @@ impl Sensor<'_> {
                     found.insert(name);
                 }
             } else if n.kind() == "macro_invocation" {
-                found.extend(self.called_names_in_macro(n));
+                found.extend(self.called_names_in_macro(n, &receiver_types, scope));
             }
             push_children(n, &mut stack);
         }
@@ -430,8 +460,37 @@ impl Sensor<'_> {
     /// `Sensor`) of its declared or constructed type, for every `let` in
     /// `body` whose type can be read off syntax. The written qualification is
     /// kept so the resolver can tell same-named types apart.
-    fn receiver_types(&self, body: Node) -> std::collections::BTreeMap<String, String> {
+    ///
+    /// A path that names a module rather than a type (`helpers::build()`)
+    /// says nothing about the value's type and is not recorded; `Self` reads
+    /// as the enclosing impl type. Typed parameters of the function owning
+    /// `body` count as declarations too.
+    fn receiver_types(
+        &self,
+        body: Node,
+        scope: &Scope,
+    ) -> std::collections::BTreeMap<String, String> {
         let mut receiver_types = std::collections::BTreeMap::new();
+        let impl_type = scope.impl_type.as_deref();
+        if let Some(parameters) = body
+            .parent()
+            .and_then(|function| function.child_by_field_name("parameters"))
+        {
+            let mut cursor = parameters.walk();
+            for parameter in parameters.named_children(&mut cursor) {
+                if parameter.kind() == "parameter"
+                    && let Some(pattern) = parameter.child_by_field_name("pattern")
+                    && pattern.kind() == "identifier"
+                    && let Some(ty) = parameter.child_by_field_name("type")
+                    && let TypePath::Type(ty) = classify_type_path(
+                        &self.unalias(written_type_path(text(ty, self.source))),
+                        impl_type,
+                    )
+                {
+                    receiver_types.insert(text(pattern, self.source).to_string(), ty);
+                }
+            }
+        }
         let mut declarations = vec![body];
         while let Some(node) = declarations.pop() {
             if node.kind() == "let_declaration"
@@ -453,7 +512,12 @@ impl Sensor<'_> {
                         }
                         None
                     })
-                    .map(|ty| written_type_path(&ty).to_string());
+                    .and_then(|ty| {
+                        match classify_type_path(&self.unalias(written_type_path(&ty)), impl_type) {
+                            TypePath::Type(ty) => Some(ty),
+                            _ => None,
+                        }
+                    });
                 if let Some(inferred) = inferred {
                     receiver_types.insert(text(pattern, self.source).to_string(), inferred);
                 }
@@ -478,18 +542,22 @@ impl Sensor<'_> {
                     .child_by_field_name("name")
                     .map(|x| text(x, self.source).to_string())
                     .unwrap_or_default();
-                // `Self::assoc_fn()` inside an impl: the path is `Self`, and
-                // the enclosing impl type turns the bare name into a
-                // resolvable method hint. Unknown impl type keeps the bare
-                // name — no guessing.
-                let path_is_self = f
+                // `Type::assoc_fn()` names a type, so it becomes a typed
+                // method hint (`Self` reads as the enclosing impl type). A
+                // bare name here would let the resolver attach it to any
+                // visible function of that leaf name — including the
+                // enclosing impl's own `new` for `serde_json::Map::new()`.
+                // Only a module path (`helpers::build()`) keeps the bare
+                // name; a type that cannot be named stays an untyped hint.
+                let path = f
                     .child_by_field_name("path")
-                    .map(|p| text(p, self.source).to_string())
-                    .is_some_and(|p| p.rsplit("::").next() == Some("Self"));
-                if path_is_self && let Some(impl_type) = scope.impl_type.as_deref() {
-                    return format!("@method:{}:{name}", strip_generic_args(impl_type));
+                    .map(|p| text(p, self.source).to_string());
+                match path {
+                    Some(path) => {
+                        scoped_call_hint(&self.unalias(&path), &name, scope.impl_type.as_deref())
+                    }
+                    None => name,
                 }
-                name
             }
             "field_expression" => f
                 .child_by_field_name("field")
@@ -520,11 +588,51 @@ impl Sensor<'_> {
     /// ordinary `call_expression` nodes. Scan only that syntax node after
     /// masking its parsed string/comment descendants; whole-file regexes are
     /// deliberately avoided.
-    fn called_names_in_macro(&self, macro_node: Node) -> BTreeSet<String> {
+    ///
+    /// The syntax in front of each name is kept as the same hint an ordinary
+    /// call would produce: `x.len()` is a method call, never a free `len`.
+    fn called_names_in_macro(
+        &self,
+        macro_node: Node,
+        receiver_types: &std::collections::BTreeMap<String, String>,
+        scope: &Scope,
+    ) -> BTreeSet<String> {
         let shaped = String::from_utf8_lossy(&self.masked_macro_source(macro_node)).into_owned();
+        let impl_type = scope.impl_type.as_deref();
         MACRO_CALL_RE
             .captures_iter(&shaped)
-            .filter_map(|captures| captures.get(1).map(|name| name.as_str().to_string()))
+            .filter_map(|captures| {
+                let name = captures.get(5)?.as_str();
+                let field_receiver = captures.get(1).is_some();
+                if let Some(receiver) = captures.get(2) {
+                    let receiver = receiver.as_str();
+                    let ty = if field_receiver {
+                        None
+                    } else if receiver == "self" {
+                        impl_type.map(str::to_string)
+                    } else {
+                        receiver_types.get(receiver).cloned()
+                    };
+                    return Some(ty.map_or_else(
+                        || format!("@method:{name}"),
+                        |ty| format!("@method:{}:{name}", strip_generic_args(&ty)),
+                    ));
+                }
+                if captures.get(3).is_some() {
+                    return Some(format!("@method:{name}"));
+                }
+                if let Some(path) = captures.get(4) {
+                    let path = path
+                        .as_str()
+                        .split("::")
+                        .map(str::trim)
+                        .filter(|segment| !segment.is_empty())
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    return Some(scoped_call_hint(&self.unalias(&path), name, impl_type));
+                }
+                Some(name.to_string())
+            })
             .collect()
     }
 
@@ -762,6 +870,105 @@ fn strip_generic_args(ty: &str) -> &str {
     }
 }
 
+/// Every `use … as alias` in the file: alias → the full path written,
+/// including the prefix of an enclosing `a::{b as c}` group. Scope is
+/// ignored (a function-local alias counts file-wide), matching how
+/// `receiver_types` treats `let`.
+fn use_aliases(root: Node, source: &[u8]) -> std::collections::BTreeMap<String, String> {
+    let mut aliases = std::collections::BTreeMap::new();
+    let mut pending = vec![root];
+    while let Some(node) = pending.pop() {
+        if node.kind() == "use_as_clause"
+            && let (Some(path), Some(alias)) = (
+                node.child_by_field_name("path"),
+                node.child_by_field_name("alias"),
+            )
+        {
+            let mut full = text(path, source).to_string();
+            let mut ancestor = node.parent();
+            while let Some(list) = ancestor.filter(|n| n.kind() == "use_list") {
+                let Some(group) = list.parent().filter(|n| n.kind() == "scoped_use_list") else {
+                    break;
+                };
+                if let Some(prefix) = group.child_by_field_name("path") {
+                    full = format!("{}::{full}", text(prefix, source));
+                }
+                ancestor = group.parent();
+            }
+            aliases.insert(text(alias, source).to_string(), full);
+        }
+        push_children(node, &mut pending);
+    }
+    aliases
+}
+
+/// What a written path names, as far as syntax can tell.
+#[derive(Debug, PartialEq, Eq)]
+enum TypePath {
+    /// A type, generics stripped (`Vec`, `serde_json::Map`, the impl type
+    /// for `Self`).
+    Type(String),
+    /// A module (`helpers`, `crate::graph`): its functions are free functions.
+    Module,
+    /// Something that is a type but cannot be named here: `<T as Trait>`,
+    /// `Self` outside an impl, `impl Trait`, a tuple or slice.
+    Unknown,
+}
+
+/// Classify a path by Rust's naming convention: a last segment that starts
+/// with an uppercase letter, or is a primitive, is a type; any other plain
+/// path is a module.
+fn classify_type_path(path: &str, impl_type: Option<&str>) -> TypePath {
+    let path = strip_generic_args(path.trim()).trim_end_matches("::");
+    let well_formed = !path.is_empty()
+        && path.split("::").all(|segment| {
+            segment
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_')
+                && segment.chars().all(|c| c.is_alphanumeric() || c == '_')
+        });
+    if !well_formed {
+        return TypePath::Unknown;
+    }
+    let last = path.rsplit("::").next().unwrap_or(path);
+    if last == "Self" {
+        return impl_type.map_or(TypePath::Unknown, |ty| {
+            TypePath::Type(strip_generic_args(ty).to_string())
+        });
+    }
+    if last.starts_with(|c: char| c.is_uppercase()) || PRIMITIVE_TYPES.contains(&last) {
+        TypePath::Type(path.to_string())
+    } else {
+        TypePath::Module
+    }
+}
+
+/// The callee hint for a call through `path::name`.
+///
+/// A module path is kept as `@path:<module>:name` so the resolver only
+/// matches a function in a module that path can name: `std::fs::write()`
+/// is not the caller's own `write`. `crate::`/`self::`/`super::` anchors
+/// are dropped; a path that is only anchors leaves the bare name.
+fn scoped_call_hint(path: &str, name: &str, impl_type: Option<&str>) -> String {
+    match classify_type_path(path, impl_type) {
+        TypePath::Type(ty) => format!("@method:{ty}:{name}"),
+        TypePath::Module => {
+            let module = path
+                .split("::")
+                .skip_while(|segment| matches!(*segment, "crate" | "self" | "super"))
+                .collect::<Vec<_>>()
+                .join("::");
+            if module.is_empty() {
+                name.to_string()
+            } else {
+                format!("@path:{module}:{name}")
+            }
+        }
+        TypePath::Unknown => format!("@method:{name}"),
+    }
+}
+
 /// Extract every base relation from one Rust file.
 pub fn extract_rust(
     file_path: &str,
@@ -867,6 +1074,7 @@ pub fn extract_rust_file(
         out: BTreeSet::new(),
         ownership: collector,
         skipped: 0,
+        use_aliases: use_aliases(tree.root_node(), source.as_bytes()),
     };
     sensor.emit("file_type", &[file_path, file_type(file_path)]);
     // Links a file to its module, so a rule matching on module-keyed
@@ -1756,10 +1964,11 @@ mod tests {
             "struct State; impl State { fn apply(&mut self) {} } fn use_it(state: &mut State) { state.apply(); }",
         );
         assert_eq!(edges_of(&out, "defines_method").len(), 1);
+        // The parameter's declared type makes the receiver known.
         assert!(
             edges_of(&out, "calls")
                 .iter()
-                .any(|args| args[1] == "@method:apply")
+                .any(|args| args[1] == "@method:State:apply")
         );
     }
 
@@ -2149,5 +2358,137 @@ fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
                 .iter()
                 .all(|e| e.p != "no_direct_test" && e.p != "in_cycle")
         );
+    }
+
+    // ─── scoped-path call hints (C6) ──────────────────────────────
+
+    fn callees(out: &Extracted) -> Vec<String> {
+        edges_of(out, "calls")
+            .iter()
+            .map(|args| args[1].clone())
+            .collect()
+    }
+
+    #[test]
+    fn c6_scoped_type_call_emits_a_typed_hint_not_a_bare_name() {
+        let out = run(
+            "src/log.rs",
+            "struct LogEntry; impl LogEntry { fn new() -> Self { \
+             let m = serde_json::Map::new(); let v = Vec::<u8>::new(); \
+             let o = OpenOptions::new(); Self::build(); LogEntry } }",
+        );
+        let calls = callees(&out);
+        assert!(
+            calls.contains(&"@method:serde_json::Map:new".to_string()),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&"@method:Vec:new".to_string()), "{calls:?}");
+        assert!(
+            calls.contains(&"@method:OpenOptions:new".to_string()),
+            "{calls:?}"
+        );
+        assert!(
+            calls.contains(&"@method:LogEntry:build".to_string()),
+            "{calls:?}"
+        );
+        assert!(
+            !calls.contains(&"new".to_string()),
+            "C6: bare `new`: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn c6_module_path_and_primitive_calls_are_classified() {
+        let out = run(
+            "src/a.rs",
+            "fn f(b: &[u8]) { helpers::build(); crate::m::go(); super::up(); \
+             std::fs::write(b); str::from_utf8(b); }",
+        );
+        let calls = callees(&out);
+        assert!(
+            calls.contains(&"@path:helpers:build".to_string()),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&"@path:m:go".to_string()), "{calls:?}");
+        assert!(calls.contains(&"up".to_string()), "{calls:?}");
+        assert!(
+            calls.contains(&"@path:std::fs:write".to_string()),
+            "{calls:?}"
+        );
+        assert!(
+            calls.contains(&"@method:str:from_utf8".to_string()),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn c6_a_module_function_result_is_not_a_receiver_type() {
+        // `let x = helpers::build()` says nothing about x's type.
+        let out = run("src/a.rs", "fn f() { let x = helpers::build(); x.len(); }");
+        let calls = callees(&out);
+        assert!(calls.contains(&"@method:len".to_string()), "{calls:?}");
+    }
+
+    #[test]
+    fn typed_parameters_are_receiver_types() {
+        let out = run(
+            "src/state.rs",
+            "struct State; impl State { fn apply(&mut self) {} } \
+             fn use_it(state: &mut State, other: impl Fn()) { state.apply(); other.call(); }",
+        );
+        let calls = callees(&out);
+        assert!(
+            calls.contains(&"@method:State:apply".to_string()),
+            "{calls:?}"
+        );
+        assert!(calls.contains(&"@method:call".to_string()), "{calls:?}");
+    }
+
+    #[test]
+    fn macro_body_calls_carry_method_and_type_hints() {
+        let out = run(
+            "src/a.rs",
+            "struct Foo; impl Foo { fn a(&self) { assert!(self.b()); \
+             assert!(x.len() > 0); assert!(Bar::make().ok()); assert!(Self::c()); \
+             assert!(helper()); } }",
+        );
+        let calls = callees(&out);
+        for want in [
+            "@method:Foo:b",
+            "@method:len",
+            "@method:Bar:make",
+            "@method:ok",
+            "@method:Foo:c",
+            "helper",
+        ] {
+            assert!(
+                calls.contains(&want.to_string()),
+                "missing {want}: {calls:?}"
+            );
+        }
+        assert!(!calls.contains(&"b".to_string()), "{calls:?}");
+        assert!(!calls.contains(&"len".to_string()), "{calls:?}");
+    }
+
+    #[test]
+    fn a_use_alias_is_followed_to_the_path_it_names() {
+        let out = run(
+            "src/main.rs",
+            "use phronesis_mcp::graph::{query as q, store};\n\
+             use crate::coverage::hydrate as coverage_hydrate;\n\
+             use crate::net::Client as C;\n\
+             fn f() { q::query(); coverage_hydrate::facts_for_event(); C::new(); }",
+        );
+        let calls = callees(&out);
+        for want in [
+            "@path:phronesis_mcp::graph::query:query",
+            "@path:coverage::hydrate:facts_for_event",
+            "@method:crate::net::Client:new",
+        ] {
+            assert!(
+                calls.contains(&want.to_string()),
+                "missing {want}: {calls:?}"
+            );
+        }
     }
 }

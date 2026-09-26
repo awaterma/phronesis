@@ -65,6 +65,24 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   (it re-imports; an export collected elsewhere then goes through
   `phr-mcp coverage import`).
 
+- **The code graph no longer invents `calls` and `tested_by` edges by matching
+  names.** A rebuild of this repository reported about a hundred functions
+  calling themselves (`LogEntry::new` "calling" `LogEntry::new` when it really
+  called `serde_json::Map::new`), and tests "directly testing" methods they
+  never touch (`f.predicate.clone()` on a `String` counted as a test of
+  `TaggerConfig::clone`). A `Type::f()` call now carries its type; a
+  `module::f()` call binds only to a function in a module that path names
+  (following `use … as` aliases and re-exports), so `std::fs::write` inside a
+  local `fn write` is no longer recursion; a bare call never binds to a method
+  of the enclosing `impl`; a method call on a receiver whose type is unknown
+  stays unresolved instead of binding to the one project method of that name;
+  and a typed receiver must name a type the caller can see, so
+  `reqwest::Client::get` no longer binds to a local `net::Client::get`. Typed
+  function parameters and calls inside macros now count as receiver evidence.
+  Dropped calls are counted as unresolved. A project whose only function
+  identity was an unqualified name could also fail the whole rebuild on a raw
+  `@method:` hint; that is fixed too.
+
 - **A predicate provider could forge the evidence a gate rule trusts.**
   Providers in `.phronesis/predicates/` — which an agent can write through
   `add_predicate_provider` — could `emit_fact` any predicate, so a two-line
