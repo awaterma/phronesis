@@ -421,17 +421,15 @@ async fn assert_pre_content_facts(
     // prior content — read it for the delta filter on heavy-clone facts.
     // Resolve `file_path` against the project root so the read works
     // regardless of process cwd (matches the post-check path-resolution).
-    let old_disk_content = if !file_path.is_empty() {
-        let root = security::project_root();
-        match security::resolve_safe_path(file_path, &root) {
-            Ok(safe) => tokio::fs::read_to_string(&safe).await.ok(),
-            Err(_) => None,
-        }
+    // Capped at the hook read limit and decoded lossily; `Unmappable` (exists
+    // but unreadable or over the cap) is kept distinct from `Missing`.
+    let disk = if file_path.is_empty() {
+        super::edit_images::DiskImage::Missing
     } else {
-        None
+        super::edit_images::read_disk_image(file_path, &security::project_root())
     };
 
-    assert_values_facts(network, file_path, content, old_disk_content.as_deref())
+    assert_values_facts(network, file_path, content, disk.text())
         .await
         .map_err(|e| {
             eprintln!("phronesis: BLOCKED — values-fact assertion failed: {}", e);
@@ -464,19 +462,19 @@ async fn assert_pre_content_facts(
     // sides, not the payload's snippet: old = disk, new = disk with the edit
     // applied (see `edit_images`). Bash events hydrate revision/staleness
     // facts only.
-    let edited: Vec<(String, Option<String>, String)> = if file_path.is_empty() {
+    let edited = if file_path.is_empty() {
         Vec::new()
     } else {
-        let images = super::edit_images::pre_images(
+        vec![super::edit_images::pre_edited(
             tool_name,
             payload
                 .tool_input
                 .as_ref()
                 .unwrap_or(&serde_json::Value::Null),
-            old_disk_content,
+            &disk,
+            file_path,
             content,
-        );
-        vec![(file_path.to_string(), images.old, images.new)]
+        )]
     };
     assert_coverage_facts(network, &project_root, rule_predicates, &edited).await?;
     assert_properties_facts(network, &project_root, rule_predicates, &edited).await?;

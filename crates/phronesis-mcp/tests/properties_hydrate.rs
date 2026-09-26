@@ -146,6 +146,7 @@ fn edit_input<'a>(
             path: "src/lib.rs".into(),
             old,
             new,
+            whole_file: false,
         }],
         head_sha: head.map(str::to_string),
     }
@@ -207,6 +208,7 @@ fn b1_staleness_join_names_only_the_branch_property() {
                 path: "src/lib.rs".into(),
                 old: Some(OLD_SRC),
                 new: NEW_SRC,
+                whole_file: false,
             }],
             head_sha: Some(head.clone()),
         })
@@ -358,6 +360,7 @@ fn b4_gap_rule_still_warns_for_unpromoted_properties() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some("b".repeat(40)),
     })
@@ -560,6 +563,7 @@ fn absolute_edit_path_still_matches_qualified_depends_on() {
             path: abs,
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some("b".repeat(40)),
     };
@@ -859,6 +863,7 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: &with_new_fn,
+            whole_file: false,
         }],
         head_sha: Some("b".repeat(40)),
     })
@@ -908,6 +913,7 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: &with_new_fn,
+            whole_file: false,
         }],
         head_sha: Some(summary.revision.clone()),
     })

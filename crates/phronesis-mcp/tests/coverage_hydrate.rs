@@ -69,6 +69,7 @@ fn test_demand_gate_skips_when_no_rule_mentions() {
             path: "src/a.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some("a".repeat(40)),
     };
@@ -99,6 +100,7 @@ fn test_hydrate_scopes_to_edited_files() {
             path: "src/a.rs".into(),
             old: None,
             new: "x",
+            whole_file: false,
         }],
         head_sha: Some(rev.clone()),
     };
@@ -127,6 +129,7 @@ fn test_hydrate_reports_stale_coverage() {
             path: "src/a.rs".into(),
             old: None,
             new: "x",
+            whole_file: false,
         }],
         head_sha: Some("b".repeat(40)),
     };
@@ -151,6 +154,7 @@ fn test_hydrate_emits_changed_regions() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some("a".repeat(40)),
     };
@@ -220,6 +224,7 @@ fn test_gap_facts_fire_on_empty_store() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some("a".repeat(40)),
     };
@@ -286,6 +291,7 @@ fn test_no_dynamic_gap_when_store_covers_region() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         // Fresh store: only evidence current for HEAD suppresses a gap (D3;
         // the stale case lives in coverage_store_integrity.rs).
@@ -318,6 +324,7 @@ fn test_gap_facts_are_demand_gated() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some("a".repeat(40)),
     };
@@ -342,11 +349,13 @@ fn test_gap_facts_deduplicate_across_edits() {
                 path: "src/lib.rs".into(),
                 old: Some(OLD_SRC),
                 new: NEW_SRC,
+                whole_file: false,
             },
             EditedFile {
                 path: "src/lib.rs".into(),
                 old: Some(OLD_SRC),
                 new: NEW_SRC,
+                whole_file: false,
             },
         ],
         head_sha: Some("a".repeat(40)),
@@ -385,6 +394,7 @@ fn test_legacy_leaf_name_store_is_stale_and_never_joined() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         // Same revision as the store: only the id format makes it stale.
         head_sha: Some(rev),
@@ -422,6 +432,7 @@ fn test_edit_outside_root_changes_no_region() {
             path,
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some("a".repeat(40)),
     };

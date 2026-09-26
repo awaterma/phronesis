@@ -436,3 +436,84 @@ fn property_obligations_follow_the_full_file_regions_in_both_phases() {
     let (_, stderr) = hook(d.path(), "post", &one_line_edit(d.path(), "PostToolUse"));
     assert_eq!(tagged(&stderr, "OBLIGATION"), only_divide, "{stderr}");
 }
+
+/// A real file that is not valid UTF-8 (a stray Latin-1 byte in a comment)
+/// was read as "missing": pre-check fell back to the one-line snippet and
+/// reported no changed region at all for a real edit.
+#[test]
+fn non_utf8_file_still_maps_the_edit() {
+    let d = project(false);
+    let mut bytes = b"// caf\xe9 \xff\xfe\n".to_vec();
+    bytes.extend_from_slice(fixture_src().as_bytes());
+    std::fs::write(d.path().join("src/lib.rs"), &bytes).expect("write non-utf8");
+    let (code, stderr) = hook(d.path(), "pre", &one_line_edit(d.path(), "PreToolUse"));
+    assert_eq!(code, 1, "expected warn exit: {stderr}");
+    let changed = tagged(&stderr, "CHANGED");
+    assert_only_safe_divide(&changed, &stderr);
+    assert_eq!(tagged(&stderr, "GAP"), changed, "{stderr}");
+
+    let mut after = b"// caf\xe9 \xff\xfe\n".to_vec();
+    after.extend_from_slice(edited_src().as_bytes());
+    std::fs::write(d.path().join("src/lib.rs"), &after).expect("apply edit");
+    let (_, stderr) = hook(d.path(), "post", &one_line_edit(d.path(), "PostToolUse"));
+    assert_only_safe_divide(&tagged(&stderr, "CHANGED"), &stderr);
+}
+
+/// A file that exists but cannot be read maps to one coarse whole-file
+/// region: the gap rule fires rather than going silent.
+#[cfg(unix)]
+#[test]
+fn unreadable_file_counts_as_wholly_changed() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = project(false);
+    let file = d.path().join("src/lib.rs");
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+    if std::fs::read(&file).is_ok() {
+        // Running as root: permissions do not bind; nothing to prove.
+        return;
+    }
+    let (code, stderr) = hook(d.path(), "pre", &one_line_edit(d.path(), "PreToolUse"));
+    let (pcode, pstderr) = hook(d.path(), "post", &one_line_edit(d.path(), "PostToolUse"));
+    std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    let whole = BTreeSet::from(["file:src/lib.rs".to_string()]);
+    assert_eq!(code, 1, "{stderr}");
+    assert_eq!(tagged(&stderr, "CHANGED"), whole, "{stderr}");
+    assert_eq!(tagged(&stderr, "GAP"), whole, "{stderr}");
+    assert_eq!(pcode, 1, "{pstderr}");
+    assert_eq!(tagged(&pstderr, "GAP"), whole, "{pstderr}");
+}
+
+/// A file over the read cap is neither read unbounded nor mapped per region:
+/// pre-check returns promptly with one coarse whole-file region (it took
+/// tens of seconds to minutes before). The bound is deliberately generous.
+#[test]
+fn oversized_file_is_bounded_and_wholly_changed() {
+    let d = project(false);
+    let mut src = fixture_src();
+    for i in 0..60_000 {
+        src.push_str(&format!("fn pad{i}(x: u32) -> u32 {{ x }}\n"));
+    }
+    assert!(src.len() > 1024 * 1024);
+    std::fs::write(d.path().join("src/lib.rs"), &src).expect("write big");
+    // Ambiguous edit (whole-file fallback) — the reviewer's worst case.
+    let p = payload(
+        d.path(),
+        "PreToolUse",
+        "Edit",
+        serde_json::json!({
+            "file_path": "src/lib.rs",
+            "old_string": "#[test]",
+            "new_string": "#[test]\n    #[ignore]",
+        }),
+    );
+    let start = std::time::Instant::now();
+    let (code, stderr) = hook(d.path(), "pre", &p);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_secs(15),
+        "pre-check took {elapsed:?}"
+    );
+    let whole = BTreeSet::from(["file:src/lib.rs".to_string()]);
+    assert_eq!(code, 1, "{stderr}");
+    assert_eq!(tagged(&stderr, "GAP"), whole, "{stderr}");
+}

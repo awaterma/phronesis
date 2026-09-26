@@ -82,6 +82,7 @@ fn hydrate(root: &Path, rels: &[&str], head: &str) -> Vec<CoverageFact> {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some(head.to_string()),
     };

@@ -59,6 +59,7 @@ fn gaps_for_edit(root: &Path, path: &str, old: &str, new: &str) -> Vec<String> {
             path: path.into(),
             old: Some(old),
             new,
+            whole_file: false,
         }],
         head_sha: Some(REV.into()),
     };

@@ -333,3 +333,100 @@ fn absolute_paths_with_parent_components_are_normalized() {
         None
     );
 }
+
+/// `n` one-line top-level functions, each with one branch.
+fn many_fns(n: usize) -> String {
+    (0..n)
+        .map(|i| format!("fn f{i}(x: i32) -> i32 {{ if x > {i} {{ 1 }} else {{ 0 }} }}\n"))
+        .collect()
+}
+
+// Region mapping ran on the synchronous pre-check path over whole files and
+// was quadratic in the number of sibling items (tree-sitter `parent()` scans
+// the parent's children) and in lines (full LCS table). A mid-size file must
+// map in well under the generous bound below; the quadratic version took
+// tens of seconds here.
+#[test]
+fn region_mapping_scales_to_many_functions() {
+    let old = many_fns(15_000);
+    assert!(old.len() < phronesis_mcp::coverage::region_map::REGION_MAP_MAX_BYTES);
+    let new = old.replacen("if x > 10000 {", "if x >= 10000 {", 1);
+    let start = std::time::Instant::now();
+    let ch = changed_regions("src/big.rs", &old, &new).unwrap();
+    let elapsed = start.elapsed();
+    assert_eq!(
+        ch.functions,
+        vec![function_region_id("src/big.rs", "f10000")]
+    );
+    // The condition changed: the old and the new anchor, both in f10000.
+    assert_eq!(ch.branches.len(), 2, "{:?}", ch.branches);
+    assert!(
+        ch.branches
+            .iter()
+            .all(|b| b.starts_with("branch:src/big.rs::f10000:"))
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "15k-function region mapping took {elapsed:?}"
+    );
+
+    // Whole-file change (no old side): every site, same bound.
+    let start = std::time::Instant::now();
+    let ch = changed_regions("src/big.rs", "", &old).unwrap();
+    assert_eq!(ch.functions.len(), 15_000);
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+}
+
+// An edit spread across a big file (no common prefix/suffix to trim) must
+// not build an old×new LCS table: the middle is capped and counted as
+// wholly changed, which over-reports and never under-reports.
+#[test]
+fn region_mapping_bounds_the_line_diff() {
+    let old = many_fns(15_000);
+    let new = old
+        .replacen("fn f0(", "fn g0(", 1)
+        .replacen("fn f14999(", "fn g14999(", 1);
+    let start = std::time::Instant::now();
+    let ch = changed_regions("src/big.rs", &old, &new).unwrap();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(10),
+        "took {:?}",
+        start.elapsed()
+    );
+    for f in ["f0", "g0", "f14999", "g14999"] {
+        assert!(
+            ch.functions.contains(&function_region_id("src/big.rs", f)),
+            "{f} must be changed"
+        );
+    }
+}
+
+// Past the byte budget the file is not mapped per region at all: one
+// coarse `file:` region stands for the whole file, so gap rules still fire.
+#[test]
+fn oversized_input_maps_to_one_whole_file_region() {
+    use phronesis_mcp::coverage::region_map::{REGION_MAP_MAX_BYTES, file_region_id};
+    let n = REGION_MAP_MAX_BYTES / 40 + 1000;
+    let big = many_fns(n);
+    assert!(big.len() > REGION_MAP_MAX_BYTES);
+    let ch = changed_regions("src/big.rs", "", &big).unwrap();
+    assert!(ch.functions.is_empty() && ch.branches.is_empty());
+    assert_eq!(ch.files, vec![file_region_id("src/big.rs")]);
+    assert_eq!(file_region_id("src/big.rs"), "file:src/big.rs");
+}
+
+#[test]
+fn a_whole_file_region_matches_every_reference_into_that_file() {
+    use phronesis_mcp::coverage::region_map::file_region_id;
+    let whole = file_region_id("src/lib.rs");
+    assert!(reference_matches("fn:src/lib.rs::safe_divide", &whole));
+    assert!(reference_matches(
+        "branch:src/lib.rs::safe_divide:cd6054b02dde",
+        &whole
+    ));
+    assert!(!reference_matches("fn:src/other.rs::safe_divide", &whole));
+    assert!(
+        reference_matches("fn:safe_divide", &whole),
+        "legacy refs name no file"
+    );
+}

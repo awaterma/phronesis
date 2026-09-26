@@ -310,7 +310,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/server.rs` | `EpistemeMcp` struct, MCP tools (rmcp macros) |
 | `crates/phronesis-mcp/src/hook.rs` | `pre-check`/`post-check` hooks, rule evaluation |
 | `crates/phronesis-mcp/src/hook/lifecycle_wiring.rs` | Shared pre/post lifecycle wiring — in-flight push/pop, Gemini `invoke_agent` sub-agent derivation, commit recording |
-| `crates/phronesis-mcp/src/hook/edit_images.rs` | Whole pre-/post-edit file images for changed-region mapping (applies the edit at pre-check, reverses it at post-check; whole-file fallback) |
+| `crates/phronesis-mcp/src/hook/edit_images.rs` | Whole pre-/post-edit file images for changed-region mapping (capped lossy disk read; applies the edit at pre-check, reverses it at post-check; whole-file / coarse `file:` region fallback) |
 | `crates/phronesis-mcp/src/claude_hook.rs` | `phr-mcp claude-hook <Event>` — Claude Code / Gemini lifecycle adapter |
 | `crates/phronesis-mcp/src/lifecycle/` | Lifecycle events — `event` (the one place both on-disk shapes are decided), `state` (locked correlation files, `classify_prompt`), `record` (the only writer), `outcome` (`detect_commit`), `scrub` (`scrub_prompt`), `inflight`, `kalpa_cli`, `unit_cli`, `unit_report` |
 | `crates/phronesis-mcp/src/init.rs` | `phr-mcp init` project setup |

@@ -23,8 +23,129 @@
 //! `originalFile` — the fallback treats the whole current file as changed.
 //! That over-reports regions; it never under-reports them, so a gap rule
 //! cannot go quiet for lack of the old side.
+//!
+//! The disk read is capped at `PHRONESIS_MAX_FILE_BYTES` (the same limit as
+//! every other hook read) and decoded lossily, so a stray non-UTF-8 byte
+//! does not hide the file. A file that exists but cannot be read, or is over
+//! the cap, is never mistaken for a missing one: it maps to one coarse
+//! whole-file region (`region_map::file_region_id`), so gap rules still fire.
+//! Only a file that genuinely does not exist falls back to the payload's
+//! snippet (a `Write` creating it, or an edit the host will reject).
+//!
+//! `tool_response.originalFile` is taken from Claude Code's documented
+//! `Edit`/`Write` response shape, but no captured PostToolUse payload in
+//! this repo's corpus confirms it yet. It is only a secondary source: the
+//! reverse-apply above is primary, and without either the whole-file
+//! fallback applies, so nothing depends on it for correctness.
+
+use std::io::Read;
+use std::path::Path;
 
 use serde_json::Value;
+
+use crate::hook_facts::EditedImage;
+use crate::security;
+
+/// The edited file as found on disk.
+pub(super) enum DiskImage {
+    /// The file does not exist (or lies outside the project root, where it
+    /// names no region of this project).
+    Missing,
+    /// The content, decoded lossily.
+    Text(String),
+    /// The file exists but could not be read within the cap; the reason.
+    Unmappable(String),
+}
+
+impl DiskImage {
+    pub(super) fn text(&self) -> Option<&str> {
+        match self {
+            DiskImage::Text(t) => Some(t),
+            _ => None,
+        }
+    }
+}
+
+/// Read `file_path` for region mapping, capped at the hook read limit.
+pub(super) fn read_disk_image(file_path: &str, root: &Path) -> DiskImage {
+    let path = match security::resolve_safe_path(file_path, root) {
+        Ok(p) => p,
+        Err(
+            security::SecurityError::PathNotFound(_)
+            | security::SecurityError::PathOutsideRoot(_)
+            | security::SecurityError::PathTraversal(_)
+            | security::SecurityError::EmptyPath,
+        ) => return DiskImage::Missing,
+        Err(e) => return DiskImage::Unmappable(e.to_string()),
+    };
+    let file = match std::fs::File::open(&path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return DiskImage::Missing,
+        Err(e) => return DiskImage::Unmappable(format!("cannot open: {e}")),
+    };
+    let cap = security::max_file_bytes();
+    let mut bytes = Vec::new();
+    if let Err(e) = file.take(cap.saturating_add(1)).read_to_end(&mut bytes) {
+        return DiskImage::Unmappable(format!("cannot read: {e}"));
+    }
+    if bytes.len() as u64 > cap {
+        return DiskImage::Unmappable(format!("larger than the {cap}-byte read cap"));
+    }
+    DiskImage::Text(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The whole file counts as changed, unmapped.
+fn unmapped(file_path: &str, reason: String) -> EditedImage {
+    EditedImage {
+        path: file_path.to_string(),
+        old: None,
+        new: String::new(),
+        unmapped: Some(reason),
+    }
+}
+
+/// Pre-check region input for one edited file.
+pub(super) fn pre_edited(
+    tool_name: &str,
+    input: &Value,
+    disk: &DiskImage,
+    file_path: &str,
+    snippet: &str,
+) -> EditedImage {
+    let disk = match disk {
+        DiskImage::Unmappable(reason) => return unmapped(file_path, reason.clone()),
+        DiskImage::Missing => None,
+        DiskImage::Text(t) => Some(t.clone()),
+    };
+    let images = pre_images(tool_name, input, disk, snippet);
+    EditedImage {
+        path: file_path.to_string(),
+        old: images.old,
+        new: images.new,
+        unmapped: None,
+    }
+}
+
+/// Post-check region input for one edited file; `None` when the file no
+/// longer exists (nothing left to map).
+pub(super) fn post_edited(
+    tool_name: &str,
+    input: &Value,
+    output: Option<&Value>,
+    disk: DiskImage,
+    file_path: &str,
+) -> Option<EditedImage> {
+    match disk {
+        DiskImage::Missing => None,
+        DiskImage::Unmappable(reason) => Some(unmapped(file_path, reason)),
+        DiskImage::Text(new) => Some(EditedImage {
+            path: file_path.to_string(),
+            old: post_old_image(tool_name, input, output, &new),
+            new,
+            unmapped: None,
+        }),
+    }
+}
 
 /// The two sides handed to region mapping. `old: None` means "no prior
 /// content": every region in `new` counts as changed.
@@ -149,8 +270,8 @@ fn reverse_all(after: &str, subs: &[Substitution<'_>]) -> Option<String> {
     (apply_all(&text, subs)? == after).then_some(text)
 }
 
-/// Pre-check images. `disk` is the file's current content (`None` when it
-/// does not exist or cannot be read); `snippet` is the payload's proposed
+/// Pre-check images. `disk` is the file's current content (`None` only when
+/// it does not exist); `snippet` is the payload's proposed
 /// content, the last resort when there is no file to apply the edit to.
 pub(super) fn pre_images(
     tool_name: &str,

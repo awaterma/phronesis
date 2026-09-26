@@ -131,7 +131,13 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   Claude Code's `tool_response.originalFile`. When the edit does not match
   the file, or the pre-image cannot be recovered, the whole file counts as
   changed — gaps are over-reported, never missed. Property obligations use
-  the same regions.
+  the same regions. A file that exists but cannot be read, or is over the
+  `PHRONESIS_MAX_FILE_BYTES` read cap, or over 1 MiB for region mapping,
+  counts as one whole-file region `file:<path>` instead of silently mapping
+  to nothing; a stray non-UTF-8 byte no longer hides a file. Region mapping
+  is now linear in file size: a pre-check on a large file that took minutes
+  (tree-sitter parent walks and a full line-diff table, both quadratic)
+  returns promptly.
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other
