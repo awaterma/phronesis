@@ -1216,3 +1216,49 @@ fn per_file_resolution_stats_survive_a_double_rebuild() {
         "expected at least one unresolved edge, got {stats2:?}"
     );
 }
+
+#[test]
+fn per_file_resolution_stats_survive_an_incremental_save() {
+    // A save re-canonicalizes only the saved file's raw edges; the other
+    // files' breakdown from the last rebuild must not be wiped.
+    let d = project();
+    write(
+        d.path(),
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod c;\n",
+    );
+    let a_body = "use crate::b::dup;\nuse crate::c::dup;\npub fn entry() { missing(); dup(); }\n";
+    write(d.path(), "src/a.rs", a_body);
+    write(
+        d.path(),
+        "src/b.rs",
+        "pub fn dup() {}\npub fn b_entry() { ghost(); }\n",
+    );
+    let c_body = "pub fn dup() {}\n";
+    write(d.path(), "src/c.rs", c_body);
+
+    rebuild(d.path()).expect("rebuild");
+    let after_rebuild = load_resolution_stats(d.path()).expect("load after rebuild");
+    assert!(after_rebuild.contains_key("src/a.rs"), "{after_rebuild:?}");
+    assert!(after_rebuild.contains_key("src/b.rs"), "{after_rebuild:?}");
+
+    // Saving an unchanged file leaves the breakdown exactly as it was.
+    let outcome = on_save(d.path(), "src/c.rs", c_body).expect("save c");
+    let after_save = load_resolution_stats(d.path()).expect("load after save");
+    assert_eq!(after_save, after_rebuild);
+    assert_eq!(outcome.per_file_resolution, after_save);
+
+    // Saving a.rs without its unresolved call replaces only a.rs's entry.
+    let a_fixed = "use crate::b::dup;\nuse crate::c::dup;\npub fn entry() { dup(); }\n";
+    write(d.path(), "src/a.rs", a_fixed);
+    let outcome = on_save(d.path(), "src/a.rs", a_fixed).expect("save a");
+    let after_fix = load_resolution_stats(d.path()).expect("load after fix");
+    assert_eq!(after_fix.get("src/a.rs"), Some(&(0, 1)), "{after_fix:?}");
+    assert_eq!(after_fix.get("src/b.rs"), after_rebuild.get("src/b.rs"));
+    let total_u: usize = after_fix.values().map(|(u, _)| u).sum();
+    let total_a: usize = after_fix.values().map(|(_, a)| a).sum();
+    assert_eq!(
+        (outcome.unresolved_calls, outcome.ambiguous_calls),
+        (total_u, total_a)
+    );
+}

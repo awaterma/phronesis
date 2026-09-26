@@ -1543,7 +1543,7 @@ mod tests {
             &[py_walk, "@method:Sensor:visit"],
             "src/python.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!((unresolved, ambiguous), (0, 0), "{base:?}");
         assert!(
             base.iter()
@@ -1575,7 +1575,7 @@ mod tests {
             &[caller, "@method:Sensor:visit"],
             "src/driver.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(
             (unresolved, ambiguous),
             (0, 1),

@@ -11,7 +11,7 @@ use super::rules::{
 };
 use super::{
     GRAPH_FORMAT, Index, PerFileResolution, SaveOutcome, hash_content, index_path,
-    save_resolution_stats,
+    load_resolution_stats, save_resolution_stats,
 };
 use crate::graph;
 use crate::graph::derive::{canonicalize_function_edges, derive_all};
@@ -60,11 +60,26 @@ fn verify_persisted(path: &Path, n_base: usize, n_derived: usize) -> std::io::Re
 }
 
 /// Recompute derived edges over `base` and persist both sets.
+///
+/// `saved_file` is the file an incremental save re-extracted. Every other
+/// stored edge is already canonical, so canonicalization only sees that
+/// file's raw edges: its breakdown replaces the file's sidecar entry and the
+/// other files' entries from the last rebuild are kept. The returned totals
+/// are the sums over the merged breakdown, as they are after a rebuild.
 fn persist(
     root: &Path,
     mut base: Vec<Edge>,
+    saved_file: Option<&str>,
 ) -> std::io::Result<(usize, usize, usize, usize, PerFileResolution)> {
-    let (unresolved, ambiguous, per_file) = canonicalize_function_edges(&mut base);
+    let (mut unresolved, mut ambiguous, mut per_file) = canonicalize_function_edges(&mut base);
+    if let Some(saved_file) = saved_file {
+        let mut merged = load_resolution_stats(root).unwrap_or_default();
+        merged.remove(saved_file);
+        merged.extend(per_file);
+        unresolved = merged.values().map(|(u, _)| u).sum();
+        ambiguous = merged.values().map(|(_, a)| a).sum();
+        per_file = merged;
+    }
     check_tested_by_targets(&base)?;
     let derived = derive_all(&base);
     let (n_base, n_derived) = (base.len(), derived.len());
@@ -229,7 +244,7 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
         base
     };
     let (n_base, n_derived, unresolved_calls, ambiguous_calls, per_file_resolution) =
-        persist(root, base)?;
+        persist(root, base, Some(file_path))?;
 
     index.generation = index.generation.saturating_add(1);
     index
@@ -475,7 +490,7 @@ fn rebuild_with_overlay(
     }
 
     let (n_base, n_derived, unresolved_calls, ambiguous_calls, per_file_resolution) =
-        persist(root, base)?;
+        persist(root, base, None)?;
     save_index(&index_path(root), &index)?;
     reconcile_bindings_best_effort(root, index.generation);
     for diagnostic in &diagnostics {
