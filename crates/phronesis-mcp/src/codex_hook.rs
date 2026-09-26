@@ -1819,6 +1819,11 @@ mod tests {
         std::fs::write(&abs_path, "fn existing() {}\n").expect("write file");
         std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(0o000))
             .expect("chmod 000");
+        if std::fs::read(&abs_path).is_ok() {
+            // Running as root: the mode bits do not apply, so there is nothing
+            // to test here.
+            return;
+        }
 
         let loaded = LoadedRules {
             rules: Vec::new(),

@@ -248,6 +248,11 @@ fn apply_patch_denies_when_an_existing_target_file_is_unreadable() {
     std::fs::create_dir_all(abs_path.parent().unwrap()).expect("mkdir");
     std::fs::write(&abs_path, "fn existing() {}\n").expect("seed file");
     std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+    if std::fs::read(&abs_path).is_ok() {
+        // Running as root: the mode bits do not apply, so there is nothing
+        // to test here.
+        return;
+    }
 
     let payload = json!({
         "hook_event_name": "PreToolUse",
