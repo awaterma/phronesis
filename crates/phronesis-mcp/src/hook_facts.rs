@@ -326,6 +326,9 @@ pub(crate) async fn assert_common_facts(
     for fact in facts {
         network.assert_fact(fact).await?;
     }
+    for fact in project_path_facts(&crate::security::project_root(), file_path) {
+        network.assert_fact(fact).await?;
+    }
 
     // Clock facts (business-hours-local, weekday-local, hour-local) — let
     // rules condition on when the hook is firing. Cheap; read the local
@@ -345,6 +348,124 @@ pub(crate) async fn assert_common_facts(
     }
 
     Ok(())
+}
+
+/// Root-anchored path facts: `project_path_is(<rel>)` for the file and
+/// `project_path_under(<dir>)` for each ancestor directory inside the
+/// project. `verification/templates/x.rhai` yields
+/// `project_path_is("verification/templates/x.rhai")`,
+/// `project_path_under("verification")`, and
+/// `project_path_under("verification/templates")`.
+///
+/// Unlike the per-segment `file_path_matches`, these are anchored at the
+/// project root and keep segment adjacency, so a rule can name one exact
+/// location (the verification trust anchors) without matching lookalikes
+/// nested elsewhere or a checkout that itself lives under such a directory.
+/// The path is lexically normalized (`.`/`..`); the deepest existing
+/// ancestor is also canonicalized, so a symlinked directory or a
+/// `/var` vs `/private/var` spelling still resolves to where the write
+/// lands. Both spellings are emitted. A path outside the root yields
+/// nothing. A lowercase form is emitted too when it differs: the default
+/// macOS filesystem is case-insensitive.
+pub(crate) fn project_path_facts(root: &Path, file_path: &str) -> Vec<Fact> {
+    if file_path.is_empty() {
+        return Vec::new();
+    }
+    let lexical = lexical_normalize(&root.join(file_path));
+    let lexical_root = lexical_normalize(root);
+    let canon_root = root.canonicalize().unwrap_or_else(|_| lexical_root.clone());
+    let resolved = canonicalize_existing_prefix(&lexical);
+
+    let mut rels: Vec<String> = Vec::new();
+    for (path, base) in [
+        (&lexical, &lexical_root),
+        (&lexical, &canon_root),
+        (&resolved, &canon_root),
+    ] {
+        if let Ok(rel) = path.strip_prefix(base) {
+            let parts: Vec<String> = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect();
+            if parts.is_empty() {
+                continue;
+            }
+            let joined = parts.join("/");
+            let lower = joined.to_lowercase();
+            rels.push(joined);
+            rels.push(lower);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut facts = Vec::new();
+    let mut push = |predicate: &str, arg: String| {
+        if seen.insert((predicate.to_string(), arg.clone())) {
+            facts.push(Fact {
+                id: format!("{predicate}_{arg}"),
+                predicate: predicate.to_string(),
+                args: vec![arg],
+                timestamp: 0,
+                source: Some("hook".to_string()),
+            });
+        }
+    };
+    for rel in rels {
+        let mut dir = String::new();
+        let mut parts = rel.split('/').peekable();
+        while let Some(part) = parts.next() {
+            if parts.peek().is_none() {
+                break;
+            }
+            if !dir.is_empty() {
+                dir.push('/');
+            }
+            dir.push_str(part);
+            push("project_path_under", dir.clone());
+        }
+        push("project_path_is", rel);
+    }
+    facts
+}
+
+/// Resolve `.` and `..` without touching the filesystem.
+fn lexical_normalize(path: &Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(c);
+                }
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
+/// Canonicalize the deepest ancestor of `path` that exists and re-attach
+/// the not-yet-created tail (the file a Write is about to create).
+fn canonicalize_existing_prefix(path: &Path) -> std::path::PathBuf {
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    let mut cur = path;
+    loop {
+        if let Ok(mut canon) = cur.canonicalize() {
+            for part in tail.iter().rev() {
+                canon.push(part);
+            }
+            return canon;
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                cur = parent;
+            }
+            _ => return path.to_path_buf(),
+        }
+    }
 }
 
 pub(crate) async fn check_content_patterns(
@@ -646,4 +767,75 @@ pub(crate) async fn check_missing_patterns(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod project_path_tests {
+    use super::*;
+
+    fn has(facts: &[Fact], predicate: &str, arg: &str) -> bool {
+        facts
+            .iter()
+            .any(|f| f.predicate == predicate && f.args == [arg.to_string()])
+    }
+
+    #[test]
+    fn relative_and_absolute_paths_anchor_at_the_root() {
+        let d = tempfile::tempdir().unwrap();
+        let abs = d.path().join("verification/templates/h.rhai");
+        for p in [
+            "verification/templates/h.rhai".to_string(),
+            "./verification/x/../templates/h.rhai".to_string(),
+            abs.display().to_string(),
+        ] {
+            let facts = project_path_facts(d.path(), &p);
+            assert!(
+                has(&facts, "project_path_is", "verification/templates/h.rhai"),
+                "{p}"
+            );
+            assert!(has(&facts, "project_path_under", "verification"), "{p}");
+            assert!(
+                has(&facts, "project_path_under", "verification/templates"),
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
+    fn nested_lookalikes_and_outside_paths_do_not_anchor() {
+        let d = tempfile::tempdir().unwrap();
+        let facts = project_path_facts(d.path(), "src/verification/templates/x.html");
+        assert!(!has(&facts, "project_path_under", "verification/templates"));
+        let outside = project_path_facts(d.path(), "/etc/verification/templates/x");
+        assert!(outside.is_empty(), "{outside:?}");
+        assert!(project_path_facts(d.path(), "").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_directory_resolves_to_where_the_write_lands() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("verification/templates")).unwrap();
+        std::os::unix::fs::symlink(
+            d.path().join("verification/templates"),
+            d.path().join("tpl"),
+        )
+        .unwrap();
+        let facts = project_path_facts(d.path(), "tpl/h.rhai");
+        assert!(
+            has(&facts, "project_path_under", "verification/templates"),
+            "{facts:?}"
+        );
+    }
+
+    #[test]
+    fn a_case_variant_also_emits_the_lowercase_form() {
+        let d = tempfile::tempdir().unwrap();
+        let facts = project_path_facts(d.path(), ".Phronesis/Verification.json");
+        assert!(has(
+            &facts,
+            "project_path_is",
+            ".phronesis/verification.json"
+        ));
+    }
 }

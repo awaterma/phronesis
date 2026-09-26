@@ -304,8 +304,12 @@ The packs are composable and **independent**:
   Blocks agent writes to the verification trust anchors
   (`.phronesis/verification-allowlist.json`, `.phronesis/verification.json`,
   `verification/templates/`) — through Edit/Write/MultiEdit (and Gemini's
-  `replace`/`write_file`) by path segment, and through shell redirects,
-  `tee`, `cp`/`mv`/`rm`, and in-place `sed`/`perl` by command text.
+  `replace`/`write_file`) by the path relative to the project root
+  (`project_path_is` / `project_path_under`, so a nested
+  `src/verification/templates/` or a lookalike `email-verification.json` is
+  not caught), and through shell redirects, `tee`, `rm`, in-place
+  `sed`/`perl`, and `cp`/`mv`/`rsync` whose destination is an anchor, by
+  command text outside quoted strings (copying an anchor out is a read).
   These rules fire from disk at every hook invocation, so they remain
   active even when CLAUDE.md content has been compressed out of context.
 - `rust` — Rust code-shape enforcement. Blocks: `.unwrap()` /

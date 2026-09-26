@@ -294,10 +294,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `.phronesis/verification.json` (the `raw_execution` opt-in), and shell
   writes like `echo > verification/templates/x.rhai` through. The `llm` pack in
   the default platform now blocks Edit/Write/MultiEdit (and Gemini
-  `replace`/`write_file`) to all three anchors, plus shell redirects, `tee`,
-  `cp`/`mv`/`rm`, and in-place `sed`/`perl` that name them. Shell matching is
-  lexical, and the spec now says so: that seam is advisory. Re-run
-  `phr-mcp init --rules-only` to pick the rules up.
+  `replace`/`write_file`) to all three anchors, matched on the path relative
+  to the project root (new `project_path_is` / `project_path_under` facts),
+  so `src/verification/templates/`, `templates/verification/`, or a checkout
+  that itself lives under such a directory is not caught. Shell commands are
+  blocked when they write an anchor — redirects, `tee`, `rm`, in-place
+  `sed`/`perl`, and `cp`/`mv`/`rsync` with the anchor as the destination —
+  while copying an anchor out, lookalike files such as
+  `fixtures/email-verification.json`, and anchor text inside a quoted commit
+  message are left alone. Shell matching is lexical, and the spec now says so:
+  that seam is advisory. Re-run `phr-mcp init --rules-only` to pick the rules up.
 
 - **`set_property_status` could promote a property without leaving an audit
   line, lose concurrent transitions, and rewrite a store every reader rejects.**

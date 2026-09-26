@@ -770,7 +770,7 @@
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
     <h3 class="rule-id">block-agent-write-to-verification-allowlist</h3>
     <p class="rule-summary">The verification allowlist is a trust anchor: approvals are human-principal acts (SPEC-C S3). An approval written by the agent is not a review — ask the human to approve the artifact.</p>
-    <div class="rule-body"><code>file_path_matches + file_path_matches</code></div>
+    <div class="rule-body"><code>project_path_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="block-agent-write-to-verification-optin">
@@ -779,7 +779,7 @@
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
     <h3 class="rule-id">block-agent-write-to-verification-optin</h3>
     <p class="rule-summary">`.phronesis/verification.json` is the verification opt-in (including `raw_execution`) and a trust anchor (SPEC-C S1). Only the human changes it.</p>
-    <div class="rule-body"><code>file_path_matches + file_path_matches</code></div>
+    <div class="rule-body"><code>project_path_is</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="block-agent-write-to-verification-templates">
@@ -788,7 +788,7 @@
     <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
     <h3 class="rule-id">block-agent-write-to-verification-templates</h3>
     <p class="rule-summary">`verification/templates/` is a trust anchor (SPEC-C S1/S3): templates and the devcontainer declaration are human-principal content. Propose the change to the human instead of writing it.</p>
-    <div class="rule-body"><code>file_path_matches + file_path_matches</code></div>
+    <div class="rule-body"><code>project_path_under</code></div>
   </div>
 </article>
 <article class="rule" data-level="block" id="block-agent-shell-write-to-trust-anchors">

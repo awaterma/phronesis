@@ -1747,9 +1747,85 @@ fn confidence_rules() -> Value {
     })
 }
 
+/// The `bash_command_matches` regex for shell writes to the verification
+/// trust anchors (SPEC-verification-artifact-generation S1). Lexical and
+/// therefore advisory, but tuned so everyday commands never false-block:
+///
+/// - Anchor tokens: `.phronesis/verification(-allowlist).json` (optionally
+///   under a leading directory, e.g. `$PWD/`) and a ROOT-level
+///   `verification/templates` (bare, `./`, or `$PWD/`), each starting at a
+///   token boundary and ending at one — `fixtures/email-verification.json`,
+///   `src/verification/templates.rs`, and `verification.json.bak` are not
+///   anchors.
+/// - Every alternative must start outside quotes: a leading prefix consumes
+///   whole quoted strings, so anchor text inside `echo "…"` or a
+///   `git commit -m "…"` message never matches.
+/// - `cp`/`mv`/`install`/`ln`/`rsync` match only when the anchor is the
+///   DESTINATION (the last argument, `-t`, or a `.phronesis/` / `verification/`
+///   directory receiving a same-named source) — copying an anchor out is a read.
+/// - Redirects, `tee`, `rm`/`unlink`/`truncate`/`touch`/`patch`/`shred`,
+///   `git checkout`/`restore`, in-place `sed`/`perl`/`ruby`, `dd of=`, and
+///   `curl -o`/`wget -O` match on any anchor argument; `cd .phronesis` then a
+///   write to a bare `verification(-allowlist).json` matches too.
+fn trust_anchor_shell_pattern() -> String {
+    // Outside-quotes prefix: whole quoted strings or single unquoted chars.
+    const Q: &str = r#"(?s)\A(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*?"#;
+    // Command position: segment start, then common wrappers.
+    const CMD: &str = r#"(?:\A|[;&|({`\n])\s*(?:(?:sudo|env|command|xargs|nohup|git|then|do|else)\s+(?:-\S*\s+)*)*"#;
+    const JSON_ANCHOR: &str =
+        r#"(?:[^\s;&|<>"'()]*/)?\.phronesis/verification(?:-allowlist)?\.json"#;
+    const TEMPLATES: &str =
+        r#"(?:\./|\$\{?PWD\}?/|\$\(pwd\)/)?verification/templates(?:/[^\s;&|<>"'()]*)?"#;
+    // Token end, and destination end (last argument of the segment).
+    const END: &str = r#"["']?(?:[\s;&|<>)`]|\z)"#;
+    const DEST_END: &str = r#"["']?\s*(?:\d?>[^;&|\n]*)?(?:[;&|)`\n]|\z)"#;
+    // Any preceding arguments, then the start of the anchor argument.
+    const ARGS: &str = r#"\s(?:[^;&|\n]*?\s)?["']?"#;
+
+    let anchor = format!("(?:{JSON_ANCHOR}|{TEMPLATES})");
+    let alternatives = [
+        // Redirects: > >> >| &> 2>
+        format!(r#"(?:\d|&)?>>?\|?\s*["']?{anchor}{END}"#),
+        // Writers of every named argument.
+        format!(
+            r#"{CMD}(?:tee|rm|unlink|truncate|touch|patch|shred|checkout|restore){ARGS}{anchor}{END}"#
+        ),
+        // Copiers: the anchor is the last argument.
+        format!(r#"{CMD}(?:cp|mv|install|ln|rsync){ARGS}{anchor}{DEST_END}"#),
+        // Copiers: `-t` / `--target-directory` names the templates anchor.
+        format!(
+            r#"{CMD}(?:cp|mv|install|ln)(?:\s[^;&|\n]*?)?\s(?:-t\s*|--target-directory[=\s])["']?{TEMPLATES}{END}"#
+        ),
+        // Copiers: a same-named source into the `.phronesis/` directory.
+        format!(
+            r#"{CMD}(?:cp|mv|install|ln|rsync)\s[^;&|\n]*?[\s/"']verification(?:-allowlist)?\.json["']?{ARGS}(?:[^\s;&|<>"'()]*/)?\.phronesis/?{DEST_END}"#
+        ),
+        // Copiers: a `templates` source into the root `verification/` directory.
+        format!(
+            r#"{CMD}(?:cp|mv|install|ln|rsync)\s[^;&|\n]*?[\s/"']templates/?["']?{ARGS}(?:\./|\$\{{?PWD\}}?/)?verification/?{DEST_END}"#
+        ),
+        // In-place editors.
+        format!(
+            r#"{CMD}(?:sed|perl|ruby)\s(?:[^;&|\n]*?\s)?(?:-[A-Za-z]*i\S*|--in-place\S*){ARGS}{anchor}{END}"#
+        ),
+        // dd of=
+        format!(r#"{CMD}dd\s[^;&|\n]*?\bof=["']?{anchor}{END}"#),
+        // curl -o / wget -O
+        format!(
+            r#"{CMD}(?:curl|wget)(?:\s[^;&|\n]*?)?\s(?:-[A-Za-z]*[oO]\s*|--output(?:-document)?[=\s])["']?{anchor}{END}"#
+        ),
+        // `cd .phronesis`, then a write to a bare anchor file name.
+        format!(
+            r#"(?:\A|[;&|({{`\n])\s*cd\s+["']?(?:[^\s;&|<>"'()]*/)?\.phronesis/?["']?\s*(?:&&|;|\n).*?(?:>>?\|?\s*|(?:tee|rm|touch|truncate|sed\s+-i\S*)\s(?:[^;&|\n]*?\s)?)["']?(?:\./)?verification(?:-allowlist)?\.json{END}"#
+        ),
+    ];
+    format!("{Q}(?:{})", alternatives.join("|"))
+}
+
 fn deflection_rules() -> Value {
     let commit_gate = git_subcommand_gate("commit");
     let add_all_gate = format!(r"{}\s+add\s+(?:-A\b|\.(?:$|\s))", git_invocation_prefix());
+    let shell_anchor_pattern = trust_anchor_shell_pattern();
     json!({
         "rules": [
             {
@@ -1827,18 +1903,20 @@ fn deflection_rules() -> Value {
             },
             // SPEC-verification-artifact-generation.md S1/S3 (acceptance C7):
             // the verification trust anchors are human-principal acts, so the
-            // agent seam is refused. File tools are matched on path segments;
-            // shell writes on the command text (redirects, tee, cp/mv/rm and
-            // friends, in-place sed/perl). Command matching is lexical: a
-            // write through an interpreter or a variable that never spells
-            // the anchor path is not caught (the spec's enforcement note).
+            // agent seam is refused. File tools are matched on the path
+            // relative to the project root (`project_path_is` /
+            // `project_path_under`), so only the root-level anchors match,
+            // never a lookalike nested elsewhere. Shell writes are matched on
+            // the command text by `trust_anchor_shell_pattern`, which is
+            // lexical: a write through an interpreter or a variable that
+            // never spells the anchor path is not caught (the spec's
+            // enforcement note).
             {
                 "id": "block-agent-write-to-verification-allowlist",
                 "phase": "pre",
                 "priority": 100,
                 "when": [
-                    {"file_path_matches": ".phronesis"},
-                    {"file_path_matches": "verification-allowlist.json"}
+                    {"project_path_is": ".phronesis/verification-allowlist.json"}
                 ],
                 "then": {"block": "The verification allowlist is a trust anchor: approvals are human-principal acts (SPEC-C S3). An approval written by the agent is not a review — ask the human to approve the artifact."}
             },
@@ -1847,8 +1925,7 @@ fn deflection_rules() -> Value {
                 "phase": "pre",
                 "priority": 100,
                 "when": [
-                    {"file_path_matches": ".phronesis"},
-                    {"file_path_matches": "verification.json"}
+                    {"project_path_is": ".phronesis/verification.json"}
                 ],
                 "then": {"block": "`.phronesis/verification.json` is the verification opt-in (including `raw_execution`) and a trust anchor (SPEC-C S1). Only the human changes it."}
             },
@@ -1857,8 +1934,7 @@ fn deflection_rules() -> Value {
                 "phase": "pre",
                 "priority": 100,
                 "when": [
-                    {"file_path_matches": "verification"},
-                    {"file_path_matches": "templates"}
+                    {"project_path_under": "verification/templates"}
                 ],
                 "then": {"block": "`verification/templates/` is a trust anchor (SPEC-C S1/S3): templates and the devcontainer declaration are human-principal content. Propose the change to the human instead of writing it."}
             },
@@ -1867,7 +1943,7 @@ fn deflection_rules() -> Value {
                 "phase": "pre",
                 "priority": 100,
                 "when": [
-                    {"bash_command_matches": "(>>?\\|?\\s*[\"']?[^\\s;&|<>\"']*(verification(-allowlist)?\\.json|verification/templates\\b))|((^|[;&|(`\\n]|\\b(git|sudo|xargs|command|env))\\s*(tee|cp|mv|install|ln|rsync|truncate|touch|rm|unlink|dd|patch)\\s[^;&|]*(verification(-allowlist)?\\.json|verification/templates\\b))|((^|[;&|(`\\n]|\\b(git|sudo|xargs|command|env))\\s*(sed|perl|ruby)\\s([^;&|]*\\s)?(-[A-Za-z]*i|--in-place)[^;&|]*(verification(-allowlist)?\\.json|verification/templates\\b))"}
+                    {"bash_command_matches": shell_anchor_pattern}
                 ],
                 "then": {"block": "This command writes a verification trust anchor (`.phronesis/verification-allowlist.json`, `.phronesis/verification.json`, or `verification/templates/`). Those are human-principal acts (SPEC-C S1/S3) — reading them is fine; changing them is the human's call."}
             }

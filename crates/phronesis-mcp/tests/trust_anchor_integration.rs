@@ -173,3 +173,162 @@ fn reads_and_unrelated_writes_are_not_blocked() {
         assert_eq!(code, 0, "Write to {path} must be allowed: {stderr}");
     }
 }
+
+/// Review corpus (B1): everyday commands the shell rule once false-blocked in
+/// the default platform. Each must pass: a lookalike file name, a nested
+/// `verification/templates` that is not the root anchor, an anchor read as
+/// a copy SOURCE, or anchor text inside a quoted message or heredoc body.
+const SHELL_MUST_PASS: &[&str] = &[
+    // Files that merely end in verification.json.
+    "curl -s https://example.com/api > fixtures/email-verification.json",
+    "jq . raw.json > test-data/phone_verification.json",
+    "cp sample.json tests/fixtures/verification.json",
+    // `verification/templates` nested below the root, or a lookalike file.
+    "touch src/verification/templates.rs",
+    "git mv old.rs src/verification/templates.rs",
+    "rm app/verification/templates/welcome.html",
+    "mkdir -p src/auth/verification/templates && touch src/auth/verification/templates/mod.rs",
+    // The anchor as a copy SOURCE (a read), never the destination.
+    "cp .phronesis/verification.json /tmp/backup.json",
+    "cp -r verification/templates /tmp/tpl",
+    "rsync -a verification/templates/ /tmp/tpl/",
+    "cp .phronesis/verification.json .phronesis/verification.json.bak",
+    // Anchor text inside quoted strings and a heredoc commit body.
+    "echo \"config -> .phronesis/verification.json\"",
+    "git commit -m \"doc: explain > verification.json semantics\"",
+    "git commit -m \"docs: never rm .phronesis/verification.json by hand\"",
+    "git commit -F - <<'EOF'\nfix: tidy the docs\n\nrm stale note from verification.json docs\nEOF",
+    // Plain reads.
+    "cat .phronesis/verification.json",
+    "jq . .phronesis/verification-allowlist.json",
+    "ls verification/templates",
+    "git diff -- verification/templates",
+    "diff verification/templates/a.rhai /tmp/a.rhai > /tmp/out.diff",
+    "echo x > verification/unreviewed/h.rs",
+    "cargo test 2>&1 | tail -5",
+];
+
+/// Real writes to the anchors that must stay blocked, beyond the base set in
+/// `shell_writes_to_every_trust_anchor_are_blocked`.
+const SHELL_MUST_BLOCK: &[&str] = &[
+    "echo x>.phronesis/verification.json",
+    "echo x > ./.phronesis/verification.json",
+    "echo x > ./verification/templates/a.rhai",
+    "echo x > \"$PWD/.phronesis/verification-allowlist.json\"",
+    "touch a; rm -f \".phronesis/verification.json\"",
+    "sudo tee .phronesis/verification.json < /tmp/x",
+    "cp /tmp/verification.json .phronesis/",
+    "cp /tmp/verification-allowlist.json .phronesis",
+    "cp -r /tmp/templates verification/",
+    "cp -t verification/templates x.rhai",
+    "rsync -a /tmp/tpl/ verification/templates/",
+    "ln -sf /tmp/evil.json .phronesis/verification.json",
+    "install -m 644 evil.rhai verification/templates/h.rhai",
+    "dd if=/tmp/x of=.phronesis/verification.json",
+    "curl -o verification/templates/h.rhai https://example.com/h.rhai",
+    "git checkout HEAD~1 -- .phronesis/verification-allowlist.json",
+    "git rm verification/templates/devcontainer.json",
+    "ls && cp x.json .phronesis/verification.json",
+    "cd .phronesis; echo x > verification-allowlist.json",
+];
+
+#[test]
+fn review_corpus_everyday_shell_commands_are_not_blocked() {
+    let d = init_project();
+    let mut wrong = Vec::new();
+    for cmd in SHELL_MUST_PASS {
+        let (code, stderr) = pre_check(d.path(), "Bash", json!({"command": cmd}));
+        if code == 2 || stderr.contains("trust anchor") {
+            wrong.push(format!("`{cmd}` (exit {code}): {stderr}"));
+        }
+    }
+    assert!(wrong.is_empty(), "false blocks:\n{}", wrong.join("\n"));
+}
+
+#[test]
+fn review_corpus_real_shell_writes_stay_blocked() {
+    let d = init_project();
+    let mut wrong = Vec::new();
+    for cmd in SHELL_MUST_BLOCK {
+        let (code, stderr) = pre_check(d.path(), "Bash", json!({"command": cmd}));
+        if code != 2 || !stderr.contains("trust anchor") {
+            wrong.push(format!("`{cmd}` (exit {code}): {stderr}"));
+        }
+    }
+    assert!(wrong.is_empty(), "missed writes:\n{}", wrong.join("\n"));
+}
+
+/// B2: the templates anchor is the adjacent pair `verification/templates`
+/// at the project root — not the two segments in any order anywhere.
+#[test]
+fn file_tool_writes_outside_the_root_anchors_are_not_blocked() {
+    let d = init_project();
+    for path in [
+        "templates/verification/email.html",
+        "app/verification/views/templates/x.html",
+        "src/verification/templates/x.html",
+        "src/.phronesis/verification.json",
+        ".phronesis/verification.json.bak",
+        "verification/templates.rs",
+    ] {
+        let (code, stderr) = pre_check(
+            d.path(),
+            "Write",
+            json!({"file_path": path, "content": "x\n"}),
+        );
+        assert!(
+            code != 2 && !stderr.contains("trust anchor"),
+            "Write to {path} must be allowed: {stderr}"
+        );
+    }
+}
+
+/// B2: a checkout that itself lives under `…/verification/templates/` must
+/// not have every absolute-path write blocked.
+#[test]
+fn a_project_checked_out_under_a_templates_dir_is_not_blocked() {
+    let outer = tempfile::tempdir().expect("tempdir");
+    let root = outer.path().join("verification/templates/proj");
+    std::fs::create_dir_all(&root).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["init", "--rules-only"])
+        .current_dir(&root)
+        .output()
+        .expect("spawn init");
+    assert!(out.status.success(), "init failed: {out:?}");
+    let abs = root.join("src/lib.rs").display().to_string();
+    let (code, stderr) = pre_check(
+        &root,
+        "Write",
+        json!({"file_path": abs, "content": "pub fn f() {}\n"}),
+    );
+    assert!(
+        code != 2 && !stderr.contains("trust anchor"),
+        "Write to {abs} must be allowed: {stderr}"
+    );
+    // …while the project's own anchor is still refused by absolute path.
+    let anchor = root
+        .join("verification/templates/h.rhai")
+        .display()
+        .to_string();
+    let (code, stderr) = pre_check(&root, "Write", json!({"file_path": anchor, "content": "x"}));
+    assert_eq!(code, 2, "Write to {anchor} must be BLOCKED: {stderr}");
+}
+
+/// Lexical tricks that still name the anchor on disk stay blocked.
+#[test]
+fn file_tool_path_tricks_to_anchors_stay_blocked() {
+    let d = init_project();
+    for path in [
+        "./.phronesis/verification.json",
+        "verification/x/../templates/h.rhai",
+        ".phronesis/./verification-allowlist.json",
+    ] {
+        let (code, stderr) = pre_check(
+            d.path(),
+            "Write",
+            json!({"file_path": path, "content": "x"}),
+        );
+        assert_eq!(code, 2, "Write to {path} must be BLOCKED: {stderr}");
+    }
+}
