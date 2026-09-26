@@ -414,17 +414,14 @@ Rules are ordinary Phronesis rules over the relations in §1.2 — no new syntax
       "phase": "pre",
       "priority": 100,
       "when": [
-        { "predicate": "edited_file", "args": ["?file"] },
-        { "predicate": "file_type",  "args": ["?file", "production"] },
-        { "predicate": "defines_fn", "args": ["?file", "?func"] },
-        { "predicate": "calls_api",  "args": ["?func", "std::unwrap"] },
-        { "predicate": "no_direct_test",   "args": ["?func"] }
+        { "edited_file": "?file" },
+        { "file_type": ["?file", "production"] },
+        { "defines_fn": ["?file", "?func"] },
+        { "calls_api": ["?func", "std::unwrap"] },
+        { "no_direct_test": "?func" }
       ],
       "then": {
-        "action_type": "warn",
-        "params": [
-          "`?file` defines `?func`, which calls `std::unwrap` and has no direct test."
-        ]
+        "warn": "`?file` defines `?func`, which calls `std::unwrap` and has no direct test."
       }
     }
   ]
@@ -439,13 +436,12 @@ Rules are ordinary Phronesis rules over the relations in §1.2 — no new syntax
   "phase": "pre",
   "priority": 90,
   "when": [
-    { "predicate": "edited_file", "args": ["?file"] },
-    { "predicate": "declares_module", "args": ["?file", "?module"] },
-    { "predicate": "in_cycle", "args": ["?module", "?cycle"] }
+    { "edited_file": "?file" },
+    { "declares_module": ["?file", "?module"] },
+    { "in_cycle": ["?module", "?cycle"] }
   ],
   "then": {
-    "action_type": "warn",
-    "params": ["Graph node `?module` participates in static dependency cycle `?cycle`."]
+    "warn": "Graph node `?module` participates in static dependency cycle `?cycle`."
   }
 }
 ```

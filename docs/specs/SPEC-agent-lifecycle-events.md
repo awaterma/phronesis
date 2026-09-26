@@ -974,12 +974,13 @@ in this spec already carry it as `subject`. This section adds three things.
 
    ```json
    { "id": "suggest-name-the-work-item",
-     "conditions": [
+     "phase": "pre",
+     "priority": 1,
+     "when": [
        { "journey_seen": ["lifecycle:prompt:fresh", "s"] },
        { "__script__": "facts_count('journey_seen', ['lifecycle:unit_start','s']) == 0" }
      ],
-     "action": { "type": "suggestion",
-                 "message": "No work item is named this session. Ask which bug or spec this is for, then call submit_suggestion with `bug_id` or `spec`." } }
+     "then": { "warn": "No work item is named this session. Ask which bug or spec this is for, then call submit_suggestion with `bug_id` or `spec`." } }
    ```
 2. **`subject` on rule evaluations.** `pre_check` / `post_check` action-log
    entries (`hook/mod.rs::log_hook_event`) gain `subject` when a unit is open.

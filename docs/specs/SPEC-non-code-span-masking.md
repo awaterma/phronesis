@@ -161,6 +161,7 @@ regression for seven. That is a strictly worse trade.
 
 So a rule opts in with a new disk field, `code_only`:
 
+<!-- rule-example: proposed -->
 ```json
 { "id": "enforce-no-unwrap-in-src",
   "code_only": true,
@@ -172,6 +173,9 @@ So a rule opts in with a new disk field, `code_only`:
 
 `code_only` defaults to `false`. Absent the field, payloads are byte-identical
 to today — the same compatibility contract the `context` pack uses.
+Implementing it means adding `code_only` to `RULE_KEYS` in
+`crates/phronesis-mcp/src/rules_file.rs`: the loader rejects unknown rule keys
+(fail closed at load), so an older binary refuses a file that uses it.
 
 ### 3.4 Ordering
 

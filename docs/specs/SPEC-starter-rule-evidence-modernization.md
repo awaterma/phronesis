@@ -191,8 +191,11 @@ the appearance of enforcement while matching nothing.
 
 ### 4.1 Hook-time Rust blocker
 
-Conceptually:
+Conceptually (`evidence_kind` is proposed; the loader rejects unknown rule
+keys, so it must join `RULE_KEYS` in `rules_file.rs` before a rules file may
+carry it):
 
+<!-- rule-example: proposed -->
 ```json
 {
   "id": "enforce-no-unwrap-in-src",
