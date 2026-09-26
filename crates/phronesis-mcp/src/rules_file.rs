@@ -716,20 +716,63 @@ pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
         path: path.display().to_string(),
         source: e,
     })?;
-    // Two rules with one id are ambiguous: which one the engine keeps
-    // depends on load order. Layer overrides across files are the supported
-    // way to replace a rule; within one file it is a mistake.
+    dedupe_identical(path, &content, w.rules)
+}
+
+/// Two rules with one id are ambiguous: which one the engine keeps depends
+/// on load order, so differing copies are a load error. (Layer overrides
+/// across files are the supported way to replace a rule.) Copies that are
+/// identical JSON are not ambiguous — older MCP servers wrote them when a
+/// guide was extracted twice — so they load as one rule, with a warning
+/// asking for the extras to be deleted.
+fn dedupe_identical(
+    path: &Path,
+    content: &str,
+    rules: Vec<SourceRule>,
+) -> Result<Vec<SourceRule>, RulesFileError> {
     let mut seen = std::collections::HashSet::new();
-    if let Some(dup) = w.rules.iter().find(|r| !seen.insert(r.id.as_str())) {
-        return Err(RulesFileError::Invalid {
-            path: path.display().to_string(),
-            message: format!(
-                "duplicate rule id `{}`; each rule id must appear once per file",
-                dup.id
-            ),
-        });
+    if rules.iter().all(|r| seen.insert(r.id.as_str())) {
+        return Ok(rules);
     }
-    Ok(w.rules)
+    // Only reached with duplicates: compare the raw JSON of each copy.
+    #[derive(Deserialize)]
+    struct Raw {
+        rules: Vec<serde_json::Value>,
+    }
+    let raw: Raw = serde_json::from_str(content).map_err(|e| RulesFileError::Malformed {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    let mut first: HashMap<&str, &serde_json::Value> = HashMap::new();
+    let mut keep = Vec::with_capacity(rules.len());
+    let mut warned = std::collections::HashSet::new();
+    for (rule, value) in rules.iter().zip(&raw.rules) {
+        match first.get(rule.id.as_str()) {
+            None => {
+                first.insert(rule.id.as_str(), value);
+                keep.push(rule.clone());
+            }
+            Some(previous) if *previous == value => {
+                if warned.insert(rule.id.as_str()) {
+                    eprintln!(
+                        "phronesis: warning: {} lists rule `{}` more than once with identical content; using one copy — delete the extras",
+                        path.display(),
+                        rule.id
+                    );
+                }
+            }
+            Some(_) => {
+                return Err(RulesFileError::Invalid {
+                    path: path.display().to_string(),
+                    message: format!(
+                        "duplicate rule id `{}` with differing definitions; keep the one you want and delete the others (each rule id must appear once per file)",
+                        rule.id
+                    ),
+                });
+            }
+        }
+    }
+    Ok(keep)
 }
 
 /// Cartesian product of per-position alternative condition sets, tracking the
@@ -857,9 +900,22 @@ pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError>
         .into_iter()
         .map(|rule| (rule.id.clone(), rule))
         .collect();
-    let sources: Vec<SourceRule> = file
-        .rules
-        .iter()
+    // Backstop: never write a duplicate id, which the loader would reject
+    // and lock every hook. The last definition of an id wins, at the
+    // position of its first.
+    let mut deduped: Vec<&DiskRule> = Vec::with_capacity(file.rules.len());
+    let mut position: HashMap<&str, usize> = HashMap::new();
+    for rule in &file.rules {
+        match position.get(rule.id.as_str()) {
+            Some(&at) => deduped[at] = rule,
+            None => {
+                position.insert(rule.id.as_str(), deduped.len());
+                deduped.push(rule);
+            }
+        }
+    }
+    let sources: Vec<SourceRule> = deduped
+        .into_iter()
         .map(|rule| {
             let mut source = diskrule_to_source(rule);
             if let Some(previous) = existing.get(&rule.id) {

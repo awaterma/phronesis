@@ -91,6 +91,8 @@ struct PatchFile {
     /// file isn't readable on disk yet (Add File), and preferred otherwise so
     /// rules see the incoming content, not just the current file state.
     added: String,
+    /// `*** Delete File:` — the patch removes this file.
+    deleted: bool,
 }
 
 struct CodexDecision {
@@ -816,10 +818,11 @@ async fn handle_pre_patch(payload: &CodexPayload) -> CodexDecision {
         }
         // A patch that only touches the file whose load error blocks every
         // hook is the repair; blocking it would leave no way to fix the file.
+        // Deleting the rules file is not a repair: it turns governance off.
         Err(e)
-            if paths
-                .iter()
-                .all(|p| crate::rule_layers::is_repair_target(&root, &e.failing_file, p)) =>
+            if files.iter().all(|f| {
+                !f.deleted && crate::rule_layers::is_repair_target(&root, &e.failing_file, &f.path)
+            }) =>
         {
             return warn_decision(format!(
                 "allowing this patch because it only edits the rules file that failed to load; every other tool call stays blocked until it loads. rules error: {e}"
@@ -1101,7 +1104,7 @@ fn make_compact_decision(root: &Path, _pre: bool) -> CodexDecision {
 }
 
 async fn build_context_body(root: &Path, kind: ContextKind) -> String {
-    context::run_body_configured(root, kind.event(), 5, kind.metric_event()).await
+    context::run_body_with_load_notice(root, kind.event(), 5, kind.metric_event()).await
 }
 
 // ---------------------------------------------------------------------------

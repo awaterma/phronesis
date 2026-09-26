@@ -147,8 +147,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   block with every user rule gone. `add_rule`, `remove_rule`, `extract_rules`
   and `save_rules` now refuse while the rules on disk do not load, naming the
   error and the file to fix, and never write or rotate `.bak`; `list_rules`
-  reports the error as `load_error`. Once the file is fixed, the same server
-  loads its rules before the next write.
+  reports the error as `load_error` (also with `PHRONESIS_NO_AUTOPERSIST`).
+  Once the file is fixed, the same server reloads it — the repaired file
+  wins over the copy the server held — before the next write.
+- **`add_rule` with an existing id, or extracting the same guide twice,
+  wrote a duplicate rule id.** Under the stricter loader that duplicate
+  blocked every tool call. `add_rule` now replaces a rule with the same id
+  (keeping its phase unless one is given) and says `replaced`;
+  `extract_rules` replaces by id; and every rules-file write keeps only the
+  last definition of an id.
 
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
@@ -289,12 +296,22 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   - an empty `when` / `conditions`;
   - a float or string `priority`, and `null` or non-boolean `audit`,
     `silent`, `doc_excepted`, `binds`;
-  - v1 rules with non-string args, more or fewer than one action, or an
-    unknown `action_type`;
-  - the same rule id twice in one file.
+  - a missing, empty, or non-string `id`; a non-string `phase` or
+    `__script__`/`script`; a `priority` outside the 32-bit integer range;
+  - `when` together with `conditions`, or `then` together with `actions`;
+  - v1 rules with non-string args, more or fewer than one action, an unknown
+    `action_type` (including `emit_capsule`, which needs the v2 `then` form),
+    or an unknown key inside a `conditions[i]` or `actions[0]` object;
+  - the same rule id twice in one file **with differing definitions**. Older
+    MCP servers wrote these: `add_rule` with an existing id appended a second
+    copy instead of replacing it. Keep the definition you want and delete the
+    others; the error names the id. Byte-identical copies (from extracting a
+    guide twice) still load as one rule, with a stderr warning.
 
-  While the file does not load, the hooks still allow edits to it, and the
-  MCP rule-writing tools refuse rather than overwrite it.
+  While the file does not load, the hooks still allow edits to
+  `.phronesis/rules.json` and `.phronesis/loader.json` (only those), and the
+  MCP rule-writing tools refuse rather than overwrite it. A broken layer file
+  outside `.phronesis/` must be fixed by a human.
 
 ## [0.35.0] - 2026-09-21
 

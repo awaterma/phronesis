@@ -658,7 +658,7 @@ is rejected at config load. Two rules worth copying:
   "when": [
     { "__script__": "facts_count('journey_count', ['lifecycle:prompt:correction','s']) >= 2" }
   ],
-  "then": { "suggestion": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }
+  "then": { "warn": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }
 ```
 
 **Journal v2 and the tool projection.** `JournalRecord` bumps `v` to 2 and
@@ -856,8 +856,10 @@ field, the bad value, and the allowed values. Rejected shapes:
 - v1 legacy only: a non-string `args`/`params` element, an `actions` array
   that does not hold exactly one action, or an `action_type` outside
   `constraint_violation`, `constraint_warning`, `log`;
-- two rules with the same `id` in one file (replacing a rule across files
-  is what `loader.json` layers are for).
+- two rules with the same `id` and differing definitions in one file
+  (replacing a rule across files is what `loader.json` layers are for);
+  byte-identical copies load as one rule with a warning. The MCP tools never
+  write duplicates: `add_rule` and `extract_rules` replace a rule by id.
 
 Unknown condition *predicate names* are not rejected: predicates come from
 built-in fact sources and from project Rhai providers discovered at run
@@ -865,9 +867,12 @@ time, so the loader cannot know the full set.
 
 While the file does not load, two things keep the failure recoverable:
 an edit (Claude `Edit`/`Write`/`MultiEdit`, Gemini `replace`/`write_file`,
-Codex `apply_patch`) whose target is exactly the file that failed is
-allowed with a warning, and `session-context` / `interaction-context` lead
-with the load error. The MCP server records the error at startup
+Codex `apply_patch` — not a delete or a `Move to:` elsewhere) whose target
+is exactly the file that failed is allowed with a warning, when that file is
+`.phronesis/rules.json` or `.phronesis/loader.json` (a broken layer file
+elsewhere needs a human); and the context hooks (`session-context`,
+`interaction-context`, Codex `SessionStart`/`UserPromptSubmit`) lead with
+the load error. The MCP server records the error at startup
 (`list_rules` reports it as `load_error`), and `add_rule`, `remove_rule`,
 `extract_rules` and `save_rules` refuse until the file loads — its network
 does not hold the user's rules, so any write would replace them.

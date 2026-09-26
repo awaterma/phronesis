@@ -338,14 +338,9 @@ fn with_rules_load_error(
     envelope: String,
     max_bytes: usize,
 ) -> String {
-    let Err(error) = crate::rule_layers::resolve(project_root) else {
+    let Some(notice) = rules_load_notice(project_root) else {
         return envelope;
     };
-    let notice = format!(
-        "**Phronesis rules do not load — every tool call is blocked until they do.** \
-         Edit {} to fix it (edits to that file are allowed): {error}",
-        error.failing_file(project_root).display()
-    );
     let existing = serde_json::from_str::<serde_json::Value>(&envelope)
         .ok()
         .and_then(|v| {
@@ -360,6 +355,23 @@ fn with_rules_load_error(
         format!("{notice}\n\n{existing}")
     };
     wrap_additional_context(hook_event_name, &body, max_bytes.max(notice_floor(&body)))
+}
+
+/// The notice context hooks lead with while the rules on disk do not load,
+/// or `None` when they load.
+pub fn rules_load_notice(project_root: &Path) -> Option<String> {
+    let error = crate::rule_layers::resolve(project_root).err()?;
+    let failing = error.failing_file(project_root);
+    let how = if crate::rule_layers::is_repairable(project_root, &failing) {
+        "edits to that file are allowed"
+    } else {
+        "it is outside `.phronesis/`, so the hooks do not allow editing it — a human must fix it"
+    };
+    Some(format!(
+        "**Phronesis rules do not load — every tool call is blocked until they do.** \
+         Fix {} ({how}): {error}",
+        failing.display()
+    ))
 }
 
 /// Never truncate the notice itself away: it is the one line that explains
@@ -412,6 +424,22 @@ pub async fn run_body_configured(
             };
             unwrap_envelope(&envelope)
         }
+    }
+}
+
+/// [`run_body_configured`] led by the rules load notice, when the rules on
+/// disk do not load. Codex carries this body directly.
+pub async fn run_body_with_load_notice(
+    project_root: &Path,
+    event: ContextEvent,
+    last_n: usize,
+    metric_event: &str,
+) -> String {
+    let body = run_body_configured(project_root, event, last_n, metric_event).await;
+    match rules_load_notice(project_root) {
+        None => body,
+        Some(notice) if body.is_empty() => notice,
+        Some(notice) => format!("{notice}\n\n{body}"),
     }
 }
 

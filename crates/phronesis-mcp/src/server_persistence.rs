@@ -54,11 +54,11 @@ impl EpistemeMcp {
     /// [`Self::ensure_disk_rules_load`]). Without that, autosave would
     /// replace the unloadable file with only the rules added since startup.
     pub async fn autoload(&self) {
-        if Self::autopersist_disabled() {
-            return;
-        }
         let root = security::project_root();
         match crate::rule_layers::resolve(&root) {
+            // With autopersist disabled nothing is loaded, but a load error
+            // is still recorded so `list_rules` can explain it.
+            Ok(_) if Self::autopersist_disabled() => {}
             Ok(resolved) => {
                 // Best-effort: an add_rule error leaves the rules before it
                 // loaded. (Unreachable in practice — the loader rejects
@@ -112,6 +112,34 @@ impl EpistemeMcp {
         Ok(())
     }
 
+    /// Replace every rule the server holds with the repaired file's rules.
+    ///
+    /// While the file did not load, every rule-writing tool was refused, so
+    /// each rule in the network came from disk (at startup, or before the
+    /// file broke) and may be stale. The repaired file is authoritative:
+    /// changed rules come from it and rules deleted from it stay deleted.
+    async fn reload_from(
+        &self,
+        root: &std::path::Path,
+        resolved: crate::rule_layers::ResolvedRules,
+    ) -> Result<(), ReteError> {
+        {
+            let network = self.network.lock().await;
+            for rule in network.get_all_rules()? {
+                network.remove_rule(&rule.id)?;
+            }
+            for fact in
+                network.facts_matching_predicates(&[crate::rule_layers::OVERRIDE_PREDICATE])?
+            {
+                network.retract_fact(&fact.id).await?;
+            }
+        }
+        self.phase_map.lock().await.clear();
+        self.persistent_rule_ids.lock().await.clear();
+        self.shadowed_project_rules.lock().await.clear();
+        self.hydrate_from(root, resolved).await
+    }
+
     /// Refuse a rule-writing call while the rules on disk do not load.
     ///
     /// The network then does not hold the user's rules, and every write path
@@ -136,9 +164,7 @@ impl EpistemeMcp {
             Ok(resolved) => {
                 let recovered = self.disk_load_error.lock().await.take().is_some();
                 if recovered && !Self::autopersist_disabled() {
-                    self.hydrate_from(&root, resolved)
-                        .await
-                        .map_err(Self::err)?;
+                    self.reload_from(&root, resolved).await.map_err(Self::err)?;
                 }
                 Ok(())
             }

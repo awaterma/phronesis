@@ -1,7 +1,8 @@
 //! Parse Codex `apply_patch` payloads.
 //!
 //! Accepts the patch format Codex sends via `PreToolUse`/`PostToolUse`:
-//! `*** Begin Patch`, `*** Update File:`, `*** Add File:`, `*** Delete File:`.
+//! `*** Begin Patch`, `*** Update File:` (optionally followed by
+//! `*** Move to:`), `*** Add File:`, `*** Delete File:`.
 //!
 //! This is a lightweight parser, not a general patch engine.
 
@@ -13,11 +14,18 @@ use super::PatchFile;
 /// - `*** Begin Patch` / `*** End Patch` (optional wrapper)
 /// - `*** Update File: <path>` — existing file being modified
 /// - `*** Add File: <path>` — new file being created
-/// - `*** Delete File: <path>` — file being removed
+/// - `*** Delete File: <path>` — file being removed (`deleted: true`)
+/// - `*** Move to: <path>` — the preceding Update renames its file; the
+///   destination is a touched file too, and receives the hunks that follow
 ///
 /// Returns an empty vec when the input doesn't match any recognised blocks.
 pub fn parse_patch(input: &str) -> Vec<PatchFile> {
-    const MARKERS: [&str; 3] = ["*** Update File:", "*** Add File:", "*** Delete File:"];
+    const MARKERS: [&str; 4] = [
+        "*** Update File:",
+        "*** Add File:",
+        "*** Delete File:",
+        "*** Move to:",
+    ];
 
     let mut files: Vec<PatchFile> = Vec::new();
     for line in input.lines() {
@@ -27,6 +35,7 @@ pub fn parse_patch(input: &str) -> Vec<PatchFile> {
             files.push(PatchFile {
                 path: stripped.trim_start_matches(marker).trim().to_string(),
                 added: String::new(),
+                deleted: *marker == "*** Delete File:",
             });
         } else if let Some(current) = files.last_mut() {
             // Hunk lines added by the patch carry the content rules must
@@ -74,6 +83,17 @@ mod tests {
         let files = parse_patch(input);
         assert_eq!(files.len(), 1);
         assert_eq!(files[0].path, "src/old.rs");
+    }
+
+    #[test]
+    fn move_to_destination_is_a_touched_file() {
+        let input = "*** Update File: a.rs\n*** Move to: src/b.rs\n@@\n-x\n+y\n";
+        let files = parse_patch(input);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["a.rs", "src/b.rs"]);
+        assert_eq!(files[1].added, "y\n");
+        assert!(!files[0].deleted && !files[1].deleted);
+        assert!(parse_patch("*** Delete File: x\n")[0].deleted);
     }
 
     #[test]

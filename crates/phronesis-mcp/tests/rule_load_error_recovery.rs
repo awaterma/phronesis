@@ -77,11 +77,20 @@ impl Mcp {
     /// A server with autoload/autosave ENABLED — the user-facing default,
     /// and the configuration in which the data loss happened.
     fn spawn(root: &Path) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        Self::spawn_with(root, true)
+    }
+
+    fn spawn_with(root: &Path, autopersist: bool) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_phr-mcp"));
+        command
             .arg("serve")
             .env("PHRONESIS_PROJECT_ROOT", root)
             .env("PHRONESIS_NO_ACTION_LOG", "1")
-            .env_remove("PHRONESIS_NO_AUTOPERSIST")
+            .env_remove("PHRONESIS_NO_AUTOPERSIST");
+        if !autopersist {
+            command.env("PHRONESIS_NO_AUTOPERSIST", "1");
+        }
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -326,4 +335,211 @@ fn context_hooks_lead_with_the_load_error() {
             "{sub} must surface the load error: {ctx}"
         );
     }
+}
+
+// ── Duplicate ids written by the MCP tools ────────────────────────────────
+
+fn disk_ids(root: &Path) -> Vec<String> {
+    let on_disk: Value =
+        serde_json::from_str(&std::fs::read_to_string(rules_path(root)).expect("rules"))
+            .expect("json");
+    on_disk["rules"]
+        .as_array()
+        .expect("rules array")
+        .iter()
+        .filter_map(|r| r["id"].as_str().map(String::from))
+        .collect()
+}
+
+fn pre_check_ls(root: &Path) -> Output {
+    spawn_hook(
+        root,
+        &["pre-check"],
+        &json!({"tool_name": "Bash", "tool_input": {"command": "ls"}}),
+    )
+}
+
+/// `add_rule` with an id already on disk is an update. It used to append a
+/// second rule with that id, and the loader (which rejects duplicate ids)
+/// then blocked every tool call.
+#[test]
+fn add_rule_with_an_existing_id_replaces_it() {
+    let dir = project(
+        r#"{"rules":[{"id":"A","phase":"pre","priority":1,
+            "when":[{"new_content_contains":"old"}],"then":{"log":"old"}}]}"#,
+    );
+    let root = dir.path();
+    let mut mcp = Mcp::spawn(root);
+    let text = mcp.tool("add_rule", new_rule("A")).done("add_rule A");
+    assert!(text.contains("replaced"), "{text}");
+    assert_eq!(disk_ids(root), vec!["A"]);
+    let listed = mcp.list_rules();
+    assert_eq!(
+        listed["rules"].as_array().map(Vec::len),
+        Some(1),
+        "{listed}"
+    );
+    assert_eq!(pre_check_ls(root).status.code(), Some(0));
+}
+
+/// The documented workflow extracts a guide once per session; the next
+/// session autoloads those rules and extracts again. Re-extraction replaces.
+#[test]
+fn extracting_the_same_guide_twice_does_not_duplicate_rules() {
+    let dir = project(r#"{"rules":[]}"#);
+    let root = dir.path();
+    std::fs::write(
+        root.join("GUIDE.md"),
+        "# Guide\n\n## Errors\n\n- Never use unwrap in production code.\n- Always propagate errors with ?.\n",
+    )
+    .expect("guide");
+    {
+        let mut mcp = Mcp::spawn(root);
+        mcp.tool("extract_rules", json!({"file_path": "GUIDE.md"}))
+            .done("extract 1");
+        mcp.tool("extract_rules", json!({"file_path": "GUIDE.md"}))
+            .done("extract 2 (same session)");
+    }
+    let first = disk_ids(root);
+    assert!(!first.is_empty(), "the guide yields rules");
+    let mut mcp = Mcp::spawn(root); // session 2 autoloads, then extracts again
+    mcp.tool("extract_rules", json!({"file_path": "GUIDE.md"}))
+        .done("extract 3 (next session)");
+    let ids = disk_ids(root);
+    let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+    assert_eq!(unique.len(), ids.len(), "duplicate ids on disk: {ids:?}");
+    assert_eq!(ids, first);
+    assert_eq!(pre_check_ls(root).status.code(), Some(0));
+}
+
+/// Older servers could write the same rule twice. Byte-for-byte identical
+/// copies are unambiguous, so they load (one copy, with a warning); copies
+/// that differ are rejected, because which one wins is a guess.
+#[test]
+fn identical_duplicate_rules_load_differing_ones_do_not() {
+    let rule = r#"{"id":"A","phase":"pre","priority":1,"when":[{"new_content_contains":"zzz"}],"then":{"block":"no"}}"#;
+    let dir = project(&format!(r#"{{"rules":[{rule},{rule}]}}"#));
+    let out = pre_check_ls(dir.path());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(0), "{err}");
+    assert!(err.contains("`A`") && err.contains("identical"), "{err}");
+
+    let other = rule.replace("\"no\"", "\"different\"");
+    let dir = project(&format!(r#"{{"rules":[{rule},{other}]}}"#));
+    let out = pre_check_ls(dir.path());
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("duplicate rule id `A`"));
+}
+
+// ── Repair allowance must not be steerable ────────────────────────────────
+
+/// A `loader.json` layer pointing at a source file must not make that source
+/// file the "repair target": only `.phronesis/rules.json` and
+/// `.phronesis/loader.json` are ever editable under a load error.
+#[test]
+fn repair_allowance_is_limited_to_the_phronesis_rules_files() {
+    let dir = project(r#"{"rules":[]}"#);
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("src");
+    std::fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("main");
+    std::fs::write(
+        root.join(".phronesis/loader.json"),
+        r#"{"version":1,"layers":[{"name":"x","path":"src/main.rs"}]}"#,
+    )
+    .expect("loader");
+    let out = spawn_hook(root, &["pre-check"], &edit("src/main.rs"));
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a layer path must not open a source file to edits: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn codex_patch_payload(body: &str) -> Value {
+    json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "apply_patch",
+        "session_id": "s", "turn_id": "t", "tool_use_id": "u",
+        "tool_input": {"command": format!("*** Begin Patch\n{body}*** End Patch\n")},
+    })
+}
+
+#[test]
+fn codex_repair_allowance_rejects_moves_and_deletes() {
+    let dir = project(ORIGINAL);
+    let root = dir.path();
+    for body in [
+        "*** Update File: .phronesis/rules.json\n*** Move to: src/evil.rs\n@@\n-x\n+y\n",
+        "*** Delete File: .phronesis/rules.json\n",
+    ] {
+        let out = spawn_hook(
+            root,
+            &["codex-hook", "PreToolUse"],
+            &codex_patch_payload(body),
+        );
+        let body_json: Value = serde_json::from_slice(&out.stdout).expect("json");
+        assert_eq!(
+            body_json["hookSpecificOutput"]["permissionDecision"], "deny",
+            "{body:?} is not a repair: {body_json}"
+        );
+    }
+}
+
+#[test]
+fn codex_context_events_lead_with_the_load_error() {
+    let dir = project(ORIGINAL);
+    for event in ["SessionStart", "UserPromptSubmit"] {
+        let payload = json!({
+            "hook_event_name": event, "session_id": "s", "turn_id": "t",
+            "source": "startup", "prompt": "hello",
+        });
+        let out = spawn_hook(dir.path(), &["codex-hook", event], &payload);
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            text.contains("keep-a") && text.contains("description"),
+            "codex {event} must surface the load error: {text}"
+        );
+    }
+}
+
+/// While the file was broken the server kept its startup copy. When the
+/// file is repaired, the repaired version wins: rules changed on disk are
+/// taken from disk and rules deleted from disk stay deleted.
+#[test]
+fn recovery_takes_the_repaired_file_not_the_servers_stale_copy() {
+    let dir = project(
+        r#"{"rules":[
+          {"id":"A","phase":"pre","priority":1,"when":[{"new_content_contains":"a"}],"then":{"log":"old"}},
+          {"id":"B","phase":"pre","priority":1,"when":[{"new_content_contains":"b"}],"then":{"log":"b"}}
+        ]}"#,
+    );
+    let root = dir.path();
+    let mut mcp = Mcp::spawn(root);
+    std::fs::write(rules_path(root), ORIGINAL).expect("break");
+    mcp.tool("add_rule", new_rule("C"))
+        .refused("add_rule while broken");
+    std::fs::write(
+        rules_path(root),
+        r#"{"rules":[{"id":"A","phase":"pre","priority":1,"when":[{"new_content_contains":"a"}],"then":{"log":"NEW"}}]}"#,
+    )
+    .expect("repair");
+    mcp.tool("add_rule", new_rule("D"))
+        .done("add_rule after repair");
+    let text = std::fs::read_to_string(rules_path(root)).expect("rules");
+    assert_eq!(disk_ids(root), vec!["A", "D"], "{text}");
+    assert!(text.contains("NEW") && !text.contains("old"), "{text}");
+}
+
+#[test]
+fn list_rules_reports_the_load_error_without_autopersist() {
+    let dir = project(ORIGINAL);
+    let mut mcp = Mcp::spawn_with(dir.path(), false);
+    let listed = mcp.list_rules();
+    assert!(
+        listed["load_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("keep-a")),
+        "{listed}"
+    );
 }

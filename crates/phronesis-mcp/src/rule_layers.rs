@@ -106,6 +106,12 @@ impl LayerError {
 /// the file whose load error is blocking every hook. Editing that file is
 /// the one tool call a load error must not block, or an agent can never
 /// repair it.
+///
+/// Only the project's own `.phronesis/rules.json` and `.phronesis/loader.json`
+/// ever qualify. The failing file can be any layer path `loader.json` names,
+/// and `loader.json` is itself agent-writable, so trusting the failing path
+/// alone would let a layer entry pointing at `src/main.rs` open that source
+/// file to unchecked edits.
 pub fn is_repair_target(project_root: &Path, failing: &Path, target: &str) -> bool {
     if target.is_empty() {
         return false;
@@ -116,8 +122,23 @@ pub fn is_repair_target(project_root: &Path, failing: &Path, target: &str) -> bo
     } else {
         project_root.join(target)
     };
-    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
-    canonical(&target) == canonical(failing)
+    is_repairable(project_root, failing) && canonical(&target) == canonical(failing)
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether a load error in `failing` may be repaired through the hooks: only
+/// the project's `.phronesis/rules.json` or `.phronesis/loader.json`.
+pub fn is_repairable(project_root: &Path, failing: &Path) -> bool {
+    let failing = canonical(failing);
+    [
+        rules_file::default_path(project_root),
+        config_path(project_root),
+    ]
+    .iter()
+    .any(|p| canonical(p) == failing)
 }
 
 fn config_version() -> u8 {

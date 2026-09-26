@@ -287,7 +287,9 @@ pub use crate::server_params::*;
 impl EpistemeMcp {
     // ── Rules Management ──
 
-    #[tool(description = "Add a rule to the RETE network")]
+    #[tool(
+        description = "Add a rule to the RETE network. A rule whose id is already loaded is replaced (an update), never duplicated; its phase is kept unless `phase` is given."
+    )]
     async fn add_rule(
         &self,
         Parameters(params): Parameters<AddRuleParams>,
@@ -332,12 +334,21 @@ impl EpistemeMcp {
         };
 
         let network = self.network.lock().await;
+        // Same id = update. Appending a second rule with the id would put a
+        // duplicate on disk, which the loader rejects — locking every hook.
+        let replaces = network
+            .get_rule_by_id(&params.id)
+            .map_err(Self::err)?
+            .is_some();
         let existing = network.get_all_rules().map_err(Self::err)?.len();
-        if existing >= MAX_RULES {
+        if !replaces && existing >= MAX_RULES {
             return Err(Self::err(format!(
                 "rule limit reached: {} (max {})",
                 existing, MAX_RULES
             )));
+        }
+        if replaces {
+            network.remove_rule(&params.id).map_err(Self::err)?;
         }
 
         let rule = Rule {
@@ -379,7 +390,8 @@ impl EpistemeMcp {
                 .with("priority", params.priority)
                 .with("phase", phase_for_log)
         });
-        Self::ok_text(format!("Rule '{}' added", params.id))
+        let verb = if replaces { "replaced" } else { "added" };
+        Self::ok_text(format!("Rule '{}' {verb}", params.id))
     }
 
     #[tool(
@@ -849,15 +861,32 @@ impl EpistemeMcp {
         self.ensure_autosave_safe().await?;
 
         let network = self.network.lock().await;
-        let existing = network.get_all_rules().map_err(Self::err)?.len();
-        if existing + count > MAX_RULES {
+        let loaded: HashSet<String> = network
+            .get_all_rules()
+            .map_err(Self::err)?
+            .into_iter()
+            .map(|rule| rule.id)
+            .collect();
+        let new = rules
+            .iter()
+            .filter(|rule| !loaded.contains(&rule.id))
+            .count();
+        if loaded.len() + new > MAX_RULES {
             return Err(Self::err(format!(
                 "extracting would exceed rule limit: {} + {} > {}",
-                existing, count, MAX_RULES
+                loaded.len(),
+                new,
+                MAX_RULES
             )));
         }
 
+        // Re-extracting a guide (the documented once-per-session workflow
+        // meets autoload in the next session) replaces its rules by id rather
+        // than duplicating them.
         for rule in &rules {
+            if loaded.contains(&rule.id) {
+                network.remove_rule(&rule.id).map_err(Self::err)?;
+            }
             network.add_rule(rule.clone()).await.map_err(Self::err)?;
         }
         drop(network);
