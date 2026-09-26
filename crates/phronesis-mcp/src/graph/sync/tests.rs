@@ -1171,3 +1171,137 @@ fn a_method_in_a_path_qualified_impl_resolves_its_self_calls() {
         );
     }
 }
+
+#[test]
+fn per_file_resolution_stats_survive_a_double_rebuild() {
+    // src/a.rs calls `missing` (no definition → unresolved) and `dup`
+    // (defined in both src/b.rs and src/c.rs, both visible via `use`
+    // → ambiguous).  src/b.rs calls `ghost` (no definition → unresolved).
+    let d = project();
+    write(
+        d.path(),
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod c;\n",
+    );
+    write(
+        d.path(),
+        "src/a.rs",
+        "use crate::b::dup;\nuse crate::c::dup;\npub fn entry() { missing(); dup(); }\n",
+    );
+    write(
+        d.path(),
+        "src/b.rs",
+        "pub fn dup() {}\npub fn b_entry() { ghost(); }\n",
+    );
+    write(d.path(), "src/c.rs", "pub fn dup() {}\n");
+
+    rebuild(d.path()).expect("first rebuild");
+    let stats1 = load_resolution_stats(d.path()).expect("load stats 1");
+
+    let outcome2 = rebuild(d.path()).expect("second rebuild");
+    let stats2 = load_resolution_stats(d.path()).expect("load stats 2");
+
+    // A second rebuild over unchanged sources must produce identical stats.
+    assert_eq!(stats1, stats2);
+    // The in-memory SaveOutcome must agree with the persisted sidecar.
+    assert_eq!(stats2, outcome2.per_file_resolution);
+
+    // Sum over files equals the global SaveOutcome totals.
+    let total_u: usize = stats2.values().map(|(u, _)| u).sum();
+    let total_a: usize = stats2.values().map(|(_, a)| a).sum();
+    assert_eq!(total_u, outcome2.unresolved_calls);
+    assert_eq!(total_a, outcome2.ambiguous_calls);
+
+    // At least one unresolved edge was attributed.
+    assert!(
+        stats2.values().any(|(u, _)| *u > 0),
+        "expected at least one unresolved edge, got {stats2:?}"
+    );
+}
+
+#[test]
+fn per_file_resolution_stats_survive_an_incremental_save() {
+    // A save re-canonicalizes only the saved file's raw edges; the other
+    // files' breakdown from the last rebuild must not be wiped.
+    let d = project();
+    write(
+        d.path(),
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod c;\n",
+    );
+    let a_body = "use crate::b::dup;\nuse crate::c::dup;\npub fn entry() { missing(); dup(); }\n";
+    write(d.path(), "src/a.rs", a_body);
+    write(
+        d.path(),
+        "src/b.rs",
+        "pub fn dup() {}\npub fn b_entry() { ghost(); }\n",
+    );
+    let c_body = "pub fn dup() {}\n";
+    write(d.path(), "src/c.rs", c_body);
+
+    rebuild(d.path()).expect("rebuild");
+    let after_rebuild = load_resolution_stats(d.path()).expect("load after rebuild");
+    assert!(after_rebuild.contains_key("src/a.rs"), "{after_rebuild:?}");
+    assert!(after_rebuild.contains_key("src/b.rs"), "{after_rebuild:?}");
+
+    // Saving an unchanged file leaves the breakdown exactly as it was.
+    let outcome = on_save(d.path(), "src/c.rs", c_body).expect("save c");
+    let after_save = load_resolution_stats(d.path()).expect("load after save");
+    assert_eq!(after_save, after_rebuild);
+    assert_eq!(outcome.per_file_resolution, after_save);
+
+    // Saving a.rs without its unresolved call replaces only a.rs's entry.
+    let a_fixed = "use crate::b::dup;\nuse crate::c::dup;\npub fn entry() { dup(); }\n";
+    write(d.path(), "src/a.rs", a_fixed);
+    let outcome = on_save(d.path(), "src/a.rs", a_fixed).expect("save a");
+    let after_fix = load_resolution_stats(d.path()).expect("load after fix");
+    assert_eq!(after_fix.get("src/a.rs"), Some(&(0, 1)), "{after_fix:?}");
+    assert_eq!(after_fix.get("src/b.rs"), after_rebuild.get("src/b.rs"));
+    let total_u: usize = after_fix.values().map(|(u, _)| u).sum();
+    let total_a: usize = after_fix.values().map(|(_, a)| a).sum();
+    assert_eq!(
+        (outcome.unresolved_calls, outcome.ambiguous_calls),
+        (total_u, total_a)
+    );
+}
+
+#[test]
+fn incremental_save_adds_other_files_newly_dropped_edges_to_their_rebuild_counts() {
+    // Removing `helper` from b.rs strands a.rs's stored canonical call to it;
+    // that drop is counted under a.rs on top of a.rs's rebuild counts.
+    let d = project();
+    write(
+        d.path(),
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod c;\n",
+    );
+    write(
+        d.path(),
+        "src/a.rs",
+        "use crate::b::helper;\nuse crate::b::dup;\nuse crate::c::dup;\npub fn entry() { helper(); missing(); dup(); }\n",
+    );
+    write(
+        d.path(),
+        "src/b.rs",
+        "pub fn dup() {}\npub fn helper() {}\n",
+    );
+    write(d.path(), "src/c.rs", "pub fn dup() {}\n");
+    rebuild(d.path()).expect("rebuild");
+    assert_eq!(
+        load_resolution_stats(d.path())
+            .expect("load")
+            .get("src/a.rs"),
+        Some(&(1, 1))
+    );
+
+    let b_without_helper = "pub fn dup() {}\n";
+    write(d.path(), "src/b.rs", b_without_helper);
+    let outcome = on_save(d.path(), "src/b.rs", b_without_helper).expect("save b");
+    let after_save = load_resolution_stats(d.path()).expect("load after save");
+    let full = rebuild(d.path()).expect("full rebuild");
+    assert_eq!(after_save, full.per_file_resolution);
+    assert_eq!(
+        (outcome.unresolved_calls, outcome.ambiguous_calls),
+        (full.unresolved_calls, full.ambiguous_calls)
+    );
+}

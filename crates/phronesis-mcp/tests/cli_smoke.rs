@@ -418,3 +418,42 @@ fn no_shipped_artifact_names_the_removed_drift_tools() {
         }
     }
 }
+
+/// `graph status --json` must emit a pure JSON object on stdout: the human
+/// "Resolution hotspots" block must not interleave with the JSON envelope.
+/// Found empirically during dogfooding (the JSON had to be rescued by
+/// truncating to the last `}`). Human mode must still print the block.
+#[test]
+fn graph_status_json_is_pure_and_human_mode_still_shows_hotspots() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    make_project(root);
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("lib.rs"), "fn caller() { never_defined(); }\n").unwrap();
+
+    let rebuild = run_bin(&["graph", "rebuild", "--path", "."], root);
+    assert!(rebuild.status.success(), "rebuild failed");
+
+    let json = run_bin(&["graph", "status", "--json", "--path", "."], root);
+    assert!(json.status.success(), "status --json failed");
+    let stdout = String::from_utf8_lossy(&json.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("status --json stdout must be a pure JSON object");
+    assert!(
+        parsed.get("per_file_resolution").is_some(),
+        "status --json must carry per_file_resolution, got: {stdout}"
+    );
+
+    let human = run_bin(&["graph", "status", "--path", "."], root);
+    assert!(human.status.success(), "status failed");
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        stdout.contains("Resolution hotspots"),
+        "human status must keep the hotspots block, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("src/lib.rs"),
+        "human hotspots must name the file with the unresolved call, got: {stdout}"
+    );
+}

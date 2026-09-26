@@ -10,13 +10,22 @@
 use super::model::Edge;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Per-file resolution breakdown: `(unresolved, ambiguous)` counts keyed by
+/// the source-file provenance (`Edge::src`) of the dropped edge.
+pub type PerFileResolution = BTreeMap<String, (usize, usize)>;
+
 /// Replace extractor-local bare `tested_by` callees with canonical
 /// `defines_fn` identities using only same-module or explicit-import evidence.
 /// Unresolved and ambiguous calls are discarded rather than attributed to
 /// every definition sharing a leaf name.
-pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize) {
+///
+/// Returns the global `(unresolved, ambiguous)` totals alongside a per-file
+/// breakdown keyed by the dropped edge's `src` provenance. The sum of all
+/// per-file counts equals the global totals.
+pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFileResolution) {
     let mut unresolved = 0usize;
     let mut ambiguous = 0usize;
+    let mut per_file: PerFileResolution = BTreeMap::new();
     let definitions = base_edges(base, "defines_fn")
         .filter_map(|edge| edge.a.get(1).cloned())
         .collect::<BTreeSet<_>>();
@@ -155,6 +164,7 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize) {
         let caller_module = caller.rsplit_once("::").map(|(module, _)| module);
         let Some(candidates) = candidates_by_leaf.get(callee) else {
             unresolved += 1;
+            per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
             continue;
         };
         let receiver = receiver_type.map(normalize_receiver);
@@ -254,12 +264,14 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize) {
             normalized.push(edge);
         } else if resolved.is_empty() {
             unresolved += 1;
+            per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
         } else {
             ambiguous += 1;
+            per_file.entry(edge.src.clone()).or_insert((0, 0)).1 += 1;
         }
     }
     *base = normalized;
-    (unresolved, ambiguous)
+    (unresolved, ambiguous, per_file)
 }
 
 /// Strip `<...>` generic arguments from a type name, returning the base name.
@@ -1395,9 +1407,42 @@ mod tests {
             Edge::base("calls", &["rust:app::a::entry", "missing"], "src/a.rs"),
             Edge::base("calls", &["rust:app::a::entry", "dup"], "src/a.rs"),
         ];
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 1, "one unresolved call expected");
         assert_eq!(ambiguous, 1, "one ambiguous call expected");
+    }
+
+    #[test]
+    fn per_file_resolution_attributes_to_edge_src() {
+        // src/a.rs: one unresolved call (to `missing`) + one ambiguous call
+        //           (to `dup` — two defs visible via imports).
+        // src/b.rs: one unresolved call (to `ghost`).
+        let mut base = vec![
+            defines("src/a.rs", "rust:app::a::entry"),
+            defines("src/b.rs", "rust:app::b::entry"),
+            defines("src/c.rs", "rust:app::c::dup"),
+            defines("src/d.rs", "rust:app::d::dup"),
+            Edge::base("file_type", &["src/a.rs", "production"], "src/a.rs"),
+            Edge::base("file_type", &["src/b.rs", "production"], "src/b.rs"),
+            Edge::base("file_type", &["src/c.rs", "production"], "src/c.rs"),
+            Edge::base("file_type", &["src/d.rs", "production"], "src/d.rs"),
+            imports("rust:app::a", "rust:app::c"),
+            imports("rust:app::a", "rust:app::d"),
+            // src/a.rs: unresolved call to `missing`
+            Edge::base("calls", &["rust:app::a::entry", "missing"], "src/a.rs"),
+            // src/a.rs: ambiguous call to `dup` (two defs visible)
+            Edge::base("calls", &["rust:app::a::entry", "dup"], "src/a.rs"),
+            // src/b.rs: unresolved call to `ghost`
+            Edge::base("calls", &["rust:app::b::entry", "ghost"], "src/b.rs"),
+        ];
+        let (unresolved, ambiguous, per_file) = canonicalize_function_edges(&mut base);
+        assert_eq!(per_file.get("src/a.rs"), Some(&(1, 1)));
+        assert_eq!(per_file.get("src/b.rs"), Some(&(1, 0)));
+        // Sum over files equals global totals.
+        let total_u: usize = per_file.values().map(|(u, _)| u).sum();
+        let total_a: usize = per_file.values().map(|(_, a)| a).sum();
+        assert_eq!(total_u, unresolved);
+        assert_eq!(total_a, ambiguous);
     }
 
     // ─── adversarial self-receiver resolution (T4) ────────────────
@@ -1427,7 +1472,7 @@ mod tests {
             &[caller, "@method:Foo:b"],
             "src/foo.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 0, "Case A: no unresolved expected");
         assert_eq!(ambiguous, 0, "Case A: no ambiguous expected");
         assert!(
@@ -1456,7 +1501,7 @@ mod tests {
             &[caller, "@method:Foo:b"],
             "src/foo.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 0, "Case B: no unresolved expected");
         assert_eq!(
             ambiguous, 0,
@@ -1498,7 +1543,7 @@ mod tests {
             &[py_walk, "@method:Sensor:visit"],
             "src/python.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!((unresolved, ambiguous), (0, 0), "{base:?}");
         assert!(
             base.iter()
@@ -1530,7 +1575,7 @@ mod tests {
             &[caller, "@method:Sensor:visit"],
             "src/driver.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(
             (unresolved, ambiguous),
             (0, 1),
@@ -1554,7 +1599,7 @@ mod tests {
             &[caller, "@method:Foo:b"],
             "src/foo.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 0, "Case C: no unresolved expected");
         assert_eq!(ambiguous, 0, "Case C: no ambiguous expected");
         assert!(
@@ -1579,7 +1624,7 @@ mod tests {
             &[caller, "@method:Foo:b"],
             "src/foo.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 0, "Case D: no unresolved expected");
         assert_eq!(ambiguous, 0, "Case D: no ambiguous expected");
         assert!(
@@ -1603,7 +1648,7 @@ mod tests {
         base.extend(method_def("src/bar.rs", bar_b));
         base.push(imports("rust:app::foo", "rust:app::bar"));
         base.push(Edge::base("calls", &[caller, "@method:b"], "src/foo.rs"));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(
             unresolved, 0,
             "Case E: bare hint with candidates is not unresolved"
@@ -1628,7 +1673,7 @@ mod tests {
         let mut base = vec![];
         base.extend(method_def("src/foo.rs", caller));
         base.push(Edge::base("calls", &[caller, "@method:b"], "src/foo.rs"));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 1, "Case E: no definition → unresolved");
         assert_eq!(ambiguous, 0, "Case E: no candidates → not ambiguous");
     }
@@ -1662,7 +1707,7 @@ mod tests {
             &[caller, "@method:contains"],
             "src/bag.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 0, "Case F: candidates exist, not unresolved");
         assert_eq!(ambiguous, 1, "Case F: 2 visible candidates → ambiguous");
         assert!(
@@ -1693,7 +1738,7 @@ mod tests {
             &[caller, "@method:a::Foo:baz"],
             "src/a.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         // Expected if the fix is correct: resolves. If F1 is a real bug,
         // unresolved=1 and no edge. We assert the GROUND TRUTH: the call
         // SHOULD resolve (same impl, same type).
@@ -1746,7 +1791,7 @@ mod tests {
             &[caller, "@method:Foo:baz"],
             "src/foo.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         // Ground truth: the leaf is `baz`, the receiver is `Foo`, the
         // candidate type (after stripping generics) is `Foo`. This should
         // resolve. If rsplit is bracket-unaware, module_last becomes
@@ -1784,7 +1829,7 @@ mod tests {
             &[caller, "@method:Wrapper:foo"],
             "src/wrap.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         // The typed hint `Wrapper` does not match candidate `Inner`.
         // Conservatively, the call is unresolved (no Wrapper::foo def).
         assert_eq!(
@@ -1826,7 +1871,7 @@ mod tests {
             &[caller, "@method:Foo:dup"],
             "src/foo.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         // Ground truth: only one candidate identity exists, so this
         // resolves unambiguously. The review finding's concern about
         // double-counting does not materialize because the graph uses a
@@ -1858,7 +1903,7 @@ mod tests {
         base.push(Edge::base("calls", &[a, "@method:A:b"], "src/a.rs"));
         base.push(Edge::base("calls", &[b, "@method:A:c"], "src/a.rs"));
         // Canonicalize first (as the sync pipeline does), then derive.
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 0, "Case G: all calls should resolve");
         assert_eq!(ambiguous, 0, "Case G: no ambiguity");
         let derived = derive_all(&base);
@@ -1904,7 +1949,7 @@ mod tests {
         // b -> c would be transitive, but since a->b is dropped, c is
         // unreachable. Add the edge anyway to prove the point.
         base.push(Edge::base("calls", &[b1, "@method:A:c"], "src/a.rs"));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(ambiguous, 1, "Case H: a->b is ambiguous (2 candidates)");
         assert_eq!(
             unresolved, 0,
@@ -1971,7 +2016,7 @@ mod tests {
             &[gpc_combat, "@method:CombatantList:next_alive_enemy_id"],
             "src/combat.rs",
         ));
-        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(unresolved, 0, "Case I: no unresolved expected");
         assert_eq!(ambiguous, 0, "Case I: typed hints disambiguate");
         // Verify the typed hint resolved to the combat module's def, not party's
