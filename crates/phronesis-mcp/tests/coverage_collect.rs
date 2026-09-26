@@ -2,7 +2,9 @@
 //! `region_map` independently produces — no reimplementation, no drift.
 //! Golden anchor: the committed fixture's `branch:safe_divide:cd6054b02dde`.
 
-use phronesis_mcp::coverage::collect::{collect_from_documents, leaf_ident, repo_rel, LlvmCovDocument};
+use phronesis_mcp::coverage::collect::{
+    LlvmCovDocument, collect_from_documents, leaf_ident, repo_rel,
+};
 
 /// Fixture source identical to the committed coverage-sample crate
 /// (tests/fixtures/coverage-sample/src/lib.rs).
@@ -51,8 +53,7 @@ fn collector_emits_the_region_map_anchor_for_the_fixture_branch() {
         "divides_positive_values".to_string(),
         doc_with_fn(name, rel, 1, "[[2, 4, 2, 24, 1]]"),
     )];
-    let records =
-        collect_from_documents(root.path(), &"a".repeat(40), &docs).unwrap();
+    let records = collect_from_documents(root.path(), &"a".repeat(40), &docs).unwrap();
 
     let regions: Vec<&str> = records.iter().map(|r| r.region.as_str()).collect();
     assert!(
@@ -65,7 +66,10 @@ fn collector_emits_the_region_map_anchor_for_the_fixture_branch() {
         .iter()
         .find(|r| r.hit_kind == "branch")
         .expect("branch hit expected");
-    assert_eq!(branch.region, "branch:safe_divide:cd6054b02dde", "{branch:?}");
+    assert_eq!(
+        branch.region, "branch:safe_divide:cd6054b02dde",
+        "{branch:?}"
+    );
 }
 
 #[test]
@@ -102,7 +106,10 @@ fn leaf_ident_rejects_closures_but_keeps_impl_methods() {
     // impl methods ARE tree-sitter function names (fn drop in an impl block)
     assert_eq!(leaf_ident("<A as B>::drop").as_deref(), Some("drop"));
     // generic instantiation leaf survives; the fn-map validation filters
-    assert_eq!(leaf_ident("std::vec::Vec::<u8>::new").as_deref(), Some("new"));
+    assert_eq!(
+        leaf_ident("std::vec::Vec::<u8>::new").as_deref(),
+        Some("new")
+    );
     // empty/garbage leaves rejected
     assert_eq!(leaf_ident("a::b::"), None);
 }

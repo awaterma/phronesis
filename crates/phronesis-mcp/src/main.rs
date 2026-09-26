@@ -537,8 +537,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                     .map(|d| d.as_nanos())
                     .unwrap_or(0)
             ));
-            std::fs::create_dir_all(&tmp)
-                .with_context(|| format!("creating {}", tmp.display()))?;
+            std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
             let docs: Vec<(String, collect::LlvmCovDocument)> = match &from_dir {
                 Some(dir) => {
                     let mut out = Vec::new();
@@ -552,10 +551,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                                 .and_then(|s| s.to_str())
                                 .unwrap_or("llvm-cov:unknown")
                                 .to_string();
-                            let label = stem
-                                .strip_prefix("cov-")
-                                .unwrap_or(&stem)
-                                .to_string();
+                            let label = stem.strip_prefix("cov-").unwrap_or(&stem).to_string();
                             out.push((label, collect::read_document(&p)?));
                         }
                     }
@@ -604,8 +600,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let summary =
-                phronesis_mcp::coverage::import::import_export(&root, &export, now)?;
+            let summary = phronesis_mcp::coverage::import::import_export(&root, &export, now)?;
             let _ = std::fs::remove_file(&export);
             println!(
                 "imported {} records across {} tests at revision {}",

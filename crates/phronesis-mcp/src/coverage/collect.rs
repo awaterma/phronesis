@@ -15,7 +15,7 @@
 //! ran alone under coverage, so every executed region in that run is
 //! attributable to that test). `test` labels come from the caller.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -116,12 +116,16 @@ pub fn collect_from_documents(
             if f.count == 0 || f.filenames.is_empty() {
                 continue;
             }
-            let Some(rel) = repo_rel(&f.filenames[0]) else { continue };
+            let Some(rel) = repo_rel(&f.filenames[0]) else {
+                continue;
+            };
             if !is_wanted_source(&rel) {
                 continue;
             }
             let dem = rustc_demangle::demangle(&f.name).to_string();
-            let Some(ident) = leaf_ident(&dem) else { continue };
+            let Some(ident) = leaf_ident(&dem) else {
+                continue;
+            };
             let fns = fn_map(root, &mut fn_maps, &rel)?;
             if !fns.contains(&ident) {
                 continue;
@@ -234,7 +238,8 @@ fn branch_map<'m>(
 pub fn read_document(path: &Path) -> Result<LlvmCovDocument> {
     let text = std::fs::read_to_string(path)
         .with_context(|| format!("reading llvm-cov export: {}", path.display()))?;
-    serde_json::from_str(&text).with_context(|| format!("parsing llvm-cov export: {}", path.display()))
+    serde_json::from_str(&text)
+        .with_context(|| format!("parsing llvm-cov export: {}", path.display()))
 }
 
 /// Serialize records to the normalized export JSONL format.
@@ -254,16 +259,10 @@ pub fn list_tests(bin: &str) -> Result<Vec<String>> {
         .args(["test", "-p", "phronesis-mcp", "--test", bin, "--", "--list"])
         .output()
         .context("running cargo test --list")?;
-    anyhow::ensure!(
-        out.status.success(),
-        "cargo test --list failed for {bin}"
-    );
+    anyhow::ensure!(out.status.success(), "cargo test --list failed for {bin}");
     let mut names = Vec::new();
     for line in String::from_utf8_lossy(&out.stdout).lines() {
-        if let Some(name) = line
-            .strip_suffix(": test")
-            .filter(|name| !name.is_empty())
-        {
+        if let Some(name) = line.strip_suffix(": test").filter(|name| !name.is_empty()) {
             names.push(name.to_string());
         }
     }
