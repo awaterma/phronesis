@@ -594,7 +594,8 @@ crates/phronesis/tests/          # Core engine tests
 └── types_smoke.rs              # Type serialization round-trips
 
 crates/phronesis-mcp/tests/     # MCP server tests
-├── features/                   # BDD-style feature tests
+├── features/                   # BDD-style feature tests (runner: bdd.rs)
+│   ├── coverage-evidence.feature   # steps in bdd/coverage_steps.rs
 │   ├── facts_management.feature
 │   ├── hooks.feature
 │   ├── markdown_extraction.feature
@@ -620,7 +621,7 @@ crates/phronesis-mcp/tests/     # MCP server tests
 
 **Unit tests:** Use `cargo test -p phronesis` or `cargo test -p phronesis-mcp`
 
-**BDD tests:** Add to `crates/phronesis-mcp/tests/features/*.feature`
+**BDD tests:** Add to `crates/phronesis-mcp/tests/features/*.feature`. The runner is strict: a failed, skipped, or undefined step fails `cargo test`, so every new step needs a definition in `tests/bdd.rs` (or a module under `tests/bdd/`).
 
 **Integration tests:** Add to `crates/phronesis-mcp/tests/*_integration.rs`
 

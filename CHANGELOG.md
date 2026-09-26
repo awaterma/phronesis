@@ -20,6 +20,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   A torn store with no one holding the lock — a crashed import — is still
   `store_corrupt`.
 
+- **`cargo test` passed while BDD scenarios never ran.** The cucumber
+  runner (`tests/bdd.rs`) printed its summary and exited 0 whatever it held,
+  so all four `coverage-evidence.feature` scenarios — whose steps had no
+  definitions — were reported skipped and the suite still went green. The
+  runner now fails the test process on any failed, skipped, or undefined
+  step, and those four scenarios have real step definitions: they run the
+  committed `coverage-sample` fixture and its real export through the
+  `phr-mcp` hooks and assert, from the action log, which rule fired for which
+  test and region (branch relevance, the evidence-gap warning, demand gating,
+  and the stale-coverage commit warning that warns without blocking).
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other
