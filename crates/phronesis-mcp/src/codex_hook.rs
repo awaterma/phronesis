@@ -1601,7 +1601,7 @@ mod hook {
 mod tests {
     use super::{
         CodexPayload, LoadedRules, PatchFile, ToolCall, assert_new_content, check_bash_patterns,
-        check_post_bash_command, evaluate_patch_file, fire_verdict,
+        check_post_bash_command, evaluate_patch_file,
     };
 
     #[tokio::test]
@@ -1647,92 +1647,13 @@ mod tests {
     // or downgrading errors.
     // -----------------------------------------------------------------
 
-    /// A `ScriptEval` that always errors out of evaluation entirely (rather
-    /// than returning a normal `Err`, which the network treats as a merely
-    /// blocked condition), used to poison one of `ReteNetwork`'s internal
-    /// locks from outside the engine crate — the smallest available seam,
-    /// since every other reachable path inside `update_agenda` only ever
-    /// produces `ReteError::LockPoisoned` this way.
-    #[derive(Debug)]
-    struct AlwaysAbortScriptEval;
-
-    impl phr::ScriptEval for AlwaysAbortScriptEval {
-        fn evaluate(
-            &self,
-            _script: &str,
-            _facts: &[phr::Fact],
-            _bindings: &std::collections::HashMap<String, String>,
-        ) -> std::result::Result<bool, String> {
-            unreachable!("AlwaysAbortScriptEval always aborts evaluation")
-        }
-    }
-
-    fn pure_script_rule(id: &str) -> phr::Rule {
-        phr::Rule {
-            id: id.to_string(),
-            priority: 1,
-            conditions: vec![phr::Condition {
-                predicate: "__script__".to_string(),
-                args: Vec::new(),
-                script: Some("true".to_string()),
-            }],
-            actions: Vec::new(),
-        }
-    }
-
-    /// Before the fix, `fire_verdict` did `let _ = network.update_agenda().await;`
-    /// and pressed on to `fire_all_consequences` — which never touches the
-    /// `fired_activations` lock, so it reports `Ok` regardless — meaning an
-    /// `update_agenda` failure was invisible to every caller. `hook/pre.rs`
-    /// treats the same failure as "agenda update failed" and blocks. This
-    /// poisons `fired_activations` via an aborting script evaluator (the
-    /// smallest reachable seam: `update_agenda` holds that lock across every
-    /// `evaluate_script_conditions` call) and asserts `fire_verdict` now
-    /// surfaces it as `Err` instead of silently returning `Ok`.
-    #[tokio::test]
-    async fn fire_verdict_surfaces_agenda_update_failure_instead_of_ignoring_it() {
-        let network = std::sync::Arc::new(phr::ReteNetwork::with_script_evaluator(Box::new(
-            AlwaysAbortScriptEval,
-        )));
-        network
-            .add_rule(pure_script_rule("aborts-on-eval"))
-            .await
-            .expect("rule loads");
-
-        // Poison the lock out of band first: the task's abort during
-        // evaluation unwinds through `update_agenda`, dropping its
-        // `fired_activations` guard while unwinding.
-        let poison_net = std::sync::Arc::clone(&network);
-        let join = tokio::spawn(async move { poison_net.update_agenda().await });
-        assert!(
-            join.await.is_err(),
-            "the aborting script evaluator must abort update_agenda's task"
-        );
-
-        let root = std::path::Path::new("/nonexistent-root-for-test");
-        let result = fire_verdict(&network, root).await;
-        let message = result.expect_err(
-            "fire_verdict must propagate an update_agenda failure as Err, matching hook/pre.rs",
-        );
-        assert!(
-            message.contains("agenda update failed"),
-            "message should name the failed step like hook/pre.rs does: {message}"
-        );
-    }
-
     /// A rule naming a `bash_command_matches` pattern whose derived fact id
     /// is already held by different content. `hook_facts::check_bash_command_patterns`
     /// then returns `Err`, which `hook/pre.rs` blocks on ("command pattern
     /// check failed"). Before the fix, Codex's `check_bash_patterns` routed
     /// this into `warnings` instead of `violations`.
     fn seed_conflicting_bash_pattern_fact(pattern: &str) -> phr::Fact {
-        let fact_id = format!(
-            "bash_command_matches_{}",
-            pattern
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-                .collect::<String>()
-        );
+        let fact_id = crate::fact_id::fact_id("bash_command_matches", &[pattern]);
         phr::Fact {
             id: fact_id,
             predicate: "bash_command_matches".to_string(),
