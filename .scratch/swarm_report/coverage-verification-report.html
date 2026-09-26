@@ -91,7 +91,10 @@ between fires, so the verdict at 3am is computed from exactly the state on disk 
   <p class="prose">The store is the foundation everything else stands on, and as of tonight it runs on
 real evidence: the Rust collector (<code>phr-mcp coverage collect</code>) ran 40 machinery tests
 in isolation under cargo-llvm-cov and imported <b>2,274 region-validated records</b> — 1,632
-function hits plus 642 branch hits over 75 source files — at the current HEAD. Region identity
+function hits plus 642 branch hits over 75 source files. The store is stamped
+<code>d1e35c47851a</code>, but the run used a working tree carrying uncommitted changes — the
+collector itself was not yet committed (it landed as <code>84b754e</code>) — so the stamp names
+a revision that did not produce the evidence. Region identity
 is self-validating: every record must be independently produced by <code>region_map</code>, so
 what lands in the store is exactly what hydration will join. The fixture below remains the
 cleanest teaching example of why the identity design matters.</p>
@@ -230,17 +233,25 @@ are from one real instrumented workspace run (nightly, <code>--branch</code>): t
 own modules — the code this report is about — land at 77–96% lines, with <code>select.rs</code>
 (67.9%) the honest low point. After the collector was ported into Rust, 40 machinery tests ran
 in isolation under coverage and their <b>2,274 region-validated records</b> were imported into
-the evidence store at the current HEAD — so the gap rules and <code>coverage select</code> now
-run on real evidence, not the toy fixture. The collector is self-validating: every emitted
+the evidence store — so the gap rules and <code>coverage select</code> now run on real
+evidence, not the toy fixture. Those records were collected from an uncommitted working tree
+and stamped with the HEAD of the time, not with a revision that contains the code they
+measured (see the note below). The collector is self-validating: every emitted
 identity must be independently produced by <code>region_map</code>, so nothing it imports can
 drift from what hydration joins.</p>
   <table><thead><tr><th>machinery module (lines)</th><th>line coverage</th></tr></thead><tbody><tr><td><code>coverage/hydrate.rs</code></td><td>95.7%</td></tr><tr><td><code>coverage/region_map.rs</code></td><td>94.3%</td></tr><tr><td><code>coverage/store.rs</code></td><td>86.8%</td></tr><tr><td><code>coverage/import.rs</code></td><td>78.7%</td></tr><tr><td><code>coverage/select.rs</code></td><td>67.9%</td></tr><tr><td><code>properties/status.rs</code></td><td>84.8%</td></tr><tr><td><code>properties/allowlist.rs</code></td><td>83.2%</td></tr><tr><td><code>properties/execute.rs</code></td><td>82.2%</td></tr><tr><td><code>properties/hydrate.rs</code></td><td>76.8%</td></tr><tr><td><code>properties/validate.rs</code></td><td>75.3%</td></tr><tr><td><code>properties/store.rs</code></td><td>72.1%</td></tr></tbody></table>
   <div class="note"><b>Workspace totals (one llvm-cov run, full suite).</b> 51,257/55,891 lines =
   <b>91.7%</b> &middot; functions 90.1% &middot; branches 77.0% &middot; regions 90.8%. Evidence store:
   <b>2,274 records across 40 tests</b> (1,632 fn + 642 branch hits over 75 source files), imported
-  at HEAD <code>d1e35c47851a</code> — the staleness warning is finally quiet. A live change
-  joined against that store selects <b>37 tests</b>: 19 dynamic observations + 18 static-reach
-  entries from the rebuilt graph (14,792 base edges).</div>
+  stamped <code>d1e35c47851a</code>. <b>Provenance caveat:</b> they were collected from a dirty
+  working tree before the collector was committed as <code>84b754e</code> (it did not exist at
+  <code>d1e35c4</code>), so the staleness rule's silence at that point reflected the stamp matching
+  HEAD, not evidence produced by HEAD. <code>coverage collect</code> now refuses a tree that differs
+  from HEAD unless <code>--allow-dirty</code> is passed. A live change joined against that store
+  selects <b>37 tests</b>: 19 dynamic observations + 18 static-reach entries from the rebuilt graph
+  (14,792 base edges). That split came from the <code>select</code> of the time, which kept one entry
+  per test and labeled it by whichever half inserted it first, so any test with both a hit and a
+  static edge was counted once, as a dynamic observation.</div>
 </section>
 
 <section>
@@ -256,7 +267,7 @@ system that overclaims its own coverage would be the funniest possible failure m
         <li><b>2635 tests</b> green across phronesis-mcp + phronesis-rhai; clippy <code>-D warnings</code> clean</li>
         <li><b>40 coverage/property tests</b> across 8 files + 1 BDD feature</li>
         <li><b>10 verus conditions</b> verified (Z3, 0 errors) — identifier charset, FNV-1a determinism, line ordering</li>
-        <li><b>2,274 coverage hits</b> imported — 40 machinery tests collected in isolation by the Rust collector, validated against the region map, fresh at HEAD</li>
+        <li><b>2,274 coverage hits</b> imported — 40 machinery tests collected in isolation by the Rust collector, validated against the region map; collected from an uncommitted tree and stamped <code>d1e35c4</code>, which did not contain the collector</li>
         <li><b>Aggregate workspace coverage measured</b> — 91.7% lines, 77.0% branches over 55,891 lines</li>
         <li><b>1 golden trace</b> through the real RETE network — 4 exact join pairs</li>
         <li><b>3 real-binary rule tests</b> — rules 5.2 / 5.3 through the actual hook</li>
