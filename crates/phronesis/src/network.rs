@@ -348,6 +348,13 @@ impl ReteNetwork {
 
     /// Add a rule to the RETE network
     pub async fn add_rule(&self, rule: Rule) -> Result<String, ReteError> {
+        let unbound = rule.unbound_action_variables();
+        if !unbound.is_empty() {
+            warn!(
+                "rule '{}' actions name variable(s) {:?} that no condition binds; they render literally",
+                rule.id, unbound
+            );
+        }
         let salience = rule.priority;
         let condition_state_ids = self.create_condition_states(&rule)?;
         let terminal_state_id = self.create_join_chain(&condition_state_ids)?;

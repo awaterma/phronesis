@@ -60,6 +60,86 @@ pub struct Rule {
     pub actions: Vec<Action>,
 }
 
+impl Rule {
+    /// Variable-shaped tokens (`?name`) in this rule's action params and
+    /// string data that no condition binds, deduplicated in first-seen order.
+    ///
+    /// A condition binds a variable by naming it as a whole argument
+    /// (`["?file"]`). Substitution is textual, so a token also counts as
+    /// bound when a condition variable occurs inside it — that is how it
+    /// renders at fire time. Everything reported here renders literally when
+    /// the rule fires; a message that merely *reads* like a variable
+    /// (`"?reason: ..."`) is reported too, since the engine cannot tell the
+    /// two apart. Hosts surface this as a diagnostic, never a load failure.
+    pub fn unbound_action_variables(&self) -> Vec<String> {
+        let bound: Vec<&str> = self
+            .conditions
+            .iter()
+            .flat_map(|c| &c.args)
+            .map(String::as_str)
+            .filter(|a| a.starts_with('?'))
+            .collect();
+        let mut out: Vec<String> = Vec::new();
+        let texts = self.actions.iter().flat_map(Action::texts);
+        for token in texts.flat_map(variable_tokens) {
+            if !bound.iter().any(|v| token.contains(v)) && !out.iter().any(|o| o == token) {
+                out.push(token.to_string());
+            }
+        }
+        out
+    }
+}
+
+impl Action {
+    /// Every string that variable substitution touches: the params, then the
+    /// string leaves of `data`.
+    pub(crate) fn texts(&self) -> Vec<&str> {
+        let mut texts: Vec<&str> = self.params.iter().map(String::as_str).collect();
+        if let Some(data) = &self.data {
+            collect_json_strings(data, &mut texts);
+        }
+        texts
+    }
+}
+
+fn collect_json_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+    match value {
+        serde_json::Value::String(s) => out.push(s),
+        serde_json::Value::Array(items) => items.iter().for_each(|v| collect_json_strings(v, out)),
+        serde_json::Value::Object(map) => map.values().for_each(|v| collect_json_strings(v, out)),
+        _ => {}
+    }
+}
+
+/// Every variable-shaped token in `text`: a `?` followed by an ASCII letter
+/// or `_`, then any run of ASCII alphanumerics and `_`. `??` and a lone `?`
+/// are punctuation, not variables.
+pub fn variable_tokens(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'?'
+            && bytes
+                .get(i + 1)
+                .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        {
+            let start = i;
+            i += 1;
+            while bytes
+                .get(i)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            {
+                i += 1;
+            }
+            out.push(&text[start..i]);
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Performance statistics for the RETE engine
 #[derive(Debug, Default)]
 pub struct PerformanceStats {
@@ -139,6 +219,43 @@ impl PerformanceStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn variable_tokens_find_names_and_skip_punctuation() {
+        assert_eq!(
+            variable_tokens("?a in ?file_2, not ?? or ? or ?1"),
+            vec!["?a", "?file_2"]
+        );
+        assert!(variable_tokens("no variables").is_empty());
+    }
+
+    fn rule(conditions: &[&[&str]], message: &str) -> Rule {
+        Rule {
+            id: "r".to_string(),
+            priority: 0,
+            conditions: conditions
+                .iter()
+                .map(|args| Condition {
+                    predicate: "p".to_string(),
+                    args: args.iter().map(|a| a.to_string()).collect(),
+                    script: None,
+                })
+                .collect(),
+            actions: vec![Action {
+                action_type: "constraint_violation".to_string(),
+                params: vec![message.to_string()],
+                data: Some(serde_json::json!({"body": "for ?who"})),
+            }],
+        }
+    }
+
+    #[test]
+    fn unbound_action_variables_reports_only_names_no_condition_binds() {
+        let r = rule(&[&["?file", "src"]], "?reason: ?file is ?file");
+        assert_eq!(r.unbound_action_variables(), vec!["?reason", "?who"]);
+        let bound = rule(&[&["?reason", "?who"]], "?reason");
+        assert!(bound.unbound_action_variables().is_empty());
+    }
 
     #[test]
     fn fact_serialization_roundtrips_with_source() {
