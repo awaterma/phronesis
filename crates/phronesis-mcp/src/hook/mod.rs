@@ -13,6 +13,7 @@ pub(crate) mod seq;
 pub use post::run_post_check;
 pub use pre::run_pre_check;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::process;
 
@@ -599,8 +600,27 @@ pub(super) fn collect_logged(
         .iter()
         .filter_map(LoggedConsequence::from_consequence)
         .collect();
+    report_guard_errors(&logged);
     let (violations, warnings) = split_messages_by_action_type(&logged);
     (logged, violations, warnings)
+}
+
+/// Name each rule whose `__script__` guard failed to evaluate, once, on
+/// stderr. The engine already failed closed (the rule fired as matched);
+/// this makes the broken guard visible even when the rule's action is not a
+/// block or warn, since the hook initializes no tracing subscriber.
+fn report_guard_errors(logged: &[LoggedConsequence]) {
+    let mut seen = HashSet::new();
+    for c in logged {
+        if let Some(error) = &c.guard_error
+            && seen.insert(c.rule_id.as_str())
+        {
+            eprintln!(
+                "phronesis: GUARD ERROR — rule `{}`: __script__ guard failed to evaluate ({error}); rule treated as matched (fail closed). Fix the guard.",
+                c.rule_id
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1102,6 +1122,7 @@ mod tests {
                 message: "v1".to_string(),
                 bindings: HashMap::new(),
                 decisions: Vec::new(),
+                guard_error: None,
             },
             LoggedConsequence {
                 rule_id: "r2".into(),
@@ -1109,6 +1130,7 @@ mod tests {
                 message: "w1".to_string(),
                 bindings: HashMap::new(),
                 decisions: Vec::new(),
+                guard_error: None,
             },
             LoggedConsequence {
                 rule_id: "r3".into(),
@@ -1116,6 +1138,7 @@ mod tests {
                 message: "v2".to_string(),
                 bindings: HashMap::new(),
                 decisions: Vec::new(),
+                guard_error: None,
             },
         ];
         let (vs, ws) = split_messages_by_action_type(&items);

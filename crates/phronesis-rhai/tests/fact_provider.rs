@@ -217,3 +217,28 @@ fn provider_engine_rejects_eval() {
         "evaluate must reject eval"
     );
 }
+
+#[test]
+fn provider_reads_multi_kb_content_without_tripping_limits() {
+    // The event map is injected host data: a 20 KB edit must not count
+    // against the provider's own 4 KiB string budget.
+    let mut event = edit_event();
+    event.old_content = "fn old() {}\n".repeat(1700);
+    event.new_content = "fn parse() { value.unwrap(); }\n".repeat(700);
+    let script = r#"
+        if event.new_content.contains("unwrap()") && event.old_content.len() > 4096 {
+            emit_fact("unsafe_unwrap_added", [event.file_path]);
+        }
+    "#;
+    let facts = RhaiFactProvider::new()
+        .evaluate(script, &event)
+        .expect("large host data must not trip the script's own limits");
+    assert_eq!(facts.len(), 1);
+
+    // The script's own runaway is still bounded.
+    assert!(
+        RhaiFactProvider::new()
+            .evaluate(r#"let s = event.new_content; loop { s += s; }"#, &event)
+            .is_err()
+    );
+}

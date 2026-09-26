@@ -37,9 +37,18 @@ Each script sees exactly two variables and must return a `bool`:
 facts.some(|f| f.predicate == "inventory" && f.args[1].parse_int() >= 5)
 ```
 
-A non-`bool` return, a syntax error, or a sandbox-limit breach yields an
-error, which the network treats as a **blocked** condition — a broken guard
-never silently passes.
+A non-`bool` return, a syntax or runtime error (an undefined function,
+division by zero), or a sandbox-limit breach yields an error, which the
+network **fails closed** on: the rule is treated as matched and fires with
+the error attached as `payload.guard_error` (and appended to its message). A
+broken guard on a block rule blocks; it never silently passes. The
+`phr-mcp` hooks also print a `GUARD ERROR` line naming the rule and record
+`guard_error` in the action log.
+
+Guards are judged when an activation fires, against the working memory as
+it is then — not when the triggering fact arrived — so a guard that reads
+facts asserted after its trigger (by a predicate provider, say) sees them,
+and the verdict does not depend on assertion order.
 
 ## Sandbox
 
@@ -51,6 +60,16 @@ engine keeps, so every engine this crate builds (guard, provider, render)
 disables it explicitly — any use is a parse error. Scripts run on every rule
 evaluation, so a malformed or hostile script can neither hang the engine nor
 reach the host.
+
+The data limits (4 KiB of string, 4096 array elements, 4096 map entries) and
+the operation cap are the script's **own** budget, granted on top of the data
+the host injects (`facts` and `bindings` for a guard, `event` for a
+provider). Rhai sizes a value as a whole, nested strings included, so
+without this a guard reading a realistic fact base (hundreds of facts, a
+multi-KB `new_content`) or a provider reading a large edit would error on the
+host's data alone. The injected data therefore never trips a limit by
+itself; a limit error always means the script built too much on its own,
+and that still fails closed.
 
 ## MCP integration
 

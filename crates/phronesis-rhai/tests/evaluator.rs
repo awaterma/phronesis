@@ -363,3 +363,58 @@ fn guard_engine_rejects_eval() {
     assert!(eval(r#"eval("\"x\"") == "x""#, &[], &b).is_err());
     assert!(eval(r#"let code = "true"; eval(code)"#, &[], &b).is_err());
 }
+
+/// A realistic hook fact base: hundreds of small facts plus a multi-KB
+/// `new_content` payload. Rhai sizes a value recursively, so the injected
+/// `facts` array as a whole used to count against the 4 KiB per-string
+/// limit — any guard touching `facts` errored, and a guard error fails
+/// closed, so it blocked.
+fn realistic_facts() -> Vec<Fact> {
+    let mut facts: Vec<Fact> = (0..300)
+        .map(|i| {
+            fact(
+                &format!("f{i}"),
+                "file_path_matches",
+                &[&format!(
+                    "component-{i:04}-padding-padding-padding-padding-pad"
+                )],
+            )
+        })
+        .collect();
+    let content = "fn main() { println!(\"needle\"); }\n".repeat(600); // ~20 KB
+    facts.push(fact("new_content", "new_content", &[&content]));
+    facts
+}
+
+#[test]
+fn guard_reads_a_realistic_fact_base_without_tripping_limits() {
+    let facts = realistic_facts();
+    let b = HashMap::new();
+    assert_eq!(eval("facts.len() > 100000", &facts, &b), Ok(false));
+    assert_eq!(
+        eval(
+            r#"facts.filter(|f| f.predicate == "file_path_matches").len() == 300"#,
+            &facts,
+            &b
+        ),
+        Ok(true)
+    );
+    assert_eq!(
+        eval(
+            r#"facts.some(|f| f.predicate == "new_content" && f.args[0].contains("needle"))"#,
+            &facts,
+            &b
+        ),
+        Ok(true)
+    );
+}
+
+#[test]
+fn guard_runaway_still_errors_over_a_large_fact_base() {
+    // The budget grows with the injected data only; a script that builds
+    // its own unbounded data still hits a limit and fails closed.
+    let facts = realistic_facts();
+    let b = HashMap::new();
+    assert!(eval(r#"let s = "ab"; loop { s += s; }"#, &facts, &b).is_err());
+    assert!(eval("let a = []; loop { a.push(1); }", &facts, &b).is_err());
+}

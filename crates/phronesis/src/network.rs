@@ -52,6 +52,52 @@ impl ActivationKey {
     }
 }
 
+/// Outcome of judging an activation's `__script__` guards.
+///
+/// Guards are judged when an activation is about to fire, against the
+/// working memory as it is then — never when the triggering WME arrives.
+/// Refraction latches the *structural* match only, so the verdict does not
+/// depend on the order facts were asserted in: a guard reading facts that
+/// arrive after the trigger (a predicate provider's, say) sees them.
+///
+/// - `Pass`: the activation fires.
+/// - `Fail`: the activation is dropped and un-latched (its refraction key is
+///   cleared), so the next `update_agenda` rediscovers it and judges it
+///   against the working memory of that cycle.
+/// - `Error`: the guard could not be evaluated. The rule is treated as
+///   matched (fail closed) — a broken guard on a block rule blocks — and each
+///   consequence carries the error as `payload.guard_error` and in its
+///   `message`, so the host can name the rule and the script error. Firing
+///   the rule's own action, rather than emitting a separate error
+///   consequence, keeps the rule's severity (block vs. warn) and routing
+///   intact.
+#[derive(Debug)]
+enum GuardVerdict {
+    Pass,
+    Fail,
+    Error(String),
+}
+
+/// Annotate the consequences of an activation whose guard errored: the raw
+/// error goes in `payload.guard_error`; the `message` gains a suffix naming
+/// the rule and the error so any host that prints messages surfaces both.
+fn annotate_guard_error(consequences: &mut [Consequence], rule_id: &str, error: &str) {
+    for consequence in consequences {
+        let Some(payload) = consequence.payload.as_object_mut() else {
+            continue;
+        };
+        let message = payload
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or_default();
+        let annotated = format!(
+            "{message} [rule `{rule_id}`: __script__ guard failed to evaluate ({error}); failing closed]"
+        );
+        payload.insert("message".to_string(), annotated.into());
+        payload.insert("guard_error".to_string(), error.into());
+    }
+}
+
 #[derive(Debug)]
 pub struct ReteNetwork {
     wme_manager: Arc<Mutex<WmeManager>>,
@@ -172,8 +218,8 @@ impl ReteNetwork {
     /// Add p-state activations to the agenda.  Holds `fired_activations`,
     /// `production_network`, and `agenda` for the whole loop to avoid
     /// repeated lock acquisition; `wme_manager` is locked per-iteration
-    /// because `evaluate_script_conditions` re-enters it and
-    /// `std::sync::Mutex` is not reentrant.
+    /// by `activation_wmes`.  `__script__` guards are not judged here —
+    /// see [`GuardVerdict`].
     fn add_p_state_activations(&self, activations: &[PStateActivation]) -> Result<(), ReteError> {
         let mut fired_activations = self
             .fired_activations
@@ -207,14 +253,6 @@ impl ReteNetwork {
                 .map(|pn| pn.rule.clone());
 
             if let Some(rule) = rule {
-                if !self.evaluate_script_conditions(&rule, &activation.token.bindings)? {
-                    debug!(
-                        "P-state activation blocked by script condition: rule '{}'",
-                        rule.id
-                    );
-                    continue;
-                }
-
                 let wme_list = self.activation_wmes(activation)?;
 
                 debug!(
@@ -452,15 +490,6 @@ impl ReteNetwork {
             let bindings =
                 crate::variable_binding::Bindings::new().can_bind(&entry.condition, &wme.fact)?;
 
-            let script_passes = self.evaluate_script_conditions(&entry.rule, &bindings)?;
-            if !script_passes {
-                debug!(
-                    "Single-condition rule '{}' blocked by script condition for WME '{}'",
-                    entry.rule.id, wme.id
-                );
-                continue;
-            }
-
             {
                 let mut agenda = self
                     .agenda
@@ -542,13 +571,6 @@ impl ReteNetwork {
             }
             let bindings =
                 crate::variable_binding::Bindings::new().can_bind(condition, &wme.fact)?;
-            if !self.evaluate_script_conditions(rule, &bindings)? {
-                debug!(
-                    "Full-scan: rule '{}' blocked by script condition for WME '{}'",
-                    rule.id, wme.id
-                );
-                continue;
-            }
             debug!(
                 "Adding single-condition rule '{}' to agenda with bindings {:?}",
                 rule.id, bindings
@@ -580,10 +602,6 @@ impl ReteNetwork {
             return Ok(());
         }
         let bindings = crate::variable_binding::Bindings::new();
-        if !self.evaluate_script_conditions(rule, &bindings)? {
-            debug!("Pure-script rule '{}' blocked by script condition", rule.id);
-            return Ok(());
-        }
         debug!(
             "Adding pure-script rule '{}' to agenda (no WMEs, empty bindings)",
             rule.id
@@ -619,13 +637,6 @@ impl ReteNetwork {
                 debug!("Skipping duplicate activation: {:?}", activation_key);
                 continue;
             }
-            if !self.evaluate_script_conditions(&state.rule, &token.bindings)? {
-                debug!(
-                    "Full-scan multi-condition: rule '{}' blocked by script condition",
-                    state.rule.id
-                );
-                continue;
-            }
             let manager = self
                 .wme_manager
                 .lock()
@@ -651,69 +662,123 @@ impl ReteNetwork {
         Ok(())
     }
 
-    /// Evaluate all `__script__` conditions on a rule against current working memory.
-    /// Returns `true` if all script conditions pass (or if there are none).
-    /// Returns `false` if any script condition blocks the activation.
-    fn evaluate_script_conditions(
+    /// Judge a rule's `__script__` guards against `facts` (the working
+    /// memory at fire time) and the activation's `bindings`.
+    ///
+    /// Every guard is evaluated, so a broken guard is reported even when
+    /// another guard on the same rule is false: an evaluation error
+    /// dominates and yields [`GuardVerdict::Error`] (fail closed).
+    fn judge_guards(
         &self,
         rule: &Rule,
         bindings: &crate::variable_binding::Bindings,
-    ) -> Result<bool, ReteError> {
-        // Collect script conditions
-        let script_conditions: Vec<&Condition> = rule
-            .conditions
-            .iter()
-            .filter(|c| c.predicate == "__script__" && c.script.is_some())
-            .collect();
-
-        if script_conditions.is_empty() {
-            return Ok(true); // No script conditions, pass through
-        }
-
-        // Get all current facts from working memory
-        let facts: Vec<Fact> = {
-            let wme_manager = self
-                .wme_manager
-                .lock()
-                .map_err(|_| ReteError::poisoned("wme_manager"))?;
-            wme_manager
-                .get_all()
-                .iter()
-                .map(|wme| wme.fact.clone())
-                .collect()
-        };
-
-        // Convert Bindings to HashMap for the ScriptEvaluator interface
-        let bindings_map: std::collections::HashMap<String, String> = bindings.bindings.clone();
-
-        // Evaluate each script condition
-        for condition in script_conditions {
-            let script = condition
-                .script
-                .as_ref()
-                .ok_or_else(|| ReteError::ScriptMissing {
-                    rule_id: rule.id.clone(),
-                })?;
+        facts: &[Fact],
+    ) -> GuardVerdict {
+        let mut verdict = GuardVerdict::Pass;
+        for condition in Self::guard_conditions(rule) {
+            let Some(script) = condition.script.as_deref() else {
+                warn!(
+                    "Script condition in rule '{}' has no script text — failing closed",
+                    rule.id
+                );
+                return GuardVerdict::Error("__script__ condition has no script text".to_string());
+            };
             match self
                 .script_evaluator
-                .evaluate(script, &facts, &bindings_map)
+                .evaluate(script, facts, &bindings.bindings)
             {
-                Ok(true) => continue,
+                Ok(true) => {}
                 Ok(false) => {
                     debug!("Script condition blocked rule '{}': {}", rule.id, script);
-                    return Ok(false);
+                    verdict = GuardVerdict::Fail;
                 }
                 Err(e) => {
                     warn!(
-                        "Script condition error in rule '{}': {} — treating as blocked",
+                        "Script condition error in rule '{}': {} — failing closed (rule treated as matched)",
                         rule.id, e
                     );
-                    return Ok(false);
+                    return GuardVerdict::Error(e);
                 }
             }
         }
+        verdict
+    }
 
-        Ok(true)
+    /// The `__script__` guard conditions on `rule`.
+    fn guard_conditions(rule: &Rule) -> impl Iterator<Item = &Condition> {
+        rule.conditions
+            .iter()
+            .filter(|c| c.predicate == "__script__")
+    }
+
+    /// Clone the facts in working memory — the snapshot guards are judged
+    /// against. Taken once per drain: firing never changes working memory.
+    fn working_memory_facts(&self) -> Result<Vec<Fact>, ReteError> {
+        Ok(self
+            .wme_manager
+            .lock()
+            .map_err(|_| ReteError::poisoned("wme_manager"))?
+            .get_all()
+            .iter()
+            .map(|wme| wme.fact.clone())
+            .collect())
+    }
+
+    /// Judge `item`'s guards, taking the working-memory snapshot on first
+    /// need so guard-free drains never clone the fact base.
+    fn verdict_for(
+        &self,
+        item: &AgendaItem,
+        facts: &mut Option<Vec<Fact>>,
+    ) -> Result<GuardVerdict, ReteError> {
+        if Self::guard_conditions(&item.rule).next().is_none() {
+            return Ok(GuardVerdict::Pass);
+        }
+        if facts.is_none() {
+            *facts = Some(self.working_memory_facts()?);
+        }
+        let facts = facts.as_deref().unwrap_or_default();
+        Ok(self.judge_guards(&item.rule, &item.bindings, facts))
+    }
+
+    /// Pop the next activation whose guards do not currently fail, with the
+    /// guard error it must be annotated with, if any.
+    ///
+    /// An activation whose guard is false is dropped *and un-latched*: its
+    /// refraction key is cleared, so the next [`update_agenda`] rediscovers
+    /// it and it is judged again against the working memory of that cycle.
+    /// Nothing is retained between drains, so a long-lived session never
+    /// re-judges an ever-growing set of guard-false activations.
+    ///
+    /// [`update_agenda`]: Self::update_agenda
+    fn pop_firable(
+        &self,
+        facts: &mut Option<Vec<Fact>>,
+    ) -> Result<Option<(AgendaItem, Option<String>)>, ReteError> {
+        loop {
+            let next = self
+                .agenda
+                .lock()
+                .map_err(|_| ReteError::poisoned("agenda"))?
+                .pop_next();
+            let Some(item) = next else {
+                return Ok(None);
+            };
+            match self.verdict_for(&item, facts)? {
+                GuardVerdict::Pass => return Ok(Some((item, None))),
+                GuardVerdict::Error(e) => return Ok(Some((item, Some(e)))),
+                GuardVerdict::Fail => {
+                    let key = ActivationKey::new(
+                        &item.rule.id,
+                        item.wme_list.iter().map(|w| w.id.as_str()),
+                    );
+                    self.fired_activations
+                        .lock()
+                        .map_err(|_| ReteError::poisoned("fired_activations"))?
+                        .remove(&key);
+                }
+            }
+        }
     }
 
     /// Count the number of real (non-script) conditions in a rule
@@ -732,30 +797,27 @@ impl ReteNetwork {
             .collect()
     }
 
-    /// Execute the next agenda item. Internal building block for
+    /// Execute the next agenda item whose `__script__` guards do not fail
+    /// against current working memory. Internal building block for
     /// [`execute_all_agenda_items`](Self::execute_all_agenda_items); the
     /// public single-step surface is [`execute_next_agenda_item`] behind the
     /// `embedding-host` feature.
-    fn execute_next_agenda_item_inner(&self) -> Result<Vec<Action>, ReteError> {
-        let agenda_item = {
-            let mut agenda = self
-                .agenda
-                .lock()
-                .map_err(|_| ReteError::poisoned("agenda"))?;
-            agenda.pop_next()
-        };
-
-        match agenda_item {
-            Some(item) => {
-                let actions = {
-                    let production_network = self
-                        .production_network
-                        .lock()
-                        .map_err(|_| ReteError::poisoned("production_network"))?;
-                    production_network.execute_agenda_item(&item)?
-                };
-
-                Ok(actions)
+    ///
+    /// The legacy `Action` shape has no room for an annotation, so an
+    /// activation whose guard errored fires its actions unannotated (still
+    /// fail closed); use [`fire_all_consequences`](Self::fire_all_consequences)
+    /// to see the `guard_error`.
+    fn execute_next_agenda_item_inner(
+        &self,
+        facts: &mut Option<Vec<Fact>>,
+    ) -> Result<Vec<Action>, ReteError> {
+        match self.pop_firable(facts)? {
+            Some((item, _guard_error)) => {
+                let production_network = self
+                    .production_network
+                    .lock()
+                    .map_err(|_| ReteError::poisoned("production_network"))?;
+                production_network.execute_agenda_item(&item)
             }
             None => Err(ReteError::EmptyAgenda),
         }
@@ -768,7 +830,7 @@ impl ReteNetwork {
     /// [`execute_all_agenda_items`](Self::execute_all_agenda_items).
     #[cfg(feature = "embedding-host")]
     pub fn execute_next_agenda_item(&self) -> Result<Vec<Action>, ReteError> {
-        self.execute_next_agenda_item_inner()
+        self.execute_next_agenda_item_inner(&mut None)
     }
 
     /// Execute all agenda items
@@ -776,15 +838,13 @@ impl ReteNetwork {
         let start = Instant::now();
 
         let mut all_actions = Vec::new();
-
-        while {
-            let agenda = self
-                .agenda
-                .lock()
-                .map_err(|_| ReteError::poisoned("agenda"))?;
-            !agenda.is_empty()
-        } {
-            all_actions.extend(self.execute_next_agenda_item_inner()?);
+        let mut facts = None;
+        loop {
+            match self.execute_next_agenda_item_inner(&mut facts) {
+                Ok(actions) => all_actions.extend(actions),
+                Err(ReteError::EmptyAgenda) => break,
+                Err(e) => return Err(e),
+            }
         }
 
         // Record metrics
@@ -803,33 +863,25 @@ impl ReteNetwork {
     /// producing `Consequence`s rather than raw `Action`s. New high-level
     /// entry point for callers that want rule_id + bindings on every fire.
     /// The legacy `execute_all_agenda_items` path stays available.
+    ///
+    /// `__script__` guards are judged here, against the working memory at
+    /// fire time — see [`GuardVerdict`]. An activation whose guard errored
+    /// fires with a `guard_error` string in each consequence payload and
+    /// the error appended to its `message`.
     pub fn fire_all_consequences(&self) -> Result<Vec<Consequence>, ReteError> {
         let start = Instant::now();
         let mut all = Vec::new();
 
-        loop {
-            let next_item = {
-                let mut agenda = self
-                    .agenda
-                    .lock()
-                    .map_err(|_| ReteError::poisoned("agenda"))?;
-                if agenda.is_empty() {
-                    break;
-                }
-                agenda.pop_next()
-            };
-            let item = match next_item {
-                Some(i) => i,
-                None => break,
-            };
-
-            let consequences = {
-                let production_network = self
-                    .production_network
-                    .lock()
-                    .map_err(|_| ReteError::poisoned("production_network"))?;
-                production_network.fire_agenda_item(&item)?
-            };
+        let mut facts = None;
+        while let Some((item, guard_error)) = self.pop_firable(&mut facts)? {
+            let mut consequences = self
+                .production_network
+                .lock()
+                .map_err(|_| ReteError::poisoned("production_network"))?
+                .fire_agenda_item(&item)?;
+            if let Some(error) = guard_error {
+                annotate_guard_error(&mut consequences, &item.rule.id, &error);
+            }
             all.extend(consequences);
         }
 
@@ -1056,15 +1108,28 @@ impl ReteNetwork {
     ///
     /// The returned values are detached from the engine, so callers cannot
     /// hold an internal agenda lock or mutate scheduling state.
+    ///
+    /// "Pending" means firable now: activations whose `__script__` guard is
+    /// false against current working memory are left out (firing would
+    /// drop them); a guard that errors is included, because firing fails
+    /// closed.
     pub fn agenda_snapshot(&self) -> Result<Vec<AgendaItem>, ReteError> {
-        Ok(self
+        let items: Vec<AgendaItem> = self
             .agenda
             .lock()
             .map_err(|_| ReteError::poisoned("agenda"))?
             .get_all_items()
             .into_iter()
             .cloned()
-            .collect())
+            .collect();
+        let mut facts = None;
+        let mut pending = Vec::with_capacity(items.len());
+        for item in items {
+            if !matches!(self.verdict_for(&item, &mut facts)?, GuardVerdict::Fail) {
+                pending.push(item);
+            }
+        }
+        Ok(pending)
     }
 
     /// Bulk-assert a batch of facts (async version).
@@ -1142,6 +1207,18 @@ impl ReteNetwork {
         production_network
             .single_cond_index
             .retain(|_, entries| !entries.is_empty());
+        drop(production_network);
+        // A removed rule leaves nothing behind: its pending activations
+        // would fail at fire time (no production state), and its refraction
+        // keys would stop a rule re-added under the same id from firing.
+        self.agenda
+            .lock()
+            .map_err(|_| ReteError::poisoned("agenda"))?
+            .remove_by_condition(|item| item.rule.id == rule_id);
+        self.fired_activations
+            .lock()
+            .map_err(|_| ReteError::poisoned("fired_activations"))?
+            .retain(|key| key.rule_id != rule_id);
         Ok(())
     }
 }

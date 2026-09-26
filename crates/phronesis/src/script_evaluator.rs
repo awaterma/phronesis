@@ -25,8 +25,9 @@ use std::collections::HashMap;
 /// can be swapped for an alternative implementation (e.g. `phronesis-rhai`)
 /// via [`ReteNetwork::with_script_evaluator`](crate::network::ReteNetwork::with_script_evaluator).
 ///
-/// A returned `Err` is treated by the network as a *blocked* condition
-/// (safe default): a broken guard never silently passes.
+/// A returned `Err` fails closed: the network treats the rule as matched
+/// and fires it with the error attached (`payload.guard_error`), so a broken
+/// guard on a block rule blocks rather than silently allowing.
 pub trait ScriptEval: Send + Sync + std::fmt::Debug {
     /// Evaluate `script` against `facts` and the rule's variable `bindings`.
     fn evaluate(

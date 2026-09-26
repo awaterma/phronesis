@@ -24,9 +24,10 @@
 //! - `facts` — an array of maps, each `#{ predicate: string, args: [string, ...] }`
 //! - `bindings` — a map of RETE variable name to bound value, e.g. `bindings["?player"]`
 //!
-//! A script must evaluate to a `bool`. Any other return type, a syntax
-//! error, or a sandbox-limit breach yields `Err`, which the network treats
-//! as a *blocked* condition (a broken guard never silently passes).
+//! A script must evaluate to a `bool`. Any other return type, a syntax or
+//! runtime error, or a sandbox-limit breach yields `Err`, which the network
+//! fails closed on: the rule is treated as matched and fires with the error
+//! attached (a broken guard on a block rule blocks; it never silently passes).
 //!
 //! ## Sandbox
 //!
@@ -65,6 +66,14 @@ const MAX_OPERATIONS: u64 = 100_000;
 const MAX_CALL_LEVELS: usize = 16;
 /// Maximum string size (bytes) a script may construct.
 const MAX_STRING_SIZE: usize = 4096;
+/// Maximum array elements a script may construct.
+const MAX_ARRAY_SIZE: usize = 4096;
+/// Maximum map entries a script may construct.
+const MAX_MAP_SIZE: usize = 4096;
+/// Extra operations granted per injected array element or map entry, so a
+/// linear pass over a large host fact base (`facts.filter(...)`) is not
+/// mistaken for a runaway script.
+const OPS_PER_HOST_ELEMENT: u64 = 32;
 /// Maximum facts one provider may emit during one hook invocation.
 const MAX_EMITTED_FACTS: usize = 128;
 const MAX_EMITTED_ARGS: usize = 32;
@@ -82,15 +91,52 @@ fn sandbox_engine() -> Engine {
     let mut engine = Engine::new_raw();
     let package = StandardPackage::new();
     package.register_into_engine(&mut engine);
-    engine.set_max_operations(MAX_OPERATIONS);
     engine.set_max_call_levels(MAX_CALL_LEVELS);
-    engine.set_max_string_size(MAX_STRING_SIZE);
-    engine.set_max_array_size(4096);
-    engine.set_max_map_size(4096);
+    set_script_budget(&mut engine, HostDataSize::default());
     for symbol in DISABLED_SYMBOLS {
         engine.disable_symbol(*symbol);
     }
     engine
+}
+
+/// Rhai's own size accounting of the data a host injects into a script's
+/// scope — array elements, map entries, and string bytes, counted
+/// recursively exactly as Rhai's data-size check counts them.
+///
+/// Rhai checks the *total* size of a value against its limits, including
+/// every nested string, whenever that value is the receiver of a method
+/// call. So `facts.len()` over a fact base whose strings sum past 4 KiB
+/// used to fail with "Length of string too large" — and a guard error fails
+/// closed, so every edit blocked.
+#[derive(Debug, Default, Clone, Copy)]
+struct HostDataSize {
+    arrays: usize,
+    maps: usize,
+    strings: usize,
+}
+
+impl HostDataSize {
+    fn add_string(&mut self, s: &str) {
+        self.strings += s.len();
+    }
+}
+
+/// Set the sandbox limits as the script's own budget *on top of* the host
+/// data in scope.
+///
+/// Decision: the injected data can never trip a limit by itself — the limit
+/// is the injected size plus the fixed script budget — so data-volume
+/// limits never block on what the host passed in. Any limit error is
+/// therefore the script's own construction (a runaway loop, an unbounded
+/// string or array), which still fails closed. Operations get the same
+/// treatment: a fixed budget plus a per-element allowance for walking the
+/// injected data once.
+fn set_script_budget(engine: &mut Engine, host: HostDataSize) {
+    let elements = (host.arrays + host.maps) as u64;
+    engine.set_max_operations(MAX_OPERATIONS + OPS_PER_HOST_ELEMENT * elements);
+    engine.set_max_string_size(host.strings + MAX_STRING_SIZE);
+    engine.set_max_array_size(host.arrays + MAX_ARRAY_SIZE);
+    engine.set_max_map_size(host.maps + MAX_MAP_SIZE);
 }
 
 /// A [`ScriptEval`] implementation backed by a sandboxed Rhai engine.
@@ -99,14 +145,16 @@ fn sandbox_engine() -> Engine {
 /// each [`evaluate`](RhaiScriptEvaluator::evaluate) call runs in a fresh
 /// scope, so evaluations don't leak state into one another.
 pub struct RhaiScriptEvaluator {
-    engine: Engine,
+    /// Behind a mutex only so each evaluation can size the budget to its
+    /// own injected data (see [`set_script_budget`]).
+    engine: Mutex<Engine>,
 }
 
 impl RhaiScriptEvaluator {
     /// Build a new evaluator with the standard package and sandbox limits.
     pub fn new() -> Self {
         Self {
-            engine: sandbox_engine(),
+            engine: Mutex::new(sandbox_engine()),
         }
     }
 
@@ -123,6 +171,22 @@ impl RhaiScriptEvaluator {
                 Dynamic::from(map)
             })
             .collect()
+    }
+
+    /// Rhai's size accounting of the `facts` array plus the `bindings` map.
+    fn host_data_size(facts: &[Fact], bindings: &HashMap<String, String>) -> HostDataSize {
+        let mut size = HostDataSize::default();
+        for fact in facts {
+            // One array slot per fact map, two map entries (predicate,
+            // args), and one array slot per argument.
+            size.arrays += 1 + fact.args.len();
+            size.maps += 2;
+            size.add_string(&fact.predicate);
+            fact.args.iter().for_each(|arg| size.add_string(arg));
+        }
+        size.maps += bindings.len();
+        bindings.values().for_each(|value| size.add_string(value));
+        size
     }
 
     /// Build the Rhai `bindings` map from RETE variable bindings.
@@ -156,6 +220,29 @@ pub struct FactProviderEvent {
 }
 
 impl FactProviderEvent {
+    /// Rhai's size accounting of the `event` map (see [`HostDataSize`]).
+    fn host_data_size(&self) -> HostDataSize {
+        let mut size = HostDataSize {
+            arrays: self.files.len(),
+            maps: 9, // eight string fields plus `files`
+            strings: 0,
+        };
+        for field in [
+            &self.phase,
+            &self.tool_name,
+            &self.file_path,
+            &self.file_rel,
+            &self.old_content,
+            &self.new_content,
+            &self.command,
+            &self.output,
+        ] {
+            size.add_string(field);
+        }
+        self.files.iter().for_each(|path| size.add_string(path));
+        size
+    }
+
     fn to_dynamic(&self) -> Map {
         let mut event: Map = [
             ("phase", &self.phase),
@@ -317,6 +404,7 @@ impl RhaiFactProvider {
         let emitter_state = Arc::clone(&state);
         let reserved = self.reserved.clone();
         let mut engine = sandbox_engine();
+        set_script_budget(&mut engine, event.host_data_size());
         engine.register_fn(
             "emit_fact",
             move |predicate: ImmutableString, args: Array| {
@@ -413,10 +501,12 @@ impl ScriptEval for RhaiScriptEvaluator {
         scope.push("facts", Self::facts_to_dynamic(facts));
         scope.push("bindings", Self::bindings_to_dynamic(bindings));
 
-        let value = self
-            .engine
+        let mut engine = self.engine.lock().unwrap_or_else(|e| e.into_inner());
+        set_script_budget(&mut engine, Self::host_data_size(facts, bindings));
+        let value = engine
             .eval_with_scope::<Dynamic>(&mut scope, script)
             .map_err(|e| format!("rhai evaluation error: {e}"))?;
+        drop(engine);
 
         value
             .as_bool()
