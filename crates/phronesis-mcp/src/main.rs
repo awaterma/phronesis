@@ -1745,6 +1745,23 @@ fn handle_wiki_drift(
     }
 }
 
+/// Sort the per-file resolution map by unresolved (desc) then ambiguous (desc)
+/// then file path (asc), returning the top `n` entries.
+fn top_offenders(
+    per_file: &std::collections::BTreeMap<String, (usize, usize)>,
+    n: usize,
+) -> Vec<(String, (usize, usize))> {
+    let mut entries: Vec<_> = per_file.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    entries.sort_by(|a, b| {
+        b.1.0
+            .cmp(&a.1.0)
+            .then_with(|| b.1.1.cmp(&a.1.1))
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    entries.truncate(n);
+    entries
+}
+
 fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
     use phronesis_mcp::graph::sync;
 
@@ -1759,6 +1776,9 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                         "derived_edges": out.derived,
                         "skipped_items": out.skipped,
                         "migrated_rules": out.migrated_rules,
+                        "unresolved_calls": out.unresolved_calls,
+                        "ambiguous_calls": out.ambiguous_calls,
+                        "per_file_resolution": out.per_file_resolution,
                         "diagnostics": out.diagnostics,
                     })
                 );
@@ -1767,6 +1787,18 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                     "Rebuilt graph: {} base edges, {} derived, {} items skipped, {} rules migrated.",
                     out.base, out.derived, out.skipped, out.migrated_rules
                 );
+                println!(
+                    "Resolution: {} calls unresolved, {} ambiguous (dropped, not guessed).",
+                    out.unresolved_calls, out.ambiguous_calls
+                );
+                // Compact top-3 offenders by unresolved then ambiguous.
+                let top = top_offenders(&out.per_file_resolution, 3);
+                if !top.is_empty() {
+                    println!("Top files by unresolved/ambiguous:");
+                    for (file, (u, a)) in &top {
+                        println!("  {file}: {u} unresolved, {a} ambiguous");
+                    }
+                }
                 // Analysis the run did not perform (spec §8.2). Printed only
                 // when a provider actually ran, so the ordinary rebuild line
                 // is unchanged for every project that has not opted in.
@@ -1854,6 +1886,8 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                 sync::Freshness::Fresh | sync::Freshness::Outdated { .. } => Vec::new(),
                 sync::Freshness::Stale(files) => files,
             };
+            let per_file = sync::load_resolution_stats(&path).unwrap_or_default();
+            let top = top_offenders(&per_file, 10);
             if json {
                 println!(
                     "{}",
@@ -1863,6 +1897,8 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                         "graph_format": index.format,
                         "expected_format": sync::GRAPH_FORMAT,
                         "drifted_files": drifted,
+                        "per_file_resolution": per_file,
+                        "top_offenders": top,
                     })
                 );
             } else if outdated {
@@ -1883,6 +1919,12 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                     println!("  {f}");
                 }
                 println!("Run `phr-mcp graph rebuild` to resync.");
+            }
+            if !json && !top.is_empty() {
+                println!("Resolution hotspots (unresolved then ambiguous):");
+                for (file, (u, a)) in &top {
+                    println!("  {file}: {u} unresolved, {a} ambiguous");
+                }
             }
             Ok(())
         }

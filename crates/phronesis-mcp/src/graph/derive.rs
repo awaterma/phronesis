@@ -10,11 +10,22 @@
 use super::model::Edge;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Per-file resolution breakdown: `(unresolved, ambiguous)` counts keyed by
+/// the source-file provenance (`Edge::src`) of the dropped edge.
+pub type PerFileResolution = BTreeMap<String, (usize, usize)>;
+
 /// Replace extractor-local bare `tested_by` callees with canonical
 /// `defines_fn` identities using only same-module or explicit-import evidence.
 /// Unresolved and ambiguous calls are discarded rather than attributed to
 /// every definition sharing a leaf name.
-pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
+///
+/// Returns the global `(unresolved, ambiguous)` totals alongside a per-file
+/// breakdown keyed by the dropped edge's `src` provenance. The sum of all
+/// per-file counts equals the global totals.
+pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFileResolution) {
+    let mut unresolved = 0usize;
+    let mut ambiguous = 0usize;
+    let mut per_file: PerFileResolution = BTreeMap::new();
     let definitions = base_edges(base, "defines_fn")
         .filter_map(|edge| edge.a.get(1).cloned())
         .collect::<BTreeSet<_>>();
@@ -133,7 +144,7 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
         let raw_callee = &edge.a[callee_index];
         let method_hint = raw_callee.strip_prefix("@method:");
         let (receiver_type, callee) = method_hint.map_or((None, raw_callee.as_str()), |hint| {
-            hint.split_once(':')
+            hint.rsplit_once(':')
                 .map_or((None, hint), |(ty, method)| (Some(ty), method))
         });
         let method_call = method_hint.is_some();
@@ -152,62 +163,179 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) {
         }
         let caller_module = caller.rsplit_once("::").map(|(module, _)| module);
         let Some(candidates) = candidates_by_leaf.get(callee) else {
+            unresolved += 1;
+            per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
             continue;
         };
-        let resolved = candidates
-            .iter()
-            .filter(|candidate| {
-                let Some((module, _)) = candidate.rsplit_once("::") else {
-                    return false;
-                };
-                let method_scope = method_call.then(|| module.rsplit_once("::")).flatten();
-                if receiver_type
-                    .is_some_and(|receiver| module.rsplit("::").next() != Some(receiver))
-                {
-                    return false;
-                }
-                let visible_imports = caller_module.into_iter().flat_map(|caller| {
-                    imports.iter().filter_map(move |(module, targets)| {
-                        (caller == module
-                            || caller
-                                .strip_prefix(module)
-                                .is_some_and(|suffix| suffix.starts_with("::")))
-                        .then_some(targets)
-                    })
-                });
-                caller_module.is_some_and(|caller_module| {
-                    caller_module == module
-                        || caller_module
-                            .strip_prefix(module)
-                            .is_some_and(|suffix| suffix.starts_with("::"))
-                }) || visible_imports.into_iter().any(|targets| {
-                    targets.contains(module)
-                        || targets
-                            .iter()
-                            .any(|imported| unit_contains(imported, module))
-                        || (method_call
-                            && targets.iter().any(|imported| {
-                                method_scope.is_some_and(|(parent, ty)| {
-                                    imported == parent
-                                        || reexports
-                                            .get(&(imported.clone(), ty.to_string()))
-                                            .is_some_and(|modules| modules.contains(parent))
-                                })
-                            }))
-                        || targets.iter().any(|imported| {
-                            reexports
-                                .get(&(imported.clone(), callee.to_string()))
-                                .is_some_and(|modules| modules.contains(module))
+        let receiver = receiver_type.map(normalize_receiver);
+        let qualified_receiver = receiver.is_some_and(|r| r.contains("::"));
+        // `by_path`: a qualified receiver must suffix-match the candidate's
+        // type path; otherwise only the type's last segment is compared.
+        let filter_candidates = |by_path: bool| {
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    let Some((module, _)) = candidate.rsplit_once("::") else {
+                        return false;
+                    };
+                    let method_scope = method_call.then(|| module.rsplit_once("::")).flatten();
+                    if receiver.is_some_and(|receiver| {
+                        let candidate_type = strip_generic_args(module);
+                        if by_path && receiver.contains("::") {
+                            !receiver_matches_qualified(candidate_type, receiver)
+                        } else {
+                            last_path_segment(candidate_type) != last_path_segment(receiver)
+                        }
+                    }) {
+                        return false;
+                    }
+                    let visible_imports = caller_module.into_iter().flat_map(|caller| {
+                        imports.iter().filter_map(move |(module, targets)| {
+                            (caller == module
+                                || caller
+                                    .strip_prefix(module)
+                                    .is_some_and(|suffix| suffix.starts_with("::")))
+                            .then_some(targets)
                         })
-                }) || receiver_type.is_some()
-            })
-            .collect::<Vec<_>>();
+                    });
+                    caller_module.is_some_and(|caller_module| {
+                        caller_module == module
+                            || caller_module
+                                .strip_prefix(module)
+                                .is_some_and(|suffix| suffix.starts_with("::"))
+                    }) || visible_imports.into_iter().any(|targets| {
+                        targets.contains(module)
+                            || targets
+                                .iter()
+                                .any(|imported| unit_contains(imported, module))
+                            || (method_call
+                                && targets.iter().any(|imported| {
+                                    method_scope.is_some_and(|(parent, ty)| {
+                                        imported == parent
+                                            || reexports
+                                                .get(&(imported.clone(), ty.to_string()))
+                                                .is_some_and(|modules| modules.contains(parent))
+                                    })
+                                }))
+                            || targets.iter().any(|imported| {
+                                reexports
+                                    .get(&(imported.clone(), callee.to_string()))
+                                    .is_some_and(|modules| modules.contains(module))
+                            })
+                    }) || receiver_type.is_some()
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut resolved = filter_candidates(true);
+        // A qualified path that names no known type (an alias such as
+        // `use crate::python as py; py::Sensor`) falls back to its last
+        // segment. It is then no longer a statement about which module the
+        // type lives in, so the same-type preference below does not apply.
+        if qualified_receiver && resolved.is_empty() {
+            resolved = filter_candidates(false);
+        }
+        // An unqualified typed hint names a type by its last segment, which
+        // several modules can share (one `Sensor` per language extractor).
+        // When the caller is itself a method of exactly one of the matching
+        // types, the hint means that type: Rust resolves an unqualified type
+        // name to the enclosing module's own definition. Otherwise the call
+        // stays ambiguous.
+        let resolved = if resolved.len() > 1 && receiver.is_some() && !qualified_receiver {
+            let caller_type = caller_module.map(strip_generic_args);
+            let same_type = resolved
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    candidate
+                        .rsplit_once("::")
+                        .is_some_and(|(module, _)| Some(strip_generic_args(module)) == caller_type)
+                })
+                .collect::<Vec<_>>();
+            if same_type.len() == 1 {
+                same_type
+            } else {
+                resolved
+            }
+        } else {
+            resolved
+        };
         if resolved.len() == 1 {
             edge.a[callee_index] = (*resolved[0]).clone();
             normalized.push(edge);
+        } else if resolved.is_empty() {
+            unresolved += 1;
+            per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
+        } else {
+            ambiguous += 1;
+            per_file.entry(edge.src.clone()).or_insert((0, 0)).1 += 1;
         }
     }
     *base = normalized;
+    (unresolved, ambiguous, per_file)
+}
+
+/// Strip `<...>` generic arguments from a type name, returning the base name.
+/// A receiver type as the resolver compares it: generic arguments dropped,
+/// and the leading `crate::`/`self::`/`super::` segments removed, since
+/// canonical identities name the unit and module path, never those keywords.
+fn normalize_receiver(receiver: &str) -> &str {
+    let mut receiver = strip_generic_args(receiver);
+    while let Some(rest) = ["crate::", "self::", "super::"]
+        .iter()
+        .find_map(|prefix| receiver.strip_prefix(prefix))
+    {
+        receiver = rest;
+    }
+    receiver
+}
+
+fn last_path_segment(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
+}
+
+fn strip_generic_args(ty: &str) -> &str {
+    match ty.find('<') {
+        Some(idx) => &ty[..idx],
+        None => ty,
+    }
+}
+
+/// Extract the last `::`-separated path segment, skipping `::` inside `<...>`
+/// generic argument lists. For `Foo<std::vec::Vec<T>>` returns `Foo`.
+fn bracket_aware_last_segment(path: &str) -> &str {
+    let bytes = path.as_bytes();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'<' => depth += 1,
+            b'>' => depth -= 1,
+            b':' if depth == 0 => {
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    &path[start..]
+}
+
+/// Whether a qualified receiver hint (e.g. `a::Foo`) suffix-matches the
+/// candidate's full type path (e.g. `rust:app::a::Foo`). The hint must be a
+/// suffix of the candidate path aligned on `::` segment boundaries, and the
+/// final segments must be equal. This prevents `a::Foo` from matching
+/// `rust:app::x::Foo` (different module, same leaf).
+fn receiver_matches_qualified(candidate_type: &str, hint: &str) -> bool {
+    let candidate_last = bracket_aware_last_segment(candidate_type);
+    let hint_last = bracket_aware_last_segment(hint);
+    if candidate_last != hint_last {
+        return false;
+    }
+    candidate_type.ends_with(hint)
+        && (candidate_type.len() == hint.len()
+            || candidate_type
+                .as_bytes()
+                .get(candidate_type.len() - hint.len() - 1)
+                .is_some_and(|&c| c == b':'))
 }
 
 /// Whether a function identity belongs to a language whose extractor emits
@@ -846,7 +974,7 @@ mod tests {
             imports("rust:app#test:integration", "rust:app::a"),
             tested("fire", "rust:app#test:integration::test_fire"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert_eq!(args_of(&base, "tested_by")[0][0], "rust:app::a::fire");
         assert!(no_direct_test(&base).is_empty());
     }
@@ -860,7 +988,7 @@ mod tests {
             imports("swift:project::AppTests::ATests", "swift:project"),
             tested("tap", "swift:project::AppTests::ATests::ATests::testTap"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert_eq!(
             args_of(&base, "tested_by")[0][0],
             "swift:project::App::A::Overlay::tap"
@@ -875,7 +1003,7 @@ mod tests {
             defines("b.rs", "rust:app::b::fire"),
             tested("fire", "rust:app#test:integration::test_fire"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(args_of(&base, "tested_by").is_empty());
         assert_eq!(no_direct_test(&base).len(), 2);
     }
@@ -888,7 +1016,7 @@ mod tests {
             defines("b.rs", "rust:app::b::helper"),
             Edge::base("calls", &["rust:app::a::entry", "helper"], "a.rs"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(base.iter().any(|edge| {
             edge.p == "calls" && edge.a == ["rust:app::a::entry", "rust:app::a::helper"]
         }));
@@ -904,7 +1032,7 @@ mod tests {
             imports("swift:project::App::A", "swift:project"),
             Edge::base("calls", &[caller, "helper"], "App/A.swift"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(
             base.iter()
                 .any(|edge| edge.p == "calls" && edge.a == [caller, helper]),
@@ -924,7 +1052,7 @@ mod tests {
             imports("rust:app::state::tests", "rust:app::state"),
             tested("@method:apply_damage", test),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(
             base.iter()
                 .any(|edge| { edge.p == "tested_by" && edge.a == [method, test] })
@@ -951,7 +1079,7 @@ mod tests {
             imports("rust:app::state::tests", "rust:app::state"),
             tested("@method:refresh", "rust:app::state::tests::works"),
         ];
-        canonicalize_function_edges(&mut base);
+        let _ = canonicalize_function_edges(&mut base);
         assert!(args_of(&base, "tested_by").is_empty());
     }
 
@@ -1277,5 +1405,756 @@ mod tests {
             Edge::derived("no_direct_test", &["crate::a"]),
         ];
         assert!(args_of(&derive_all(&base), "no_direct_test").is_empty());
+    }
+
+    #[test]
+    fn generic_receiver_type_matches_non_generic_method_definition() {
+        // The extractor emits `@method:Vec<u32>:push` when a `let v: Vec<u32>`
+        // variable calls `.push()`. The method is defined under
+        // `rust:app::Vec::push` — the last module segment is `Vec` (no generics).
+        // Generics normalization should strip `<u32>` from the receiver hint
+        // so the comparison `Vec == Vec` succeeds.
+        let method = "rust:app::Vec::push";
+        let caller = "rust:app::container::fill";
+        let mut base = vec![
+            defines("src/vec.rs", method),
+            Edge::base("defines_method", &["src/vec.rs", method], "src/vec.rs"),
+            defines("src/container.rs", caller),
+            Edge::base("file_type", &["src/vec.rs", "production"], "src/vec.rs"),
+            Edge::base(
+                "file_type",
+                &["src/container.rs", "production"],
+                "src/container.rs",
+            ),
+            Edge::base(
+                "calls",
+                &[caller, "@method:Vec<u32>:push"],
+                "src/container.rs",
+            ),
+        ];
+        let _ = canonicalize_function_edges(&mut base);
+        assert!(
+            base.iter()
+                .any(|edge| { edge.p == "calls" && edge.a == [caller, method] }),
+            "generic receiver should resolve to non-generic method def: {base:?}"
+        );
+    }
+
+    #[test]
+    fn self_receiver_hint_resolves_same_impl_among_same_leaf_methods() {
+        // DoD case: two types in different modules define the same method
+        // leaf (`dup`), both visible to the caller via imports. A call
+        // emitted from inside `impl A` as `@method:A:dup` (the `self`
+        // receiver hint from the extractor) must resolve to A's method —
+        // receiver evidence decides, the leaf name alone stays ambiguous.
+        let caller = "rust:app::a::entry";
+        let a_method = "rust:app::a::A::dup";
+        let mut base = vec![
+            defines("src/a.rs", caller),
+            defines("src/a.rs", a_method),
+            Edge::base("defines_method", &["src/a.rs", a_method], "src/a.rs"),
+            defines("src/b.rs", "rust:app::b::B::dup"),
+            Edge::base(
+                "defines_method",
+                &["src/b.rs", "rust:app::b::B::dup"],
+                "src/b.rs",
+            ),
+            Edge::base("file_type", &["src/a.rs", "production"], "src/a.rs"),
+            Edge::base("file_type", &["src/b.rs", "production"], "src/b.rs"),
+            imports("rust:app::a", "rust:app::b"),
+            Edge::base("calls", &[caller, "@method:A:dup"], "src/a.rs"),
+        ];
+        canonicalize_function_edges(&mut base);
+        assert!(
+            base.iter()
+                .any(|edge| edge.p == "calls" && edge.a == [caller, a_method]),
+            "typed self hint should resolve to the same-impl candidate: {base:?}"
+        );
+    }
+
+    #[test]
+    fn unresolved_and_ambiguous_counts_are_reported() {
+        // One call to `missing` (no definition at all → unresolved),
+        // one call to `dup` where two definitions share the leaf name and
+        // both are visible to the caller via imports (→ ambiguous).
+        let mut base = vec![
+            defines("src/a.rs", "rust:app::a::entry"),
+            defines("src/b.rs", "rust:app::b::dup"),
+            defines("src/c.rs", "rust:app::c::dup"),
+            Edge::base("file_type", &["src/a.rs", "production"], "src/a.rs"),
+            Edge::base("file_type", &["src/b.rs", "production"], "src/b.rs"),
+            Edge::base("file_type", &["src/c.rs", "production"], "src/c.rs"),
+            imports("rust:app::a", "rust:app::b"),
+            imports("rust:app::a", "rust:app::c"),
+            Edge::base("calls", &["rust:app::a::entry", "missing"], "src/a.rs"),
+            Edge::base("calls", &["rust:app::a::entry", "dup"], "src/a.rs"),
+        ];
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 1, "one unresolved call expected");
+        assert_eq!(ambiguous, 1, "one ambiguous call expected");
+    }
+
+    #[test]
+    fn per_file_resolution_attributes_to_edge_src() {
+        // src/a.rs: one unresolved call (to `missing`) + one ambiguous call
+        //           (to `dup` — two defs visible via imports).
+        // src/b.rs: one unresolved call (to `ghost`).
+        let mut base = vec![
+            defines("src/a.rs", "rust:app::a::entry"),
+            defines("src/b.rs", "rust:app::b::entry"),
+            defines("src/c.rs", "rust:app::c::dup"),
+            defines("src/d.rs", "rust:app::d::dup"),
+            Edge::base("file_type", &["src/a.rs", "production"], "src/a.rs"),
+            Edge::base("file_type", &["src/b.rs", "production"], "src/b.rs"),
+            Edge::base("file_type", &["src/c.rs", "production"], "src/c.rs"),
+            Edge::base("file_type", &["src/d.rs", "production"], "src/d.rs"),
+            imports("rust:app::a", "rust:app::c"),
+            imports("rust:app::a", "rust:app::d"),
+            // src/a.rs: unresolved call to `missing`
+            Edge::base("calls", &["rust:app::a::entry", "missing"], "src/a.rs"),
+            // src/a.rs: ambiguous call to `dup` (two defs visible)
+            Edge::base("calls", &["rust:app::a::entry", "dup"], "src/a.rs"),
+            // src/b.rs: unresolved call to `ghost`
+            Edge::base("calls", &["rust:app::b::entry", "ghost"], "src/b.rs"),
+        ];
+        let (unresolved, ambiguous, per_file) = canonicalize_function_edges(&mut base);
+        assert_eq!(per_file.get("src/a.rs"), Some(&(1, 1)));
+        assert_eq!(per_file.get("src/b.rs"), Some(&(1, 0)));
+        // Sum over files equals global totals.
+        let total_u: usize = per_file.values().map(|(u, _)| u).sum();
+        let total_a: usize = per_file.values().map(|(_, a)| a).sum();
+        assert_eq!(total_u, unresolved);
+        assert_eq!(total_a, ambiguous);
+    }
+
+    // ─── adversarial self-receiver resolution (T4) ────────────────
+
+    /// Helper: a `defines_fn` + `defines_method` + `file_type=production`
+    /// triple for a method inside a module.
+    fn method_def(file: &str, method: &str) -> Vec<Edge> {
+        vec![
+            defines(file, method),
+            Edge::base("defines_method", &[file, method], file),
+            Edge::base("file_type", &[file, "production"], file),
+        ]
+    }
+
+    #[test]
+    fn t4_a_same_impl_self_call_resolves_to_same_type_method() {
+        // Case A: `self.b()` inside `impl Foo` emits `@method:Foo:b`.
+        // Foo::a and Foo::b both exist; the receiver hint `Foo` must
+        // resolve the call to `Foo::b` (not dropped, not misattributed).
+        let caller = "rust:app::foo::Foo::a";
+        let target = "rust:app::foo::Foo::b";
+        let mut base = vec![];
+        base.extend(method_def("src/foo.rs", caller));
+        base.extend(method_def("src/foo.rs", target));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Foo:b"],
+            "src/foo.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 0, "Case A: no unresolved expected");
+        assert_eq!(ambiguous, 0, "Case A: no ambiguous expected");
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [caller, target]),
+            "Case A: calls(Foo::a, Foo::b) must exist, got: {base:?}"
+        );
+    }
+
+    #[test]
+    fn t4_b_same_leaf_on_two_types_resolves_by_receiver_not_name() {
+        // Case B: Foo and Bar both define `b`. A call `@method:Foo:b`
+        // from Foo::a must resolve to Foo::b, NOT Bar::b. Both directions
+        // asserted.
+        let caller = "rust:app::foo::Foo::a";
+        let foo_b = "rust:app::foo::Foo::b";
+        let bar_b = "rust:app::bar::Bar::b";
+        let mut base = vec![];
+        base.extend(method_def("src/foo.rs", caller));
+        base.extend(method_def("src/foo.rs", foo_b));
+        base.extend(method_def("src/bar.rs", bar_b));
+        // cross-module import so both candidates are visible
+        base.push(imports("rust:app::foo", "rust:app::bar"));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Foo:b"],
+            "src/foo.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 0, "Case B: no unresolved expected");
+        assert_eq!(
+            ambiguous, 0,
+            "Case B: receiver evidence should disambiguate"
+        );
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [caller, foo_b]),
+            "Case B: Foo::a -> Foo::b must exist, got: {base:?}"
+        );
+        assert!(
+            !base
+                .iter()
+                .any(|e| e.p == "calls" && e.a == [caller, bar_b]),
+            "Case B: Foo::a -> Bar::b must NOT exist, got: {base:?}"
+        );
+    }
+
+    #[test]
+    fn same_named_types_in_two_modules_resolve_self_calls_to_the_callers_own_type() {
+        // One `Sensor` per language extractor: a typed `self` hint matches
+        // both by last segment, so the caller's own impl type decides.
+        let rust_walk = "rust:app::rust::Sensor<'_>::walk";
+        let rust_visit = "rust:app::rust::Sensor<'_>::visit";
+        let py_walk = "rust:app::python::Sensor<'_>::walk";
+        let py_visit = "rust:app::python::Sensor<'_>::visit";
+        let mut base = vec![];
+        base.extend(method_def("src/rust.rs", rust_walk));
+        base.extend(method_def("src/rust.rs", rust_visit));
+        base.extend(method_def("src/python.rs", py_walk));
+        base.extend(method_def("src/python.rs", py_visit));
+        base.push(Edge::base(
+            "calls",
+            &[rust_walk, "@method:Sensor:visit"],
+            "src/rust.rs",
+        ));
+        base.push(Edge::base(
+            "calls",
+            &[py_walk, "@method:Sensor:visit"],
+            "src/python.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!((unresolved, ambiguous), (0, 0), "{base:?}");
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [rust_walk, rust_visit])
+        );
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [py_walk, py_visit])
+        );
+        assert!(
+            !base
+                .iter()
+                .any(|e| e.p == "calls" && e.a == [rust_walk, py_visit])
+        );
+    }
+
+    #[test]
+    fn same_named_types_stay_ambiguous_for_a_caller_outside_both() {
+        let caller = "rust:app::driver::run";
+        let mut base = vec![];
+        base.extend(method_def("src/driver.rs", caller));
+        base.extend(method_def("src/rust.rs", "rust:app::rust::Sensor::visit"));
+        base.extend(method_def(
+            "src/python.rs",
+            "rust:app::python::Sensor::visit",
+        ));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Sensor:visit"],
+            "src/driver.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(
+            (unresolved, ambiguous),
+            (0, 1),
+            "no guess between two Sensors"
+        );
+        assert!(!base.iter().any(|e| e.p == "calls" && e.a[0] == caller));
+    }
+
+    #[test]
+    fn t4_c_generic_impl_self_call_resolves_after_normalization() {
+        // Case C: `@method:Foo:b` (generics already stripped by extract)
+        // must resolve to `rust:app::foo::Foo::b` whose module last
+        // segment is `Foo`.
+        let caller = "rust:app::foo::Foo::a";
+        let target = "rust:app::foo::Foo::b";
+        let mut base = vec![];
+        base.extend(method_def("src/foo.rs", caller));
+        base.extend(method_def("src/foo.rs", target));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Foo:b"],
+            "src/foo.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 0, "Case C: no unresolved expected");
+        assert_eq!(ambiguous, 0, "Case C: no ambiguous expected");
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [caller, target]),
+            "Case C: generic impl self call must resolve, got: {base:?}"
+        );
+    }
+
+    #[test]
+    fn t4_d_self_assoc_fn_resolves_to_same_type() {
+        // Case D: `Self::b()` emits `@method:Foo:b`. Must resolve to
+        // Foo::b (here an associated function, but the graph does not
+        // distinguish — receiver type filter matches `Foo`).
+        let caller = "rust:app::foo::Foo::a";
+        let target = "rust:app::foo::Foo::b";
+        let mut base = vec![];
+        base.extend(method_def("src/foo.rs", caller));
+        base.extend(method_def("src/foo.rs", target));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Foo:b"],
+            "src/foo.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 0, "Case D: no unresolved expected");
+        assert_eq!(ambiguous, 0, "Case D: no ambiguous expected");
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [caller, target]),
+            "Case D: Self::b() must resolve to Foo::b, got: {base:?}"
+        );
+    }
+
+    #[test]
+    fn t4_e_unknown_receiver_bare_hint_no_invented_edge() {
+        // Case E: bare `@method:b` (no receiver type). Two types define
+        // `b`, both visible. The call must NOT be guessed; it must be
+        // counted as ambiguous and dropped (no invented edge).
+        let caller = "rust:app::foo::Foo::a";
+        let foo_b = "rust:app::foo::Foo::b";
+        let bar_b = "rust:app::bar::Bar::b";
+        let mut base = vec![];
+        base.extend(method_def("src/foo.rs", caller));
+        base.extend(method_def("src/foo.rs", foo_b));
+        base.extend(method_def("src/bar.rs", bar_b));
+        base.push(imports("rust:app::foo", "rust:app::bar"));
+        base.push(Edge::base("calls", &[caller, "@method:b"], "src/foo.rs"));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(
+            unresolved, 0,
+            "Case E: bare hint with candidates is not unresolved"
+        );
+        assert_eq!(
+            ambiguous, 1,
+            "Case E: bare hint with 2 visible candidates is ambiguous"
+        );
+        assert!(
+            !base
+                .iter()
+                .any(|e| e.p == "calls" && (e.a == [caller, foo_b] || e.a == [caller, bar_b])),
+            "Case E: no invented edge to Foo::b or Bar::b, got: {base:?}"
+        );
+    }
+
+    #[test]
+    fn t4_e_unknown_receiver_no_definition_is_unresolved() {
+        // Case E (complement): bare `@method:b` with NO definition at all
+        // → unresolved, not ambiguous.
+        let caller = "rust:app::foo::Foo::a";
+        let mut base = vec![];
+        base.extend(method_def("src/foo.rs", caller));
+        base.push(Edge::base("calls", &[caller, "@method:b"], "src/foo.rs"));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 1, "Case E: no definition → unresolved");
+        assert_eq!(ambiguous, 0, "Case E: no candidates → not ambiguous");
+    }
+
+    #[test]
+    fn t4_f_collision_across_unrelated_types_no_resolution_by_name() {
+        // Case F: `.contains` on an opaque receiver (bare hint). Bag and
+        // StrWrap both define `contains`, both visible to the caller via
+        // imports of their type modules. The call must NOT resolve to
+        // either by name alone — it is ambiguous and dropped.
+        let caller = "rust:app::bag::checker";
+        let bag_contains = "rust:app::bag::Bag::contains";
+        let str_contains = "rust:app::strwrap::StrWrap::contains";
+        let mut base = vec![];
+        base.extend(method_def("src/bag.rs", caller));
+        base.extend(method_def("src/bag.rs", bag_contains));
+        base.extend(method_def("src/strwrap.rs", str_contains));
+        // Import the type's parent module so method_scope visibility
+        // matches for both candidates.
+        base.push(imports("rust:app::bag", "rust:app::strwrap"));
+        // Bag::contains is in the caller's own module, but the method's
+        // module path includes the type (`rust:app::bag::Bag`), which
+        // does not match the caller's module (`rust:app::bag`). The
+        // method_scope path matches `imported == parent` where parent is
+        // `rust:app::bag`, so we need the caller's own module as an
+        // import target too — or a self-import. Use a reexport-free
+        // self-referencing import to make Bag visible.
+        base.push(imports("rust:app::bag", "rust:app::bag"));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:contains"],
+            "src/bag.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 0, "Case F: candidates exist, not unresolved");
+        assert_eq!(ambiguous, 1, "Case F: 2 visible candidates → ambiguous");
+        assert!(
+            !base.iter().any(|e| e.p == "calls"
+                && (e.a == [caller, bag_contains] || e.a == [caller, str_contains])),
+            "Case F: no resolution to unrelated type by name, got: {base:?}"
+        );
+    }
+
+    // ─── T4 review findings F1–F4 (derive side) ───────────────────
+
+    #[test]
+    fn t4_f1_qualified_impl_path_resolves_to_qualified_candidate() {
+        // F1: extract emits `@method:a::Foo:baz` for `impl<T> a::Foo<T>`.
+        // The candidate method is `rust:app::a::Foo::baz`. Derive's
+        // receiver filter compares `strip_generic_args(module_last)` to
+        // `strip_generic_args(receiver)`. module_last is `Foo` (from
+        // `rust:app::a::Foo`), receiver is `a::Foo` (from the hint).
+        // `Foo != a::Foo` → the edge is dropped. This test falsifies the
+        // fix: a qualified impl path hint does not match the candidate.
+        let caller = "rust:app::a::Foo::bar";
+        let target = "rust:app::a::Foo::baz";
+        let mut base = vec![];
+        base.extend(method_def("src/a.rs", caller));
+        base.extend(method_def("src/a.rs", target));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:a::Foo:baz"],
+            "src/a.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        // Expected if the fix is correct: resolves. If F1 is a real bug,
+        // unresolved=1 and no edge. We assert the GROUND TRUTH: the call
+        // SHOULD resolve (same impl, same type).
+        let resolved = base
+            .iter()
+            .any(|e| e.p == "calls" && e.a == [caller, target]);
+        if !resolved {
+            // F1 defect exposed: the qualified receiver `a::Foo` does not
+            // match the candidate module last segment `Foo`. Record it.
+            // We do NOT weaken conservative behavior; we just report.
+        }
+        // Ground truth from fixture: bar and baz are on the same impl,
+        // so this MUST resolve. If it doesn't, the fix has a defect.
+        assert!(
+            resolved,
+            "F1: qualified impl path should resolve to same-type candidate \
+             (unresolved={unresolved}, ambiguous={ambiguous}), base: {base:?}"
+        );
+    }
+
+    #[test]
+    fn t4_f2_bracket_aware_rsplit_for_generic_impl_with_path_in_args() {
+        // F2: candidate module `rust:app::Foo<std::vec::Vec<T>>`.
+        // `module.rsplit(\"::\").next()` would yield `Vec<T>>` (wrong).
+        // The fix uses `strip_generic_args` on `module_last`, but
+        // `module_last` itself is already wrong if rsplit is not
+        // bracket-aware. Ground truth: `self.baz()` in
+        // `impl Foo<std::vec::Vec<T>>` should resolve to `Foo::baz`.
+        let caller = "rust:app::foo::Foo::bar";
+        let _target = "rust:app::foo::Foo::baz";
+        // Simulate a candidate whose module path contains generic args
+        // with `::` inside the brackets. The defines_method identity is
+        // the fully-qualified path including generics.
+        let target_with_generics = "rust:app::foo::Foo<std::vec::Vec<T>>::baz";
+        let mut base = vec![];
+        base.extend(method_def("src/foo.rs", caller));
+        base.push(defines("src/foo.rs", target_with_generics));
+        base.push(Edge::base(
+            "defines_method",
+            &["src/foo.rs", target_with_generics],
+            "src/foo.rs",
+        ));
+        base.push(Edge::base(
+            "file_type",
+            &["src/foo.rs", "production"],
+            "src/foo.rs",
+        ));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Foo:baz"],
+            "src/foo.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        // Ground truth: the leaf is `baz`, the receiver is `Foo`, the
+        // candidate type (after stripping generics) is `Foo`. This should
+        // resolve. If rsplit is bracket-unaware, module_last becomes
+        // `Vec<T>>` and strip_generic_args yields `Vec`, which != `Foo`.
+        let resolved = base
+            .iter()
+            .any(|e| e.p == "calls" && e.a[0] == caller && e.a[1].ends_with("::baz"));
+        assert!(
+            resolved,
+            "F2: bracket-unaware rsplit must not block resolution of \
+             Foo<std::vec::Vec<T>>::baz (unresolved={unresolved}, \
+             ambiguous={ambiguous}), base: {base:?}"
+        );
+    }
+
+    #[test]
+    fn t4_f3_deref_autoderef_typed_hint_blocks_inner_resolution() {
+        // F3: `impl Wrapper` with `Deref<Target=Inner>`. `self.foo()`
+        // from `Wrapper::bar` emits `@method:Wrapper:foo`. The candidate
+        // is `Inner::foo` (module last segment `Inner`). The receiver
+        // filter rejects `Inner != Wrapper`. Ground truth from the
+        // review finding: ideally `Wrapper::bar` should still reach
+        // `Inner::foo` via autoderef. The typed hint now BLOCKS that
+        // unique resolution. We assert the CONSERVATIVE ground truth:
+        // the call does NOT resolve (the fix is conservative, not
+        // magic), AND we record this as a known limitation (false
+        // negative relative to Rust's real method resolution).
+        let caller = "rust:app::wrap::Wrapper::bar";
+        let inner_foo = "rust:app::wrap::Inner::foo";
+        let mut base = vec![];
+        base.extend(method_def("src/wrap.rs", caller));
+        base.extend(method_def("src/wrap.rs", inner_foo));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Wrapper:foo"],
+            "src/wrap.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        // The typed hint `Wrapper` does not match candidate `Inner`.
+        // Conservatively, the call is unresolved (no Wrapper::foo def).
+        assert_eq!(
+            unresolved, 1,
+            "F3: Wrapper::foo has no definition → unresolved (conservative)"
+        );
+        assert_eq!(ambiguous, 0, "F3: not ambiguous");
+        assert!(
+            !base
+                .iter()
+                .any(|e| e.p == "calls" && e.a == [caller, inner_foo]),
+            "F3: typed hint blocks Inner::foo resolution (conservative false negative), \
+             got: {base:?}"
+        );
+        // Record: this is a known limitation. The fix is conservative and
+        // does NOT perform autoderef. This is acceptable (no guessing),
+        // but it IS a false negative vs Rust's real resolution.
+    }
+
+    #[test]
+    fn t4_f4_assoc_fn_and_method_sharing_leaf() {
+        // F4: `Self::dup()` emits `@method:Foo:dup`. The same type has
+        // both `fn dup() -> Foo` (assoc fn) and `fn dup(&self)` (method).
+        // Both are defines_fn/defines_method with the same identity
+        // `rust:app::foo::Foo::dup` (the graph does not distinguish
+        // assoc fn from method). The receiver filter matches `Foo` for
+        // both. But since they share the SAME identity, there is only
+        // ONE candidate — resolved.len() == 1, not 2. So the call
+        // resolves. If the graph DID emit two distinct identities, it
+        // would be ambiguous. We assert ground truth: one candidate,
+        // resolves.
+        let caller = "rust:app::foo::Foo::make";
+        let dup = "rust:app::foo::Foo::dup";
+        let mut base = vec![];
+        base.extend(method_def("src/foo.rs", caller));
+        base.extend(method_def("src/foo.rs", dup));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Foo:dup"],
+            "src/foo.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        // Ground truth: only one candidate identity exists, so this
+        // resolves unambiguously. The review finding's concern about
+        // double-counting does not materialize because the graph uses a
+        // single identity per function name.
+        assert_eq!(unresolved, 0, "F4: one candidate → not unresolved");
+        assert_eq!(ambiguous, 0, "F4: one candidate → not ambiguous");
+        assert!(
+            base.iter().any(|e| e.p == "calls" && e.a == [caller, dup]),
+            "F4: Self::dup() should resolve to Foo::dup, got: {base:?}"
+        );
+    }
+
+    // ─── T4 transitive reachability (G, H) ────────────────────────
+
+    #[test]
+    fn t4_g_transitive_test_reachability_through_resolved_self_calls() {
+        // Case G: test_t -> A::a -> A::b -> A::c. All calls are typed
+        // self-receiver hints that resolve. test_reachability (via
+        // derive_all) must cover a, b, AND c.
+        let a = "rust:app::a::A::a";
+        let b = "rust:app::a::A::b";
+        let c = "rust:app::a::A::c";
+        let test = "rust:app#test:a::test_t";
+        let mut base = vec![];
+        base.extend(method_def("src/a.rs", a));
+        base.extend(method_def("src/a.rs", b));
+        base.extend(method_def("src/a.rs", c));
+        base.push(tested(a, test));
+        base.push(Edge::base("calls", &[a, "@method:A:b"], "src/a.rs"));
+        base.push(Edge::base("calls", &[b, "@method:A:c"], "src/a.rs"));
+        // Canonicalize first (as the sync pipeline does), then derive.
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 0, "Case G: all calls should resolve");
+        assert_eq!(ambiguous, 0, "Case G: no ambiguity");
+        let derived = derive_all(&base);
+        let reaches: BTreeSet<String> = derived
+            .iter()
+            .filter(|e| e.p == "test_reaches" && e.a[0] == test)
+            .map(|e| e.a[1].clone())
+            .collect();
+        assert!(
+            reaches.contains(a),
+            "Case G: reachability must cover a, got: {reaches:?}"
+        );
+        assert!(
+            reaches.contains(b),
+            "Case G: reachability must cover b, got: {reaches:?}"
+        );
+        assert!(
+            reaches.contains(c),
+            "Case G: reachability must cover c (transitive), got: {reaches:?}"
+        );
+    }
+
+    #[test]
+    fn t4_h_negative_control_unresolvable_call_stops_reachability() {
+        // Case H: same fixture but a->b is unresolvable (bare hint, two
+        // candidates). Reachability must stop at a — b and c are NOT
+        // reached. This demonstrates why the original bug (dropping all
+        // self-receiver calls) produced false zeros.
+        let a = "rust:app::a::A::a";
+        let b1 = "rust:app::a::A::b";
+        let b2 = "rust:app::b::B::b";
+        let c = "rust:app::a::A::c";
+        let test = "rust:app#test:a::test_t";
+        let mut base = vec![];
+        base.extend(method_def("src/a.rs", a));
+        base.extend(method_def("src/a.rs", b1));
+        base.extend(method_def("src/b.rs", b2));
+        base.extend(method_def("src/a.rs", c));
+        base.push(imports("rust:app::a", "rust:app::b"));
+        base.push(tested(a, test));
+        // a -> b is BARE (no receiver type) → ambiguous, dropped
+        base.push(Edge::base("calls", &[a, "@method:b"], "src/a.rs"));
+        // b -> c would be transitive, but since a->b is dropped, c is
+        // unreachable. Add the edge anyway to prove the point.
+        base.push(Edge::base("calls", &[b1, "@method:A:c"], "src/a.rs"));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(ambiguous, 1, "Case H: a->b is ambiguous (2 candidates)");
+        assert_eq!(
+            unresolved, 0,
+            "Case H: the typed b->c edge still resolves, so nothing is unresolved"
+        );
+        let derived = derive_all(&base);
+        let reaches: BTreeSet<String> = derived
+            .iter()
+            .filter(|e| e.p == "test_reaches" && e.a[0] == test)
+            .map(|e| e.a[1].clone())
+            .collect();
+        assert!(
+            reaches.contains(a),
+            "Case H: reachability must cover a, got: {reaches:?}"
+        );
+        assert!(
+            !reaches.contains(b1),
+            "Case H: reachability must NOT cover b (a->b unresolved), got: {reaches:?}"
+        );
+        assert!(
+            !reaches.contains(c),
+            "Case H: reachability must NOT cover c (transitive gap), got: {reaches:?}"
+        );
+    }
+
+    // ─── T4 integration fixture (I) ───────────────────────────────
+
+    #[test]
+    fn t4_i_integration_downstream_consumer_reach_parity() {
+        // Case I: replicate the downstream-consumer shape. An impl method
+        // calls `self.get_player_combatants()` where the same leaf is
+        // defined on 2+ types across modules. Plus the reach parity
+        // invariant:
+        //   test_reaches(get_player_combatants) >= test_reaches(next_alive_enemy_id)
+        // using those exact function names. No hard-coded counts.
+        let caller = "rust:game::combat::CombatantList::resolve_target";
+        let gpc_combat = "rust:game::combat::CombatantList::get_player_combatants";
+        let gpc_party = "rust:game::party::PartyRoster::get_player_combatants";
+        let nae = "rust:game::combat::CombatantList::next_alive_enemy_id";
+        let test = "rust:game#test:combat::test_resolve";
+
+        let mut base = vec![];
+        base.extend(method_def("src/combat.rs", caller));
+        base.extend(method_def("src/combat.rs", gpc_combat));
+        base.extend(method_def("src/party.rs", gpc_party));
+        base.extend(method_def("src/combat.rs", nae));
+        // cross-module import so both get_player_combatants candidates
+        // are visible
+        base.push(imports("rust:game::combat", "rust:game::party"));
+        // The test directly exercises `resolve_target` and
+        // `next_alive_enemy_id`.
+        base.push(tested(caller, test));
+        base.push(tested(nae, test));
+        // resolve_target calls self.get_player_combatants() — typed hint
+        // `CombatantList` must disambiguate to the combat module's def.
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:CombatantList:get_player_combatants"],
+            "src/combat.rs",
+        ));
+        // get_player_combatants calls next_alive_enemy_id via self
+        base.push(Edge::base(
+            "calls",
+            &[gpc_combat, "@method:CombatantList:next_alive_enemy_id"],
+            "src/combat.rs",
+        ));
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert_eq!(unresolved, 0, "Case I: no unresolved expected");
+        assert_eq!(ambiguous, 0, "Case I: typed hints disambiguate");
+        // Verify the typed hint resolved to the combat module's def, not party's
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [caller, gpc_combat]),
+            "Case I: resolve_target -> CombatantList::get_player_combatants must exist, \
+             got: {base:?}"
+        );
+        assert!(
+            !base
+                .iter()
+                .any(|e| e.p == "calls" && e.a == [caller, gpc_party]),
+            "Case I: must NOT resolve to PartyRoster::get_player_combatants, got: {base:?}"
+        );
+        let derived = derive_all(&base);
+        let reaches: BTreeSet<String> = derived
+            .iter()
+            .filter(|e| e.p == "test_reaches" && e.a[0] == test)
+            .map(|e| e.a[1].clone())
+            .collect();
+        // Reach parity invariant:
+        //   test_reaches(get_player_combatants) >= test_reaches(next_alive_enemy_id)
+        // Both are directly tested, and gpc is transitively reached from
+        // resolve_target. The invariant holds as a set-containment check.
+        let gpc_reached = reaches
+            .iter()
+            .any(|f| f.ends_with("::get_player_combatants") && f.starts_with("rust:game::combat"));
+        let nae_reached = reaches
+            .iter()
+            .any(|f| f.ends_with("::next_alive_enemy_id") && f.starts_with("rust:game::combat"));
+        assert!(
+            gpc_reached,
+            "Case I: test_reaches(get_player_combatants) must be true, got: {reaches:?}"
+        );
+        assert!(
+            nae_reached,
+            "Case I: test_reaches(next_alive_enemy_id) must be true, got: {reaches:?}"
+        );
+        // Parity: if next_alive_enemy_id is reached, get_player_combatants
+        // must also be reached (it is a transitive predecessor in the
+        // call chain). The invariant: gpc_reached >= nae_reached.
+        assert!(
+            gpc_reached || !nae_reached,
+            "Case I: reach parity violated — next_alive_enemy_id reached \
+             but get_player_combatants not, got: {reaches:?}"
+        );
+        // Exact-name assertions using the fixture function names.
+        assert!(
+            reaches.contains(gpc_combat),
+            "Case I: test_reaches must contain the combat get_player_combatants, \
+             got: {reaches:?}"
+        );
+        assert!(
+            reaches.contains(nae),
+            "Case I: test_reaches must contain next_alive_enemy_id, got: {reaches:?}"
+        );
     }
 }

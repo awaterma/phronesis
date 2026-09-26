@@ -119,6 +119,17 @@ impl EpistemeMcp {
         let derived_edges = edges.len().saturating_sub(base_edges);
         let deprecated_rule_predicates =
             sync::deprecated_graph_rule_predicates(root).map_err(|e| Self::err(e.to_string()))?;
+        // Derived state: a corrupt sidecar means no hotspots, not no status.
+        let per_file_resolution = sync::load_resolution_stats(root)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(file, (unresolved, ambiguous))| {
+                (
+                    file,
+                    serde_json::json!({"unresolved": unresolved, "ambiguous": ambiguous}),
+                )
+            })
+            .collect::<serde_json::Map<String, serde_json::Value>>();
 
         let (status, drifted_files, outdated_format) = if !available {
             ("missing", Vec::new(), false)
@@ -159,6 +170,7 @@ impl EpistemeMcp {
             "base_edges": base_edges,
             "derived_edges": derived_edges,
             "rule_predicate_drift": deprecated_rule_predicates,
+            "per_file_resolution": per_file_resolution,
             "bindings": {
                 "available": bindings_available,
                 "bound": bound,
