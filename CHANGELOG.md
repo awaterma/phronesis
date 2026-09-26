@@ -97,9 +97,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 - **The macOS verifier sandbox let the verifier write anywhere.** The
   sandbox-exec profile allowed every write and named `verification/` as a
   relative path Seatbelt never matches, so a verifier run could write any file
-  the user could. Writes are now denied except under a fresh per-run directory
-  (the artifact copy and `TMPDIR`), with network still denied; the real Verus
-  harness still proves under it.
+  the user could — directly, or through a daemon such as `defaults write` or
+  `pbcopy` — and could signal any of the user's processes. Writes are now
+  denied except under a fresh per-run directory (the artifact copy and
+  `TMPDIR`), daemon lookups are denied, signals may target only the verifier
+  itself, and network is still denied; the real Verus harness still proves
+  under it.
 - **The devcontainer tier ran whatever image the verifier command named.** The
   `docker run` line had no image and no mount, so the first verifier word was
   pulled from a registry as the image and any image that printed the summary

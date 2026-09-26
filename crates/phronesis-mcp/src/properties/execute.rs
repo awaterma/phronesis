@@ -145,16 +145,26 @@ pub struct ExecutionKey {
     pub tree_revision: String,
 }
 
+/// The per-run directory's two children: the staged artifact lives in its
+/// own subdirectory so no artifact file name can collide with `TMPDIR`.
+const RUN_ARTIFACT_DIR: &str = "artifact";
+const RUN_TMP_DIR: &str = "tmp";
+
 /// The container path the artifact's run directory is mounted at.
 const CONTAINER_RUN_DIR: &str = "/verification";
 
 /// The Seatbelt profile (S9 Tier 2). Everything the verifier needs to read
 /// stays readable, but network is denied and every write is denied except
-/// under the per-run scratch directory, passed as the `RUN_DIR` parameter
+/// under the per-run scratch directory. Writes by proxy are writes too:
+/// mach-lookup is denied so no daemon (cfprefsd behind `defaults`, the
+/// pasteboard server behind `pbcopy`, …) can write on the verifier's behalf,
+/// and signals are confined to the verifier itself so it cannot kill or stop
+/// the user's other processes. The run directory is passed as the `RUN_DIR` parameter
 /// (`sandbox-exec -D`) so no path is ever spliced into the profile text.
 /// Seatbelt matches `subpath` against resolved absolute paths, so `RUN_DIR`
 /// must be canonical (macOS `/var` is `/private/var`).
-const SEATBELT_PROFILE: &str = "(version 1)(allow default)(deny network*)(deny file-write*)\
+const SEATBELT_PROFILE: &str = "(version 1)(allow default)(deny network*)\
+     (deny mach-lookup)(deny signal)(allow signal (target self))(deny file-write*)\
      (allow file-write* (subpath (param \"RUN_DIR\")))\
      (allow file-write-data (literal \"/dev/null\"))";
 
@@ -233,6 +243,16 @@ pub fn verifier_argv(
                         ),
                     })?;
             let container_artifact = Path::new(CONTAINER_RUN_DIR).join(relative);
+            // `--mount` is a comma-separated field list with no escaping a
+            // bind source can rely on: a comma would inject mount options.
+            let source = confinement.run_dir.display().to_string();
+            if source.contains(',') {
+                return Err(ExecutionError::Failed {
+                    message: format!(
+                        "run directory {source} contains a comma, which docker --mount cannot carry"
+                    ),
+                });
+            }
             let mut argv = vec![
                 "docker".to_string(),
                 "run".to_string(),
@@ -246,10 +266,7 @@ pub fn verifier_argv(
                 "--memory=2g".to_string(),
                 "--cpus=2".to_string(),
                 "--pids-limit=512".to_string(),
-                format!(
-                    "--mount=type=bind,source={},target={CONTAINER_RUN_DIR},readonly",
-                    confinement.run_dir.display()
-                ),
+                format!("--mount=type=bind,source={source},target={CONTAINER_RUN_DIR},readonly"),
                 format!("--workdir={CONTAINER_RUN_DIR}"),
                 // `--` ends docker's options: the image is the next token,
                 // never a verifier token.
@@ -444,12 +461,15 @@ pub fn execute(
         .path()
         .canonicalize()
         .map_err(|e| failed(format!("cannot resolve run directory: {e}")))?;
-    let tmp_dir = run_dir.join("tmp");
+    let tmp_dir = run_dir.join(RUN_TMP_DIR);
     std::fs::create_dir(&tmp_dir).map_err(|e| failed(format!("cannot create TMPDIR: {e}")))?;
     let file_name = artifact
         .file_name()
         .ok_or_else(|| failed(format!("artifact {} has no file name", artifact.display())))?;
-    let run_artifact = run_dir.join(file_name);
+    let artifact_dir = run_dir.join(RUN_ARTIFACT_DIR);
+    std::fs::create_dir(&artifact_dir)
+        .map_err(|e| failed(format!("cannot create artifact directory: {e}")))?;
+    let run_artifact = artifact_dir.join(file_name);
     std::fs::write(&run_artifact, &bytes)
         .map_err(|e| failed(format!("cannot stage artifact: {e}")))?;
 
@@ -676,6 +696,168 @@ mod confinement_tests {
         let inside = run_dir.join("inside-write-probe");
         assert!(run_sandboxed(&run_dir, &inside), "inside write denied");
         assert!(inside.exists());
+    }
+
+    /// The `sandbox-exec -D RUN_DIR=… -p <profile>` prefix `verifier_argv`
+    /// composes, followed by an arbitrary command.
+    fn sandboxed(run_dir: &Path, command: &[&str]) -> std::process::Command {
+        let argv = verifier_argv(
+            ConfinementTier::SandboxExec,
+            &RunConfinement {
+                run_dir,
+                image: None,
+            },
+            &run_dir.join("h.rs"),
+            "verifier",
+        )
+        .unwrap();
+        let (program, prefix) = (&argv[0], &argv[1..5]);
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(prefix)
+            .args(command)
+            .current_dir(run_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        cmd
+    }
+
+    fn canonical_run_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+        let scratch = tempfile::tempdir().unwrap();
+        let run_dir = scratch.path().canonicalize().unwrap();
+        (scratch, run_dir)
+    }
+
+    /// C12: writes by proxy are writes. `defaults` asks cfprefsd (over a
+    /// mach service) to write `~/Library/Preferences/<domain>.plist` on the
+    /// verifier's behalf; mach-lookup must be denied so the daemon is
+    /// unreachable.
+    #[test]
+    fn c12_sandbox_denies_daemon_proxied_writes_via_defaults() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping C12 defaults probe: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let (_scratch, run_dir) = canonical_run_dir();
+        let domain = format!("com.phronesis.c12-probe-{}", std::process::id());
+        let status = sandboxed(&run_dir, &["/usr/bin/defaults", "write", &domain, "k", "v"])
+            .status()
+            .unwrap();
+        let plist = dirs::home_dir()
+            .unwrap()
+            .join(format!("Library/Preferences/{domain}.plist"));
+        let escaped = status.success() || plist.exists();
+        // Clean up outside the sandbox whatever happened.
+        let _ = std::process::Command::new("/usr/bin/defaults")
+            .args(["delete", &domain])
+            .stderr(std::process::Stdio::null())
+            .status();
+        let _ = std::fs::remove_file(&plist);
+        assert!(!escaped, "defaults write reached cfprefsd: {status:?}");
+    }
+
+    /// C12: the pasteboard is another daemon-held write surface.
+    #[test]
+    fn c12_sandbox_denies_clipboard_writes() {
+        use std::io::Write;
+        if !sandbox_exec_available() {
+            eprintln!("skipping C12 pbcopy probe: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let before = std::process::Command::new("/usr/bin/pbpaste")
+            .output()
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+        let (_scratch, run_dir) = canonical_run_dir();
+        let marker = format!("c12-pbcopy-probe-{}", std::process::id());
+        let mut child = sandboxed(&run_dir, &["/usr/bin/pbcopy"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _ = child.stdin.take().unwrap().write_all(marker.as_bytes());
+        let status = child.wait().unwrap();
+        let after = std::process::Command::new("/usr/bin/pbpaste")
+            .output()
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+        let escaped = after == marker.as_bytes();
+        if escaped {
+            // Restore the user's clipboard.
+            if let Ok(mut restore) = std::process::Command::new("/usr/bin/pbcopy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                let _ = restore.stdin.take().unwrap().write_all(&before);
+                let _ = restore.wait();
+            }
+        }
+        assert!(!escaped, "pbcopy overwrote the clipboard: {status:?}");
+    }
+
+    /// C12: the verifier may signal only itself — not a sibling process of
+    /// the same user.
+    #[test]
+    fn c12_sandbox_denies_signalling_other_processes() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping C12 signal probe: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let (_scratch, run_dir) = canonical_run_dir();
+        let mut sibling = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = sibling.id().to_string();
+        let status = sandboxed(&run_dir, &["/bin/kill", "-TERM", &pid])
+            .status()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let alive = sibling.try_wait().unwrap().is_none();
+        let _ = sibling.kill();
+        let _ = sibling.wait();
+        assert!(
+            !status.success() && alive,
+            "sandboxed kill reached a sibling: {status:?}, alive={alive}"
+        );
+    }
+
+    /// An artifact literally named like the scratch TMPDIR must not collide
+    /// with it: staging still succeeds and the verifier runs.
+    #[test]
+    fn an_artifact_named_tmp_does_not_collide_with_the_run_tmpdir() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let artifact = root.path().join(RUN_TMP_DIR);
+        std::fs::write(&artifact, "fn h() {}").unwrap();
+        let sha = approve(root.path(), b"fn h() {}");
+        let result = execute(root.path(), &artifact, &sha, "/bin/cat", "r1");
+        assert!(
+            matches!(&result, Ok(o) if o.status == "inconclusive"),
+            "an artifact named {RUN_TMP_DIR:?} must stage and run: {result:?}"
+        );
+    }
+
+    /// A comma in the run directory would split docker's `--mount` field
+    /// list (e.g. inject `,readonly=false`-style options): refuse it.
+    #[test]
+    fn devcontainer_mount_refuses_a_comma_in_the_run_dir() {
+        let run_dir = Path::new("/tmp/a,readonly=false,x");
+        let image = format!("verus@sha256:{DIGEST}");
+        let result = verifier_argv(
+            ConfinementTier::Devcontainer,
+            &RunConfinement {
+                run_dir,
+                image: Some(&image),
+            },
+            &run_dir.join("h.rs"),
+            "verus",
+        );
+        assert!(
+            matches!(result, Err(ExecutionError::Failed { .. })),
+            "{result:?}"
+        );
     }
 
     /// C12: the run directory rides a `-D` parameter, never the profile text,
