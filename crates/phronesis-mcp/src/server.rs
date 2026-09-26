@@ -171,7 +171,13 @@ impl EpistemeMcp {
             "graph_format": index.format,
             "expected_format": sync::GRAPH_FORMAT,
             "outdated_format": outdated_format,
-            "files_indexed": index.entries.len(),
+            // Inputs the graph was built from; the graph file's own
+            // integrity hash is bookkeeping, not an indexed input.
+            "files_indexed": index
+                .entries
+                .keys()
+                .filter(|file| file.as_str() != store::GRAPH_REL_PATH)
+                .count(),
             "drifted_files": drifted_files,
             "base_edges": base_edges,
             "derived_edges": derived_edges,

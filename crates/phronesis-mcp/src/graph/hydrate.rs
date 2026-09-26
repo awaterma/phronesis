@@ -5,10 +5,10 @@
 //! nothing, which matters because every existing project is in that state and
 //! hook latency is a shared budget.
 
-use super::model::Edge;
+use super::model::{Edge, parse_jsonl};
 use super::ownership;
 use super::store;
-use super::sync::{Freshness, check_freshness, index_path, load_index};
+use super::sync::{Freshness, check_freshness, hash_content, index_path, load_index};
 use phr::{Fact, Rule, RuleId};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -230,14 +230,30 @@ pub fn hydrate(root: &Path, rules: &[Rule], edited_file: Option<&str>) -> Hydrat
         };
     }
 
-    let edges: Vec<Edge> = store::load(&store::graph_path(root)).unwrap_or_default();
+    // Read once: the edges asserted below and the hash checked against the
+    // index must describe the same bytes. An unreadable graph yields no
+    // edges, and its hash cannot match, so it is never mistaken for fresh.
+    let graph_body = std::fs::read_to_string(store::graph_path(root)).ok();
+    let edges: Vec<Edge> = graph_body
+        .as_deref()
+        .map(|body| parse_jsonl(body).0)
+        .unwrap_or_default();
     let index = load_index(&index_path(root)).unwrap_or_default();
-    let (fresh, drifted, outdated) = match check_freshness(root, &index) {
+    let (mut fresh, mut drifted, outdated) = match check_freshness(root, &index) {
         Freshness::Fresh => (true, Vec::new(), false),
         Freshness::Stale(files) => (false, files, false),
         // No file drifted; the whole graph speaks an older identity scheme.
         Freshness::Outdated { .. } => (false, Vec::new(), true),
     };
+    // `check_freshness` re-reads the graph file; a write racing between the
+    // two reads must not let unvouched edges ride on a fresh verdict.
+    if fresh
+        && graph_body.as_deref().map(hash_content)
+            != index.entries.get(store::GRAPH_REL_PATH).copied()
+    {
+        fresh = false;
+        drifted.push(store::GRAPH_REL_PATH.to_string());
+    }
 
     let mut facts: Vec<Fact> = edges
         .iter()

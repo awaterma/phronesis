@@ -541,15 +541,26 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).expect("mkdir");
         let body = "fn foo() {}";
         std::fs::write(dir.path().join("src/lib.rs"), body).expect("source");
+        // Freshness vouches for the graph file too, so a fresh fixture needs
+        // one whose hash the index records.
+        let graph = super::super::store::graph_path(dir.path());
+        super::super::store::write_atomic(&graph, &[]).expect("graph");
+        let graph_body = std::fs::read_to_string(&graph).expect("graph body");
         super::super::sync::save_index(
             &super::super::sync::index_path(dir.path()),
             &super::super::sync::Index {
                 format: super::super::sync::GRAPH_FORMAT,
                 generation,
-                entries: BTreeMap::from([(
-                    "src/lib.rs".to_string(),
-                    super::super::sync::hash_content(body),
-                )]),
+                entries: BTreeMap::from([
+                    (
+                        "src/lib.rs".to_string(),
+                        super::super::sync::hash_content(body),
+                    ),
+                    (
+                        super::super::store::GRAPH_REL_PATH.to_string(),
+                        super::super::sync::hash_content(&graph_body),
+                    ),
+                ]),
             },
         )
         .expect("index");

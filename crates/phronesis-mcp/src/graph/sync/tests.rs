@@ -1020,6 +1020,83 @@ fn rebuild_restores_freshness_after_drift() {
     assert_eq!(check_freshness(d.path(), &idx), Freshness::Fresh);
 }
 
+/// The graph file is an input to freshness like any source: the index vouches
+/// for the exact bytes the same rebuild or save wrote.
+fn graph_rel() -> String {
+    store::GRAPH_REL_PATH.to_string()
+}
+
+#[test]
+fn a_rebuild_indexes_the_graph_it_wrote() {
+    let d = project();
+    write(d.path(), "src/a.rs", "fn f() {}");
+    rebuild(d.path()).expect("rebuild");
+    let idx = load_index(&index_path(d.path())).expect("load");
+    let body = std::fs::read_to_string(store::graph_path(d.path())).expect("graph");
+    assert_eq!(idx.entries.get(&graph_rel()), Some(&hash_content(&body)));
+    assert_eq!(check_freshness(d.path(), &idx), Freshness::Fresh);
+}
+
+#[test]
+fn a_damaged_graph_file_is_stale_even_when_every_source_matches() {
+    for damage in ["truncate", "garble", "empty", "delete"] {
+        let d = project();
+        write(
+            d.path(),
+            "src/a.rs",
+            "fn f() {}
+fn g() { f(); }
+",
+        );
+        rebuild(d.path()).expect("rebuild");
+        let path = store::graph_path(d.path());
+        let body = std::fs::read_to_string(&path).expect("graph");
+        match damage {
+            "truncate" => std::fs::write(&path, &body[..body.len() / 2]).expect("truncate"),
+            "garble" => std::fs::write(&path, format!("{body}garbage\n")).expect("garble"),
+            "empty" => std::fs::write(&path, "").expect("empty"),
+            _ => std::fs::remove_file(&path).expect("delete"),
+        }
+        let idx = load_index(&index_path(d.path())).expect("load");
+        assert_eq!(
+            check_freshness(d.path(), &idx),
+            Freshness::Stale(vec![graph_rel()]),
+            "{damage}"
+        );
+    }
+}
+
+#[test]
+fn an_index_that_predates_graph_hashing_reads_as_stale() {
+    // Upgrade path: an index written before the graph hash existed cannot
+    // vouch for the graph, so the first check asks for a rebuild.
+    let d = project();
+    write(d.path(), "src/a.rs", "fn f() {}");
+    rebuild(d.path()).expect("rebuild");
+    let mut idx = load_index(&index_path(d.path())).expect("load");
+    idx.entries.remove(&graph_rel());
+    save_index(&index_path(d.path()), &idx).expect("save");
+    let idx = load_index(&index_path(d.path())).expect("reload");
+    assert_eq!(
+        check_freshness(d.path(), &idx),
+        Freshness::Stale(vec![graph_rel()])
+    );
+    rebuild(d.path()).expect("rebuild");
+    let idx = load_index(&index_path(d.path())).expect("reload");
+    assert_eq!(check_freshness(d.path(), &idx), Freshness::Fresh);
+}
+
+#[test]
+fn an_incremental_save_reindexes_the_graph_it_rewrote() {
+    let d = project();
+    write(d.path(), "src/a.rs", "fn f() {}");
+    rebuild(d.path()).expect("rebuild");
+    write(d.path(), "src/a.rs", "fn f() {}\nfn g() {}");
+    on_save(d.path(), "src/a.rs", "fn f() {}\nfn g() {}").expect("save");
+    let idx = load_index(&index_path(d.path())).expect("load");
+    assert_eq!(check_freshness(d.path(), &idx), Freshness::Fresh);
+}
+
 #[test]
 fn rebuild_excludes_node_modules_from_typescript_tracking() {
     // `tracked_files` drives both `rebuild` and the freshness check. If

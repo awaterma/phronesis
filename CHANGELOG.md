@@ -229,6 +229,20 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `kind: "fail_closed"` with the message (and, for `pre-check`, the failing
   stage).
 
+- **A damaged code graph reported "fresh" and structural rules silently saw
+  nothing.** Freshness compared only source-file hashes, never the graph file,
+  so a truncated, garbled, emptied, or deleted `.phronesis/graph.jsonl` still
+  printed "Graph is fresh.", the session line said "Code graph: current", and
+  structural block rules kept block authority over whatever edges were left —
+  or quietly matched nothing. The index now records the graph file's content
+  hash, written by the same rebuild or save; any mismatch reports the graph as
+  unverified in `phr-mcp graph status`, `get_code_graph_status` (listed in
+  `drifted_files`), and the session context line, and structural rules warn
+  instead of block, with a notice naming `phr-mcp graph rebuild`.
+  **Upgrade note:** an index written by an earlier version carries no graph
+  hash, so the first hook after upgrading reports the graph as unverified
+  until `phr-mcp graph rebuild` or the next hooked save rewrites it.
+
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
   `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose

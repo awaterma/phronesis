@@ -144,6 +144,8 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             if !h.fresh && !h.facts.is_empty() {
                 let cause = if h.outdated {
                     "was built by an older phronesis and names entities differently".to_string()
+                } else if crate::graph::sync::graph_file_unverified(&h.drifted) {
+                    "does not match its index (graph file missing, truncated, altered, or indexed by an older phronesis)".to_string()
                 } else {
                     format!(
                         "is stale ({} file(s) changed outside the hook)",

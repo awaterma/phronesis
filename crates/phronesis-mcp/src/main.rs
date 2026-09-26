@@ -1938,6 +1938,15 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                 println!("Run `phr-mcp graph rebuild` to resync.");
             } else if drifted.is_empty() {
                 println!("Graph is fresh.");
+            } else if sync::graph_file_unverified(&drifted) {
+                println!(
+                    "Graph is unverified: {} does not match the index (missing, truncated, altered, or indexed by an older phronesis). Structural rules will warn, not block.",
+                    phronesis_mcp::graph::store::GRAPH_REL_PATH
+                );
+                for f in drifted.iter().take(10) {
+                    println!("  {f}");
+                }
+                println!("Run `phr-mcp graph rebuild` to resync.");
             } else {
                 println!(
                     "Graph is stale: {} file(s) drifted. Structural rules will warn, not block.",
