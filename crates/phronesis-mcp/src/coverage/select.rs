@@ -16,7 +16,9 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::coverage::region_map::{ChangedRegions, changed_regions, file_segment};
+use crate::coverage::region_map::{
+    ChangedRegions, changed_regions, file_segment, is_qualified_region_id,
+};
 use crate::coverage::store::load_hits;
 use crate::graph::model::Edge;
 use crate::graph::store as graph_store;
@@ -53,6 +55,10 @@ pub struct Selection {
     pub static_reach_available: bool,
     /// Human-readable note when the static half was skipped.
     pub static_note: Option<String>,
+    /// Human-readable note when the dynamic half cannot be trusted — the
+    /// store carries region ids from before per-site qualification
+    /// (SPEC-coverage-evidence §3.2), which match no changed region.
+    pub coverage_note: Option<String>,
 }
 
 /// A file diff entry: repo-relative path, old content, new content.
@@ -152,6 +158,14 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
 
     // --- Dynamic half: coverage store ---
     let hits = load_hits(root).unwrap_or_default();
+    let coverage_note = hits
+        .iter()
+        .any(|h| !is_qualified_region_id(&h.region))
+        .then(|| {
+            "coverage store predates per-site region ids and matches no changed region; \
+             re-run `phr-mcp coverage collect`"
+                .to_string()
+        });
     let changed_region_set: std::collections::BTreeSet<&str> = regions
         .functions
         .iter()
@@ -223,6 +237,7 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         tests,
         static_reach_available: static_available,
         static_note,
+        coverage_note,
     })
 }
 
@@ -300,9 +315,12 @@ pub fn render_table(sel: &Selection) -> String {
     let mut out = String::new();
 
     if sel.tests.is_empty() {
-        out.push_str(
-            "No tests selected: the coverage store is empty or no hits match changed regions.\n",
-        );
+        match &sel.coverage_note {
+            Some(note) => out.push_str(&format!("No tests selected: {note}.\n")),
+            None => out.push_str(
+                "No tests selected: the coverage store is empty or no hits match changed regions.\n",
+            ),
+        }
         if let Some(note) = &sel.static_note {
             out.push_str(&format!("  static reach: {note}\n"));
         }
@@ -365,6 +383,9 @@ pub fn render_table(sel: &Selection) -> String {
     if let Some(note) = &sel.static_note {
         out.push_str(&format!("static reach: {note}\n"));
     }
+    if let Some(note) = &sel.coverage_note {
+        out.push_str(&format!("coverage: {note}\n"));
+    }
 
     // Count distinct tests: one with both evidence kinds has two entries.
     let distinct: std::collections::BTreeSet<&str> =
@@ -382,6 +403,7 @@ pub fn render_json(sel: &Selection) -> String {
         "changed_branches": sel.changed_branches,
         "static_reach_available": sel.static_reach_available,
         "static_note": sel.static_note,
+        "coverage_note": sel.coverage_note,
         "tests": sel.tests.iter().map(|t| serde_json::json!({
             "test": t.test,
             "evidence": t.evidence,

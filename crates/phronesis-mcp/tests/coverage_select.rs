@@ -445,3 +445,52 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
         "footer counts distinct tests: {table}"
     );
 }
+
+// A store collected before per-site region ids holds leaf-name ids that can
+// match nothing. Selection must say so and name the remedy, not claim the
+// store is empty or merely unmatched.
+#[test]
+fn test_select_on_legacy_store_tells_the_user_to_recollect() {
+    let root = tempfile::tempdir().unwrap();
+    init_git_repo(root.path());
+    write_store(
+        root.path(),
+        &[hit(
+            "divides_positive_values",
+            "fn:safe_divide",
+            "src/lib.rs",
+            "region",
+        )],
+        &CoverageIndex {
+            format: COVERAGE_FORMAT,
+            revision: FIXTURE_REV.into(),
+            imported_at: 1,
+            tool: "cargo-llvm-cov".into(),
+        },
+    )
+    .unwrap();
+    apply_edit(root.path());
+
+    let sel = select(root.path(), None).unwrap();
+    assert!(
+        sel.tests.is_empty(),
+        "legacy hits never match: {:?}",
+        sel.tests
+    );
+    let table = render_table(&sel);
+    assert!(
+        table.contains("phr-mcp coverage collect"),
+        "table must name the remedy: {table}"
+    );
+    assert!(
+        !table.contains("the coverage store is empty"),
+        "the store is not empty: {table}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&render_json(&sel)).unwrap();
+    assert!(
+        json["coverage_note"]
+            .as_str()
+            .is_some_and(|n| n.contains("phr-mcp coverage collect")),
+        "json must carry coverage_note: {json}"
+    );
+}
