@@ -30,6 +30,25 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `phr-mcp` hooks and assert, from the action log, which rule fired for which
   test and region (branch relevance, the evidence-gap warning, demand gating,
   and the stale-coverage commit warning that warns without blocking).
+
+- **The packaged commit-gate rules could be bypassed with `git -C .
+  commit`, `/usr/bin/git commit`, or similar.** `confidence-low-blocks-commit`,
+  `confidence-medium-warns-commit`, `nudge-verify-before-commit`, and
+  `llm-warn-git-add-all` matched a git subcommand only when it directly
+  followed the literal word `git`, so any of git's global options
+  (`-C <dir>`, `-c <k=v>`, `--git-dir=…`, `--work-tree=…`, `--no-pager`,
+  `--bare`, …), an absolute or relative path to the `git` binary, a
+  backslash-escaped binary name (`\git`), or a `command`/`env FOO=bar`
+  wrapper silently skipped every gate — the governed commit went through
+  with no confidence warning at all. The packaged rules now build their
+  `bash_command_matches` pattern from a shared regex (`git_invocation_prefix`
+  / `git_subcommand_gate` in `init.rs`) that recognizes the subcommand past
+  any of those forms, while continuing to reject plumbing extensions
+  (`commit-tree`, `merge-base` do not mutate a ref or the index the way
+  the porcelain command does) and text that merely mentions the word
+  (`git log --grep commit`, `echo "git commit"`). Existing projects pick
+  this up via `phr-mcp init --rules-only --packs llm,confidence` (or
+  `rust`/`python`/etc. alongside them).
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other

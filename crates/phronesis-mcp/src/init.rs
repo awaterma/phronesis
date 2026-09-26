@@ -1663,6 +1663,48 @@ fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Value) {
 // Starter packs
 // ─────────────────────────────────────────────────────────────────────
 
+/// Regex fragment matching a `git` invocation in a shell command line, up to
+/// (but not including) its subcommand. Every packaged rule that gates a git
+/// subcommand builds its `bash_command_matches` pattern from this fragment
+/// rather than hand-rolling `git\s+<subcommand>` — that literal shape only
+/// recognizes `git` immediately followed by the subcommand, so
+/// `git -C . commit`, `git -c user.name=x commit`,
+/// `git --git-dir=.git commit`, `git --no-pager commit`,
+/// `/usr/bin/git commit`, `\git commit`, `command git commit`, and
+/// `env FOO=bar git commit` all bypassed every gate silently (C18).
+///
+/// Recognizes, in any order and any number of times, git's common global
+/// options (`-C <dir>`, `-c <k=v>`, `--git-dir=…`, `--work-tree=…`,
+/// `--namespace=…`, `--exec-path[=…]`, `--no-pager`, `--paginate`/`-p`,
+/// `--bare`, `-P`, `--literal-pathspecs`, `--no-optional-locks`,
+/// `--no-lazy-fetch`) between the binary and the subcommand, plus a
+/// `command`/`env FOO=bar` wrapper, a backslash-escaped binary name, and an
+/// absolute or relative path to the binary.
+///
+/// The leading `(?:^|[;&|]\s*)` anchor requires the invocation to start the
+/// command line or immediately follow a shell separator (`;`, `&&`, `||`,
+/// `|`) — never trail an unrelated word or an open quote — which is what
+/// keeps this from matching `git` mentioned inside `echo "git commit"`.
+fn git_invocation_prefix() -> &'static str {
+    r"(?:^|[;&|]\s*)(?:(?:command|exec)\s+)?(?:env\s+(?:\S+=\S+\s+)*)?\\?(?:\S*/)?git\b(?:\s+(?:-c\s+\S+|-C\s+\S+|--git-dir=\S+|--work-tree=\S+|--namespace=\S+|--exec-path(?:=\S+)?|--no-pager|--paginate|--bare|--literal-pathspecs|--no-optional-locks|--no-lazy-fetch|-p|-P))*"
+}
+
+/// Build a `bash_command_matches` pattern recognizing any of `subcommands`
+/// (a `|`-joined regex alternation, e.g. `"commit|merge|rebase"`) as git's
+/// *subcommand*, tolerant of everything `git_invocation_prefix` handles.
+///
+/// Plumbing extensions of a name (`commit-tree`, `merge-base`) are
+/// deliberately excluded by requiring the subcommand to be followed by
+/// whitespace or end-of-string rather than any word/hyphen character: they
+/// don't mutate history/branches the way the porcelain command does
+/// (`commit-tree` writes a commit object without touching any ref or the
+/// index), so gating them would be a false positive, not a closed bypass.
+/// (The `regex` crate has no look-around, hence `(?:\s|$)` rather than a
+/// negative lookahead.)
+fn git_subcommand_gate(subcommands: &str) -> String {
+    format!(r"{}\s+(?:{subcommands})(?:\s|$)", git_invocation_prefix())
+}
+
 /// Confidence-scoring gate rules (SPEC-confidence-scoring §3, approach A;
 /// severity per SPEC-structural-rule-migration §"Confidence gate severity").
 /// They count the open work unit's passed `signal_pass` facts (asserted by the
@@ -1678,6 +1720,7 @@ fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Value) {
 /// missing or failing signal — that would claim more than the asserted facts
 /// prove. Run `phr-mcp confidence` for the itemized per-signal report.
 fn confidence_rules() -> Value {
+    let commit_gate = git_subcommand_gate("commit|merge|rebase|cherry-pick|revert|pull");
     json!({
         "rules": [
             {
@@ -1685,7 +1728,7 @@ fn confidence_rules() -> Value {
                 "phase": "pre",
                 "priority": 30,
                 "when": [
-                    {"bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)"},
+                    {"bash_command_matches": commit_gate.clone()},
                     {"__script__": "facts_count('signal_pass', ['*','*']) <= 1"}
                 ],
                 "then": {"warn": "Low confidence — compile/tests/known-bug evidence is incomplete or failing. Run `phr-mcp confidence` for the per-signal report before presenting this as done."}
@@ -1695,7 +1738,7 @@ fn confidence_rules() -> Value {
                 "phase": "pre",
                 "priority": 29,
                 "when": [
-                    {"bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)"},
+                    {"bash_command_matches": commit_gate},
                     {"__script__": "facts_count('signal_pass', ['*','*']) == 2"}
                 ],
                 "then": {"warn": "Medium confidence — one grounded signal is missing. Review before presenting this as done."}
@@ -1705,6 +1748,8 @@ fn confidence_rules() -> Value {
 }
 
 fn deflection_rules() -> Value {
+    let commit_gate = git_subcommand_gate("commit");
+    let add_all_gate = format!(r"{}\s+add\s+(?:-A\b|\.(?:$|\s))", git_invocation_prefix());
     json!({
         "rules": [
             {
@@ -1757,7 +1802,7 @@ fn deflection_rules() -> Value {
                 "phase": "pre",
                 "priority": 5,
                 "when": [
-                    {"bash_command_matches": "git commit -m"},
+                    {"bash_command_matches": commit_gate},
                     {"__script__": "facts_count('confidence_enabled', []) == 0"}
                 ],
                 "then": {"warn": "About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode."}
@@ -1767,7 +1812,7 @@ fn deflection_rules() -> Value {
                 "phase": "pre",
                 "priority": 5,
                 "when": [
-                    {"bash_command_matches": "(^|[;&|]\\s*)git\\s+add\\s+(-A\\b|\\.($|\\s))"}
+                    {"bash_command_matches": add_all_gate}
                 ],
                 "then": {"warn": "Stage files explicitly — git add -A / git add . sweeps unrelated changes into the commit. List the files you actually changed."}
             },
