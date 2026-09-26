@@ -140,6 +140,17 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   mismatch or when that hash is not approved, and the allowlist refuses to load
   when any entry is invalid, naming the entry.
 
+- **Generated verification harnesses could smuggle file, process, and network
+  access past the rendered-body validator.** The validator scanned text with a
+  hand-written lexer and plain substring checks, so a char literal `'"'` hid
+  every line after it, `include_str ! ("/etc/passwd")` and `std :: fs :: read`
+  slipped through on whitespace, and `use std::{fs, process};` was never seen
+  as `std::fs`. Rust bodies are now lexed by a real Rust lexer and must parse
+  as a file (anything else is refused); denied paths and macros are matched on
+  tokens through whitespace, comments, grouped `use` trees, globs, and
+  renames, and an interpolated value is refused if any occurrence touches code
+  rather than a string, char, or comment.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
