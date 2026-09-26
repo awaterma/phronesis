@@ -477,6 +477,11 @@ enum CoverageCmd {
     /// the current HEAD revision. With `--bins`, runs each listed test
     /// binary's tests in isolation under coverage first (per-test attribution
     /// by isolation, SPEC §2/§8).
+    ///
+    /// Refuses when tracked files differ from HEAD (staged or unstaged;
+    /// untracked files and `.phronesis/` state are ignored), since the
+    /// evidence would carry a revision that did not produce it. Applies to
+    /// `--from-dir` too: it stamps HEAD and reads region maps from the tree.
     Collect {
         /// Import llvm-cov JSON exports already collected under this dir
         /// (files named cov-<bin>-<test>.json) instead of running cargo.
@@ -486,6 +491,10 @@ enum CoverageCmd {
         /// properties_hydrate). Defaults to the machinery test set.
         #[arg(long, value_delimiter = ',')]
         bins: Vec<String>,
+        /// Collect even though tracked files differ from HEAD. The evidence
+        /// is still stamped HEAD; a warning names the modified files.
+        #[arg(long)]
+        allow_dirty: bool,
         /// Project root (defaults to current directory).
         #[arg(long, default_value = ".")]
         path: PathBuf,
@@ -524,12 +533,23 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
         CoverageCmd::Collect {
             from_dir,
             bins,
+            allow_dirty,
             path,
         } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
-            let revision = phronesis_mcp::lifecycle::outcome::git_head(&root)
-                .unwrap_or_else(|| "unknown".to_string());
+            let revision = match phronesis_mcp::lifecycle::outcome::git_head(&root) {
+                // Checked before any test runs or store write: a dirty tree
+                // would put HEAD on evidence HEAD did not produce.
+                Some(head) => {
+                    if let Some(warning) = collect::check_clean_tree(&root, &head, allow_dirty)? {
+                        eprintln!("{warning}");
+                    }
+                    head
+                }
+                // No HEAD to misattribute to: the evidence says so.
+                None => "unknown".to_string(),
+            };
             let tmp = std::env::temp_dir().join(format!(
                 "phronesis-collect-{}",
                 std::time::SystemTime::now()

@@ -469,9 +469,18 @@ Three files exceed 800 LOC with intentional exemptions (see `SPEC-god-file-decom
 # emitted identities always match what hydration will join.
 phr-mcp coverage collect                     # run machinery tests in isolation
 phr-mcp coverage collect --from-dir /tmp/x   # normalize already-collected JSONs
+phr-mcp coverage collect --allow-dirty       # stamp HEAD despite a modified tree (warns)
 phr-mcp coverage import <export.jsonl>       # import a normalized export
 phr-mcp coverage select                      # relevant tests for changed regions
 ```
+
+`collect` (with or without `--from-dir`) stamps HEAD on every record, so it
+refuses — exit 1, naming the files, nothing written — when tracked files
+differ from HEAD, staged or unstaged. Untracked files and `.phronesis/` tool
+state are ignored. Commit or stash first; `--allow-dirty` proceeds with a
+warning. `select` lists a test under `coverage_observation` only for regions
+the store saw it hit; statically reached regions appear under `static_reach`,
+so one test can have an entry of each kind.
 
 Requires cargo-llvm-cov 0.8.x and a nightly toolchain (rust-version >= 1.90).
 

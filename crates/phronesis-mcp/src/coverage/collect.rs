@@ -245,6 +245,9 @@ pub fn read_document(path: &Path) -> Result<LlvmCovDocument> {
 /// Serialize records to the normalized export JSONL format.
 pub fn write_export(records: &[HitRecord], out: &Path) -> Result<()> {
     use std::io::Write as _;
+    if let Some(dir) = out.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
     let mut fh = std::fs::File::create(out)?;
     for r in records {
         serde_json::to_writer(&mut fh, r)?;
@@ -290,4 +293,83 @@ pub fn run_isolated(bin: &str, test: &str, out: &Path) -> Result<()> {
         .context("spawning cargo llvm-cov")?;
     anyhow::ensure!(status.success(), "llvm-cov run failed for {bin}::{test}");
     Ok(())
+}
+
+/// Most dirty paths named in the refusal/warning before eliding the rest.
+const DIRTY_PATHS_SHOWN: usize = 20;
+
+/// Tracked files under `root` whose working-tree or index content differs
+/// from HEAD (staged or unstaged), as repo-relative paths.
+///
+/// Untracked files are ignored: the test run and the region maps read
+/// covered sources the collector keeps (`crates/**/src/*.rs`), and a new
+/// source file only becomes coverage evidence through a tracked `mod`
+/// declaration or `Cargo.toml` edit, which this check does see.
+/// `.phronesis/` is excluded: it is tool state that hooks rewrite during a
+/// session (context, journey, confidence), not an input to the tests or the
+/// region map.
+pub fn dirty_tracked_paths(root: &Path) -> Result<Vec<String>> {
+    let out = std::process::Command::new("git")
+        .args([
+            "diff",
+            "HEAD",
+            "--name-only",
+            "--no-renames",
+            "-z",
+            "--",
+            ".",
+            ":(exclude).phronesis",
+        ])
+        .current_dir(root)
+        .output()
+        .context("running git diff HEAD --name-only")?;
+    anyhow::ensure!(
+        out.status.success(),
+        "git diff HEAD failed in {}: {}",
+        root.display(),
+        String::from_utf8_lossy(&out.stderr).trim()
+    );
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Guard for stamping `revision` on evidence (SPEC §3.1: evidence is keyed
+/// to the revision that produced the observation). The tests run on, and
+/// the region maps are read from, the working tree, so a tree that differs
+/// from HEAD produces evidence HEAD never had.
+///
+/// Returns `Ok(None)` for a clean tree, `Err` naming the dirty paths when
+/// `allow_dirty` is false, and `Ok(Some(warning))` when it is true.
+pub fn check_clean_tree(root: &Path, revision: &str, allow_dirty: bool) -> Result<Option<String>> {
+    let dirty = dirty_tracked_paths(root)?;
+    if dirty.is_empty() {
+        return Ok(None);
+    }
+    let mut listed: Vec<&str> = dirty
+        .iter()
+        .take(DIRTY_PATHS_SHOWN)
+        .map(String::as_str)
+        .collect();
+    let more = dirty.len().saturating_sub(DIRTY_PATHS_SHOWN);
+    let elided = format!("... and {more} more");
+    if more > 0 {
+        listed.push(&elided);
+    }
+    let paths = listed.join("\n  ");
+    if allow_dirty {
+        return Ok(Some(format!(
+            "warning: --allow-dirty: evidence is stamped {revision} (HEAD) but was \
+             produced from a working tree with {} modified tracked file(s):\n  {paths}",
+            dirty.len()
+        )));
+    }
+    bail!(
+        "refusing to collect: {} tracked file(s) differ from HEAD ({revision}), so the \
+         evidence would be stamped with a revision that did not produce it:\n  {paths}\n\
+         Commit or stash the changes, or pass --allow-dirty to stamp HEAD anyway.",
+        dirty.len()
+    )
 }

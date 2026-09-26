@@ -40,6 +40,7 @@ cargo run -- migrate-rules <path>  # Convert a rules.json from the old (v1) shap
 cargo run -- migrate-extracted-rules <path>  # Salvage pre-0.14.0 extract_rules output: strip prefixes, demote actions
 cargo run -- catalogue        # Regenerate docs/catalogue.html from the shipped packs (run from repo root)
 cargo run -- scrub-payload <path> [--write] [--home DIR] [--project-root DIR]  # Anonymize captured payloads for committing as fixtures
+cargo run -- coverage collect [--from-dir DIR] [--bins a,b] [--allow-dirty]  # llvm-cov per-test collection, imported at HEAD; refuses when tracked files differ from HEAD (untracked and .phronesis/ ignored) unless --allow-dirty
 cargo run -- coverage import <export.jsonl>  # Import a normalized per-test coverage export into the evidence store
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
