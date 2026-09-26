@@ -157,68 +157,80 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize) {
             unresolved += 1;
             continue;
         };
-        let resolved = candidates
-            .iter()
-            .filter(|candidate| {
-                let Some((module, _)) = candidate.rsplit_once("::") else {
-                    return false;
-                };
-                let method_scope = method_call.then(|| module.rsplit_once("::")).flatten();
-                if receiver_type.is_some_and(|receiver| {
-                    let receiver_stripped = strip_generic_args(receiver);
-                    let candidate_type = strip_generic_args(module);
-                    if receiver_stripped.contains("::") {
-                        !receiver_matches_qualified(candidate_type, receiver_stripped)
-                    } else {
-                        let module_last =
-                            candidate_type.rsplit("::").next().unwrap_or(candidate_type);
-                        module_last != receiver_stripped
+        let receiver = receiver_type.map(normalize_receiver);
+        let qualified_receiver = receiver.is_some_and(|r| r.contains("::"));
+        // `by_path`: a qualified receiver must suffix-match the candidate's
+        // type path; otherwise only the type's last segment is compared.
+        let filter_candidates = |by_path: bool| {
+            candidates
+                .iter()
+                .filter(|candidate| {
+                    let Some((module, _)) = candidate.rsplit_once("::") else {
+                        return false;
+                    };
+                    let method_scope = method_call.then(|| module.rsplit_once("::")).flatten();
+                    if receiver.is_some_and(|receiver| {
+                        let candidate_type = strip_generic_args(module);
+                        if by_path && receiver.contains("::") {
+                            !receiver_matches_qualified(candidate_type, receiver)
+                        } else {
+                            last_path_segment(candidate_type) != last_path_segment(receiver)
+                        }
+                    }) {
+                        return false;
                     }
-                }) {
-                    return false;
-                }
-                let visible_imports = caller_module.into_iter().flat_map(|caller| {
-                    imports.iter().filter_map(move |(module, targets)| {
-                        (caller == module
-                            || caller
-                                .strip_prefix(module)
-                                .is_some_and(|suffix| suffix.starts_with("::")))
-                        .then_some(targets)
-                    })
-                });
-                caller_module.is_some_and(|caller_module| {
-                    caller_module == module
-                        || caller_module
-                            .strip_prefix(module)
-                            .is_some_and(|suffix| suffix.starts_with("::"))
-                }) || visible_imports.into_iter().any(|targets| {
-                    targets.contains(module)
-                        || targets
-                            .iter()
-                            .any(|imported| unit_contains(imported, module))
-                        || (method_call
-                            && targets.iter().any(|imported| {
-                                method_scope.is_some_and(|(parent, ty)| {
-                                    imported == parent
-                                        || reexports
-                                            .get(&(imported.clone(), ty.to_string()))
-                                            .is_some_and(|modules| modules.contains(parent))
-                                })
-                            }))
-                        || targets.iter().any(|imported| {
-                            reexports
-                                .get(&(imported.clone(), callee.to_string()))
-                                .is_some_and(|modules| modules.contains(module))
+                    let visible_imports = caller_module.into_iter().flat_map(|caller| {
+                        imports.iter().filter_map(move |(module, targets)| {
+                            (caller == module
+                                || caller
+                                    .strip_prefix(module)
+                                    .is_some_and(|suffix| suffix.starts_with("::")))
+                            .then_some(targets)
                         })
-                }) || receiver_type.is_some()
-            })
-            .collect::<Vec<_>>();
-        // A typed hint names a type by its last segment, which several
-        // modules can share (one `Sensor` per language extractor). When the
-        // caller is itself a method of exactly one of the matching types, the
-        // hint means that type: Rust resolves an unqualified type name to the
-        // enclosing module's own definition. Otherwise the call stays ambiguous.
-        let resolved = if resolved.len() > 1 && receiver_type.is_some() {
+                    });
+                    caller_module.is_some_and(|caller_module| {
+                        caller_module == module
+                            || caller_module
+                                .strip_prefix(module)
+                                .is_some_and(|suffix| suffix.starts_with("::"))
+                    }) || visible_imports.into_iter().any(|targets| {
+                        targets.contains(module)
+                            || targets
+                                .iter()
+                                .any(|imported| unit_contains(imported, module))
+                            || (method_call
+                                && targets.iter().any(|imported| {
+                                    method_scope.is_some_and(|(parent, ty)| {
+                                        imported == parent
+                                            || reexports
+                                                .get(&(imported.clone(), ty.to_string()))
+                                                .is_some_and(|modules| modules.contains(parent))
+                                    })
+                                }))
+                            || targets.iter().any(|imported| {
+                                reexports
+                                    .get(&(imported.clone(), callee.to_string()))
+                                    .is_some_and(|modules| modules.contains(module))
+                            })
+                    }) || receiver_type.is_some()
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut resolved = filter_candidates(true);
+        // A qualified path that names no known type (an alias such as
+        // `use crate::python as py; py::Sensor`) falls back to its last
+        // segment. It is then no longer a statement about which module the
+        // type lives in, so the same-type preference below does not apply.
+        if qualified_receiver && resolved.is_empty() {
+            resolved = filter_candidates(false);
+        }
+        // An unqualified typed hint names a type by its last segment, which
+        // several modules can share (one `Sensor` per language extractor).
+        // When the caller is itself a method of exactly one of the matching
+        // types, the hint means that type: Rust resolves an unqualified type
+        // name to the enclosing module's own definition. Otherwise the call
+        // stays ambiguous.
+        let resolved = if resolved.len() > 1 && receiver.is_some() && !qualified_receiver {
             let caller_type = caller_module.map(strip_generic_args);
             let same_type = resolved
                 .iter()
@@ -251,6 +263,24 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize) {
 }
 
 /// Strip `<...>` generic arguments from a type name, returning the base name.
+/// A receiver type as the resolver compares it: generic arguments dropped,
+/// and the leading `crate::`/`self::`/`super::` segments removed, since
+/// canonical identities name the unit and module path, never those keywords.
+fn normalize_receiver(receiver: &str) -> &str {
+    let mut receiver = strip_generic_args(receiver);
+    while let Some(rest) = ["crate::", "self::", "super::"]
+        .iter()
+        .find_map(|prefix| receiver.strip_prefix(prefix))
+    {
+        receiver = rest;
+    }
+    receiver
+}
+
+fn last_path_segment(path: &str) -> &str {
+    path.rsplit("::").next().unwrap_or(path)
+}
+
 fn strip_generic_args(ty: &str) -> &str {
     match ty.find('<') {
         Some(idx) => &ty[..idx],

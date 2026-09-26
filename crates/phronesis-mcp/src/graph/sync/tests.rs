@@ -1109,3 +1109,65 @@ fn rebuild_drops_edges_for_files_that_no_longer_exist() {
     rebuild(d.path()).expect("rebuild");
     assert!(edges(d.path()).is_empty());
 }
+
+fn has_call(root: &Path, caller_suffix: &str, callee_suffix: &str) -> bool {
+    edges(root).iter().any(|e| {
+        e.p == "calls"
+            && e.a.first().is_some_and(|a| a.ends_with(caller_suffix))
+            && e.a.get(1).is_some_and(|b| b.ends_with(callee_suffix))
+    })
+}
+
+#[test]
+fn a_qualified_let_receiver_resolves_to_the_named_type_not_the_callers_own() {
+    let d = project();
+    write(d.path(), "src/lib.rs", "pub mod python;\npub mod rust;\n");
+    write(
+        d.path(),
+        "src/python.rs",
+        "pub struct Sensor;\npub fn make() -> Sensor { Sensor }\nimpl Sensor { pub fn visit(&self) {} }\n",
+    );
+    write(
+        d.path(),
+        "src/rust.rs",
+        "pub struct Sensor;\nimpl Sensor {\n    pub fn walk(&self) { let p: crate::python::Sensor = crate::python::make(); p.visit(); }\n    pub fn visit(&self) {}\n}\n",
+    );
+    rebuild(d.path()).expect("rebuild");
+    assert!(has_call(
+        d.path(),
+        "rust::Sensor::walk",
+        "python::Sensor::visit"
+    ));
+    assert!(!has_call(
+        d.path(),
+        "rust::Sensor::walk",
+        "rust::Sensor::visit"
+    ));
+}
+
+#[test]
+fn a_method_in_a_path_qualified_impl_resolves_its_self_calls() {
+    for impl_type in ["super::Foo", "crate::a::Foo"] {
+        let d = project();
+        write(d.path(), "src/lib.rs", "pub mod a;\n");
+        write(
+            d.path(),
+            "src/a/mod.rs",
+            "pub mod ext;\npub struct Foo;\nimpl Foo { pub fn y(&self) {} }\n",
+        );
+        write(
+            d.path(),
+            "src/a/ext.rs",
+            &format!("use super::*;\nimpl {impl_type} {{ pub fn x(&self) {{ self.y() }} }}\n"),
+        );
+        rebuild(d.path()).expect("rebuild");
+        assert!(
+            has_call(d.path(), "::x", "a::Foo::y"),
+            "impl {impl_type}: {:?}",
+            edges(d.path())
+                .iter()
+                .filter(|e| e.p == "calls")
+                .collect::<Vec<_>>()
+        );
+    }
+}

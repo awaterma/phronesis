@@ -426,8 +426,10 @@ impl Sensor<'_> {
         found
     }
 
-    /// Local variable name → last segment of its declared or constructed
-    /// type, for every `let` in `body` whose type can be read off syntax.
+    /// Local variable name → the type path as written (`crate::python::Sensor`,
+    /// `Sensor`) of its declared or constructed type, for every `let` in
+    /// `body` whose type can be read off syntax. The written qualification is
+    /// kept so the resolver can tell same-named types apart.
     fn receiver_types(&self, body: Node) -> std::collections::BTreeMap<String, String> {
         let mut receiver_types = std::collections::BTreeMap::new();
         let mut declarations = vec![body];
@@ -451,7 +453,7 @@ impl Sensor<'_> {
                         }
                         None
                     })
-                    .and_then(|ty| ty.rsplit("::").next().map(str::to_string));
+                    .map(|ty| written_type_path(&ty).to_string());
                 if let Some(inferred) = inferred {
                     receiver_types.insert(text(pattern, self.source).to_string(), inferred);
                 }
@@ -734,6 +736,25 @@ fn push_children<'t>(node: Node<'t>, pending: &mut Vec<Node<'t>>) {
 /// Strip generic type parameters from a type name so `Vec<T>` becomes `Vec`.
 /// This normalizes receiver-type hints so that `let v: Vec<u32> = …; v.push()`
 /// matches a method defined on `Vec`, not `Vec<u32>`.
+/// The path part of a written type: leading `&`, `mut` and lifetimes
+/// removed, so `&'a mut crate::a::Foo` reads as `crate::a::Foo`.
+fn written_type_path(ty: &str) -> &str {
+    let mut ty = ty.trim();
+    loop {
+        let before = ty;
+        ty = ty.trim_start_matches('&').trim_start();
+        if let Some(rest) = ty.strip_prefix("mut ") {
+            ty = rest.trim_start();
+        }
+        if ty.starts_with('\'') {
+            ty = ty.split_once(' ').map_or("", |(_, rest)| rest).trim_start();
+        }
+        if ty == before {
+            return ty;
+        }
+    }
+}
+
 fn strip_generic_args(ty: &str) -> &str {
     match ty.find('<') {
         Some(idx) => &ty[..idx],
