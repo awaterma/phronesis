@@ -1066,25 +1066,23 @@ vocabulary. Rollout node 6 owns this section (§Rollout).
 
 ```json
 { "id": "warn-subagent-ended-without-tests",
-  "conditions": [
+  "when": [
     { "journey_seen": ["lifecycle:subagent_stop", "s"] },
     { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:subagent_stop','tests',1]) == 0" }
   ],
-  "action": { "type": "warning", "message": "A sub-agent finished this session and no test ran since." } }
+  "then": { "warn": "A sub-agent finished this session and no test ran since." } }
 
 { "id": "warn-many-interventions-since-last-commit",
-  "conditions": [
+  "when": [
     { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:commit','lifecycle:intervention',3]) >= 1" }
   ],
-  "action": { "type": "warning",
-              "message": "Three interventions since the last commit. Stop and re-plan before continuing." } }
+  "then": { "warn": "Three interventions since the last commit. Stop and re-plan before continuing." } }
 
 { "id": "suggest-rule-after-two-corrections",
-  "conditions": [
+  "when": [
     { "__script__": "facts_count('journey_count', ['lifecycle:prompt:correction','s']) >= 2" }
   ],
-  "action": { "type": "suggestion",
-              "message": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }
+  "then": { "warn": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }
 ```
 
 ## Privacy and scrubbing

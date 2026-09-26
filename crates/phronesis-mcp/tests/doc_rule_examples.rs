@@ -4,9 +4,11 @@
 //! fails closed (decision D1): an example with an unknown key or verb would
 //! make every hook in the copying project block. This scans fenced ```json
 //! blocks in `docs/**/*.md`, the crate guides, README and AGENTS, and loads
-//! each block that looks like a rules file or a single rule. A block whose
-//! preceding line is `<!-- rule-example: proposed -->` is skipped: it shows a
-//! proposed field the loader does not accept yet.
+//! each block that looks like a rules file or a single rule (a block may hold
+//! several JSON values). A rule-shaped block that is not valid JSON fails the
+//! test. A block whose preceding line is `<!-- rule-example: proposed -->` is
+//! skipped: it shows a proposed field, or a deliberate sketch, the loader
+//! does not accept.
 
 use std::path::{Path, PathBuf};
 
@@ -80,11 +82,28 @@ fn json_blocks(text: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// Whether an unparseable block still looks like a rule example (it names an
+/// id plus conditions). Such a block must parse: silently skipping it is how
+/// broken examples went unnoticed.
+fn looks_rule_shaped(block: &str) -> bool {
+    block.contains("\"id\"") && (block.contains("\"when\"") || block.contains("\"conditions\""))
+}
+
+/// Parse a block as a stream of JSON values (several objects in one fence
+/// are common in the docs).
+fn parse_stream(block: &str) -> Option<Vec<Value>> {
+    serde_json::Deserializer::from_str(block)
+        .into_iter::<Value>()
+        .collect::<Result<Vec<_>, _>>()
+        .ok()
+}
+
 #[test]
 fn every_documented_rule_example_loads() {
     let root = workspace_root();
     let mut files = Vec::new();
     markdown_files(&root.join("docs"), &mut files);
+    markdown_files(&root.join("crates/phronesis-mcp/docs"), &mut files);
     for extra in [
         "README.md",
         "AGENTS.md",
@@ -102,16 +121,24 @@ fn every_documented_rule_example_loads() {
             continue;
         };
         for (line, block) in json_blocks(&text) {
-            let Ok(value) = serde_json::from_str::<Value>(&block) else {
-                continue; // prose-y pseudo-JSON with `…` placeholders
-            };
-            let Some(rules) = as_rules_file(value) else {
+            let Some(values) = parse_stream(&block) else {
+                if looks_rule_shaped(&block) {
+                    failures.push(format!(
+                        "{}:{line}: rule example is not valid JSON (mark a deliberate sketch `{PROPOSED}`)",
+                        file.display()
+                    ));
+                }
                 continue;
             };
-            std::fs::write(&path, rules.to_string()).expect("write");
-            checked += 1;
-            if let Err(e) = phronesis_mcp::rules_file::read(&path) {
-                failures.push(format!("{}:{line}: {e}", file.display()));
+            for value in values {
+                let Some(rules) = as_rules_file(value) else {
+                    continue;
+                };
+                std::fs::write(&path, rules.to_string()).expect("write");
+                checked += 1;
+                if let Err(e) = phronesis_mcp::rules_file::read(&path) {
+                    failures.push(format!("{}:{line}: {e}", file.display()));
+                }
             }
         }
     }

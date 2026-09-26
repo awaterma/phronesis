@@ -881,6 +881,7 @@ Expected: FAIL — `expected audit-rust-let-binding-count-high in rust pack`.
 
 Find the closing `]` of the `"rules": [ ... ]` array inside `rust_rules()` (around the end of that function, before the closing `})`). Insert these two entries before the closing `]` (mind the comma on the previous entry):
 
+<!-- rule-example: proposed -->
 ```jsonc
             ,
             {
