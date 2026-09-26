@@ -419,20 +419,57 @@ pub enum RenderError {
 }
 
 /// Maximum rendered body. Set by measurement against the proven 10-VC
-/// harness (209 lines ≈ 7 KiB) — the review proposes 64 KiB + line cap; a
-/// provenance header is budgeted outside this by the caller.
+/// harness (`crates/phronesis-mcp/verification/harness.rs`, 209 lines ≈
+/// 7 KiB) — the review proposes 64 KiB + line cap; a provenance header is
+/// budgeted outside this by the caller.
 pub const MAX_RENDER_BYTES: usize = 64 * 1024;
+
+/// Symbols removed from the render engine at parse time. SPEC-C: "`eval`
+/// and dynamic script evaluation are disabled". The raw engine does NOT
+/// disable `eval` on its own — it is a built-in keyword, not a package
+/// function — so it must be disabled explicitly. Disabling the symbol makes
+/// every spelling (`eval(...)`, `x.eval()`, `let e = eval`) a parse error,
+/// and Rhai itself refuses `Fn("eval")`, so no function pointer reaches it.
+const RENDER_DISABLED_SYMBOLS: &[&str] = &["eval"];
+
+/// The render engine: the guard/provider sandbox plus (1) `eval` disabled
+/// and (2) a string budget equal to the rendered-body cap. Guards and
+/// providers keep their own 4 KiB string limit — this budget is render-only.
+fn render_engine() -> Engine {
+    let mut engine = sandbox_engine();
+    engine.set_max_string_size(MAX_RENDER_BYTES);
+    for symbol in RENDER_DISABLED_SYMBOLS {
+        engine.disable_symbol(*symbol);
+    }
+    engine
+}
+
+/// Map an engine failure to a [`RenderError`]. A string that outgrows the
+/// engine's budget (which equals [`MAX_RENDER_BYTES`]) is the body-cap
+/// breach, so it surfaces as `TooLarge` rather than a generic eval error.
+fn render_eval_error(error: &rhai::EvalAltResult) -> RenderError {
+    match error.unwrap_inner() {
+        rhai::EvalAltResult::ErrorDataTooLarge(what, _) if what.contains("string") => {
+            RenderError::TooLarge {
+                limit: MAX_RENDER_BYTES,
+            }
+        }
+        _ => RenderError::Eval {
+            message: error.to_string(),
+        },
+    }
+}
 
 /// Render an artifact body from a template through a render-frozen engine.
 ///
 /// Scope contract: the ONLY values in scope are `property` (the frozen map)
 /// and `facts` (the frozen sorted array). No host functions are registered
 /// beyond the sandbox package — no `emit_fact`, no file I/O (the raw engine
-/// already denies it), no eval of dynamic strings.
+/// already denies it), no modules (`no_module`), and `eval` is disabled.
+/// The operation, call-depth, array and map limits are the guard/provider
+/// sandbox limits; only the string budget is raised, to [`MAX_RENDER_BYTES`].
 pub fn render(template: &str, input: &RenderInput) -> Result<String, RenderError> {
-    let engine = sandbox_engine();
-    // Render has no op budget for runaway logic either — same limits as
-    // guards/providers (sandbox_engine sets them).
+    let engine = render_engine();
     let mut scope = Scope::new();
     scope.push_constant("property", Dynamic::from(input.property.clone()));
     let facts: Array = input
@@ -442,12 +479,9 @@ pub fn render(template: &str, input: &RenderInput) -> Result<String, RenderError
         .collect();
     scope.push_constant("facts", Dynamic::from(facts));
 
-    let out: Dynamic =
-        engine
-            .eval_with_scope(&mut scope, template)
-            .map_err(|e| RenderError::Eval {
-                message: e.to_string(),
-            })?;
+    let out: Dynamic = engine
+        .eval_with_scope(&mut scope, template)
+        .map_err(|e| render_eval_error(&e))?;
     if !out.is_string() {
         // A template that produces nothing is a template bug — loud, not silent.
         return Err(RenderError::NotAString {
@@ -465,18 +499,33 @@ pub fn render(template: &str, input: &RenderInput) -> Result<String, RenderError
     Ok(s)
 }
 
-/// The scope-freeze check, callable: inside the render scope, forbidden
-/// host capabilities (fact emission, file I/O, eval of dynamic strings) are
-/// ABSENT — scripts that try them fail loudly instead of half-working.
-pub fn render_scope_freeze_holds(template: &str, input: &RenderInput) -> bool {
-    // 1. The render itself succeeds (or fails for its own reasons) —
-    //    either way the scope was frozen: the engine is fresh per call and
-    //    registers nothing beyond the sandbox package.
-    let _ = render(template, input);
-    // 2. The structural guarantee: the render engine is built by
-    //    `sandbox_engine()` (raw: no file I/O, no modules, no closures) and
-    //    `render` registers no custom functions on it. Enforced by compile
-    //    time + this guard: any future host registration in render() makes
-    //    the attempt-script below succeed — flip this test then.
-    true
+/// Probe templates for the scope-freeze check. Each one evaluates to a
+/// STRING if its capability is present, so a rejection can only mean the
+/// capability is absent — not that the template returned the wrong type.
+const FORBIDDEN_RENDER_PROBES: &[&str] = &[
+    // Fact emission (the provider-only host function).
+    "emit_fact(\"x\", []); `emitted`",
+    // File I/O.
+    "open_file(\"/tmp/pwned\"); `opened`",
+    // Dynamic script evaluation, direct and aliased.
+    "eval(\"`x` + `y`\")",
+    "let code = \"`x`\"; eval(code)",
+    "Fn(\"eval\").call(\"`x`\")",
+    "call(Fn(\"eval\"), \"`x`\")",
+    "\"`x`\".eval()",
+    // Modules.
+    "import \"std\" as s; `imported`",
+];
+
+/// The scope-freeze check, callable: runs every forbidden-capability probe
+/// through [`render`] and holds only if each one is rejected. Fact
+/// emission, file I/O, module import, and `eval` (direct or through a
+/// function pointer) must fail loudly in render scope instead of
+/// half-working; any future host registration or engine change that makes a
+/// probe render flips this to `false`.
+pub fn render_scope_freeze_holds() -> bool {
+    let input = RenderInput::frozen(Map::new(), Vec::new());
+    FORBIDDEN_RENDER_PROBES
+        .iter()
+        .all(|probe| matches!(render(probe, &input), Err(RenderError::Eval { .. })))
 }
