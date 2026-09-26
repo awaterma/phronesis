@@ -261,3 +261,178 @@ fn resolve_project_root_finds_main_checkout_from_a_worktree() {
         "a governed worktree must keep its own state: {resolved:?}"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// Worktree discovery matrix: {absolute, relative gitdir} × {worktree root,
+// worktree/src, worktree/src/deep}. A relative `gitdir:` (written by
+// `git worktree add --relative-paths`, git >= 2.48) is relative to the
+// directory holding the `.git` file — never to the process cwd.
+// ─────────────────────────────────────────────────────────────────────────
+
+fn git(args: &[&str], dir: &Path) -> std::process::Output {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .output()
+        .expect("spawn git")
+}
+
+fn git_ok(args: &[&str], dir: &Path) {
+    let out = git(args, dir);
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A governed main checkout at `<tmp>/main` (with a blocking pre rule) and an
+/// ungoverned worktree at `<tmp>/wt` with `src/deep` inside it. Returns `None`
+/// when `relative` is requested but the installed git lacks `--relative-paths`.
+fn worktree_fixture(relative: bool) -> Option<(tempfile::TempDir, std::path::PathBuf)> {
+    let tmp = tempdir().expect("tmp");
+    let main = tmp.path().join("main");
+    std::fs::create_dir_all(main.join(".phronesis")).expect("mkdir .phronesis");
+    std::fs::write(
+        main.join(".phronesis/rules.json"),
+        r#"{"rules":[{"id":"forbid-marker","phase":"pre","priority":1,
+            "when":[{"new_content_contains":"FORBIDDEN_MARKER"}],
+            "then":{"block":"forbidden marker"}}]}"#,
+    )
+    .expect("rules");
+    std::fs::write(main.join(".gitignore"), ".phronesis/\n").expect("gitignore");
+    std::fs::create_dir_all(main.join("src/deep")).expect("mkdir src");
+    std::fs::write(main.join("src/deep/lib.rs"), "// fixture\n").expect("src file");
+    git_ok(&["init", "-q"], &main);
+    git_ok(&["add", "."], &main);
+    git_ok(&["commit", "-q", "-m", "fixture"], &main);
+
+    let wt = tmp.path().join("wt");
+    let wt_str = wt.to_str().expect("utf8 path");
+    let mut args = vec!["worktree", "add", "-q"];
+    if relative {
+        args.push("--relative-paths");
+    }
+    args.extend([wt_str, "-b", "wt-test"]);
+    let out = git(&args, &main);
+    if !out.status.success() {
+        if relative {
+            eprintln!(
+                "skipping relative-gitdir case: `git worktree add --relative-paths` unsupported: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            return None;
+        }
+        panic!(
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let pointer = std::fs::read_to_string(wt.join(".git")).expect("worktree .git file");
+    let gitdir = pointer
+        .lines()
+        .find_map(|l| l.strip_prefix("gitdir:"))
+        .map(str::trim)
+        .expect("gitdir line");
+    assert_eq!(
+        !Path::new(gitdir).is_absolute(),
+        relative,
+        "fixture gitdir shape mismatch: {gitdir}"
+    );
+    Some((tmp, wt))
+}
+
+fn assert_matrix_row(relative: bool) {
+    let Some((tmp, wt)) = worktree_fixture(relative) else {
+        return;
+    };
+    let expected = std::fs::canonicalize(tmp.path().join("main")).expect("canonicalize main");
+    for start in [wt.clone(), wt.join("src"), wt.join("src/deep")] {
+        let resolved = phronesis_mcp::security::resolve_project_root(&start);
+        assert_eq!(
+            resolved, expected,
+            "relative={relative}: start {start:?} must resolve to the main checkout"
+        );
+    }
+}
+
+#[test]
+fn resolve_project_root_absolute_gitdir_worktree_at_every_depth() {
+    assert_matrix_row(false);
+}
+
+#[test]
+fn resolve_project_root_relative_gitdir_worktree_at_every_depth() {
+    assert_matrix_row(true);
+}
+
+// A submodule-style `.git` file with a relative gitdir, nested inside a
+// governed checkout, still resolves to that checkout from any depth.
+#[test]
+fn resolve_project_root_submodule_style_relative_gitdir_file() {
+    let tmp = tempdir().expect("tmp");
+    let main = tmp.path().join("main");
+    std::fs::create_dir_all(main.join(".phronesis")).expect("mkdir .phronesis");
+    std::fs::create_dir_all(main.join(".git/modules/sub")).expect("mkdir modules");
+    let sub = main.join("vendor/sub");
+    std::fs::create_dir_all(sub.join("src")).expect("mkdir sub");
+    std::fs::write(sub.join(".git"), "gitdir: ../../.git/modules/sub\n").expect("sub .git");
+    let expected = std::fs::canonicalize(&main).expect("canonicalize main");
+    for start in [sub.clone(), sub.join("src")] {
+        let resolved = phronesis_mcp::security::resolve_project_root(&start);
+        assert_eq!(
+            std::fs::canonicalize(&resolved).expect("canonicalize resolved"),
+            expected,
+            "submodule-style start {start:?} must resolve to the enclosing checkout"
+        );
+    }
+}
+
+/// Drive the real `phr-mcp pre-check` binary from inside the worktree: the
+/// main checkout's blocking rule must fire (exit 2) at every depth.
+fn assert_pre_check_blocks_at_every_depth(relative: bool) {
+    use std::io::Write;
+    let Some((_tmp, wt)) = worktree_fixture(relative) else {
+        return;
+    };
+    let payload = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/deep/lib.rs","old_string":"// fixture","new_string":"// FORBIDDEN_MARKER"}}"#;
+    for cwd in [wt.clone(), wt.join("src"), wt.join("src/deep")] {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+            .arg("pre-check")
+            .current_dir(&cwd)
+            .env_remove("PHRONESIS_PROJECT_ROOT")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn phr-mcp");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(payload.as_bytes())
+            .expect("write payload");
+        let out = child.wait_with_output().expect("wait phr-mcp");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "relative={relative}: pre-check from {cwd:?} must be governed and block: {stderr}"
+        );
+        assert!(stderr.contains("forbidden marker"), "{stderr}");
+    }
+}
+
+#[test]
+fn pre_check_blocks_in_absolute_gitdir_worktree_at_every_depth() {
+    assert_pre_check_blocks_at_every_depth(false);
+}
+
+#[test]
+fn pre_check_blocks_in_relative_gitdir_worktree_at_every_depth() {
+    assert_pre_check_blocks_at_every_depth(true);
+}

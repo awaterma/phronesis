@@ -156,19 +156,30 @@ fn has_phronesis(root: &Path) -> bool {
 ///
 /// The pointer format is `gitdir: <main>/.git/worktrees/<name>`, so the main
 /// checkout root is three components up from the value (name, worktrees, .git).
+/// A relative value (`git worktree add --relative-paths`, git >= 2.48, e.g.
+/// `gitdir: ../main/.git/worktrees/wt`) is relative to the directory holding
+/// the `.git` file — `root` — never to the process working directory.
+///
+/// The result is canonicalized when it exists, so a relative pointer does not
+/// leak `..` components (or a symlinked prefix such as macOS `/tmp` vs
+/// `/private/tmp`) into callers that `strip_prefix` file paths against the
+/// root; it falls back to the joined path when canonicalization fails.
 fn main_checkout_root(root: &Path) -> Option<PathBuf> {
     let git = root.join(".git");
     if !git.is_file() {
         return None;
     }
     let contents = std::fs::read_to_string(&git).ok()?;
-    let value = contents.lines().find_map(|line| {
-        line.strip_prefix("gitdir:")
-            .map(str::trim)
-            .map(|v| v.to_string())
-    })?;
-    let main_root = Path::new(&value).parent()?.parent()?.parent()?;
-    Some(main_root.to_path_buf())
+    let value = contents
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:").map(str::trim))?;
+    let gitdir = root.join(value);
+    let main_root = gitdir.parent()?.parent()?.parent()?;
+    Some(
+        main_root
+            .canonicalize()
+            .unwrap_or_else(|_| main_root.to_path_buf()),
+    )
 }
 
 /// Resolve a user-supplied path against `project_root`, ensuring the canonical
