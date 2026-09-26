@@ -505,6 +505,11 @@ pub(crate) async fn assert_coverage_facts(
                     crate::coverage::store::RECOLLECT_HINT
                 );
             }
+            if h.store_busy {
+                eprintln!(
+                    "phronesis: note — coverage store is being replaced by an import in progress; evidence treated as stale for this event."
+                );
+            }
             h.facts
         }
         Err(e) => {

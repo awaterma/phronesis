@@ -66,6 +66,9 @@ fn fact(predicate: &str, args: Vec<String>) -> CoverageFact {
 pub struct Hydration {
     pub facts: Vec<CoverageFact>,
     pub store_corrupt: Option<StoreCorruption>,
+    /// An import was replacing the store while this event read it
+    /// ([`StoreState::Busy`]): evidence treated as stale.
+    pub store_busy: bool,
 }
 
 pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFact>> {
@@ -100,9 +103,10 @@ pub fn hydrate(input: &HydrationInput) -> anyhow::Result<Hydration> {
     } else {
         StoreState::Missing
     };
+    let store_busy = matches!(store, StoreState::Busy);
     let (index, hits, store_corrupt) = match store {
         StoreState::Loaded { index, hits } => (Some(index), hits, None),
-        StoreState::Missing => (None, Vec::new(), None),
+        StoreState::Missing | StoreState::Busy => (None, Vec::new(), None),
         StoreState::Corrupt(c) => (None, Vec::new(), Some(c)),
     };
     if wants("store_corrupt")
@@ -120,7 +124,10 @@ pub fn hydrate(input: &HydrationInput) -> anyhow::Result<Hydration> {
     // never joined (below), and rules see `coverage_stale` so the remedy —
     // re-collect — is visible rather than a silent mis-join.
     let legacy_ids = hits.iter().any(|h| !is_qualified_region_id(&h.region));
+    // A busy store (an import replacing it right now) is stale too: no
+    // evidence this event can trust, but not corruption either.
     let stale = legacy_ids
+        || store_busy
         || index
             .as_ref()
             .is_some_and(|idx| is_stale(idx, input.head_sha.as_deref()));
@@ -242,5 +249,6 @@ pub fn hydrate(input: &HydrationInput) -> anyhow::Result<Hydration> {
     Ok(Hydration {
         facts,
         store_corrupt,
+        store_busy,
     })
 }

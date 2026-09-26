@@ -564,6 +564,7 @@ fn concurrent_reads_during_imports_never_see_corruption() {
     };
 
     let mut reads = 0usize;
+    let mut busy = 0usize;
     let mut corrupt: Vec<String> = Vec::new();
     while !done.load(Ordering::SeqCst) {
         reads += 1;
@@ -571,11 +572,20 @@ fn concurrent_reads_during_imports_never_see_corruption() {
             StoreState::Loaded { index, hits } => {
                 assert!(hits.iter().all(|h| h.revision == index.revision));
             }
+            // The writer can starve the bounded lock wait (flock is not
+            // fair); a torn unlocked read is then Busy, never Corrupt.
+            StoreState::Busy => busy += 1,
             StoreState::Corrupt(c) => corrupt.push(c.reason.to_string()),
             StoreState::Missing => panic!("store vanished mid-import"),
         }
     }
     writer.join().unwrap();
+    eprintln!("concurrent reads: {reads} total, {busy} busy");
+    // Once the imports stop, the store reads as the last import.
+    assert!(
+        matches!(load_store(root.path()), StoreState::Loaded { ref index, .. } if index.revision == "a".repeat(40)),
+        "quiescent store must load"
+    );
     assert!(
         corrupt.is_empty(),
         "{} of {reads} concurrent reads saw a transient corrupt store: {:?}",
@@ -661,4 +671,77 @@ fn import_permission_error_names_the_lock_file() {
             "error must name the file: {msg}"
         );
     }
+}
+
+// ---------------------------------------------------------------- contention
+
+/// Hold the store lock (an import in flight) over a torn store: the unlocked
+/// fallback finds records and index from different imports.
+fn busy_store(root: &Path) -> std::fs::File {
+    use fs2::FileExt;
+    let a = "a".repeat(40);
+    let b = "b".repeat(40);
+    write_store(root, &covering_hits(&a), &index(&a)).unwrap();
+    let (_, index_path) = store_paths(root);
+    let old_index = std::fs::read(&index_path).unwrap();
+    let mut more = covering_hits(&b);
+    more.push(hit("extra", "fn:src/lib.rs::extra", "region", &b));
+    write_store(root, &more, &index(&b)).unwrap();
+    std::fs::write(&index_path, old_index).unwrap();
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(root.join(".phronesis/coverage.lock"))
+        .unwrap();
+    lock.lock_exclusive().unwrap();
+    lock
+}
+
+#[test]
+fn busy_store_hydrates_as_stale_not_corrupt() {
+    let root = tempfile::tempdir().unwrap();
+    let _held = busy_store(root.path());
+    let facts = hydrate(root.path(), ALL, &"a".repeat(40));
+    assert!(
+        corrupt_reason(&facts).is_none(),
+        "busy is not corrupt: {facts:?}"
+    );
+    assert!(
+        facts.iter().any(|f| f.predicate == "coverage_stale"),
+        "busy evidence is stale: {facts:?}"
+    );
+    assert_eq!(
+        gaps(&facts).len(),
+        2,
+        "busy evidence suppresses no gap: {facts:?}"
+    );
+    assert!(
+        !facts.iter().any(|f| f.predicate == "test_hits_region"),
+        "{facts:?}"
+    );
+}
+
+#[test]
+fn select_on_a_busy_store_says_an_import_is_in_progress() {
+    let (repo, _head) = git_project();
+    let _held = busy_store(repo.path());
+    let sel = select(repo.path(), None).unwrap();
+    let note = sel.coverage_note.clone().unwrap_or_default();
+    assert!(note.contains("import in progress"), "{note}");
+    assert!(!note.contains("corrupt"), "{note}");
+}
+
+/// A crash leftover (records renamed, index not, nobody holding the lock)
+/// is still corruption.
+#[test]
+fn crash_leftover_without_a_lock_holder_is_corrupt() {
+    let root = tempfile::tempdir().unwrap();
+    let held = busy_store(root.path());
+    drop(held);
+    let facts = hydrate(root.path(), ALL, &"a".repeat(40));
+    assert_eq!(
+        corrupt_reason(&facts).as_deref(),
+        Some("digest_mismatch"),
+        "{facts:?}"
+    );
 }
