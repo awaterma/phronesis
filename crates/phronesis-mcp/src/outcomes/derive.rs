@@ -100,6 +100,14 @@ pub fn entries_from(subject: &str, records: &[JournalRecord]) -> Vec<DerivedEntr
                         ],
                     });
                 }
+                "outcome:proof_run_fail" => out.push(DerivedEntry {
+                    predicate: "proof_run_outcome".to_string(),
+                    args: vec![subject.to_string(), "failed".to_string()],
+                }),
+                "outcome:proof_run_inconclusive" => out.push(DerivedEntry {
+                    predicate: "proof_run_outcome".to_string(),
+                    args: vec![subject.to_string(), "inconclusive".to_string()],
+                }),
                 t if t.starts_with("outcome:bug_caught:") => {
                     let id = &t["outcome:bug_caught:".len()..];
                     out.push(DerivedEntry {
@@ -159,14 +167,31 @@ pub fn signals_from(subject: &str, entries: &[DerivedEntry]) -> Vec<OutcomeFact>
     // §3): the signal grounds only when at least one property has a proof and
     // every latest result is `passed` — failed/timeout/inconclusive never
     // count, matching the three-state discipline. BTreeMap keeps determinism.
+    //
+    // A run-level `proof_run_outcome` (failed, or inconclusive: SPEC-C S8's
+    // "silence is a state") withholds the signal until a later run reports
+    // per-property results — it names no property, so it can't displace one
+    // by key, and without it an earlier pass would outlive a failed re-run.
+    // The toolchain emits it after the run's own per-property facts.
     let mut proof_latest: std::collections::BTreeMap<&str, &str> =
         std::collections::BTreeMap::new();
-    for e in entries.iter().filter(|e| e.predicate == "proof_outcome") {
-        if let (Some(property), Some(status)) = (e.args.get(1), e.args.get(2)) {
-            proof_latest.insert(property.as_str(), status.as_str());
+    let mut proof_run_withheld = false;
+    for e in entries.iter() {
+        match e.predicate.as_str() {
+            "proof_outcome" => {
+                if let (Some(property), Some(status)) = (e.args.get(1), e.args.get(2)) {
+                    proof_latest.insert(property.as_str(), status.as_str());
+                    proof_run_withheld = false;
+                }
+            }
+            "proof_run_outcome" => proof_run_withheld = true,
+            _ => {}
         }
     }
-    if !proof_latest.is_empty() && proof_latest.values().all(|s| *s == "passed") {
+    if !proof_run_withheld
+        && !proof_latest.is_empty()
+        && proof_latest.values().all(|s| *s == "passed")
+    {
         out.push(OutcomeFact::signal(subject, "proof"));
     }
 
@@ -475,5 +500,105 @@ mod proof_tests {
             matches!(band, Band::Medium | Band::High),
             "a band grounded on proof signals must lift beyond low: {band:?}"
         );
+    }
+
+    /// One journal record per proof run: the def parses the run, the adapter
+    /// turns its facts into tags, the hook stamps them on one record.
+    fn proof_run_record(seq: u64, output: &str, exit: Option<i32>) -> JournalRecord {
+        let compiled = CompiledDef::compile(kani_def(), DefSource::Project).unwrap();
+        let facts = compiled.parse("u", "cargo kani", output, exit);
+        JournalRecord {
+            v: 1,
+            ts: seq,
+            sid: "s".to_string(),
+            seq,
+            tool: "Bash".to_string(),
+            path: "<cmd>".to_string(),
+            ext: None,
+            module: None,
+            tags: outcome_tags(&facts),
+            subject: Some("u".to_string()),
+            command_exit: exit,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
+        }
+    }
+
+    fn has_proof_signal(records: &[JournalRecord]) -> bool {
+        signals_from("u", &entries_from("u", records))
+            .iter()
+            .any(|f| f.predicate == "signal_pass" && f.args[1] == "proof")
+    }
+
+    const PASSING_RUN: &str = "Checks for property safe_divide.zero_returns_error: SUCCESS\n";
+
+    /// S8: "failed never upgrades confidence" — a later failing proof run
+    /// (FAILURE line, non-zero exit) must not leave the earlier pass standing.
+    #[test]
+    fn a_failing_proof_run_retracts_an_earlier_proof_signal() {
+        let first = proof_run_record(1, PASSING_RUN, Some(0));
+        assert!(has_proof_signal(std::slice::from_ref(&first)));
+
+        let failing = proof_run_record(
+            2,
+            "Checks for property safe_divide.zero_returns_error: FAILURE\n",
+            Some(1),
+        );
+        assert!(
+            !has_proof_signal(&[first.clone(), failing]),
+            "a failed proof run must not leave a stale proof signal"
+        );
+
+        // A non-zero exit with no per-property lines at all (the verifier
+        // crashed, or failed on a harness the regex doesn't name).
+        let crashed = proof_run_record(2, "thread 'main' panicked\n", Some(1));
+        assert!(!has_proof_signal(&[first, crashed]));
+    }
+
+    /// S8: "silence is a state" — a proof run that exits 0 but whose output
+    /// matches no property is inconclusive, and inconclusive never keeps an
+    /// earlier pass alive.
+    #[test]
+    fn a_silent_proof_run_retracts_an_earlier_proof_signal() {
+        let first = proof_run_record(1, PASSING_RUN, Some(0));
+        let garbage = proof_run_record(2, "<html>totally unparseable</html>\n", Some(0));
+        assert!(
+            !has_proof_signal(&[first.clone(), garbage]),
+            "a zero-match proof run must not leave a stale proof signal"
+        );
+
+        // No exit code and no evidence: still a proof run that matched nothing.
+        let unknown = proof_run_record(2, "", None);
+        assert!(!has_proof_signal(&[first, unknown]));
+    }
+
+    /// The happy path survives: a clean run grounds proof, and a clean re-run
+    /// after a failed or silent one grounds it again.
+    #[test]
+    fn a_passing_proof_run_after_a_failed_one_grounds_the_signal_again() {
+        let pass = |seq| proof_run_record(seq, PASSING_RUN, Some(0));
+        assert!(has_proof_signal(&[pass(1)]));
+        let failing = proof_run_record(
+            2,
+            "Checks for property safe_divide.zero_returns_error: FAILURE\n",
+            Some(1),
+        );
+        assert!(has_proof_signal(&[pass(1), failing.clone(), pass(3)]));
+        let garbage = proof_run_record(2, "garbage\n", Some(0));
+        assert!(has_proof_signal(&[pass(1), garbage, pass(3)]));
+
+        // A property that failed stays failed until it is re-proved: a clean
+        // run of a *different* property doesn't paper over it.
+        let other = proof_run_record(
+            3,
+            "Checks for property safe_divide.nonzero_returns_quotient: SUCCESS\n",
+            Some(0),
+        );
+        assert!(!has_proof_signal(&[pass(1), failing, other]));
     }
 }

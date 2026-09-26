@@ -124,6 +124,16 @@ fn proof_tag(f: &OutcomeFact) -> Option<String> {
     })
 }
 
+/// `outcome:proof_run_fail` / `outcome:proof_run_inconclusive` — a proof run
+/// that was not a clean pass (SPEC-C S8).
+fn proof_run_tag(f: &OutcomeFact) -> Option<&'static str> {
+    match f.args.get(1).map(String::as_str) {
+        Some("failed") => Some("outcome:proof_run_fail"),
+        Some("inconclusive") => Some("outcome:proof_run_inconclusive"),
+        _ => None,
+    }
+}
+
 pub(crate) fn outcome_tags(facts: &[OutcomeFact]) -> Vec<String> {
     facts
         .iter()
@@ -131,6 +141,7 @@ pub(crate) fn outcome_tags(facts: &[OutcomeFact]) -> Vec<String> {
             "build_outcome" => build_tag(f).map(str::to_string),
             "test_outcome" => test_tag(f).map(str::to_string),
             "proof_outcome" => proof_tag(f),
+            "proof_run_outcome" => proof_run_tag(f).map(str::to_string),
             _ => None,
         })
         .map(|s| s.to_string())

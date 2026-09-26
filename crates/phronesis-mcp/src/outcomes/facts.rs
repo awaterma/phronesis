@@ -65,8 +65,7 @@ impl OutcomeFact {
     /// `proof_outcome(subject, property, "passed" | "failed")` — one verifier
     /// result for one property (SPEC-property-ontology.md §3). Proof defs
     /// journal `outcome:proof_pass:<property>` / `outcome:proof_fail:<property>`;
-    /// the three-state discipline rides the build outcome (an unknown build
-    /// produces no proof evidence).
+    /// a run that is not clean end to end also carries a `proof_run` fact.
     pub fn proof(subject: &str, property: &str, passed: bool) -> Self {
         Self {
             predicate: "proof_outcome",
@@ -79,6 +78,20 @@ impl OutcomeFact {
                     "failed".to_string()
                 },
             ],
+        }
+    }
+
+    /// `proof_run_outcome(subject, "failed" | "inconclusive")` — a proof run
+    /// that was not a clean pass: a non-zero exit or a failed build
+    /// (`failed`), or one whose output matched no property (`inconclusive`,
+    /// SPEC-C S8: silence is a state). Journaled as `outcome:proof_run_fail` /
+    /// `outcome:proof_run_inconclusive`; it withholds the `proof` signal until
+    /// a later run reports per-property results, so an earlier pass never
+    /// outlives a failed or silent re-run.
+    pub fn proof_run(subject: &str, status: &str) -> Self {
+        Self {
+            predicate: "proof_run_outcome",
+            args: vec![subject.to_string(), status.to_string()],
         }
     }
 
