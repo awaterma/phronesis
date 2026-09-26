@@ -23,6 +23,10 @@ pub(crate) struct LoggedConsequence {
     pub bindings: HashMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub decisions: Vec<String>,
+    /// Set when the rule fired because its `__script__` guard failed to
+    /// evaluate (fail closed); the evaluator's error text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_error: Option<String>,
 }
 
 impl LoggedConsequence {
@@ -52,12 +56,18 @@ impl LoggedConsequence {
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
+        let guard_error = c
+            .payload
+            .get("guard_error")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         Some(Self {
             rule_id,
             action_type,
             message,
             bindings,
             decisions,
+            guard_error,
         })
     }
 }
@@ -117,6 +127,7 @@ mod demote_tests {
             message: format!("from {rule_id}"),
             bindings: HashMap::new(),
             decisions: Vec::new(),
+            guard_error: None,
         }
     }
 

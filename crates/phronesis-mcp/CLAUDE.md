@@ -816,7 +816,13 @@ Each element of `when` is a single-key object: `{ "<predicate>": <arg> }`.
 - **String** — one argument: `{ "new_content_contains": ".unwrap()" }`
 - **Array** — two or more arguments: `{ "function_param_count_high": ["?file", "?fn", "?count"] }`
 - **`true`** — zero arguments (predicate has no parameters): `{ "some_flag_predicate": true }`
-- **`__script__`** — inline Rhai expression: `{ "__script__": "rank > 5" }`
+- **`__script__`** — inline Rhai expression: `{ "__script__": "rank > 5" }`.
+  Guards are judged at fire time against the final working memory (all hook
+  facts, provider facts included), so the verdict never depends on the order
+  facts were asserted in. A guard that fails to evaluate (a Rhai runtime
+  error, a non-`bool` result) **fails closed**: the rule fires as matched, its
+  message names the rule and the error, stderr gets a `GUARD ERROR` line, and
+  the log entry's consequence carries `guard_error`.
 
 ### Action shape — `then`
 

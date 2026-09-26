@@ -24,9 +24,10 @@
 //! - `facts` — an array of maps, each `#{ predicate: string, args: [string, ...] }`
 //! - `bindings` — a map of RETE variable name to bound value, e.g. `bindings["?player"]`
 //!
-//! A script must evaluate to a `bool`. Any other return type, a syntax
-//! error, or a sandbox-limit breach yields `Err`, which the network treats
-//! as a *blocked* condition (a broken guard never silently passes).
+//! A script must evaluate to a `bool`. Any other return type, a syntax or
+//! runtime error, or a sandbox-limit breach yields `Err`, which the network
+//! fails closed on: the rule is treated as matched and fires with the error
+//! attached (a broken guard on a block rule blocks; it never silently passes).
 //!
 //! ## Sandbox
 //!

@@ -2743,3 +2743,93 @@ fn a_blocked_invoke_agent_compensates_its_start_with_a_blocked_stop() {
     assert_eq!(life.subagents, 1);
     assert_eq!(life.subagents_matched, 1);
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// `__script__` guards: fail closed on evaluation errors, judged against the
+// final working memory (not whatever was asserted when the trigger arrived)
+// ─────────────────────────────────────────────────────────────────────────
+
+fn guarded_rule(id: &str, guard: &str, verb: &str) -> String {
+    format!(
+        r#"{{"rules":[{{"id":"{id}","phase":"pre","priority":10,
+            "when":[{{"file_path_matches":"src"}},{{"__script__":"{guard}"}}],
+            "then":{{"{verb}":"guarded rule message"}}}}]}}"#
+    )
+}
+
+const GUARD_EDIT: &str = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/lib.rs","old_string":"a","new_string":"b"}}"#;
+
+#[test]
+fn guard_runtime_error_blocks_and_names_rule_and_error() {
+    for guard in ["undefined_guard_fn()", "1 / 0 == 0"] {
+        let dir = tempfile::tempdir().unwrap();
+        write_rules_file(dir.path(), &guarded_rule("broken-guard", guard, "block"));
+        let (code, stderr) = run_hook_in("pre-check", GUARD_EDIT, Some(dir.path()));
+        assert_eq!(
+            code, 2,
+            "guard `{guard}` errored; must fail closed: {stderr}"
+        );
+        assert!(stderr.contains("broken-guard"), "{stderr}");
+        assert!(stderr.contains("guarded rule message"), "{stderr}");
+        assert!(
+            stderr.contains("rhai evaluation error"),
+            "stderr must carry the script error: {stderr}"
+        );
+
+        let log = std::fs::read_to_string(dir.path().join(".phronesis/log.jsonl")).unwrap();
+        let entry: Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(entry["exit"], 2);
+        let logged = &entry["consequences"][0];
+        assert_eq!(logged["rule_id"], "broken-guard");
+        assert!(
+            logged["guard_error"]
+                .as_str()
+                .is_some_and(|e| e.contains("rhai evaluation error")),
+            "log entry must record the guard error: {entry}"
+        );
+    }
+}
+
+#[test]
+fn guard_runtime_error_on_warn_rule_exits_one() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        &guarded_rule("broken-warn", "undefined_guard_fn()", "warn"),
+    );
+    let (code, stderr) = run_hook_in("pre-check", GUARD_EDIT, Some(dir.path()));
+    assert_eq!(code, 1, "{stderr}");
+    assert!(stderr.contains("broken-warn"), "{stderr}");
+    assert!(stderr.contains("rhai evaluation error"), "{stderr}");
+}
+
+fn commit_gate_rules() -> &'static str {
+    r#"{"rules":[{"id":"commit-needs-two-passes","phase":"pre","priority":10,
+        "when":[{"bash_command_matches":"git commit"},
+                {"__script__":"facts_count('ci_pass', ['*']) <= 1"}],
+        "then":{"block":"commit needs two ci passes"}}]}"#
+}
+
+const COMMIT: &str = r#"{"tool_name":"Bash","tool_input":{"command":"git commit -m wip"}}"#;
+
+#[test]
+fn guard_sees_facts_a_provider_asserts_after_the_trigger() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(dir.path(), commit_gate_rules());
+    write_predicate_provider(
+        dir.path(),
+        "ci.rhai",
+        r#"emit_fact("ci_pass", ["unit"]); emit_fact("ci_pass", ["integration"]);"#,
+    );
+    let (code, stderr) = run_hook_in("pre-check", COMMIT, Some(dir.path()));
+    assert_eq!(
+        code, 0,
+        "two ci_pass facts make the guard false; the verdict must not latch before the provider ran: {stderr}"
+    );
+
+    // Control: one pass keeps the guard true, so the commit is blocked.
+    write_predicate_provider(dir.path(), "ci.rhai", r#"emit_fact("ci_pass", ["unit"]);"#);
+    let (code, stderr) = run_hook_in("pre-check", COMMIT, Some(dir.path()));
+    assert_eq!(code, 2, "{stderr}");
+    assert!(stderr.contains("commit needs two ci passes"), "{stderr}");
+}

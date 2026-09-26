@@ -88,6 +88,25 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   engines allowed it. `eval` is now disabled in every Rhai engine, so a guard
   or provider that uses it fails to parse (a guard fails closed).
 
+- **A block rule whose `__script__` guard errored silently allowed the edit.**
+  A guard that failed at runtime (an undefined Rhai function, division by
+  zero, a non-`bool` result) was dropped as "blocked" with a log line the
+  hooks never printed, so the hook exited 0 with no output. A guard error now
+  fails closed: the rule fires as matched (block → exit 2, warn → exit 1), its
+  message names the rule and the script error, stderr gets a
+  `phronesis: GUARD ERROR` line, and the action log records `guard_error` on
+  the consequence.
+
+- **A `__script__` guard could be judged before the facts it reads existed.**
+  Guards were evaluated when the rule's triggering fact arrived and the
+  activation then latched, so a guard over facts asserted later — by a
+  predicate provider, for instance — saw an incomplete fact base and the
+  verdict depended on assertion order (a `facts_count(...) <= 1` guard kept
+  blocking after a provider emitted two facts). Guards are now judged at fire
+  time against the final working memory; an activation whose guard is false
+  stays latched and is judged again on the next fire, and `agenda_snapshot`
+  lists only activations that would fire now.
+
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
   `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose

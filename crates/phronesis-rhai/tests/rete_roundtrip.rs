@@ -90,27 +90,32 @@ async fn script_false_does_not_fire_rule() {
 }
 
 #[tokio::test]
-async fn script_error_blocks_rule_safe_default() {
+async fn script_error_fails_closed_and_fires_annotated() {
     let network = network();
     network
         .assert_fact(fact("f1", "inventory", &["potion", "3"]))
         .await
         .unwrap();
-    // A script that returns a non-bool is an error → treated as blocked.
+    // A script that returns a non-bool is an error. Failing closed means the
+    // rule is treated as matched — a broken guard on a block rule blocks —
+    // and the consequence carries the error so the host can name it.
     let rule = Rule {
         id: "rhai-bad-return".to_string(),
         priority: 0,
         conditions: vec![script("facts.len()")],
-        actions: vec![warn("should never fire")],
+        actions: vec![warn("guarded warning")],
     };
     network.add_rule(rule).await.unwrap();
     network.update_agenda().await.unwrap();
 
     let consequences = network.fire_all_consequences().unwrap();
-    assert!(
-        consequences.is_empty(),
-        "a script error must block the rule, not fire it; got {consequences:?}"
-    );
+    assert_eq!(consequences.len(), 1, "{consequences:?}");
+    let payload = &consequences[0].payload;
+    let error = payload["guard_error"].as_str().expect("guard_error");
+    assert!(error.contains("must return bool"), "{error}");
+    let message = payload["message"].as_str().unwrap();
+    assert!(message.starts_with("guarded warning"), "{message}");
+    assert!(message.contains("rhai-bad-return"), "{message}");
 }
 
 #[tokio::test]
