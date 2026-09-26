@@ -1585,6 +1585,8 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                         "derived_edges": out.derived,
                         "skipped_items": out.skipped,
                         "migrated_rules": out.migrated_rules,
+                        "unresolved_calls": out.unresolved_calls,
+                        "ambiguous_calls": out.ambiguous_calls,
                         "diagnostics": out.diagnostics,
                     })
                 );
@@ -1592,6 +1594,10 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                 println!(
                     "Rebuilt graph: {} base edges, {} derived, {} items skipped, {} rules migrated.",
                     out.base, out.derived, out.skipped, out.migrated_rules
+                );
+                println!(
+                    "Resolution: {} calls unresolved, {} ambiguous (dropped, not guessed).",
+                    out.unresolved_calls, out.ambiguous_calls
                 );
                 // Analysis the run did not perform (spec §8.2). Printed only
                 // when a provider actually ran, so the ordinary rebuild line
