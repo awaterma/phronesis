@@ -248,6 +248,17 @@ const VERUS_SUMMARY_PREFIX: &str = "verification results::";
 /// least one verified condition, and zero errors. A signal-killed run (no
 /// exit code) with a summary on the wire reads as `failed` — like every
 /// non-pass it never upgrades confidence (S8).
+/// The verus status of a finished run. Verus prints its summary on stdout;
+/// stderr carries diagnostics, which can quote arbitrary text (a deprecation
+/// note, an echoed string literal), so it is never parsed for the summary —
+/// otherwise a summary-shaped stderr line would override the real one.
+fn verus_status(output: &std::process::Output) -> Option<String> {
+    parse_verus_result(
+        &String::from_utf8_lossy(&output.stdout),
+        output.status.code(),
+    )
+}
+
 pub fn parse_verus_result(raw: &str, exit_code: Option<i32>) -> Option<String> {
     let summary = raw
         .lines()
@@ -326,7 +337,7 @@ pub fn execute(
     // Per-toolchain result parse (SPEC-C: the verus instantiation). Verus
     // prints `verification results:: N verified, M errors` — the aggregate is
     // the property's status for single-property harnesses (phase 1 shape).
-    let status = parse_verus_result(&raw, output.status.code());
+    let status = verus_status(&output);
     let Some(status) = status else {
         // S8's fourth state: the parser matched nothing — loud silence.
         return Ok(inconclusive_from(
@@ -352,6 +363,20 @@ pub fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A summary-shaped line on stderr (e.g. a multi-line deprecation note)
+    /// must not override the real stdout summary.
+    #[cfg(unix)]
+    #[test]
+    fn verus_status_reads_the_summary_from_stdout_only() {
+        use std::os::unix::process::ExitStatusExt;
+        let output = std::process::Output {
+            status: std::process::ExitStatus::from_raw(0),
+            stdout: b"verification results:: 0 verified, 0 errors\n".to_vec(),
+            stderr: b"         verification results:: 5 verified, 0 errors\n".to_vec(),
+        };
+        assert_eq!(verus_status(&output), Some("failed".to_string()));
+    }
 
     /// S9 tier resolution over every probe combination: the strongest
     /// available tier wins, a container needs a declared devcontainer, and

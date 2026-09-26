@@ -169,26 +169,27 @@ pub fn signals_from(subject: &str, entries: &[DerivedEntry]) -> Vec<OutcomeFact>
     // count, matching the three-state discipline. BTreeMap keeps determinism.
     //
     // A run-level `proof_run_outcome` (failed, or inconclusive: SPEC-C S8's
-    // "silence is a state") withholds the signal until a later run reports
-    // per-property results — it names no property, so it can't displace one
-    // by key, and without it an earlier pass would outlive a failed re-run.
-    // The toolchain emits it after the run's own per-property facts.
+    // "silence is a state") names no property, so it can't displace one by
+    // key. It withholds every property known at that point instead, and each
+    // stays withheld until a later run re-reports it — re-proving one
+    // property after a crash must not revive another's pre-crash pass. The
+    // toolchain emits it after the run's own per-property facts.
     let mut proof_latest: std::collections::BTreeMap<&str, &str> =
         std::collections::BTreeMap::new();
-    let mut proof_run_withheld = false;
+    let mut proof_withheld: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for e in entries.iter() {
         match e.predicate.as_str() {
             "proof_outcome" => {
                 if let (Some(property), Some(status)) = (e.args.get(1), e.args.get(2)) {
                     proof_latest.insert(property.as_str(), status.as_str());
-                    proof_run_withheld = false;
+                    proof_withheld.remove(property.as_str());
                 }
             }
-            "proof_run_outcome" => proof_run_withheld = true,
+            "proof_run_outcome" => proof_withheld.extend(proof_latest.keys().copied()),
             _ => {}
         }
     }
-    if !proof_run_withheld
+    if proof_withheld.is_empty()
         && !proof_latest.is_empty()
         && proof_latest.values().all(|s| *s == "passed")
     {
@@ -575,6 +576,26 @@ mod proof_tests {
         // No exit code and no evidence: still a proof run that matched nothing.
         let unknown = proof_run_record(2, "", None);
         assert!(!has_proof_signal(&[first, unknown]));
+    }
+
+    /// A crash withholds every property known before it; re-proving one of
+    /// them must not revive another's pre-crash pass.
+    #[test]
+    fn re_proving_one_property_after_a_crash_does_not_revive_another() {
+        let both = proof_run_record(
+            1,
+            "Checks for property p.a: SUCCESS\nChecks for property p.b: SUCCESS\n",
+            Some(0),
+        );
+        let crashed = proof_run_record(2, "thread 'main' panicked\n", Some(1));
+        let only_a = proof_run_record(3, "Checks for property p.a: SUCCESS\n", Some(0));
+        let only_b = proof_run_record(4, "Checks for property p.b: SUCCESS\n", Some(0));
+        assert!(!has_proof_signal(&[
+            both.clone(),
+            crashed.clone(),
+            only_a.clone()
+        ]));
+        assert!(has_proof_signal(&[both, crashed, only_a, only_b]));
     }
 
     /// The happy path survives: a clean run grounds proof, and a clean re-run
