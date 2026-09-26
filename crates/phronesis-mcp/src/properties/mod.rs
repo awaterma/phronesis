@@ -4,6 +4,7 @@
 pub mod allowlist;
 pub mod execute;
 pub mod hydrate;
+pub mod process;
 pub mod status;
 pub mod store;
 pub mod validate;
