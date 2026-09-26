@@ -1170,6 +1170,8 @@ fn a_method_in_a_path_qualified_impl_resolves_its_self_calls() {
                 .collect::<Vec<_>>()
         );
     }
+}
+
 #[test]
 fn per_file_resolution_stats_survive_a_double_rebuild() {
     // src/a.rs calls `missing` (no definition → unresolved) and `dup`
