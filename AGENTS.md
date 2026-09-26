@@ -261,7 +261,7 @@ This repository's `change_set.rhai` provider emits
 
 | Pack | Contents |
 |------|----------|
-| `llm` | Deflection rules (blocks blame-shifting, unverified completion claims), `git commit -m` warning |
+| `llm` | Deflection rules (blocks blame-shifting, unverified completion claims), governed `git commit` warning (bypass-tolerant: global options, absolute paths, `command`/`env` wrappers) |
 | `rust` | Existing panic/error/API/design rules plus synchronous lock guards across `.await`, unsafe blocks without `SAFETY:` rationale, and known blocking calls inside `async fn` |
 | `rhai` | `engine.eval(<string literal>)` (use `compile_file`), `print(` in `.rhai` scripts |
 | `python` | Bare `except:`, `print()`, mutable/call defaults, swallowed exceptions, import-time I/O, `is` with value literals, mutated module globals, and star imports |

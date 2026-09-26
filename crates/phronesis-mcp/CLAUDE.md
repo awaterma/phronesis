@@ -295,10 +295,12 @@ scripts.
 The packs are composable and **independent**:
 - `llm` — LLM-behavior rules. Blocks the deflection family (disclaimers
   that shift blame to pre-existing code or to "the test environment")
-  plus unverified completion claims. Warns on `git commit -m` to nudge
-  end-to-end verification before reporting done, on a sweeping
+  plus unverified completion claims. Warns on a governed `git commit` to
+  nudge end-to-end verification before reporting done, on a sweeping
   `git add -A` / `git add .`, and on `pkill`/`kill` of a `cargo`/`rustc`
-  build (the last two via the `bash_command_matches` regex predicate).
+  build (all three via the `bash_command_matches` regex predicate; the two
+  git ones tolerate global options, absolute paths, and `command`/`env`
+  wrappers between the binary and the subcommand — see `confidence` below).
   These rules fire from disk at every hook invocation, so they remain
   active even when CLAUDE.md content has been compressed out of context.
 - `rust` — Rust code-shape enforcement. Blocks: `.unwrap()` /
@@ -369,11 +371,20 @@ The packs are composable and **independent**:
   `throws` functions that force-unwrap instead of throwing
 - `confidence` — confidence-band gate (SPEC-confidence-scoring), enabled by default.
   Writes `.phronesis/confidence.json` and ships two advisory gate rules over
-  `git (commit|merge|rebase|cherry-pick|revert|pull)`: low confidence warns
-  that build/test/known-bug evidence is incomplete or failing, medium warns
-  that one grounded signal is missing, and high (3/3 signals) passes clean —
-  neither band blocks the Git command (SPEC-structural-rule-migration
-  §"Confidence gate severity"). Pair with `.phronesis/bugs.json` (known-bug
+  a governed `git commit`/`merge`/`rebase`/`cherry-pick`/`revert`/`pull`:
+  low confidence warns that build/test/known-bug evidence is incomplete or
+  failing, medium warns that one grounded signal is missing, and high (3/3
+  signals) passes clean — neither band blocks the Git command
+  (SPEC-structural-rule-migration §"Confidence gate severity"). The
+  `bash_command_matches` pattern is built from the shared
+  `git_subcommand_gate`/`git_invocation_prefix` helpers in `init.rs`, so it
+  recognizes the subcommand past global options (`-C <dir>`, `-c <k=v>`,
+  `--git-dir=…`, `--no-pager`, …), an absolute path to the `git` binary, a
+  backslash-escaped binary name, and `command`/`env FOO=bar` wrappers —
+  `git -C . commit`, `/usr/bin/git commit`, and `env CI=1 git commit` all
+  trip it, while plumbing forms (`commit-tree`, `merge-base`) and text that
+  merely mentions "commit" (`git log --grep commit`, `echo "git commit"`)
+  do not. Pair with `.phronesis/bugs.json` (known-bug
   registry) and `phr-mcp confidence` for the report surface. Also scaffolds
   `.phronesis/toolchains.json` (pytest/tsc example defs). Confidence signals
   are toolchain-neutral: any command matched by a toolchain def grounds a
