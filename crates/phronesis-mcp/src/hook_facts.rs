@@ -472,17 +472,19 @@ pub(crate) fn collect_rule_predicates(rules: &[Rule]) -> HashSet<String> {
 ///
 /// Demand-gated twice: the hydrate module gates on `rule_relations` itself,
 /// and this wrapper skips the whole pipeline (store read, git probe) when no
-/// loaded rule mentions any coverage relation. Fails OPEN: coverage evidence
-/// is enrichment — a hydration failure warns but never blocks the tool call,
-/// unlike the structural producers above. `PHRONESIS_NO_COVERAGE` disables
-/// the whole path.
+/// loaded rule mentions any coverage relation. A corrupt coverage store is
+/// NOT a hydration failure: it warns on stderr, asserts
+/// `store_corrupt(coverage, <reason>)` when a rule mentions it (so a rule can
+/// block on it), and gap facts are derived as if no evidence existed. Only
+/// failures outside the store (region mapping) fail open with a warning.
+/// `PHRONESIS_NO_COVERAGE` disables the whole path.
 pub(crate) async fn assert_coverage_facts(
     network: &ReteNetwork,
     project_root: &Path,
     rule_predicates: &HashSet<String>,
     edited: &[(String, Option<String>, String)],
 ) -> Result<(), HookError> {
-    use crate::coverage::hydrate::{EditedFile, HydrationInput, RELATIONS, facts_for_event};
+    use crate::coverage::hydrate::{EditedFile, HydrationInput, RELATIONS, hydrate};
 
     if std::env::var_os("PHRONESIS_NO_COVERAGE").is_some() {
         return Ok(());
@@ -512,8 +514,15 @@ pub(crate) async fn assert_coverage_facts(
         head_sha,
     };
 
-    let facts = match facts_for_event(&input) {
-        Ok(f) => f,
+    let facts = match hydrate(&input) {
+        Ok(h) => {
+            if let Some(c) = &h.store_corrupt {
+                eprintln!(
+                    "phronesis: WARNING — {c}; coverage evidence ignored (gaps reported as untested). Re-run `phr-mcp coverage import`."
+                );
+            }
+            h.facts
+        }
         Err(e) => {
             eprintln!("phronesis: WARNING — coverage hydration failed: {}", e);
             return Ok(());

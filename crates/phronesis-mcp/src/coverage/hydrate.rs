@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::coverage::region_map::changed_regions;
-use crate::coverage::store::{load_hits, load_index};
+use crate::coverage::store::{StoreCorruption, StoreState, is_stale, load_store};
 
 /// Every relation this module can assert. The hook demand-gates on this
 /// set: a relation is asserted only when some loaded rule mentions it (the
@@ -17,6 +17,18 @@ pub const RELATIONS: &[&str] = &[
     "head_revision",
     "region_without_dynamic_evidence",
     "region_without_formal_evidence",
+    "store_corrupt",
+];
+
+/// Relations whose derivation reads the coverage store. The store is read
+/// (and verified) at most once per event, and only when one is demanded.
+const STORE_RELATIONS: &[&str] = &[
+    "test_hits_region",
+    "test_hits_branch",
+    "coverage_revision",
+    "coverage_stale",
+    "region_without_dynamic_evidence",
+    "store_corrupt",
 ];
 
 /// `(predicate, args)` in the clock_facts / outcomes::facts shape — the hook
@@ -47,15 +59,55 @@ fn fact(predicate: &str, args: Vec<String>) -> CoverageFact {
     }
 }
 
+/// Hydration result: the facts, plus the store corruption (if any) so the
+/// hook can report it on stderr whether or not a rule demanded
+/// `store_corrupt`.
+#[derive(Debug, Default)]
+pub struct Hydration {
+    pub facts: Vec<CoverageFact>,
+    pub store_corrupt: Option<StoreCorruption>,
+}
+
 pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFact>> {
+    hydrate(input).map(|h| h.facts)
+}
+
+/// Derive this event's coverage facts. A corrupt store is not an error: it
+/// yields `store_corrupt(coverage, <reason>)` (when demanded), no hit or
+/// revision facts, and gap facts computed as if the store held no evidence.
+/// Errors are reserved for failures outside the store (region mapping).
+pub fn hydrate(input: &HydrationInput) -> anyhow::Result<Hydration> {
     let wants = |rel: &str| input.rule_relations.contains(rel);
 
     // Demand gate: no loaded rule mentions any coverage relation -> nothing.
     if !RELATIONS.iter().any(|r| wants(r)) {
-        return Ok(Vec::new());
+        return Ok(Hydration::default());
     }
 
     let mut facts: Vec<CoverageFact> = Vec::new();
+
+    let store = if STORE_RELATIONS.iter().any(|r| wants(r)) {
+        load_store(input.root)
+    } else {
+        StoreState::Missing
+    };
+    let (index, hits, store_corrupt) = match store {
+        StoreState::Loaded { index, hits } => (Some(index), hits, None),
+        StoreState::Missing => (None, Vec::new(), None),
+        StoreState::Corrupt(c) => (None, Vec::new(), Some(c)),
+    };
+    if wants("store_corrupt")
+        && let Some(c) = &store_corrupt
+    {
+        facts.push(fact(
+            "store_corrupt",
+            vec!["coverage".to_string(), c.reason.to_string()],
+        ));
+    }
+    // D3: only evidence verified current for HEAD may suppress a gap.
+    let stale = index
+        .as_ref()
+        .is_some_and(|idx| is_stale(idx, input.head_sha.as_deref()));
 
     if wants("head_revision")
         && let Some(sha) = &input.head_sha
@@ -63,16 +115,12 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
         facts.push(fact("head_revision", vec![sha.clone()]));
     }
 
-    let index = load_index(input.root);
     if wants("coverage_revision")
         && let Some(idx) = &index
     {
         facts.push(fact("coverage_revision", vec![idx.revision.clone()]));
     }
-    if wants("coverage_stale")
-        && let (Some(idx), Some(sha)) = (&index, &input.head_sha)
-        && idx.revision != *sha
-    {
+    if wants("coverage_stale") && stale {
         facts.push(fact("coverage_stale", Vec::new()));
     }
 
@@ -117,8 +165,13 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
             // Closed world over the WHOLE store (not the change-scoped
             // subset): "has any test ever executed this region?" is a
             // question about the imported evidence, not about this event.
-            let hits = load_hits(input.root)?;
-            let hit_regions: HashSet<&str> = hits.iter().map(|h| h.region.as_str()).collect();
+            // Stale or corrupt evidence counts as no evidence: it says
+            // nothing about the code at HEAD.
+            let hit_regions: HashSet<&str> = if stale {
+                HashSet::new()
+            } else {
+                hits.iter().map(|h| h.region.as_str()).collect()
+            };
             for region in &changed_regions_out {
                 if !hit_regions.contains(region.as_str()) {
                     facts.push(fact(
@@ -142,7 +195,7 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
     if wants("test_hits_region") || wants("test_hits_branch") {
         // Change scope: only hits whose file is part of this event.
         let edited_paths: HashSet<&str> = input.edited.iter().map(|e| e.path.as_str()).collect();
-        for hit in load_hits(input.root)? {
+        for hit in hits {
             if !edited_paths.contains(hit.file.as_str()) {
                 continue;
             }
@@ -166,5 +219,8 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
 
     facts.sort();
     facts.dedup();
-    Ok(facts)
+    Ok(Hydration {
+        facts,
+        store_corrupt,
+    })
 }

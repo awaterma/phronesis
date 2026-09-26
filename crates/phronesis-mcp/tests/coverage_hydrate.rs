@@ -281,7 +281,9 @@ fn test_no_dynamic_gap_when_store_covers_region() {
             old: Some(OLD_SRC),
             new: NEW_SRC,
         }],
-        head_sha: Some("b".repeat(40)), // store is stale; staleness is separate evidence
+        // Fresh store: only evidence current for HEAD suppresses a gap (D3;
+        // the stale case lives in coverage_store_integrity.rs).
+        head_sha: Some("a".repeat(40)),
     };
     let facts = facts_for_event(&input).unwrap();
     assert!(

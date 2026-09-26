@@ -779,16 +779,45 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
         "fn:safe_divide must still be changed: {changed:?}"
     );
 
-    // Assert 2: the dynamic evidence for fn:safe_divide is still present —
-    // the store's hits join the changed region (no false gap).
-    let gaps: Vec<&String> = facts
+    // Assert 2: the dynamic evidence for fn:safe_divide still joins the
+    // changed region — the reflow does not orphan it. At revision B the
+    // evidence is stale, so it must NOT suppress the gap (D3: stale hits
+    // never suppress region_without_dynamic_evidence); hydrated at the
+    // import's own revision the same identities do suppress it.
+    assert!(
+        facts
+            .iter()
+            .any(|f| f.predicate == "test_hits_region" && f.args[1] == "fn:safe_divide"),
+        "fn:safe_divide hits must still join after the reflow: {facts:?}"
+    );
+    let stale_gaps: Vec<&String> = facts
+        .iter()
+        .filter(|f| f.predicate == "region_without_dynamic_evidence")
+        .map(|f| &f.args[0])
+        .collect();
+    assert!(
+        stale_gaps.iter().any(|g| g.starts_with("fn:safe_divide")),
+        "stale evidence must not suppress the gap at revision B: {stale_gaps:?}"
+    );
+    let fresh = coverage_hydrate::facts_for_event(&coverage_hydrate::HydrationInput {
+        root: d.path(),
+        rule_relations: relations.clone(),
+        edited: vec![coverage_hydrate::EditedFile {
+            path: "src/lib.rs".into(),
+            old: Some(OLD_SRC),
+            new: &with_new_fn,
+        }],
+        head_sha: Some(summary.revision.clone()),
+    })
+    .expect("coverage hydrate at the import revision");
+    let gaps: Vec<&String> = fresh
         .iter()
         .filter(|f| f.predicate == "region_without_dynamic_evidence")
         .map(|f| &f.args[0])
         .collect();
     assert!(
         !gaps.iter().any(|g| g.starts_with("fn:safe_divide")),
-        "fn:safe_divide has dynamic evidence from the import — must not gap: {gaps:?}"
+        "fn:safe_divide has fresh dynamic evidence from the import — must not gap: {gaps:?}"
     );
 
     // Assert 3: the completely_new_function region gaps (5.2 fires for it).
