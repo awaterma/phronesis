@@ -213,6 +213,30 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize) {
                 }) || receiver_type.is_some()
             })
             .collect::<Vec<_>>();
+        // A typed hint names a type by its last segment, which several
+        // modules can share (one `Sensor` per language extractor). When the
+        // caller is itself a method of exactly one of the matching types, the
+        // hint means that type: Rust resolves an unqualified type name to the
+        // enclosing module's own definition. Otherwise the call stays ambiguous.
+        let resolved = if resolved.len() > 1 && receiver_type.is_some() {
+            let caller_type = caller_module.map(strip_generic_args);
+            let same_type = resolved
+                .iter()
+                .copied()
+                .filter(|candidate| {
+                    candidate
+                        .rsplit_once("::")
+                        .is_some_and(|(module, _)| Some(strip_generic_args(module)) == caller_type)
+                })
+                .collect::<Vec<_>>();
+            if same_type.len() == 1 {
+                same_type
+            } else {
+                resolved
+            }
+        } else {
+            resolved
+        };
         if resolved.len() == 1 {
             edge.a[callee_index] = (*resolved[0]).clone();
             normalized.push(edge);
@@ -1419,6 +1443,70 @@ mod tests {
                 .any(|e| e.p == "calls" && e.a == [caller, bar_b]),
             "Case B: Foo::a -> Bar::b must NOT exist, got: {base:?}"
         );
+    }
+
+    #[test]
+    fn same_named_types_in_two_modules_resolve_self_calls_to_the_callers_own_type() {
+        // One `Sensor` per language extractor: a typed `self` hint matches
+        // both by last segment, so the caller's own impl type decides.
+        let rust_walk = "rust:app::rust::Sensor<'_>::walk";
+        let rust_visit = "rust:app::rust::Sensor<'_>::visit";
+        let py_walk = "rust:app::python::Sensor<'_>::walk";
+        let py_visit = "rust:app::python::Sensor<'_>::visit";
+        let mut base = vec![];
+        base.extend(method_def("src/rust.rs", rust_walk));
+        base.extend(method_def("src/rust.rs", rust_visit));
+        base.extend(method_def("src/python.rs", py_walk));
+        base.extend(method_def("src/python.rs", py_visit));
+        base.push(Edge::base(
+            "calls",
+            &[rust_walk, "@method:Sensor:visit"],
+            "src/rust.rs",
+        ));
+        base.push(Edge::base(
+            "calls",
+            &[py_walk, "@method:Sensor:visit"],
+            "src/python.rs",
+        ));
+        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        assert_eq!((unresolved, ambiguous), (0, 0), "{base:?}");
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [rust_walk, rust_visit])
+        );
+        assert!(
+            base.iter()
+                .any(|e| e.p == "calls" && e.a == [py_walk, py_visit])
+        );
+        assert!(
+            !base
+                .iter()
+                .any(|e| e.p == "calls" && e.a == [rust_walk, py_visit])
+        );
+    }
+
+    #[test]
+    fn same_named_types_stay_ambiguous_for_a_caller_outside_both() {
+        let caller = "rust:app::driver::run";
+        let mut base = vec![];
+        base.extend(method_def("src/driver.rs", caller));
+        base.extend(method_def("src/rust.rs", "rust:app::rust::Sensor::visit"));
+        base.extend(method_def(
+            "src/python.rs",
+            "rust:app::python::Sensor::visit",
+        ));
+        base.push(Edge::base(
+            "calls",
+            &[caller, "@method:Sensor:visit"],
+            "src/driver.rs",
+        ));
+        let (unresolved, ambiguous) = canonicalize_function_edges(&mut base);
+        assert_eq!(
+            (unresolved, ambiguous),
+            (0, 1),
+            "no guess between two Sensors"
+        );
+        assert!(!base.iter().any(|e| e.p == "calls" && e.a[0] == caller));
     }
 
     #[test]
