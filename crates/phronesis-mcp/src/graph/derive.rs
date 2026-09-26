@@ -127,6 +127,24 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
         },
     );
 
+    let impl_of = base_edges(base, "impl_of").fold(
+        BTreeMap::<String, BTreeSet<String>>::new(),
+        |mut map, edge| {
+            if let (Some(impl_type), Some(ty)) = (edge.a.first(), edge.a.get(1)) {
+                map.entry(impl_type.clone()).or_default().insert(ty.clone());
+            }
+            map
+        },
+    );
+    // The absolute types an `impl` block's identity path can denote: the
+    // types `impl_of` records for it, or else the path itself.
+    let denotes = |impl_type: &str| -> BTreeSet<String> {
+        impl_of
+            .get(impl_type)
+            .cloned()
+            .unwrap_or_else(|| BTreeSet::from([impl_type.to_string()]))
+    };
+
     let mut normalized = Vec::with_capacity(base.len());
     for mut edge in base.drain(..) {
         if !matches!(edge.p.as_str(), "tested_by" | "calls") || edge.a.len() != 2 {
@@ -218,12 +236,15 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
         let caller_module = caller.rsplit_once("::").map(|(module, _)| module);
         // The type whose impl the caller sits in, when the caller is a method.
         // A typed hint naming that type is how `self.f()` / `Self::f()`
-        // arrive, and may reach any `impl` block of the type.
-        let caller_type = methods
+        // arrive, and may reach any `impl` block of the same type — the same
+        // absolute type, per `impl_of`, not merely the same name.
+        let caller_impl = methods
             .contains(caller)
             .then_some(caller_module)
             .flatten()
-            .map(|module| last_path_segment(strip_generic_args(module)));
+            .map(strip_generic_args);
+        let caller_type = caller_impl.map(last_path_segment);
+        let caller_denotes = caller_impl.map(denotes).unwrap_or_default();
         let Some(candidates) = candidates_by_leaf.get(callee) else {
             unresolved += 1;
             per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
@@ -256,7 +277,7 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
                                     candidate_type,
                                     alternative,
                                     &reexports,
-                                    &imports,
+                                    &impl_of,
                                     0,
                                 )
                             })
@@ -313,8 +334,10 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
                                     .strip_prefix(parent)
                                     .is_some_and(|suffix| suffix.starts_with("::"))
                         })
-                    }) || receiver
-                        .is_some_and(|receiver| caller_type == Some(last_path_segment(receiver)))
+                    }) || receiver.is_some_and(|receiver| {
+                        caller_type == Some(last_path_segment(receiver))
+                            && !caller_denotes.is_disjoint(&denotes(strip_generic_args(module)))
+                    })
                 })
                 .collect::<Vec<_>>()
         };
@@ -471,20 +494,21 @@ fn resolve_in_module(
 
 /// Whether a qualified receiver type `hint` names the type a candidate
 /// method's identity carries (`candidate_type`, which is the path of the
-/// module holding the `impl` block plus the type).
+/// module holding the `impl` block plus the type as written there).
 ///
 /// Besides a direct path match, two Rust facts are followed for a path the
 /// extractor resolved to an absolute one (`rust:app::net::Client`): the type
 /// can be re-exported (`pub use network::ReteNetwork;` at the crate root,
 /// followed through `reexports`), and its `impl` block can live in another
-/// module that imports the type's module (`impl EpistemeMcp` in
-/// `server_persistence`). A written relative path (an impl type such as
-/// `a::Foo`) keeps plain suffix matching.
+/// module whose `impl` names it through a `use` (`impl EpistemeMcp` in
+/// `server_persistence`, recorded as `impl_of`). A same-named type the other
+/// module defines itself is a different type. A written relative path (an
+/// impl type such as `a::Foo`) keeps plain suffix matching.
 fn qualified_type_matches(
     candidate_type: &str,
     hint: &str,
     reexports: &BTreeMap<(String, String), BTreeSet<String>>,
-    imports: &BTreeMap<String, BTreeSet<String>>,
+    impl_of: &BTreeMap<String, BTreeSet<String>>,
     depth: usize,
 ) -> bool {
     if receiver_matches_qualified(candidate_type, hint) {
@@ -500,12 +524,9 @@ fn qualified_type_matches(
     if !absolute {
         return false;
     }
-    if let Some((impl_module, candidate_ty)) = candidate_type.rsplit_once("::")
-        && candidate_ty == ty
-        && (impl_module == module
-            || imports
-                .get(impl_module)
-                .is_some_and(|targets| targets.contains(module)))
+    if impl_of
+        .get(candidate_type)
+        .is_some_and(|types| types.iter().any(|named| named == hint))
     {
         return true;
     }
@@ -515,7 +536,7 @@ fn qualified_type_matches(
                 candidate_type,
                 &format!("{target}::{ty}"),
                 reexports,
-                imports,
+                impl_of,
                 depth + 1,
             )
         })
@@ -2514,19 +2535,31 @@ mod tests {
     }
 
     #[test]
-    fn d5_self_hint_resolves_across_impl_blocks_without_an_import() {
-        // `self.b()` in an `impl Foo` block written in another module than
-        // the one defining `Foo::b` is the caller's own type.
+    fn d5_self_hint_resolves_across_impl_blocks_of_the_same_type_only() {
+        // `self.y()` in `impl Foo` in `a` reaches an `impl Foo` block in `b`
+        // only when `b`'s `Foo` is `a::Foo` (`use crate::a::Foo;`, recorded
+        // as `impl_of`). A `Foo` that `b` defines itself is another type.
         let caller = "rust:app::a::Foo::x";
         let target = "rust:app::b::Foo::y";
-        let mut base = method_def("src/a.rs", caller);
-        base.extend(method_def("src/b.rs", target));
-        base.push(Edge::base("calls", &[caller, "@method:Foo:y"], "src/a.rs"));
-        let _ = canonicalize_function_edges(&mut base);
+        let fixture = |same_type: bool| {
+            let mut base = method_def("src/a.rs", caller);
+            base.extend(method_def("src/b.rs", target));
+            if same_type {
+                base.push(Edge::base(
+                    "impl_of",
+                    &["rust:app::b::Foo", "rust:app::a::Foo"],
+                    "src/b.rs",
+                ));
+            }
+            base.push(Edge::base("calls", &[caller, "@method:Foo:y"], "src/a.rs"));
+            let _ = canonicalize_function_edges(&mut base);
+            base
+        };
         assert_eq!(
-            calls_edges(&base),
+            calls_edges(&fixture(true)),
             vec![&vec![caller.to_string(), target.to_string()]]
         );
+        assert!(calls_edges(&fixture(false)).is_empty());
     }
 
     #[test]
@@ -2636,8 +2669,8 @@ mod tests {
     #[test]
     fn an_absolute_receiver_follows_a_type_reexport_and_an_impl_elsewhere() {
         // `use phr::ReteNetwork;` names the crate-root re-export of
-        // `network::ReteNetwork`; `impl EpistemeMcp` lives in
-        // `server_persistence`, which imports `server`.
+        // `network::ReteNetwork`; `impl EpistemeMcp` in `server_persistence`
+        // names `server::EpistemeMcp` through a `use` (`impl_of`).
         let caller = "rust:app::run";
         let add_rule = "rust:phr::network::ReteNetwork::add_rule";
         let autoload = "rust:app::server_persistence::EpistemeMcp::autoload";
@@ -2651,11 +2684,18 @@ mod tests {
             &["rust:phr", "rust:phr::network", "ReteNetwork"],
             "src/lib.rs",
         ));
-        base.push(imports("rust:app::server_persistence", "rust:app::server"));
+        base.push(Edge::base(
+            "impl_of",
+            &[
+                "rust:app::server_persistence::EpistemeMcp",
+                "rust:app::server::EpistemeMcp",
+            ],
+            "src/server_persistence.rs",
+        ));
         for hint in [
             "@method:rust:phr::ReteNetwork:add_rule",
             "@method:rust:app::server::EpistemeMcp:autoload",
-            // `other` does not import `server`: its same-named type is not it.
+            // `other`'s same-named type has no `impl_of`: it is not it.
             "@method:rust:app::server::EpistemeMcp:autoload2",
         ] {
             base.push(Edge::base("calls", &[caller, hint], "src/lib.rs"));

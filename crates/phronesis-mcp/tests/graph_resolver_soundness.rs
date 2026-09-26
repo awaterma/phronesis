@@ -225,3 +225,107 @@ fn a_qualified_external_type_never_falls_back_to_the_callers_own_type() {
         "rust:app::err::Error::kind"
     ));
 }
+
+#[test]
+fn an_impl_of_a_same_named_local_type_is_not_the_imported_type() {
+    // `b` imports `a` but implements `Default`/`Clone` for its own
+    // `Config`; calls on `a::Config` are not calls to `b::Config`. An impl
+    // in `c` of the imported `a::Config` is.
+    let graph = graph_of(&[
+        (
+            "src/lib.rs",
+            "pub mod a;\npub mod b;\npub mod c;\npub mod user;\n",
+        ),
+        (
+            "src/a.rs",
+            "#[derive(Default, Clone)]\npub struct Config;\n",
+        ),
+        (
+            "src/b.rs",
+            "use crate::a;\npub struct Config;\n\
+             impl Default for Config {\n    fn default() -> Self { Config }\n}\n\
+             impl Clone for Config {\n    fn clone(&self) -> Self { Config }\n}\n\
+             pub fn touch(_: &a::Config) {}\n",
+        ),
+        (
+            "src/c.rs",
+            "use crate::a::Config;\nimpl Config {\n    pub fn extra(&self) {}\n}\n",
+        ),
+        (
+            "src/user.rs",
+            "use crate::a;\n\
+             pub fn make() -> a::Config { a::Config::default() }\n\
+             pub fn dup(c: &a::Config) -> a::Config { c.clone() }\n\
+             pub fn more(c: &a::Config) { c.extra() }\n",
+        ),
+    ]);
+    assert!(!has(
+        &graph,
+        "calls",
+        "rust:app::user::make",
+        "rust:app::b::Config::default"
+    ));
+    assert!(!has(
+        &graph,
+        "calls",
+        "rust:app::user::dup",
+        "rust:app::b::Config::clone"
+    ));
+    assert!(
+        has(
+            &graph,
+            "calls",
+            "rust:app::user::more",
+            "rust:app::c::Config::extra"
+        ),
+        "{graph:?}"
+    );
+}
+
+#[test]
+fn a_function_local_use_binds_only_inside_its_function() {
+    for source in [
+        "pub fn b() { use crate::store as fs; fs::write(); }\n\
+         pub fn a() { use std::fs; let _ = fs::write(\"x\", \"y\"); }\n",
+        "pub fn a() { use std::fs; let _ = fs::write(\"x\", \"y\"); }\n\
+         pub fn b() { use crate::store as fs; fs::write(); }\n",
+    ] {
+        let graph = graph_of(&[
+            ("src/lib.rs", "pub mod k;\npub mod store;\n"),
+            ("src/store.rs", "pub fn write() {}\n"),
+            ("src/k.rs", source),
+        ]);
+        assert!(
+            !has(&graph, "calls", "rust:app::k::a", "rust:app::store::write"),
+            "{source}"
+        );
+        assert!(
+            has(&graph, "calls", "rust:app::k::b", "rust:app::store::write"),
+            "{source}"
+        );
+    }
+}
+
+#[test]
+fn a_typed_shadow_inside_a_block_ends_with_the_block() {
+    let graph = graph_of(&[
+        ("src/lib.rs", "pub mod r;\n"),
+        (
+            "src/r.rs",
+            "pub struct A;\npub struct B;\n\
+             impl A {\n    pub fn go(&self) {}\n}\n\
+             impl B {\n    pub fn go(&self) {}\n}\n\
+             pub fn run(a: A, b: B) {\n    let c: A = a;\n    {\n        let c: B = b;\n        let _ = &c;\n    }\n    c.go();\n}\n",
+        ),
+    ]);
+    assert!(
+        has(&graph, "calls", "rust:app::r::run", "rust:app::r::A::go"),
+        "{graph:?}"
+    );
+    assert!(!has(
+        &graph,
+        "calls",
+        "rust:app::r::run",
+        "rust:app::r::B::go"
+    ));
+}

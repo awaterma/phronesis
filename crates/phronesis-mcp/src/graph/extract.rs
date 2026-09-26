@@ -330,13 +330,19 @@ impl Sensor<'_> {
     /// and never falls back to a same-named project module); then a sibling
     /// crate; then an item of the module itself or of a module it glob-
     /// imports. Only the last can yield several candidates.
+    ///
+    /// `at` is the byte offset of the path in this file, so a `use` written
+    /// inside a function or block binds only there; `None` reads only the
+    /// module's own `use` items (the path is in another module, or is itself
+    /// a module-level item).
     fn resolve_path(
         &self,
         segments: &[String],
         module: &[String],
+        at: Option<usize>,
         depth: usize,
     ) -> Option<Vec<Vec<String>>> {
-        self.resolve_path_in(segments, module, depth, true)
+        self.resolve_path_in(segments, module, at, depth, true)
     }
 
     /// [`Self::resolve_path`]; `globs` is false while resolving a glob's
@@ -346,6 +352,7 @@ impl Sensor<'_> {
         &self,
         segments: &[String],
         module: &[String],
+        at: Option<usize>,
         depth: usize,
         globs: bool,
     ) -> Option<Vec<Vec<String>>> {
@@ -377,11 +384,11 @@ impl Sensor<'_> {
         // in place: a path prefix is a module, and the imported item lives
         // in another namespace. Following it would also loop.
         if let Some(bound) = uses
-            .and_then(|uses| uses.names.get(first))
+            .and_then(|uses| uses.binding(first, at))
             .filter(|bound| bound.first() != Some(first))
         {
             return self
-                .resolve_path(bound, module, depth + 1)
+                .resolve_path(bound, module, at, depth + 1)
                 .map(|found| found.into_iter().map(|base| under(&base, rest)).collect());
         }
         // Cargo names a dependency `phronesis-metrics`; source writes
@@ -401,15 +408,15 @@ impl Sensor<'_> {
         let mut found = vec![under(module, segments)];
         let glob_paths = uses
             .filter(|_| globs)
-            .map(|uses| uses.globs.as_slice())
+            .map(|uses| uses.globs(at))
             .unwrap_or_default();
         for glob in glob_paths {
             for base in self
-                .resolve_path_in(glob, module, depth + 1, false)
+                .resolve_path_in(&glob, module, at, depth + 1, false)
                 .unwrap_or_default()
             {
                 found.extend(
-                    self.resolve_path(segments, &base, depth + 1)
+                    self.resolve_path(segments, &base, None, depth + 1)
                         .unwrap_or_default(),
                 );
             }
@@ -425,7 +432,7 @@ impl Sensor<'_> {
     /// judge); otherwise the absolute path(s) its first segment resolves
     /// to, `|`-separated, or [`TypeRef::Outside`] for a type outside the
     /// project (`io::Error` under `use std::io;`).
-    fn type_ref(&self, written: &str, scope: &Scope) -> Option<TypeRef> {
+    fn type_ref(&self, written: &str, scope: &Scope, at: usize) -> Option<TypeRef> {
         let impl_type = scope.impl_type.as_deref();
         let TypePath::Type(path) = classify_type_path(written, impl_type) else {
             return None;
@@ -442,20 +449,22 @@ impl Sensor<'_> {
         let bound = self
             .uses
             .get(&scope.path.join("::"))
-            .is_some_and(|uses| uses.names.contains_key(&segments[0]));
+            .is_some_and(|uses| uses.binding(&segments[0], Some(at)).is_some());
         if segments.len() == 1 && !bound {
             return Some(TypeRef::Named(path));
         }
-        Some(match self.resolve_path(&segments, &scope.path, 0) {
-            Some(found) => TypeRef::Named(
-                found
-                    .iter()
-                    .map(|segments| segments.join("::"))
-                    .collect::<Vec<_>>()
-                    .join("|"),
-            ),
-            None => TypeRef::Outside(path),
-        })
+        Some(
+            match self.resolve_path(&segments, &scope.path, Some(at), 0) {
+                Some(found) => TypeRef::Named(
+                    found
+                        .iter()
+                        .map(|segments| segments.join("::"))
+                        .collect::<Vec<_>>()
+                        .join("|"),
+                ),
+                None => TypeRef::Outside(path),
+            },
+        )
     }
 
     /// The callee hint for a call through `path::name`.
@@ -465,24 +474,64 @@ impl Sensor<'_> {
     /// name from the caller, so the resolver never matches a module by
     /// spelling alone: under `use std::fs;`, `fs::write()` is `@extern:`,
     /// never the project's own `fs::write`.
-    fn scoped_call_hint(&self, path: &str, name: &str, scope: &Scope) -> String {
+    fn scoped_call_hint(&self, path: &str, name: &str, scope: &Scope, at: usize) -> String {
         match classify_type_path(path, scope.impl_type.as_deref()) {
-            TypePath::Type(_) => match self.type_ref(path, scope) {
+            TypePath::Type(_) => match self.type_ref(path, scope, at) {
                 Some(receiver) => receiver.hint(name),
                 None => format!("@method:{name}"),
             },
-            TypePath::Module => match self.resolve_path(&path_segments(path), &scope.path, 0) {
-                Some(found) => format!(
-                    "@path:{}:{name}",
-                    found
-                        .iter()
-                        .map(|segments| segments.join("::"))
-                        .collect::<Vec<_>>()
-                        .join("|")
-                ),
-                None => format!("@extern:{path}:{name}"),
-            },
+            TypePath::Module => {
+                match self.resolve_path(&path_segments(path), &scope.path, Some(at), 0) {
+                    Some(found) => format!(
+                        "@path:{}:{name}",
+                        found
+                            .iter()
+                            .map(|segments| segments.join("::"))
+                            .collect::<Vec<_>>()
+                            .join("|")
+                    ),
+                    None => format!("@extern:{path}:{name}"),
+                }
+            }
             TypePath::Unknown => format!("@method:{name}"),
+        }
+    }
+
+    /// `impl_of(impl_type, type)`: the absolute type an `impl` block names,
+    /// when that is not the module-local path its methods are identified
+    /// under. `impl Config` in `b` under `use crate::a::Config;` implements
+    /// `a::Config`; `impl Config` for `b`'s own `struct Config` implements
+    /// `b::Config` and records nothing. A type from a glob import records
+    /// each module the glob can supply it from.
+    fn visit_impl_type(&mut self, written: &str, scope: &Scope, at: usize) {
+        let path = strip_generic_args(written.trim());
+        let segments = path_segments(path);
+        let well_formed = !segments.is_empty()
+            && segments
+                .iter()
+                .all(|segment| segment.chars().all(|c| c.is_alphanumeric() || c == '_'));
+        if !well_formed {
+            return;
+        }
+        let module = scope.path.join("::");
+        let key = format!("{module}::{}", segments.join("::"));
+        let uses = self.uses.get(&module);
+        let bound = uses.is_some_and(|uses| uses.binding(&segments[0], Some(at)).is_some());
+        let local = segments.len() == 1
+            && !bound
+            && uses.is_some_and(|uses| uses.types.contains(&segments[0]));
+        if local {
+            return;
+        }
+        let targets = self
+            .resolve_path(&segments, &scope.path, Some(at), 0)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|target| target.join("::"))
+            .filter(|target| *target != key)
+            .collect::<Vec<_>>();
+        for target in targets {
+            self.emit("impl_of", &[&key, &target]);
         }
     }
 
@@ -508,6 +557,9 @@ impl Sensor<'_> {
                 inner.impl_type = node
                     .child_by_field_name("type")
                     .map(|t| text(t, self.source).to_string());
+                if let Some(ty) = inner.impl_type.as_deref() {
+                    self.visit_impl_type(ty, scope, node.start_byte());
+                }
                 self.walk_children(node, &inner);
             }
             "function_item" => {
@@ -618,16 +670,17 @@ impl Sensor<'_> {
     ///
     /// Any other binding of the name — an untyped `let` (`let c =
     /// c.render();`), an `if let`/`match`/`for` pattern, a closure parameter
-    /// — shadows it with no type from that point. Block scope is not
-    /// tracked, so a shadow can outlive its block: the call then stays
-    /// unresolved, which is the safe direction.
+    /// — shadows it with no type. Every binding ends with its scope: a `let`
+    /// with its enclosing block, a pattern with its `if`/`while`/`match`
+    /// arm/`for`/closure, so an outer binding is visible again after an
+    /// inner block shadowed it.
     fn receiver_types(&self, body: Node, scope: &Scope) -> Receivers {
         let mut receivers = Receivers::new();
-        let mut bind = |name: &str, at: usize, ty: Option<TypeRef>| {
+        let mut bind = |name: &str, from: usize, until: usize, ty: Option<TypeRef>| {
             receivers
                 .entry(name.to_string())
                 .or_default()
-                .push((at, ty));
+                .push((from, until, ty));
         };
         if let Some(parameters) = body
             .parent()
@@ -640,9 +693,13 @@ impl Sensor<'_> {
                     && pattern.kind() == "identifier"
                 {
                     let ty = parameter.child_by_field_name("type").and_then(|ty| {
-                        self.type_ref(written_type_path(text(ty, self.source)), scope)
+                        self.type_ref(
+                            written_type_path(text(ty, self.source)),
+                            scope,
+                            parameter.start_byte(),
+                        )
                     });
-                    bind(text(pattern, self.source), 0, ty);
+                    bind(text(pattern, self.source), 0, body.end_byte(), ty);
                 }
             }
         }
@@ -651,14 +708,18 @@ impl Sensor<'_> {
             match node.kind() {
                 "let_declaration" => {
                     if let Some(pattern) = node.child_by_field_name("pattern") {
+                        let until =
+                            enclosing(node, &["block"]).map_or(body.end_byte(), |b| b.end_byte());
                         let inferred = (pattern.kind() == "identifier")
                             .then(|| self.let_type(node, scope))
                             .flatten();
                         match inferred {
-                            Some(ty) => bind(text(pattern, self.source), node.end_byte(), Some(ty)),
+                            Some(ty) => {
+                                bind(text(pattern, self.source), node.end_byte(), until, Some(ty))
+                            }
                             None => {
                                 for name in pattern_identifiers(pattern, self.source) {
-                                    bind(name, node.end_byte(), None);
+                                    bind(name, node.end_byte(), until, None);
                                 }
                             }
                         }
@@ -666,15 +727,21 @@ impl Sensor<'_> {
                 }
                 "let_condition" | "for_expression" | "match_arm" => {
                     if let Some(pattern) = node.child_by_field_name("pattern") {
+                        let until = if node.kind() == "let_condition" {
+                            enclosing(node, &["if_expression", "while_expression", "block"])
+                                .map_or(body.end_byte(), |n| n.end_byte())
+                        } else {
+                            node.end_byte()
+                        };
                         for name in pattern_identifiers(pattern, self.source) {
-                            bind(name, node.start_byte(), None);
+                            bind(name, node.start_byte(), until, None);
                         }
                     }
                 }
                 "closure_expression" => {
                     if let Some(parameters) = node.child_by_field_name("parameters") {
                         for name in pattern_identifiers(parameters, self.source) {
-                            bind(name, node.start_byte(), None);
+                            bind(name, node.start_byte(), node.end_byte(), None);
                         }
                     }
                 }
@@ -699,7 +766,7 @@ impl Sensor<'_> {
                 text(function.child_by_field_name("path")?, self.source).to_string()
             }
         };
-        self.type_ref(written_type_path(&written), scope)
+        self.type_ref(written_type_path(&written), scope, node.start_byte())
     }
 
     /// The name a call's `function` node contributes, or empty for shapes
@@ -723,7 +790,7 @@ impl Sensor<'_> {
                     .child_by_field_name("path")
                     .map(|p| text(p, self.source).to_string());
                 match path {
-                    Some(path) => self.scoped_call_hint(&path, &name, scope),
+                    Some(path) => self.scoped_call_hint(&path, &name, scope, f.start_byte()),
                     None => name,
                 }
             }
@@ -794,7 +861,8 @@ impl Sensor<'_> {
                         .filter(|segment| !segment.is_empty())
                         .collect::<Vec<_>>()
                         .join("::");
-                    return Some(self.scoped_call_hint(&path, name, scope));
+                    let at = macro_node.start_byte() + captures.get(0).map_or(0, |m| m.start());
+                    return Some(self.scoped_call_hint(&path, name, scope, at));
                 }
                 Some(name.to_string())
             })
@@ -983,7 +1051,7 @@ impl Sensor<'_> {
             // Not read through the module's globs: a `pub use` prefix names
             // a child module or an anchored path.
             for target in self
-                .resolve_path_in(module, &scope.path, 0, false)
+                .resolve_path_in(module, &scope.path, None, 0, false)
                 .unwrap_or_default()
             {
                 self.emit("reexports", &[&from, &target.join("::"), &item]);
@@ -991,7 +1059,7 @@ impl Sensor<'_> {
         }
         for glob in exported.globs {
             for target in self
-                .resolve_path_in(&glob, &scope.path, 0, false)
+                .resolve_path_in(&glob, &scope.path, None, 0, false)
                 .unwrap_or_default()
             {
                 self.emit("reexports", &[&from, &target.join("::"), "*"]);
@@ -1051,11 +1119,55 @@ struct ModuleUses {
     globs: Vec<Vec<String>>,
 }
 
-/// Module path (`::`-joined) → that module's `use` bindings.
-type UseMap = BTreeMap<String, ModuleUses>;
+/// The `use` items of one module scope: those written at module level, and
+/// those written inside a function body or block, which bind only within
+/// that block's byte range. Also the type names the module defines in this
+/// file, to tell an `impl` of a local type from one of an imported type.
+#[derive(Debug, Default)]
+struct ScopeUses {
+    module: ModuleUses,
+    blocks: Vec<(std::ops::Range<usize>, ModuleUses)>,
+    types: BTreeSet<String>,
+}
 
-/// Local name → `(offset the binding takes effect at, its receiver type)`.
-type Receivers = BTreeMap<String, Vec<(usize, Option<TypeRef>)>>;
+impl ScopeUses {
+    /// The path `name` is bound to at byte `at`: the innermost enclosing
+    /// block's own `use` first, then the module's.
+    fn binding(&self, name: &str, at: Option<usize>) -> Option<&Vec<String>> {
+        self.blocks_at(at)
+            .find_map(|uses| uses.names.get(name))
+            .or_else(|| self.module.names.get(name))
+    }
+
+    /// Glob imports in effect at byte `at`.
+    fn globs(&self, at: Option<usize>) -> Vec<Vec<String>> {
+        self.blocks_at(at)
+            .flat_map(|uses| uses.globs.iter().cloned())
+            .chain(self.module.globs.iter().cloned())
+            .collect()
+    }
+
+    /// Block-local `use` sets containing `at`, innermost first.
+    fn blocks_at(&self, at: Option<usize>) -> impl Iterator<Item = &ModuleUses> {
+        let mut containing = at
+            .map(|at| {
+                self.blocks
+                    .iter()
+                    .filter(|(range, _)| range.contains(&at))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        containing.sort_by_key(|(range, _)| range.end - range.start);
+        containing.into_iter().map(|(_, uses)| uses)
+    }
+}
+
+/// Module path (`::`-joined) → that module's `use` bindings.
+type UseMap = BTreeMap<String, ScopeUses>;
+
+/// Local name → `(offset the binding takes effect at, offset its scope
+/// ends at, its receiver type)`.
+type Receivers = BTreeMap<String, Vec<(usize, usize, Option<TypeRef>)>>;
 
 /// A receiver's type for a method hint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1081,10 +1193,22 @@ fn receiver_at(receivers: &Receivers, name: &str, at: usize) -> Option<TypeRef> 
     receivers
         .get(name)?
         .iter()
-        .filter(|(from, _)| *from <= at)
-        .max_by_key(|(from, _)| *from)?
-        .1
+        .filter(|(from, until, _)| *from <= at && at < *until)
+        .max_by_key(|(from, _, _)| *from)?
+        .2
         .clone()
+}
+
+/// The nearest ancestor of `node` whose kind is one of `kinds`.
+fn enclosing<'t>(node: Node<'t>, kinds: &[&str]) -> Option<Node<'t>> {
+    let mut current = node.parent();
+    while let Some(candidate) = current {
+        if kinds.contains(&candidate.kind()) {
+            return Some(candidate);
+        }
+        current = candidate.parent();
+    }
+    None
 }
 
 /// Names a pattern binds: its `identifier` nodes.
@@ -1109,12 +1233,13 @@ fn path_segments(path: &str) -> Vec<String> {
 }
 
 /// Every `use` in the file, grouped by the module scope it is written in
-/// (inline `mod` blocks nest; a function-local `use` counts for its whole
-/// module, the same approximation `receiver_types` makes for blocks).
+/// (inline `mod` blocks nest). A `use` inside a function body or other
+/// block is kept with that block's byte range, since it binds only there.
+/// The type names each module scope defines are collected alongside.
 fn collect_uses(root: Node, source: &[u8], root_path: Vec<String>) -> UseMap {
     let mut uses = UseMap::new();
-    let mut pending = vec![(root, root_path)];
-    while let Some((node, path)) = pending.pop() {
+    let mut pending = vec![(root, root_path, None::<std::ops::Range<usize>>)];
+    while let Some((node, path, block)) = pending.pop() {
         match node.kind() {
             "mod_item" => {
                 if let (Some(name), Some(body)) = (
@@ -1123,19 +1248,50 @@ fn collect_uses(root: Node, source: &[u8], root_path: Vec<String>) -> UseMap {
                 ) {
                     let mut inner = path.clone();
                     inner.push(text(name, source).to_string());
-                    pending.push((body, inner));
+                    pending.push((body, inner, None));
                 }
             }
             "use_declaration" => {
                 if let Some(arg) = node.child_by_field_name("argument") {
-                    let module = uses.entry(path.join("::")).or_default();
-                    parse_use_tree(arg, &[], source, module, true);
+                    let scope = uses.entry(path.join("::")).or_default();
+                    let target = match &block {
+                        Some(range) => {
+                            let index = scope
+                                .blocks
+                                .iter()
+                                .position(|(existing, _)| existing == range)
+                                .unwrap_or_else(|| {
+                                    scope.blocks.push((range.clone(), ModuleUses::default()));
+                                    scope.blocks.len() - 1
+                                });
+                            &mut scope.blocks[index].1
+                        }
+                        None => &mut scope.module,
+                    };
+                    parse_use_tree(arg, &[], source, target, true);
                 }
             }
-            _ => {
+            kind => {
+                if block.is_none()
+                    && matches!(
+                        kind,
+                        "struct_item" | "enum_item" | "union_item" | "type_item" | "trait_item"
+                    )
+                    && let Some(name) = node.child_by_field_name("name")
+                {
+                    uses.entry(path.join("::"))
+                        .or_default()
+                        .types
+                        .insert(text(name, source).to_string());
+                }
+                let block = if kind == "block" {
+                    Some(node.start_byte()..node.end_byte())
+                } else {
+                    block
+                };
                 let mut cursor = node.walk();
                 for child in node.children(&mut cursor) {
-                    pending.push((child, path.clone()));
+                    pending.push((child, path.clone(), block.clone()));
                 }
             }
         }
@@ -2824,8 +2980,8 @@ fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
         assert!(calls.contains(&"@method:Foo:a".to_string()), "{calls:?}");
         assert!(calls.contains(&"@method:b".to_string()), "{calls:?}");
         assert!(calls.contains(&"@method:c".to_string()), "{calls:?}");
-        // Block scope is not tracked: after a shadow the name stays untyped.
-        assert!(calls.contains(&"@method:d".to_string()), "{calls:?}");
+        // The `if let` and closure bindings end with their scopes.
+        assert!(calls.contains(&"@method:Foo:d".to_string()), "{calls:?}");
     }
 
     #[test]
@@ -2887,5 +3043,47 @@ fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
                 ],
             ]
         );
+    }
+
+    #[test]
+    fn an_impl_of_an_imported_type_records_the_type_it_names() {
+        let out = run(
+            "src/b.rs",
+            "use crate::a;\nuse crate::c::Other;\npub struct Config;\n\
+             impl Default for Config { fn default() -> Self { Config } }\n\
+             impl Other { fn f(&self) {} }\n\
+             impl a::Thing { fn g(&self) {} }\n",
+        );
+        assert_eq!(
+            edges_of(&out, "impl_of"),
+            vec![
+                vec![
+                    "rust:crate::b::Other".to_string(),
+                    "rust:crate::c::Other".to_string()
+                ],
+                vec![
+                    "rust:crate::b::a::Thing".to_string(),
+                    "rust:crate::a::Thing".to_string()
+                ],
+            ]
+        );
+    }
+
+    #[test]
+    fn a_block_local_use_does_not_leak_to_sibling_functions() {
+        let out = run(
+            "src/k.rs",
+            "fn b() { use crate::store as fs; fs::write(); }\n\
+             fn a() { use std::fs; fs::write(); }\n",
+        );
+        let calls = edges_of(&out, "calls");
+        assert!(calls.contains(&vec![
+            "rust:crate::k::b".to_string(),
+            "@path:rust:crate::store:write".to_string()
+        ]));
+        assert!(calls.contains(&vec![
+            "rust:crate::k::a".to_string(),
+            "@extern:fs:write".to_string()
+        ]));
     }
 }
