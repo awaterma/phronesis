@@ -62,6 +62,10 @@ tree-sitter-typescript = "0.23.2"
 # 0.5.9–0.5.15 reject U+212A in string literals; covered by parser regression.
 tree-sitter-java-orchard = "=0.5.8"
 roxmltree = "0.20"
+# S5 rendered-body validation lexes with a real Rust lexer (byte spans for the
+# interpolation check) and fail-closed parses; both already in the lock file.
+proc-macro2 = { version = "1", default-features = false, features = ["span-locations"] }
+syn = { version = "2", default-features = false, features = ["full", "parsing"] }
 globset = "0.4"
 tempfile = "3"
 
