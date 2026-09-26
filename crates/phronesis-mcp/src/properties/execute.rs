@@ -18,7 +18,7 @@ pub enum ConfinementTier {
     /// mounts except the artifact, resource limits.
     Devcontainer,
     /// macOS native Seatbelt profile (sandbox-exec): no network, writes
-    /// confined to `verification/`.
+    /// confined to the per-run scratch directory holding the artifact copy.
     SandboxExec,
     /// Explicitly configured, human-set: no confinement. A downgraded trust
     /// tier — the S3 allowlist gate still applies, and the tier is recorded
@@ -36,6 +36,22 @@ pub enum ExecutionError {
     Failed { message: String },
     #[error("artifact not approved: hash {hash} is not in the review-gate allowlist (S3)")]
     NotApproved { hash: String },
+    #[error(
+        "artifact bytes changed since approval: on-disk sha256 {actual} does not match {expected} (S3)"
+    )]
+    HashMismatch { expected: String, actual: String },
+    #[error("devcontainer tier refused: {message}")]
+    DevcontainerImage { message: String },
+}
+
+/// The artifact's SHA-256 as lowercase hex — the S3 allowlist key.
+pub fn artifact_sha256(bytes: &[u8]) -> String {
+    crate::graph::ownership::extract::hex(&crate::graph::ownership::extract::sha256(bytes))
+}
+
+/// Where the instantiation declares its verifier environment (S9 Tier 1).
+fn devcontainer_path(root: &Path) -> std::path::PathBuf {
+    root.join("verification/templates/devcontainer.json")
 }
 
 /// Which tier this host can provide right now. Resolution order (S9 ladder):
@@ -47,9 +63,7 @@ pub fn detect_tier(root: &Path) -> Option<ConfinementTier> {
     // ship its devcontainer.json — a running daemon without a declared image
     // is not a Tier-1 claim (S9: the host composes the container from the
     // instantiation's declaration).
-    let has_devcontainer = root
-        .join("verification/templates/devcontainer.json")
-        .is_file();
+    let has_devcontainer = devcontainer_path(root).is_file();
     resolve_tier(
         has_devcontainer,
         container_runtime_available,
@@ -131,49 +145,154 @@ pub struct ExecutionKey {
     pub tree_revision: String,
 }
 
+/// The per-run directory's two children: the staged artifact lives in its
+/// own subdirectory so no artifact file name can collide with `TMPDIR`.
+const RUN_ARTIFACT_DIR: &str = "artifact";
+const RUN_TMP_DIR: &str = "tmp";
+
+/// The container path the artifact's run directory is mounted at.
+const CONTAINER_RUN_DIR: &str = "/verification";
+
+/// The Seatbelt profile (S9 Tier 2). Everything the verifier needs to read
+/// stays readable, but network is denied and every write is denied except
+/// under the per-run scratch directory. Writes by proxy are writes too:
+/// mach-lookup is denied so no daemon (cfprefsd behind `defaults`, the
+/// pasteboard server behind `pbcopy`, …) can write on the verifier's behalf,
+/// and signals are confined to the verifier itself so it cannot kill or stop
+/// the user's other processes. The run directory is passed as the `RUN_DIR` parameter
+/// (`sandbox-exec -D`) so no path is ever spliced into the profile text.
+/// Seatbelt matches `subpath` against resolved absolute paths, so `RUN_DIR`
+/// must be canonical (macOS `/var` is `/private/var`).
+const SEATBELT_PROFILE: &str = "(version 1)(allow default)(deny network*)\
+     (deny mach-lookup)(deny signal)(allow signal (target self))(deny file-write*)\
+     (allow file-write* (subpath (param \"RUN_DIR\")))\
+     (allow file-write-data (literal \"/dev/null\"))";
+
+/// What the host decided for one verifier run: the canonical per-run
+/// scratch directory (holds the hashed artifact copy and TMPDIR; the only
+/// writable path) and, for the devcontainer tier, the pinned image.
+#[derive(Debug, Clone)]
+pub struct RunConfinement<'a> {
+    pub run_dir: &'a Path,
+    pub image: Option<&'a str>,
+}
+
+/// The devcontainer tier's image, read from the instantiation's declared
+/// `devcontainer.json` (`image` field). It must be pinned by digest
+/// (`name@sha256:<64 hex>`): a tag is mutable, and a registry pull would let
+/// whatever that tag points at today run as the verifier. Refuses when the
+/// file, the field, or the pin is absent.
+pub fn devcontainer_image(root: &Path) -> Result<String, ExecutionError> {
+    let path = devcontainer_path(root);
+    let refuse = |message: String| ExecutionError::DevcontainerImage { message };
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|e| refuse(format!("cannot read {}: {e}", path.display())))?;
+    let config: serde_json::Value = serde_json::from_str(&raw)
+        .map_err(|e| refuse(format!("{} is not plain JSON: {e}", path.display())))?;
+    let Some(image) = config.get("image").and_then(|v| v.as_str()) else {
+        return Err(refuse(format!(
+            "{} declares no \"image\" string",
+            path.display()
+        )));
+    };
+    let pinned = image.split_once("@sha256:").is_some_and(|(name, digest)| {
+        !name.is_empty()
+            && digest.len() == 64
+            && digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    });
+    if !pinned {
+        return Err(refuse(format!(
+            "image {image:?} in {} is not pinned by digest (expected name@sha256:<64 hex>)",
+            path.display()
+        )));
+    }
+    Ok(image.to_string())
+}
+
 /// Compose the verifier invocation as argv (S4: never shell strings), forced
 /// confinement flags included (S9: the host sets them regardless of any
-/// devcontainer file). `tier` decides the wrapper.
+/// devcontainer file). `tier` decides the wrapper; `artifact` is the host
+/// path of the hashed copy inside `confinement.run_dir`.
 pub fn verifier_argv(
     tier: ConfinementTier,
+    confinement: &RunConfinement<'_>,
     artifact: &Path,
     verifier_command: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>, ExecutionError> {
     let artifact_str = artifact.display().to_string();
-    match tier {
+    let verifier = verifier_command.split_whitespace().map(str::to_string);
+    Ok(match tier {
         ConfinementTier::Devcontainer => {
+            let Some(image) = confinement.image else {
+                return Err(ExecutionError::DevcontainerImage {
+                    message: "no pinned image declared for the devcontainer tier".to_string(),
+                });
+            };
+            // The artifact is reachable only through the read-only run-dir
+            // mount; its host path means nothing inside the container.
+            let relative =
+                artifact
+                    .strip_prefix(confinement.run_dir)
+                    .map_err(|_| ExecutionError::Failed {
+                        message: format!(
+                            "artifact {} is outside the run directory {}",
+                            artifact.display(),
+                            confinement.run_dir.display()
+                        ),
+                    })?;
+            let container_artifact = Path::new(CONTAINER_RUN_DIR).join(relative);
+            // `--mount` is a comma-separated field list with no escaping a
+            // bind source can rely on: a comma would inject mount options.
+            let source = confinement.run_dir.display().to_string();
+            if source.contains(',') {
+                return Err(ExecutionError::Failed {
+                    message: format!(
+                        "run directory {source} contains a comma, which docker --mount cannot carry"
+                    ),
+                });
+            }
             let mut argv = vec![
                 "docker".to_string(),
                 "run".to_string(),
                 "--rm".to_string(),
+                "--pull=never".to_string(),
                 "--network=none".to_string(),
                 "--read-only".to_string(),
+                "--tmpfs=/tmp".to_string(),
+                "--cap-drop=ALL".to_string(),
+                "--security-opt=no-new-privileges".to_string(),
                 "--memory=2g".to_string(),
                 "--cpus=2".to_string(),
+                "--pids-limit=512".to_string(),
+                format!("--mount=type=bind,source={source},target={CONTAINER_RUN_DIR},readonly"),
+                format!("--workdir={CONTAINER_RUN_DIR}"),
+                // `--` ends docker's options: the image is the next token,
+                // never a verifier token.
+                "--".to_string(),
+                image.to_string(),
             ];
-            argv.extend(verifier_command.split_whitespace().map(str::to_string));
-            argv.push(artifact_str);
+            argv.extend(verifier);
+            argv.push(container_artifact.display().to_string());
             argv
         }
         ConfinementTier::SandboxExec => {
-            // Seatbelt: no network, writes confined to the verification dir.
-            let profile = "(version 1)(deny network*)(allow default)(allow file-write* (subpath \"verification\"))";
             let mut argv = vec![
                 "sandbox-exec".to_string(),
+                "-D".to_string(),
+                format!("RUN_DIR={}", confinement.run_dir.display()),
                 "-p".to_string(),
-                profile.to_string(),
+                SEATBELT_PROFILE.to_string(),
             ];
-            argv.extend(verifier_command.split_whitespace().map(str::to_string));
+            argv.extend(verifier);
             argv.push(artifact_str);
             argv
         }
         ConfinementTier::Raw => {
             // No confinement — the S3 allowlist gate still applied upstream.
             // Argv composition holds even raw (S4).
-            let mut argv = verifier_command
-                .split_whitespace()
-                .map(str::to_string)
-                .collect::<Vec<_>>();
+            let mut argv = verifier.collect::<Vec<_>>();
             argv.push(artifact_str);
             argv
         }
@@ -181,7 +300,7 @@ pub fn verifier_argv(
             // Unreachable via detect_tier — callers refuse before composing.
             vec!["false".to_string()]
         }
-    }
+    })
 }
 
 /// The S8 fourth state: a run whose output parses to zero proof outcomes is
@@ -294,8 +413,11 @@ fn tracing_like(message: &str) {
 }
 
 /// Execute the verifier for an approved artifact through the confinement
-/// tiers. `artifact_sha256` must already be allowlist-checked by the caller
-/// (C-T3's `contains`) — this layer refuses unapproved execution (S3).
+/// tiers. `artifact_sha256` is the hash the caller believes it approved; this
+/// layer re-hashes the bytes on disk itself and refuses on mismatch or when
+/// the on-disk hash is not allowlisted (S3 condition iii). The verifier runs
+/// against a copy of exactly the hashed bytes in a fresh per-run directory,
+/// so the file cannot change between the check and the run.
 pub fn execute(
     root: &Path,
     artifact: &Path,
@@ -303,14 +425,18 @@ pub fn execute(
     verifier_command: &str,
     tree_revision: &str,
 ) -> Result<ProofOutcome, ExecutionError> {
-    if !crate::properties::allowlist::contains(root, artifact_sha256).map_err(|e| {
-        ExecutionError::Failed {
-            message: e.to_string(),
-        }
-    })? {
-        return Err(ExecutionError::NotApproved {
-            hash: artifact_sha256.to_string(),
+    let failed = |message: String| ExecutionError::Failed { message };
+    let bytes = std::fs::read(artifact)
+        .map_err(|e| failed(format!("cannot read artifact {}: {e}", artifact.display())))?;
+    let actual = self::artifact_sha256(&bytes);
+    if actual != artifact_sha256 {
+        return Err(ExecutionError::HashMismatch {
+            expected: artifact_sha256.to_string(),
+            actual,
         });
+    }
+    if !crate::properties::allowlist::contains(root, &actual).map_err(|e| failed(e.to_string()))? {
+        return Err(ExecutionError::NotApproved { hash: actual });
     }
     let Some(tier) = detect_tier(root) else {
         // S9 fail-closed: no confinement available, execution refused.
@@ -319,20 +445,48 @@ pub fn execute(
             message: "refused: no confinement tier available (S9 fail-closed)".to_string(),
         });
     };
+    let image = match tier {
+        ConfinementTier::Devcontainer => Some(devcontainer_image(root)?),
+        _ => None,
+    };
     let _ = tree_revision; // dedup ledger keyed by (hash, revision); the
     // ledger write lands with the results sidecar (property-results.jsonl).
-    let argv = verifier_argv(tier, artifact, verifier_command);
+
+    // The per-run directory: the only writable path under confinement.
+    let run = tempfile::Builder::new()
+        .prefix("phr-verify-")
+        .tempdir()
+        .map_err(|e| failed(format!("cannot create run directory: {e}")))?;
+    let run_dir = run
+        .path()
+        .canonicalize()
+        .map_err(|e| failed(format!("cannot resolve run directory: {e}")))?;
+    let tmp_dir = run_dir.join(RUN_TMP_DIR);
+    std::fs::create_dir(&tmp_dir).map_err(|e| failed(format!("cannot create TMPDIR: {e}")))?;
+    let file_name = artifact
+        .file_name()
+        .ok_or_else(|| failed(format!("artifact {} has no file name", artifact.display())))?;
+    let artifact_dir = run_dir.join(RUN_ARTIFACT_DIR);
+    std::fs::create_dir(&artifact_dir)
+        .map_err(|e| failed(format!("cannot create artifact directory: {e}")))?;
+    let run_artifact = artifact_dir.join(file_name);
+    std::fs::write(&run_artifact, &bytes)
+        .map_err(|e| failed(format!("cannot stage artifact: {e}")))?;
+
+    let confinement = RunConfinement {
+        run_dir: &run_dir,
+        image: image.as_deref(),
+    };
+    let argv = verifier_argv(tier, &confinement, &run_artifact, verifier_command)?;
     let output = std::process::Command::new(&argv[0])
         .args(&argv[1..])
-        .current_dir(root)
+        .current_dir(&run_dir)
+        .env("TMPDIR", &tmp_dir)
         .output()
-        .map_err(|e| ExecutionError::Failed {
-            message: e.to_string(),
-        })?;
+        .map_err(|e| failed(e.to_string()))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let raw = format!("{stdout}{stderr}");
-    let _ = raw; // journaled with the result record by the caller
 
     // Per-toolchain result parse (SPEC-C: the verus instantiation). Verus
     // prints `verification results:: N verified, M errors` — the aggregate is
@@ -451,9 +605,14 @@ mod tests {
     fn raw_argv_is_plain_verifier_composition() {
         let argv = verifier_argv(
             ConfinementTier::Raw,
-            Path::new("verification/unreviewed/h.rs"),
+            &RunConfinement {
+                run_dir: Path::new("/run"),
+                image: None,
+            },
+            Path::new("/run/h.rs"),
             "verus",
-        );
+        )
+        .unwrap();
         assert_eq!(argv.first(), Some(&"verus".to_string()));
         assert!(argv.last().is_some_and(|a| a.ends_with("h.rs")));
         assert!(
@@ -484,8 +643,399 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let artifact = root.path().join("h.rs");
         std::fs::write(&artifact, "fn h() {}").unwrap();
-        let result = execute(root.path(), &artifact, "unapproved-hash", "verus", "r1");
+        let sha = artifact_sha256(b"fn h() {}");
+        let result = execute(root.path(), &artifact, &sha, "verus", "r1");
         assert!(matches!(result, Err(ExecutionError::NotApproved { .. })));
+    }
+}
+
+#[cfg(test)]
+mod confinement_tests {
+    use super::*;
+
+    const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn run_sandboxed(run_dir: &Path, target: &Path) -> bool {
+        let confinement = RunConfinement {
+            run_dir,
+            image: None,
+        };
+        let argv = verifier_argv(
+            ConfinementTier::SandboxExec,
+            &confinement,
+            target,
+            "/usr/bin/touch",
+        )
+        .unwrap();
+        std::process::Command::new(&argv[0])
+            .args(&argv[1..])
+            .current_dir(run_dir)
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// C12: under the Seatbelt tier a write outside the per-run directory
+    /// fails and one inside succeeds. macOS-only: skipped (with a note) on a
+    /// host without sandbox-exec, where the tier is never selected.
+    #[test]
+    fn c12_sandbox_profile_confines_writes_to_the_run_dir() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping C12: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let scratch = scratch.path().canonicalize().unwrap();
+        let run_dir = scratch.join("run");
+        std::fs::create_dir(&run_dir).unwrap();
+
+        let outside = scratch.join("outside-write-probe");
+        assert!(!run_sandboxed(&run_dir, &outside), "outside write escaped");
+        assert!(!outside.exists(), "outside write escaped the sandbox");
+
+        let inside = run_dir.join("inside-write-probe");
+        assert!(run_sandboxed(&run_dir, &inside), "inside write denied");
+        assert!(inside.exists());
+    }
+
+    /// The `sandbox-exec -D RUN_DIR=… -p <profile>` prefix `verifier_argv`
+    /// composes, followed by an arbitrary command.
+    fn sandboxed(run_dir: &Path, command: &[&str]) -> std::process::Command {
+        let argv = verifier_argv(
+            ConfinementTier::SandboxExec,
+            &RunConfinement {
+                run_dir,
+                image: None,
+            },
+            &run_dir.join("h.rs"),
+            "verifier",
+        )
+        .unwrap();
+        let (program, prefix) = (&argv[0], &argv[1..5]);
+        let mut cmd = std::process::Command::new(program);
+        cmd.args(prefix)
+            .args(command)
+            .current_dir(run_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        cmd
+    }
+
+    fn canonical_run_dir() -> (tempfile::TempDir, std::path::PathBuf) {
+        let scratch = tempfile::tempdir().unwrap();
+        let run_dir = scratch.path().canonicalize().unwrap();
+        (scratch, run_dir)
+    }
+
+    /// C12: writes by proxy are writes. `defaults` asks cfprefsd (over a
+    /// mach service) to write `~/Library/Preferences/<domain>.plist` on the
+    /// verifier's behalf; mach-lookup must be denied so the daemon is
+    /// unreachable.
+    #[test]
+    fn c12_sandbox_denies_daemon_proxied_writes_via_defaults() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping C12 defaults probe: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let (_scratch, run_dir) = canonical_run_dir();
+        let domain = format!("com.phronesis.c12-probe-{}", std::process::id());
+        let status = sandboxed(&run_dir, &["/usr/bin/defaults", "write", &domain, "k", "v"])
+            .status()
+            .unwrap();
+        let plist = dirs::home_dir()
+            .unwrap()
+            .join(format!("Library/Preferences/{domain}.plist"));
+        let escaped = status.success() || plist.exists();
+        // Clean up outside the sandbox whatever happened.
+        let _ = std::process::Command::new("/usr/bin/defaults")
+            .args(["delete", &domain])
+            .stderr(std::process::Stdio::null())
+            .status();
+        let _ = std::fs::remove_file(&plist);
+        assert!(!escaped, "defaults write reached cfprefsd: {status:?}");
+    }
+
+    /// C12: the pasteboard is another daemon-held write surface.
+    #[test]
+    fn c12_sandbox_denies_clipboard_writes() {
+        use std::io::Write;
+        if !sandbox_exec_available() {
+            eprintln!("skipping C12 pbcopy probe: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let before = std::process::Command::new("/usr/bin/pbpaste")
+            .output()
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+        let (_scratch, run_dir) = canonical_run_dir();
+        let marker = format!("c12-pbcopy-probe-{}", std::process::id());
+        let mut child = sandboxed(&run_dir, &["/usr/bin/pbcopy"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let _ = child.stdin.take().unwrap().write_all(marker.as_bytes());
+        let status = child.wait().unwrap();
+        let after = std::process::Command::new("/usr/bin/pbpaste")
+            .output()
+            .map(|o| o.stdout)
+            .unwrap_or_default();
+        let escaped = after == marker.as_bytes();
+        if escaped {
+            // Restore the user's clipboard.
+            if let Ok(mut restore) = std::process::Command::new("/usr/bin/pbcopy")
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+            {
+                let _ = restore.stdin.take().unwrap().write_all(&before);
+                let _ = restore.wait();
+            }
+        }
+        assert!(!escaped, "pbcopy overwrote the clipboard: {status:?}");
+    }
+
+    /// C12: the verifier may signal only itself — not a sibling process of
+    /// the same user.
+    #[test]
+    fn c12_sandbox_denies_signalling_other_processes() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping C12 signal probe: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let (_scratch, run_dir) = canonical_run_dir();
+        let mut sibling = std::process::Command::new("/bin/sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let pid = sibling.id().to_string();
+        let status = sandboxed(&run_dir, &["/bin/kill", "-TERM", &pid])
+            .status()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let alive = sibling.try_wait().unwrap().is_none();
+        let _ = sibling.kill();
+        let _ = sibling.wait();
+        assert!(
+            !status.success() && alive,
+            "sandboxed kill reached a sibling: {status:?}, alive={alive}"
+        );
+    }
+
+    /// An artifact literally named like the scratch TMPDIR must not collide
+    /// with it: staging still succeeds and the verifier runs.
+    #[test]
+    fn an_artifact_named_tmp_does_not_collide_with_the_run_tmpdir() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let artifact = root.path().join(RUN_TMP_DIR);
+        std::fs::write(&artifact, "fn h() {}").unwrap();
+        let sha = approve(root.path(), b"fn h() {}");
+        let result = execute(root.path(), &artifact, &sha, "/bin/cat", "r1");
+        assert!(
+            matches!(&result, Ok(o) if o.status == "inconclusive"),
+            "an artifact named {RUN_TMP_DIR:?} must stage and run: {result:?}"
+        );
+    }
+
+    /// A comma in the run directory would split docker's `--mount` field
+    /// list (e.g. inject `,readonly=false`-style options): refuse it.
+    #[test]
+    fn devcontainer_mount_refuses_a_comma_in_the_run_dir() {
+        let run_dir = Path::new("/tmp/a,readonly=false,x");
+        let image = format!("verus@sha256:{DIGEST}");
+        let result = verifier_argv(
+            ConfinementTier::Devcontainer,
+            &RunConfinement {
+                run_dir,
+                image: Some(&image),
+            },
+            &run_dir.join("h.rs"),
+            "verus",
+        );
+        assert!(
+            matches!(result, Err(ExecutionError::Failed { .. })),
+            "{result:?}"
+        );
+    }
+
+    /// C12: the run directory rides a `-D` parameter, never the profile text,
+    /// so a hostile path cannot splice Seatbelt syntax into the profile.
+    #[test]
+    fn c12_run_dir_is_a_profile_parameter_not_profile_text() {
+        let hostile = Path::new("/tmp/x\")(allow file-write* (subpath \"/");
+        let argv = verifier_argv(
+            ConfinementTier::SandboxExec,
+            &RunConfinement {
+                run_dir: hostile,
+                image: None,
+            },
+            &hostile.join("h.rs"),
+            "verus",
+        )
+        .unwrap();
+        assert_eq!(argv[..2], ["sandbox-exec", "-D"]);
+        assert_eq!(argv[2], format!("RUN_DIR={}", hostile.display()));
+        assert_eq!(argv[3..5], ["-p".to_string(), SEATBELT_PROFILE.to_string()]);
+        assert!(SEATBELT_PROFILE.contains("(deny file-write*)"));
+        assert!(!SEATBELT_PROFILE.contains("subpath \"verification\""));
+    }
+
+    fn devcontainer_root(config: &str) -> tempfile::TempDir {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("verification/templates")).unwrap();
+        std::fs::write(devcontainer_path(root.path()), config).unwrap();
+        root
+    }
+
+    /// C13: the devcontainer argv runs the declared, digest-pinned image with
+    /// no pull, mounts only the run dir read-only at a fixed path, rewrites
+    /// the artifact to that path, and never lets a verifier token become the
+    /// image.
+    #[test]
+    fn c13_devcontainer_argv_pins_image_and_mounts_artifact() {
+        let image = format!("ghcr.io/acme/verus@sha256:{DIGEST}");
+        let root = devcontainer_root(&format!(r#"{{"image": "{image}"}}"#));
+        let declared = devcontainer_image(root.path()).unwrap();
+        assert_eq!(declared, image);
+
+        let run_dir = Path::new("/private/var/folders/x/phr-verify-1");
+        let argv = verifier_argv(
+            ConfinementTier::Devcontainer,
+            &RunConfinement {
+                run_dir,
+                image: Some(&declared),
+            },
+            &run_dir.join("h.rs"),
+            "verus --crate-type=lib",
+        )
+        .unwrap();
+        for forced in [
+            "--rm",
+            "--pull=never",
+            "--network=none",
+            "--read-only",
+            "--cap-drop=ALL",
+        ] {
+            assert!(
+                argv.iter().any(|a| a == forced),
+                "{forced} missing: {argv:?}"
+            );
+        }
+        assert!(argv.contains(&format!(
+            "--mount=type=bind,source={},target=/verification,readonly",
+            run_dir.display()
+        )));
+        let sep = argv
+            .iter()
+            .position(|a| a == "--")
+            .expect("option terminator");
+        assert_eq!(argv[sep + 1], image, "image follows the terminator");
+        assert_eq!(
+            argv[sep + 2..],
+            ["verus", "--crate-type=lib", "/verification/h.rs"],
+            "verifier tokens after the image; artifact rewritten"
+        );
+        assert!(
+            !argv
+                .iter()
+                .any(|a| a == &run_dir.join("h.rs").display().to_string()),
+            "host artifact path never reaches the container: {argv:?}"
+        );
+    }
+
+    /// C13: no declared image, or one not pinned by digest, refuses the
+    /// devcontainer tier with a clear error.
+    #[test]
+    fn c13_devcontainer_image_must_be_declared_and_digest_pinned() {
+        let refused = |config: &str| {
+            matches!(
+                devcontainer_image(devcontainer_root(config).path()),
+                Err(ExecutionError::DevcontainerImage { .. })
+            )
+        };
+        assert!(refused(r#"{"name": "no image"}"#));
+        assert!(refused(r#"{"image": "verus:latest"}"#));
+        assert!(refused(r#"{"image": "verus@sha256:abc"}"#));
+        assert!(refused(&format!(r#"{{"image": "@sha256:{DIGEST}"}}"#)));
+        assert!(refused("// jsonc comment\n{}"));
+        let missing = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            devcontainer_image(missing.path()),
+            Err(ExecutionError::DevcontainerImage { .. })
+        ));
+        // And argv composition itself refuses a devcontainer run without one.
+        let run_dir = Path::new("/run");
+        assert!(matches!(
+            verifier_argv(
+                ConfinementTier::Devcontainer,
+                &RunConfinement {
+                    run_dir,
+                    image: None
+                },
+                &run_dir.join("h.rs"),
+                "verus",
+            ),
+            Err(ExecutionError::DevcontainerImage { .. })
+        ));
+    }
+
+    /// The allowlist key is real SHA-256 (published test vector).
+    #[test]
+    fn artifact_sha256_is_real_sha256() {
+        assert_eq!(
+            artifact_sha256(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    fn approve(root: &Path, bytes: &[u8]) -> String {
+        let sha = artifact_sha256(bytes);
+        crate::properties::allowlist::record(
+            root,
+            crate::properties::allowlist::AllowlistEntry {
+                artifact_sha256: sha.clone(),
+                template_sha256: "t".into(),
+                property_id: "p".into(),
+                property_revision: "r1".into(),
+                approver_principal: "human".into(),
+                date: "2026-09-26".into(),
+            },
+        )
+        .unwrap();
+        sha
+    }
+
+    /// C14: a tampered artifact is refused even when the caller passes the
+    /// approved hash — execute re-hashes the bytes on disk itself.
+    #[test]
+    fn c14_execute_rehashes_the_artifact_on_disk() {
+        let root = tempfile::tempdir().unwrap();
+        let artifact = root.path().join("h.rs");
+        let approved = approve(root.path(), b"fn approved() {}");
+        std::fs::write(&artifact, "fn tampered() {}").unwrap();
+        let result = execute(root.path(), &artifact, &approved, "/usr/bin/true", "r1");
+        assert!(
+            matches!(result, Err(ExecutionError::HashMismatch { .. })),
+            "tampered artifact must be refused: {result:?}"
+        );
+        // Passing the tampered bytes' true hash does not help: not approved.
+        let tampered = artifact_sha256(b"fn tampered() {}");
+        let result = execute(root.path(), &artifact, &tampered, "/usr/bin/true", "r1");
+        assert!(
+            matches!(result, Err(ExecutionError::NotApproved { .. })),
+            "unapproved bytes must be refused: {result:?}"
+        );
+        // A missing artifact fails closed.
+        let result = execute(
+            root.path(),
+            &root.path().join("gone.rs"),
+            &approved,
+            "/usr/bin/true",
+            "r1",
+        );
+        assert!(matches!(result, Err(ExecutionError::Failed { .. })));
     }
 }
 
