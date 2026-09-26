@@ -460,16 +460,23 @@ async fn assert_pre_content_facts(
         })?;
 
     // Coverage-evidence hydration: demand-gated, fail-open, opt-out via
-    // PHRONESIS_NO_COVERAGE. File edits carry their own old/new content;
-    // bash events hydrate revision/staleness facts only.
+    // PHRONESIS_NO_COVERAGE. Region mapping needs the WHOLE file on both
+    // sides, not the payload's snippet: old = disk, new = disk with the edit
+    // applied (see `edit_images`). Bash events hydrate revision/staleness
+    // facts only.
     let edited: Vec<(String, Option<String>, String)> = if file_path.is_empty() {
         Vec::new()
     } else {
-        vec![(
-            file_path.to_string(),
-            old_content.clone(),
-            content.to_string(),
-        )]
+        let images = super::edit_images::pre_images(
+            tool_name,
+            payload
+                .tool_input
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
+            old_disk_content,
+            content,
+        );
+        vec![(file_path.to_string(), images.old, images.new)]
     };
     assert_coverage_facts(network, &project_root, rule_predicates, &edited).await?;
     assert_properties_facts(network, &project_root, rule_predicates, &edited).await?;

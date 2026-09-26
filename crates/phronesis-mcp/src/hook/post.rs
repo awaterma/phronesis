@@ -151,13 +151,21 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         process::exit(1);
     }
 
-    // Coverage hydration wants the event's old content (the payload's
-    // old_string) so changed-region mapping can see both sides even though
-    // disk already holds the new content.
-    let old_content = super::extract_old_content(&payload, &tool_name);
     // Validate the file path is inside the project root before reading.
     // An empty file_path means the hook input didn't include one — skip file read.
     if let Some(content) = read_disk_content(&file_path).unwrap_or_else(|_| process::exit(1)) {
+        // Region mapping needs the whole pre-edit file, and disk already
+        // holds the new content: reconstruct the pre-image from the edit
+        // (see `edit_images`). `None` = every region counts as changed.
+        let old_content = super::edit_images::post_old_image(
+            &tool_name,
+            payload
+                .tool_input
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
+            payload.tool_output.as_ref(),
+            &content,
+        );
         assert_post_content_facts(
             &network,
             PostContentInput {
@@ -394,10 +402,9 @@ async fn assert_post_content_facts(
         })?;
 
     // Coverage-evidence hydration: demand-gated, fail-open, opt-out via
-    // PHRONESIS_NO_COVERAGE. At post-check the edit has already applied, so
-    // disk holds the new content and old content is unavailable — the
-    // changed-region computation still maps both sides from the payload's
-    // old_string when the event carried one.
+    // PHRONESIS_NO_COVERAGE. `content` is the whole post-edit file from
+    // disk; `old_content` is the reconstructed whole pre-edit file, or
+    // `None` when none could be derived.
     let edited: Vec<(String, Option<String>, String)> = if file_path.is_empty() {
         Vec::new()
     } else {
