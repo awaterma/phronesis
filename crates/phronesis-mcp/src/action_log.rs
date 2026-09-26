@@ -116,6 +116,15 @@ pub fn append(path: &Path, entry: &LogEntry) -> Result<(), LogError> {
     append_with_max(path, entry, max_log_bytes())
 }
 
+/// Append an entry that is part of an audit contract — one the spec says
+/// every invocation must leave (e.g. `set_property_status`, SPEC-property-
+/// ontology §4). Same locking and rotation as `append`, but it ignores
+/// `PHRONESIS_NO_ACTION_LOG`: that opt-out silences routine logging, and must
+/// not let an audited act commit without its record.
+pub fn append_audit(path: &Path, entry: &LogEntry) -> Result<(), LogError> {
+    write_entry(path, entry, max_log_bytes())
+}
+
 /// Variant of `append` with an explicit size threshold. Used by tests to
 /// trigger rotation with small inputs; production callers go through
 /// `append`, which reads the env-var-configurable global.
@@ -123,6 +132,11 @@ pub fn append_with_max(path: &Path, entry: &LogEntry, max_bytes: u64) -> Result<
     if std::env::var("PHRONESIS_NO_ACTION_LOG").is_ok() {
         return Ok(());
     }
+    write_entry(path, entry, max_bytes)
+}
+
+/// The locked, rotating write behind `append` and `append_audit`.
+fn write_entry(path: &Path, entry: &LogEntry, max_bytes: u64) -> Result<(), LogError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| LogError::Io {
             path: parent.display().to_string(),

@@ -314,6 +314,9 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   it commits (a journal failure refuses it and leaves the store untouched), the
   update holds a lock with a unique temp file, and the store is read through the
   same validator every reader uses, so a rejected store is refused.
+  `PHRONESIS_NO_ACTION_LOG` no longer silences this journal line, an unknown
+  property id no longer creates `.phronesis/`, and a staging file left by a
+  crashed transition is cleaned up by the next one.
 
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule

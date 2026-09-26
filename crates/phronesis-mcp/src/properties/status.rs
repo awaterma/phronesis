@@ -79,7 +79,17 @@ fn parse_status_name(s: &str) -> Option<PropertyStatus> {
 /// lands in `log.jsonl`): the new store is staged in a uniquely named temp
 /// file, the transition is journaled, and only then is the temp file renamed
 /// over the store. A journal failure discards the staged file and returns an
-/// error — no transition commits unaudited.
+/// error — no transition commits unaudited. The journal write ignores
+/// `PHRONESIS_NO_ACTION_LOG` (`action_log::append_audit`).
+///
+/// The journal line is therefore a record of intent: a rename that fails
+/// after it is followed by a `set_property_status_aborted` line, but a crash
+/// in the window between the journal append and the rename leaves a
+/// `set_property_status` line for a transition that never landed. That
+/// window is accepted — the reverse order could commit a transition with no
+/// record at all. `properties.json` is the source of truth for the current
+/// status; the log is the audit trail of attempts. A staging file orphaned
+/// by such a crash is removed by the next transition.
 pub fn set_status(
     root: &Path,
     property_id: &str,
@@ -90,11 +100,17 @@ pub fn set_status(
         return Err(SetPropertyStatusError::MissingBecause);
     }
     let path = properties_path(root);
+    // No store: nothing to transition, and no `.phronesis/` or lock file to
+    // create as a side effect of a lookup that must fail.
+    if !path.exists() {
+        return Err(SetPropertyStatusError::NoSuchProperty {
+            id: property_id.to_string(),
+        });
+    }
     let dir = path
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_else(|| root.to_path_buf());
-    std::fs::create_dir_all(&dir)?;
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .write(true)
@@ -102,6 +118,7 @@ pub fn set_status(
         .open(dir.join("properties.json.lock"))?;
     // Released on drop (and by the OS on process exit) — no stuck lock.
     lock.lock_exclusive()?;
+    remove_stale_staging_files(&dir);
 
     let mut properties = load_properties(root)?;
     let prop = properties
@@ -121,14 +138,17 @@ pub fn set_status(
         message: e.to_string(),
     })?;
 
-    let mut staged = tempfile::NamedTempFile::new_in(&dir)?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(STAGING_PREFIX)
+        .suffix(".tmp")
+        .tempfile_in(&dir)?;
     staged.write_all(body.as_bytes())?;
     staged.as_file().sync_all()?;
     // Dropping `staged` on any early return removes the temp file.
     journal_transition(root, property_id, &old_name, &new_name, because)?;
     if let Err(e) = staged.persist(&path) {
         // The journal already names a transition that did not land; say so.
-        let _ = crate::action_log::append(
+        let _ = crate::action_log::append_audit(
             &crate::action_log::default_path(root),
             &crate::action_log::LogEntry::new("mcp", "set_property_status_aborted")
                 .with("property", property_id)
@@ -137,6 +157,24 @@ pub fn set_status(
         return Err(e.error.into());
     }
     Ok((old_name, new_name))
+}
+
+/// Name prefix of the staging file a transition writes before the rename.
+const STAGING_PREFIX: &str = ".properties.json.";
+
+/// Best-effort removal of staging files a crashed transition left behind.
+/// Called under the store lock, so no live transition owns one.
+fn remove_stale_staging_files(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(STAGING_PREFIX) && name.ends_with(".tmp") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// The on-disk store shape (kept as an alias for API stability).
@@ -157,7 +195,7 @@ pub fn journal_transition(
         .with("old_status", old_status)
         .with("new_status", new_status)
         .with("because", because);
-    crate::action_log::append(&crate::action_log::default_path(root), &entry).map_err(|e| {
+    crate::action_log::append_audit(&crate::action_log::default_path(root), &entry).map_err(|e| {
         SetPropertyStatusError::Journal {
             message: e.to_string(),
         }
@@ -306,6 +344,41 @@ mod tests {
             let log = std::fs::read_to_string(root.path().join(".phronesis/log.jsonl")).unwrap();
             assert_eq!(log.lines().count(), N, "every transition journaled once");
         }
+    }
+
+    /// No store at all: the unknown id is refused without creating
+    /// `.phronesis/` or a lock file as a side effect.
+    #[test]
+    fn unknown_property_without_a_store_creates_nothing() {
+        let root = tempdir().unwrap();
+        let out = set_property_status_handler(root.path(), "nope", "accepted", "r");
+        assert!(
+            matches!(out, Err(SetPropertyStatusError::NoSuchProperty { .. })),
+            "{out:?}"
+        );
+        assert!(!root.path().join(".phronesis").exists());
+    }
+
+    /// A staging file left by a crashed transition is removed by the next one
+    /// (it runs under the same lock, so no live writer owns it).
+    #[test]
+    fn a_crashed_transitions_staging_file_is_cleaned_up() {
+        let root = tempdir().unwrap();
+        write_props(root.path(), ONE);
+        let stale = root.path().join(".phronesis/.properties.json.crashed.tmp");
+        std::fs::write(&stale, "partial").unwrap();
+        let unrelated = root.path().join(".phronesis/.tmpOther");
+        std::fs::write(&unrelated, "not ours").unwrap();
+        set_property_status_handler(root.path(), "p1", "accepted", "r").unwrap();
+        assert!(!stale.exists(), "stale staging file must be removed");
+        assert!(unrelated.exists(), "only our own staging files are touched");
+        let leftovers: Vec<_> = std::fs::read_dir(root.path().join(".phronesis"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".properties.json."))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 
     #[test]
