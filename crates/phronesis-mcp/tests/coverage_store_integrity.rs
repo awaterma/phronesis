@@ -527,3 +527,59 @@ fn d8_select_reports_corrupt_store() {
         "{json}"
     );
 }
+
+// ---------------------------------------------------------------- concurrency
+
+/// A hook reading while an import replaces the store must see either the
+/// old store or the new one — never a transient `digest_mismatch` from
+/// reading the index before the records rename and the records after it.
+#[test]
+fn concurrent_reads_during_imports_never_see_corruption() {
+    use phronesis_mcp::coverage::store::{StoreState, load_store};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let root = tempfile::tempdir().unwrap();
+    let a = "a".repeat(40);
+    let b = "b".repeat(40);
+    write_store(root.path(), &covering_hits(&a), &index(&a)).unwrap();
+
+    let done = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let root = root.path().to_path_buf();
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            for i in 0..300 {
+                let rev = if i % 2 == 0 { &b } else { &a };
+                // Distinct record counts per revision so a torn read
+                // cannot pass by coincidence.
+                let mut hits = covering_hits(rev);
+                if i % 2 == 0 {
+                    hits.push(hit("extra", "fn:src/lib.rs::extra", "region", rev));
+                }
+                write_store(&root, &hits, &index(rev)).unwrap();
+            }
+            done.store(true, Ordering::SeqCst);
+        })
+    };
+
+    let mut reads = 0usize;
+    let mut corrupt: Vec<String> = Vec::new();
+    while !done.load(Ordering::SeqCst) {
+        reads += 1;
+        match load_store(root.path()) {
+            StoreState::Loaded { index, hits } => {
+                assert!(hits.iter().all(|h| h.revision == index.revision));
+            }
+            StoreState::Corrupt(c) => corrupt.push(c.reason.to_string()),
+            StoreState::Missing => panic!("store vanished mid-import"),
+        }
+    }
+    writer.join().unwrap();
+    assert!(
+        corrupt.is_empty(),
+        "{} of {reads} concurrent reads saw a transient corrupt store: {:?}",
+        corrupt.len(),
+        &corrupt[..corrupt.len().min(5)]
+    );
+}

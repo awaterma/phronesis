@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, anyhow};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -131,6 +132,18 @@ fn count_records(bytes: &[u8]) -> usize {
         .count()
 }
 
+/// Advisory lock serializing store replacement against reads, so a reader
+/// never pairs one import's index with another's records. flock releases
+/// on process exit, so a crashed writer leaves no stale lock.
+fn open_lock(dir: &Path) -> std::io::Result<File> {
+    OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("coverage.lock"))
+}
+
 /// Atomically replace the coverage store: records first, then the index.
 /// The index is the commit marker and records the records file's digest and
 /// count, so a crash between the two renames (new records, old index) reads
@@ -143,6 +156,8 @@ pub fn write_store(root: &Path, records: &[HitRecord], index: &CoverageIndex) ->
         .parent()
         .context("coverage path has no parent")?;
     fs::create_dir_all(dir)?;
+    let lock = open_lock(dir)?;
+    lock.lock_exclusive()?;
 
     let mut buf: Vec<u8> = Vec::new();
     for rec in records {
@@ -182,9 +197,45 @@ fn read_optional(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
     }
 }
 
+/// How many times a read retries when the index changed underneath it
+/// (a writer that does not take the lock, e.g. an older binary).
+const READ_ATTEMPTS: usize = 3;
+
 /// Read and verify the whole store. Never errors: every failure mode is a
 /// [`StoreState::Corrupt`] with a stable reason code.
+///
+/// Reads take the store lock shared, so an import in flight is either
+/// wholly before or wholly after the read. If the lock cannot be taken
+/// (read-only checkout) the read proceeds unlocked, and a read whose index
+/// changed between the start and the end is retried rather than reported
+/// as corrupt.
 pub fn load_store(root: &Path) -> StoreState {
+    let (records_path, _) = store_paths(root);
+    let lock = records_path
+        .parent()
+        .filter(|dir| dir.is_dir())
+        .and_then(|dir| open_lock(dir).ok())
+        .filter(|lock| lock.lock_shared().is_ok());
+    let state = load_store_unlocked(root);
+    drop(lock);
+    state
+}
+
+fn load_store_unlocked(root: &Path) -> StoreState {
+    let (_, index_path) = store_paths(root);
+    let mut state = StoreState::Missing;
+    for _ in 0..READ_ATTEMPTS {
+        let before = read_optional(&index_path).ok().flatten();
+        state = load_store_once(root);
+        let after = read_optional(&index_path).ok().flatten();
+        if before == after {
+            break;
+        }
+    }
+    state
+}
+
+fn load_store_once(root: &Path) -> StoreState {
     match load_verified(root) {
         Ok(Some((index, hits))) => StoreState::Loaded { index, hits },
         Ok(None) => StoreState::Missing,

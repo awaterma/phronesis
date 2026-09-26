@@ -29,7 +29,9 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   off new hits as the old revision's evidence.** The coverage index now
   records a digest and count of the records file it commits, and every read
   checks them — plus each record's revision and tool — against the index. A
-  torn or mismatched store reads as corrupt instead of fresh.
+  torn or mismatched store reads as corrupt instead of fresh. Imports and
+  reads share a lock, so a hook firing during an import sees the old store
+  or the new one, never a spurious corruption.
 
 - **Coverage records the importer would refuse are refused on read too, and
   import no longer accepts inconsistent exports.** One validator runs on

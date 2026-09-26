@@ -80,7 +80,7 @@ Companion index `.phronesis/coverage.index`:
 
 The store holds **only the latest imported revision** (import replaces prior content; idempotent per revision). Historical outcomes are the journey journal's job, not the store's.
 
-**Integrity (commit marker).** Import writes the records file, then the index, each by atomic rename. The index is the commit marker: it records the FNV-1a 64 digest and the count of the exact records bytes it belongs to. Every read recomputes both and also requires each record's `revision` and `tool` to equal the index's. A crash between the two renames (new records behind the old index — whose revision may still equal HEAD) therefore reads as **corrupt**, never as fresh evidence for the old revision; records without an index, an index without records, and an index predating the digest fields are corrupt too. The digest guards against torn or mismatched writes, not tampering (whoever can rewrite one file can rewrite both).
+**Integrity (commit marker).** Import writes the records file, then the index, each by atomic rename. The index is the commit marker: it records the FNV-1a 64 digest and the count of the exact records bytes it belongs to. Every read recomputes both and also requires each record's `revision` and `tool` to equal the index's. A crash between the two renames (new records behind the old index — whose revision may still equal HEAD) therefore reads as **corrupt**, never as fresh evidence for the old revision; records without an index, an index without records, and an index predating the digest fields are corrupt too. The digest guards against torn or mismatched writes, not tampering (whoever can rewrite one file can rewrite both). Import holds an exclusive advisory lock (`.phronesis/coverage.lock`, flock — released on process exit) across both renames and readers hold it shared across both reads, so a hook firing during an import sees the old store or the new one, never a transient `digest_mismatch`; if the lock cannot be taken (read-only checkout), a read whose index changed while it ran is retried.
 
 **Store states.** A reader sees exactly one of: *missing* (neither file — nothing imported), *loaded* (verified), or *corrupt* with a stable reason code: `index_unreadable`, `records_unreadable`, `missing_index`, `missing_records`, `unverifiable_index`, `unsupported_format`, `invalid_index`, `digest_mismatch`, `count_mismatch`, `invalid_record`, `revision_mismatch`, `tool_mismatch`. Consumers treat *corrupt* as "no evidence" and say so (§4 `store_corrupt`, §7).
 
@@ -217,7 +217,7 @@ Both negative conditions are host-derived closed-world facts (§7). The message 
     { "bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)" },
     { "coverage_stale": true }
   ],
-  "then": { "warn": "committing with stale coverage evidence; run `phr-mcp coverage import` to refresh" }
+  "then": { "warn": "committing with stale coverage evidence; run `phr-mcp coverage collect` to refresh" }
 }
 ```
 
