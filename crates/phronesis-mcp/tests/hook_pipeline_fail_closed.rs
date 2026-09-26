@@ -216,6 +216,35 @@ fn bound_variables_raise_no_load_diagnostic() {
     assert!(!err.contains("unbound"), "{err}");
 }
 
+/// Regression: a bound `?f` must not be treated as binding, or substituted
+/// into, the longer, still-unbound `?file` — substitution and detection must
+/// agree on whole-token boundaries.
+#[test]
+fn prefix_bound_variable_does_not_mask_or_corrupt_a_longer_unbound_variable() {
+    let dir = setup(&json!({"rules": [{
+        "id": "fn-added-rule",
+        "phase": "pre",
+        "priority": 10,
+        "when": [{"function_added": ["?f", "?fn"]}],
+        "then": {"block": "Function added in ?file (file var is ?f)"}
+    }]}));
+    let out = spawn(
+        dir.path(),
+        &["pre-check"],
+        &claude_write("src/lib.rs", "pub fn frobnicate() {}\n"),
+    );
+    let err = stderr(&out);
+    assert_eq!(out.status.code(), Some(2), "must block; stderr: {err}");
+    assert!(
+        err.contains("BLOCKED — Function added in ?file (file var is src/lib.rs)"),
+        "?f substitutes exactly, ?file renders literally: {err}"
+    );
+    assert!(
+        err.contains("fn-added-rule") && err.contains("`?file`") && err.contains("unbound"),
+        "NOTE names the rule and the unbound `?file`, not `?f`: {err}"
+    );
+}
+
 // --- C3: collision-free fact ids -------------------------------------------
 
 fn punctuation_twins() -> Value {

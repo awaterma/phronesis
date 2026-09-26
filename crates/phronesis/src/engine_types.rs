@@ -82,7 +82,7 @@ impl Rule {
         let mut out: Vec<String> = Vec::new();
         let texts = self.actions.iter().flat_map(Action::texts);
         for token in texts.flat_map(variable_tokens) {
-            if !bound.iter().any(|v| token.contains(v)) && !out.iter().any(|o| o == token) {
+            if !bound.contains(&token) && !out.iter().any(|o| o == token) {
                 out.push(token.to_string());
             }
         }
@@ -111,10 +111,14 @@ fn collect_json_strings<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>
     }
 }
 
-/// Every variable-shaped token in `text`: a `?` followed by an ASCII letter
-/// or `_`, then any run of ASCII alphanumerics and `_`. `??` and a lone `?`
-/// are punctuation, not variables.
-pub fn variable_tokens(text: &str) -> Vec<&str> {
+/// Every variable-shaped token in `text`, together with its byte range: a
+/// `?` followed by an ASCII letter or `_`, then any run of ASCII
+/// alphanumerics and `_`. `??` and a lone `?` are punctuation, not
+/// variables. This is the single tokenizer shared by substitution
+/// (`apply_bindings`) and unbound-variable detection (`warn_unbound`,
+/// `unbound_action_variables`), so both agree on token boundaries: a bound
+/// `?f` must not match, or be treated as binding, the longer `?file`.
+pub fn variable_token_spans(text: &str) -> Vec<(std::ops::Range<usize>, &str)> {
     let bytes = text.as_bytes();
     let mut out = Vec::new();
     let mut i = 0;
@@ -132,12 +136,21 @@ pub fn variable_tokens(text: &str) -> Vec<&str> {
             {
                 i += 1;
             }
-            out.push(&text[start..i]);
+            out.push((start..i, &text[start..i]));
         } else {
             i += 1;
         }
     }
     out
+}
+
+/// Every variable-shaped token in `text`, as whole `?ident` strings. See
+/// [`variable_token_spans`] for the exact tokenization rule.
+pub fn variable_tokens(text: &str) -> Vec<&str> {
+    variable_token_spans(text)
+        .into_iter()
+        .map(|(_, token)| token)
+        .collect()
 }
 
 /// Performance statistics for the RETE engine
@@ -255,6 +268,15 @@ mod tests {
         assert_eq!(r.unbound_action_variables(), vec!["?reason", "?who"]);
         let bound = rule(&[&["?reason", "?who"]], "?reason");
         assert!(bound.unbound_action_variables().is_empty());
+    }
+
+    /// Regression: a bound `?f` must not mask the longer, still-unbound
+    /// `?file` — a condition binds a variable only by naming it exactly,
+    /// not by being a prefix of it.
+    #[test]
+    fn unbound_action_variables_does_not_treat_a_prefix_bound_variable_as_binding_a_longer_one() {
+        let r = rule(&[&["?f"]], "Function added in ?file (file var is ?f)");
+        assert_eq!(r.unbound_action_variables(), vec!["?file", "?who"]);
     }
 
     #[test]

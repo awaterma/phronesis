@@ -190,6 +190,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   again when the rule fires. A message that is merely text (`?? are you
   sure`) is left alone.
 
+- **A bound short variable name could corrupt or hide a longer one.** A
+  message like `"Function added in ?file (file var is ?f)"` with only `?f`
+  bound rendered as `"Function added in <value>ile (file var is <value>)"` —
+  substitution matched `?f` as a substring of `?file` — and the load-time
+  diagnostic wrongly treated `?file` as bound for the same reason, so no
+  `NOTE` warned about it. Substitution and unbound-variable detection now
+  share one tokenizer and match whole `?ident` tokens only, so `?f` never
+  touches `?file`.
+
 - **Two warn rules could produce a spurious block.** Hook-derived fact ids were
   built by replacing punctuation with `_`, so `new_content_contains` patterns
   `a.b` and `a-b` both became `new_content_contains_a_b`; an edit containing
