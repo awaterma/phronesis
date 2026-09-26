@@ -36,8 +36,8 @@ fn test_import_happy_path_writes_store_and_index() {
     let export = write_export(
         expdir.path(),
         &jsonl(&[
-            rec("test_a", "fn:foo", "src/lib.rs", &rev),
-            rec("test_b", "fn:bar", "src/main.rs", &rev),
+            rec("test_a", "fn:src/lib.rs::foo", "src/lib.rs", &rev),
+            rec("test_b", "fn:src/main.rs::bar", "src/main.rs", &rev),
         ]),
     );
 
@@ -59,7 +59,7 @@ fn test_import_rejects_malformed_line() {
     let expdir = tempfile::tempdir().unwrap();
     let rev = "a".repeat(40);
     let lines = vec![
-        serde_json::to_string(&rec("t", "fn:foo", "src/lib.rs", &rev)).unwrap(),
+        serde_json::to_string(&rec("t", "fn:src/lib.rs::foo", "src/lib.rs", &rev)).unwrap(),
         "not json".to_string(),
     ];
     let export = write_export(expdir.path(), &lines);
@@ -80,7 +80,7 @@ fn test_import_rejects_absolute_file_path() {
     let rev = "a".repeat(40);
     let export = write_export(
         expdir.path(),
-        &jsonl(&[rec("t", "fn:foo", "/abs/lib.rs", &rev)]),
+        &jsonl(&[rec("t", "fn:/abs/lib.rs::foo", "/abs/lib.rs", &rev)]),
     );
 
     let err = import_export(root.path(), &export, 1)
@@ -97,8 +97,8 @@ fn test_import_rejects_mixed_revisions() {
     let export = write_export(
         expdir.path(),
         &jsonl(&[
-            rec("t1", "fn:foo", "src/lib.rs", &"a".repeat(40)),
-            rec("t2", "fn:foo", "src/lib.rs", &"b".repeat(40)),
+            rec("t1", "fn:src/lib.rs::foo", "src/lib.rs", &"a".repeat(40)),
+            rec("t2", "fn:src/lib.rs::foo", "src/lib.rs", &"b".repeat(40)),
         ]),
     );
 
@@ -116,7 +116,7 @@ fn test_import_is_idempotent_per_revision() {
     let rev = "a".repeat(40);
     let export = write_export(
         expdir.path(),
-        &jsonl(&[rec("t1", "fn:foo", "src/lib.rs", &rev)]),
+        &jsonl(&[rec("t1", "fn:src/lib.rs::foo", "src/lib.rs", &rev)]),
     );
 
     let s1 = import_export(root.path(), &export, 1000).unwrap();
@@ -127,4 +127,57 @@ fn test_import_is_idempotent_per_revision() {
     assert_eq!(s1.records, s2.records);
     assert_eq!(s1.tests, s2.tests);
     assert_eq!(h1, h2);
+}
+
+// Region ids are qualified per site (SPEC-coverage-evidence §3.2). An export
+// with leaf-name ids (pre-qualification collector) would join `fn:new` in
+// a.rs with every other `new`; it must be refused so the store is
+// re-collected instead.
+#[test]
+fn test_import_rejects_legacy_leaf_name_region_ids() {
+    let root = tempfile::tempdir().unwrap();
+    let expdir = tempfile::tempdir().unwrap();
+    let rev = "a".repeat(40);
+    let export = write_export(
+        expdir.path(),
+        &jsonl(&[rec("t", "fn:foo", "src/lib.rs", &rev)]),
+    );
+    let err = import_export(root.path(), &export, 1).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("qualified"),
+        "legacy id must be refused with a re-collect hint: {err:#}"
+    );
+    assert!(load_index(root.path()).is_none(), "nothing written");
+}
+
+#[test]
+fn test_import_rejects_region_qualified_with_another_file() {
+    let root = tempfile::tempdir().unwrap();
+    let expdir = tempfile::tempdir().unwrap();
+    let rev = "a".repeat(40);
+    let export = write_export(
+        expdir.path(),
+        &jsonl(&[rec("t", "fn:src/other.rs::foo", "src/lib.rs", &rev)]),
+    );
+    let err = import_export(root.path(), &export, 1).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("file"),
+        "region/file mismatch must be refused: {err:#}"
+    );
+}
+
+#[test]
+fn test_import_rejects_hit_kind_that_disagrees_with_region_kind() {
+    let root = tempfile::tempdir().unwrap();
+    let expdir = tempfile::tempdir().unwrap();
+    let rev = "a".repeat(40);
+    let mut r = rec(
+        "t",
+        "branch:src/lib.rs::foo:cd6054b02dde",
+        "src/lib.rs",
+        &rev,
+    );
+    r.hit_kind = "region".into();
+    let export = write_export(expdir.path(), &jsonl(&[r]));
+    assert!(import_export(root.path(), &export, 1).is_err());
 }

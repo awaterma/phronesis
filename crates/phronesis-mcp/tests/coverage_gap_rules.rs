@@ -177,7 +177,7 @@ fn stale_coverage_warns_before_a_commit() {
     // here with a known-non-head revision).
     install_store(
         d.path(),
-        &[hit("t", "fn:safe_divide", "region")],
+        &[hit("t", "fn:src/lib.rs::safe_divide", "region")],
         &"c".repeat(40),
     );
 

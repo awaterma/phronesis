@@ -29,7 +29,7 @@ const NEW_SRC: &str = r#"pub fn safe_divide(numerator: i32, denominator: i32) ->
 }
 "#;
 
-const BRANCH_REGION: &str = "branch:safe_divide:cd6054b02dde";
+const BRANCH_REGION: &str = "branch:src/lib.rs::safe_divide:cd6054b02dde";
 
 /// The two safe_divide properties from spec §1 (the real fixture anchor).
 fn fixture_properties() -> Vec<Property> {
@@ -40,7 +40,7 @@ fn fixture_properties() -> Vec<Property> {
             kind: "postcondition".into(),
             condition: None,
             guarantee: None,
-            depends_on: vec!["fn:safe_divide".into()],
+            depends_on: vec!["fn:src/lib.rs::safe_divide".into()],
             source: PropertySource::ExplicitSpec,
             status: PropertyStatus::Accepted,
             corroborated_by: vec![],
@@ -102,7 +102,7 @@ fn edit_input<'a>(
         root: root.path(),
         rule_relations: rel,
         edited: vec![EditedFile {
-            path: "crates/phronesis-mcp/tests/fixtures/coverage-sample/src/lib.rs".into(),
+            path: "src/lib.rs".into(),
             old,
             new,
         }],
@@ -171,7 +171,7 @@ fn b1_staleness_join_names_only_the_branch_property() {
             root: d.path(),
             rule_relations: relations(&["changed_region", "test_hits_region"]),
             edited: vec![coverage_hydrate::EditedFile {
-                path: "crates/phronesis-mcp/tests/fixtures/coverage-sample/src/lib.rs".into(),
+                path: "src/lib.rs".into(),
                 old: Some(OLD_SRC),
                 new: NEW_SRC,
             }],
@@ -245,7 +245,7 @@ fn b2_observation_property_never_becomes_intent() {
         kind: "postcondition".into(),
         condition: None,
         guarantee: None,
-        depends_on: vec!["fn:safe_divide".into()],
+        depends_on: vec!["fn:src/lib.rs::safe_divide".into()],
         source: PropertySource::RuntimeObservation,
         status: PropertyStatus::Candidate,
         corroborated_by: vec!["log:run-42".into(), "test:zero_case".into()],
@@ -330,7 +330,7 @@ fn b4_gap_rule_still_warns_for_unpromoted_properties() {
         root: d.path(),
         rule_relations: relations(&["changed_region", "region_without_dynamic_evidence"]),
         edited: vec![coverage_hydrate::EditedFile {
-            path: "crates/phronesis-mcp/tests/fixtures/coverage-sample/src/lib.rs".into(),
+            path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
         }],
@@ -350,7 +350,8 @@ fn b4_gap_rule_still_warns_for_unpromoted_properties() {
         .map(|f| &f.args[0])
         .collect();
     assert!(
-        gaps.iter().any(|g| g.starts_with("fn:safe_divide")),
+        gaps.iter()
+            .any(|g| g.starts_with("fn:src/lib.rs::safe_divide")),
         "the coverage gap must still fire despite property records + passing results: {gaps:?}"
     );
 }
@@ -371,7 +372,7 @@ fn c5_hostile_property_payload_renders_inert_or_refuses() {
         kind: "postcondition".into(),
         condition: None,
         guarantee: None,
-        depends_on: vec!["fn:safe_divide".into()],
+        depends_on: vec!["fn:src/lib.rs::safe_divide".into()],
         source: PropertySource::ExplicitSpec,
         status: PropertyStatus::Accepted,
         corroborated_by: vec![],
@@ -480,6 +481,37 @@ fn c9_first_proof_obligation_fires_without_a_prior_result() {
     assert!(
         !obligations.is_empty() || facts.iter().any(|f| f.predicate == "changed_region"),
         "the obligation must be reachable for a never-proved property (C9)"
+    );
+}
+
+// A property store written before per-site region ids names regions by leaf
+// (`fn:safe_divide`). Such a reference cannot say which site it meant, so it
+// must match every same-leaf changed site (raising obligations) rather than
+// silently never matching a qualified id.
+#[test]
+fn legacy_leaf_name_depends_on_still_raises_obligations() {
+    let d = TempDir::new().unwrap();
+    let mut props = fixture_properties();
+    props[0].depends_on = vec!["fn:safe_divide".into()];
+    props[1].depends_on = vec!["branch:safe_divide:cd6054b02dde".into()];
+    write_properties(d.path(), &props);
+    let input = edit_input(
+        &d,
+        relations(&["property_obligation"]),
+        Some(OLD_SRC),
+        NEW_SRC,
+        Some(&"b".repeat(40)),
+    );
+    let obligated: HashSet<String> = facts_for_event(&input)
+        .unwrap()
+        .into_iter()
+        .filter(|f| f.predicate == "property_obligation")
+        .map(|f| f.args[0].clone())
+        .collect();
+    assert!(
+        obligated.contains("safe_divide.zero_returns_error")
+            && obligated.contains("safe_divide.nonzero_returns_quotient"),
+        "legacy references must match the changed sites: {obligated:?}"
     );
 }
 
@@ -767,7 +799,7 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
     .expect("coverage hydrate at revision B");
     let facts = cov;
 
-    // Assert 1: the fn:safe_divide region is still changed (it contains the
+    // Assert 1: the fn:src/lib.rs::safe_divide region is still changed (it contains the
     // edited line — this is a semantic-preserving change to safe_divide's body).
     let changed: Vec<&String> = facts
         .iter()
@@ -775,11 +807,13 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
         .map(|f| &f.args[1])
         .collect();
     assert!(
-        changed.iter().any(|r| r.starts_with("fn:safe_divide")),
-        "fn:safe_divide must still be changed: {changed:?}"
+        changed
+            .iter()
+            .any(|r| r.starts_with("fn:src/lib.rs::safe_divide")),
+        "fn:src/lib.rs::safe_divide must still be changed: {changed:?}"
     );
 
-    // Assert 2: the dynamic evidence for fn:safe_divide is still present —
+    // Assert 2: the dynamic evidence for fn:src/lib.rs::safe_divide is still present —
     // the store's hits join the changed region (no false gap).
     let gaps: Vec<&String> = facts
         .iter()
@@ -787,8 +821,10 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
         .map(|f| &f.args[0])
         .collect();
     assert!(
-        !gaps.iter().any(|g| g.starts_with("fn:safe_divide")),
-        "fn:safe_divide has dynamic evidence from the import — must not gap: {gaps:?}"
+        !gaps
+            .iter()
+            .any(|g| g.starts_with("fn:src/lib.rs::safe_divide")),
+        "fn:src/lib.rs::safe_divide has dynamic evidence from the import — must not gap: {gaps:?}"
     );
 
     // Assert 3: the completely_new_function region gaps (5.2 fires for it).
@@ -799,7 +835,9 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
 
     // Assert 3b: the branch anchor survives the reflow (whitespace-normalized).
     assert!(
-        changed.iter().any(|r| r.starts_with("branch:safe_divide:")),
+        changed
+            .iter()
+            .any(|r| r.starts_with("branch:src/lib.rs::safe_divide:")),
         "the branch region must survive the reflow: {changed:?}"
     );
 
@@ -835,7 +873,7 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
         net.fire_all_consequences().expect("fire")
     });
 
-    // The golden join pairs survive: 3 tests at fn:safe_divide + 1 branch pair
+    // The golden join pairs survive: 3 tests at fn:src/lib.rs::safe_divide + 1 branch pair
     // for rejects_zero_denominator — the same pairs as the original golden.
     let logged: Vec<&str> = consequences
         .iter()
@@ -843,7 +881,7 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
         .collect();
     let branch_pairs: Vec<&str> = logged
         .iter()
-        .filter(|p| p.contains("branch:safe_divide:"))
+        .filter(|p| p.contains("branch:src/lib.rs::safe_divide:"))
         .copied()
         .collect();
     assert_eq!(

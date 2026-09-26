@@ -32,7 +32,7 @@ fn round_trips_records_and_index() {
     };
     write_store(
         root.path(),
-        &[hit("t1", "fn:safe_divide", &"a".repeat(40))],
+        &[hit("t1", "fn:src/lib.rs::safe_divide", &"a".repeat(40))],
         &idx,
     )
     .unwrap();
@@ -51,13 +51,13 @@ fn replace_per_import_drops_prior_revision() {
     };
     write_store(
         root.path(),
-        &[hit("t1", "fn:safe_divide", &"a".repeat(40))],
+        &[hit("t1", "fn:src/lib.rs::safe_divide", &"a".repeat(40))],
         &idx(&"a".repeat(40)),
     )
     .unwrap();
     write_store(
         root.path(),
-        &[hit("t2", "fn:safe_divide", &"b".repeat(40))],
+        &[hit("t2", "fn:src/lib.rs::safe_divide", &"b".repeat(40))],
         &idx(&"b".repeat(40)),
     )
     .unwrap();

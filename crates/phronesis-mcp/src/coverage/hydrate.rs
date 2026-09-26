@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::coverage::region_map::changed_regions;
+use crate::coverage::region_map::{changed_regions, is_qualified_region_id};
 use crate::coverage::store::{load_hits, load_index};
 
 /// Every relation this module can assert. The hook demand-gates on this
@@ -69,12 +69,31 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
     {
         facts.push(fact("coverage_revision", vec![idx.revision.clone()]));
     }
-    if wants("coverage_stale")
-        && let (Some(idx), Some(sha)) = (&index, &input.head_sha)
-        && idx.revision != *sha
-    {
+    let revision_stale = matches!(
+        (&index, &input.head_sha),
+        (Some(idx), Some(sha)) if idx.revision != *sha
+    );
+    // A store imported before region ids were qualified per site
+    // (SPEC-coverage-evidence §3.2) carries leaf-name ids (`fn:new`) that
+    // name no single site. It is stale evidence whatever its revision: its
+    // hits are never joined (below), and rules see `coverage_stale` so the
+    // remedy — re-collect — is visible rather than a silent mis-join.
+    let wants_hits = wants("region_without_dynamic_evidence")
+        || wants("test_hits_region")
+        || wants("test_hits_branch");
+    let hits = if wants_hits || wants("coverage_stale") {
+        load_hits(input.root)?
+    } else {
+        Vec::new()
+    };
+    let legacy_ids = hits.iter().any(|h| !is_qualified_region_id(&h.region));
+    if wants("coverage_stale") && (revision_stale || legacy_ids) {
         facts.push(fact("coverage_stale", Vec::new()));
     }
+    let hits: Vec<_> = hits
+        .into_iter()
+        .filter(|h| is_qualified_region_id(&h.region))
+        .collect();
 
     // Closed-world gap evidence, bounded by the change: collect the changed
     // region identities first (the `no_direct_test` precedent — the host
@@ -93,7 +112,7 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
             .unwrap_or_else(|| "head:unknown".to_string());
 
         for edit in &input.edited {
-            let regions = changed_regions(edit.old.unwrap_or(""), edit.new)?;
+            let regions = changed_regions(&edit.path, edit.old.unwrap_or(""), edit.new)?;
             for region in regions.functions.iter().chain(regions.branches.iter()) {
                 changed_regions_out.push(region.clone());
                 if wants("changed_region") {
@@ -117,7 +136,6 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
             // Closed world over the WHOLE store (not the change-scoped
             // subset): "has any test ever executed this region?" is a
             // question about the imported evidence, not about this event.
-            let hits = load_hits(input.root)?;
             let hit_regions: HashSet<&str> = hits.iter().map(|h| h.region.as_str()).collect();
             for region in &changed_regions_out {
                 if !hit_regions.contains(region.as_str()) {
@@ -142,7 +160,7 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
     if wants("test_hits_region") || wants("test_hits_branch") {
         // Change scope: only hits whose file is part of this event.
         let edited_paths: HashSet<&str> = input.edited.iter().map(|e| e.path.as_str()).collect();
-        for hit in load_hits(input.root)? {
+        for hit in hits {
             if !edited_paths.contains(hit.file.as_str()) {
                 continue;
             }

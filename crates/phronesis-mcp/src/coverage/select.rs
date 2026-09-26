@@ -16,7 +16,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-use crate::coverage::region_map::{ChangedRegions, changed_regions};
+use crate::coverage::region_map::{ChangedRegions, changed_regions, file_segment};
 use crate::coverage::store::load_hits;
 use crate::graph::model::Edge;
 use crate::graph::store as graph_store;
@@ -42,9 +42,9 @@ pub struct SelectedTest {
 pub struct Selection {
     /// Change id used for this selection (`head:<short-sha>` or `--change` value).
     pub change: String,
-    /// Changed function region IDs (e.g. `fn:safe_divide`).
+    /// Changed function region IDs (e.g. `fn:src/lib.rs::safe_divide`).
     pub changed_functions: Vec<String>,
-    /// Changed branch region IDs (e.g. `branch:safe_divide:cd6054b02dde`).
+    /// Changed branch region IDs (e.g. `branch:src/lib.rs::safe_divide:cd6054b02dde`).
     pub changed_branches: Vec<String>,
     /// Selected tests, sorted by name then evidence kind. A test may appear
     /// twice: once per evidence kind.
@@ -118,7 +118,7 @@ pub fn changed_regions_from_diffs(diffs: &[FileDiff]) -> Result<ChangedRegions> 
     let mut functions = std::collections::BTreeSet::new();
     let mut branches = std::collections::BTreeSet::new();
     for diff in diffs {
-        let regions = changed_regions(diff.old.as_deref().unwrap_or(""), &diff.new)?;
+        let regions = changed_regions(&diff.path, diff.old.as_deref().unwrap_or(""), &diff.new)?;
         for f in regions.functions {
             functions.insert(f);
         }
@@ -177,35 +177,38 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
     let (static_available, static_note) = graph_freshness_status(root, &edges);
 
     if static_available {
-        // Build a set of bare function names (without fn: prefix) from
-        // changed regions, for matching against graph edge args.
-        let changed_fn_names: Vec<&str> = regions
-            .functions
+        // A graph function reaches a changed region only when the graph
+        // defines it in the region's own file under the same name. Leaf
+        // name alone would pair `other.rs::gamma` with a test of
+        // `unrelated.rs::gamma`; a function the graph never resolved to a
+        // definition (no `defines_fn`) pairs with nothing.
+        let defined_in: BTreeMap<&str, &str> = edges
             .iter()
-            .map(|s| s.strip_prefix("fn:").unwrap_or(s))
+            .filter(|e| e.p == "defines_fn" && e.a.len() == 2)
+            .map(|e| (e.a[1].as_str(), e.a[0].as_str()))
             .collect();
+        let reached = |func: &str| -> Vec<&String> {
+            let Some(file) = defined_in.get(func) else {
+                return Vec::new();
+            };
+            let leaf = func.rsplit("::").next().unwrap_or(func);
+            regions
+                .functions
+                .iter()
+                .filter(|region| static_region_matches(region, file, leaf))
+                .collect()
+        };
 
-        // tested_by: [function, test]
         for edge in &edges {
-            if edge.p == "tested_by" && edge.a.len() == 2 {
-                let func = &edge.a[0];
-                let test = &edge.a[1];
-                if fn_matches(func, &changed_fn_names) {
-                    let region = format!("fn:{}", func.rsplit("::").next().unwrap_or(func));
-                    add_entry(&mut by_test, test, STATIC_REACH, &region);
-                }
-            }
-        }
-
-        // test_reaches: [test, function]
-        for edge in &edges {
-            if edge.p == "test_reaches" && edge.a.len() == 2 {
-                let test = &edge.a[0];
-                let func = &edge.a[1];
-                if fn_matches(func, &changed_fn_names) {
-                    let region = format!("fn:{}", func.rsplit("::").next().unwrap_or(func));
-                    add_entry(&mut by_test, test, STATIC_REACH, &region);
-                }
+            let (test, func) = match edge.p.as_str() {
+                // tested_by: [function, test]
+                "tested_by" if edge.a.len() == 2 => (&edge.a[1], &edge.a[0]),
+                // test_reaches: [test, function]
+                "test_reaches" if edge.a.len() == 2 => (&edge.a[0], &edge.a[1]),
+                _ => continue,
+            };
+            for region in reached(func) {
+                add_entry(&mut by_test, test, STATIC_REACH, region);
             }
         }
     }
@@ -223,14 +226,19 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
     })
 }
 
-/// Check whether a graph function ID matches any of the changed function names.
-/// Graph function IDs may be canonical (`crate::safe_divide`) while changed
-/// regions are bare names (`safe_divide`), so we match on the last path segment.
-fn fn_matches(graph_func: &str, changed_names: &[&str]) -> bool {
-    let bare = graph_func.rsplit("::").next().unwrap_or(graph_func);
-    changed_names
-        .iter()
-        .any(|name| *name == bare || *name == graph_func)
+/// Whether the changed function region `region` is the function named
+/// `leaf` defined in `file`: the region's file segment must be `file`'s and
+/// its last item-path segment (ordinal dropped) must be `leaf`.
+fn static_region_matches(region: &str, file: &str, leaf: &str) -> bool {
+    let Some(item_path) = region
+        .strip_prefix("fn:")
+        .and_then(|rest| rest.strip_prefix(file_segment(file).as_str()))
+        .and_then(|rest| rest.strip_prefix("::"))
+    else {
+        return false;
+    };
+    let last = item_path.rsplit("::").next().unwrap_or(item_path);
+    last.split('.').next() == Some(leaf)
 }
 
 /// Add or merge a region into the entry for `(test, evidence)`.

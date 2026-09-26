@@ -4,6 +4,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use crate::coverage::region_map::{MAX_REGION_ID_BYTES, file_segment, is_qualified_region_id};
 use crate::coverage::store::{COVERAGE_FORMAT, CoverageIndex, HitRecord, write_store};
 
 #[derive(Debug)]
@@ -44,6 +45,43 @@ pub fn validate_record(rec: &HitRecord) -> Result<()> {
     }
     if rec.start_line > rec.end_line {
         return Err(anyhow!("start_line must be <= end_line"));
+    }
+    validate_region_id(rec)
+}
+
+/// Region ids must be in the per-site grammar (SPEC-coverage-evidence
+/// §3.2), agree with `hit_kind`, and be qualified with the record's own
+/// file — otherwise a hit would join a site it never executed.
+fn validate_region_id(rec: &HitRecord) -> Result<()> {
+    if !is_qualified_region_id(&rec.region) {
+        return Err(anyhow!(
+            "region '{}' is not a qualified region id (fn:<file>::<item-path> or \
+             branch:<file>::<item-path>:<anchor>); exports from before per-site ids \
+             must be re-collected with `phr-mcp coverage collect`",
+            rec.region
+        ));
+    }
+    let prefix = if rec.hit_kind == "branch" {
+        "branch:"
+    } else {
+        "fn:"
+    };
+    if !rec.region.starts_with(prefix) {
+        return Err(anyhow!(
+            "region '{}' does not match hit_kind '{}'",
+            rec.region,
+            rec.hit_kind
+        ));
+    }
+    // A capped id (§3.2: over-long ids are truncated and hashed) may have
+    // lost part of its file segment; every other id must start with it.
+    let qualified = format!("{prefix}{}::", file_segment(&rec.file));
+    if rec.region.len() < MAX_REGION_ID_BYTES && !rec.region.starts_with(&qualified) {
+        return Err(anyhow!(
+            "region '{}' is not qualified with the record's file '{}'",
+            rec.region,
+            rec.file
+        ));
     }
     Ok(())
 }

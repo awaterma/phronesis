@@ -83,9 +83,33 @@ The store holds **only the latest imported revision** (import replaces prior con
 
 Region identity is **not** `(file, start_line, end_line)` — raw line numbers drift across edits, and the sketch's §4 change (error-message text swap) would silently break region joins. Identity anchors to structural graph elements:
 
-- Function/method region: `fn:<qualified-name>` (the graph's element identity)
-- Branch site: `branch:<qualified-name>:<anchor>`, where `<anchor>` is a stable discriminator (condition-text hash); the exact scheme is decided by the Phase 1 spike and pinned by acceptance test A2, which requires the sketch's zero-denominator edit to map to the *same* branch site.
+Every region id names exactly one code site within a revision. A leaf function name is not enough: the same `new` exists in many files, and `if x == 0` can appear twice in one function; joining on either would let a hit on one site stand as evidence for, or select tests of, another.
+
+Grammar (`coverage/region_map.rs` is the single implementation; every id stays within the importer's identifier charset `[A-Za-z0-9_:./-]` and ≤256 bytes):
+
+```text
+fn-id      = "fn:" file "::" item-path
+branch-id  = "branch:" file "::" item-path ":" anchor [ "." ordinal ]
+file       = repo-relative path; a char outside [A-Za-z0-9_./-] becomes "_"
+             and the segment gains ".h" + 12 hex of FNV-1a(original path)
+item-path  = segment *( "::" segment )      ; outermost scope first
+segment    = name                            ; mod, trait, or fn name
+           | type [ ".as." trait ]           ; impl block (inherent / trait impl)
+           | "_"                             ; branch outside any fn
+anchor     = 12 hex of FNV-1a over the whitespace-normalized condition text
+```
+
+- `name`, `type`, and `trait` are the source text with whitespace removed, `::` rewritten to `.`, and every other character outside `[A-Za-z0-9_]` — generic brackets, `&`, `'`, `,`, non-ASCII — rewritten to `-`. Generics stay in the id, so `impl From<u8> for X` and `impl From<u16> for X` give `X.as.From-u8-::from` and `X.as.From-u16-::from`.
+- The file is the repo-relative path rather than a Rust module path: it is unique per file where a module path is not (`lib.rs` and `main.rs` are both crate roots; `src/bin/*.rs` are separate crates), and every producer already holds it.
+- Function ordinal: the encoding above is not injective, and cfg variants legitimately repeat an item path in one file, so a repeated item path gets `.2`, `.3`, … on its last segment in source order (`f`, `f.2`).
+- Branch ordinal: sites with the same enclosing function and the same anchor are numbered in source order; the first carries no suffix, later ones `.2`, `.3`, …. Whitespace-only reflow moves neither the anchor nor the order.
+- An id longer than 256 bytes keeps its first 242 bytes and appends `.h` + 12 hex of FNV-1a over the full id.
+- Example: the §1 fixture's zero-denominator branch is `branch:src/lib.rs::safe_divide:cd6054b02dde`; its function is `fn:src/lib.rs::safe_divide`.
 - Line spans ride along as display payload in the store record only.
+
+**Older stores must be re-collected.** Versions before per-site ids wrote leaf-name ids (`fn:new`, `branch:safe_divide:cd6054b02dde`). The importer rejects them, and also rejects an id that disagrees with its record's `hit_kind` or is qualified with a different file than the record's. A store already on disk with leaf-name ids is treated as stale: hydration asserts `coverage_stale` (whatever the revision), never asserts `test_hits_region`/`test_hits_branch` for those hits, and never lets them suppress `region_without_dynamic_evidence`; `coverage select` cannot match them. Re-run `phr-mcp coverage collect`. A property store (`SPEC-property-ontology.md`) whose `depends_on` still lists leaf-name ids keeps working conservatively — a leaf-name reference matches every changed site with that leaf name (and anchor) — until it is rewritten with qualified ids.
+
+The static half of `coverage select` pairs a graph function with a changed function region only when the graph's `defines_fn` places it in the region's file under the same name.
 
 Precedent: ownership sites (`SPEC-rust-ownership-evidence.md`) record spans under stable, queryable IDs.
 
@@ -96,7 +120,7 @@ Precedent: ownership sites (`SPEC-rust-ownership-evidence.md`) record spans unde
   "v": 1,
   "kind": "hit",
   "test": "rejects_zero_denominator",
-  "region": "branch:safe_divide:denominator==0",
+  "region": "branch:src/lib.rs::safe_divide:cd6054b02dde",
   "file": "src/lib.rs",
   "start_line": 3,
   "end_line": 5,
@@ -151,7 +175,7 @@ Notes:
 }
 ```
 
-This is sketch §5 verbatim, translated: `changed_region(?change, ?region) ⋈ test_hits_region(?test, ?region)`. The sketch's distinction `branch_relevant != function_relevant` falls out naturally — a test hits `fn:safe_divide` without hitting `branch:safe_divide:denominator==0`.
+This is sketch §5 verbatim, translated: `changed_region(?change, ?region) ⋈ test_hits_region(?test, ?region)`. The sketch's distinction `branch_relevant != function_relevant` falls out naturally — a test hits `fn:src/lib.rs::safe_divide` without hitting `branch:src/lib.rs::safe_divide:cd6054b02dde`.
 
 ### 5.2 The evidence gap — sketch §7, without engine negation
 
@@ -219,7 +243,7 @@ If a later rule needs to count relevant tests, the host re-asserts per-element `
 
 **A1 — Fixture.** `crates/phronesis-mcp/tests/fixtures/coverage-sample/`: the sketch's `safe_divide` + three tests verbatim; a committed, hand-checkable normalized export; a documented regeneration command.
 
-**A2 — Golden trace.** Hydrate → apply the sketch §4 edit (zero-denominator message change) → fire: rule 5.1 names `rejects_zero_denominator` for the branch site; `divides_positive_values` / `divides_negative_values` are relevant to `fn:safe_divide` but **not** to the branch site. The edit must also not break region identity (this pins §3.2).
+**A2 — Golden trace.** Hydrate → apply the sketch §4 edit (zero-denominator message change) → fire: rule 5.1 names `rejects_zero_denominator` for the branch site; `divides_positive_values` / `divides_negative_values` are relevant to `fn:src/lib.rs::safe_divide` but **not** to the branch site. The edit must also not break region identity (this pins §3.2).
 
 **A3 — Gap.** With an empty store, rule 5.2 fires for the changed region with the §7 message.
 

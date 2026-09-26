@@ -6,6 +6,24 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Coverage evidence joined different functions that shared a name.** Region
+  ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
+  test that executed `new` in one file counted as evidence for every other
+  `new`: `region_without_dynamic_evidence` stayed silent for code no test had
+  run, `phr-mcp coverage select` picked tests that never touched the edited
+  function, and two identical `if` conditions in one function shared one
+  branch id. Region ids are now unique per code site —
+  `fn:<file>::<item-path>` and `branch:<file>::<item-path>:<anchor>[.<n>]`,
+  qualified by file, module, impl type (generics included), and trait, with a
+  source-order ordinal for repeated conditions (SPEC-coverage-evidence §3.2).
+  The importer rejects the old ids; a store collected by an earlier version is
+  reported as `coverage_stale` and its hits are never joined, so run
+  `phr-mcp coverage collect` again. Property `depends_on` entries still using
+  the old ids keep matching conservatively (every same-named site) until
+  rewritten.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added

@@ -44,25 +44,25 @@ fn write_coverage_store(root: &std::path::Path) {
     let hits = vec![
         hit(
             "divides_positive_values",
-            "fn:safe_divide",
+            "fn:src/lib.rs::safe_divide",
             "src/lib.rs",
             "region",
         ),
         hit(
             "divides_negative_values",
-            "fn:safe_divide",
+            "fn:src/lib.rs::safe_divide",
             "src/lib.rs",
             "region",
         ),
         hit(
             "rejects_zero_denominator",
-            "fn:safe_divide",
+            "fn:src/lib.rs::safe_divide",
             "src/lib.rs",
             "region",
         ),
         hit(
             "rejects_zero_denominator",
-            "branch:safe_divide:cd6054b02dde",
+            "branch:src/lib.rs::safe_divide:cd6054b02dde",
             "src/lib.rs",
             "branch",
         ),
@@ -127,15 +127,15 @@ fn test_select_returns_rejects_zero_at_branch_granularity() {
     // Changed regions must include the branch site and the function.
     assert!(
         sel.changed_functions
-            .contains(&"fn:safe_divide".to_string()),
-        "changed_functions must include fn:safe_divide: {:?}",
+            .contains(&"fn:src/lib.rs::safe_divide".to_string()),
+        "changed_functions must include fn:src/lib.rs::safe_divide: {:?}",
         sel.changed_functions
     );
     assert!(
         sel.changed_branches
             .iter()
-            .any(|b| b.starts_with("branch:safe_divide:")),
-        "changed_branches must include a branch:safe_divide:* site: {:?}",
+            .any(|b| b.starts_with("branch:src/lib.rs::safe_divide:")),
+        "changed_branches must include a branch:src/lib.rs::safe_divide:* site: {:?}",
         sel.changed_branches
     );
 
@@ -155,12 +155,13 @@ fn test_select_returns_rejects_zero_at_branch_granularity() {
     assert!(
         rzd.regions
             .iter()
-            .any(|r| r.starts_with("branch:safe_divide:")),
+            .any(|r| r.starts_with("branch:src/lib.rs::safe_divide:")),
         "rejects_zero_denominator must carry the branch region: {:?}",
         rzd.regions
     );
     assert!(
-        rzd.regions.contains(&"fn:safe_divide".to_string()),
+        rzd.regions
+            .contains(&"fn:src/lib.rs::safe_divide".to_string()),
         "rejects_zero_denominator must also carry the function region: {:?}",
         rzd.regions
     );
@@ -172,15 +173,17 @@ fn test_select_returns_rejects_zero_at_branch_granularity() {
             .find(|t| &t.test == name)
             .expect("{name} must be selected at function level");
         assert!(
-            entry.regions.contains(&"fn:safe_divide".to_string()),
-            "{name} must carry fn:safe_divide: {:?}",
+            entry
+                .regions
+                .contains(&"fn:src/lib.rs::safe_divide".to_string()),
+            "{name} must carry fn:src/lib.rs::safe_divide: {:?}",
             entry.regions
         );
         assert!(
             !entry
                 .regions
                 .iter()
-                .any(|r| r.starts_with("branch:safe_divide:")),
+                .any(|r| r.starts_with("branch:src/lib.rs::safe_divide:")),
             "{name} must NOT carry a branch region: {:?}",
             entry.regions
         );
@@ -373,7 +376,12 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
 
     write_store(
         dir,
-        &[hit(&test_id, "fn:alpha", "src/lib.rs", "region")],
+        &[hit(
+            &test_id,
+            "fn:src/lib.rs::alpha",
+            "src/lib.rs",
+            "region",
+        )],
         &CoverageIndex {
             format: COVERAGE_FORMAT,
             revision: FIXTURE_REV.into(),
@@ -402,14 +410,16 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
         .collect();
     assert_eq!(dynamic.len(), 1, "one dynamic entry: {:?}", sel.tests);
     assert_eq!(stat.len(), 1, "one static entry: {:?}", sel.tests);
-    assert_eq!(dynamic[0].regions, vec!["fn:alpha".to_string()]);
+    assert_eq!(dynamic[0].regions, vec!["fn:src/lib.rs::alpha".to_string()]);
     assert!(
-        stat[0].regions.contains(&"fn:beta".to_string()),
-        "static entry must carry fn:beta: {:?}",
+        stat[0].regions.contains(&"fn:src/lib.rs::beta".to_string()),
+        "static entry must carry fn:src/lib.rs::beta: {:?}",
         stat[0].regions
     );
     assert!(
-        !stat[0].regions.contains(&"fn:alpha".to_string()),
+        !stat[0]
+            .regions
+            .contains(&"fn:src/lib.rs::alpha".to_string()),
         "alpha has no static edge from this test: {:?}",
         stat[0].regions
     );
@@ -422,8 +432,8 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
         .and_then(|rest| rest.split("static_reach (graph edges):").next())
         .expect("dynamic section must be rendered");
     assert!(
-        !dynamic_section.contains("fn:beta"),
-        "fn:beta leaked into the dynamic section: {table}"
+        !dynamic_section.contains("fn:src/lib.rs::beta"),
+        "fn:src/lib.rs::beta leaked into the dynamic section: {table}"
     );
     assert!(
         table.contains("static_reach (graph edges):"),
