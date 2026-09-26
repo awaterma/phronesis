@@ -42,6 +42,14 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   run. The project root is matched as a whole component, so a sibling
   `…/project2` is no longer rewritten to `/home/dev/project2`.
 
+- **Governance switched off inside some git worktrees.** For a worktree created
+  with `git worktree add --relative-paths`, a hook run from a subdirectory
+  resolved the worktree's relative `gitdir` against the current directory, so
+  it either found no `.phronesis` (every rule skipped) or, in a nested
+  checkout, found an unrelated project's rules. The `gitdir` is now resolved
+  against the directory holding the `.git` file, and the main checkout root is
+  canonicalized.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
