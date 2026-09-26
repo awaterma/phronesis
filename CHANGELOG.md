@@ -15,6 +15,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   re-asserted. Fired activations are now typed `(rule, facts)` keys, and a
   retraction clears exactly the activations that used the retracted fact.
 
+- **Journal compaction could change the confidence band.** Compaction kept only
+  each subject's latest outcome record, but confidence signals are "latest per
+  kind" (compile, tests, each proof property, each bug). Dropping an older
+  record could grant a proof signal that had been withheld (an older failing
+  property vanished while a newer passing one survived) or drop a compile
+  signal. Compaction now keeps the latest record for every signal each
+  subject's reader can see, and a randomized test checks that signals are
+  identical before and after.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
