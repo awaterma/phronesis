@@ -152,7 +152,11 @@ pub const MAX_JOURNAL_BYTES_DEFAULT: u64 = 16 * 1024 * 1024;
 /// Upper bound on the env override, mirroring the action log's ceiling.
 pub const MAX_JOURNAL_BYTES_CEILING: u64 = 1024 * 1024 * 1024;
 /// Records retained unconditionally at the tail. Equal to `SUFFIX_HARD_CAP`
-/// so compaction can never drop a record the readers could still see.
+/// so compaction can never drop a record the positional reader
+/// (`read_recent`) could still see. The subject-filtered reader
+/// (`read_recent_subject`) can see further back than the tail; for it the
+/// guarantee is weaker but sufficient: compaction may drop visible records,
+/// never a signal — see `retained_prefix_indices`.
 pub const COMPACT_TAIL_RECORDS: usize = SUFFIX_HARD_CAP;
 
 fn dir(root: &Path) -> PathBuf {
@@ -221,12 +225,14 @@ fn over_cap(path: &Path, max_bytes: u64) -> bool {
 }
 
 /// Compact the journal when it exceeds `max_bytes`: retain the most recent
-/// `tail_records` records plus, for every subject appearing in the dropped
-/// prefix, its most recent `outcome:*`-bearing record that carries a
-/// **grounded** signal (so each work unit's latest grounded build/test
-/// result survives for confidence banding). `outcome:compile_unknown` is
-/// deliberately excluded from retention because absent evidence must not
-/// displace grounded evidence.
+/// `tail_records` records, the retained lifecycle records, and, for every
+/// subject, the latest record carrying each grounded signal slot derivation
+/// reads (latest build, latest test run, latest result per proof property,
+/// latest run-level proof marker, latest check per bug id) — so every work
+/// unit's confidence signals are identical before and after compaction
+/// (see `retained_prefix_indices`). `outcome:compile_unknown` grounds no slot
+/// and is never retained for its own sake: absent evidence must not displace
+/// grounded evidence.
 /// Atomic rewrite (temp file + fsync + rename) under the stable lock file
 /// shared with appenders; never blind-truncates. Returns whether a
 /// compaction ran.
@@ -290,9 +296,20 @@ fn read_records(path: &Path) -> Result<Vec<JournalRecord>, JournalError> {
 }
 
 fn compacted_content(all: &[JournalRecord], tail_records: usize) -> Result<String, JournalError> {
+    compacted_content_with_cap(all, tail_records, SUFFIX_HARD_CAP)
+}
+
+/// `compacted_content` against a reader whose per-subject window is
+/// `subject_cap` records (`read_recent_subject`'s cap; `SUFFIX_HARD_CAP` in
+/// production, parameterized so tests can exercise the cap).
+fn compacted_content_with_cap(
+    all: &[JournalRecord],
+    tail_records: usize,
+    subject_cap: usize,
+) -> Result<String, JournalError> {
     let split = all.len() - tail_records;
     let (prefix, tail) = all.split_at(split);
-    let keep = latest_outcome_indices(prefix);
+    let keep = retained_prefix_indices(all, split, subject_cap);
     serialize_compaction(prefix, tail, &keep)
 }
 
@@ -308,7 +325,8 @@ fn compacted_content(all: &[JournalRecord], tail_records: usize) -> Result<Strin
 ///
 /// The retained set is bounded by human turns and commits, not by tool calls,
 /// so the growth it adds is an order of magnitude below the tail it lives
-/// beside; no further cap ships in v1.
+/// beside; no further cap ships in v1. Lifecycle records carry no `outcome:*`
+/// tags, so retaining them unconditionally never feeds derivation.
 const RETAINED_LIFECYCLE_TAGS: [&str; 7] = [
     "lifecycle:commit",
     "lifecycle:interrupt",
@@ -319,26 +337,57 @@ const RETAINED_LIFECYCLE_TAGS: [&str; 7] = [
     "lifecycle:unit_end",
 ];
 
-fn latest_outcome_indices(prefix: &[JournalRecord]) -> Vec<usize> {
-    let mut latest: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+/// Indices (into `all[..split]`, the dropped prefix) of the records that
+/// must survive compaction, in append order:
+///
+/// - every record carrying a `RETAINED_LIFECYCLE_TAGS` tag;
+/// - for every subject, the latest carrier of each `SignalKey` among the
+///   records `read_recent_subject(subject, subject_cap)` can see — the latest
+///   build, the latest test run, the latest result per proof property, the
+///   latest run-level proof marker, the latest check per bug id — unless the
+///   tail already holds a later carrier.
+///
+/// Signals are derived latest-per-key (`outcomes::derive::signals_from`), so
+/// keeping exactly those carriers, in their original order, leaves every
+/// subject's signals unchanged; keeping one record per subject did not (an
+/// older failed proof property or build result could be dropped behind a
+/// newer record of another family). The key vocabulary is
+/// `outcomes::derive::signal_key`, the same parser derivation uses.
+fn retained_prefix_indices(all: &[JournalRecord], split: usize, subject_cap: usize) -> Vec<usize> {
+    use crate::outcomes::derive::{SignalKey, signal_key};
+    use std::collections::{HashMap, HashSet};
+
+    let mut visible: HashMap<&str, usize> = HashMap::new();
+    let mut claimed: HashSet<(&str, SignalKey<'_>)> = HashSet::new();
     let mut keep: Vec<usize> = Vec::new();
-    for (i, r) in prefix.iter().enumerate() {
-        if r.tags
-            .iter()
-            .any(|t| RETAINED_LIFECYCLE_TAGS.contains(&t.as_str()))
-        {
-            keep.push(i);
-            continue;
-        }
-        if let Some(s) = r.subject.as_deref()
+    // Newest first: the first carrier of a key seen is its latest one.
+    for (i, r) in all.iter().enumerate().rev() {
+        let in_prefix = i < split;
+        if in_prefix
             && r.tags
                 .iter()
-                .any(|t| crate::outcomes::is_grounded_outcome_tag(t))
+                .any(|t| RETAINED_LIFECYCLE_TAGS.contains(&t.as_str()))
         {
-            latest.insert(s, i);
+            keep.push(i);
+        }
+        let Some(s) = r.subject.as_deref() else {
+            continue;
+        };
+        let seen = visible.entry(s).or_insert(0);
+        *seen += 1;
+        if *seen > subject_cap {
+            // Older than the reader's per-subject window: derivation never
+            // sees it, so it carries no signal worth keeping.
+            continue;
+        }
+        let mut carries_latest = false;
+        for key in r.tags.iter().filter_map(|t| signal_key(t)) {
+            carries_latest |= claimed.insert((s, key));
+        }
+        if in_prefix && carries_latest {
+            keep.push(i);
         }
     }
-    keep.extend(latest.into_values());
     keep.sort_unstable();
     keep.dedup();
     keep
@@ -444,7 +493,10 @@ pub fn read_recent(root: &Path, n: usize) -> Result<Vec<JournalRecord>, JournalE
 /// Subject-filtered over the whole journal (the journal is bounded by
 /// compaction), capped at the last `min(n, SUFFIX_HARD_CAP)` matching
 /// records — this is what makes the compactor's per-subject preserved
-/// outcomes reachable. Lock-free, same rationale as `read_recent`.
+/// outcomes reachable. Compaction may drop matching records this reader
+/// could see (superseded outcomes, outcome-less noise), but never one that
+/// changes the signals derived from the `SUFFIX_HARD_CAP` window. Lock-free,
+/// same rationale as `read_recent`.
 pub fn read_recent_subject(
     root: &Path,
     subject: &str,
@@ -966,5 +1018,155 @@ mod tests {
                 .any(|r| r.tags.iter().any(|t| t == "outcome:compile_ok")),
             "compile_ok must survive compaction subject filter; records = {for_u:?}"
         );
+    }
+
+    // ── Compaction must not change any subject's derived confidence signals ──
+
+    /// What `outcomes::derive::signals` computes for `subject` over `recs`,
+    /// with `read_recent_subject`'s filter-then-cap applied in memory.
+    fn signals_over(
+        recs: &[JournalRecord],
+        subject: &str,
+        cap: usize,
+    ) -> Vec<crate::outcomes::OutcomeFact> {
+        use crate::outcomes::derive::{entries_from, signals_from};
+        let filtered: Vec<JournalRecord> = recs
+            .iter()
+            .filter(|r| r.subject.as_deref() == Some(subject))
+            .cloned()
+            .collect();
+        let start = filtered.len().saturating_sub(cap);
+        signals_from(subject, &entries_from(subject, &filtered[start..]))
+    }
+
+    fn signal_names(root: &Path, subject: &str) -> Vec<String> {
+        crate::outcomes::derive::signals(root, subject)
+            .expect("signals read")
+            .into_iter()
+            .map(|f| f.args[1].clone())
+            .collect()
+    }
+
+    fn append_ok(root: &Path, rec: &JournalRecord) {
+        append(root, rec).expect("append");
+    }
+
+    #[test]
+    fn compaction_does_not_grant_proof_by_dropping_an_older_failed_property() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        append_ok(dir.path(), &tagged(1, "u", &["outcome:proof_fail:P1"]));
+        append_ok(dir.path(), &tagged(2, "u", &["outcome:proof_pass:P2"]));
+        for seq in 3..=5 {
+            append_ok(dir.path(), &record(seq, None));
+        }
+        assert!(
+            signal_names(dir.path(), "u").is_empty(),
+            "P1 failed: no proof"
+        );
+        assert!(maybe_compact(dir.path(), 1, 3).expect("compact"));
+        assert!(
+            signal_names(dir.path(), "u").is_empty(),
+            "compaction must not grant a proof signal by dropping P1's failure"
+        );
+    }
+
+    #[test]
+    fn compaction_keeps_the_latest_carrier_of_every_signal_family() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        append_ok(dir.path(), &tagged(1, "w", &["outcome:compile_ok"]));
+        append_ok(dir.path(), &tagged(2, "w", &["outcome:test_pass"]));
+        for seq in 3..=5 {
+            append_ok(dir.path(), &record(seq, None));
+        }
+        assert_eq!(signal_names(dir.path(), "w"), vec!["compile", "tests"]);
+        assert!(maybe_compact(dir.path(), 1, 3).expect("compact"));
+        assert_eq!(
+            signal_names(dir.path(), "w"),
+            vec!["compile", "tests"],
+            "compaction must not drop w's compile signal"
+        );
+    }
+
+    /// Random journals over a few subjects and the whole outcome-tag
+    /// vocabulary (plus lifecycle and non-outcome noise), compacted at a
+    /// random tail and a random per-subject reader cap: every subject's
+    /// signals must be identical before and after.
+    #[test]
+    fn compaction_preserves_signals_for_every_subject_on_random_journals() {
+        use rand::rngs::StdRng;
+        use rand::{Rng, SeedableRng};
+
+        const SUBJECTS: [&str; 3] = ["a", "b", "c"];
+        const TAGS: [&str; 17] = [
+            "outcome:compile_ok",
+            "outcome:compile_error",
+            "outcome:compile_unknown",
+            "outcome:test_pass",
+            "outcome:test_fail",
+            "outcome:proof_pass:P1",
+            "outcome:proof_pass:P2",
+            "outcome:proof_pass:P3",
+            "outcome:proof_fail:P1",
+            "outcome:proof_fail:P2",
+            "outcome:proof_fail:P3",
+            "outcome:proof_run_fail",
+            "outcome:proof_run_inconclusive",
+            "outcome:bug_caught:1",
+            "outcome:bug_caught:2",
+            "outcome:unrecognized",
+            "build",
+        ];
+        const LIFECYCLE_TAGS: [&str; 3] = [
+            "lifecycle:commit",
+            "lifecycle:unit_start",
+            "lifecycle:prompt",
+        ];
+
+        let mut rng = StdRng::seed_from_u64(0x5eed_c0de);
+        for case in 0..3000 {
+            let len = rng.gen_range(1..=40usize);
+            let mut all = Vec::with_capacity(len);
+            for seq in 0..len as u64 {
+                let subject = SUBJECTS
+                    .get(rng.gen_range(0..5usize))
+                    .map(|s| s.to_string());
+                let mut rec = JournalRecord {
+                    subject,
+                    ..record(seq, None)
+                };
+                if rng.gen_range(0..8) == 0 {
+                    // Lifecycle records carry the open subject but never an
+                    // outcome tag.
+                    rec.tool = LIFECYCLE_TOOL.to_string();
+                    rec.kind = Some("commit".to_string());
+                    rec.tags = vec![LIFECYCLE_TAGS[rng.gen_range(0..LIFECYCLE_TAGS.len())].into()];
+                } else {
+                    for _ in 0..rng.gen_range(0..=3) {
+                        rec.tags
+                            .push(TAGS[rng.gen_range(0..TAGS.len())].to_string());
+                    }
+                }
+                all.push(rec);
+            }
+            let tail = rng.gen_range(0..len);
+            let cap = if case % 2 == 0 {
+                SUFFIX_HARD_CAP
+            } else {
+                rng.gen_range(1..=12usize)
+            };
+            let out = compacted_content_with_cap(&all, tail, cap).expect("compact");
+            let compacted: Vec<JournalRecord> = out
+                .lines()
+                .map(|l| serde_json::from_str(l).expect("compacted line parses"))
+                .collect();
+            for s in SUBJECTS {
+                assert_eq!(
+                    signals_over(&compacted, s, cap),
+                    signals_over(&all, s, cap),
+                    "case {case}: subject {s} signals changed by compaction \
+                     (tail {tail}, cap {cap})\nbefore: {all:#?}\nafter: {compacted:#?}"
+                );
+            }
+        }
     }
 }

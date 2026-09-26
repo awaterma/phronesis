@@ -44,87 +44,119 @@ pub fn band(root: &Path, subject: &str) -> Result<Band, journal::JournalError> {
     Ok(Band::from_signal_count(signals(root, subject)?.len()))
 }
 
+/// One `outcome:*` journal tag, parsed. This is the **single** outcome-tag
+/// vocabulary: `entries_from` (derivation), `signal_key` (compaction
+/// retention) and `is_grounded_outcome_tag` all read it, so the three cannot
+/// drift apart. `outcome:compile_unknown` (Task 4 decision) and any tag this
+/// enum does not name parse to `None`: an unknown run produced no evidence,
+/// so it neither grounds a signal nor clobbers an earlier grounded result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutcomeTag<'a> {
+    Build { passed: bool },
+    Test { passed: bool },
+    Proof { property: &'a str, passed: bool },
+    ProofRun { status: &'static str },
+    BugCaught { id: &'a str },
+}
+
+impl<'a> OutcomeTag<'a> {
+    fn parse(tag: &'a str) -> Option<Self> {
+        match tag {
+            "outcome:compile_ok" => Some(Self::Build { passed: true }),
+            "outcome:compile_error" => Some(Self::Build { passed: false }),
+            "outcome:test_pass" => Some(Self::Test { passed: true }),
+            "outcome:test_fail" => Some(Self::Test { passed: false }),
+            "outcome:proof_run_fail" => Some(Self::ProofRun { status: "failed" }),
+            "outcome:proof_run_inconclusive" => Some(Self::ProofRun {
+                status: "inconclusive",
+            }),
+            _ => {
+                if let Some(property) = tag.strip_prefix("outcome:proof_pass:") {
+                    Some(Self::Proof {
+                        property,
+                        passed: true,
+                    })
+                } else if let Some(property) = tag.strip_prefix("outcome:proof_fail:") {
+                    Some(Self::Proof {
+                        property,
+                        passed: false,
+                    })
+                } else {
+                    tag.strip_prefix("outcome:bug_caught:")
+                        .map(|id| Self::BugCaught { id })
+                }
+            }
+        }
+    }
+
+    /// The `(predicate, args)` shape `signals_from` consumes.
+    fn entry(self, subject: &str) -> DerivedEntry {
+        let (predicate, args): (&str, Vec<&str>) = match self {
+            Self::Build { passed } => ("build_outcome", vec![if passed { "pass" } else { "fail" }]),
+            // synthetic counts: passed, failed, total — the shape signals_from reads.
+            Self::Test { passed: true } => ("test_outcome", vec!["1", "0", "1"]),
+            Self::Test { passed: false } => ("test_outcome", vec!["0", "1", "1"]),
+            Self::Proof { property, passed } => (
+                "proof_outcome",
+                vec![property, if passed { "passed" } else { "failed" }],
+            ),
+            Self::ProofRun { status } => ("proof_run_outcome", vec![status]),
+            Self::BugCaught { id } => ("bug_check_outcome", vec![id, "fixed"]),
+        };
+        DerivedEntry {
+            predicate: predicate.to_string(),
+            args: std::iter::once(subject)
+                .chain(args)
+                .map(str::to_string)
+                .collect(),
+        }
+    }
+
+    /// The latest-wins slot this tag's entry occupies in `signals_from`.
+    fn key(self) -> SignalKey<'a> {
+        match self {
+            Self::Build { .. } => SignalKey::Build,
+            Self::Test { .. } => SignalKey::Test,
+            Self::Proof { property, .. } => SignalKey::Proof(property),
+            Self::ProofRun { .. } => SignalKey::ProofRun,
+            Self::BugCaught { id } => SignalKey::Bug(id),
+        }
+    }
+}
+
+/// A slot `signals_from` reads "latest wins" from: the latest build, the
+/// latest test run, the latest result per proof property, the latest
+/// run-level proof marker, and the latest check per bug id. The signals a
+/// subject's entries yield are a function of the latest carrier of each key
+/// (and, for proof, of the relative order of each property's latest result
+/// and the latest run marker) — so retaining exactly those records, in
+/// order, preserves every signal. Journal compaction relies on this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SignalKey<'a> {
+    Build,
+    Test,
+    Proof(&'a str),
+    ProofRun,
+    Bug(&'a str),
+}
+
+/// The latest-wins slot `tag` feeds in derivation, or `None` when the tag
+/// carries no grounded signal (non-outcome tags, `outcome:compile_unknown`,
+/// unrecognized `outcome:*` tags).
+pub fn signal_key(tag: &str) -> Option<SignalKey<'_>> {
+    OutcomeTag::parse(tag).map(OutcomeTag::key)
+}
+
 /// Translate a slice of journey records carrying `outcome:*` tags into the
 /// `(predicate, args)` shape the legacy `signals_from` consumes. Append
 /// order is preserved.
 pub fn entries_from(subject: &str, records: &[JournalRecord]) -> Vec<DerivedEntry> {
-    let mut out = Vec::new();
-    for rec in records {
-        for tag in &rec.tags {
-            match tag.as_str() {
-                "outcome:compile_ok" => out.push(DerivedEntry {
-                    predicate: "build_outcome".to_string(),
-                    args: vec![subject.to_string(), "pass".to_string()],
-                }),
-                "outcome:compile_error" => out.push(DerivedEntry {
-                    predicate: "build_outcome".to_string(),
-                    args: vec![subject.to_string(), "fail".to_string()],
-                }),
-                "outcome:test_pass" => out.push(DerivedEntry {
-                    predicate: "test_outcome".to_string(),
-                    args: vec![
-                        subject.to_string(),
-                        "1".to_string(),
-                        "0".to_string(),
-                        "1".to_string(),
-                    ],
-                }),
-                "outcome:test_fail" => out.push(DerivedEntry {
-                    predicate: "test_outcome".to_string(),
-                    args: vec![
-                        subject.to_string(),
-                        "0".to_string(),
-                        "1".to_string(),
-                        "1".to_string(),
-                    ],
-                }),
-                t if t.starts_with("outcome:proof_pass:") => {
-                    let property = &t["outcome:proof_pass:".len()..];
-                    out.push(DerivedEntry {
-                        predicate: "proof_outcome".to_string(),
-                        args: vec![
-                            subject.to_string(),
-                            property.to_string(),
-                            "passed".to_string(),
-                        ],
-                    });
-                }
-                t if t.starts_with("outcome:proof_fail:") => {
-                    let property = &t["outcome:proof_fail:".len()..];
-                    out.push(DerivedEntry {
-                        predicate: "proof_outcome".to_string(),
-                        args: vec![
-                            subject.to_string(),
-                            property.to_string(),
-                            "failed".to_string(),
-                        ],
-                    });
-                }
-                "outcome:proof_run_fail" => out.push(DerivedEntry {
-                    predicate: "proof_run_outcome".to_string(),
-                    args: vec![subject.to_string(), "failed".to_string()],
-                }),
-                "outcome:proof_run_inconclusive" => out.push(DerivedEntry {
-                    predicate: "proof_run_outcome".to_string(),
-                    args: vec![subject.to_string(), "inconclusive".to_string()],
-                }),
-                t if t.starts_with("outcome:bug_caught:") => {
-                    let id = &t["outcome:bug_caught:".len()..];
-                    out.push(DerivedEntry {
-                        predicate: "bug_check_outcome".to_string(),
-                        args: vec![subject.to_string(), id.to_string(), "fixed".to_string()],
-                    });
-                }
-                // `outcome:compile_unknown` (Task 4 decision): an unknown run
-                // produced no evidence, so it carries no signal in either
-                // direction — it neither grounds a compile signal nor
-                // clobbers an earlier grounded pass/fail via latest-wins.
-                "outcome:compile_unknown" => {}
-                _ => {}
-            }
-        }
-    }
-    out
+    records
+        .iter()
+        .flat_map(|rec| rec.tags.iter())
+        .filter_map(|tag| OutcomeTag::parse(tag))
+        .map(|t| t.entry(subject))
+        .collect()
 }
 
 fn latest<'a>(entries: &'a [DerivedEntry], predicate: &str) -> Option<&'a DerivedEntry> {
