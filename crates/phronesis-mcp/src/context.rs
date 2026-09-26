@@ -746,7 +746,7 @@ mod tests {
         let mut f = std::fs::File::create(&rules_path).unwrap();
         write!(
             f,
-            r#"{{"rules":[{{"id":"r1","phase":"pre","priority":10,"conditions":[],"actions":[{{"action_type":"constraint_violation","params":["Don't do X"]}}]}}]}}"#
+            r#"{{"rules":[{{"id":"r1","phase":"pre","priority":10,"conditions":[{{"predicate":"p","args":["x"]}}],"actions":[{{"action_type":"constraint_violation","params":["Don't do X"]}}]}}]}}"#
         )
         .unwrap();
 
@@ -790,7 +790,7 @@ mod tests {
         let mut f = std::fs::File::create(ep.join("rules.json")).unwrap();
         write!(
             f,
-            r#"{{"rules":[{{"id":"r1","phase":"pre","priority":10,"conditions":[],"actions":[{{"action_type":"constraint_violation","params":["Don't do X"]}}]}}]}}"#
+            r#"{{"rules":[{{"id":"r1","phase":"pre","priority":10,"conditions":[{{"predicate":"p","args":["x"]}}],"actions":[{{"action_type":"constraint_violation","params":["Don't do X"]}}]}}]}}"#
         ).unwrap();
         let out = run_session_context(dir.path(), DEFAULT_MAX_BYTES);
         let body = serde_json::from_str::<serde_json::Value>(&out).unwrap()
@@ -887,7 +887,7 @@ mod tests {
         std::fs::write(ep.join("kernel.md"), "Always-on kernel line.\n").expect("write kernel");
         std::fs::write(
             ep.join("rules.json"),
-            r#"{"rules":[{"id":"r1","phase":"pre","priority":10,"conditions":[],"actions":[{"action_type":"constraint_violation","params":["Don't do X"]}]}]}"#,
+            r#"{"rules":[{"id":"r1","phase":"pre","priority":10,"conditions":[{"predicate":"p","args":["x"]}],"actions":[{"action_type":"constraint_violation","params":["Don't do X"]}]}]}"#,
         )
         .expect("write rules");
         let entry = LogEntry::new("hook", "pre_check")

@@ -1286,10 +1286,10 @@ async fn handle_audit(
             Ok(resolved) => RulesFile {
                 rules: resolved.rules,
             },
-            Err(e) => {
-                eprintln!("phronesis: cannot read rules file: {}", e);
-                return Ok(());
-            }
+            // Fail closed: a rules file the hooks refuse to load must not
+            // produce a clean (exit 0) audit, or `--fail-on block` in CI
+            // would pass on a file that governs nothing.
+            Err(e) => anyhow::bail!("cannot read rules file: {}", e),
         }
     };
     if rules.rules.is_empty() {

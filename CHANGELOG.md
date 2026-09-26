@@ -124,6 +124,20 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   the agenda, where firing one failed with `ProductionStateNotFound`. Removing
   a rule now clears both.
 
+- **A rule with a typo loaded silently and allowed everything it was written
+  to stop.** A rule meant to block `git push --force` let the push through
+  (exit 0) when its verb was `"Block"`, its phase was `"Pre"`, its `when` was
+  empty, a v1 argument was not a string, a v1 rule carried a second action or
+  named a v2 verb as its `action_type`, or a key was mis-cased (`"Phase"`).
+  These shapes now fail closed at load, exactly like malformed JSON:
+  `pre-check` blocks, `post-check` warns, `codex-hook` denies, `phr-mcp audit`
+  exits non-zero (it used to print the load error and exit 0, so
+  `--fail-on block` passed in CI), and the MCP `load_rules_file` and
+  `add_rule` tools return an error. The message names the rule id, the field,
+  the bad value, and the allowed values. Duplicate rule ids within one file
+  are rejected too. Unknown predicate names are still accepted, because
+  project Rhai providers define predicates at run time.
+
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
   `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose

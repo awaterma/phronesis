@@ -287,6 +287,16 @@ impl EpistemeMcp {
         Parameters(params): Parameters<AddRuleParams>,
     ) -> Result<CallToolResult, McpError> {
         Self::validate_rule_params(&params).map_err(|e| Self::err(e.to_string()))?;
+        // The same shape checks the rules-file loader applies, so a rule the
+        // hook would refuse to load is refused here instead of being saved.
+        rules_file::check_conditions_nonempty(&params.id, "conditions", params.conditions.len())
+            .map_err(Self::err)?;
+        rules_file::check_single_action(&params.id, "actions", params.actions.len())
+            .map_err(Self::err)?;
+        for action in &params.actions {
+            rules_file::check_action_type(&params.id, "action_type", &action.action_type)
+                .map_err(Self::err)?;
+        }
         for action in &params.actions {
             if action.action_type == "emit_capsule" {
                 let data = action

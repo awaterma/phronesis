@@ -217,8 +217,15 @@ fn load_rules(phase: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
     if !project_path.exists() && !loader_path.exists() {
         return Ok(None);
     }
+    // Name the file the resolver started from: `loader.json` only when it
+    // exists, otherwise the project `rules.json`.
+    let entry_path = if loader_path.exists() {
+        &loader_path
+    } else {
+        &project_path
+    };
     let resolved = crate::rule_layers::resolve(&root).map_err(|e| RulesLoadError::Load {
-        path: loader_path.display().to_string(),
+        path: entry_path.display().to_string(),
         message: e.to_string(),
     })?;
 
