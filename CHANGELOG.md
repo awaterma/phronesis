@@ -8,6 +8,18 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **A predicate provider could forge the evidence a gate rule trusts.**
+  Providers in `.phronesis/predicates/` — which an agent can write through
+  `add_predicate_provider` — could `emit_fact` any predicate, so a two-line
+  script emitting `signal_pass` turned a low-confidence block into a pass.
+  Host-owned predicates (`signal_*`, `journey_*`, `rule_overridden`, outcome,
+  clock, coverage, property, graph, AST, and hook content facts,
+  `store_corrupt`) are now reserved: a provider that emits one fails, all of
+  its facts for that event are dropped, and the pre-hook blocks with a
+  diagnostic naming the provider and predicate. `add_predicate_provider`
+  refuses a literal reserved emit up front. Project vocabularies such as
+  `change_set_*` are unaffected.
+
 - **Guard and provider scripts could call `eval`.** Only the artifact render
   engine disabled it, although the crate documentation said none of the
   engines allowed it. `eval` is now disabled in every Rhai engine, so a guard

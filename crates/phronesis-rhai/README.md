@@ -65,6 +65,13 @@ contains batch `files`. Multi-file hosts evaluate providers once with `files`
 populated and separately for each file with `file_path` populated, allowing a
 provider to opt into either context without double-emitting.
 
+A host that asserts facts its rules trust should build providers with
+`RhaiFactProvider::with_reserved(ReservedPredicates)`: an exact name reserves
+one predicate, a prefix reserves a namespace, and a provider that emits a
+reserved name fails its whole run (none of its facts survive). `validate`
+also refuses literal `emit_fact("<reserved>", ...)` calls.
+`RhaiFactProvider::new()` reserves nothing.
+
 ## License
 
 MIT.

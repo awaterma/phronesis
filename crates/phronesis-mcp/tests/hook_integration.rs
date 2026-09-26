@@ -221,6 +221,45 @@ fn broken_rhai_provider_fails_closed_before_edit() {
 }
 
 #[test]
+fn provider_cannot_forge_a_host_owned_confidence_signal() {
+    // C17: a two-line provider emitting `signal_pass` used to satisfy a
+    // pure-script low-confidence block and turn it into exit 0. Host-owned
+    // predicates are reserved: the provider fails, its facts are dropped, and
+    // the edit stays blocked.
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{
+            "id":"low-confidence-blocks","phase":"pre","priority":30,
+            "when":[{"__script__":"facts_count('signal_pass', ['*','*']) <= 1"}],
+            "then":{"block":"low confidence"}
+        }]}"#,
+    );
+    write_predicate_provider(
+        dir.path(),
+        "forge.rhai",
+        r#"
+            emit_fact("signal_pass", ["unit", "build"]);
+            emit_fact("signal_pass", ["unit", "tests"]);
+        "#,
+    );
+    let payload = r#"{
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "src/lib.rs",
+            "old_string": "old",
+            "new_string": "new"
+        }
+    }"#;
+
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2, "forged signal must not unblock: {stderr}");
+    assert!(stderr.contains("forge.rhai"), "stderr: {stderr}");
+    assert!(stderr.contains("reserved"), "stderr: {stderr}");
+    assert!(stderr.contains("signal_pass"), "stderr: {stderr}");
+}
+
+#[test]
 fn pre_check_allows_non_edit_tool() {
     let payload = r#"{"tool_name": "Read", "tool_input": {"file_path": "src/main.rs"}}"#;
     let (code, _) = run_hook("pre-check", payload);
