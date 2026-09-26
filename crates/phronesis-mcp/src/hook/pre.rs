@@ -4,10 +4,9 @@ use std::process;
 use phr::{Fact, ReteNetwork};
 
 use crate::hook_facts::{
-    assert_common_facts, assert_coverage_facts, assert_diff_facts, assert_language_pack_facts,
-    assert_properties_facts, assert_test_facts, assert_values_facts, check_bash_command_patterns,
-    check_content_patterns, collect_bash_command_patterns, collect_content_patterns,
-    collect_rule_predicates,
+    assert_coverage_facts, assert_diff_facts, assert_language_pack_facts, assert_properties_facts,
+    assert_test_facts, assert_values_facts, check_bash_command_patterns, check_content_patterns,
+    collect_bash_command_patterns, collect_content_patterns, collect_rule_predicates,
 };
 use crate::security;
 
@@ -82,50 +81,26 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     );
 
     let network = {
-        let rules_for_journey = rules.clone();
-        let mut net = crate::net::build_network();
-        for rule in rules {
-            if let Err(e) = net.add_rule(rule).await {
-                eprintln!("phronesis: BLOCKED — failed to load rule: {}", e);
-                blocked_exit(
-                    &root,
-                    &inflight_key,
-                    payload.tool_name.as_deref().unwrap_or_default(),
-                );
-            }
-        }
-        if let Err(e) = assert_common_facts(&net, &file_path, &tool_name, "pre").await {
-            eprintln!("phronesis: BLOCKED — failed to assert facts: {}", e);
-            blocked_exit(
-                &root,
-                &inflight_key,
-                payload.tool_name.as_deref().unwrap_or_default(),
-            );
-        }
-        for fact in override_facts {
-            if let Err(e) = net.assert_fact(fact).await {
-                eprintln!("phronesis: BLOCKED — failed to assert rule override provenance: {e}");
-                blocked_exit(
-                    &root,
-                    &inflight_key,
-                    payload.tool_name.as_deref().unwrap_or_default(),
-                );
-            }
-        }
-        if let Err(e) = super::assert_journey_facts_into(
-            &mut net,
-            &security::project_root(),
-            &rules_for_journey,
-        )
+        let net = match super::build_rule_network(super::RuleNetworkInput {
+            rules: &rules,
+            override_facts: &override_facts,
+            file_path: &file_path,
+            tool_name: &tool_name,
+            phase: "pre",
+            project_root: &root,
+        })
         .await
         {
-            eprintln!("phronesis: BLOCKED — {}", e);
-            blocked_exit(
-                &root,
-                &inflight_key,
-                payload.tool_name.as_deref().unwrap_or_default(),
-            );
-        }
+            Ok(net) => net,
+            Err(e) => {
+                eprintln!("phronesis: BLOCKED — {e}");
+                blocked_exit(
+                    &root,
+                    &inflight_key,
+                    payload.tool_name.as_deref().unwrap_or_default(),
+                );
+            }
+        };
         super::assert_pack_marker_facts(&net, &security::project_root()).await;
         super::assert_confidence_signals(&net).await;
         // Structural graph facts. Costs nothing unless a loaded rule names a
@@ -134,7 +109,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         {
             let root = security::project_root();
             let edited = (!file_path.is_empty()).then_some(file_path.as_str());
-            let h = crate::graph::hydrate::hydrate(&root, &rules_for_journey, edited);
+            let h = crate::graph::hydrate::hydrate(&root, &rules, edited);
             if !h.fresh && !h.facts.is_empty() {
                 let cause = if h.outdated {
                     "was built by an older phronesis and names entities differently".to_string()

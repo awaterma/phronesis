@@ -369,6 +369,69 @@ pub(crate) async fn assert_pack_marker_facts(network: &ReteNetwork, project_root
     }
 }
 
+/// Why [`build_rule_network`] could not produce a network. Every variant is
+/// fatal to the hook: the pre-phase fails closed on it (block / deny) and the
+/// post-phase surfaces it as a warning. The `Display` text is the reason shown
+/// to the agent, so it names what failed.
+#[derive(Debug, Error)]
+pub(crate) enum NetworkBuildError {
+    #[error("failed to load rule: {0}")]
+    AddRule(phr::ReteError),
+    #[error("failed to assert facts: {0}")]
+    CommonFacts(HookError),
+    #[error("failed to assert rule override provenance: {0}")]
+    OverrideFact(phr::ReteError),
+    /// A journey configuration error (undefined selector, bad window). I/O
+    /// errors never reach here — [`assert_journey_facts_into`] swallows them.
+    #[error("{0}")]
+    Journey(journey::derive::DeriveError),
+}
+
+/// Inputs to [`build_rule_network`].
+pub(crate) struct RuleNetworkInput<'a> {
+    pub(crate) rules: &'a [Rule],
+    pub(crate) override_facts: &'a [Fact],
+    pub(crate) file_path: &'a str,
+    /// Lower-cased into the `change_type` fact.
+    pub(crate) tool_name: &'a str,
+    /// `"pre"` or `"post"`, asserted as `hook_phase`.
+    pub(crate) phase: &'a str,
+    pub(crate) project_root: &'a Path,
+}
+
+/// The fallible core of hook-time network construction, shared by every
+/// host adapter (`pre-check`, `post-check`, `codex-hook`): load the rules,
+/// assert the common facts and rule-override provenance, then derive the
+/// journey facts the rules reference.
+///
+/// Any error here is a configuration or engine failure the caller must not
+/// ignore — see `.phronesis/wiki/decisions/2026-06-23-undefined-selector-rejection.md`.
+/// Sharing one builder is what keeps the hosts from drifting apart on that
+/// policy: the Codex adapter once discarded every one of these errors and
+/// allowed edits `pre-check` blocked.
+pub(crate) async fn build_rule_network(
+    input: RuleNetworkInput<'_>,
+) -> Result<ReteNetwork, NetworkBuildError> {
+    let mut net = crate::net::build_network();
+    for rule in input.rules {
+        net.add_rule(rule.clone())
+            .await
+            .map_err(NetworkBuildError::AddRule)?;
+    }
+    crate::hook_facts::assert_common_facts(&net, input.file_path, input.tool_name, input.phase)
+        .await
+        .map_err(NetworkBuildError::CommonFacts)?;
+    for fact in input.override_facts {
+        net.assert_fact(fact.clone())
+            .await
+            .map_err(NetworkBuildError::OverrideFact)?;
+    }
+    assert_journey_facts_into(&mut net, input.project_root, input.rules)
+        .await
+        .map_err(NetworkBuildError::Journey)?;
+    Ok(net)
+}
+
 /// Journey wiring shared by `run_pre_check` and `run_post_check`: derive the
 /// `journey_*` facts the rules reference, assert them into the live network.
 ///
