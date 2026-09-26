@@ -59,12 +59,19 @@ truth. The reserved set (`reserved_predicates()` in
   context (`markdown_rule`), clock facts, the outcome ledger (`build_outcome`,
   `test_outcome`, `proof_outcome`, `proof_run_outcome`, `bug_check_outcome`),
   `rule_overridden`, `store_corrupt`, `__script__`, plus every relation in the
-  coverage, property, graph, and ownership hydration lists and the AST
-  `SyntaxFacts::PREDICATES` list (appended from those constants, so a new
-  relation is reserved automatically);
-- **by prefix** — namespaces the host owns outright, including names not yet
-  minted: `signal_`, `journey_`, `confidence_`, `context_`, `coverage_`,
-  `property_`, `verification_`, `proof_`, `store_`.
+  coverage, property, graph, and ownership hydration lists, the AST
+  `SyntaxFacts::PREDICATES` list, and the nudge-capsule predicates
+  (`context_confidence_band`) — appended from those constants, so a new
+  relation is reserved automatically;
+- **by prefix** — only the two namespaces whose names the host builds at run
+  time, including names not yet minted: `signal_` and `journey_`.
+
+Host names under other family words (`store_corrupt`, `confidence_enabled`,
+`proof_outcome`, `property_status`, `coverage_stale`, `verification_result`,
+`context_confidence_band`, …) are reserved exactly, not by prefix, so a
+provider's own `store_opened` or `context_switch` stays legal. Providers on
+disk are never re-validated, so an over-broad prefix would turn an existing
+provider into a hook-wide block on upgrade.
 
 Exact names do not act as prefixes (`signal_pass` reservation does not cover
 `signal_pass_extra`; the `signal_` prefix does). Everything outside the set —

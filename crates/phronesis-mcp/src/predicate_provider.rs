@@ -72,7 +72,8 @@ pub fn providers_dir(root: &Path) -> PathBuf {
 /// (`hook_facts.rs`, `hook/`), the cargo scanner, section context,
 /// `clock_facts`, the outcome ledger (`outcomes/`), rule-layer override
 /// provenance, and the `__script__` guard marker. The hydrated families
-/// (coverage, properties, graph, ownership, AST syntax) are appended from
+/// (coverage, properties, graph, ownership, AST syntax) and the capsule
+/// predicates (`context_confidence_band`) are appended from
 /// their own relation lists in [`reserved_predicates`], so a relation added
 /// there is reserved without touching this list.
 #[cfg(feature = "rhai")]
@@ -115,23 +116,15 @@ const RESERVED_EXACT: &[&str] = &[
     crate::rule_layers::OVERRIDE_PREDICATE,
 ];
 
-/// Namespaces the host owns outright. A prefix reserves every predicate
-/// under it — including names the host has not minted yet — so a new
-/// `signal_*` or `journey_*` fact is protected the day it ships. Everything
-/// else is reserved by exact name only, which is what keeps project
-/// vocabularies such as this repository's `change_set_*` available.
+/// Namespaces the host owns outright: it builds names under these at run
+/// time, so a prefix is the only complete reservation, and a new `signal_*`
+/// or `journey_*` fact is protected the day it ships. Every other host name
+/// — including those under `store_`, `context_`, `confidence_`, `proof_`,
+/// `property_`, `coverage_`, and `verification_` — is reserved by exact
+/// name only, so a provider's own `store_opened` or `context_switch` (and
+/// vocabularies such as this repository's `change_set_*`) stays available.
 #[cfg(feature = "rhai")]
-const RESERVED_PREFIXES: &[&str] = &[
-    "signal_",
-    "journey_",
-    "confidence_",
-    "context_",
-    "coverage_",
-    "property_",
-    "verification_",
-    "proof_",
-    "store_",
-];
+const RESERVED_PREFIXES: &[&str] = &["signal_", "journey_"];
 
 /// The host-owned predicates a project provider may not emit (C17).
 ///
@@ -148,6 +141,7 @@ pub fn reserved_predicates() -> phronesis_rhai::ReservedPredicates {
         .with_exact(crate::properties::hydrate::RELATIONS.iter().copied())
         .with_exact(crate::graph::hydrate::GRAPH_RELATIONS.iter().copied())
         .with_exact(crate::graph::ownership::OWNERSHIP_RELATIONS.iter().copied())
+        .with_exact(crate::context::capsule::ALLOWED_PREDICATES.iter().copied())
         .with_exact(
             crate::syntax::facts::SyntaxFacts::PREDICATES
                 .iter()
@@ -501,6 +495,14 @@ mod reserved_tests {
             "context_confidence_band",
             "store_corrupt",
             "new_content_contains",
+            "coverage_revision",
+            "coverage_stale",
+            "property_obligation",
+            "verification_result",
+            "proof_outcome",
+            "proof_run_outcome",
+            "signal_anything_new",
+            "journey_anything_new",
         ] {
             let script = format!("emit_fact(\"{host_owned}\", []);");
             assert!(
@@ -532,5 +534,29 @@ mod reserved_tests {
                 "change_set_production_without_test",
             ]
         );
+    }
+
+    #[test]
+    fn provider_names_under_host_family_words_are_not_reserved() {
+        // Only `signal_` and `journey_` are reserved as prefixes. A provider
+        // already on disk that emits its own `store_*` / `context_*` / ...
+        // name must keep working after upgrade: providers are never
+        // re-validated, so an over-broad prefix would block every hook call.
+        for own in [
+            "store_opened",
+            "context_switch",
+            "confidence_note",
+            "proof_reviewed",
+            "property_touched",
+            "coverage_wanted",
+            "verification_pending",
+        ] {
+            let script = format!("emit_fact(\"{own}\", []);");
+            validate_script(&script).unwrap_or_else(|e| panic!("{own}: {e}"));
+            let facts = test_script(&script, &ProviderEvent::default())
+                .unwrap_or_else(|e| panic!("{own}: {e}"));
+            assert_eq!(facts.len(), 1, "{own}");
+            assert_eq!(facts[0].predicate, own);
+        }
     }
 }

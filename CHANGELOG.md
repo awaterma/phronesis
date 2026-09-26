@@ -18,7 +18,13 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   its facts for that event are dropped, and the pre-hook blocks with a
   diagnostic naming the provider and predicate. `add_predicate_provider`
   refuses a literal reserved emit up front. Project vocabularies such as
-  `change_set_*` are unaffected.
+  `change_set_*` are unaffected. Only `signal_*` and `journey_*` are reserved
+  as whole namespaces; every other host name (`store_corrupt`,
+  `context_confidence_band`, `proof_outcome`, …) is reserved exactly, so a
+  provider's own `store_opened` or `context_switch` keeps working.
+  **Upgrade note:** an existing provider that emits a reserved host-owned
+  name now fails, which blocks every pre-hook (post-hooks warn) until the
+  provider is changed to emit a name of its own — rename it.
 
 - **Guard and provider scripts could call `eval`.** Only the artifact render
   engine disabled it, although the crate documentation said none of the
