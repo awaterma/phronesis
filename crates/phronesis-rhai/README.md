@@ -61,6 +61,16 @@ disables it explicitly — any use is a parse error. Scripts run on every rule
 evaluation, so a malformed or hostile script can neither hang the engine nor
 reach the host.
 
+The data limits (4 KiB of string, 4096 array elements, 4096 map entries) and
+the operation cap are the script's **own** budget, granted on top of the data
+the host injects (`facts` and `bindings` for a guard, `event` for a
+provider). Rhai sizes a value as a whole, nested strings included, so
+without this a guard reading a realistic fact base (hundreds of facts, a
+multi-KB `new_content`) or a provider reading a large edit would error on the
+host's data alone. The injected data therefore never trips a limit by
+itself; a limit error always means the script built too much on its own,
+and that still fails closed.
+
 ## MCP integration
 
 `phronesis-mcp` enables its `rhai` cargo feature by default for expressive

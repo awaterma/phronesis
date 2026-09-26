@@ -97,6 +97,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `phronesis: GUARD ERROR` line, and the action log records `guard_error` on
   the consequence.
 
+- **Rhai scripts errored on large host data.** Rhai sizes a value as a
+  whole, so the injected `facts` array (for a guard) or `event` map (for a
+  predicate provider) counted against the script's 4 KiB string cap: a guard
+  touching `facts` over a realistic fact base, or a provider reading an edit
+  over 4 KiB, failed with "Length of string too large" — and failed closed,
+  blocking the edit. The sandbox limits are now the script's own budget on
+  top of the injected data, so host data never trips them by itself; a
+  script that builds unbounded data on its own still fails closed.
+
 - **A `__script__` guard could be judged before the facts it reads existed.**
   Guards were evaluated when the rule's triggering fact arrived and the
   activation then latched, so a guard over facts asserted later — by a

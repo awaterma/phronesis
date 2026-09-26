@@ -2833,3 +2833,33 @@ fn guard_sees_facts_a_provider_asserts_after_the_trigger() {
     assert_eq!(code, 2, "{stderr}");
     assert!(stderr.contains("commit needs two ci passes"), "{stderr}");
 }
+
+#[test]
+fn rhai_guard_over_a_realistic_fact_base_does_not_error() {
+    // A 20 KB Write puts a 20 KB `new_content` fact in working memory. The
+    // guard reads `facts`; that must evaluate, not trip the 4 KiB string
+    // limit (a guard error fails closed and would block every edit).
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[
+            {"id":"never","phase":"pre","priority":10,
+             "when":[{"file_extension_is":"rs"},{"__script__":"facts.len() > 100000"}],
+             "then":{"block":"never fires"}},
+            {"id":"sees-content","phase":"pre","priority":5,
+             "when":[{"file_extension_is":"rs"},
+                     {"__script__":"facts.filter(|f| f.predicate == \"new_content\").len() == 1"}],
+             "then":{"warn":"guard saw the content fact"}}
+        ]}"#,
+    );
+    let content = "fn main() { println!(\"hello\"); }\n".repeat(600);
+    let payload = serde_json::json!({
+        "tool_name": "Write",
+        "tool_input": {"file_path": "src/x.rs", "content": content}
+    })
+    .to_string();
+    let (code, stderr) = run_hook_in("pre-check", &payload, Some(dir.path()));
+    assert!(!stderr.contains("GUARD ERROR"), "{stderr}");
+    assert_eq!(code, 1, "only the true guard's warn rule fires: {stderr}");
+    assert!(stderr.contains("guard saw the content fact"), "{stderr}");
+}
