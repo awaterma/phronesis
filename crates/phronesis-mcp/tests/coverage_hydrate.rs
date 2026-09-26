@@ -58,7 +58,7 @@ fn test_demand_gate_skips_when_no_rule_mentions() {
     let root = tempfile::tempdir().unwrap();
     write(
         root.path(),
-        &[hit("test_a", "fn:foo", "src/a.rs", "region")],
+        &[hit("test_a", "fn:src/a.rs::foo", "src/a.rs", "region")],
         &"a".repeat(40),
     );
 
@@ -86,8 +86,8 @@ fn test_hydrate_scopes_to_edited_files() {
     write(
         root.path(),
         &[
-            hit("test_a", "fn:foo", "src/a.rs", "region"),
-            hit("test_b", "fn:bar", "src/b.rs", "region"),
+            hit("test_a", "fn:src/a.rs::foo", "src/a.rs", "region"),
+            hit("test_b", "fn:src/b.rs::bar", "src/b.rs", "region"),
         ],
         &rev,
     );
@@ -107,7 +107,7 @@ fn test_hydrate_scopes_to_edited_files() {
     assert_eq!(facts[0].predicate, "test_hits_region");
     assert_eq!(
         facts[0].args,
-        vec!["test_a".to_string(), "fn:foo".to_string()]
+        vec!["test_a".to_string(), "fn:src/a.rs::foo".to_string()]
     );
 }
 
@@ -116,7 +116,7 @@ fn test_hydrate_reports_stale_coverage() {
     let root = tempfile::tempdir().unwrap();
     write(
         root.path(),
-        &[hit("test_a", "fn:foo", "src/a.rs", "region")],
+        &[hit("test_a", "fn:src/a.rs::foo", "src/a.rs", "region")],
         &"a".repeat(40),
     );
 
@@ -163,11 +163,15 @@ fn test_hydrate_emits_changed_regions() {
         .map(|f| &f.args[1])
         .collect();
     assert!(
-        regions.iter().any(|r| r.starts_with("fn:safe_divide")),
+        regions
+            .iter()
+            .any(|r| r.starts_with("fn:src/lib.rs::safe_divide")),
         "missing function region: {regions:?}"
     );
     assert!(
-        regions.iter().any(|r| r.starts_with("branch:safe_divide:")),
+        regions
+            .iter()
+            .any(|r| r.starts_with("branch:src/lib.rs::safe_divide:")),
         "missing branch region: {regions:?}"
     );
     for f in &facts {
@@ -180,8 +184,8 @@ fn test_hydrate_emits_changed_regions() {
         .collect();
     assert_eq!(
         functions,
-        vec!["fn:safe_divide".to_string()],
-        "changed_function must be exactly fn:safe_divide: {functions:?}"
+        vec!["fn:src/lib.rs::safe_divide".to_string()],
+        "changed_function must be exactly fn:src/lib.rs::safe_divide: {functions:?}"
     );
 }
 
@@ -227,13 +231,15 @@ fn test_gap_facts_fire_on_empty_store() {
         .map(|f| &f.args[0])
         .collect();
     assert!(
-        dyn_gaps.iter().any(|r| r.starts_with("fn:safe_divide")),
+        dyn_gaps
+            .iter()
+            .any(|r| r.starts_with("fn:src/lib.rs::safe_divide")),
         "function region must gap on an empty store: {dyn_gaps:?}"
     );
     assert!(
         dyn_gaps
             .iter()
-            .any(|r| r.starts_with("branch:safe_divide:")),
+            .any(|r| r.starts_with("branch:src/lib.rs::safe_divide:")),
         "branch region must gap on an empty store: {dyn_gaps:?}"
     );
     let formal_gaps: Vec<&String> = facts
@@ -256,13 +262,13 @@ fn test_no_dynamic_gap_when_store_covers_region() {
         &[
             hit(
                 "rejects_zero_denominator",
-                "fn:safe_divide",
+                "fn:src/lib.rs::safe_divide",
                 "src/lib.rs",
                 "region",
             ),
             hit(
                 "rejects_zero_denominator",
-                "branch:safe_divide:cd6054b02dde",
+                "branch:src/lib.rs::safe_divide:cd6054b02dde",
                 "src/lib.rs",
                 "branch",
             ),
@@ -281,7 +287,9 @@ fn test_no_dynamic_gap_when_store_covers_region() {
             old: Some(OLD_SRC),
             new: NEW_SRC,
         }],
-        head_sha: Some("b".repeat(40)), // store is stale; staleness is separate evidence
+        // Fresh store: only evidence current for HEAD suppresses a gap (D3;
+        // the stale case lives in coverage_store_integrity.rs).
+        head_sha: Some("a".repeat(40)),
     };
     let facts = facts_for_event(&input).unwrap();
     assert!(
@@ -352,4 +360,74 @@ fn test_gap_facts_deduplicate_across_edits() {
     let mut sorted = dyn_gaps.clone();
     sorted.sort();
     assert_eq!(dyn_gaps, sorted, "gap facts must be deduplicated");
+}
+
+// A store imported before per-site region ids (SPEC-coverage-evidence §3.2)
+// carries leaf-name ids. Hydration must report it stale and never join its
+// hits — not let `fn:safe_divide` stand in for every `safe_divide` site.
+#[test]
+fn test_legacy_leaf_name_store_is_stale_and_never_joined() {
+    let root = tempfile::tempdir().unwrap();
+    let rev = "a".repeat(40);
+    write(
+        root.path(),
+        &[hit("test_a", "fn:safe_divide", "src/lib.rs", "region")],
+        &rev,
+    );
+    let input = HydrationInput {
+        root: root.path(),
+        rule_relations: relations(&[
+            "coverage_stale",
+            "test_hits_region",
+            "region_without_dynamic_evidence",
+        ]),
+        edited: vec![EditedFile {
+            path: "src/lib.rs".into(),
+            old: Some(OLD_SRC),
+            new: NEW_SRC,
+        }],
+        // Same revision as the store: only the id format makes it stale.
+        head_sha: Some(rev),
+    };
+    let facts = facts_for_event(&input).unwrap();
+    assert!(
+        facts.iter().any(|f| f.predicate == "coverage_stale"),
+        "legacy ids must mark the store stale: {facts:?}"
+    );
+    assert!(
+        !facts.iter().any(|f| f.predicate == "test_hits_region"),
+        "legacy hits must not be joined: {facts:?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .any(|f| f.predicate == "region_without_dynamic_evidence"
+                && f.args[0] == "fn:src/lib.rs::safe_divide"),
+        "a legacy hit is not evidence for the qualified site: {facts:?}"
+    );
+}
+
+// An edit outside the project root names no region of this project.
+#[test]
+fn test_edit_outside_root_changes_no_region() {
+    let root = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = elsewhere.path().join("lib.rs");
+    std::fs::write(&outside, NEW_SRC).unwrap();
+    let path = outside.display().to_string();
+    let input = HydrationInput {
+        root: root.path(),
+        rule_relations: relations(&["changed_region", "region_without_dynamic_evidence"]),
+        edited: vec![EditedFile {
+            path,
+            old: Some(OLD_SRC),
+            new: NEW_SRC,
+        }],
+        head_sha: Some("a".repeat(40)),
+    };
+    let facts = facts_for_event(&input).unwrap();
+    assert!(
+        facts.is_empty(),
+        "outside-root edit must not hydrate: {facts:?}"
+    );
 }

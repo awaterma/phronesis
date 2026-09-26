@@ -1,20 +1,279 @@
+//! Region identity (SPEC-coverage-evidence §3.2): one id per code site
+//! within a revision, shared by every producer (collector, importer) and
+//! consumer (hydration, selection, property staleness).
+//!
+//! Grammar, within the importer's identifier charset `[A-Za-z0-9_:./-]`:
+//!
+//! ```text
+//! fn-id      = "fn:" file "::" item-path
+//! branch-id  = "branch:" file "::" item-path ":" anchor [ "." ordinal ]
+//! file       = repo-relative path; any char outside [A-Za-z0-9_./-] becomes
+//!              "_" and the segment gains ".h" + 12 hex of FNV-1a(path)
+//!              (also when capped, below)
+//! item-path  = segment *( "::" segment )     ; outermost scope first
+//! segment    = name                           ; mod, trait, or fn
+//!            | type [ ".as." trait ]          ; impl block
+//!            | "_"                            ; branch outside any fn
+//! ```
+//!
+//! `name`, `type`, and `trait` are the source text with whitespace removed,
+//! `::` rewritten to `.`, and every other char outside `[A-Za-z0-9_]`
+//! (generic brackets, `&`, `'`, `,`, non-ASCII) rewritten to `-` — so
+//! `impl From<A> for X` and `impl From<B> for X` stay distinct
+//! (`X.as.From-A-` / `X.as.From-B-`). That encoding is not injective, so a
+//! function whose item path repeats earlier in the same file (cfg variants,
+//! encoding collisions) gets `.2`, `.3`, ... on its last segment, in source
+//! order. The branch `ordinal` does the same for identical conditions in
+//! one function: the first site has none, later ones `.2`, `.3`, ... —
+//! whitespace-only reflow moves neither the anchor nor the order.
+//!
+//! Each segment is capped on its own so an id never exceeds 256 bytes and
+//! never loses its `::`: a `file` over 120 bytes keeps its first 106 and
+//! appends `.h` + 12 hex of FNV-1a(path); an `item-path` over 100 bytes
+//! becomes `_h` + 12 hex of FNV-1a(item path) + `::` + its last segment
+//! (dropped too when that alone would not fit).
+//!
+//! Ids from before this grammar (`fn:<leaf>`, `branch:<leaf>:<anchor>`)
+//! carry no `::`; [`is_qualified_region_id`] tells them apart so hydration
+//! can report such a store as stale instead of joining on leaf names.
+
 use anyhow::{Context, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::path::{Component, Path, PathBuf};
 use tree_sitter::{Node, Parser};
 
-pub fn function_region_id(f: &str) -> String {
-    format!("fn:{f}")
+/// The importer's identifier cap (`validate_identifier_field`).
+pub const MAX_REGION_ID_BYTES: usize = 256;
+
+/// Byte budget of the `file` segment. With the item-path budget below, the
+/// longest id — `branch:` (7) + file (120) + `::` (2) + item path (100) +
+/// `:` (1) + anchor (12) + `.` and a u32 ordinal (11) — is 253 bytes.
+const MAX_FILE_SEGMENT_BYTES: usize = 120;
+/// Byte budget of the `item-path` segment.
+const MAX_ITEM_PATH_BYTES: usize = 100;
+/// `.h` + 12 hex.
+const HASH_SUFFIX_BYTES: usize = 14;
+
+pub fn function_region_id(file: &str, item_path: &str) -> String {
+    format!("fn:{}::{}", file_segment(file), cap_item_path(item_path))
 }
 
-pub fn branch_region_id(f: &str, anchor: &str) -> String {
-    format!("branch:{f}:{anchor}")
+pub fn branch_region_id(file: &str, item_path: &str, anchor: &str, ordinal: u32) -> String {
+    let suffix = if ordinal > 1 {
+        format!(".{ordinal}")
+    } else {
+        String::new()
+    };
+    format!(
+        "branch:{}::{}:{anchor}{suffix}",
+        file_segment(file),
+        cap_item_path(item_path)
+    )
+}
+
+/// An over-budget item path becomes `_h<12 hex of the full path>::<leaf>`:
+/// the hash keeps distinct paths distinct, and the leaf segment (the fn
+/// name with its ordinal) survives so legacy references still find it. A
+/// leaf too long to keep is dropped; the hash alone then names the site.
+fn cap_item_path(item_path: &str) -> String {
+    if item_path.len() <= MAX_ITEM_PATH_BYTES {
+        return item_path.to_string();
+    }
+    let hashed = format!("_h{}", hash12(item_path));
+    match item_path.rsplit("::").next() {
+        Some(leaf) if hashed.len() + 2 + leaf.len() <= MAX_ITEM_PATH_BYTES => {
+            format!("{hashed}::{leaf}")
+        }
+        _ => hashed,
+    }
+}
+
+/// The repo-relative spelling of an edited path — the `file` every region id
+/// is qualified with. Hooks pass the host's `file_path` through unmodified,
+/// and Claude Code sends it absolute. A relative path is root-relative (the
+/// hook's own `resolve_safe_path` contract, which reads the file the same
+/// way). The path is joined to `root` and normalized lexically (`.` and `..`
+/// resolved) before the root is stripped; failing that, both sides are
+/// canonicalized (symlinked roots, `/var` vs `/private/var`), a path that
+/// does not exist yet canonicalizing through its deepest existing ancestor.
+/// `None` when the path lies outside the root (or climbs out with `..`):
+/// such an edit names no region of this project.
+pub fn repo_relative_path(root: &Path, path: &str) -> Option<String> {
+    let p = Path::new(path);
+    let joined = normalize_lexically(&root.join(p))?;
+    let rel = match joined.strip_prefix(normalize_lexically(root)?) {
+        Ok(rel) => rel.to_path_buf(),
+        Err(_) => {
+            let canonical_root = root.canonicalize().ok()?;
+            canonicalize_lenient(&joined)?
+                .strip_prefix(&canonical_root)
+                .ok()?
+                .to_path_buf()
+        }
+    };
+    let mut parts: Vec<String> = Vec::new();
+    for component in rel.components() {
+        match component {
+            Component::Normal(part) => parts.push(part.to_str()?.to_string()),
+            Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+/// Resolve `.` and `..` without touching the filesystem. `None` for a `..`
+/// that would climb above the filesystem root.
+fn normalize_lexically(path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    Some(out)
+}
+
+/// Canonicalize the deepest existing ancestor and re-append the rest, so a
+/// file in a directory the edit is about to create still maps through a
+/// symlinked spelling of the root. `path` must already be lexically
+/// normalized (no `..` left to resolve against a symlink).
+fn canonicalize_lenient(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            let mut out = canonical;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return Some(out);
+        }
+        rest.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
+}
+
+/// The `file` production of the grammar: the path itself when it is already
+/// in the charset and within budget, otherwise a sanitized (and, past 120
+/// bytes, truncated) path plus a hash of the original, so two paths that
+/// sanitize or truncate alike stay distinct.
+pub fn file_segment(file: &str) -> String {
+    let clean: String = file
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if clean == file && clean.len() <= MAX_FILE_SEGMENT_BYTES {
+        return clean;
+    }
+    // Sanitized or over budget: keep a readable prefix and add a hash of the
+    // original path. `clean` is ASCII, so any byte index is a char boundary.
+    let keep = clean.len().min(MAX_FILE_SEGMENT_BYTES - HASH_SUFFIX_BYTES);
+    format!("{}.h{}", &clean[..keep], hash12(file))
+}
+
+/// True for ids in the current grammar; false for the leaf-name ids older
+/// stores carry (`fn:new`, `branch:safe_divide:cd6054b02dde`), which cannot
+/// be joined against per-site ids without conflating sites.
+pub fn is_qualified_region_id(id: &str) -> bool {
+    id.strip_prefix("fn:")
+        .or_else(|| id.strip_prefix("branch:"))
+        .is_some_and(|rest| rest.contains("::"))
+}
+
+/// Whether the region reference `reference` (a property's `depends_on`
+/// entry) names the changed region `changed`. A qualified reference must
+/// match exactly. A legacy leaf-name reference cannot say which site it
+/// meant, so it matches every changed site with that leaf name (and, for a
+/// branch, that anchor) — over-approximating keeps a stale property store
+/// raising obligations rather than silently never matching.
+pub fn reference_matches(reference: &str, changed: &str) -> bool {
+    if reference == changed {
+        return true;
+    }
+    if is_qualified_region_id(reference) {
+        return false;
+    }
+    match (legacy_parts(reference), qualified_parts(changed)) {
+        (Some(r), Some(c)) => r == c,
+        _ => false,
+    }
+}
+
+/// `(is_branch, leaf fn name, anchor)` of a legacy id.
+fn legacy_parts(id: &str) -> Option<(bool, &str, Option<&str>)> {
+    if let Some(leaf) = id.strip_prefix("fn:") {
+        return Some((false, leaf, None));
+    }
+    let (leaf, anchor) = id.strip_prefix("branch:")?.split_once(':')?;
+    Some((true, leaf, Some(anchor)))
+}
+
+/// Last item-path segment without its ordinal: the function's own name.
+fn leaf_of(item_path: &str) -> Option<&str> {
+    item_path.rsplit("::").next()?.split('.').next()
+}
+
+/// `(is_branch, leaf fn name, anchor)` of a qualified id: the leaf is the
+/// last item-path segment without its ordinal, the anchor drops its ordinal.
+fn qualified_parts(id: &str) -> Option<(bool, &str, Option<&str>)> {
+    if let Some(rest) = id.strip_prefix("fn:") {
+        let (_, item_path) = rest.split_once("::")?;
+        return Some((false, leaf_of(item_path)?, None));
+    }
+    let (_, rest) = id.strip_prefix("branch:")?.split_once("::")?;
+    let (item_path, anchor) = rest.rsplit_once(':')?;
+    Some((true, leaf_of(item_path)?, anchor.split('.').next()))
+}
+
+pub struct FunctionSite {
+    /// Qualified item path (grammar above), ordinal included.
+    pub item_path: String,
+    pub start_line: u64,
+    pub end_line: u64,
+}
+
+impl FunctionSite {
+    pub fn region_id(&self, file: &str) -> String {
+        function_region_id(file, &self.item_path)
+    }
+
+    /// The function's own name: the last item-path segment, ordinal dropped.
+    pub fn name(&self) -> &str {
+        leaf_of(&self.item_path).unwrap_or(&self.item_path)
+    }
 }
 
 pub struct BranchSite {
+    /// Item path of the innermost enclosing function (`_` when none).
     pub function: String,
     pub anchor: String,
+    /// 1-based position among sites with the same `function` and `anchor`,
+    /// in source order.
+    pub ordinal: u32,
     pub start_line: u64,
     pub end_line: u64,
+}
+
+impl BranchSite {
+    pub fn region_id(&self, file: &str) -> String {
+        branch_region_id(file, &self.function, &self.anchor, self.ordinal)
+    }
 }
 
 /// FNV-1a 64-bit over the condition source text, rendered as 12 lowercase
@@ -29,6 +288,10 @@ fn fnv1a_64(data: &[u8]) -> u64 {
     hash
 }
 
+fn hash12(text: &str) -> String {
+    format!("{:016x}", fnv1a_64(text.as_bytes()))[..12].to_string()
+}
+
 fn compute_anchor(condition: &str) -> String {
     // Whitespace-normalized before hashing: rustfmt reflowing a condition
     // (default-on in Rust workflows) must not orphan the anchor — the
@@ -36,12 +299,12 @@ fn compute_anchor(condition: &str) -> String {
     // persistence requirement (review finding #5; full token-stream
     // normalization is the follow-up, operand reorder still re-anchors).
     let normalized: String = condition.split_whitespace().collect::<Vec<_>>().join(" ");
-    let hash = fnv1a_64(normalized.as_bytes());
-    format!("{hash:016x}")[..12].to_string()
+    hash12(&normalized)
 }
 
 /// Depth-first collection of every node — `root.children()` alone only
 /// visits top-level items, and `if_expression`s live inside function bodies.
+/// Returned in source order (by start byte), which the ordinals rely on.
 fn all_nodes<'t>(root: Node<'t>) -> Vec<Node<'t>> {
     let mut out = Vec::new();
     let mut stack = vec![root];
@@ -49,21 +312,58 @@ fn all_nodes<'t>(root: Node<'t>) -> Vec<Node<'t>> {
         out.push(node);
         stack.extend(node.children(&mut node.walk()));
     }
+    out.sort_by_key(|n| (n.start_byte(), std::cmp::Reverse(n.end_byte())));
     out
 }
 
-fn find_function_name(node: Node, source: &str) -> String {
-    let mut current = node;
-    while let Some(parent) = current.parent() {
-        if parent.kind() == "function_item"
-            && let Some(name_node) = parent.child_by_field_name("name")
-            && let Ok(name) = name_node.utf8_text(source.as_bytes())
-        {
-            return name.to_string();
+/// `name`/`type`/`trait` production: whitespace dropped, `::` -> `.`,
+/// everything else outside `[A-Za-z0-9_]` -> `-`.
+fn encode_segment(text: &str) -> String {
+    let compact: String = text.split_whitespace().collect();
+    compact
+        .replace("::", ".")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '.' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
+}
+
+/// The item-path segment a scope node contributes, if it is a scope.
+fn scope_segment(node: Node, source: &str) -> Option<String> {
+    let field = |name: &str| {
+        node.child_by_field_name(name)
+            .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+    };
+    match node.kind() {
+        "function_item" | "mod_item" | "trait_item" => field("name").map(encode_segment),
+        "impl_item" => {
+            let ty = encode_segment(field("type")?);
+            Some(match field("trait") {
+                Some(tr) => format!("{ty}.as.{}", encode_segment(tr)),
+                None => ty,
+            })
         }
-        current = parent;
+        _ => None,
     }
-    String::new()
+}
+
+/// Item path of `node` itself plus every enclosing scope, outermost first.
+fn scope_path(node: Node, source: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = Some(node);
+    while let Some(n) = current {
+        if let Some(segment) = scope_segment(n, source) {
+            segments.push(segment);
+        }
+        current = n.parent();
+    }
+    segments.reverse();
+    segments
 }
 
 fn parse(source: &str) -> Result<tree_sitter::Tree> {
@@ -74,11 +374,55 @@ fn parse(source: &str) -> Result<tree_sitter::Tree> {
     parser.parse(source, None).context("failed to parse source")
 }
 
+/// Function sites keyed by tree-sitter node id, so branch sites can name
+/// their enclosing function by the same (ordinal-disambiguated) item path.
+fn function_sites_by_node(tree: &tree_sitter::Tree, source: &str) -> Vec<(usize, FunctionSite)> {
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    let mut sites = Vec::new();
+    for node in all_nodes(tree.root_node()) {
+        if node.kind() != "function_item" || node.child_by_field_name("name").is_none() {
+            continue;
+        }
+        let base = scope_path(node, source).join("::");
+        let count = seen.entry(base.clone()).or_insert(0);
+        *count += 1;
+        let item_path = if *count > 1 {
+            format!("{base}.{count}")
+        } else {
+            base
+        };
+        sites.push((
+            node.id(),
+            FunctionSite {
+                item_path,
+                start_line: node.start_position().row as u64 + 1,
+                end_line: node.end_position().row as u64 + 1,
+            },
+        ));
+    }
+    sites
+}
+
+/// Every named function (free fns, methods, trait default methods, nested
+/// fns), in source order, with its qualified item path.
+pub fn extract_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
+    let tree = parse(source)?;
+    Ok(function_sites_by_node(&tree, source)
+        .into_iter()
+        .map(|(_, site)| site)
+        .collect())
+}
+
 /// Every `if_expression`, with the anchor hashed from its condition text and
 /// the span covering the whole expression (so edits to the branch body count
 /// as changes to the branch).
 pub fn extract_branch_sites(source: &str) -> Result<Vec<BranchSite>> {
     let tree = parse(source)?;
+    let functions: HashMap<usize, String> = function_sites_by_node(&tree, source)
+        .into_iter()
+        .map(|(id, site)| (id, site.item_path))
+        .collect();
+    let mut ordinals: HashMap<(String, String), u32> = HashMap::new();
     let mut sites = Vec::new();
     for node in all_nodes(tree.root_node()) {
         if node.kind() != "if_expression" {
@@ -88,9 +432,16 @@ pub fn extract_branch_sites(source: &str) -> Result<Vec<BranchSite>> {
             continue;
         };
         let condition_text = condition.utf8_text(source.as_bytes()).unwrap_or_default();
+        let anchor = compute_anchor(condition_text);
+        let function = enclosing_function(node, &functions).unwrap_or_else(|| "_".to_string());
+        let ordinal = ordinals
+            .entry((function.clone(), anchor.clone()))
+            .or_insert(0);
+        *ordinal += 1;
         sites.push(BranchSite {
-            anchor: compute_anchor(condition_text),
-            function: find_function_name(node, source),
+            function,
+            anchor,
+            ordinal: *ordinal,
             start_line: node.start_position().row as u64 + 1,
             end_line: node.end_position().row as u64 + 1,
         });
@@ -98,24 +449,15 @@ pub fn extract_branch_sites(source: &str) -> Result<Vec<BranchSite>> {
     Ok(sites)
 }
 
-pub fn extract_functions(source: &str) -> Result<Vec<(String, u64, u64)>> {
-    let tree = parse(source)?;
-    let mut functions = Vec::new();
-    for node in all_nodes(tree.root_node()) {
-        if node.kind() != "function_item" {
-            continue;
+fn enclosing_function(node: Node, functions: &HashMap<usize, String>) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if let Some(path) = functions.get(&n.id()) {
+            return Some(path.clone());
         }
-        if let Some(name_node) = node.child_by_field_name("name")
-            && let Ok(name) = name_node.utf8_text(source.as_bytes())
-        {
-            functions.push((
-                name.to_string(),
-                node.start_position().row as u64 + 1,
-                node.end_position().row as u64 + 1,
-            ));
-        }
+        current = n.parent();
     }
-    Ok(functions)
+    None
 }
 
 /// One step of the LCS walk: a matched pair (old line, new line), a
@@ -220,33 +562,28 @@ pub struct ChangedRegions {
 
 /// Overlap policy: any changed line inside a function's or branch site's
 /// span flags that region (SPEC-coverage-evidence §"region identity").
+/// `file` is the repo-relative path the ids are qualified with.
 /// Branch mapping is skipped for inputs over 100_000 lines (documented cap).
-pub fn changed_regions(old: &str, new: &str) -> Result<ChangedRegions> {
+pub fn changed_regions(file: &str, old: &str, new: &str) -> Result<ChangedRegions> {
     let (changed_old, changed_new) = changed_lines(old, new);
 
     let mut functions = HashSet::new();
-    for (name, start, end) in extract_functions(old)? {
-        if (start..=end).any(|line| changed_old.contains(&line)) {
-            functions.insert(function_region_id(&name));
-        }
-    }
-    for (name, start, end) in extract_functions(new)? {
-        if (start..=end).any(|line| changed_new.contains(&line)) {
-            functions.insert(function_region_id(&name));
+    for (source, changed) in [(old, &changed_old), (new, &changed_new)] {
+        for site in extract_function_sites(source)? {
+            if (site.start_line..=site.end_line).any(|line| changed.contains(&line)) {
+                functions.insert(site.region_id(file));
+            }
         }
     }
 
     let mut branches = HashSet::new();
     let too_big = old.lines().count() > 100_000 || new.lines().count() > 100_000;
     if !too_big {
-        for site in extract_branch_sites(old)? {
-            if (site.start_line..=site.end_line).any(|line| changed_old.contains(&line)) {
-                branches.insert(branch_region_id(&site.function, &site.anchor));
-            }
-        }
-        for site in extract_branch_sites(new)? {
-            if (site.start_line..=site.end_line).any(|line| changed_new.contains(&line)) {
-                branches.insert(branch_region_id(&site.function, &site.anchor));
+        for (source, changed) in [(old, &changed_old), (new, &changed_new)] {
+            for site in extract_branch_sites(source)? {
+                if (site.start_line..=site.end_line).any(|line| changed.contains(&line)) {
+                    branches.insert(site.region_id(file));
+                }
             }
         }
     }

@@ -45,7 +45,7 @@ Version-controlled, reviewed in PRs, loaded alongside rules at hook fire. Hydrat
       "id": "safe_divide.nonzero_returns_quotient",
       "subject": "safe_divide",
       "kind": "postcondition",
-      "depends_on": ["fn:safe_divide"],
+      "depends_on": ["fn:src/lib.rs::safe_divide"],
       "source": "explicit_spec",
       "status": "accepted",
       "corroborated_by": [],
@@ -59,7 +59,7 @@ Version-controlled, reviewed in PRs, loaded alongside rules at hook fire. Hydrat
       "kind": "postcondition",
       "condition": "denominator == 0",
       "guarantee": "result is Error",
-      "depends_on": ["branch:safe_divide:denominator==0"],
+      "depends_on": ["branch:src/lib.rs::safe_divide:cd6054b02dde"],
       "source": "explicit_spec",
       "status": "accepted",
       "corroborated_by": ["docs/specs/REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md"],
@@ -78,7 +78,7 @@ Corroboration claims are part of the reviewed record — a corroboration is itse
 | `property` | `[id]` | The property exists |
 | `property_subject` | `[property, function]` | What the property is about (graph element identity) |
 | `property_kind` | `[property, kind]` | `postcondition` \| `precondition` \| `invariant` \| … |
-| `property_depends_on` | `[property, region]` | Region dependency (SPEC A region IDs) |
+| `property_depends_on` | `[property, region]` | Region dependency (SPEC A §3.2 per-site region IDs; a legacy leaf-name id matches every same-leaf changed site) |
 | `property_source` | `[property, source]` | `explicit_spec` \| `existing_verifier_contract` \| `test_assertion` \| `documentation` \| `code_inference` \| `runtime_observation` \| `agent_inference` |
 | `property_status` | `[property, status]` | `observed` \| `candidate` \| `corroborated` \| `accepted` \| `verified` \| `rejected` \| `superseded` |
 | `property_corroborated_by` | `[property, source_entity]` | Independent corroboration for promotion policy |
