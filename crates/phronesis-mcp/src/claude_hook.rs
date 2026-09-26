@@ -128,6 +128,15 @@ pub async fn run(event: &str) -> ! {
     }
 
     let root = security::project_root();
+    // An ungoverned root records nothing: every lifecycle write would create
+    // a stray `<cwd>/.phronesis/journey/` that later stops the project-root
+    // walk. Drain stdin (so the host never sees a broken pipe) and answer
+    // with the same empty object a no-op event gets.
+    if !security::is_governed(&root) {
+        let _ = security::read_stdin_capped();
+        println!("{EMPTY}");
+        process::exit(0);
+    }
     let raw = match security::read_stdin_capped() {
         Ok(raw) => raw,
         Err(e) => {

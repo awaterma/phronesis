@@ -41,6 +41,19 @@ fn write_rules_file(dir: &Path, contents: &str) {
     std::fs::write(phronesis.join("rules.json"), contents).unwrap();
 }
 
+/// Hooks record lifecycle state only under a governed root (one whose
+/// `.phronesis/` holds a rules config). Lifecycle tests exercise that
+/// recording, so give a bare fixture an empty rule set — rule evaluation is
+/// unchanged, the root is just governed.
+fn ensure_governed(root: &Path) {
+    let phr = root.join(".phronesis");
+    if phr.join("rules.json").is_file() || phr.join("loader.json").is_file() {
+        return;
+    }
+    std::fs::create_dir_all(&phr).expect("mkdir .phronesis");
+    std::fs::write(phr.join("rules.json"), r#"{"rules":[]}"#).expect("write rules.json");
+}
+
 fn write_predicate_provider(dir: &Path, name: &str, script: &str) {
     let predicates = dir.join(".phronesis/predicates");
     std::fs::create_dir_all(&predicates).unwrap();
@@ -835,6 +848,7 @@ fn v1_legacy_rules_still_load() {
 /// Like `run_hook_in`, but for the two-argument `claude-hook` form and
 /// returning stdout — the adapter's contract is its stdout JSON.
 fn run_claude_hook(dir: &Path, event: &str, payload: &str) -> (i32, String, String) {
+    ensure_governed(dir);
     let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .arg("claude-hook")
         .arg(event)
@@ -1573,6 +1587,7 @@ fn gemini_before_agent_records_a_gemini_prompt() {
 #[test]
 fn pre_pushes_inflight_and_post_pops_it() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     let pre = r#"{"tool_name":"Bash","tool_use_id":"tu-42","tool_input":{"command":"ls"}}"#;
     run_hook_in("pre-check", pre, Some(dir.path()));
     assert_eq!(inflight_keys(dir.path()), vec!["tu-42".to_string()]);
@@ -1635,6 +1650,7 @@ fn claude_hook_prompt_after_inflight_records_interrupt_and_correction() {
 #[test]
 fn a_non_allowlisted_tool_still_pushes_and_pops_inflight() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     let pre = r#"{"tool_name":"WebSearch","tool_use_id":"tu-w","tool_input":{"query":"rust"}}"#;
     run_hook_in("pre-check", pre, Some(dir.path()));
     assert_eq!(inflight_keys(dir.path()), vec!["tu-w".to_string()]);
@@ -1649,6 +1665,7 @@ fn a_non_allowlisted_tool_still_pushes_and_pops_inflight() {
 #[test]
 fn a_pair_without_tool_use_id_pops_by_hashed_key() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     let input = r#"{"command":"echo hi"}"#;
     run_hook_in(
         "pre-check",
@@ -1674,6 +1691,7 @@ fn a_pair_without_tool_use_id_pops_by_hashed_key() {
 #[test]
 fn post_check_pops_an_entry_older_than_the_ttl() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     // Write the entry directly with a timestamp well past the 900 s TTL: driving
     // a real pre-check cannot produce an old entry without sleeping.
     std::fs::create_dir_all(dir.path().join(".phronesis/journey")).unwrap();
@@ -1700,6 +1718,7 @@ fn post_check_pops_an_entry_older_than_the_ttl() {
 #[test]
 fn head_before_is_recorded_only_for_commands_that_could_move_head() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     let git = |args: &[&str]| {
         let out = Command::new("git")
             .args(args)
@@ -1802,6 +1821,7 @@ fn init_repo(git: &impl Fn(&[&str]), dir: &std::path::Path) {
 #[test]
 fn post_check_records_a_commit_when_head_moved() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     let git = |args: &[&str]| {
         let out = Command::new("git")
             .args(args)
@@ -1864,6 +1884,7 @@ fn post_check_records_a_commit_when_head_moved() {
 #[test]
 fn a_claude_post_payload_without_an_exit_code_still_records_the_commit() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     let git = git_in(dir.path());
     init_repo(&git, dir.path());
 
@@ -1937,6 +1958,7 @@ fn a_nonzero_exit_code_still_suppresses_detection() {
 #[test]
 fn a_commit_carries_the_confidence_band_when_scoring_is_enabled() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     std::fs::create_dir_all(dir.path().join(".phronesis/outcomes")).unwrap();
     std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").unwrap();
     std::fs::write(dir.path().join(".phronesis/outcomes/current"), "unit-1").unwrap();
@@ -2002,6 +2024,7 @@ fn non_commit_shell_call_records_nothing() {
 #[test]
 fn invoke_agent_derives_a_subagent_pair_before_the_allowlist() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     let pre =
         r#"{"tool_name":"invoke_agent","tool_input":{"agent_name":"reviewer","prompt":"look"}}"#;
     run_hook_in("pre-check", pre, Some(dir.path()));
@@ -2045,6 +2068,7 @@ fn invoke_agent_derives_a_subagent_pair_before_the_allowlist() {
 #[test]
 fn a_hostile_invoke_agent_name_is_sanitized_away() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     run_hook_in(
         "pre-check",
         r#"{"tool_name":"invoke_agent","tool_input":{"agent_name":"kalpa:evil name; rm -rf /","prompt":"x"}}"#,
@@ -2130,6 +2154,7 @@ fn a_blocked_invoke_agent_pre_check_pops_its_agents_entry() {
 #[test]
 fn tool_records_are_written_at_journal_v2() {
     let dir = tempfile::tempdir().unwrap();
+    ensure_governed(dir.path());
     run_hook_in(
         "post-check",
         r#"{"tool_name":"Edit","tool_input":{"file_path":"src/a.rs","old_string":"a","new_string":"b"}}"#,
@@ -2230,6 +2255,7 @@ fn no_log_entry_carries_a_transcript_path_or_an_assistant_message() {
 }
 
 fn run_hook_at(root: &Path, args: &[&str], payload: &str) -> (i32, String, String) {
+    ensure_governed(root);
     let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .args(args)
         .env("PHRONESIS_PROJECT_ROOT", root)

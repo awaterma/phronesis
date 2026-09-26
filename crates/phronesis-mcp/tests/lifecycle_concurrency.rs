@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 fn run(dir: &Path, args: &[&str], payload: &str) -> i32 {
+    ensure_governed(dir);
     let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .args(args)
         .current_dir(dir)
@@ -20,6 +21,19 @@ fn run(dir: &Path, args: &[&str], payload: &str) -> i32 {
     let _ = stdin.write_all(payload.as_bytes());
     drop(stdin);
     child.wait().expect("wait").code().unwrap_or(-1)
+}
+
+/// Hooks record lifecycle state only under a governed root (one whose
+/// `.phronesis/` holds a rules config). Lifecycle tests exercise that
+/// recording, so give a bare fixture an empty rule set — rule evaluation is
+/// unchanged, the root is just governed.
+fn ensure_governed(root: &Path) {
+    let phr = root.join(".phronesis");
+    if phr.join("rules.json").is_file() || phr.join("loader.json").is_file() {
+        return;
+    }
+    std::fs::create_dir_all(&phr).expect("mkdir .phronesis");
+    std::fs::write(phr.join("rules.json"), r#"{"rules":[]}"#).expect("write rules.json");
 }
 
 fn journal(dir: &Path) -> Vec<serde_json::Value> {

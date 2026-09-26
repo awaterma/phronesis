@@ -428,7 +428,15 @@ we are in before the adapter ships.
 outside their allowlist (`pre.rs:30–43`, `post.rs:37–50`) and when no rules of
 that phase exist (`pre.rs:48`). The `inflight` push/pop and the Gemini
 `invoke_agent` sub-agent derivation run immediately after `read_payload`,
-before the tool-name match and before rule loading, in both runners.
+before the tool-name match and before rule loading, in both runners — but only
+under a **governed** root (`security::is_governed`: `.phronesis/rules.json` or
+`.phronesis/loader.json` exists). Every hook entry point (`pre-check`,
+`post-check`, `claude-hook`, `codex-hook`, `session-context`,
+`interaction-context`) returns its no-op answer without touching disk when the
+resolved root is not governed; otherwise the correlation writes would create a
+stray `<cwd>/.phronesis/journey/` in any directory a host happened to run in.
+Project-root discovery uses the same marker, so a stray journey-only
+`.phronesis/` never stops the walk up to the governing root.
 `invoke_agent` is added to both allowlists. A blocked `invoke_agent` pre-check
 (exit 2) pops the `agents` entry it just pushed, mirroring the `inflight` pop:
 a sub-agent that never ran must not leave a dangling entry for the next real

@@ -37,6 +37,11 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     };
 
     let root = security::project_root();
+    // Ungoverned: nothing to check, and no lifecycle or graph write may
+    // create a stray `<cwd>/.phronesis/` (see `security::is_governed`).
+    if !security::is_governed(&root) {
+        super::exit_ok();
+    }
     let raw_tool = payload.tool_name.clone().unwrap_or_default();
     super::lifecycle_wiring::post_pop_and_detect(&root, &payload, &raw_tool);
     if raw_tool == "invoke_agent" {

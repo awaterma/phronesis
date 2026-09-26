@@ -377,6 +377,7 @@ fn resolve_project_root_submodule_style_relative_gitdir_file() {
     let tmp = tempdir().expect("tmp");
     let main = tmp.path().join("main");
     std::fs::create_dir_all(main.join(".phronesis")).expect("mkdir .phronesis");
+    std::fs::write(main.join(".phronesis/rules.json"), "{\"rules\":[]}").expect("rules");
     std::fs::create_dir_all(main.join(".git/modules/sub")).expect("mkdir modules");
     let sub = main.join("vendor/sub");
     std::fs::create_dir_all(sub.join("src")).expect("mkdir sub");
@@ -435,4 +436,112 @@ fn pre_check_blocks_in_absolute_gitdir_worktree_at_every_depth() {
 #[test]
 fn pre_check_blocks_in_relative_gitdir_worktree_at_every_depth() {
     assert_pre_check_blocks_at_every_depth(true);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Stray journey-only `.phronesis` dirs. Earlier hooks wrote lifecycle state
+// into `<cwd>/.phronesis/journey/` from an ungoverned cwd; the walk used to
+// stop at any `.phronesis` directory, so such a stray made its subtree
+// permanently ungoverned. Only a real rules config marks a governed root.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// Leave the shape the old hooks left behind: `journey/` state and nothing else.
+fn plant_stray_journey(dir: &Path) {
+    let journey = dir.join(".phronesis/journey");
+    std::fs::create_dir_all(&journey).expect("mkdir stray journey");
+    for name in ["inflight.lock", "seq", "events.jsonl", "events.lock"] {
+        std::fs::write(journey.join(name), "").expect("stray journey file");
+    }
+}
+
+fn pre_check_from(cwd: &Path, payload: &str) -> (Option<i32>, String) {
+    use std::io::Write;
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .arg("pre-check")
+        .current_dir(cwd)
+        .env_remove("PHRONESIS_PROJECT_ROOT")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn phr-mcp");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.as_bytes())
+        .expect("write payload");
+    let out = child.wait_with_output().expect("wait phr-mcp");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+const FORBIDDEN_EDIT: &str = r#"{"tool_name":"Edit","tool_input":{"file_path":"src/deep/lib.rs","old_string":"// fixture","new_string":"// FORBIDDEN_MARKER"}}"#;
+
+#[test]
+fn resolve_project_root_skips_a_stray_journey_only_phronesis() {
+    let tmp = tempdir().expect("tmp");
+    let main = tmp.path().join("main");
+    std::fs::create_dir_all(main.join(".phronesis")).expect("mkdir .phronesis");
+    std::fs::write(main.join(".phronesis/rules.json"), "{\"rules\":[]}").expect("rules");
+    let sub = main.join("sub");
+    plant_stray_journey(&sub);
+    assert_eq!(
+        phronesis_mcp::security::resolve_project_root(&sub),
+        main,
+        "a journey-only .phronesis must not stop the walk"
+    );
+    assert!(phronesis_mcp::security::is_governed(&main));
+    assert!(!phronesis_mcp::security::is_governed(&sub));
+}
+
+#[test]
+fn pre_check_from_under_a_stray_phronesis_is_governed_by_main() {
+    let tmp = tempdir().expect("tmp");
+    let main = tmp.path().join("main");
+    std::fs::create_dir_all(main.join(".phronesis")).expect("mkdir .phronesis");
+    std::fs::write(
+        main.join(".phronesis/rules.json"),
+        r#"{"rules":[{"id":"forbid-marker","phase":"pre","priority":1,
+            "when":[{"new_content_contains":"FORBIDDEN_MARKER"}],
+            "then":{"block":"forbidden marker"}}]}"#,
+    )
+    .expect("rules");
+    let sub = main.join("sub");
+    plant_stray_journey(&sub);
+    let (code, stderr) = pre_check_from(&sub, FORBIDDEN_EDIT);
+    assert_eq!(
+        code,
+        Some(2),
+        "pre-check under a stray .phronesis must be governed by main and block: {stderr}"
+    );
+    assert!(stderr.contains("forbidden marker"), "{stderr}");
+}
+
+fn assert_stray_in_worktree_subdir_still_blocks(relative: bool) {
+    let Some((_tmp, wt)) = worktree_fixture(relative) else {
+        return;
+    };
+    plant_stray_journey(&wt.join("src"));
+    for cwd in [wt.join("src"), wt.join("src/deep")] {
+        let (code, stderr) = pre_check_from(&cwd, FORBIDDEN_EDIT);
+        assert_eq!(
+            code,
+            Some(2),
+            "relative={relative}: pre-check from {cwd:?} under a stray .phronesis must block: {stderr}"
+        );
+        assert!(stderr.contains("forbidden marker"), "{stderr}");
+    }
+}
+
+#[test]
+fn stray_phronesis_in_absolute_gitdir_worktree_subdir_does_not_ungovern_it() {
+    assert_stray_in_worktree_subdir_still_blocks(false);
+}
+
+#[test]
+fn stray_phronesis_in_relative_gitdir_worktree_subdir_does_not_ungovern_it() {
+    assert_stray_in_worktree_subdir_still_blocks(true);
 }

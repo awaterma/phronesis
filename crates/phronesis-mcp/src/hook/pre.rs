@@ -29,6 +29,12 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     };
 
     let root = security::project_root();
+    // An ungoverned root has no rules to enforce, and every write below
+    // (lifecycle state, journal) would create a stray `<cwd>/.phronesis/`
+    // that later stops the project-root walk. Allow without touching disk.
+    if !security::is_governed(&root) {
+        super::exit_ok();
+    }
     let inflight_key = super::lifecycle_wiring::pre_push_inflight(&root, &payload);
     if payload.tool_name.as_deref() == Some("invoke_agent") {
         super::lifecycle_wiring::gemini_subagent_start(&root, &payload);

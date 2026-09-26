@@ -927,6 +927,11 @@ async fn handle_serve() -> anyhow::Result<()> {
 
 async fn handle_session_context() -> anyhow::Result<()> {
     let root = phronesis_mcp::security::project_root();
+    // Ungoverned: nothing to inject, and stamping the session id would create
+    // a stray `<cwd>/.phronesis/journey/` (see `security::is_governed`).
+    if !phronesis_mcp::security::is_governed(&root) {
+        return Ok(());
+    }
     let out = phronesis_mcp::context::run_session_context_configured(
         &root,
         phronesis_mcp::context::DEFAULT_MAX_BYTES,
@@ -940,6 +945,9 @@ async fn handle_session_context() -> anyhow::Result<()> {
 
 async fn handle_interaction_context(last: usize) -> anyhow::Result<()> {
     let root = phronesis_mcp::security::project_root();
+    if !phronesis_mcp::security::is_governed(&root) {
+        return Ok(());
+    }
     let out = phronesis_mcp::context::run_interaction_context_configured(
         &root,
         last,

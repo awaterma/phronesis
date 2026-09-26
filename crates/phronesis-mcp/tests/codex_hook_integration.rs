@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use phronesis_mcp::lifecycle::state;
 
 fn run_hook(root: &std::path::Path, payload: &Value) -> Output {
+    ensure_governed(root);
     let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .arg("codex-hook")
         .env("PHRONESIS_PROJECT_ROOT", root)
@@ -25,6 +26,7 @@ fn run_hook(root: &std::path::Path, payload: &Value) -> Output {
 }
 
 fn run_raw_hook(root: &std::path::Path, event: &str, raw: &[u8]) -> Output {
+    ensure_governed(root);
     let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
         .args(["codex-hook", event])
         .env("PHRONESIS_PROJECT_ROOT", root)
@@ -40,6 +42,19 @@ fn run_raw_hook(root: &std::path::Path, event: &str, raw: &[u8]) -> Output {
         .write_all(raw)
         .expect("write raw payload");
     child.wait_with_output().expect("wait for raw hook")
+}
+
+/// Hooks record lifecycle state only under a governed root (one whose
+/// `.phronesis/` holds a rules config). Lifecycle tests exercise that
+/// recording, so give a bare fixture an empty rule set — rule evaluation is
+/// unchanged, the root is just governed.
+fn ensure_governed(root: &std::path::Path) {
+    let phr = root.join(".phronesis");
+    if phr.join("rules.json").is_file() || phr.join("loader.json").is_file() {
+        return;
+    }
+    std::fs::create_dir_all(&phr).expect("mkdir .phronesis");
+    std::fs::write(phr.join("rules.json"), r#"{"rules":[]}"#).expect("write rules.json");
 }
 
 fn response(output: &Output) -> Value {
@@ -1060,6 +1075,7 @@ fn correction_survives_an_intervening_tool_record_and_is_session_scoped() {
 #[test]
 fn prompt_text_is_scrubbed_into_the_log_and_never_the_journal() {
     let project = tempfile::tempdir().expect("temp project");
+    ensure_governed(project.path());
     // A temp `$HOME` set on the *child* process only: the parent's environment
     // is never mutated, so this test cannot race the rest of the binary, and it
     // does not require the ambient HOME to exist (CI sandboxes sometimes unset

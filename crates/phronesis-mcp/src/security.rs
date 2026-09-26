@@ -113,29 +113,32 @@ pub fn project_root() -> PathBuf {
 }
 
 /// Walk up from `start` to find the governing project root — the nearest
-/// ancestor (or its main checkout) that actually carries `.phronesis` state.
+/// ancestor (or its main checkout) that is [governed](is_governed), i.e. whose
+/// `.phronesis/` holds a rules config.
 ///
 /// Discovery precedence at each ancestor, nearest first:
-/// - an ancestor carrying `.phronesis/` governs — a worktree that
-///   copy-initialized its own `.phronesis` is governed by its own state, not the
-///   main checkout's;
+/// - a governed ancestor governs — a worktree that copy-initialized its own
+///   `.phronesis` is governed by its own state, not the main checkout's;
 /// - otherwise, when the ancestor is a git *worktree* (its `.git` is a file
-///   pointer) and lacks its own `.phronesis`, the main checkout's `.phronesis`
-///   is probed via the `gitdir:` pointer and governs when present;
-/// - a git root without `.phronesis` (and whose main checkout has none) does
-///   not govern — the walk continues, so a repo with no phronesis state anywhere
-///   falls through to `start`, reproducing the pre-discovery fail-open behavior.
+///   pointer) and is not governed itself, the main checkout is probed via the
+///   `gitdir:` pointer and governs when it is governed;
+/// - an ungoverned directory does not govern even when it carries a
+///   `.phronesis/` — a stray journey-only dir left by an older hook must not
+///   stop the walk and ungovern its subtree — so the walk continues, and a
+///   tree with no governed ancestor anywhere falls through to `start`,
+///   reproducing the pre-discovery fail-open behavior. Hooks do not write
+///   into that fallback root (see [`is_governed`]).
 ///
 /// Exposed separately from [`project_root`] so the worktree-aware discovery can
 /// be exercised without changing the process working directory.
 pub fn resolve_project_root(start: &Path) -> PathBuf {
     let mut current = Some(start.to_path_buf());
     while let Some(dir) = current.take() {
-        if has_phronesis(&dir) {
+        if is_governed(&dir) {
             return dir;
         }
         if let Some(main_root) = main_checkout_root(&dir)
-            && has_phronesis(&main_root)
+            && is_governed(&main_root)
         {
             return main_root;
         }
@@ -144,9 +147,15 @@ pub fn resolve_project_root(start: &Path) -> PathBuf {
     start.to_path_buf()
 }
 
-/// True when `root` carries a `.phronesis` directory (the phronesis state root).
-fn has_phronesis(root: &Path) -> bool {
-    root.join(".phronesis").is_dir()
+/// True when `root` is a governed phronesis project: its `.phronesis/` holds a
+/// rules config — `rules.json` (which `phr-mcp init` always writes, even with
+/// `--packs none`) or a layered `loader.json`. A bare `.phronesis/` is not
+/// enough: hooks fired from an ungoverned directory used to leave
+/// journey-only `.phronesis/journey/` dirs behind, and those must neither stop
+/// the project-root walk nor be written to again.
+pub fn is_governed(root: &Path) -> bool {
+    crate::rules_file::default_path(root).is_file()
+        || crate::rule_layers::config_path(root).is_file()
 }
 
 /// If `root` is a git worktree (its `.git` is a file pointer), return the main
