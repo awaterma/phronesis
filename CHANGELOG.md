@@ -64,6 +64,41 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   capsule's priority could push the low-priority pool past its 96-record or
   192 KiB reservation; an upsert is now checked as if the old version were
   removed and the new one inserted fresh.
+
+- **A verification result counted as proof without saying what it proved.**
+  `property-results.jsonl` records carried no confinement tier and no
+  artifact hash, and `execute` returned results with an empty property and
+  revision, so a hand-written `kani passed` line hydrated as
+  `verification_result(…, kani, passed)` for a property with no kani
+  encoding, a raw (unconfined) proof was indistinguishable from a sandboxed
+  one, and a result with an empty revision counted as "at HEAD" whenever
+  HEAD was unknown — silencing the first-proof obligation for good. Result
+  records (format `v: 2`) now carry the property, the 40-hex commit the proof
+  ran against, the verifier, the tier, and the SHA-256 of the artifact bytes
+  that ran, and `execute` fills them (it now takes the property and verifier
+  name, requires the artifact to be approved for that property, and refuses a
+  non-commit revision). A record hydrates as `verification_result` only when
+  every binding holds and matches a property encoding for that verifier and
+  an allowlisted artifact for that property; otherwise it asserts
+  `unbound_evidence(property, verifier, reason)` and never satisfies an
+  obligation. Bound results also assert `result_tier(property, verifier,
+  tier)` so a rule can refuse `raw` evidence (SPEC-property-ontology §2
+  "Result binding").
+  **Upgrade note:** existing `v: 1` records still load but read as
+  `unbound_evidence(…, legacy_record)` — they no longer count as proof, so
+  accepted properties with changed dependencies raise `property_obligation`
+  again until re-proved. This repository's own hand-seeded kani record is
+  one of them.
+- **One bad line in the property results file silently turned off every
+  property rule.** A malformed `property-results.jsonl` line (or a malformed
+  `properties.json`) failed the whole property hydration with a stderr
+  note, dropping the property facts, stale-proof warnings, and proof
+  obligations. The hook now asserts `store_corrupt(properties, <reason>)` —
+  mirroring `store_corrupt(coverage, …)` — so a rule can warn or block,
+  prints a stderr warning naming the file, and derives everything else as
+  if the corrupt file held no evidence, so obligations still fire. Loading
+  also rejects a result status outside the closed `passed | failed |
+  inconclusive | timeout | unknown` set.
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other

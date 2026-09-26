@@ -941,17 +941,19 @@ pub(crate) async fn assert_coverage_facts(
 }
 
 /// Hydrate property-ontology facts (SPEC-property-ontology.md) — the
-/// coverage hydration pattern: demand-gated on rule predicates, fail-open,
-/// `PHRONESIS_NO_PROPERTIES` opt-out.
+/// coverage hydration pattern: demand-gated on rule predicates,
+/// `PHRONESIS_NO_PROPERTIES` opt-out. A corrupt property store (properties.json
+/// or property-results.jsonl) is NOT a hydration failure: it warns on
+/// stderr, asserts `store_corrupt(properties, <reason>)` when a rule mentions
+/// it, and the rest is derived as if the corrupt file held no evidence, so
+/// obligations still fire (D8).
 pub(crate) async fn assert_properties_facts(
     network: &ReteNetwork,
     project_root: &Path,
     rule_predicates: &HashSet<String>,
     edited: &[(String, Option<String>, String)],
 ) -> Result<(), HookError> {
-    use crate::properties::hydrate::{
-        EditedFile, PropertyHydrationInput, RELATIONS, facts_for_event,
-    };
+    use crate::properties::hydrate::{EditedFile, PropertyHydrationInput, RELATIONS, hydrate};
 
     if std::env::var_os("PHRONESIS_NO_PROPERTIES").is_some() {
         return Ok(());
@@ -977,8 +979,16 @@ pub(crate) async fn assert_properties_facts(
         edited: edited_files,
         head_sha,
     };
-    let facts = match facts_for_event(&input) {
-        Ok(f) => f,
+    let facts = match hydrate(&input) {
+        Ok(h) => {
+            if let Some(c) = &h.store_corrupt {
+                eprintln!(
+                    "phronesis: WARNING — property store corrupt ({}): {c}; property evidence ignored (obligations reported as unproved).",
+                    c.reason()
+                );
+            }
+            h.facts
+        }
         Err(e) => {
             eprintln!("phronesis: WARNING — property hydration failed: {}", e);
             return Ok(());

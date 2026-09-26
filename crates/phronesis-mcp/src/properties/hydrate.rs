@@ -4,7 +4,10 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::properties::store::{load_properties, load_results};
+use crate::properties::store::{
+    LEGACY_RESULTS_FORMAT, Property, PropertyStoreError, ResultRecord, load_properties,
+    load_results,
+};
 
 /// Every relation this module can assert (spec §2 — the closed relation set).
 /// The hook demand-gates on this set, exactly as coverage does.
@@ -19,9 +22,16 @@ pub const RELATIONS: &[&str] = &[
     "property_encoding",
     "verification_result",
     "result_revision",
+    "result_tier",
+    "unbound_evidence",
     "stale_evidence",
     "property_obligation",
+    "store_corrupt",
 ];
+
+/// The confinement tiers a bound result may name (`ConfinementTier`,
+/// snake_case). `refused` never produces a result.
+const RESULT_TIERS: &[&str] = &["devcontainer", "sandbox_exec", "raw"];
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PropertyFact {
@@ -81,17 +91,140 @@ fn depends_on_changed(reference: &str, changed: &HashSet<String>) -> bool {
             .any(|region| crate::coverage::region_map::reference_matches(reference, region))
 }
 
+/// Hydration result: the facts, plus the store corruption (if any) so the
+/// hook can report it on stderr whether or not a rule demanded
+/// `store_corrupt` — the `coverage::hydrate::Hydration` shape.
+#[derive(Debug, Default)]
+pub struct PropertyHydration {
+    pub facts: Vec<PropertyFact>,
+    pub store_corrupt: Option<PropertyStoreError>,
+}
+
+fn is_hex_of_len(value: &str, len: usize) -> bool {
+    value.len() == len && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether a result record is evidence (D9). `Ok(())` is a bound result;
+/// `Err(reason)` names the first missing or mismatched binding, and the
+/// record hydrates as `unbound_evidence(property, verifier, reason)`:
+///
+/// - `legacy_record` — a v1 record (no tier, no artifact hash);
+/// - `missing_revision` / `invalid_revision` — not a 40-hex commit id;
+/// - `missing_tier` / `invalid_tier` — not a confinement tier that runs;
+/// - `missing_artifact` / `invalid_artifact` — not a SHA-256 digest;
+/// - `unknown_property` — no curated property with that id;
+/// - `no_encoding` — the property has no encoding for that verifier;
+/// - `allowlist_unreadable` / `artifact_not_approved` — the artifact hash is
+///   not an approved artifact for that property (S3 allowlist).
+fn binding(
+    r: &ResultRecord,
+    properties: &[Property],
+    approved: &Result<Vec<(String, String)>, ()>,
+) -> Result<(), &'static str> {
+    if r.v == LEGACY_RESULTS_FORMAT {
+        return Err("legacy_record");
+    }
+    if r.revision.is_empty() {
+        return Err("missing_revision");
+    }
+    if !is_hex_of_len(&r.revision, 40) {
+        return Err("invalid_revision");
+    }
+    match r.tier.as_deref() {
+        None | Some("") => return Err("missing_tier"),
+        Some(tier) if !RESULT_TIERS.contains(&tier) => return Err("invalid_tier"),
+        Some(_) => {}
+    }
+    let artifact = match r.artifact_sha256.as_deref() {
+        None | Some("") => return Err("missing_artifact"),
+        Some(a) if !(is_hex_of_len(a, 64) && a.bytes().all(|b| !b.is_ascii_uppercase())) => {
+            return Err("invalid_artifact");
+        }
+        Some(a) => a,
+    };
+    let Some(property) = properties.iter().find(|p| p.id == r.property) else {
+        return Err("unknown_property");
+    };
+    if !property.encodings.iter().any(|e| e.verifier == r.verifier) {
+        return Err("no_encoding");
+    }
+    let Ok(approved) = approved else {
+        return Err("allowlist_unreadable");
+    };
+    if !approved
+        .iter()
+        .any(|(sha, id)| sha == artifact && id == &r.property)
+    {
+        return Err("artifact_not_approved");
+    }
+    Ok(())
+}
+
 pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<PropertyFact>> {
+    hydrate(input).map(|h| h.facts)
+}
+
+/// Derive this event's property facts. A corrupt store (properties.json or
+/// the results sidecar) is not an error: it yields
+/// `store_corrupt(properties, <reason>)` (when demanded), and everything
+/// else is derived as if the corrupt file held nothing — unreadable results
+/// are no evidence, so obligations still fire (D8).
+pub fn hydrate(input: &PropertyHydrationInput) -> anyhow::Result<PropertyHydration> {
     let wants = |rel: &str| input.rule_relations.contains(rel);
 
     if !RELATIONS.iter().any(|r| wants(r)) {
-        return Ok(Vec::new());
+        return Ok(PropertyHydration::default());
     }
 
     let mut facts: Vec<PropertyFact> = Vec::new();
 
-    let properties = load_properties(input.root)?;
-    let results = load_results(input.root)?;
+    let mut store_corrupt: Option<PropertyStoreError> = None;
+    let properties = load_properties(input.root).unwrap_or_else(|e| {
+        store_corrupt = Some(e);
+        Vec::new()
+    });
+    let results = load_results(input.root).unwrap_or_else(|e| {
+        store_corrupt.get_or_insert(e);
+        Vec::new()
+    });
+    if wants("store_corrupt")
+        && let Some(c) = &store_corrupt
+    {
+        facts.push(fact(
+            "store_corrupt",
+            vec!["properties".to_string(), c.reason().to_string()],
+        ));
+    }
+
+    // D9: split results into bound evidence and unbound records. The
+    // allowlist is read only when there is a result to bind.
+    let approved: Result<Vec<(String, String)>, ()> = if results.is_empty() {
+        Ok(Vec::new())
+    } else {
+        crate::properties::allowlist::load(input.root)
+            .map(|f| {
+                f.entries
+                    .into_iter()
+                    .map(|e| (e.artifact_sha256, e.property_id))
+                    .collect()
+            })
+            .map_err(|_| ())
+    };
+    let mut bound: Vec<&ResultRecord> = Vec::new();
+    for r in &results {
+        match binding(r, &properties, &approved) {
+            Ok(()) => bound.push(r),
+            Err(reason) => {
+                if wants("unbound_evidence") {
+                    facts.push(fact(
+                        "unbound_evidence",
+                        vec![r.property.clone(), r.verifier.clone(), reason.to_string()],
+                    ));
+                }
+            }
+        }
+    }
+    let results = bound;
 
     for p in &properties {
         let id = p.id.clone();
@@ -152,8 +285,9 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
         }
     }
 
-    // Results at their recorded revision (spec §2: verification_result,
-    // result_revision — provenance via Fact.source, not RETE args).
+    // Bound results at their recorded revision (spec §2: verification_result,
+    // result_revision, result_tier — provenance via Fact.source, not RETE
+    // args). Only bound records reach here.
     for r in &results {
         if wants("verification_result") {
             facts.push(fact(
@@ -167,6 +301,14 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
                 vec![r.property.clone(), r.verifier.clone(), r.revision.clone()],
             ));
         }
+        if wants("result_tier")
+            && let Some(tier) = &r.tier
+        {
+            facts.push(fact(
+                "result_tier",
+                vec![r.property.clone(), r.verifier.clone(), tier.clone()],
+            ));
+        }
     }
 
     // Staleness is host-derived (spec §5): the engine cannot order SHAs, so
@@ -178,15 +320,16 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
     if wants_stale {
         let mut changed: HashSet<String> = HashSet::new();
         changed.extend(changed_region_ids(input));
-        let head = input.head_sha.clone().unwrap_or_default();
         let mut stale: Vec<PropertyFact> = Vec::new();
-        for r in &results {
+        // An unknown HEAD cannot prove staleness (the coverage rule); the
+        // obligation below stays conservative instead.
+        for r in results.iter().filter(|_| input.head_sha.is_some()) {
             let depends_on_changed = properties
                 .iter()
                 .filter(|p| p.id == r.property)
                 .flat_map(|p| p.depends_on.iter())
                 .any(|region| depends_on_changed(region, &changed));
-            if depends_on_changed && !r.revision.is_empty() && r.revision != head {
+            if depends_on_changed && !at_head(r, input.head_sha.as_deref()) {
                 stale.push(fact(
                     "stale_evidence",
                     vec![r.property.clone(), r.verifier.clone()],
@@ -204,7 +347,6 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
     if wants("property_obligation") {
         let mut changed: HashSet<String> = HashSet::new();
         changed.extend(changed_region_ids(input));
-        let head = input.head_sha.clone().unwrap_or_default();
         for p in &properties {
             if !matches!(
                 p.status,
@@ -219,7 +361,7 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
                 .any(|region| depends_on_changed(region, &changed));
             let has_result = results
                 .iter()
-                .any(|r| r.property == p.id && r.revision == head);
+                .any(|r| r.property == p.id && at_head(r, input.head_sha.as_deref()));
             if depends_on_changed && !has_result {
                 facts.push(fact(
                     "property_obligation",
@@ -231,5 +373,14 @@ pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<Pro
 
     facts.sort();
     facts.dedup();
-    Ok(facts)
+    Ok(PropertyHydration {
+        facts,
+        store_corrupt,
+    })
+}
+
+/// A bound result ran against the current HEAD. An unknown HEAD matches
+/// nothing: no result can be shown current, so none suppresses an obligation.
+fn at_head(r: &ResultRecord, head_sha: Option<&str>) -> bool {
+    head_sha.is_some_and(|head| r.revision.eq_ignore_ascii_case(head))
 }

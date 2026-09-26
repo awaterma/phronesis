@@ -9,8 +9,11 @@ pub mod status;
 pub mod store;
 pub mod validate;
 
-pub use hydrate::{EditedFile, PropertyFact, PropertyHydrationInput, RELATIONS, facts_for_event};
+pub use hydrate::{
+    EditedFile, PropertyFact, PropertyHydration, PropertyHydrationInput, RELATIONS,
+    facts_for_event, hydrate,
+};
 pub use store::{
-    PROPERTIES_FORMAT, Property, PropertySource, PropertyStatus, RESULTS_FORMAT, ResultRecord,
-    load_properties, load_results,
+    LEGACY_RESULTS_FORMAT, PROPERTIES_FORMAT, Property, PropertySource, PropertyStatus,
+    RESULT_STATUSES, RESULTS_FORMAT, ResultRecord, load_properties, load_results,
 };
