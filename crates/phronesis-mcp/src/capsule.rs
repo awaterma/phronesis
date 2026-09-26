@@ -20,6 +20,12 @@ const MAX_RECORDS: usize = 128;
 const LOW_PRIORITY_RECORDS: usize = 96;
 const GOVERNANCE_PRIORITY: i32 = 50;
 const MAX_AGGREGATE_BYTES: usize = 256 * 1024;
+/// Byte budget reserved for priority < `GOVERNANCE_PRIORITY` capsules:
+/// `MAX_AGGREGATE_BYTES * LOW_PRIORITY_RECORDS / MAX_RECORDS`. Mirrors the
+/// slot reservation in bytes so a handful of large low-priority capsules
+/// cannot crowd governance capsules out of the aggregate budget the way a
+/// handful of large low-priority records could crowd out their slots.
+const LOW_PRIORITY_MAX_BYTES: usize = 192 * 1024;
 const MAX_RECORD_BYTES: usize = 8 * 1024;
 const MAX_PROVENANCE_ITEMS: usize = 32;
 pub const LEASE_SECS: u64 = 300;
@@ -202,7 +208,11 @@ impl CapsuleStorage {
 
     /// Emit a new capsule. Returns true if emitted, false if rejected.
     ///
-    /// Same rule re-emission upserts; different rule same ID is rejected.
+    /// Same rule re-emission upserts; different rule same ID is rejected. An
+    /// upsert is checked against the count and byte limits as if it were an
+    /// insert of the new version after removing the old one: re-emitting an
+    /// existing id under a lower priority or a larger body cannot bypass the
+    /// low-priority reservation the way a plain insert could not.
     pub fn emit(&mut self, capsule: EmittedCapsule) -> CapsuleResult<bool> {
         // Validate size limits
         if capsule.body.len() > MAX_RECORD_BYTES {
@@ -211,41 +221,16 @@ impl CapsuleStorage {
             ));
         }
 
-        // Check capacity
-        if !self.capsules.contains_key(&capsule.id) && self.capsules.len() >= MAX_RECORDS {
-            return Err(CapsuleError::CapacityExceeded(format!(
-                "Maximum {MAX_RECORDS} capsules allowed"
-            )));
-        }
-        if !self.capsules.contains_key(&capsule.id)
-            && capsule.priority < GOVERNANCE_PRIORITY
-            && self
-                .capsules
-                .values()
-                .filter(|record| record.priority < GOVERNANCE_PRIORITY)
-                .count()
-                >= LOW_PRIORITY_RECORDS
+        // Check for ID conflict before touching storage: a different rule
+        // must never be able to steal or displace an existing id.
+        if let Some(existing) = self.capsules.get(&capsule.id)
+            && existing.emitted_by != capsule.emitted_by
         {
-            return Err(CapsuleError::CapacityExceeded(
-                "low-priority capsule pool is full; 32 records are reserved for priority >= 50 governance capsules".into(),
+            return Err(CapsuleError::IdConflict(
+                capsule.id.clone(),
+                existing.emitted_by.clone(),
+                capsule.emitted_by.clone(),
             ));
-        }
-
-        // Check for ID conflict
-        if let Some(existing) = self.capsules.get(&capsule.id) {
-            if existing.emitted_by != capsule.emitted_by {
-                // Different rule, same ID = conflict
-                return Err(CapsuleError::IdConflict(
-                    capsule.id.clone(),
-                    existing.emitted_by.clone(),
-                    capsule.emitted_by.clone(),
-                ));
-            }
-            // Same rule re-emission = upsert
-            info!(
-                "Capsule {} upserted by rule {}",
-                capsule.id, capsule.emitted_by
-            );
         }
 
         let record_bytes = serde_json::to_vec(&capsule)?.len();
@@ -254,20 +239,70 @@ impl CapsuleStorage {
                 "capsule record exceeds 8 KiB limit".into(),
             ));
         }
+
+        // Remove any existing version of this id first, so every limit below
+        // is evaluated as "insert the new version into the pool with the old
+        // one gone" -- an upsert gets no free pass on count or byte limits.
+        let previous = self.capsules.remove(&capsule.id);
+        let is_upsert = previous.is_some();
+
+        if self.capsules.len() >= MAX_RECORDS {
+            self.restore(previous);
+            return Err(CapsuleError::CapacityExceeded(format!(
+                "Maximum {MAX_RECORDS} capsules allowed"
+            )));
+        }
+
+        if capsule.priority < GOVERNANCE_PRIORITY {
+            let low_priority: Vec<&EmittedCapsule> = self
+                .capsules
+                .values()
+                .filter(|record| record.priority < GOVERNANCE_PRIORITY)
+                .collect();
+            if low_priority.len() >= LOW_PRIORITY_RECORDS {
+                self.restore(previous);
+                return Err(CapsuleError::CapacityExceeded(
+                    "low-priority capsule pool is full; 32 records are reserved for priority >= 50 governance capsules".into(),
+                ));
+            }
+            let mut low_priority_bytes = 0usize;
+            for record in &low_priority {
+                low_priority_bytes += serde_json::to_vec(record)?.len();
+            }
+            if low_priority_bytes + record_bytes > LOW_PRIORITY_MAX_BYTES {
+                self.restore(previous);
+                return Err(CapsuleError::CapacityExceeded(format!(
+                    "low-priority capsule pool is full; priority < {GOVERNANCE_PRIORITY} capsules are capped at 192 KiB so governance capsules always have room in the 256 KiB aggregate"
+                )));
+            }
+        }
+
+        if is_upsert {
+            info!(
+                "Capsule {} upserted by rule {}",
+                capsule.id, capsule.emitted_by
+            );
+        }
+
         let capsule_id = capsule.id.clone();
-        let previous = self.capsules.insert(capsule_id.clone(), capsule);
+        self.capsules.insert(capsule_id.clone(), capsule);
         let aggregate = serde_json::to_vec(&self.capsules)?.len();
         if aggregate > MAX_AGGREGATE_BYTES {
-            if let Some(previous) = previous {
-                self.capsules.insert(previous.id.clone(), previous);
-            } else {
-                self.capsules.remove(&capsule_id);
-            }
+            self.capsules.remove(&capsule_id);
+            self.restore(previous);
             return Err(CapsuleError::CapacityExceeded(
                 "256 KiB aggregate emitted capsule limit exceeded".into(),
             ));
         }
         Ok(true)
+    }
+
+    /// Reinsert a capsule removed earlier in `emit` while checking limits,
+    /// restoring storage to its pre-attempt state on any rejection.
+    fn restore(&mut self, previous: Option<EmittedCapsule>) {
+        if let Some(previous) = previous {
+            self.capsules.insert(previous.id.clone(), previous);
+        }
     }
 
     /// Retract a capsule by ID.
@@ -1009,6 +1044,236 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// Build a low-priority capsule whose serialized size is exactly
+    /// `target_bytes`, by padding the body after measuring the fixed-field
+    /// overhead. `id` must be short and ASCII so the padding math is exact.
+    fn sized_record(id: &str, priority: i32, target_bytes: usize) -> EmittedCapsule {
+        let mut capsule = record(id, CapsuleLifecycle::Persistent, "s");
+        capsule.priority = priority;
+        capsule.body = String::new();
+        let base_len = serde_json::to_vec(&capsule)
+            .expect("capsule serializes")
+            .len();
+        let pad = target_bytes
+            .checked_sub(base_len)
+            .expect("target_bytes must exceed the fixed-field overhead");
+        capsule.body = "x".repeat(pad);
+        assert_eq!(
+            serde_json::to_vec(&capsule)
+                .expect("capsule serializes")
+                .len(),
+            target_bytes
+        );
+        capsule
+    }
+
+    fn low_priority_bytes(storage: &CapsuleStorage) -> usize {
+        storage
+            .capsules
+            .values()
+            .filter(|c| c.priority < GOVERNANCE_PRIORITY)
+            .map(|c| serde_json::to_vec(c).expect("capsule serializes").len())
+            .sum()
+    }
+
+    /// D6 repro 1: low-priority capsules must not be able to use more than
+    /// 256 KiB * 96/128 = 192 KiB of the aggregate budget, and a governance
+    /// (priority >= 50) capsule must always be able to use the rest of the
+    /// budget even when the low-priority pool is at its own cap.
+    #[test]
+    fn low_priority_pool_is_capped_below_the_full_aggregate_budget() {
+        let mut storage = CapsuleStorage::default();
+        // Each record is sized near the old (buggy) per-record ceiling so
+        // that, pre-fix, 32 of them alone eat almost the entire 256 KiB
+        // aggregate budget -- crowding out governance capsules.
+        for i in 0..32 {
+            let capsule = sized_record(&format!("low-{i}"), 10, 8100);
+            let _ = storage.emit(capsule);
+        }
+
+        // The low-priority pool must never exceed its 192 KiB reservation,
+        // no matter how many low-priority capsules were offered.
+        assert!(
+            low_priority_bytes(&storage) <= 192 * 1024,
+            "low-priority pool used {} bytes, more than the 192 KiB reservation",
+            low_priority_bytes(&storage)
+        );
+
+        // A governance capsule must still fit: the aggregate budget always
+        // leaves at least 256 KiB - 192 KiB = 64 KiB for priority >= 50
+        // capsules regardless of how the low-priority pool filled up.
+        let governance = sized_record("gov-1", 90, 7_000);
+        assert!(
+            storage.emit(governance).is_ok(),
+            "a 7000-byte governance capsule should fit in the reserved budget"
+        );
+    }
+
+    /// D6 repro 2: an upsert of an existing id must be checked against the
+    /// count/byte limits as if it were an insert of the new version after
+    /// removing the old one -- so lowering an existing governance capsule's
+    /// priority cannot silently overflow the low-priority reservation.
+    #[test]
+    fn upsert_lowering_priority_is_checked_against_a_full_low_priority_pool() {
+        let mut storage = CapsuleStorage::default();
+        for i in 0..96 {
+            let capsule = record(&format!("low-{i}"), CapsuleLifecycle::Persistent, "s");
+            storage
+                .emit(EmittedCapsule {
+                    priority: 10,
+                    ..capsule
+                })
+                .expect("first 96 low-priority capsules should be accepted");
+        }
+        let governance = EmittedCapsule {
+            priority: 90,
+            emitted_by: "rule-g".into(),
+            ..record("g1", CapsuleLifecycle::Persistent, "s")
+        };
+        storage
+            .emit(governance)
+            .expect("governance capsule should be accepted");
+        assert_eq!(storage.len(), 97);
+
+        // Re-emit "g1" from the same rule, but now at low priority. The
+        // low-priority pool is already full (96 records), so this must be
+        // rejected rather than silently becoming the 97th low-priority
+        // record.
+        let downgraded = EmittedCapsule {
+            priority: 10,
+            emitted_by: "rule-g".into(),
+            ..record("g1", CapsuleLifecycle::Persistent, "s")
+        };
+        let result = storage.emit(downgraded);
+        assert!(
+            matches!(result, Err(CapsuleError::CapacityExceeded(_))),
+            "expected capacity error, got {result:?}"
+        );
+        // The original governance record must be left untouched.
+        assert_eq!(
+            storage.get_capsule("g1").map(|capsule| capsule.priority),
+            Some(90)
+        );
+        assert_eq!(
+            storage
+                .capsules
+                .values()
+                .filter(|c| c.priority < GOVERNANCE_PRIORITY)
+                .count(),
+            96
+        );
+    }
+
+    #[test]
+    fn low_priority_count_exactly_at_reserve_succeeds_one_more_fails() {
+        let mut storage = CapsuleStorage::default();
+        for i in 0..96 {
+            storage
+                .emit(EmittedCapsule {
+                    priority: 10,
+                    ..record(&format!("low-{i}"), CapsuleLifecycle::Persistent, "s")
+                })
+                .expect("first 96 low-priority capsules should be accepted");
+        }
+        let one_more = EmittedCapsule {
+            priority: 10,
+            ..record("low-96", CapsuleLifecycle::Persistent, "s")
+        };
+        let err = storage.emit(one_more).unwrap_err();
+        assert!(matches!(err, CapsuleError::CapacityExceeded(_)));
+        assert!(err.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn low_priority_bytes_exactly_at_cap_succeeds_one_more_fails() {
+        let mut storage = CapsuleStorage::default();
+        // Fill the 192 KiB low-priority budget exactly with 24 capsules at
+        // the 8 KiB per-record ceiling (well under the 96-record cap, so
+        // only the byte cap is exercised).
+        for i in 0..24 {
+            let capsule = sized_record(&format!("low-{i}"), 10, 8 * 1024);
+            storage
+                .emit(capsule)
+                .expect("8 KiB low-priority capsule should be accepted");
+        }
+        assert_eq!(low_priority_bytes(&storage), 192 * 1024);
+
+        // The low-priority pool is exactly at its 192 KiB cap; even the
+        // smallest additional low-priority capsule must be rejected.
+        let one_more = EmittedCapsule {
+            priority: 10,
+            ..record("low-24", CapsuleLifecycle::Persistent, "s")
+        };
+        let err = storage.emit(one_more).unwrap_err();
+        assert!(matches!(err, CapsuleError::CapacityExceeded(_)));
+    }
+
+    #[test]
+    fn upsert_raising_priority_out_of_a_full_low_priority_pool_succeeds() {
+        let mut storage = CapsuleStorage::default();
+        for i in 0..96 {
+            storage
+                .emit(EmittedCapsule {
+                    priority: 10,
+                    emitted_by: "rule-low".into(),
+                    ..record(&format!("low-{i}"), CapsuleLifecycle::Persistent, "s")
+                })
+                .expect("first 96 low-priority capsules should be accepted");
+        }
+        // Raising an existing low-priority record's own priority to
+        // governance must succeed even though the low-priority pool is at
+        // its cap: the record is removed from the low-priority pool by the
+        // same upsert that adds it to governance.
+        let raised = EmittedCapsule {
+            priority: 90,
+            emitted_by: "rule-low".into(),
+            ..record("low-0", CapsuleLifecycle::Persistent, "s")
+        };
+        assert!(storage.emit(raised).is_ok());
+        assert_eq!(
+            storage.get_capsule("low-0").map(|capsule| capsule.priority),
+            Some(90)
+        );
+        assert_eq!(
+            storage
+                .capsules
+                .values()
+                .filter(|c| c.priority < GOVERNANCE_PRIORITY)
+                .count(),
+            95
+        );
+    }
+
+    #[test]
+    fn upsert_of_the_same_low_priority_record_does_not_double_count_itself() {
+        let mut storage = CapsuleStorage::default();
+        for i in 0..96 {
+            storage
+                .emit(EmittedCapsule {
+                    priority: 10,
+                    emitted_by: format!("rule-{i}"),
+                    ..record(&format!("low-{i}"), CapsuleLifecycle::Persistent, "s")
+                })
+                .expect("first 96 low-priority capsules should be accepted");
+        }
+        // Re-emitting one of the 96 existing low-priority records (same
+        // rule, same id, still low priority) must not be treated as if it
+        // were the 97th low-priority record.
+        let reemit = EmittedCapsule {
+            body: "updated".into(),
+            priority: 10,
+            emitted_by: "rule-0".into(),
+            ..record("low-0", CapsuleLifecycle::Persistent, "s")
+        };
+        assert!(storage.emit(reemit).is_ok());
+        assert_eq!(
+            storage
+                .get_capsule("low-0")
+                .map(|capsule| capsule.body.clone()),
+            Some("updated".to_string())
+        );
     }
 
     #[test]
