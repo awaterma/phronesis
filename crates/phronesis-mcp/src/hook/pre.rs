@@ -1,11 +1,13 @@
+use std::collections::HashSet;
 use std::process;
 
 use phr::{Fact, ReteNetwork};
 
 use crate::hook_facts::{
-    assert_common_facts, assert_diff_facts, assert_language_pack_facts, assert_test_facts,
-    assert_values_facts, check_bash_command_patterns, check_content_patterns,
-    collect_bash_command_patterns, collect_content_patterns,
+    assert_common_facts, assert_coverage_facts, assert_diff_facts, assert_language_pack_facts,
+    assert_properties_facts, assert_test_facts, assert_values_facts, check_bash_command_patterns,
+    check_content_patterns, collect_bash_command_patterns, collect_content_patterns,
+    collect_rule_predicates,
 };
 use crate::security;
 
@@ -49,7 +51,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         _ => super::exit_ok(),
     };
 
-    let (rules, override_facts, content_patterns, bash_command_patterns) = {
+    let (rules, override_facts, content_patterns, bash_command_patterns, rule_predicates) = {
         let loaded = match super::load_rules("pre") {
             Ok(Some(r)) => r,
             Ok(None) => super::exit_ok(),
@@ -65,7 +67,8 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         let rules = loaded.rules;
         let cp = collect_content_patterns(&rules);
         let bcp = collect_bash_command_patterns(&rules);
-        (rules, loaded.override_facts, cp, bcp)
+        let rp = collect_rule_predicates(&rules);
+        (rules, loaded.override_facts, cp, bcp, rp)
     };
 
     // Populated only when the structural graph has drifted; these rules'
@@ -175,6 +178,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                 file_path: &file_path,
                 content_patterns: &content_patterns,
                 bash_command_patterns: &bash_command_patterns,
+                rule_predicates: &rule_predicates,
             },
         )
         .await
@@ -314,6 +318,7 @@ struct PreContentInput<'a> {
     file_path: &'a str,
     content_patterns: &'a [String],
     bash_command_patterns: &'a [String],
+    rule_predicates: &'a HashSet<String>,
 }
 
 async fn assert_pre_content_facts(
@@ -327,6 +332,7 @@ async fn assert_pre_content_facts(
         file_path,
         content_patterns,
         bash_command_patterns,
+        rule_predicates,
     } = input;
     network
         .assert_fact(Fact {
@@ -417,6 +423,21 @@ async fn assert_pre_content_facts(
             eprintln!("phronesis: BLOCKED — test-fact assertion failed: {}", e);
             e
         })?;
+
+    // Coverage-evidence hydration: demand-gated, fail-open, opt-out via
+    // PHRONESIS_NO_COVERAGE. File edits carry their own old/new content;
+    // bash events hydrate revision/staleness facts only.
+    let edited: Vec<(String, Option<String>, String)> = if file_path.is_empty() {
+        Vec::new()
+    } else {
+        vec![(
+            file_path.to_string(),
+            old_content.clone(),
+            content.to_string(),
+        )]
+    };
+    assert_coverage_facts(network, &project_root, rule_predicates, &edited).await?;
+    assert_properties_facts(network, &project_root, rule_predicates, &edited).await?;
 
     Ok(())
 }

@@ -15,14 +15,18 @@ use crate::payload_scrub::Scrubber;
 fn uuid_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b").unwrap()
+        Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+            .expect("static uuid regex is a compile-time invariant")
     })
 }
 /// The phronesis sid shape, `s-YYYY-MM-DD-<hex>`, which is not a UUID and which
 /// a human pastes into a prompt all the time ("what happened in s-2026-09-18-3a9f1c?").
 fn phronesis_sid_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"\bs-\d{4}-\d{2}-\d{2}-[0-9a-f]{1,8}\b").unwrap())
+    RE.get_or_init(|| {
+        Regex::new(r"\bs-\d{4}-\d{2}-\d{2}-[0-9a-f]{1,8}\b")
+            .expect("static session-id regex is a compile-time invariant")
+    })
 }
 /// Any path ending in `.jsonl` under a `.claude`, `.codex` or `.gemini`
 /// directory, accepting both separators and relative as well as absolute forms
@@ -30,7 +34,8 @@ fn phronesis_sid_re() -> &'static Regex {
 fn transcript_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r#"(?:[^\s"']*[/\\])?\.(?:claude|codex|gemini)[/\\][^\s"']*\.jsonl"#).unwrap()
+        Regex::new(r#"(?:[^\s"']*[/\\])?\.(?:claude|codex|gemini)[/\\][^\s"']*\.jsonl"#)
+            .expect("static jsonl-path regex is a compile-time invariant")
     })
 }
 

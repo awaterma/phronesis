@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "properties": [
+    {
+      "id": "safe_divide.nonzero_returns_quotient",
+      "subject": "safe_divide",
+      "kind": "postcondition",
+      "depends_on": [
+        "fn:safe_divide"
+      ],
+      "source": "explicit_spec",
+      "status": "accepted",
+      "corroborated_by": [],
+      "encodings": []
+    },
+    {
+      "id": "safe_divide.zero_returns_error",
+      "subject": "safe_divide",
+      "kind": "postcondition",
+      "condition": "denominator == 0",
+      "guarantee": "result is Error",
+      "depends_on": [
+        "branch:safe_divide:cd6054b02dde"
+      ],
+      "source": "explicit_spec",
+      "status": "accepted",
+      "corroborated_by": [
+        "docs/specs/SPEC-property-ontology.md"
+      ],
+      "encodings": []
+    }
+  ]
+}

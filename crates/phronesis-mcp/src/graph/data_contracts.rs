@@ -718,6 +718,60 @@ consumer = "rust:example-app::config::GameManifest"
     }
 
     #[test]
+    fn every_consumes_data_edge_is_coupled_to_a_generates_edge() {
+        // The spec's "current limitation": a consumer-only binding cannot be
+        // expressed. `augment` emits `consumes_data` only inside the loop body
+        // of a producer-validated binding, and that same body unconditionally
+        // emits `generates` for the same artifact. So the binding layer can
+        // never produce an artifact that is consumed without being generated,
+        // which is why `consumed_without_producer` stays dormant. Assert the
+        // coupling directly: every `consumes_data` artifact has a `generates`
+        // edge over the same artifact.
+        let temp = tempfile::tempdir().expect("tempdir");
+        write(
+            temp.path(),
+            "config/manifest.yaml",
+            "gameName: demo\nlegacy-name: old\n",
+        );
+        write(
+            temp.path(),
+            "src/config.rs",
+            r#"#[derive(Deserialize)]
+pub struct GameManifest {
+    pub game_name: String,
+    #[serde(alias = "legacy-name")]
+    pub renamed: String,
+}
+"#,
+        );
+        write(
+            temp.path(),
+            ".phronesis/graph.toml",
+            r#"[[generated_artifacts]]
+producer = "cue:example.game::cue::export::export::#Manifest"
+artifact = "config/manifest.yaml"
+consumer = "rust:example-app::config::GameManifest"
+"#,
+        );
+        let mut edges = base();
+        augment(temp.path(), &mut edges);
+        let consumed: BTreeSet<String> = edges
+            .iter()
+            .filter(|edge| edge.p == "consumes_data")
+            .filter_map(|edge| edge.a.get(1).cloned())
+            .collect();
+        assert!(!consumed.is_empty(), "fixture must emit a consumer edge");
+        for artifact in consumed {
+            assert!(
+                edges
+                    .iter()
+                    .any(|edge| { edge.p == "generates" && edge.a.get(1) == Some(&artifact) }),
+                "consumed artifact {artifact} has no paired producer edge"
+            );
+        }
+    }
+
+    #[test]
     fn invalid_exact_references_emit_no_guessed_edges() {
         let temp = tempfile::tempdir().expect("tempdir");
         write(temp.path(), "config/manifest.yaml", "name: demo\n");

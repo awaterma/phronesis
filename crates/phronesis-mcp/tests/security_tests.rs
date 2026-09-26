@@ -204,3 +204,60 @@ fn validate_args_accepts_normal() {
     let args = vec!["a".to_string(), "b".to_string(), "c".to_string()];
     assert!(validate_args(&args, "test").is_ok());
 }
+
+// Worktree-aware discovery (swarm WTb2 salvage): a git worktree without its
+// own .phronesis is governed by the main checkout's state.
+#[test]
+fn resolve_project_root_finds_main_checkout_from_a_worktree() {
+    let main = tempfile::tempdir().expect("main tmp");
+    std::fs::create_dir_all(main.path().join(".phronesis")).expect("mkdir .phronesis");
+    std::fs::write(main.path().join(".phronesis/rules.json"), "{\"rules\":[]}").expect("rules");
+    let init = |args: &[&str], dir: &std::path::Path| {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .status()
+            .expect("git");
+        assert!(status.success(), "git {args:?} failed");
+    };
+    // .phronesis is gitignored in real repos - the worktree must be born
+    // ungoverned for the main-checkout fallback to apply.
+    std::fs::write(main.path().join(".gitignore"), ".phronesis/\n").expect("gitignore");
+    init(&["init", "-q"], main.path());
+    init(&["add", "."], main.path());
+    init(&["commit", "-q", "-m", "fixture"], main.path());
+    let wt = tempfile::tempdir().expect("wt tmp");
+    init(
+        &[
+            "worktree",
+            "add",
+            "-q",
+            wt.path().join("wt").to_str().expect("path"),
+            "-b",
+            "wt-test",
+        ],
+        main.path(),
+    );
+
+    // From inside the worktree, the governing root is the MAIN checkout.
+    let resolved = phronesis_mcp::security::resolve_project_root(&wt.path().join("wt"));
+    let expected = std::fs::canonicalize(main.path()).expect("canonicalize main");
+    assert_eq!(
+        resolved, expected,
+        "worktree without own .phronesis must resolve to the main checkout: {resolved:?}"
+    );
+
+    // A worktree that copy-initialized its own .phronesis governs itself.
+    std::fs::create_dir_all(wt.path().join("wt/.phronesis")).expect("mkdir wt .phronesis");
+    std::fs::write(wt.path().join("wt/.phronesis/rules.json"), "{\"rules\":[]}").expect("rules");
+    let resolved = phronesis_mcp::security::resolve_project_root(&wt.path().join("wt"));
+    assert_eq!(
+        resolved,
+        wt.path().join("wt"),
+        "a governed worktree must keep its own state: {resolved:?}"
+    );
+}

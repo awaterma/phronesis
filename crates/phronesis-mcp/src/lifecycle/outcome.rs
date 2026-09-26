@@ -14,7 +14,8 @@ pub fn is_shell_tool(tool_name: &str) -> bool {
 fn prefilter() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
-        Regex::new(r"\bgit\b[^\n|;&]*\b(commit|cherry-pick|revert|merge|rebase)\b").unwrap()
+        Regex::new(r"\bgit\b[^\n|;&]*\b(commit|cherry-pick|revert|merge|rebase)\b")
+            .expect("static prefilter regex is a compile-time invariant")
     })
 }
 pub fn command_may_move_head(command: &str) -> bool {

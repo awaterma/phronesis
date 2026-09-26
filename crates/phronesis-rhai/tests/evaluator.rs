@@ -166,3 +166,191 @@ fn evaluator_is_reusable_across_calls() {
             .unwrap()
     );
 }
+
+#[cfg(test)]
+mod render_tests {
+    use phronesis_rhai::{RenderError, RenderInput};
+    use rhai::Map;
+
+    fn property_map(id: &str, subject: &str) -> Map {
+        let mut m = Map::new();
+        m.insert("id".into(), id.into());
+        m.insert("subject".into(), subject.into());
+        m.insert("kind".into(), "postcondition".into());
+        m
+    }
+
+    fn verus_template() -> &'static str {
+        r#"
+        let id = property.get("id");
+        let subject = property.get("subject");
+        `// GENERATED - DO NOT EDIT
+// Property: ${id}
+use vstd::prelude::*;
+
+verus! {
+
+spec fn property_${subject}_holds(input: int) -> bool {
+    input != 0
+}
+
+fn check(input: int)
+    requires input != 0,
+    ensures true,
+{
+}
+
+} // verus!`
+    "#
+    }
+
+    #[test]
+    fn render_scope_freeze_forbidden_capabilities_are_absent() {
+        let mut m = Map::new();
+        m.insert("id".into(), "x".into());
+        let input = RenderInput {
+            property: m,
+            dependency_facts: vec![],
+        };
+        // Black-box scope freeze: templates attempting forbidden capabilities
+        // must FAIL, not half-work. Every probe returns a STRING when the
+        // capability is present, so a rejection can only come from the
+        // capability being absent — never from `NotAString`.
+        for forbidden in [
+            "emit_fact(\"x\", []); `emitted`",
+            "let p = \"/tmp/pwned\"; open_file(p); `opened`",
+            "eval(\"`x` + `y`\")",
+            "import \"std\" as s; `imported`",
+        ] {
+            match phronesis_rhai::render(forbidden, &input) {
+                Err(RenderError::Eval { .. }) => {}
+                other => panic!(
+                    "forbidden capability must be absent from render scope: {forbidden} -> {other:?}"
+                ),
+            }
+        }
+        assert!(
+            phronesis_rhai::render_scope_freeze_holds(),
+            "the callable scope-freeze check must hold for the render engine"
+        );
+        // And the worked template still renders verus code.
+        let body = phronesis_rhai::render(verus_template(), &input).unwrap();
+        assert!(
+            body.contains("verus!"),
+            "the worked template renders verus code"
+        );
+    }
+
+    #[test]
+    fn render_is_deterministic_over_the_frozen_input() {
+        let mut facts = vec![];
+        for (k, v) in [
+            ("predicate", "changed_region"),
+            ("predicate", "property_depends_on"),
+        ] {
+            let mut m = Map::new();
+            m.insert(k.into(), v.into());
+            m.insert("arg".into(), format!("{v}:fn:safe_divide").into());
+            facts.push(m);
+        }
+        let input = RenderInput::frozen(
+            property_map("safe_divide.zero_returns_error", "safe_divide"),
+            facts,
+        );
+        let input2 = RenderInput::frozen(
+            property_map("safe_divide.zero_returns_error", "safe_divide"),
+            {
+                // Same facts, DIFFERENT insertion order — frozen() must normalize.
+                let mut rev = input.dependency_facts.clone();
+                rev.reverse();
+                rev
+            },
+        );
+        let a = phronesis_rhai::render(verus_template(), &input).unwrap();
+        let b = phronesis_rhai::render(verus_template(), &input2).unwrap();
+        assert_eq!(
+            a, b,
+            "byte-identical across runs AND across insertion order"
+        );
+    }
+
+    #[test]
+    fn render_rejects_non_string_and_oversize() {
+        let input = RenderInput {
+            property: property_map("p", "s"),
+            dependency_facts: vec![],
+        };
+        assert!(matches!(
+            phronesis_rhai::render("42", &input),
+            Err(RenderError::NotAString { .. })
+        ));
+    }
+
+    /// SPEC-C: "`eval` and dynamic script evaluation are disabled". A
+    /// string-returning eval — the only shape that would otherwise render —
+    /// must be rejected, and so must every aliasing path to it.
+    #[test]
+    fn render_rejects_eval_and_its_aliases() {
+        let input = RenderInput::frozen(property_map("p", "s"), vec![]);
+        for probe in [
+            "eval(\"`x` + `y`\")",
+            "let e = eval; e(\"`x`\")",
+            "Fn(\"eval\").call(\"`x`\")",
+            "call(Fn(\"eval\"), \"`x`\")",
+            "let f = Fn(\"ev\" + \"al\"); f.call(\"`x`\")",
+            "\"`x`\".eval()",
+            "let code = \"`x`\"; eval(code)",
+        ] {
+            match phronesis_rhai::render(probe, &input) {
+                Err(RenderError::Eval { .. }) => {}
+                other => panic!("eval must be unreachable in render: {probe} -> {other:?}"),
+            }
+        }
+    }
+
+    /// The body cap is 64 KiB (`MAX_RENDER_BYTES`); the proven 10-VC harness
+    /// is ~7 KiB. A ~8 KiB, 240-line body must render.
+    #[test]
+    fn render_accepts_a_harness_sized_body() {
+        let input = RenderInput::frozen(property_map("p", "safe_divide"), vec![]);
+        let template = r#"
+            let subject = property.get("subject");
+            let body = "";
+            for i in 0..240 {
+                body += `    assert(${subject}_vc_${i}(x));   // line\n`;
+            }
+            body
+        "#;
+        let body = phronesis_rhai::render(template, &input).expect("8 KiB body renders");
+        assert!(body.len() > 8 * 1024, "body is {} bytes", body.len());
+        assert!(body.len() < phronesis_rhai::MAX_RENDER_BYTES);
+    }
+
+    /// Exactly at the cap renders; one byte over is `TooLarge` — the
+    /// intended error, not a generic engine failure.
+    #[test]
+    fn render_enforces_the_64_kib_cap_with_too_large() {
+        let input = RenderInput::frozen(property_map("p", "s"), vec![]);
+        let cap = phronesis_rhai::MAX_RENDER_BYTES;
+        assert_eq!(cap, 64 * 1024);
+
+        let at_cap = format!("let s = \"\"; s.pad({cap}, \"a\"); s");
+        let body = phronesis_rhai::render(&at_cap, &input).expect("body at the cap renders");
+        assert_eq!(body.len(), cap);
+
+        let over = format!("let s = \"\"; s.pad({}, \"a\"); s", cap + 1);
+        match phronesis_rhai::render(&over, &input) {
+            Err(RenderError::TooLarge { limit }) => assert_eq!(limit, cap),
+            other => panic!("expected TooLarge, got {other:?}"),
+        }
+    }
+}
+
+/// The render engine's larger string budget must not leak into guards: a
+/// `__script__` guard still cannot build a string over 4 KiB.
+#[test]
+fn guard_string_limit_is_unchanged_by_render_budget() {
+    let b = HashMap::new();
+    assert!(eval(r#"let s = ""; s.pad(4096, "a"); s.len() == 4096"#, &[], &b).unwrap());
+    assert!(eval(r#"let s = ""; s.pad(4097, "a"); true"#, &[], &b).is_err());
+}

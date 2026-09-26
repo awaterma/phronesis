@@ -78,6 +78,36 @@ pub fn entries_from(subject: &str, records: &[JournalRecord]) -> Vec<DerivedEntr
                         "1".to_string(),
                     ],
                 }),
+                t if t.starts_with("outcome:proof_pass:") => {
+                    let property = &t["outcome:proof_pass:".len()..];
+                    out.push(DerivedEntry {
+                        predicate: "proof_outcome".to_string(),
+                        args: vec![
+                            subject.to_string(),
+                            property.to_string(),
+                            "passed".to_string(),
+                        ],
+                    });
+                }
+                t if t.starts_with("outcome:proof_fail:") => {
+                    let property = &t["outcome:proof_fail:".len()..];
+                    out.push(DerivedEntry {
+                        predicate: "proof_outcome".to_string(),
+                        args: vec![
+                            subject.to_string(),
+                            property.to_string(),
+                            "failed".to_string(),
+                        ],
+                    });
+                }
+                "outcome:proof_run_fail" => out.push(DerivedEntry {
+                    predicate: "proof_run_outcome".to_string(),
+                    args: vec![subject.to_string(), "failed".to_string()],
+                }),
+                "outcome:proof_run_inconclusive" => out.push(DerivedEntry {
+                    predicate: "proof_run_outcome".to_string(),
+                    args: vec![subject.to_string(), "inconclusive".to_string()],
+                }),
                 t if t.starts_with("outcome:bug_caught:") => {
                     let id = &t["outcome:bug_caught:".len()..];
                     out.push(DerivedEntry {
@@ -131,6 +161,39 @@ pub fn signals_from(subject: &str, entries: &[DerivedEntry]) -> Vec<OutcomeFact>
         if failed == 0 && total > 0 {
             out.push(OutcomeFact::signal(subject, "tests"));
         }
+    }
+
+    // proof — per-property latest verifier result (SPEC-property-ontology.md
+    // §3): the signal grounds only when at least one property has a proof and
+    // every latest result is `passed` — failed/timeout/inconclusive never
+    // count, matching the three-state discipline. BTreeMap keeps determinism.
+    //
+    // A run-level `proof_run_outcome` (failed, or inconclusive: SPEC-C S8's
+    // "silence is a state") names no property, so it can't displace one by
+    // key. It withholds every property known at that point instead, and each
+    // stays withheld until a later run re-reports it — re-proving one
+    // property after a crash must not revive another's pre-crash pass. The
+    // toolchain emits it after the run's own per-property facts.
+    let mut proof_latest: std::collections::BTreeMap<&str, &str> =
+        std::collections::BTreeMap::new();
+    let mut proof_withheld: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    for e in entries.iter() {
+        match e.predicate.as_str() {
+            "proof_outcome" => {
+                if let (Some(property), Some(status)) = (e.args.get(1), e.args.get(2)) {
+                    proof_latest.insert(property.as_str(), status.as_str());
+                    proof_withheld.remove(property.as_str());
+                }
+            }
+            "proof_run_outcome" => proof_withheld.extend(proof_latest.keys().copied()),
+            _ => {}
+        }
+    }
+    if proof_withheld.is_empty()
+        && !proof_latest.is_empty()
+        && proof_latest.values().all(|s| *s == "passed")
+    {
+        out.push(OutcomeFact::signal(subject, "proof"));
     }
 
     // bug:<id> — each known bug whose latest check is "fixed". BTreeMap keeps
@@ -346,5 +409,217 @@ mod tests {
         journal::append(dir.path(), &rec(1, "u", &["outcome:compile_unknown"])).unwrap();
         assert!(signals(dir.path(), "u").unwrap().is_empty());
         assert_eq!(band(dir.path(), "u").unwrap(), Band::Low);
+    }
+}
+
+// ---- SPEC-property-ontology.md §3 / B3: proof signal through a declarative
+// proof toolchain ----
+
+#[cfg(test)]
+mod proof_tests {
+    use super::*;
+    use crate::outcomes::adapter::outcome_tags;
+    use crate::outcomes::toolchain::{CompiledDef, DefSource, ToolchainDef};
+
+    fn kani_def() -> ToolchainDef {
+        serde_json::from_str(
+            r#"{
+                "id": "kani",
+                "matches": "^cargo kani",
+                "compile_fail": ["error\\[E\\d+\\]"],
+                "compile_success": ["Verification complete"],
+                "per_test": "(?m)Checks for property (?P<name>\\S+): (?P<status>SUCCESS|FAILURE)",
+                "pass_tokens": ["SUCCESS"],
+                "outcome_kind": "proof"
+            }"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn b3_proof_pass_through_a_toolchain_def_grounds_the_proof_signal() {
+        let compiled = CompiledDef::compile(kani_def(), DefSource::Project).unwrap();
+        assert!(
+            compiled.is_proof,
+            "the def must register as a proof toolchain"
+        );
+
+        let subject = "u";
+        let output = "Checks for property safe_divide.zero_returns_error: SUCCESS\n\
+                      Checks for property safe_divide.nonzero_returns_quotient: SUCCESS";
+        let facts = compiled.parse(subject, "cargo kani --harness verify_zero", output, Some(0));
+
+        let proof_facts: Vec<_> = facts
+            .iter()
+            .filter(|f| f.predicate == "proof_outcome")
+            .collect();
+        assert_eq!(proof_facts.len(), 2, "two properties proved: {facts:?}");
+
+        let tags = outcome_tags(&facts);
+        assert!(
+            tags.iter()
+                .any(|t| t == "outcome:proof_pass:safe_divide.zero_returns_error"),
+            "proof pass tag must journal: {tags:?}"
+        );
+
+        let records: Vec<JournalRecord> = tags
+            .iter()
+            .enumerate()
+            .map(|(i, t)| JournalRecord {
+                v: 1,
+                ts: i as u64,
+                sid: "s".to_string(),
+                seq: i as u64,
+                tool: "Bash".to_string(),
+                path: "<cmd>".to_string(),
+                ext: None,
+                module: None,
+                tags: vec![t.clone()],
+                subject: Some(subject.to_string()),
+                command_exit: Some(0),
+                kind: None,
+                mode: None,
+                host: None,
+                turn: None,
+                agent: None,
+                agent_type: None,
+                kalpa: None,
+            })
+            .collect();
+        let entries = entries_from(subject, &records);
+        let signals = signals_from(subject, &entries);
+        assert!(
+            signals
+                .iter()
+                .any(|f| f.predicate == "signal_pass" && f.args[1] == "proof"),
+            "signal_pass(subject, \"proof\") must ground: {signals:?}"
+        );
+
+        // The Band lifts: proof joins compile and tests in the signal count.
+        let band = Band::from_signal_count(signals.len());
+        assert!(
+            matches!(band, Band::Medium | Band::High),
+            "a band grounded on proof signals must lift beyond low: {band:?}"
+        );
+    }
+
+    /// One journal record per proof run: the def parses the run, the adapter
+    /// turns its facts into tags, the hook stamps them on one record.
+    fn proof_run_record(seq: u64, output: &str, exit: Option<i32>) -> JournalRecord {
+        let compiled = CompiledDef::compile(kani_def(), DefSource::Project).unwrap();
+        let facts = compiled.parse("u", "cargo kani", output, exit);
+        JournalRecord {
+            v: 1,
+            ts: seq,
+            sid: "s".to_string(),
+            seq,
+            tool: "Bash".to_string(),
+            path: "<cmd>".to_string(),
+            ext: None,
+            module: None,
+            tags: outcome_tags(&facts),
+            subject: Some("u".to_string()),
+            command_exit: exit,
+            kind: None,
+            mode: None,
+            host: None,
+            turn: None,
+            agent: None,
+            agent_type: None,
+            kalpa: None,
+        }
+    }
+
+    fn has_proof_signal(records: &[JournalRecord]) -> bool {
+        signals_from("u", &entries_from("u", records))
+            .iter()
+            .any(|f| f.predicate == "signal_pass" && f.args[1] == "proof")
+    }
+
+    const PASSING_RUN: &str = "Checks for property safe_divide.zero_returns_error: SUCCESS\n";
+
+    /// S8: "failed never upgrades confidence" — a later failing proof run
+    /// (FAILURE line, non-zero exit) must not leave the earlier pass standing.
+    #[test]
+    fn a_failing_proof_run_retracts_an_earlier_proof_signal() {
+        let first = proof_run_record(1, PASSING_RUN, Some(0));
+        assert!(has_proof_signal(std::slice::from_ref(&first)));
+
+        let failing = proof_run_record(
+            2,
+            "Checks for property safe_divide.zero_returns_error: FAILURE\n",
+            Some(1),
+        );
+        assert!(
+            !has_proof_signal(&[first.clone(), failing]),
+            "a failed proof run must not leave a stale proof signal"
+        );
+
+        // A non-zero exit with no per-property lines at all (the verifier
+        // crashed, or failed on a harness the regex doesn't name).
+        let crashed = proof_run_record(2, "thread 'main' panicked\n", Some(1));
+        assert!(!has_proof_signal(&[first, crashed]));
+    }
+
+    /// S8: "silence is a state" — a proof run that exits 0 but whose output
+    /// matches no property is inconclusive, and inconclusive never keeps an
+    /// earlier pass alive.
+    #[test]
+    fn a_silent_proof_run_retracts_an_earlier_proof_signal() {
+        let first = proof_run_record(1, PASSING_RUN, Some(0));
+        let garbage = proof_run_record(2, "<html>totally unparseable</html>\n", Some(0));
+        assert!(
+            !has_proof_signal(&[first.clone(), garbage]),
+            "a zero-match proof run must not leave a stale proof signal"
+        );
+
+        // No exit code and no evidence: still a proof run that matched nothing.
+        let unknown = proof_run_record(2, "", None);
+        assert!(!has_proof_signal(&[first, unknown]));
+    }
+
+    /// A crash withholds every property known before it; re-proving one of
+    /// them must not revive another's pre-crash pass.
+    #[test]
+    fn re_proving_one_property_after_a_crash_does_not_revive_another() {
+        let both = proof_run_record(
+            1,
+            "Checks for property p.a: SUCCESS\nChecks for property p.b: SUCCESS\n",
+            Some(0),
+        );
+        let crashed = proof_run_record(2, "thread 'main' panicked\n", Some(1));
+        let only_a = proof_run_record(3, "Checks for property p.a: SUCCESS\n", Some(0));
+        let only_b = proof_run_record(4, "Checks for property p.b: SUCCESS\n", Some(0));
+        assert!(!has_proof_signal(&[
+            both.clone(),
+            crashed.clone(),
+            only_a.clone()
+        ]));
+        assert!(has_proof_signal(&[both, crashed, only_a, only_b]));
+    }
+
+    /// The happy path survives: a clean run grounds proof, and a clean re-run
+    /// after a failed or silent one grounds it again.
+    #[test]
+    fn a_passing_proof_run_after_a_failed_one_grounds_the_signal_again() {
+        let pass = |seq| proof_run_record(seq, PASSING_RUN, Some(0));
+        assert!(has_proof_signal(&[pass(1)]));
+        let failing = proof_run_record(
+            2,
+            "Checks for property safe_divide.zero_returns_error: FAILURE\n",
+            Some(1),
+        );
+        assert!(has_proof_signal(&[pass(1), failing.clone(), pass(3)]));
+        let garbage = proof_run_record(2, "garbage\n", Some(0));
+        assert!(has_proof_signal(&[pass(1), garbage, pass(3)]));
+
+        // A property that failed stays failed until it is re-proved: a clean
+        // run of a *different* property doesn't paper over it.
+        let other = proof_run_record(
+            3,
+            "Checks for property safe_divide.nonzero_returns_quotient: SUCCESS\n",
+            Some(0),
+        );
+        assert!(!has_proof_signal(&[pass(1), failing, other]));
     }
 }

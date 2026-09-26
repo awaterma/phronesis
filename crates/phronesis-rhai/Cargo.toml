@@ -18,6 +18,7 @@ phronesis = { path = "../phronesis", version = "0.35.0" }
 # `ScriptEval` trait requires (the network is shared behind Arc<Mutex<_>>).
 # `no_module`/`no_closure` shrink the sandbox surface.
 rhai = { version = "1", features = ["sync", "no_module", "no_closure"] }
+thiserror = "2"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["macros", "rt"] }

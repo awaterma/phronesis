@@ -3,16 +3,17 @@ use crate::graph::{Edge, store};
 
 fn write(root: &Path, file: &str, body: &str) {
     let path = root.join(file);
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, body).unwrap();
+    std::fs::create_dir_all(path.parent().expect("joined path always has a parent"))
+        .expect("test fixture dir creation");
+    std::fs::write(path, body).expect("test fixture write");
 }
 
 fn edges(root: &Path) -> Vec<Edge> {
-    store::load(&store::graph_path(root)).unwrap()
+    store::load(&store::graph_path(root)).expect("test fixture graph load")
 }
 
 fn fixture() -> tempfile::TempDir {
-    let root = tempfile::tempdir().unwrap();
+    let root = tempfile::tempdir().expect("test fixture tempdir");
     write(
         root.path(),
         "pom.xml",

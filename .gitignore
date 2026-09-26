@@ -29,6 +29,7 @@ docs/specs/PLAN-v0.11-hardening.md
 
 # Local rules cache produced when running phr-mcp here
 .phronesis/*
+!.phronesis/properties.json
 .phronesis/log.jsonl
 .phronesis/log.jsonl.1
 .phronesis/rules.json.bak
@@ -49,3 +50,9 @@ docs/specs/PLAN-v0.11-hardening.md
 # state, so they go stale the moment the tree moves — keep them local rather
 # than versioning a snapshot that will disagree with the repo it describes.
 docs/phronesis-evaluation-*.html
+
+# Coverage evidence derived state (SPEC-coverage-evidence)
+.phronesis/coverage.jsonl
+.phronesis/coverage.index
+*.profraw
+crates/phronesis-mcp/tests/fixtures/coverage-sample/target/

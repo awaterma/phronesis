@@ -355,3 +355,17 @@ pub struct EmittedCapsuleIdParam {
     #[serde(default)]
     pub lease_token: Option<String>,
 }
+
+/// Parameters for `set_property_status` (SPEC-property-ontology.md §4):
+/// the promotion act. `because` is required — every transition must name
+/// its reason (the audit trail is the discipline, not a state machine).
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetPropertyStatusParams {
+    /// The property id to transition.
+    pub property_id: String,
+    /// The new status: observed | candidate | corroborated | accepted | verified | rejected | superseded.
+    pub new_status: String,
+    /// The human reason for the transition. Required: promotion is an explicit,
+    /// recorded act (sketch §17: "observed ≠ intended").
+    pub because: String,
+}

@@ -67,6 +67,14 @@ pub struct ToolchainDef {
     /// Which `status` tokens mean "pass".
     #[serde(default = "default_pass_tokens")]
     pub pass_tokens: Vec<String>,
+    /// What the per-test lines mean: `None`/`"test"` (the default — the
+    /// known-bug registry and test_outcome counts) or `"proof"` (verifier
+    /// results for properties, SPEC-property-ontology.md §3). Proof defs
+    /// journal `outcome:proof_pass:<property>` / `outcome:proof_fail:<property>`
+    /// instead of test tags, plus `outcome:proof_run_fail` /
+    /// `outcome:proof_run_inconclusive` for a run that was not a clean pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_kind: Option<String>,
 }
 
 /// One regex or several, in a field that historically held exactly one.
@@ -137,6 +145,9 @@ pub enum ToolchainError {
 pub struct CompiledDef {
     pub def: ToolchainDef,
     pub source: DefSource,
+    /// `true` when this def's per-test results are verifier proofs for
+    /// properties, not test results (SPEC-property-ontology.md §3).
+    pub is_proof: bool,
     matches: Regex,
     compile_fail: Vec<Regex>,
     compile_success: Vec<Regex>,
@@ -177,6 +188,7 @@ fn require_groups(required: RequiredGroups<'_>) -> Result<(), ToolchainError> {
 
 impl CompiledDef {
     pub fn compile(def: ToolchainDef, source: DefSource) -> Result<Self, ToolchainError> {
+        let is_proof = def.outcome_kind.as_deref() == Some("proof");
         let matches = compile_field(&def.id, "matches", &def.matches)?;
         let compile_fail = def
             .compile_fail
@@ -227,6 +239,7 @@ impl CompiledDef {
             compile_success,
             test_summary,
             per_test,
+            is_proof,
         })
     }
 
@@ -359,10 +372,47 @@ impl CompiledDef {
             BuildStatus::Fail => OutcomeFact::build(subject, false),
             BuildStatus::Unknown => OutcomeFact::build_unknown(subject),
         }];
-        if status == BuildStatus::Pass
+        if self.is_proof {
+            facts.extend(self.proof_facts(subject, output, command_exit, status));
+        } else if status == BuildStatus::Pass
             && let Some(c) = counts
         {
             facts.push(OutcomeFact::test(subject, c.passed, c.failed));
+        }
+        facts
+    }
+
+    /// Proof defs (SPEC-property-ontology.md §3): each per-test line is a
+    /// verifier result for one property. SPEC-C S8's discipline: only a clean
+    /// run — the build passed, the exit (when captured) was zero, and at least
+    /// one property matched — journals per-property passes. Any other run
+    /// journals its per-property failures (a pass line inside a failed run
+    /// never upgrades confidence) and one run-level `proof_run_outcome`:
+    /// `failed` for a failed build or non-zero exit, `inconclusive` when
+    /// nothing matched or the build is unknown. The run-level fact is what
+    /// stops a stale earlier pass from outliving this run.
+    fn proof_facts(
+        &self,
+        subject: &str,
+        output: &str,
+        command_exit: Option<i32>,
+        status: BuildStatus,
+    ) -> Vec<OutcomeFact> {
+        let results = self.per_test_results(output);
+        let run = if status == BuildStatus::Fail || command_exit.is_some_and(|c| c != 0) {
+            Some("failed")
+        } else if status == BuildStatus::Unknown || results.is_empty() {
+            Some("inconclusive")
+        } else {
+            None
+        };
+        let mut facts: Vec<OutcomeFact> = results
+            .iter()
+            .filter(|(_, passed)| run.is_none() || !passed)
+            .map(|(property, passed)| OutcomeFact::proof(subject, property, *passed))
+            .collect();
+        if let Some(run) = run {
+            facts.push(OutcomeFact::proof_run(subject, run));
         }
         facts
     }
@@ -426,6 +476,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             test_summary: swift_summaries(),
             per_test: None,
             pass_tokens: default_pass_tokens(),
+            outcome_kind: None,
         },
         ToolchainDef {
             id: "swift".to_string(),
@@ -435,6 +486,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             test_summary: swift_summaries(),
             per_test: None,
             pass_tokens: default_pass_tokens(),
+            outcome_kind: None,
         },
     ]
 }
@@ -462,6 +514,7 @@ fn cargo_builtin() -> ToolchainDef {
         ])),
         per_test: Some(r"(?m)^test (?P<name>\S+) \.\.\. (?P<status>ok|FAILED)".to_string()),
         pass_tokens: default_pass_tokens(),
+        outcome_kind: None,
     }
 }
 
@@ -1223,5 +1276,74 @@ mod tests {
         let facts = d.parse("u", "swift test", fail, Some(1));
         let t = test_fact(&facts).expect("failing run still grounds a (failing) test_outcome");
         assert_eq!(t.args[2], "2");
+    }
+
+    fn proof_def() -> CompiledDef {
+        let d: ToolchainDef = serde_json::from_str(
+            r#"{
+                "id": "kani",
+                "matches": "^cargo kani",
+                "per_test": "(?m)Checks for property (?P<name>\\S+): (?P<status>SUCCESS|FAILURE)",
+                "pass_tokens": ["SUCCESS"],
+                "outcome_kind": "proof"
+            }"#,
+        )
+        .unwrap();
+        CompiledDef::compile(d, DefSource::Project).unwrap()
+    }
+
+    fn proof_facts(facts: &[OutcomeFact]) -> Vec<(&str, Vec<&str>)> {
+        facts
+            .iter()
+            .filter(|f| f.predicate.starts_with("proof_"))
+            .map(|f| (f.predicate, f.args.iter().map(String::as_str).collect()))
+            .collect()
+    }
+
+    /// S8 on a proof def: a failed run journals its per-property failures and
+    /// a run-level `failed` (a pass line in a failed run never upgrades); a
+    /// run that matches no property is a run-level `inconclusive`, never
+    /// silence; a clean run carries per-property passes only.
+    #[test]
+    fn proof_def_records_failed_and_silent_runs() {
+        let d = proof_def();
+        let failed = d.parse(
+            "u",
+            "cargo kani",
+            "Checks for property p.a: FAILURE\nChecks for property p.b: SUCCESS\n",
+            Some(1),
+        );
+        assert_eq!(
+            proof_facts(&failed),
+            vec![
+                ("proof_outcome", vec!["u", "p.a", "failed"]),
+                ("proof_run_outcome", vec!["u", "failed"]),
+            ]
+        );
+
+        for (output, exit) in [("garbage\n", Some(0)), ("", None), ("garbage\n", Some(1))] {
+            let facts = d.parse("u", "cargo kani", output, exit);
+            let expected = if exit == Some(1) {
+                "failed"
+            } else {
+                "inconclusive"
+            };
+            assert_eq!(
+                proof_facts(&facts),
+                vec![("proof_run_outcome", vec!["u", expected])],
+                "{output:?} exit={exit:?}"
+            );
+        }
+
+        let clean = d.parse(
+            "u",
+            "cargo kani",
+            "Checks for property p.a: SUCCESS\n",
+            Some(0),
+        );
+        assert_eq!(
+            proof_facts(&clean),
+            vec![("proof_outcome", vec!["u", "p.a", "passed"])]
+        );
     }
 }

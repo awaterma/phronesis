@@ -5,6 +5,7 @@
 //! RETE network has the facts a rule's conditions can match against."
 //! No I/O orchestration here; that stays in `hook.rs`.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use phr::{Fact, ReteNetwork, Rule};
@@ -441,6 +442,163 @@ fn sanitize_fact_id_fragment(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
+}
+
+/// FNV-1a 64 over joined args — stable fact IDs so re-asserting the same
+/// coverage fact replaces it instead of accumulating (the graph `fact_id()`
+/// precedent). 12 hex chars keep IDs readable.
+fn coverage_args_hash(args: &[String]) -> String {
+    let joined = args.join("\u{1f}");
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in joined.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:012x}")
+}
+
+/// Every predicate mentioned by any loaded rule's conditions. The coverage
+/// hydration demand-gates on this set: facts assert only when a loaded rule
+/// mentions a coverage relation (the `graph/hydrate.rs` precedent — a
+/// footprint bounded by construction, spec acceptance A4).
+pub(crate) fn collect_rule_predicates(rules: &[Rule]) -> HashSet<String> {
+    rules
+        .iter()
+        .flat_map(|r| r.conditions.iter().map(|c| c.predicate.clone()))
+        .collect()
+}
+
+/// Hydrate coverage-evidence facts into the network for this event.
+///
+/// Demand-gated twice: the hydrate module gates on `rule_relations` itself,
+/// and this wrapper skips the whole pipeline (store read, git probe) when no
+/// loaded rule mentions any coverage relation. Fails OPEN: coverage evidence
+/// is enrichment — a hydration failure warns but never blocks the tool call,
+/// unlike the structural producers above. `PHRONESIS_NO_COVERAGE` disables
+/// the whole path.
+pub(crate) async fn assert_coverage_facts(
+    network: &ReteNetwork,
+    project_root: &Path,
+    rule_predicates: &HashSet<String>,
+    edited: &[(String, Option<String>, String)],
+) -> Result<(), HookError> {
+    use crate::coverage::hydrate::{EditedFile, HydrationInput, RELATIONS, facts_for_event};
+
+    if std::env::var_os("PHRONESIS_NO_COVERAGE").is_some() {
+        return Ok(());
+    }
+    // Demand gate (spec A4): no coverage relation in any loaded rule -> zero
+    // hydration work.
+    if !RELATIONS.iter().any(|r| rule_predicates.contains(*r)) {
+        return Ok(());
+    }
+
+    let edited_files: Vec<EditedFile> = edited
+        .iter()
+        .map(|(path, old, new)| EditedFile {
+            path: path.clone(),
+            old: old.as_deref(),
+            new,
+        })
+        .collect();
+    let head_sha = match crate::lifecycle::outcome::git_head_probe(project_root) {
+        crate::lifecycle::outcome::HeadProbe::Head(sha) => Some(sha),
+        _ => None,
+    };
+    let input = HydrationInput {
+        root: project_root,
+        rule_relations: rule_predicates.clone(),
+        edited: edited_files,
+        head_sha,
+    };
+
+    let facts = match facts_for_event(&input) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("phronesis: WARNING — coverage hydration failed: {}", e);
+            return Ok(());
+        }
+    };
+
+    for f in facts {
+        let hash = coverage_args_hash(&f.args);
+        let fact = Fact {
+            id: format!("coverage:{}:{hash}", f.predicate),
+            predicate: f.predicate.clone(),
+            args: f.args,
+            timestamp: 0,
+            source: Some("coverage".to_string()),
+        };
+        if let Err(e) = network.assert_fact(fact).await {
+            eprintln!("phronesis: WARNING — coverage fact rejected: {}", e);
+        }
+    }
+    Ok(())
+}
+
+/// Hydrate property-ontology facts (SPEC-property-ontology.md) — the
+/// coverage hydration pattern: demand-gated on rule predicates, fail-open,
+/// `PHRONESIS_NO_PROPERTIES` opt-out.
+pub(crate) async fn assert_properties_facts(
+    network: &ReteNetwork,
+    project_root: &Path,
+    rule_predicates: &HashSet<String>,
+    edited: &[(String, Option<String>, String)],
+) -> Result<(), HookError> {
+    use crate::properties::hydrate::{
+        EditedFile, PropertyHydrationInput, RELATIONS, facts_for_event,
+    };
+
+    if std::env::var_os("PHRONESIS_NO_PROPERTIES").is_some() {
+        return Ok(());
+    }
+    if !RELATIONS.iter().any(|r| rule_predicates.contains(*r)) {
+        return Ok(());
+    }
+    let edited_files: Vec<EditedFile> = edited
+        .iter()
+        .map(|(path, old, new)| EditedFile {
+            path: path.clone(),
+            old: old.as_deref(),
+            new,
+        })
+        .collect();
+    let head_sha = match crate::lifecycle::outcome::git_head_probe(project_root) {
+        crate::lifecycle::outcome::HeadProbe::Head(sha) => Some(sha),
+        _ => None,
+    };
+    let input = PropertyHydrationInput {
+        root: project_root,
+        rule_relations: rule_predicates.clone(),
+        edited: edited_files,
+        head_sha,
+    };
+    let facts = match facts_for_event(&input) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("phronesis: WARNING — property hydration failed: {}", e);
+            return Ok(());
+        }
+    };
+    for f in facts {
+        let joined = f.args.join("\u{1f}");
+        let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in joined.as_bytes() {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        let fact = Fact {
+            id: format!("property:{}:{hash:012x}", f.predicate),
+            predicate: f.predicate.clone(),
+            args: f.args,
+            timestamp: 0,
+            source: Some("properties".to_string()),
+        };
+        if let Err(e) = network.assert_fact(fact).await {
+            eprintln!("phronesis: WARNING — property fact rejected: {}", e);
+        }
+    }
+    Ok(())
 }
 
 /// Collect every distinct `args[0]` from rules' `new_content_contains`

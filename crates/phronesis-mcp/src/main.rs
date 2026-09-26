@@ -461,6 +461,199 @@ enum Command {
         #[command(subcommand)]
         cmd: phronesis_mcp::lifecycle::unit_cli::UnitCmd,
     },
+    /// Manage the coverage evidence store (SPEC-coverage-evidence).
+    Coverage {
+        #[command(subcommand)]
+        cmd: CoverageCmd,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum CoverageCmd {
+    /// Collect real coverage (cargo-llvm-cov, not tarpaulin) and import it.
+    ///
+    /// Normalizes llvm-cov JSON exports into per-test hit records validated
+    /// against the region map, then imports them into the evidence store at
+    /// the current HEAD revision. With `--bins`, runs each listed test
+    /// binary's tests in isolation under coverage first (per-test attribution
+    /// by isolation, SPEC §2/§8).
+    ///
+    /// Refuses when tracked files differ from HEAD (staged or unstaged;
+    /// untracked files and `.phronesis/` state are ignored), since the
+    /// evidence would carry a revision that did not produce it. Applies to
+    /// `--from-dir` too: it stamps HEAD and reads region maps from the tree.
+    Collect {
+        /// Import llvm-cov JSON exports already collected under this dir
+        /// (files named cov-<bin>-<test>.json) instead of running cargo.
+        #[arg(long)]
+        from_dir: Option<PathBuf>,
+        /// Test binaries to run in isolation (e.g. coverage_hydrate,
+        /// properties_hydrate). Defaults to the machinery test set.
+        #[arg(long, value_delimiter = ',')]
+        bins: Vec<String>,
+        /// Collect even though tracked files differ from HEAD. The evidence
+        /// is still stamped HEAD; a warning names the modified files.
+        #[arg(long)]
+        allow_dirty: bool,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Import a normalized per-test coverage export into the evidence store.
+    Import {
+        /// Path to the export JSONL file.
+        export: PathBuf,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
+    /// Select tests relevant to the current change (SPEC §7 / A6).
+    ///
+    /// Union of tests hitting changed regions (dynamic coverage store) and
+    /// tests statically reaching changed functions (graph tested_by /
+    /// test_reaches edges, when the graph is fresh). Each entry is labeled
+    /// by evidence kind and carries its justifying regions.
+    Select {
+        /// Select by a specific change id (defaults to head:<short-sha>).
+        #[arg(long)]
+        change: Option<String>,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Emit JSON instead of a human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    use phronesis_mcp::coverage::collect;
+    match cmd {
+        CoverageCmd::Collect {
+            from_dir,
+            bins,
+            allow_dirty,
+            path,
+        } => {
+            let root = std::env::current_dir()?.join(&path);
+            let root = root.canonicalize().unwrap_or(root);
+            let revision = match phronesis_mcp::lifecycle::outcome::git_head(&root) {
+                // Checked before any test runs or store write: a dirty tree
+                // would put HEAD on evidence HEAD did not produce.
+                Some(head) => {
+                    if let Some(warning) = collect::check_clean_tree(&root, &head, allow_dirty)? {
+                        eprintln!("{warning}");
+                    }
+                    head
+                }
+                // No HEAD to misattribute to: the evidence says so.
+                None => "unknown".to_string(),
+            };
+            let tmp = std::env::temp_dir().join(format!(
+                "phronesis-collect-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            ));
+            std::fs::create_dir_all(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
+            let docs: Vec<(String, collect::LlvmCovDocument)> = match &from_dir {
+                Some(dir) => {
+                    let mut out = Vec::new();
+                    for entry in std::fs::read_dir(dir)
+                        .with_context(|| format!("reading {}", dir.display()))?
+                    {
+                        let p = entry?.path();
+                        if p.extension().and_then(|e| e.to_str()) == Some("json") {
+                            let stem = p
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("llvm-cov:unknown")
+                                .to_string();
+                            let label = stem.strip_prefix("cov-").unwrap_or(&stem).to_string();
+                            out.push((label, collect::read_document(&p)?));
+                        }
+                    }
+                    println!(
+                        "normalizing {} collected export(s) from {}",
+                        out.len(),
+                        dir.display()
+                    );
+                    out
+                }
+                None => {
+                    let bins: Vec<String> = if bins.is_empty() {
+                        [
+                            "coverage_store",
+                            "coverage_import",
+                            "coverage_region_map",
+                            "coverage_hydrate",
+                            "coverage_gap_rules",
+                            "coverage_golden",
+                            "coverage_select",
+                            "properties_hydrate",
+                        ]
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect()
+                    } else {
+                        bins.clone()
+                    };
+                    let mut out = Vec::new();
+                    for bin in &bins {
+                        for test in collect::list_tests(bin)? {
+                            println!("collecting {bin}::{test}");
+                            let doc_path = tmp.join(format!("cov-{bin}-{test}.json"));
+                            collect::run_isolated(bin, &test, &doc_path)?;
+                            let label = test.clone();
+                            out.push((label, collect::read_document(&doc_path)?));
+                        }
+                    }
+                    out
+                }
+            };
+            let records = collect::collect_from_documents(&root, &revision, &docs)?;
+            let export = root.join(".phronesis/coverage-export.jsonl");
+            collect::write_export(&records, &export)?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let summary = phronesis_mcp::coverage::import::import_export(&root, &export, now)?;
+            let _ = std::fs::remove_file(&export);
+            println!(
+                "imported {} records across {} tests at revision {}",
+                summary.records, summary.tests, summary.revision
+            );
+            Ok(())
+        }
+        CoverageCmd::Import { export, path } => {
+            let root = std::env::current_dir()?.join(&path);
+            let root = root.canonicalize().unwrap_or(root);
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let summary = phronesis_mcp::coverage::import::import_export(&root, &export, now)?;
+            println!(
+                "imported {} hits across {} tests at revision {}",
+                summary.records, summary.tests, summary.revision
+            );
+            Ok(())
+        }
+        CoverageCmd::Select { change, path, json } => {
+            let root = std::env::current_dir()?.join(&path);
+            let root = root.canonicalize().unwrap_or(root);
+            let sel = phronesis_mcp::coverage::select::select(&root, change.as_deref())?;
+            if json {
+                println!("{}", phronesis_mcp::coverage::select::render_json(&sel));
+            } else {
+                print!("{}", phronesis_mcp::coverage::select::render_table(&sel));
+            }
+            Ok(())
+        }
+    }
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -620,6 +813,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Confidence { subject, json } => handle_confidence(subject, json),
         Command::Signal { name, outcome } => handle_signal(&name, outcome == "pass"),
         Command::Toolchains { json } => handle_toolchains(json),
+        Command::Coverage { cmd } => handle_coverage(cmd),
         Command::Journey {
             json,
             explain,

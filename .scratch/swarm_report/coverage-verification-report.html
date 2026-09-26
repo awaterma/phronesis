@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Verification &amp; Coverage in Phronesis</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<style>
+  :root{ --bg:#0f1218; --panel:#171b23; --panel2:#1e232d; --line:#2a303c; --ink:#d7dce4;
+         --mut:#8b93a3; --accent:#5aa9ff; --ok:#3ecf8e; --warn:#e0a52b; --bad:#e0574f; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif}
+  header{padding:26px 30px 14px;border-bottom:1px solid var(--line);
+         background:linear-gradient(180deg,#141922,#0f1218)}
+  h1{margin:0 0 4px;font-size:21px}
+  h2{font-size:16px;margin:0 0 12px;color:#eaeef5}
+  h3{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin:18px 0 8px}
+  .sub{color:var(--mut);font-size:12.5px}
+  main{padding:20px 30px 60px;max-width:1500px;margin:0 auto}
+  section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:16px 0}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-top:14px}
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 13px}
+  .card .k{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.06em}
+  .card .v{font-size:18px;font-weight:650;margin-top:3px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:1100px){.grid2{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;font-size:12.5px}
+  th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--mut);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+  code{background:#0b0e13;border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .mermaid{background:#12161d;border-radius:10px;padding:10px;overflow:auto;position:relative;cursor:zoom-in}
+  .mermaid::after{content:"\2922 expand";position:absolute;top:7px;right:9px;font-size:10.5px;color:#c9ced8;
+    background:rgba(5,7,10,.8);border:1px solid var(--line);border-radius:6px;padding:2px 7px;opacity:.7}
+  .gmodal{display:none;position:fixed;inset:0;z-index:200;background:rgba(5,7,10,.92);flex-direction:column}
+  .gmodal.open{display:flex}
+  .gmodal-bar{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;
+    border-bottom:1px solid var(--line);background:#0b0e13}
+  .gmodal-body{flex:1;overflow:auto;padding:20px;display:flex;justify-content:center;align-items:flex-start;
+    overscroll-behavior:contain}
+  .note{border-left:3px solid var(--accent);background:#121a24;padding:9px 12px;border-radius:0 8px 8px 0;
+        font-size:12.5px;color:#b9c2d0;margin:10px 0}
+  .warn{border-left-color:var(--warn)}
+  .ok{border-left-color:var(--ok)}
+  .small{color:var(--mut);font-size:12px}
+  .prose{font-size:13.5px;color:#c3cad6;max-width:900px}
+  .prose b{color:#dfe5ee}
+  ul.small{margin:6px 0;padding-left:18px}
+  ul.small li{margin:3px 0}
+</style>
+</head>
+<body>
+<header>
+  <h1>Verification &amp; Coverage in Phronesis</h1>
+  <div class="sub">How coverage evidence, property ontologies, verification artifacts, and governance hooks
+  interact — and what that machinery says about the code it governs.<br/>
+  <code>feat/coverage-evidence</code> &middot; <code>phr-mcp 0.35.0</code> &middot; HEAD <code>1670052</code> &middot; Sep 2026</div>
+  <div class="cards" id="cards"></div>
+</header>
+<main>
+
+<section>
+  <h2>What this system answers</h2>
+  <p class="prose">One question sits under everything in this report: <i>which tests exercise the code I
+  changed, and where is the evidence missing?</i> Phronesis answers it with three cooperating
+  surfaces. <code>phr-mcp coverage select</code> is the host query — the union of dynamic hits from the
+  evidence store and static graph reach, labeled by evidence kind. Rules 5.1 and 5.2 fire at hook time,
+  logging the relevant-test join and warning on evidence gaps. Rule 5.3 warns when the store is stale
+  against HEAD, so freshness is never a manual check. The property ontology layers intent on top of all
+  of it: a property is a claimed behavior with a promotion lifecycle, and a formal proof is one kind of
+  evidence among several — never a status change by itself.</p>
+</section>
+
+<section>
+  <h2>Architecture — intent, evidence, consequences</h2>
+  <p class="prose">Three kinds of state meet at one join point. <b>Intent</b> is what humans curate:
+<code>properties.json</code> (version-controlled, reviewed in PRs) and <code>rules.json</code>.
+<b>Evidence</b> is what the machinery derives: coverage hits from real test runs, verifier
+results, graph edges — durable but gitignored, rebuildable, never hand-edited.
+<b>Consequences</b> are what anyone sees: the log, warn, or block a hook emits at fire time.
+The RETE network is rebuilt fresh on every hook fire and joins all three. Nothing is cached
+between fires, so the verdict at 3am is computed from exactly the state on disk at 3am.</p>
+  <div class="mermaid" id="m-arch" data-title="Verification &amp; coverage architecture"></div>
+  <h3>A hook fire, end to end</h3>
+  <div class="mermaid" id="m-seq" data-title="Hook fire: Edit &rarr; hydrate &rarr; RETE join &rarr; verdict"></div>
+</section>
+
+<section>
+  <h2>Coverage evidence store</h2>
+  <p class="prose">The store is the foundation everything else stands on, and as of tonight it runs on
+real evidence: the Rust collector (<code>phr-mcp coverage collect</code>) ran 40 machinery tests
+in isolation under cargo-llvm-cov and imported <b>2,274 region-validated records</b> — 1,632
+function hits plus 642 branch hits over 75 source files. The store is stamped
+<code>d1e35c47851a</code>, but the run used a working tree carrying uncommitted changes — the
+collector itself was not yet committed (it landed as <code>84b754e</code>) — so the stamp names
+a revision that did not produce the evidence. Region identity
+is self-validating: every record must be independently produced by <code>region_map</code>, so
+what lands in the store is exactly what hydration will join. The fixture below remains the
+cleanest teaching example of why the identity design matters.</p>
+  <h3>Which tests hit which regions</h3>
+  <table><thead><tr><th>test</th><th>regions</th><th>granularity</th></tr></thead><tbody><tr><td><code>divides_positive_values</code></td><td><code>fn:safe_divide</code></td><td>region</td></tr><tr><td><code>divides_negative_values</code></td><td><code>fn:safe_divide</code></td><td>region</td></tr><tr><td><code>rejects_zero_denominator</code></td><td><code>fn:safe_divide</code>, <code>branch:safe_divide:cd6054b02dde</code></td><td>region + branch</td></tr></tbody></table>
+  <div class="note"><b>The key asymmetry.</b> All three tests exercise <code>fn:safe_divide</code> — but
+  only <code>rejects_zero_denominator</code> exercises the zero-denominator <i>branch</i>. The region
+  identity <code>branch:safe_divide:cd6054b02dde</code> is a whitespace-normalized FNV-1a hash of the
+  condition text, so it survives rustfmt reflows. That is what makes the relevant-test join precise:
+  <i>branch-relevant</i> is distinct from <i>function-relevant</i>, and the distinction falls out of the
+  region identity rather than from any special-case code.</div>
+  <h3>Selection CLI output</h3>
+  <pre class="mono small" style="white-space:pre-wrap;background:#0b0e13;border:1px solid var(--line);border-radius:9px;padding:10px">Change: head:d1e35c47851a
+Changed functions: fn:extract_functions, fn:handle_coverage
+Changed branches: branch:handle_coverage:2464de760b5a, ...
+
+coverage_observation (dynamic):
+TEST                                     REGIONS
+a_evidence_gap_rule_warns_on_empty_store fn:extract_functions
+test_branch_anchor_survives_message_edit fn:extract_functions
+golden_relevant_test_join_fires_for_the_right_pairs fn:extract_functions
+... (16 more dynamic entries)
+
+static_reach (graph tested_by / test_reaches):
+rust:phronesis-mcp#test:coverage_hydrate::test_head_revision_uses_probe_value fn:extract_functions
+... (17 more)
+
+37 test(s) selected.</pre>
+  <p class="prose small">This is the real CLI answering against the real working tree at HEAD:
+the uncommitted edits to `region_map.rs` and `main.rs` produce the changed
+regions, the dynamic half joins them against the 2,274-record store, and the
+static half reaches through the rebuilt graph. Reproduce with
+`phr-mcp coverage select` after any edit — the union of dynamic hits and
+static reach, labeled by evidence kind.</p>
+</section>
+
+<section>
+  <h2>Property ontology</h2>
+  <p class="prose">Properties are the layer that turns "this function has tests" into "this behavior
+is supposed to hold, and here is what would count as proof." The design split is deliberate:
+<b>intent is version-controlled, evidence is derived.</b> The record says what should be true;
+the sidecar says what has actually been shown, by which verifier, at which revision. Rules
+join the two and never conflate them.</p>
+  <h3>Live records</h3>
+  <table><thead><tr><th>id</th><th>status</th><th>source</th><th>depends on</th><th>corroborated by</th></tr></thead><tbody><tr><td><code>safe_divide.nonzero_returns_quotient</code></td><td>accepted</td><td>explicit_spec</td><td><code>fn:safe_divide</code></td><td>&mdash;</td></tr><tr><td><code>safe_divide.zero_returns_error</code></td><td>accepted</td><td>explicit_spec</td><td><code>branch:safe_divide:cd6054b02dde</code></td><td>SPEC-property-ontology.md</td></tr></tbody></table>
+  <h3>Promotion lifecycle</h3>
+  <div class="mermaid" id="m-state" data-title="Property promotion lifecycle"></div>
+  <div class="note"><b>The discipline.</b> Rules report eligibility, never promote. A
+  <code>runtime_observation</code>-sourced property stays <code>candidate</code> — no rule treats it as
+  accepted even with a passing verification result attached. With two or more
+  <code>corroborated_by</code> entries the eligibility rule logs; nothing more. Status changes only via
+  the recorded <code>set_property_status</code> MCP act, with a required reason that lands in the audit
+  trail. This is "observed &ne; intended" given teeth.</div>
+</section>
+
+<section>
+  <h2>Verification track</h2>
+  <p class="prose">Ten verification conditions, zero errors. Three invariants over the coverage
+machinery itself: the identifier charset that gates imported records, the FNV-1a
+determinism that gives branch anchors their durability, and the line-ordering check that
+keeps the store well-formed. The honest limit is right there in the word <i>mirror</i>:
+these proofs bind the spec to a faithful reimplementation, not to the production functions.
+A refactor of the original could drift from its mirror and the proof would stay green.
+Full token-stream normalization is the follow-up that closes that gap.</p>
+  <table><thead><tr><th>invariant</th><th>mirrors</th><th>what it means</th></tr></thead><tbody><tr><td><code>Identifier charset</code></td><td><code>validate_identifier_field (import.rs)</code></td><td>only A-Za-z0-9_:. /- bytes pass</td></tr><tr><td><code>FNV-1a determinism</code></td><td><code>fnv1a_64 (region_map.rs)</code></td><td>same input bytes always produce the same branch anchor</td></tr><tr><td><code>Line ordering</code></td><td><code>validate_record (store.rs)</code></td><td>start_line &le; end_line is enforced</td></tr></tbody></table>
+  <div class="note warn"><b>The honest limit.</b> These proofs bind the spec to <i>mirror</i> functions,
+  not to the production code. The mirrors are faithful today; a refactor of the original could drift from
+  its mirror and the proof would stay green. Token-stream normalization and in-tree annotation are the
+  follow-ups that close that gap.</div>
+  <p class="prose small">Alongside verus, one kani result is journaled for
+  <code>safe_divide.zero_returns_error</code> — <i>passed</i> at revision <code>0ef2e37d</code>, stale
+  against current HEAD. Rule 5.3 attaches the freshness caveat automatically, so the claim carries its
+  own expiry date.</p>
+</section>
+
+<section>
+  <h2>The governance pipeline</h2>
+  <p class="prose">Here is the pipeline end to end. Every Edit, Write, or Bash call fires a hook;
+the hook builds a fresh RETE network; three demand-gated producers assert facts — structural
+(graph edges), coverage (changed regions, hits, gaps), property (records, obligations,
+staleness) — and the rules that mention those relations do the joining. The demand gate is
+the quiet hero: if no loaded rule mentions a coverage relation, zero coverage facts are
+asserted, <i>by construction</i>. The footprint is bounded by what the rule set actually
+asks about, not by a policy that can be forgotten.</p>
+  <div class="note ok"><b>What an evidence gap looks like, live.</b> A post-check over the fixture crate
+  edit warned on <code>fn:divides_negative_values</code>, <code>fn:divides_positive_values</code>, and
+  <code>fn:rejects_zero_denominator</code> — each "has neither dynamic test evidence nor formal proof
+  evidence" — while <code>fn:safe_divide</code>, which has imported dynamic hits, was <b>not</b> warned.
+  The rule distinguishes "no test executed this function" from "this function has evidence," and a
+  property record with a passing result does <i>not</i> silence it (finding B4, now pinned by test).</div>
+</section>
+
+<section>
+  <h2>Test inventory</h2>
+  <p class="prose">Forty coverage/property-specific tests across eight files pin the machinery itself,
+  plus one BDD feature file. The distribution is bottom-heavy on purpose: hydration is where the joins
+  live, so it carries the most tests.</p>
+  <table><thead><tr><th>test file</th><th>count</th><th>layer</th><th>what it pins</th></tr></thead><tbody><tr><td><code>coverage_store</code></td><td>3</td><td>durable store</td><td>HitRecord round-trip, replace-per-revision, missing-store loads empty</td></tr><tr><td><code>coverage_import</code></td><td>5</td><td>importer</td><td>normalized export parsing, all-or-nothing validation, CLI, mixed-revision rejection</td></tr><tr><td><code>coverage_region_map</code></td><td>5</td><td>region map</td><td>tree-sitter function spans, branch anchors (FNV-1a), changed regions, reflow survival</td></tr><tr><td><code>coverage_hydrate</code></td><td>9</td><td>hydration</td><td>demand gate, changed regions, dynamic evidence, gap facts, first-proof obligation, staleness</td></tr><tr><td><code>coverage_gap_rules</code></td><td>3</td><td>rules (real binary)</td><td>rules 5.2 / 5.3 through the real pre/post-check binary</td></tr><tr><td><code>coverage_golden</code></td><td>1</td><td>golden trace</td><td>the relevant-test join: 4 exact pairs, branch-only for rejects_zero_denominator</td></tr><tr><td><code>coverage_select</code></td><td>5</td><td>selection CLI</td><td>CLI selection, evidence-kind labeling, dedup, A6 acceptance</td></tr><tr><td><code>properties_hydrate</code></td><td>9</td><td>property ontology</td><td>B1 staleness join, B2 promotion discipline, B4 gap-not-silenced, demand gate, cross-revision persistence, C9 first-proof, C5 injection</td></tr></tbody></table>
+  <div class="mermaid" id="m-xchart" data-title="Test counts by layer"></div>
+  <div class="mermaid" id="m-pie" data-title="Test type distribution"></div>
+</section>
+
+<section>
+  <h2>Reading a swarm through this machinery</h2>
+  <p class="prose">The best test of a governance system is whether it can explain an agent that
+nobody watched. The overnight swarm that built this feature ran for seven hours across
+seventeen spawned workers and four harness profiles, and everything worth knowing about it
+is recoverable from the machinery it was building — the hook log, the journey journal, the
+auction ledger. This is the flywheel closing: the swarm built the instrumentation, and the
+instrumentation is how we now understand the swarm.</p>
+  <div class="mermaid" id="m-swarmseq" data-title="How the governance machinery records a swarm run"></div>
+  <div class="mermaid" id="m-gantt" data-title="Overnight swarm task lifecycles (from the swarm ledger)"></div>
+  <h3>Worker ledger</h3>
+  <table><thead><tr><th>worker</th><th>profile</th><th>task</th><th>outcome</th></tr></thead><tbody><tr><td><code>w-t6-1</code></td><td>crush-qwen-spark</td><td>T6 golden trace</td><td>failed: stalled (contract protocol)</td></tr><tr><td><code>w-t7-1</code></td><td>crush-qwen-spark</td><td>T7 docs</td><td>done 523d254 (grade 8/10)</td></tr><tr><td><code>w-v1-1</code></td><td>crush-glm-5.2</td><td>V1 dogfood</td><td>done 6a8f97d (grade 9/10)</td></tr><tr><td><code>w-verus-1</code></td><td>crush-glm-5.2</td><td>VERUS</td><td>done 5d56fde — 10 verified, 0 errors (grade 10/10)</td></tr><tr><td><code>w-af-1</code></td><td>crush-glm-5.2</td><td>AUDIT-FIX</td><td>done d6189c6 (grade 9/10)</td></tr><tr><td><code>w-a6-1</code></td><td>crush-glm-5.2</td><td>A6 select CLI</td><td>done da150c9 (grade 10/10)</td></tr><tr><td><code>w-wtb-1</code></td><td>crush-glm-5.2</td><td>WTb re-open</td><td>died at spawn: ollama credit wall</td></tr><tr><td><code>w-ds1-1</code></td><td>crush-glm-5.2</td><td>DS1 ownership validation</td><td>died at spawn: ollama credit wall</td></tr><tr><td><code>w-v2-1</code></td><td>together-kimi-k3</td><td>V2 stronger-model review</td><td>done — 6 findings, 1 blocker fixed same night</td></tr><tr><td><code>w-r-1</code></td><td>together-glm-5.3</td><td>R report narrative</td><td>done — 5.9k chars ($0.047)</td></tr></tbody></table>
+  <p class="prose"><b>A concrete read.</b> Worker <code>w-verus-1</code> (crush-glm-5.2) was awarded the
+verus track and finished with 10 verified, 0 errors — graded 10/10. Workers
+<code>w-wtb-1</code> and <code>w-ds1-1</code> died at spawn on the ollama credit wall — the
+auction re-opened their tasks and re-priced the remaining work onto the local pool without a
+human in the loop. <code>w-t6-1</code> stalled twice and the &minus;2 recalibration priced
+crush-qwen-spark out of engineering work for the rest of the run. None of that came from
+reading a transcript: it came from the event log, the ledger, and the hook events per source.
+The <code>phr_by_source</code> counts (567 events from the orchestrator checkout, 79 from the
+verus worktree, 36 from wt-root) are the flight recorder — per-worker enforcement history
+that doubles as grading evidence.</p>
+  <h3>How to answer any question about a governed run</h3>
+  <table><thead><tr><th>question</th><th>surface</th><th>what you learn</th></tr></thead><tbody><tr><td>Which tests exercise the code I changed?</td><td><code>phr-mcp coverage select</code></td><td>the union of dynamic hits and static graph reach, labeled by evidence kind</td></tr><tr><td>Which changed regions have no test evidence?</td><td>rule 5.2 (evidence gap)</td><td>a warn on every changed region without dynamic or formal evidence</td></tr><tr><td>Is my evidence fresh?</td><td>rule 5.3 (staleness)</td><td>a pre-check warn when the store's revision differs from HEAD</td></tr><tr><td>Does a property still hold after my edit?</td><td>rule 5.2 &#8859; property_depends_on</td><td>the proof must be re-run — the evidence is stale for the changed region</td></tr><tr><td>What has a formal proof?</td><td>the verus harness</td><td>3 invariants, 10 conditions, 0 errors — over mirror functions</td></tr><tr><td>What did the swarm actually touch?</td><td><code>phr_by_source</code> in log.jsonl</td><td>per-worktree hook-event counts, without scraping any transcript</td></tr></tbody></table>
+</section>
+
+<section>
+  <h2>Coverage — the real numbers</h2>
+  <p class="prose">The tarpaulin chapter is worth one honest paragraph: tarpaulin cannot instrument on
+macOS, and its failure mode is <i>silent</i> — it writes a plausible 6.4&nbsp;MB HTML report over
+23,181 traces with zero coverage inside. A coverage tool that lies by rendering is worse than
+one that crashes, so tarpaulin is gone and the collector is cargo-llvm-cov. The numbers below
+are from one real instrumented workspace run (nightly, <code>--branch</code>): the machinery's
+own modules — the code this report is about — land at 77–96% lines, with <code>select.rs</code>
+(67.9%) the honest low point. After the collector was ported into Rust, 40 machinery tests ran
+in isolation under coverage and their <b>2,274 region-validated records</b> were imported into
+the evidence store — so the gap rules and <code>coverage select</code> now run on real
+evidence, not the toy fixture. Those records were collected from an uncommitted working tree
+and stamped with the HEAD of the time, not with a revision that contains the code they
+measured (see the note below). The collector is self-validating: every emitted
+identity must be independently produced by <code>region_map</code>, so nothing it imports can
+drift from what hydration joins.</p>
+  <table><thead><tr><th>machinery module (lines)</th><th>line coverage</th></tr></thead><tbody><tr><td><code>coverage/hydrate.rs</code></td><td>95.7%</td></tr><tr><td><code>coverage/region_map.rs</code></td><td>94.3%</td></tr><tr><td><code>coverage/store.rs</code></td><td>86.8%</td></tr><tr><td><code>coverage/import.rs</code></td><td>78.7%</td></tr><tr><td><code>coverage/select.rs</code></td><td>67.9%</td></tr><tr><td><code>properties/status.rs</code></td><td>84.8%</td></tr><tr><td><code>properties/allowlist.rs</code></td><td>83.2%</td></tr><tr><td><code>properties/execute.rs</code></td><td>82.2%</td></tr><tr><td><code>properties/hydrate.rs</code></td><td>76.8%</td></tr><tr><td><code>properties/validate.rs</code></td><td>75.3%</td></tr><tr><td><code>properties/store.rs</code></td><td>72.1%</td></tr></tbody></table>
+  <div class="note"><b>Workspace totals (one llvm-cov run, full suite).</b> 51,257/55,891 lines =
+  <b>91.7%</b> &middot; functions 90.1% &middot; branches 77.0% &middot; regions 90.8%. Evidence store:
+  <b>2,274 records across 40 tests</b> (1,632 fn + 642 branch hits over 75 source files), imported
+  stamped <code>d1e35c47851a</code>. <b>Provenance caveat:</b> they were collected from a dirty
+  working tree before the collector was committed as <code>84b754e</code> (it did not exist at
+  <code>d1e35c4</code>), so the staleness rule's silence at that point reflected the stamp matching
+  HEAD, not evidence produced by HEAD. <code>coverage collect</code> now refuses a tree that differs
+  from HEAD unless <code>--allow-dirty</code> is passed. A live change joined against that store
+  selects <b>37 tests</b>: 19 dynamic observations + 18 static-reach entries from the rebuilt graph
+  (14,792 base edges). That split came from the <code>select</code> of the time, which kept one entry
+  per test and labeled it by whichever half inserted it first, so any test with both a hit and a
+  static edge was counted once, as a dynamic observation.</div>
+</section>
+
+<section>
+  <h2>What's validated — and what isn't</h2>
+  <p class="prose">The accounting, stated plainly. What is validated is validated by
+execution — real exports, real hook binaries, real Z3 runs, a golden trace through the real
+RETE network. What is not validated is written down rather than hidden, because a coverage
+system that overclaims its own coverage would be the funniest possible failure mode.</p>
+  <div class="grid2">
+    <div>
+      <h3 style="color:var(--ok)">Validated</h3>
+      <ul class="small">
+        <li><b>2635 tests</b> green across phronesis-mcp + phronesis-rhai; clippy <code>-D warnings</code> clean</li>
+        <li><b>40 coverage/property tests</b> across 8 files + 1 BDD feature</li>
+        <li><b>10 verus conditions</b> verified (Z3, 0 errors) — identifier charset, FNV-1a determinism, line ordering</li>
+        <li><b>2,274 coverage hits</b> imported — 40 machinery tests collected in isolation by the Rust collector, validated against the region map; collected from an uncommitted tree and stamped <code>d1e35c4</code>, which did not contain the collector</li>
+        <li><b>Aggregate workspace coverage measured</b> — 91.7% lines, 77.0% branches over 55,891 lines</li>
+        <li><b>1 golden trace</b> through the real RETE network — 4 exact join pairs</li>
+        <li><b>3 real-binary rule tests</b> — rules 5.2 / 5.3 through the actual hook</li>
+        <li><b>1 cross-revision persistence test</b> — evidence survives semantic-preserving edits</li>
+        <li><b>1 injection containment test</b> (C5) — hostile property payloads render inert</li>
+        <li><b>1 mutation detection test</b> (C6) — the forbidden bug flips the proof to failed</li>
+        <li><b>Tiered execution proven live</b> — sandbox-exec ran real verus end-to-end</li>
+      </ul>
+    </div>
+    <div>
+      <h3 style="color:var(--warn)">Not yet validated</h3>
+      <ul class="small">
+        <li>Performance at scale — closed-world gap computation reads the whole store; untested at 100k hits</li>
+        <li>Write / rename / MultiEdit shapes — post-check's change model is whole-file-Edit-first</li>
+        <li>Producer-scoped replace — two llvm-cov runs with different filters are last-writer-win today</li>
+        <li>Demand-gate derivation closure — a rule joining a derived view needs the closure chased to base relations</li>
+        <li>Curated property records in PRs — the gitignore carve-out exists; real records are still the fixture's</li>
+        <li>The devcontainer tier — spec'd, not image-built</li>
+        <li>C6 at other (language, verifier) pairs — those adapters don't exist yet</li>
+        <li>Verus mirrors vs production code — the drift gap described above</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<div id="gmodal" class="gmodal" role="dialog" aria-modal="true" aria-labelledby="gmodal-title">
+  <div class="gmodal-bar"><b id="gmodal-title"></b><button onclick="closeG()">✕ Close</button></div>
+  <div class="gmodal-body" id="gmodal-body"></div>
+</div>
+
+<script>
+const DIAG = {"arch": "flowchart TD\n  subgraph HOOKS[\"Governance hooks \u2014 fire on every tool call\"]\n    PRE[\"pre-check<br/>(before edit applies)\"]\n    POST[\"post-check<br/>(after edit applies)\"]\n  end\n  subgraph COV[\"Coverage evidence \u2014 SPEC A\"]\n    STORE[\"coverage.jsonl + coverage.index<br/>durable, gitignored\"]\n    IMP[\"import.rs<br/>normalized cargo-llvm-cov export<br/>all-or-nothing validation\"]\n    RM[\"region_map.rs<br/>tree-sitter function spans<br/>branch anchors: FNV-1a-12\"]\n    HYD[\"hydrate.rs<br/>demand-gated fact production\"]\n  end\n  subgraph PROP[\"Property ontology \u2014 SPEC B\"]\n    PJ[\"properties.json<br/>curated intent, version-controlled\"]\n    PH[\"properties/hydrate.rs<br/>10 relations, demand-gated\"]\n    AS[\"allowlist.rs<br/>hash-keyed review gate\"]\n    ST[\"status.rs<br/>set_property_status<br/>audited transitions\"]\n  end\n  subgraph VER[\"Verification artifacts \u2014 SPEC C\"]\n    EX[\"execute.rs<br/>tiered confinement<br/>devcontainer, sandbox-exec, raw, fail-closed\"]\n    RES[\"property-results.jsonl<br/>verifier results sidecar\"]\n  end\n  NET[\"RETE network<br/>fresh per fire\"]\n  RULES[\"rules 5.1 log-relevant-test<br/>5.2 warn-evidence-gap<br/>5.3 warn-stale-on-commit\"]\n  OUT[\"consequences<br/>log / warn / block\"]\n\n  POST --> HYD\n  POST --> PH\n  POST --> NET\n  IMP --> STORE\n  RM --> IMP\n  STORE --> HYD\n  EX --> RES\n  RES --> PH\n  PJ --> PH\n  AS --> PJ\n  ST --> PJ\n  HYD --> NET\n  PH --> NET\n  NET --> RULES\n  RULES --> OUT\n", "seq": "sequenceDiagram\n  participant A as Agent (crush / opencode / human)\n  participant H as phr-mcp post-check\n  participant C as Coverage hydrate\n  participant P as Properties hydrate\n  participant N as RETE network (fresh)\n  participant R as Rules 5.1 / 5.2 / 5.3\n  A->>H: Edit event (file, old, new)\n  H->>H: demand gate \u2014 no rule mentions coverage? zero work\n  H->>C: changed regions via tree-sitter\n  C-->>H: test_hits_region facts + gap facts + staleness\n  H->>P: region join against properties.json\n  P-->>H: property_depends_on + property_obligation facts\n  H->>N: assert rules + facts\n  N->>R: join\n  R-->>H: log: change touched region exercised by test T\n  R-->>H: warn: region R has neither dynamic nor formal evidence\n  H-->>A: exit 0 pass / exit 1 warn / exit 2 block\n  Note over A,R: the agent sees exactly what the rules said:<br/>the violation message is the tool's error\n", "state": "stateDiagram-v2\n  [*] --> observed : runtime_observation / agent_inference\n  observed --> candidate : explicit_spec corroborates\n  candidate --> corroborated : 2+ independent sources\n  corroborated --> accepted : human review via set_property_status\n  accepted --> verified : formal proof passes at HEAD\n  verified --> accepted : property record edited (revision bump)\n  accepted --> rejected : adversarial review finds defect\n  verified --> superseded : property redefined\n  note right of observed\n    rules report eligibility, never promote.\n    status changes ONLY via the recorded\n    MCP act with a required reason.\n  end note\n", "pie": "pie showData\n  title Coverage/property test distribution by layer\n  \"durable store\" : 3\n  \"importer\" : 5\n  \"region map\" : 5\n  \"hydration\" : 9\n  \"gap rules (real binary)\" : 3\n  \"golden trace\" : 1\n  \"selection CLI\" : 5\n  \"property hydration\" : 9\n  \"injection containment\" : 1\n  \"cross-revision persistence\" : 1\n", "xchart": "xychart-beta\n  title \"Test counts by layer\"\n  x-axis [\"store\", \"importer\", \"region-map\", \"hydrate\", \"gap-rules\", \"golden\", \"select\", \"properties\"]\n  y-axis \"tests\" 0 --> 12\n  bar [3, 5, 5, 9, 3, 1, 5, 9]\n", "gantt": "gantt\n  title Swarm task lifecycles \u2014 the overnight run that built this (minutes from init, axis in wall clock)\n  dateFormat X\n  axisFormat %H:%M\n  \"T6 golden (failed, stalled)\" :crit, 0, 2640\n  \"T7 docs (done)\" :done, 0, 2280\n  \"V1 dogfood (done)\" :done, 0, 720\n  \"R report (done)\" :done, 600, 7260\n  \"WT root-discovery (failed)\" :crit, 720, 2640\n  \"VERUS 10 VCs (done)\" :done, 780, 1980\n  \"AUDIT-FIX (done)\" :done, 1380, 2280\n  \"A6 select CLI (done)\" :done, 1560, 2640\n  \"T6b re-open (failed again)\" :crit, 2640, 5460\n  \"credit wall kills WTb/DS1/DS2\" :crit, 4800, 6000\n  \"A3 integration (orch takeover)\" :done, 4380, 4440\n  \"V2 stronger-model review (done)\" :done, 6300, 7080\n  \"T6-orch takeover (done)\" :done, 7080, 7140\n", "swarmseq": "sequenceDiagram\n  participant O as Orchestrator\n  participant W as Harness worker (crush / opencode)\n  participant G as Phronesis governance\n  participant L as phronesis logs + journal\n  O->>O: worktree governance init<br/>copy rules.json + durable.md\n  O->>W: spawn CLI in worktree with brief\n  W->>G: every Edit / Bash fires pre-check + post-check\n  G-->>W: exit 2 block on violation \u2014 worker sees it as tool error\n  W->>L: hook events land in log.jsonl per source<br/>worktree:wt-root, orchestrator-main-checkout\n  O->>L: read phr_by_source to grade the worker<br/>without scraping a transcript\n  Note over O,L: the governance machinery is the swarm's<br/>flight recorder \u2014 read it, don't guess\n"};
+const CARDS = [["tests green", "2639 / 2639"], ["verus conditions", "10 verified, 0 errors"], ["properties", "2 accepted"], ["coverage hits", "2274 across 40 tests"], ["workspace line cov", "91.7%"], ["audit src/coverage", "0 blocked"], ["confinement tiers", "3 live + fail-closed"], ["swarm spend (overnight)", "$71.93"]];
+const esc = s => String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+const q = s => document.querySelector(s);
+q("#cards").innerHTML = CARDS.map(([k, v]) =>
+  `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`).join("");
+if (typeof mermaid === "undefined") { /* CDN failed: page stays readable, no zoom */ } else {
+mermaid.initialize({startOnLoad:false, theme:"dark", securityLevel:"loose",
+                    themeVariables:{fontSize:"12px"}});
+function mk(sel, code) {
+  const host = q(sel);
+  const d = document.createElement("div");
+  d.className = "mermaid";
+  d.textContent = code;
+  d.dataset.title = host.dataset.title || "Diagram";
+  d.setAttribute("tabindex", "0");
+  d.setAttribute("role", "button");
+  d.setAttribute("aria-label", "Zoom diagram: " + d.dataset.title);
+  host.replaceWith(d);
+  return d;
+}
+(async () => {
+  try {
+    await mermaid.run({nodes: [
+      mk("#m-arch", DIAG.arch), mk("#m-seq", DIAG.seq), mk("#m-state", DIAG.state),
+      mk("#m-pie", DIAG.pie), mk("#m-xchart", DIAG.xchart), mk("#m-gantt", DIAG.gantt),
+      mk("#m-swarmseq", DIAG.swarmseq),
+    ]});
+  } catch (e) {
+    document.querySelectorAll(".mermaid").forEach(h => h.insertAdjacentHTML("beforeend",
+      `<div class="small" style="padding:6px">diagram failed to render: ${esc(String(e && e.message || e))}</div>`));
+  }
+  document.querySelectorAll(".mermaid").forEach(h => {
+    h.addEventListener("click", () => openG(h));
+    h.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openG(h); } });
+  });
+})(); }
+function openG(host) {
+  const svg = host.querySelector("svg");
+  if (!svg) return;
+  q("#gmodal-title").textContent = host.dataset.title || "Diagram";
+  const body = q("#gmodal-body");
+  body.innerHTML = "";
+  const c = svg.cloneNode(true);
+  c.removeAttribute("width"); c.removeAttribute("height"); c.removeAttribute("style");
+  c.style.width = "min(100%, 1100px)";
+  body.appendChild(c);
+  window.__lastFocus = document.activeElement;
+  q("#gmodal").classList.add("open");
+  q("#gmodal").querySelector("button").focus();
+}
+function closeG() {
+  if (!q("#gmodal").classList.contains("open")) return;
+  q("#gmodal").classList.remove("open");
+  if (window.__lastFocus && window.__lastFocus.focus) window.__lastFocus.focus();
+}
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeG(); });
+q("#gmodal").addEventListener("click", e => { if (e.target === q("#gmodal")) closeG(); });
+</script>
+</body>
+</html>

@@ -305,11 +305,13 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/security.rs` | Path canonicalization, size caps, validators |
 | `crates/phronesis-mcp/src/diff_extract.rs` | Regex-based diff facts (function_added, import_added, etc.) |
 | `crates/phronesis-mcp/src/syntax/` | Tree-sitter AST predicates (rust, swift, python, typescript) |
+| `crates/phronesis-mcp/src/coverage/` | Coverage evidence store, importer, region mapping, demand-gated hydration, collector (`collect.rs`: llvm-cov JSON → per-test hits, validated against the region map) (SPEC-coverage-evidence.md) |
 | `crates/phronesis-mcp/src/outcomes/` | Confidence scoring — per-toolchain adapter (`cargo` first), per-subject signal derivation, gate-rule input |
 | `crates/phronesis-mcp/src/journey/` | Journey facts — append-only journal, project-defined taggers, rule-driven aggregator derivation |
 | `crates/phronesis-mcp/src/journey_cli.rs` | `phr-mcp journey` rendering glue (table + JSON + `--explain`) |
 | `crates/phronesis-mcp/src/{claude_md,memory,wiki}_drift.rs` | Three heuristic drift detectors (Jaccard overlap, no LLM call) |
 | `crates/phronesis-mcp/src/wiki.rs` | ADR page primitives shared by wiki_drift + decision scaffolding |
+| `crates/phronesis-mcp/verification/` | Verus-verified harness for coverage-store invariants (standalone, outside main workspace) |
 
 ### Action Log (`.phronesis/log.jsonl`)
 
@@ -457,6 +459,30 @@ Three files exceed 800 LOC with intentional exemptions (see `SPEC-god-file-decom
 ## Workflow Patterns
 
 ### Common Agent Workflows
+
+#### 1. Coverage collection (cargo-llvm-cov, NOT tarpaulin)
+
+```bash
+# Per-test isolated collection over the machinery test set, then import at HEAD.
+# tarpaulin cannot instrument on macOS — it produces reports with zero covered
+# traces. The collector validates every record against the region map, so
+# emitted identities always match what hydration will join.
+phr-mcp coverage collect                     # run machinery tests in isolation
+phr-mcp coverage collect --from-dir /tmp/x   # normalize already-collected JSONs
+phr-mcp coverage collect --allow-dirty       # stamp HEAD despite a modified tree (warns)
+phr-mcp coverage import <export.jsonl>       # import a normalized export
+phr-mcp coverage select                      # relevant tests for changed regions
+```
+
+`collect` (with or without `--from-dir`) stamps HEAD on every record, so it
+refuses — exit 1, naming the files, nothing written — when tracked files
+differ from HEAD, staged or unstaged. Untracked files and `.phronesis/` tool
+state are ignored. Commit or stash first; `--allow-dirty` proceeds with a
+warning. `select` lists a test under `coverage_observation` only for regions
+the store saw it hit; statically reached regions appear under `static_reach`,
+so one test can have an entry of each kind.
+
+Requires cargo-llvm-cov 0.8.x and a nightly toolchain (rust-version >= 1.90).
 
 #### 1. Adding a New Rule
 

@@ -1543,6 +1543,25 @@ impl EpistemeMcp {
         });
         Self::ok_text(serde_json::to_string_pretty(&out).map_err(|e| Self::err(e.to_string()))?)
     }
+    #[tool(
+        description = "Transition a property's status (SPEC-property-ontology.md §4): the promotion act. `because` is required — every transition must name its reason. The transition is journaled as kind:mcp in log.jsonl with the property, old status, new status, and the reason. Statuses: observed | candidate | corroborated | accepted | verified | rejected | superseded. This is the ONLY way to change a property's status — rules report eligibility, never promote."
+    )]
+    async fn set_property_status(
+        &self,
+        Parameters(params): Parameters<crate::server_params::SetPropertyStatusParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        let out = crate::properties::status::set_property_status_handler(
+            &root,
+            &params.property_id,
+            &params.new_status,
+            &params.because,
+        )
+        .map_err(|e| Self::err(e.to_string()))?;
+        Ok(CallToolResult::success(vec![Content::text(
+            serde_json::to_string_pretty(&out).unwrap_or_default(),
+        )]))
+    }
 }
 
 #[tool_handler]

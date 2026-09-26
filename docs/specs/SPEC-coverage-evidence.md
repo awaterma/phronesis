@@ -1,0 +1,244 @@
+# SPEC: Dynamic coverage evidence and change-relevant test selection
+
+**Status:** Draft for review — not approved for implementation
+**Author:** awaterma (agent-drafted, adapted from `REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md`, which was co-authored with ChatGPT/Codex)
+**Created:** 2026-09-23
+**Scope:** `crates/phronesis-mcp` host only — **no engine changes**
+**Derives from:** `REQUIREMENTS-phronesis-coverage-verification-rust-sketch.md` §1–§9, §11–§12
+**Companions:** `SPEC-property-ontology.md` (B), `SPEC-verification-artifact-generation.md` (C)
+**Reuses:** `SPEC-triple-store-rete.md` (graph discipline, demand-gated hydration, drift demotion), `SPEC-fact-provenance.md` (fact source attribution), `SPEC-rust-ownership-evidence.md` (stable site identity), `SPEC-confidence-scoring.md` (signal gates)
+
+## Summary
+
+Add a durable, opt-in **coverage evidence store** recording which test executed which code region, at which revision, at which granularity — then hydrate a bounded subset of those edges into the RETE network at hook fire and join them against derived change facts, so rules can answer:
+
+> Which tests exercise the code I changed, and where is the evidence missing?
+
+This is the **dynamic complement to the structural graph**. `SPEC-triple-store-rete.md` already ships static edges — `tested_by`, `test_reaches`, `no_direct_test` — what a test *could* reach. This spec adds what tests *actually executed*, keyed to the revision that produced the observation.
+
+As with the structural graph, **the centerpiece is the importer and the store, not RETE plumbing**. Relational matching over `Fact { predicate, args }` with `?var` binding and beta joins already exists in `crates/phronesis` and is proven in production (`warn-untested-risky-call` joins five conditions on shared variables). Everything here reuses it.
+
+## Problem
+
+Today a rule can say "no test calls this function" (host-derived `no_direct_test`), but nothing can say "no test has ever executed the branch you just changed." An agent editing a branch has no cheap way to ask "which tests provide evidence for this behavior?" — the only answer available is "re-run everything."
+
+The requirements sketch's answer — per-test coverage edges joined against change facts, with evidence-gap detection instead of coverage percentages — is correct. Its *mechanics* need translation to what the engine actually supports (§3).
+
+## Goals
+
+1. **Zero-token, zero-LLM** reasoning about dynamic coverage at the hook boundary.
+2. **Evidence-directed test selection**: a query answering "which tests exercise what I changed," with per-test provenance.
+3. **Evidence-gap statements a human can act on** ("the changed behavior has neither dynamic test evidence nor formal proof evidence"), not coverage percentages.
+4. **Bounded footprint**: store proportional to code under test; hydrated facts bounded by the current change, not the store.
+5. **No engine changes**: reuse the `Fact` shape, `?var` beta joins, demand-gated hydration, and the hook-time environment-fact producer pattern (`clock_facts.rs`).
+
+## Non-goals
+
+1. Not a coverage dashboard. No percentage targets.
+2. Not a replacement for the full test suite. Selection only; the sketch §8 policy tiers (low risk → minimal set, release candidate → full suite) remain **project policy**, not engine behavior.
+3. No engine negation node. Gap detection is host-derived closed-world reasoning (§7).
+4. No set-valued rule heads. Selection is a host query (§8).
+5. No artifact generation or verifier execution (`SPEC-verification-artifact-generation.md`).
+6. No property ontology beyond one formal-evidence lookup seam (`SPEC-property-ontology.md`).
+7. Rust first. JaCoCo / coverage.py adapters are Phase 3.
+
+## 1. Engine feasibility — what this spec builds on, and what it refuses
+
+Audited against `crates/phronesis` on 2026-09-23:
+
+| Sketch mechanism | Engine reality | Design here |
+|---|---|---|
+| Relational facts `test_hits_region(Test, Region)` | `Fact { predicate, args: Vec<String> }` — flat positional strings only (`crates/phronesis/src/engine_types.rs`); no named/typed fields | Region is a minted ID string (§4.2); line numbers are payload, never identity |
+| Join `changed_region ⋈ test_hits_region` (sketch §5–§6) | `?var` equi-join via beta network; proven by production rules | Used as-is (§6.1) |
+| `AND NOT exists test_hits_region(Test, Region)` (sketch §7) | No pattern-level negation. `__script__` guards (`facts_count(...) == 0`, used by `nudge-verify-before-commit`) are per-activation and do not react to later assertions | Host-derived closed-world facts (§7), the `no_direct_test` precedent (`graph/derive.rs`) |
+| `minimal_relevant_test_set(Change, tests=[...])` (sketch §8) | No aggregation. Firings produce per-match consequences; `journey_count`/`journey_distinct` are computed host-side | Host-side union query (§8). "Minimal" is dropped: the sketch computes a **union**, not a hitting-set optimization |
+| Facts persisting across runs | Working memory is in-memory; the hook builds a fresh network every fire; `MAX_FACTS = 100_000` (`security.rs`) | Durable on-disk store + demand-gated, change-scoped hydration (§4.1, §5) |
+| `stale because dependent code changed` (sketch §9) | The engine cannot order revision SHAs; `detect_commit` knows HEAD at hook time but asserts nothing | Host-side revision comparison; `head_revision` / `coverage_revision` facts + `coverage_stale` marker (§5) |
+
+## 2. Module layout
+
+New module `crates/phronesis-mcp/src/coverage/` mirroring `graph/`:
+
+- `store.rs` — the JSONL store and index (§4.1)
+- `import.rs` — normalized-export parsing and validation (§9)
+- `hydrate.rs` — demand-gated, change-scoped fact assertion (§5)
+- `region_map.rs` — diff hunks → region/function change facts (Phase 2)
+- `gap.rs` — closed-world evidence-gap resolution (§7)
+
+## 3. Data representation
+
+### 3.1 Store
+
+`.phronesis/coverage.jsonl` — **derived, gitignored, rebuildable** by re-running the covered suite. Same discipline as `graph.jsonl` (see `SPEC-triple-store-rete.md` §"Note"): no auditability guarantee; git-auditability belongs to version-controlled inputs.
+
+Companion index `.phronesis/coverage.index`:
+
+```json
+{ "format": 1, "revision": "<40-hex>", "imported_at": 1715717111, "tool": "cargo-llvm-cov" }
+```
+
+The store holds **only the latest imported revision** (import replaces prior content; idempotent per revision). Historical outcomes are the journey journal's job, not the store's.
+
+### 3.2 Region identity
+
+Region identity is **not** `(file, start_line, end_line)` — raw line numbers drift across edits, and the sketch's §4 change (error-message text swap) would silently break region joins. Identity anchors to structural graph elements:
+
+- Function/method region: `fn:<qualified-name>` (the graph's element identity)
+- Branch site: `branch:<qualified-name>:<anchor>`, where `<anchor>` is a stable discriminator (condition-text hash); the exact scheme is decided by the Phase 1 spike and pinned by acceptance test A2, which requires the sketch's zero-denominator edit to map to the *same* branch site.
+- Line spans ride along as display payload in the store record only.
+
+Precedent: ownership sites (`SPEC-rust-ownership-evidence.md`) record spans under stable, queryable IDs.
+
+### 3.3 Normalized hit record
+
+```json
+{
+  "v": 1,
+  "kind": "hit",
+  "test": "rejects_zero_denominator",
+  "region": "branch:safe_divide:denominator==0",
+  "file": "src/lib.rs",
+  "start_line": 3,
+  "end_line": 5,
+  "hit_kind": "branch",
+  "revision": "<40-hex>",
+  "tool": "cargo-llvm-cov"
+}
+```
+
+`hit_kind` ∈ `region` | `branch`. Importer validation: test/region strings must survive the `security.rs` validators; `file` must be repo-relative in the graph's `file_rel` form so coverage facts join graph facts on paths (the join-key discipline `predicate_provider.rs` already documents); record and file sizes capped per `security.rs`.
+
+### 3.4 Change identity
+
+Hooks see the **working tree, not commits**. The `change` id minted at hook fire is `head:<short-sha>` — the revision the edit rides on. Commit correlation flows through the existing lifecycle `detect_commit` post-check recording (`lifecycle/outcome.rs`). The sketch's `commit_abc123` framing is commit-time; our joins run at edit-time. Stated, not hidden.
+
+## 4. Fact vocabulary and producers
+
+| Fact | Args | Producer | When |
+|---|---|---|---|
+| `test_hits_region` | `[test, region]` | coverage hydrator | hook fire; demand-gated + change-scoped |
+| `test_hits_branch` | `[test, branch_site]` | coverage hydrator | hook fire; demand-gated + change-scoped |
+| `changed_region` | `[change, region]` | region mapper (Phase 2) | hook fire, from diff hunks ⋈ graph spans |
+| `changed_function` | `[change, function]` | region mapper | hook fire; any overlapped region ⇒ function changed (added/removed already covered by `diff_extract.rs`) |
+| `region_without_dynamic_evidence` | `[region]` | gap resolver (host) | hook fire; changed regions only |
+| `region_without_formal_evidence` | `[region]` | gap resolver (host) | hook fire; changed regions only (see §7) |
+| `coverage_revision` | `[sha]` | coverage hydrator | hook fire, from store index |
+| `head_revision` | `[sha]` | revision probe (new) | hook fire, `clock_facts` pattern |
+| `coverage_stale` | `[]` (zero-arg presence) | coverage hydrator | hook fire, when index revision ≠ HEAD |
+
+Notes:
+
+- **Demand-gated** exactly as graph hydration: a relation is asserted only when a loaded rule mentions it (`graph/hydrate.rs` precedent).
+- **Change-scoped**: coverage facts assert only for regions/functions touched by the current event's edited files. Bounded per fire regardless of store size.
+- **Staleness**: mismatch between `coverage_revision` and `head_revision` asserts `coverage_stale` and **demotes enforcement** block→warn through the existing drift-demotion path (`hook_logged.rs`) — the same contract as graph drift. Rules may also match `coverage_stale` directly (§6.3).
+- Every fact carries `Fact.source = "coverage"` / `"diff"` / `"git"` so `Provenance::RuleFiring.fact_sources` shows origin (`SPEC-fact-provenance.md`).
+
+## 5. Rules (exact v2 on-disk format)
+
+### 5.1 The relevant-test join — works today, unmodified
+
+```json
+{
+  "id": "log-relevant-test-for-change",
+  "phase": "post",
+  "priority": 30,
+  "audit": true,
+  "when": [
+    { "changed_region": ["?change", "?region"] },
+    { "test_hits_region": ["?test", "?region"] }
+  ],
+  "then": { "log": "change ?change touches region ?region exercised by test ?test" }
+}
+```
+
+This is sketch §5 verbatim, translated: `changed_region(?change, ?region) ⋈ test_hits_region(?test, ?region)`. The sketch's distinction `branch_relevant != function_relevant` falls out naturally — a test hits `fn:safe_divide` without hitting `branch:safe_divide:denominator==0`.
+
+### 5.2 The evidence gap — sketch §7, without engine negation
+
+```json
+{
+  "id": "warn-evidence-gap",
+  "phase": "post",
+  "priority": 20,
+  "audit": true,
+  "when": [
+    { "changed_region": ["?change", "?region"] },
+    { "region_without_dynamic_evidence": ["?region"] },
+    { "region_without_formal_evidence": ["?region"] }
+  ],
+  "then": { "warn": "changed region ?region has neither dynamic test evidence nor formal proof evidence" }
+}
+```
+
+Both negative conditions are host-derived closed-world facts (§7). The message is the sketch's §7 risk statement, not a coverage delta.
+
+### 5.3 Policy example — stale coverage gates a commit warning
+
+```json
+{
+  "id": "warn-commit-on-stale-coverage",
+  "phase": "pre",
+  "priority": 20,
+  "audit": true,
+  "when": [
+    { "bash_command_matches": "git (commit|merge|rebase|cherry-pick|revert|pull)" },
+    { "coverage_stale": true }
+  ],
+  "then": { "warn": "committing with stale coverage evidence; run `phr-mcp coverage import` to refresh" }
+}
+```
+
+Mirrors the live `confidence-low-blocks-commit` gate shape. Pack placement (llm/rust/new `evidence` pack) is a review decision, not this spec's.
+
+## 6. Host-derived closed-world facts (why not `__script__` guards)
+
+The engine has no negation-as-failure at the pattern level (`graph/derive.rs` states this in its header). `__script__` guards (`facts_count('test_hits_region', ['?test','?region']) == 0`) exist but are evaluated **per activation** — they don't react to later assertions — and unscoped absence checks over a whole store are exactly the unbounded scan the demand-gating design forbids.
+
+So gap detection follows the `no_direct_test` precedent: the resolver computes, **for changed regions only** (bounded by the change), whether any dynamic hit and any passing formal result cover the region, and asserts `region_without_dynamic_evidence` / `region_without_formal_evidence`. Until `SPEC-property-ontology.md` lands its results index, the resolver asserts the formal-absent fact unconditionally and only rule 5.2's dynamic half has teeth — the seam is explicit, not silent.
+
+## 7. Selection — a host query, not a rule head
+
+Sketch §8's `minimal_relevant_test_set` cannot be a rule: no set-valued derivation exists in the engine, and "minimal" overpromises (the sketch computes a union). Instead:
+
+`phr-mcp coverage select [--change <id>]` (CLI first, like `stats`/`audit`; MCP tool `select_relevant_tests` in Phase 3):
+
+- Union of tests hitting changed regions, plus tests statically reaching changed functions (`tested_by` / `test_reaches` edges), each entry labeled by evidence kind: `coverage_observation` vs `static_reach`.
+- Deduplicated; each entry carries its justifying regions (provenance), preserving the sketch's `affected_test != test_that_calls_function` distinction.
+- Output: human table + `--json`.
+
+If a later rule needs to count relevant tests, the host re-asserts per-element `relevant_test(change, test)` facts and rules use `facts_count` — the `journey_count` pattern. Not in initial scope.
+
+## 8. Importer
+
+`phr-mcp coverage import <export.json>` consumes the normalized format (§3.3). The Rust adapter documents producing it via **cargo-llvm-cov**; per-test attribution requires its cargo-nextest integration, and the per-binary aggregate fallback is documented as degraded granularity (region hits without test identity are recorded against a synthetic `test:<binary>` subject — explicitly, never dropped).
+
+- Import is CLI-first; an `import_coverage` MCP tool is Phase 3.
+- The fixture's committed export (A1) must be regenerable by a documented command, and an opt-in integration test runs the real toolchain end-to-end so the documented command cannot rot. No simulated exports in the default test path.
+
+## 9. Acceptance criteria
+
+**A1 — Fixture.** `crates/phronesis-mcp/tests/fixtures/coverage-sample/`: the sketch's `safe_divide` + three tests verbatim; a committed, hand-checkable normalized export; a documented regeneration command.
+
+**A2 — Golden trace.** Hydrate → apply the sketch §4 edit (zero-denominator message change) → fire: rule 5.1 names `rejects_zero_denominator` for the branch site; `divides_positive_values` / `divides_negative_values` are relevant to `fn:safe_divide` but **not** to the branch site. The edit must also not break region identity (this pins §3.2).
+
+**A3 — Gap.** With an empty store, rule 5.2 fires for the changed region with the §7 message.
+
+**A4 — Demand-gating proof.** With no loaded rule mentioning coverage relations, zero coverage facts assert (footprint bounded by construction).
+
+**A5 — Staleness.** Index revision ≠ HEAD ⇒ `coverage_stale` asserts and a block-phase rule demotes to warn through the existing drift path.
+
+**A6 — Selection.** `phr-mcp coverage select` on the fixture change returns exactly `rejects_zero_denominator` at branch granularity, with function-level reach listed separately.
+
+**A7 — BDD.** `crates/phronesis-mcp/tests/features/coverage-evidence.feature` scenarios mirroring A2–A5.
+
+## 10. Phasing
+
+- **Phase 1:** store + importer + demand-gated/change-scoped hydration + `head_revision`/`coverage_revision`/`coverage_stale` facts + rule 5.1 + A1/A2/A4/A7 (partial feature file).
+- **Phase 2:** region mapper (`changed_region`/`changed_function` from real diff hunks; overlap policy: any line overlap ⇒ changed) + gap resolver + rule 5.2 + `coverage select` + A3/A6.
+- **Phase 3:** staleness demotion wiring + block-phase opt-in pack + MCP tools (`import_coverage`, `select_relevant_tests`) + JaCoCo / coverage.py adapters.
+
+## 11. Open questions
+
+1. Branch-site anchor scheme (condition-text hash vs tree-sitter node identity) — Phase 1 spike, decided by A2.
+2. Should `changed_region` persist across the pre→post hook pair via in-flight state for commit correlation?
+3. Should import record a journey tag (`coverage:imported`) so confidence can count fresh coverage as a signal? (lean yes, Phase 3)
