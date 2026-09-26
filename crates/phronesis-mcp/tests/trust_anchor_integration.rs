@@ -370,6 +370,21 @@ fn file_tool_path_tricks_to_anchors_stay_blocked() {
     }
 }
 
+/// A shell-arithmetic `<<` (`$((1<<2))`) must not be mistaken for a heredoc
+/// operator: that used to swallow every following line as a bogus heredoc
+/// body, hiding a real anchor write from the (advisory) shell trust-anchor
+/// scan.
+#[test]
+fn arithmetic_left_shift_does_not_hide_a_later_anchor_write() {
+    let d = init_project();
+    let cmd = "x=$((1<<2))\nrm .phronesis/verification.json";
+    let (code, stderr) = pre_check(d.path(), "Bash", json!({"command": cmd}));
+    assert!(
+        warns_as_trust_anchor_write(code, &stderr),
+        "`{cmd}` writes a trust anchor after arithmetic and must WARN (exit 1), got {code}: {stderr}"
+    );
+}
+
 /// Codex `apply_patch` renames: `*** Move to:` writes the destination, so a
 /// move onto an anchor must be refused like a direct write.
 #[test]

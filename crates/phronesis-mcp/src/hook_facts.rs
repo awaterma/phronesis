@@ -709,6 +709,11 @@ fn scan_line_for_heredocs(
     let chars: Vec<char> = line.chars().collect();
     let mut segment_start = 0;
     let mut i = 0;
+    // Depth of open arithmetic contexts (`$(( … ))` or standalone `(( … ))`).
+    // Bash never nests two independent subshells without a space between
+    // their parens, so a bare `((` is always the arithmetic-evaluation
+    // idiom; inside it `<<`/`<<=` are shift operators, not heredoc starts.
+    let mut arith_depth: u32 = 0;
     while i < chars.len() {
         let c = chars[i];
         match *quote {
@@ -731,6 +736,20 @@ fn scan_line_for_heredocs(
                 continue;
             }
             None => {}
+        }
+        if arith_depth > 0 {
+            match c {
+                '(' => arith_depth += 1,
+                ')' => arith_depth -= 1,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        if c == '(' && chars.get(i + 1) == Some(&'(') {
+            arith_depth = 2;
+            i += 2;
+            continue;
         }
         match c {
             '\\' => {
@@ -1149,6 +1168,16 @@ mod shell_code_tests {
         ] {
             assert!(shell_code_text(cmd).contains("rm f"), "{cmd}");
         }
+    }
+
+    #[test]
+    fn arithmetic_left_shift_is_not_a_heredoc() {
+        let code = shell_code_text("x=$((1<<2))\nrm .phronesis/verification.json");
+        assert!(code.contains("rm .phronesis/verification.json"), "{code}");
+        let code = shell_code_text("x=$(( a << b ))\nrm f");
+        assert!(code.contains("rm f"), "{code}");
+        let code = shell_code_text("(( x <<= 1 ))\nrm f");
+        assert!(code.contains("rm f"), "{code}");
     }
 
     #[test]

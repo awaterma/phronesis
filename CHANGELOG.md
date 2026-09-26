@@ -307,7 +307,13 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   bodies removed, so a commit message or a document that mentions an anchor
   is not flagged; copying an anchor out, another project's `.phronesis/`,
   and lookalike files such as `fixtures/email-verification.json` are left
-  alone. Re-run `phr-mcp init --rules-only` to pick the rules up.
+  alone. That heredoc stripping mistook a shell arithmetic `<<` (`$((1<<2))`,
+  `(( x <<= 1 ))`) for a heredoc operator, captured the arithmetic's trailing
+  digits as a bogus delimiter, and swallowed every following line as its
+  body — hiding a real anchor write later in the same command from the scan.
+  `<<` inside an open `((`/`$((` arithmetic context is now tracked as a shift
+  operator, not a heredoc start. Re-run `phr-mcp init --rules-only` to pick
+  the rules up.
 
 - **`set_property_status` could promote a property without leaving an audit
   line, lose concurrent transitions, and rewrite a store every reader rejects.**
