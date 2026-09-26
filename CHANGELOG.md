@@ -6,6 +6,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Rules could silently stop firing when an id contained `:` or `,`.** The
+  engine remembered fired activations as `rule:fact1,fact2` strings, so rule
+  `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose
+  id contained `:` never fired again after its fact was retracted and
+  re-asserted. Fired activations are now typed `(rule, facts)` keys, and a
+  retraction clears exactly the activations that used the retracted fact.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
