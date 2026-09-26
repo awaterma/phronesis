@@ -49,6 +49,21 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   (`git log --grep commit`, `echo "git commit"`). Existing projects pick
   this up via `phr-mcp init --rules-only --packs llm,confidence` (or
   `rust`/`python`/etc. alongside them).
+
+- **A flood of low-priority context capsules could starve governance
+  capsules of room.** `CapsuleStorage::emit` reserved 32 of 128 record slots
+  for priority >= 50 governance capsules, but only counted records, not
+  bytes: 32 low-priority capsules near the 8 KiB per-record ceiling could
+  fill the whole 256 KiB aggregate budget by themselves, leaving 96 free
+  slots but no room, so the next governance capsule was rejected with
+  `CapacityExceeded`. Low-priority (priority < 50) capsules are now also
+  capped at 192 KiB (256 KiB * 96/128), guaranteeing governance capsules at
+  least 64 KiB regardless of how the low-priority pool fills up. Separately,
+  re-emitting (upserting) an existing capsule id bypassed the low-priority
+  count and byte checks entirely, so lowering an existing governance
+  capsule's priority could push the low-priority pool past its 96-record or
+  192 KiB reservation; an upsert is now checked as if the old version were
+  removed and the new one inserted fresh.
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other
