@@ -9,6 +9,7 @@
 //! branch-id  = "branch:" file "::" item-path ":" anchor [ "." ordinal ]
 //! file       = repo-relative path; any char outside [A-Za-z0-9_./-] becomes
 //!              "_" and the segment gains ".h" + 12 hex of FNV-1a(path)
+//!              (also when capped, below)
 //! item-path  = segment *( "::" segment )     ; outermost scope first
 //! segment    = name                           ; mod, trait, or fn
 //!            | type [ ".as." trait ]          ; impl block
@@ -26,8 +27,11 @@
 //! one function: the first site has none, later ones `.2`, `.3`, ... —
 //! whitespace-only reflow moves neither the anchor nor the order.
 //!
-//! An id longer than 256 bytes keeps its first 242 bytes and appends
-//! `.h` + 12 hex of FNV-1a over the full id.
+//! Each segment is capped on its own so an id never exceeds 256 bytes and
+//! never loses its `::`: a `file` over 120 bytes keeps its first 106 and
+//! appends `.h` + 12 hex of FNV-1a(path); an `item-path` over 100 bytes
+//! becomes `_h` + 12 hex of FNV-1a(item path) + `::` + its last segment
+//! (dropped too when that alone would not fit).
 //!
 //! Ids from before this grammar (`fn:<leaf>`, `branch:<leaf>:<anchor>`)
 //! carry no `::`; [`is_qualified_region_id`] tells them apart so hydration
@@ -41,11 +45,17 @@ use tree_sitter::{Node, Parser};
 /// The importer's identifier cap (`validate_identifier_field`).
 pub const MAX_REGION_ID_BYTES: usize = 256;
 
-/// Bytes kept from an over-long id before the `.h<12 hex>` suffix.
-const CAPPED_PREFIX_BYTES: usize = MAX_REGION_ID_BYTES - 14;
+/// Byte budget of the `file` segment. With the item-path budget below, the
+/// longest id — `branch:` (7) + file (120) + `::` (2) + item path (100) +
+/// `:` (1) + anchor (12) + `.` and a u32 ordinal (11) — is 253 bytes.
+const MAX_FILE_SEGMENT_BYTES: usize = 120;
+/// Byte budget of the `item-path` segment.
+const MAX_ITEM_PATH_BYTES: usize = 100;
+/// `.h` + 12 hex.
+const HASH_SUFFIX_BYTES: usize = 14;
 
 pub fn function_region_id(file: &str, item_path: &str) -> String {
-    cap(format!("fn:{}::{item_path}", file_segment(file)))
+    format!("fn:{}::{}", file_segment(file), cap_item_path(item_path))
 }
 
 pub fn branch_region_id(file: &str, item_path: &str, anchor: &str, ordinal: u32) -> String {
@@ -54,10 +64,28 @@ pub fn branch_region_id(file: &str, item_path: &str, anchor: &str, ordinal: u32)
     } else {
         String::new()
     };
-    cap(format!(
-        "branch:{}::{item_path}:{anchor}{suffix}",
-        file_segment(file)
-    ))
+    format!(
+        "branch:{}::{}:{anchor}{suffix}",
+        file_segment(file),
+        cap_item_path(item_path)
+    )
+}
+
+/// An over-budget item path becomes `_h<12 hex of the full path>::<leaf>`:
+/// the hash keeps distinct paths distinct, and the leaf segment (the fn
+/// name with its ordinal) survives so legacy references still find it. A
+/// leaf too long to keep is dropped; the hash alone then names the site.
+fn cap_item_path(item_path: &str) -> String {
+    if item_path.len() <= MAX_ITEM_PATH_BYTES {
+        return item_path.to_string();
+    }
+    let hashed = format!("_h{}", hash12(item_path));
+    match item_path.rsplit("::").next() {
+        Some(leaf) if hashed.len() + 2 + leaf.len() <= MAX_ITEM_PATH_BYTES => {
+            format!("{hashed}::{leaf}")
+        }
+        _ => hashed,
+    }
 }
 
 /// The repo-relative spelling of an edited path — the `file` every region id
@@ -107,8 +135,9 @@ fn canonicalize_lenient(path: &Path) -> Option<PathBuf> {
 }
 
 /// The `file` production of the grammar: the path itself when it is already
-/// in the charset, otherwise a sanitized path plus a hash of the original so
-/// two paths that sanitize alike stay distinct.
+/// in the charset and within budget, otherwise a sanitized (and, past 120
+/// bytes, truncated) path plus a hash of the original, so two paths that
+/// sanitize or truncate alike stay distinct.
 pub fn file_segment(file: &str) -> String {
     let clean: String = file
         .chars()
@@ -120,19 +149,13 @@ pub fn file_segment(file: &str) -> String {
             }
         })
         .collect();
-    if clean == file {
-        clean
-    } else {
-        format!("{clean}.h{}", hash12(file))
+    if clean == file && clean.len() <= MAX_FILE_SEGMENT_BYTES {
+        return clean;
     }
-}
-
-fn cap(id: String) -> String {
-    if id.len() <= MAX_REGION_ID_BYTES {
-        return id;
-    }
-    // Every production above is ASCII, so any byte index is a char boundary.
-    format!("{}.h{}", &id[..CAPPED_PREFIX_BYTES], hash12(&id))
+    // Sanitized or over budget: keep a readable prefix and add a hash of the
+    // original path. `clean` is ASCII, so any byte index is a char boundary.
+    let keep = clean.len().min(MAX_FILE_SEGMENT_BYTES - HASH_SUFFIX_BYTES);
+    format!("{}.h{}", &clean[..keep], hash12(file))
 }
 
 /// True for ids in the current grammar; false for the leaf-name ids older

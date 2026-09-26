@@ -4,7 +4,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
-use crate::coverage::region_map::{MAX_REGION_ID_BYTES, file_segment, is_qualified_region_id};
+use crate::coverage::region_map::{file_segment, is_qualified_region_id};
 use crate::coverage::store::{COVERAGE_FORMAT, CoverageIndex, HitRecord, write_store};
 
 #[derive(Debug)]
@@ -73,10 +73,10 @@ fn validate_region_id(rec: &HitRecord) -> Result<()> {
             rec.hit_kind
         ));
     }
-    // A capped id (§3.2: over-long ids are truncated and hashed) may have
-    // lost part of its file segment; every other id must start with it.
+    // Capping (§3.2) shortens each segment in place and `file_segment`
+    // applies the same cap, so every id — capped or not — starts with it.
     let qualified = format!("{prefix}{}::", file_segment(&rec.file));
-    if rec.region.len() < MAX_REGION_ID_BYTES && !rec.region.starts_with(&qualified) {
+    if !rec.region.starts_with(&qualified) {
         return Err(anyhow!(
             "region '{}' is not qualified with the record's file '{}'",
             rec.region,

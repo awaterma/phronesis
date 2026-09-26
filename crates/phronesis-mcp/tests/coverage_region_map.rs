@@ -182,7 +182,7 @@ fn ids_stay_in_the_importer_charset_and_cap() {
 
     let long_path = format!("src/{}.rs", "d/".repeat(200));
     let id = function_region_id(&long_path, "f");
-    assert_eq!(id.len(), MAX_REGION_ID_BYTES);
+    assert!(id.len() <= MAX_REGION_ID_BYTES, "{id}");
     assert_ne!(id, function_region_id(&format!("{long_path}x"), "f"));
     for id in [id, branch_region_id(odd, "A-T-::f", "cd6054b02dde", 3)] {
         assert!(
@@ -253,4 +253,46 @@ fn edited_paths_are_made_repo_relative() {
         repo_relative_path(root.path(), &outside.display().to_string()),
         None
     );
+}
+
+// Capping must keep the qualified shape: a >256-byte id that lost its `::`
+// would be refused by the importer and read as a legacy id by hydration.
+#[test]
+fn capped_ids_stay_qualified_and_keep_their_leaf() {
+    let long_path = format!("crates/x/src/{}.rs", "d".repeat(300));
+    let deep_item = format!("{}::leaf_fn", vec!["m"; 150].join("::"));
+    for id in [
+        function_region_id(&long_path, "f"),
+        function_region_id("src/lib.rs", &deep_item),
+        function_region_id(&long_path, &deep_item),
+        branch_region_id(&long_path, &deep_item, "cd6054b02dde", 7),
+    ] {
+        assert!(id.len() <= MAX_REGION_ID_BYTES, "{} bytes: {id}", id.len());
+        assert!(
+            is_qualified_region_id(&id),
+            "capped id lost its shape: {id}"
+        );
+    }
+    // Distinct inputs stay distinct after capping.
+    assert_ne!(
+        function_region_id(&long_path, "f"),
+        function_region_id(&format!("{long_path}x"), "f")
+    );
+    assert_ne!(
+        function_region_id("src/lib.rs", &deep_item),
+        function_region_id("src/lib.rs", &format!("n::{deep_item}"))
+    );
+    // Legacy references still find the leaf of a capped id.
+    assert!(reference_matches(
+        "fn:f",
+        &function_region_id(&long_path, "f")
+    ));
+    assert!(reference_matches(
+        "fn:leaf_fn",
+        &function_region_id(&long_path, &deep_item)
+    ));
+    assert!(reference_matches(
+        "branch:leaf_fn:cd6054b02dde",
+        &branch_region_id(&long_path, &deep_item, "cd6054b02dde", 7)
+    ));
 }

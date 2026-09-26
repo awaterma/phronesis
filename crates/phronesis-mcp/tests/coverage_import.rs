@@ -181,3 +181,42 @@ fn test_import_rejects_hit_kind_that_disagrees_with_region_kind() {
     let export = write_export(expdir.path(), &jsonl(&[r]));
     assert!(import_export(root.path(), &export, 1).is_err());
 }
+
+// The collector's own output for a very long path must import: the capped
+// id keeps its qualified shape and its file qualification.
+#[test]
+fn test_import_accepts_capped_ids_for_long_paths() {
+    use phronesis_mcp::coverage::region_map::{branch_region_id, function_region_id};
+    let root = tempfile::tempdir().unwrap();
+    let expdir = tempfile::tempdir().unwrap();
+    let rev = "a".repeat(40);
+    let long = format!("crates/x/src/{}.rs", "d".repeat(300));
+    let mut b = rec(
+        "t",
+        &branch_region_id(&long, "f", "cd6054b02dde", 1),
+        &long,
+        &rev,
+    );
+    b.hit_kind = "branch".into();
+    let export = write_export(
+        expdir.path(),
+        &jsonl(&[rec("t", &function_region_id(&long, "f"), &long, &rev), b]),
+    );
+    import_export(root.path(), &export, 1).expect("capped ids must import");
+}
+
+// A 256-byte id is not exempt from the file-qualification check.
+#[test]
+fn test_import_checks_file_qualification_at_the_length_limit() {
+    let root = tempfile::tempdir().unwrap();
+    let expdir = tempfile::tempdir().unwrap();
+    let rev = "a".repeat(40);
+    let prefix = "fn:src/other.rs::";
+    let region = format!("{prefix}{}", "f".repeat(256 - prefix.len()));
+    assert_eq!(region.len(), 256);
+    let export = write_export(
+        expdir.path(),
+        &jsonl(&[rec("t", &region, "src/lib.rs", &rev)]),
+    );
+    assert!(import_export(root.path(), &export, 1).is_err());
+}

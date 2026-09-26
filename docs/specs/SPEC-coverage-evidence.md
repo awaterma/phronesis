@@ -103,7 +103,8 @@ anchor     = 12 hex of FNV-1a over the whitespace-normalized condition text
 - The file is the repo-relative path rather than a Rust module path: it is unique per file where a module path is not (`lib.rs` and `main.rs` are both crate roots; `src/bin/*.rs` are separate crates), and every producer already holds it.
 - Function ordinal: the encoding above is not injective, and cfg variants legitimately repeat an item path in one file, so a repeated item path gets `.2`, `.3`, … on its last segment in source order (`f`, `f.2`).
 - Branch ordinal: sites with the same enclosing function and the same anchor are numbered in source order; the first carries no suffix, later ones `.2`, `.3`, …. Whitespace-only reflow moves neither the anchor nor the order.
-- An id longer than 256 bytes keeps its first 242 bytes and appends `.h` + 12 hex of FNV-1a over the full id.
+- Known limitation: both ordinals follow source order, so inserting a same-path item (a new `#[cfg(...)] fn f` variant) or a same-condition branch *above* an existing one renumbers the later sites — their ids shift, and evidence for them reads as absent until the next collect. The cfg predicate is not folded into the segment.
+- Each segment is capped on its own, so an id stays ≤256 bytes and never loses its `::` (a capped id is still qualified, still imports, and still carries its file qualification): a `file` over 120 bytes keeps its first 106 bytes and appends `.h` + 12 hex of FNV-1a(path); an `item-path` over 100 bytes becomes `_h` + 12 hex of FNV-1a(item path) + `::` + its last segment (the fn name and ordinal, dropped as well only when it alone would not fit).
 - Example: the §1 fixture's zero-denominator branch is `branch:src/lib.rs::safe_divide:cd6054b02dde`; its function is `fn:src/lib.rs::safe_divide`.
 - Line spans ride along as display payload in the store record only.
 
