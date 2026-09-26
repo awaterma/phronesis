@@ -248,10 +248,14 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
                 return Vec::new();
             };
             let leaf = func.rsplit("::").next().unwrap_or(func);
+            // A function in a file that changed as a whole is reached
+            // through that file's region: over-select rather than miss.
+            let whole_file = file_region_id(file);
             regions
                 .functions
                 .iter()
                 .filter(|region| static_region_matches(region, file, leaf))
+                .chain(regions.files.iter().filter(|region| **region == whole_file))
                 .collect()
         };
 

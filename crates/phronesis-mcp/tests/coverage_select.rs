@@ -519,3 +519,71 @@ fn test_select_on_legacy_store_tells_the_user_to_recollect() {
         "json must carry coverage_note: {json}"
     );
 }
+
+// A file too large to map per site changes as one `file:` region. A test the
+// graph statically reaches in that file must still be selected: the static
+// half over-selects like the dynamic half rather than miss it.
+#[test]
+fn test_select_static_reach_into_a_whole_file_region() {
+    use phronesis_mcp::graph::store as graph_store;
+
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path();
+    Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .expect("git init");
+    for (k, v) in [("user.email", "test@test.com"), ("user.name", "Test")] {
+        Command::new("git")
+            .args(["config", k, v])
+            .current_dir(dir)
+            .output()
+            .expect("git config");
+    }
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/lib.rs"), TWO_FN_OLD).unwrap();
+    for args in [&["add", "."][..], &["commit", "-m", "initial"][..]] {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+    }
+    // Past the region-mapping byte cap: the edit maps to `file:src/lib.rs`.
+    let padding = "// padding line to push the file past the region-map cap\n".repeat(20_000);
+    std::fs::write(dir.join("src/lib.rs"), format!("{TWO_FN_NEW}{padding}")).unwrap();
+    phronesis_mcp::graph::sync::rebuild(dir).expect("graph rebuild");
+
+    let edges = graph_store::load(&graph_store::graph_path(dir)).expect("graph");
+    let test_id = edges
+        .iter()
+        .find_map(|e| {
+            let reaches_beta = |f: &str| f.rsplit("::").next() == Some("beta");
+            match e.p.as_str() {
+                "tested_by" if e.a.len() == 2 && reaches_beta(&e.a[0]) => Some(e.a[1].clone()),
+                "test_reaches" if e.a.len() == 2 && reaches_beta(&e.a[1]) => Some(e.a[0].clone()),
+                _ => None,
+            }
+        })
+        .expect("graph must carry a static edge from a test to beta");
+
+    let sel = select(dir, None).unwrap();
+    assert!(
+        sel.static_reach_available,
+        "graph must be fresh: {:?}",
+        sel.static_note
+    );
+    let stat: Vec<&SelectedTest> = sel
+        .tests
+        .iter()
+        .filter(|t| t.test == test_id && t.evidence == "static_reach")
+        .collect();
+    assert_eq!(stat.len(), 1, "one static entry: {:?}", sel.tests);
+    assert_eq!(stat[0].regions, vec!["file:src/lib.rs".to_string()]);
+}
