@@ -7,6 +7,9 @@ use std::path::Path;
 use crate::coverage::region_map::{file_segment, is_qualified_region_id};
 use crate::coverage::store::{COVERAGE_FORMAT, CoverageIndex, HitRecord, write_store};
 
+/// Re-exported: the one validator shared by import and every store read.
+pub use crate::coverage::store::validate_record;
+
 #[derive(Debug)]
 pub struct ImportSummary {
     pub records: usize,
@@ -16,42 +19,12 @@ pub struct ImportSummary {
 
 const MAX_EXPORT_SIZE: u64 = 5 * 1024 * 1024;
 
-pub fn validate_record(rec: &HitRecord) -> Result<()> {
-    if rec.v != COVERAGE_FORMAT {
-        return Err(anyhow!(
-            "invalid format version: expected {}",
-            COVERAGE_FORMAT
-        ));
-    }
-    if rec.kind != "hit" {
-        return Err(anyhow!("invalid kind: expected 'hit'"));
-    }
-    validate_identifier_field(&rec.test, "test")?;
-    validate_identifier_field(&rec.region, "region")?;
-    if rec.file.starts_with('/') {
-        return Err(anyhow!("file path must be repo-relative (no leading '/')"));
-    }
-    if rec.file.split('/').any(|c| c == "..") {
-        return Err(anyhow!("file path must not contain '..'"));
-    }
-    if rec.file.is_empty() {
-        return Err(anyhow!("file path must be non-empty"));
-    }
-    if rec.revision.len() != 40 || !rec.revision.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(anyhow!("revision must be exactly 40 hex chars"));
-    }
-    if rec.hit_kind != "region" && rec.hit_kind != "branch" {
-        return Err(anyhow!("hit_kind must be 'region' or 'branch'"));
-    }
-    if rec.start_line > rec.end_line {
-        return Err(anyhow!("start_line must be <= end_line"));
-    }
-    validate_region_id(rec)
-}
-
 /// Region ids must be in the per-site grammar (SPEC-coverage-evidence
 /// §3.2), agree with `hit_kind`, and be qualified with the record's own
-/// file — otherwise a hit would join a site it never executed.
+/// file — otherwise a hit would join a site it never executed. Import-only:
+/// the shared read validator checks just the `hit_kind` prefix, so a
+/// digest-valid store from before per-site ids reads as stale evidence
+/// (`coverage_stale`), not as `store_corrupt`.
 fn validate_region_id(rec: &HitRecord) -> Result<()> {
     if !is_qualified_region_id(&rec.region) {
         return Err(anyhow!(
@@ -86,30 +59,18 @@ fn validate_region_id(rec: &HitRecord) -> Result<()> {
     Ok(())
 }
 
-fn validate_identifier_field(field: &str, name: &str) -> Result<()> {
-    if field.is_empty() {
-        return Err(anyhow!("{name} must be non-empty"));
-    }
-    if field.len() > 256 {
-        return Err(anyhow!("{name} must be <= 256 bytes"));
-    }
-    for c in field.chars() {
-        if c.is_control() {
-            return Err(anyhow!("{name} contains control characters"));
-        }
-        if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | ':' | '.' | '/' | '-') {
-            return Err(anyhow!("{name} contains invalid character '{c}'"));
-        }
-    }
-    Ok(())
-}
-
 /// All-or-nothing import: parse and validate every record first; only when
 /// the whole export passes (including single-revision consistency) is the
-/// store replaced (SPEC-coverage-evidence §8).
+/// store replaced (SPEC-coverage-evidence §8). Revisions are canonicalized
+/// to lowercase (git prints lowercase, so an uppercase import would read as
+/// permanently stale), exact duplicate records are collapsed, and an export
+/// must name exactly one tool: the index records a single `tool` and region
+/// identity is tool-specific, so a mixed export is rejected rather than
+/// attributed to whichever tool came first.
 pub fn import_export(root: &Path, export_path: &Path, now_unix: u64) -> Result<ImportSummary> {
-    let records = read_records(export_path)?;
+    let records = dedupe(read_records(export_path)?);
     let revision = single_revision(&records)?;
+    let tool = single_tool(&records)?;
     write_store(
         root,
         &records,
@@ -117,7 +78,7 @@ pub fn import_export(root: &Path, export_path: &Path, now_unix: u64) -> Result<I
             format: COVERAGE_FORMAT,
             revision: revision.clone(),
             imported_at: now_unix,
-            tool: records[0].tool.clone(),
+            tool,
         },
     )?;
     Ok(ImportSummary {
@@ -158,10 +119,32 @@ fn parse_record(index: usize, line: &str) -> Result<HitRecord> {
     let line_num = index + 1;
     let rec: HitRecord = serde_json::from_str(line)
         .with_context(|| format!("malformed JSON at export line {line_num}"))?;
-    match validate_record(&rec) {
-        Ok(()) => Ok(rec),
+    match validate_record(&rec).and_then(|()| validate_region_id(&rec)) {
+        Ok(()) => Ok(HitRecord {
+            revision: rec.revision.to_ascii_lowercase(),
+            ..rec
+        }),
         Err(e) => Err(anyhow!("export line {line_num}: {e}")),
     }
+}
+
+/// Drop exact duplicates, keeping first-occurrence order.
+fn dedupe(records: Vec<HitRecord>) -> Vec<HitRecord> {
+    let mut seen: HashSet<HitRecord> = HashSet::new();
+    records
+        .into_iter()
+        .filter(|r| seen.insert(r.clone()))
+        .collect()
+}
+
+fn single_tool(records: &[HitRecord]) -> Result<String> {
+    let first = records
+        .first()
+        .ok_or_else(|| anyhow!("no records found in export"))?;
+    if records.iter().any(|r| r.tool != first.tool) {
+        return Err(anyhow!("export mixes tools"));
+    }
+    Ok(first.tool.clone())
 }
 
 fn single_revision(records: &[HitRecord]) -> Result<String> {

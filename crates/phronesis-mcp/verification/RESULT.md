@@ -31,7 +31,7 @@ All 10 verification conditions discharged by Z3 with zero errors.
 ### 1. Identifier charset invariant (`valid_identifier_char`)
 
 - **Spec:** `is_valid_identifier_byte(b: u8) -> bool` — characterises the exact
-  byte set accepted by `validate_identifier_field` in `coverage/import.rs`:
+  byte set accepted by `validate_identifier_field` in `coverage/store.rs`:
   `A-Z`, `a-z`, `0-9`, `_`, `:`, `.`, `/`, `-`.
 - **Exec:** `valid_identifier_char(b: u8) -> bool` — an if-chain mirroring the
   spec.

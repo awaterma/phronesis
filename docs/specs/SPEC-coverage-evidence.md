@@ -74,10 +74,15 @@ New module `crates/phronesis-mcp/src/coverage/` mirroring `graph/`:
 Companion index `.phronesis/coverage.index`:
 
 ```json
-{ "format": 1, "revision": "<40-hex>", "imported_at": 1715717111, "tool": "cargo-llvm-cov" }
+{ "format": 1, "revision": "<40-hex>", "imported_at": 1715717111, "tool": "cargo-llvm-cov",
+  "records_fnv1a64": "<16-hex>", "record_count": 3 }
 ```
 
 The store holds **only the latest imported revision** (import replaces prior content; idempotent per revision). Historical outcomes are the journey journal's job, not the store's.
+
+**Integrity (commit marker).** Import writes the records file, then the index, each by atomic rename. The index is the commit marker: it records the FNV-1a 64 digest and the count of the exact records bytes it belongs to. Every read recomputes both and also requires each record's `revision` and `tool` to equal the index's. A crash between the two renames (new records behind the old index — whose revision may still equal HEAD) therefore reads as **corrupt**, never as fresh evidence for the old revision; records without an index, an index without records, and an index predating the digest fields are corrupt too. The digest guards against torn or mismatched writes, not tampering (whoever can rewrite one file can rewrite both).
+
+**Store states.** A reader sees exactly one of: *missing* (neither file — nothing imported), *loaded* (verified), or *corrupt* with a stable reason code: `index_unreadable`, `records_unreadable`, `missing_index`, `missing_records`, `unverifiable_index`, `unsupported_format`, `invalid_index`, `digest_mismatch`, `count_mismatch`, `invalid_record`, `revision_mismatch`, `tool_mismatch`. Consumers treat *corrupt* as "no evidence" and say so (§4 `store_corrupt`, §7).
 
 ### 3.2 Region identity
 
@@ -108,7 +113,7 @@ anchor     = 12 hex of FNV-1a over the whitespace-normalized condition text
 - Example: the §1 fixture's zero-denominator branch is `branch:src/lib.rs::safe_divide:cd6054b02dde`; its function is `fn:src/lib.rs::safe_divide`.
 - Line spans ride along as display payload in the store record only.
 
-**Older stores must be re-collected.** Versions before per-site ids wrote leaf-name ids (`fn:new`, `branch:safe_divide:cd6054b02dde`). The importer rejects them, and also rejects an id that disagrees with its record's `hit_kind` or is qualified with a different file than the record's. A store already on disk with leaf-name ids is treated as stale: hydration asserts `coverage_stale` (whatever the revision), never asserts `test_hits_region`/`test_hits_branch` for those hits, and never lets them suppress `region_without_dynamic_evidence`; `coverage select` cannot match them and reports a `coverage_note` naming the remedy. Re-run `phr-mcp coverage collect`. A property store (`SPEC-property-ontology.md`) whose `depends_on` still lists leaf-name ids keeps working conservatively — a leaf-name reference matches every changed site with that leaf name (and anchor) — until it is rewritten with qualified ids.
+**Older stores must be re-collected.** Versions before per-site ids wrote leaf-name ids (`fn:new`, `branch:safe_divide:cd6054b02dde`). The importer rejects them, and also rejects an id that disagrees with its record's `hit_kind` or is qualified with a different file than the record's. In practice a store written before this release also lacks the index records digest (§3.1) and reads as `store_corrupt(coverage, unverifiable_index)` first. A digest-valid store with leaf-name ids (possible only from a hand-built or intermediate writer) is treated as stale — the shared read validator deliberately checks only the `hit_kind` prefix, not the qualified grammar, so such a store is stale evidence, not corruption: hydration asserts `coverage_stale` (whatever the revision), never asserts `test_hits_region`/`test_hits_branch` for those hits, and never lets them suppress `region_without_dynamic_evidence`; `coverage select` cannot match them and reports a `coverage_note` naming the remedy. Re-run `phr-mcp coverage collect`. A property store (`SPEC-property-ontology.md`) whose `depends_on` still lists leaf-name ids keeps working conservatively — a leaf-name reference matches every changed site with that leaf name (and anchor) — until it is rewritten with qualified ids.
 
 The static half of `coverage select` pairs a graph function with a changed function region only when the graph's `defines_fn` places it in the region's file under the same name.
 
@@ -131,7 +136,7 @@ Precedent: ownership sites (`SPEC-rust-ownership-evidence.md`) record spans unde
 }
 ```
 
-`hit_kind` ∈ `region` | `branch`. Importer validation: test/region strings must survive the `security.rs` validators; `file` must be repo-relative in the graph's `file_rel` form so coverage facts join graph facts on paths (the join-key discipline `predicate_provider.rs` already documents); record and file sizes capped per `security.rs`.
+`hit_kind` ∈ `region` | `branch`, and the region id must agree with it: `region` ⇒ `fn:…`, `branch` ⇒ `branch:…`. One validator (`store::validate_record`) runs on import **and** on every read, so a hand-edited store cannot carry a record the importer would have refused. On import, revisions are canonicalized to lowercase (git prints lowercase; an uppercase import would otherwise be permanently stale, and mixed-case spellings of one sha are one revision), exact duplicate records are collapsed before counting, and `tool` must be non-empty and identical across the export — the index records one tool and region identity is tool-specific, so a mixed-tool export is rejected rather than attributed to the first record's tool. Importer validation: test/region strings must survive the `security.rs` validators; `file` must be repo-relative in the graph's `file_rel` form so coverage facts join graph facts on paths (the join-key discipline `predicate_provider.rs` already documents); record and file sizes capped per `security.rs`.
 
 ### 3.4 Change identity
 
@@ -149,12 +154,15 @@ Hooks see the **working tree, not commits**. The `change` id minted at hook fire
 | `region_without_formal_evidence` | `[region]` | gap resolver (host) | hook fire; changed regions only (see §7) |
 | `coverage_revision` | `[sha]` | coverage hydrator | hook fire, from store index |
 | `head_revision` | `[sha]` | revision probe (new) | hook fire, `clock_facts` pattern |
-| `coverage_stale` | `[]` (zero-arg presence) | coverage hydrator | hook fire, when index revision ≠ HEAD |
+| `coverage_stale` | `[]` (zero-arg presence) | coverage hydrator | hook fire, when the verified index revision ≠ HEAD, or the verified store holds leaf-name (pre-§3.2) ids |
+| `store_corrupt` | `["coverage", reason]` | coverage hydrator | hook fire, when the store is corrupt (§3.1 reason codes); demand-gated |
 
 Notes:
 
 - **Demand-gated** exactly as graph hydration: a relation is asserted only when a loaded rule mentions it (`graph/hydrate.rs` precedent).
 - **Change-scoped**: coverage facts assert only for regions/functions touched by the current event's edited files. Bounded per fire regardless of store size.
+- **Stale evidence never closes a gap**: hits from a store whose revision differs from HEAD still assert `test_hits_region` / `test_hits_branch` (the join is useful, and `coverage_stale` marks it), but they never suppress `region_without_dynamic_evidence` — the store says nothing about the code at HEAD. Staleness is decided once (`store::is_stale`): an unknown HEAD (no git) cannot prove staleness, matching when `coverage_stale` asserts.
+- **Corrupt store**: the hook prints a stderr warning and asserts `store_corrupt(coverage, <reason>)` when a rule mentions it (so a rule can warn or block on it); no hit, `coverage_revision`, or `coverage_stale` facts assert, and gap facts are derived as if the store were empty. The corrupt store no longer fails the whole hydration open. `coverage_stale` is not asserted for a corrupt store: it means "verified evidence at another revision"; corruption has its own fact.
 - **Staleness**: mismatch between `coverage_revision` and `head_revision` asserts `coverage_stale` and **demotes enforcement** block→warn through the existing drift-demotion path (`hook_logged.rs`) — the same contract as graph drift. Rules may also match `coverage_stale` directly (§6.3).
 - Every fact carries `Fact.source = "coverage"` / `"diff"` / `"git"` so `Provenance::RuleFiring.fact_sources` shows origin (`SPEC-fact-provenance.md`).
 
@@ -227,7 +235,8 @@ Sketch §8's `minimal_relevant_test_set` cannot be a rule: no set-valued derivat
 
 `phr-mcp coverage select [--change <id>]` (CLI first, like `stats`/`audit`; MCP tool `select_relevant_tests` in Phase 3):
 
-- Union of tests hitting changed regions, plus tests statically reaching changed functions (`tested_by` / `test_reaches` edges), each entry labeled by evidence kind: `coverage_observation` vs `static_reach`.
+- Union of tests hitting changed regions, plus tests statically reaching changed functions (`tested_by` / `test_reaches` edges), each entry labeled by evidence kind: `coverage_observation` vs `static_reach`. Hits from a stale store (index revision ≠ HEAD) are labeled `coverage_observation_stale` and listed in their own table section.
+- A stale or corrupt store sets `coverage_note` (a table line and a `--json` key present only when set, so a fresh store's output is unchanged). A corrupt store contributes no dynamic entries and the empty-selection message names the corruption instead of "the coverage store is empty".
 - Deduplicated; each entry carries its justifying regions (provenance), preserving the sketch's `affected_test != test_that_calls_function` distinction.
 - Output: human table + `--json`.
 

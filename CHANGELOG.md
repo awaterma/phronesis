@@ -21,12 +21,46 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   Hooks make the edited path repo-relative first, so the absolute
   `file_path` Claude Code sends — including one through a symlinked project
   root — joins the store; an edit outside the project root names no region.
-  The importer rejects the old ids; a store collected by an earlier version is
-  reported as `coverage_stale` and its hits are never joined, and
-  `phr-mcp coverage select` says so (`coverage_note`) instead of reporting an
-  empty store — run `phr-mcp coverage collect` again. Property `depends_on` entries still using
+  The importer rejects the old ids, so re-importing an old export fails — run
+  `phr-mcp coverage collect` again (see the upgrade note below). Property `depends_on` entries still using
   the old ids keep matching conservatively (every same-named site) until
   rewritten.
+- **A coverage import interrupted between its two writes no longer passes
+  off new hits as the old revision's evidence.** The coverage index now
+  records a digest and count of the records file it commits, and every read
+  checks them — plus each record's revision and tool — against the index. A
+  torn or mismatched store reads as corrupt instead of fresh.
+
+- **Coverage records the importer would refuse are refused on read too, and
+  import no longer accepts inconsistent exports.** One validator runs on
+  import and on every store read: absolute paths, unknown `hit_kind`, short
+  revisions, and inverted line spans are rejected wherever they appear, and
+  `hit_kind` must agree with the region id (`region` ⇒ `fn:…`, `branch` ⇒
+  `branch:…`). Import now lowercases revisions (an uppercase sha was treated
+  as permanently stale, and mixed-case spellings of one sha were rejected as
+  "mixes revisions"), collapses duplicate records instead of counting them,
+  and rejects an empty `tool` or an export that mixes tools.
+
+- **Stale coverage no longer hides untested changes.** Hits imported at a
+  revision other than HEAD never suppress `region_without_dynamic_evidence`,
+  and `phr-mcp coverage select` labels them `coverage_observation_stale`
+  (with a `coverage_note` in `--json`) instead of presenting them as current.
+
+- **A corrupt coverage store no longer silences every coverage gap
+  warning.** The hook used to print one stderr line and drop all coverage
+  facts. It now asserts `store_corrupt(coverage, <reason>)` for rules to warn
+  or block on, still warns on stderr, and reports changed regions as having
+  no dynamic evidence. `phr-mcp coverage select` says the store is corrupt
+  instead of "the coverage store is empty".
+
+- **Upgrade note: re-collect coverage after upgrading.** A coverage store
+  written by an earlier version has no records digest, so it reads as
+  `store_corrupt(coverage, unverifiable_index)`: the hook warns on stderr,
+  reports changed regions as untested, and `phr-mcp coverage select` notes
+  the corruption. Re-importing the old export does not help — the importer
+  now rejects its leaf-name region ids. Re-run `phr-mcp coverage collect`
+  (it re-imports; an export collected elsewhere then goes through
+  `phr-mcp coverage import`).
 
 ## [0.35.0] - 2026-09-21
 

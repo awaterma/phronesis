@@ -8,7 +8,9 @@
 //! Each entry is labeled by evidence kind (`coverage_observation` vs
 //! `static_reach`), deduplicated, and carries its justifying regions. A test
 //! with both kinds of evidence yields one entry per kind, so a statically
-//! reached region is never reported as observed.
+//! reached region is never reported as observed. Hits from a store imported
+//! at a revision other than HEAD are labeled `coverage_observation_stale`;
+//! a corrupt store contributes nothing and says so in `coverage_note`.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -19,13 +21,16 @@ use anyhow::{Context, Result};
 use crate::coverage::region_map::{
     ChangedRegions, changed_regions, file_segment, is_qualified_region_id,
 };
-use crate::coverage::store::load_hits;
+use crate::coverage::store::{RECOLLECT_HINT, StoreState, is_stale, load_store};
 use crate::graph::model::Edge;
 use crate::graph::store as graph_store;
 use crate::graph::sync::{self, Freshness};
 
 /// Evidence label for a region the coverage store observed a test hitting.
 const COVERAGE_OBSERVATION: &str = "coverage_observation";
+/// Evidence label for a hit recorded at a revision other than HEAD: the
+/// test once executed the region, but nothing says it still does.
+const COVERAGE_OBSERVATION_STALE: &str = "coverage_observation_stale";
 /// Evidence label for a region a test reaches only via a graph edge.
 const STATIC_REACH: &str = "static_reach";
 
@@ -33,7 +38,9 @@ const STATIC_REACH: &str = "static_reach";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedTest {
     pub test: String,
-    /// `coverage_observation` (dynamic hit) or `static_reach` (graph edge).
+    /// `coverage_observation` (dynamic hit), `coverage_observation_stale`
+    /// (dynamic hit imported at a revision other than HEAD), or
+    /// `static_reach` (graph edge).
     pub evidence: String,
     /// Region IDs that justify this test's selection.
     pub regions: Vec<String>,
@@ -55,9 +62,11 @@ pub struct Selection {
     pub static_reach_available: bool,
     /// Human-readable note when the static half was skipped.
     pub static_note: Option<String>,
-    /// Human-readable note when the dynamic half cannot be trusted — the
-    /// store carries region ids from before per-site qualification
-    /// (SPEC-coverage-evidence §3.2), which match no changed region.
+    /// Human-readable note when the dynamic half cannot be trusted: the
+    /// store is stale (imported at another revision), carries region ids
+    /// from before per-site qualification (SPEC-coverage-evidence §3.2,
+    /// matching no changed region), or is corrupt. `None` for a fresh or
+    /// absent store.
     pub coverage_note: Option<String>,
 }
 
@@ -144,10 +153,11 @@ pub fn changed_regions_from_diffs(diffs: &[FileDiff]) -> Result<ChangedRegions> 
 /// `change_override` is the `--change <id>` value; when `None`, the change id
 /// is `head:<short-sha>` from `git rev-parse HEAD`.
 pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
+    let head = crate::lifecycle::outcome::git_head(root);
     let change = match change_override {
         Some(id) => id.to_string(),
         None => {
-            let sha = crate::lifecycle::outcome::git_head(root).unwrap_or_default();
+            let sha = head.as_deref().unwrap_or_default();
             let short = &sha[..sha.len().min(12)];
             format!("head:{short}")
         }
@@ -157,15 +167,30 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
     let regions = changed_regions_from_diffs(&diffs)?;
 
     // --- Dynamic half: coverage store ---
-    let hits = load_hits(root).unwrap_or_default();
-    let coverage_note = hits
-        .iter()
-        .any(|h| !is_qualified_region_id(&h.region))
-        .then(|| {
-            "coverage store predates per-site region ids and matches no changed region; \
-             re-run `phr-mcp coverage collect`"
-                .to_string()
-        });
+    let (hits, observation, coverage_note) = match load_store(root) {
+        StoreState::Loaded { index, hits } => {
+            if hits.iter().any(|h| !is_qualified_region_id(&h.region)) {
+                let note = format!(
+                    "coverage store predates per-site region ids and matches no changed region; {RECOLLECT_HINT}"
+                );
+                (hits, COVERAGE_OBSERVATION_STALE, Some(note))
+            } else if is_stale(&index, head.as_deref()) {
+                let short = &index.revision[..index.revision.len().min(12)];
+                let note = format!(
+                    "coverage evidence is stale (imported at {short}, HEAD has moved); {RECOLLECT_HINT}"
+                );
+                (hits, COVERAGE_OBSERVATION_STALE, Some(note))
+            } else {
+                (hits, COVERAGE_OBSERVATION, None)
+            }
+        }
+        StoreState::Missing => (Vec::new(), COVERAGE_OBSERVATION, None),
+        StoreState::Corrupt(c) => (
+            Vec::new(),
+            COVERAGE_OBSERVATION,
+            Some(format!("{c}; dynamic evidence ignored; {RECOLLECT_HINT}")),
+        ),
+    };
     let changed_region_set: std::collections::BTreeSet<&str> = regions
         .functions
         .iter()
@@ -181,7 +206,7 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
 
     for hit in &hits {
         if changed_region_set.contains(hit.region.as_str()) {
-            add_entry(&mut by_test, &hit.test, COVERAGE_OBSERVATION, &hit.region);
+            add_entry(&mut by_test, &hit.test, observation, &hit.region);
         }
     }
 
@@ -316,7 +341,7 @@ pub fn render_table(sel: &Selection) -> String {
 
     if sel.tests.is_empty() {
         match &sel.coverage_note {
-            Some(note) => out.push_str(&format!("No tests selected: {note}.\n")),
+            Some(note) => out.push_str(&format!("No tests selected: {note}\n")),
             None => out.push_str(
                 "No tests selected: the coverage store is empty or no hits match changed regions.\n",
             ),
@@ -348,6 +373,11 @@ pub fn render_table(sel: &Selection) -> String {
         .iter()
         .filter(|t| t.evidence == COVERAGE_OBSERVATION)
         .collect();
+    let stale_entries: Vec<&SelectedTest> = sel
+        .tests
+        .iter()
+        .filter(|t| t.evidence == COVERAGE_OBSERVATION_STALE)
+        .collect();
     let static_entries: Vec<&SelectedTest> = sel
         .tests
         .iter()
@@ -358,6 +388,19 @@ pub fn render_table(sel: &Selection) -> String {
         out.push_str("coverage_observation (dynamic):\n");
         out.push_str(&format!("{:<40} {}\n", "TEST", "REGIONS"));
         for entry in &coverage_entries {
+            out.push_str(&format!(
+                "{:<40} {}\n",
+                entry.test,
+                entry.regions.join(", ")
+            ));
+        }
+        out.push('\n');
+    }
+
+    if !stale_entries.is_empty() {
+        out.push_str("coverage_observation_stale (dynamic, recorded at an older revision):\n");
+        out.push_str(&format!("{:<40} {}\n", "TEST", "REGIONS"));
+        for entry in &stale_entries {
             out.push_str(&format!(
                 "{:<40} {}\n",
                 entry.test,
@@ -380,11 +423,11 @@ pub fn render_table(sel: &Selection) -> String {
         out.push('\n');
     }
 
-    if let Some(note) = &sel.static_note {
-        out.push_str(&format!("static reach: {note}\n"));
-    }
     if let Some(note) = &sel.coverage_note {
         out.push_str(&format!("coverage: {note}\n"));
+    }
+    if let Some(note) = &sel.static_note {
+        out.push_str(&format!("static reach: {note}\n"));
     }
 
     // Count distinct tests: one with both evidence kinds has two entries.
@@ -395,7 +438,8 @@ pub fn render_table(sel: &Selection) -> String {
     out
 }
 
-/// Render the selection as JSON.
+/// Render the selection as JSON. `coverage_note` is `null` for a fresh or
+/// absent store.
 pub fn render_json(sel: &Selection) -> String {
     serde_json::json!({
         "change": sel.change,

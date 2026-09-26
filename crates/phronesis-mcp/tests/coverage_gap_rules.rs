@@ -180,11 +180,12 @@ fn stale_coverage_warns_before_a_commit() {
     init(&["add", "."]);
     init(&["commit", "-q", "-m", "fixture"]);
     // Index claims a revision that cannot equal HEAD (store written fresh
-    // here with a known-non-head revision).
+    // here with a known-non-head revision; records agree with the index, or
+    // the store would read as corrupt rather than stale).
     install_store(
         d.path(),
         &[hit("t", "fn:src/lib.rs::safe_divide", "region")],
-        &"c".repeat(40),
+        &"a".repeat(40),
     );
 
     let payload = format!(
@@ -284,5 +285,44 @@ fn absolute_file_path_outside_the_root_produces_no_regions() {
     assert!(
         !stderr.contains("has neither dynamic test evidence"),
         "an edit outside the root must not produce gap facts (exit {code}): {stderr}"
+    );
+}
+
+#[test]
+fn corrupt_store_surfaces_store_corrupt_and_keeps_the_gap_warning() {
+    let d = project();
+    // A rule set that also reacts to a corrupt coverage store (D8).
+    let rules = rules_json().replacen(
+        r#"{"rules":["#,
+        r#"{"rules":[
+    {
+      "id":"warn-coverage-store-corrupt","phase":"post","priority":30,"audit":true,
+      "when":[{"store_corrupt":["coverage","?reason"]}],
+      "then":{"warn":"coverage store is corrupt (?reason)"}
+    },"#,
+        1,
+    );
+    std::fs::write(d.path().join(".phronesis/rules.json"), rules).expect("write rules");
+    install_store(
+        d.path(),
+        &[
+            hit("t", "fn:src/lib.rs::safe_divide", "region"),
+            hit("t", "branch:src/lib.rs::safe_divide:cd6054b02dde", "branch"),
+        ],
+        &"a".repeat(40),
+    );
+    std::fs::write(d.path().join(".phronesis/coverage.jsonl"), "{not json\n")
+        .expect("corrupt store");
+    std::fs::write(d.path().join("src/lib.rs"), NEW_SRC).expect("apply edit");
+
+    let (code, stderr) = hook(d.path(), "post", edit_event(d.path()));
+    assert_eq!(code, 1, "expected warn exit, got {code}: {stderr}");
+    assert!(
+        stderr.contains("coverage store is corrupt"),
+        "store_corrupt rule must fire: {stderr}"
+    );
+    assert!(
+        stderr.contains("has neither dynamic test evidence nor formal proof evidence"),
+        "a corrupt store must not silence the gap warning: {stderr}"
     );
 }

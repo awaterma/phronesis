@@ -25,6 +25,26 @@ const NEW_SRC: &str = r#"pub fn safe_divide(numerator: i32, denominator: i32) ->
 
 const FIXTURE_REV: &str = "0ef2e37d80ee4be6d551cb9c7429a8a22720e712";
 
+/// The temp repo's HEAD: a store imported at any other revision is stale,
+/// and stale hits are labeled `coverage_observation_stale` (D3).
+fn head_rev(root: &std::path::Path) -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .expect("git rev-parse");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn at_rev(hits: Vec<HitRecord>, rev: &str) -> Vec<HitRecord> {
+    hits.into_iter()
+        .map(|h| HitRecord {
+            revision: rev.to_string(),
+            ..h
+        })
+        .collect()
+}
+
 fn hit(test: &str, region: &str, file: &str, kind: &str) -> HitRecord {
     HitRecord {
         v: COVERAGE_FORMAT,
@@ -67,12 +87,13 @@ fn write_coverage_store(root: &std::path::Path) {
             "branch",
         ),
     ];
+    let rev = head_rev(root);
     write_store(
         root,
-        &hits,
+        &at_rev(hits, &rev),
         &CoverageIndex {
             format: COVERAGE_FORMAT,
-            revision: FIXTURE_REV.into(),
+            revision: rev.clone(),
             imported_at: 1,
             tool: "cargo-llvm-cov".into(),
         },
@@ -374,17 +395,21 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
         })
         .expect("graph must carry a static edge from a test to beta");
 
+    let rev = head_rev(dir);
     write_store(
         dir,
-        &[hit(
-            &test_id,
-            "fn:src/lib.rs::alpha",
-            "src/lib.rs",
-            "region",
-        )],
+        &at_rev(
+            vec![hit(
+                &test_id,
+                "fn:src/lib.rs::alpha",
+                "src/lib.rs",
+                "region",
+            )],
+            &rev,
+        ),
         &CoverageIndex {
             format: COVERAGE_FORMAT,
-            revision: FIXTURE_REV.into(),
+            revision: rev.clone(),
             imported_at: 1,
             tool: "cargo-llvm-cov".into(),
         },

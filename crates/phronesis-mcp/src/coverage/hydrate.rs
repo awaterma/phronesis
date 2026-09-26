@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use crate::coverage::region_map::{changed_regions, is_qualified_region_id, repo_relative_path};
-use crate::coverage::store::{load_hits, load_index};
+use crate::coverage::store::{StoreCorruption, StoreState, is_stale, load_store};
 
 /// Every relation this module can assert. The hook demand-gates on this
 /// set: a relation is asserted only when some loaded rule mentions it (the
@@ -17,6 +17,18 @@ pub const RELATIONS: &[&str] = &[
     "head_revision",
     "region_without_dynamic_evidence",
     "region_without_formal_evidence",
+    "store_corrupt",
+];
+
+/// Relations whose derivation reads the coverage store. The store is read
+/// (and verified) at most once per event, and only when one is demanded.
+const STORE_RELATIONS: &[&str] = &[
+    "test_hits_region",
+    "test_hits_branch",
+    "coverage_revision",
+    "coverage_stale",
+    "region_without_dynamic_evidence",
+    "store_corrupt",
 ];
 
 /// `(predicate, args)` in the clock_facts / outcomes::facts shape — the hook
@@ -47,12 +59,29 @@ fn fact(predicate: &str, args: Vec<String>) -> CoverageFact {
     }
 }
 
+/// Hydration result: the facts, plus the store corruption (if any) so the
+/// hook can report it on stderr whether or not a rule demanded
+/// `store_corrupt`.
+#[derive(Debug, Default)]
+pub struct Hydration {
+    pub facts: Vec<CoverageFact>,
+    pub store_corrupt: Option<StoreCorruption>,
+}
+
 pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFact>> {
+    hydrate(input).map(|h| h.facts)
+}
+
+/// Derive this event's coverage facts. A corrupt store is not an error: it
+/// yields `store_corrupt(coverage, <reason>)` (when demanded), no hit or
+/// revision facts, and gap facts computed as if the store held no evidence.
+/// Errors are reserved for failures outside the store (region mapping).
+pub fn hydrate(input: &HydrationInput) -> anyhow::Result<Hydration> {
     let wants = |rel: &str| input.rule_relations.contains(rel);
 
     // Demand gate: no loaded rule mentions any coverage relation -> nothing.
     if !RELATIONS.iter().any(|r| wants(r)) {
-        return Ok(Vec::new());
+        return Ok(Hydration::default());
     }
 
     let mut facts: Vec<CoverageFact> = Vec::new();
@@ -66,37 +95,48 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
         .filter_map(|e| repo_relative_path(input.root, &e.path).map(|rel| (rel, e)))
         .collect();
 
+    let store = if STORE_RELATIONS.iter().any(|r| wants(r)) {
+        load_store(input.root)
+    } else {
+        StoreState::Missing
+    };
+    let (index, hits, store_corrupt) = match store {
+        StoreState::Loaded { index, hits } => (Some(index), hits, None),
+        StoreState::Missing => (None, Vec::new(), None),
+        StoreState::Corrupt(c) => (None, Vec::new(), Some(c)),
+    };
+    if wants("store_corrupt")
+        && let Some(c) = &store_corrupt
+    {
+        facts.push(fact(
+            "store_corrupt",
+            vec!["coverage".to_string(), c.reason.to_string()],
+        ));
+    }
+    // D3: only evidence verified current for HEAD may suppress a gap. A
+    // store imported before region ids were qualified per site
+    // (SPEC-coverage-evidence §3.2) carries leaf-name ids (`fn:new`) that
+    // name no single site: it is stale whatever its revision, its hits are
+    // never joined (below), and rules see `coverage_stale` so the remedy —
+    // re-collect — is visible rather than a silent mis-join.
+    let legacy_ids = hits.iter().any(|h| !is_qualified_region_id(&h.region));
+    let stale = legacy_ids
+        || index
+            .as_ref()
+            .is_some_and(|idx| is_stale(idx, input.head_sha.as_deref()));
+
     if wants("head_revision")
         && let Some(sha) = &input.head_sha
     {
         facts.push(fact("head_revision", vec![sha.clone()]));
     }
 
-    let index = load_index(input.root);
     if wants("coverage_revision")
         && let Some(idx) = &index
     {
         facts.push(fact("coverage_revision", vec![idx.revision.clone()]));
     }
-    let revision_stale = matches!(
-        (&index, &input.head_sha),
-        (Some(idx), Some(sha)) if idx.revision != *sha
-    );
-    // A store imported before region ids were qualified per site
-    // (SPEC-coverage-evidence §3.2) carries leaf-name ids (`fn:new`) that
-    // name no single site. It is stale evidence whatever its revision: its
-    // hits are never joined (below), and rules see `coverage_stale` so the
-    // remedy — re-collect — is visible rather than a silent mis-join.
-    let wants_hits = wants("region_without_dynamic_evidence")
-        || wants("test_hits_region")
-        || wants("test_hits_branch");
-    let hits = if wants_hits || wants("coverage_stale") {
-        load_hits(input.root)?
-    } else {
-        Vec::new()
-    };
-    let legacy_ids = hits.iter().any(|h| !is_qualified_region_id(&h.region));
-    if wants("coverage_stale") && (revision_stale || legacy_ids) {
+    if wants("coverage_stale") && stale {
         facts.push(fact("coverage_stale", Vec::new()));
     }
     let hits: Vec<_> = hits
@@ -145,7 +185,13 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
             // Closed world over the WHOLE store (not the change-scoped
             // subset): "has any test ever executed this region?" is a
             // question about the imported evidence, not about this event.
-            let hit_regions: HashSet<&str> = hits.iter().map(|h| h.region.as_str()).collect();
+            // Stale or corrupt evidence counts as no evidence: it says
+            // nothing about the code at HEAD.
+            let hit_regions: HashSet<&str> = if stale {
+                HashSet::new()
+            } else {
+                hits.iter().map(|h| h.region.as_str()).collect()
+            };
             for region in &changed_regions_out {
                 if !hit_regions.contains(region.as_str()) {
                     facts.push(fact(
@@ -193,5 +239,8 @@ pub fn facts_for_event(input: &HydrationInput) -> anyhow::Result<Vec<CoverageFac
 
     facts.sort();
     facts.dedup();
-    Ok(facts)
+    Ok(Hydration {
+        facts,
+        store_corrupt,
+    })
 }
