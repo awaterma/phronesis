@@ -110,8 +110,15 @@ fn file_tool_writes_to_every_trust_anchor_are_blocked() {
     }
 }
 
+/// The shell seam is advisory (SPEC-C S1): a command that writes an anchor
+/// WARNS (pre-check exit 1) with the trust-anchor message; only the file-tool
+/// rules block.
+fn warns_as_trust_anchor_write(code: i32, stderr: &str) -> bool {
+    code == 1 && stderr.contains("trust anchor")
+}
+
 #[test]
-fn shell_writes_to_every_trust_anchor_are_blocked() {
+fn shell_writes_to_every_trust_anchor_warn() {
     let d = init_project();
     let commands = [
         "echo '{\"raw_execution\": true}' > .phronesis/verification.json",
@@ -133,13 +140,9 @@ fn shell_writes_to_every_trust_anchor_are_blocked() {
     for tool in ["Bash", "run_shell_command"] {
         for cmd in commands {
             let (code, stderr) = pre_check(d.path(), tool, json!({"command": cmd}));
-            assert_eq!(
-                code, 2,
-                "{tool} `{cmd}` writes a trust anchor and must be BLOCKED: {stderr}"
-            );
             assert!(
-                stderr.contains("trust anchor"),
-                "{tool} `{cmd}`: blocked by the trust-anchor rule, not something else: {stderr}"
+                warns_as_trust_anchor_write(code, &stderr),
+                "{tool} `{cmd}` writes a trust anchor and must WARN (exit 1), got {code}: {stderr}"
             );
         }
     }
@@ -198,6 +201,26 @@ const SHELL_MUST_PASS: &[&str] = &[
     "git commit -m \"doc: explain > verification.json semantics\"",
     "git commit -m \"docs: never rm .phronesis/verification.json by hand\"",
     "git commit -F - <<'EOF'\nfix: tidy the docs\n\nrm stale note from verification.json docs\nEOF",
+    // Heredoc BODIES are data (a commit message, a doc being written), not
+    // commands — not even a warning.
+    "git commit -F - <<'EOF'\nfix: tidy\n\n  rm .phronesis/verification.json\nEOF",
+    "cat <<'EOF' > docs/howto.md\nTo opt in:\n  echo '{\"raw_execution\": true}' > .phronesis/verification.json\nEOF",
+    "cat > notes.md <<-EOF\n\tcp x.json .phronesis/verification-allowlist.json\n\tEOF\necho done",
+    "git commit -m \"use <<EOF\" && echo ok",
+    // Another project's `.phronesis/` is not this project's anchor.
+    "echo x > /tmp/.phronesis/verification.json",
+    "echo x > \"$TMPDIR/proj/.phronesis/verification.json\"",
+    "echo x > ../other/.phronesis/verification.json",
+    // Branch names and index-only operations.
+    "git checkout -b verification/templates",
+    "git checkout -B verification/templates",
+    "git restore --staged .phronesis/verification.json",
+    "git rm --cached .phronesis/verification.json",
+    // An anchor as `<` input is a read.
+    "tee /tmp/copy.json < .phronesis/verification.json",
+    "patch -p1 < verification/templates/fix.patch",
+    // `cd` out of `.phronesis` ends its scope.
+    "cd .phronesis && ls; cd ..; echo x > verification.json",
     // Plain reads.
     "cat .phronesis/verification.json",
     "jq . .phronesis/verification-allowlist.json",
@@ -230,6 +253,20 @@ const SHELL_MUST_BLOCK: &[&str] = &[
     "git rm verification/templates/devcontainer.json",
     "ls && cp x.json .phronesis/verification.json",
     "cd .phronesis; echo x > verification-allowlist.json",
+    // Commands run through a shell, quoted or fed as a heredoc.
+    "bash -c \"echo x > .phronesis/verification.json\"",
+    "sh -c 'rm verification/templates/a.rhai'",
+    "bash <<'EOF'\necho x > .phronesis/verification.json\nEOF",
+    // Environment prefixes.
+    "env FOO=1 rm .phronesis/verification.json",
+    "FOO=1 rm .phronesis/verification.json",
+    // Case-insensitive filesystems (default macOS).
+    "echo x > .Phronesis/Verification.json",
+    "cp x.rhai Verification/Templates/x.rhai",
+    // Index-and-worktree operations still write.
+    "git checkout -- .phronesis/verification.json",
+    "git restore .phronesis/verification.json",
+    "git rm verification/templates/old.rhai",
 ];
 
 #[test]
@@ -246,12 +283,12 @@ fn review_corpus_everyday_shell_commands_are_not_blocked() {
 }
 
 #[test]
-fn review_corpus_real_shell_writes_stay_blocked() {
+fn review_corpus_real_shell_writes_warn() {
     let d = init_project();
     let mut wrong = Vec::new();
     for cmd in SHELL_MUST_BLOCK {
         let (code, stderr) = pre_check(d.path(), "Bash", json!({"command": cmd}));
-        if code != 2 || !stderr.contains("trust anchor") {
+        if !warns_as_trust_anchor_write(code, &stderr) {
             wrong.push(format!("`{cmd}` (exit {code}): {stderr}"));
         }
     }
@@ -331,4 +368,42 @@ fn file_tool_path_tricks_to_anchors_stay_blocked() {
         );
         assert_eq!(code, 2, "Write to {path} must be BLOCKED: {stderr}");
     }
+}
+
+/// Codex `apply_patch` renames: `*** Move to:` writes the destination, so a
+/// move onto an anchor must be refused like a direct write.
+#[test]
+fn codex_apply_patch_move_onto_an_anchor_is_denied() {
+    let d = init_project();
+    let payload = json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "apply_patch",
+        "session_id": "s-codex",
+        "turn_id": "t",
+        "tool_use_id": "u",
+        "cwd": d.path().display().to_string(),
+        "tool_input": {"command": "*** Begin Patch\n*** Update File: src/x.json\n*** Move to: .phronesis/verification-allowlist.json\n@@\n+{\"entries\": []}\n*** End Patch\n"},
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(d.path())
+        .args(["codex-hook", "PreToolUse"])
+        .env("PHRONESIS_NO_ACTION_LOG", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn codex-hook");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(payload.to_string().as_bytes())
+        .expect("write payload");
+    let out = child.wait_with_output().expect("wait");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("deny") && stdout.contains("trust anchor"),
+        "move onto the allowlist must be denied; stdout: {stdout} stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }

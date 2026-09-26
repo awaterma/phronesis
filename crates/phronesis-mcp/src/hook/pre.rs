@@ -352,7 +352,7 @@ struct PreContentInput<'a> {
     content: &'a str,
     file_path: &'a str,
     content_patterns: &'a [String],
-    bash_command_patterns: &'a [String],
+    bash_command_patterns: &'a [crate::hook_facts::BashCommandPattern],
     rule_predicates: &'a HashSet<String>,
 }
 

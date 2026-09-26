@@ -233,6 +233,8 @@ value, and allowed values. Valid verbs and phases live in `ACTION_VERBS` /
 |-----------|-------------|
 | `file_path_matches(?path)` | Path substring match |
 | `file_extension_is(?ext)` | Extension check |
+| `bash_command_matches(?regex)` | Regex over the raw shell command |
+| `bash_command_code_matches(?regex)` | Regex over the command's code: heredoc bodies removed (unless fed to a shell), `sh -c`/`eval` scripts unwrapped |
 | `project_path_is(?rel)` | Exact path relative to the project root (normalized; symlinked dirs resolved) |
 | `project_path_under(?dir)` | File lies under this root-relative directory, e.g. `verification/templates` |
 | `new_content_contains(?pattern)` | Regex substring in new content |

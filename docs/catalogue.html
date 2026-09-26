@@ -791,13 +791,13 @@
     <div class="rule-body"><code>project_path_under</code></div>
   </div>
 </article>
-<article class="rule" data-level="block" id="block-agent-shell-write-to-trust-anchors">
+<article class="rule" data-level="warn" id="warn-agent-shell-write-to-trust-anchors">
   <div class="rule-mark" aria-hidden="true">!</div>
   <div class="rule-content">
-    <div class="rule-tags"><span class="tag tag-block">block</span><span class="tag">pre</span><span class="tag">llm</span></div>
-    <h3 class="rule-id">block-agent-shell-write-to-trust-anchors</h3>
-    <p class="rule-summary">This command writes a verification trust anchor (`.phronesis/verification-allowlist.json`, `.phronesis/verification.json`, or `verification/templates/`). Those are human-principal acts (SPEC-C S1/S3) — reading them is fine; changing them is the human's call.</p>
-    <div class="rule-body"><code>bash_command_matches</code></div>
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">pre</span><span class="tag">llm</span></div>
+    <h3 class="rule-id">warn-agent-shell-write-to-trust-anchors</h3>
+    <p class="rule-summary">This command appears to write a verification trust anchor (`.phronesis/verification-allowlist.json`, `.phronesis/verification.json`, or `verification/templates/`). Those are human-principal acts (SPEC-C S1/S3) — reading them is fine; changing them is the human's call. Stop and ask unless the human asked for this change.</p>
+    <div class="rule-body"><code>bash_command_code_matches</code></div>
   </div>
 </article>
 </section>
