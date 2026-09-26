@@ -49,6 +49,30 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   checkout, found an unrelated project's rules. The `gitdir` is now resolved
   against the directory holding the `.git` file, and the main checkout root is
   canonicalized.
+- **Stray `.phronesis/journey/` directories switched governance off for their
+  subtree.** Hooks fired from a directory no project governed (and, before
+  project-root discovery walked up, from any subdirectory) created
+  `<cwd>/.phronesis/journey/` holding only `inflight.lock`, `seq`,
+  `events.jsonl` and `events.lock`. Root discovery stopped at the first
+  `.phronesis/` it met, so every hook run from under one of those strays found
+  no rules and allowed everything, even with blocking rules in the real
+  project root. A root now counts as governed only when `.phronesis/rules.json`
+  (which `phr-mcp init` always writes, `--packs none` included) or
+  `.phronesis/loader.json` exists; discovery skips anything else, and
+  `pre-check`, `post-check`, `claude-hook`, `codex-hook`, `session-context` and
+  `interaction-context` neither write nor inject anything in an ungoverned
+  root (a `durable.md` without a rules file is no longer injected). Existing strays
+  are not removed for you. To find them, run from your repository root:
+  `find . -type d -path '*/.phronesis/journey' -not -path './.phronesis/*' -exec sh -c 'p=$(dirname "$1"); [ -e "$p/rules.json" ] || [ -e "$p/loader.json" ] || echo "$p"' _ {} \;`
+  and delete each printed `.phronesis` directory once you have checked it
+  holds nothing but `journey/` (older builds also left a `log.jsonl`). A
+  printed directory with more state than that is a copy-initialized worktree
+  missing its `rules.json`; it is now governed by its main checkout, so restore
+  `rules.json` there if it should govern itself. The Phronesis repository had
+  fourteen strays, among them `crates/`, `crates/phronesis/`,
+  `crates/phronesis-mcp/src/`, `crates/phronesis-mcp/tests/`,
+  `crates/phronesis-metrics/` and its `src/`, `tests/` and `examples/`,
+  `docs/specs/`, and `.worktrees/`.
 
 ## [0.35.0] - 2026-09-21
 
