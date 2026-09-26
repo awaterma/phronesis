@@ -5,6 +5,9 @@ use cucumber::{World as _, given, then, when};
 use phr::{Action, Condition, Fact, ReteNetwork, Rule};
 use phronesis_mcp::server::extract_rules_from_markdown;
 
+#[path = "bdd/coverage_steps.rs"]
+mod coverage_steps;
+
 // ---------------------------------------------------------------------------
 // World — shared test state across Given/When/Then steps
 // ---------------------------------------------------------------------------
@@ -22,6 +25,7 @@ struct World {
     checked_file_path: Option<String>,
     last_exit_code: Option<i32>,
     last_stderr: String,
+    coverage: Option<coverage_steps::CoverageProject>,
 }
 
 impl Default for World {
@@ -38,6 +42,7 @@ impl Default for World {
             checked_file_path: None,
             last_exit_code: None,
             last_stderr: String::new(),
+            coverage: None,
         }
     }
 }
@@ -828,5 +833,12 @@ async fn main() {
     if std::env::args().skip(1).any(|arg| !arg.starts_with('-')) {
         return;
     }
-    World::run("tests/features").await;
+    // Strict: a failed, skipped, or undefined step (cucumber reports an
+    // undefined step as skipped) fails the test process. `World::run` only
+    // prints the summary and exits 0 whatever it holds, which let whole
+    // scenarios with no step definitions pass `cargo test` unnoticed.
+    World::cucumber()
+        .fail_on_skipped()
+        .run_and_exit("tests/features")
+        .await;
 }
