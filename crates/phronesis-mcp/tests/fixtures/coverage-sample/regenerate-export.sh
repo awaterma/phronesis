@@ -56,8 +56,11 @@ for t in TESTS:
         spans = f.get("regions") or []
         start = spans[0][0] if spans else 1
         end = spans[-1][2] if spans else len(LINES)
+        # Region ids follow SPEC-coverage-evidence §3.2 (file-qualified). The
+        # fixture has only free functions and one `if` per condition, so the
+        # item path is the bare name and no ordinal is ever needed.
         records.append({
-            "v": 1, "kind": "hit", "test": t, "region": f"fn:{name}",
+            "v": 1, "kind": "hit", "test": t, "region": f"fn:src/lib.rs::{name}",
             "file": "src/lib.rs", "start_line": start, "end_line": end,
             "hit_kind": "region", "revision": REV, "tool": "cargo-llvm-cov",
         })
@@ -69,7 +72,7 @@ for t in TESTS:
             anchor = fnv1a12(condition_text(line))
             records.append({
                 "v": 1, "kind": "hit", "test": t,
-                "region": f"branch:{name}:{anchor}",
+                "region": f"branch:src/lib.rs::{name}:{anchor}",
                 "file": "src/lib.rs", "start_line": line, "end_line": eline,
                 "hit_kind": "branch", "revision": REV, "tool": "cargo-llvm-cov",
             })

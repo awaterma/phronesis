@@ -3,7 +3,7 @@
 //! regions from the tree-sitter region map, demand-gated facts, RETE join
 //! with rule 5.1 exactly as spec §5.1 writes it — and assert the pairing is
 //! exact: `rejects_zero_denominator` is the only test relevant to the branch
-//! site, while all three tests are relevant to `fn:safe_divide`.
+//! site, while all three tests are relevant to `fn:src/lib.rs::safe_divide`.
 //!
 //! Spec: `docs/specs/SPEC-coverage-evidence.md` §5.1, §9 A2.
 
@@ -130,7 +130,7 @@ fn golden_relevant_test_join_fires_for_the_right_pairs() {
     // exercising test.
     let branch_pairs: Vec<&str> = logged
         .iter()
-        .filter(|p| p.contains("branch:safe_divide:"))
+        .filter(|p| p.contains("branch:src/lib.rs::safe_divide:"))
         .copied()
         .collect();
     assert_eq!(
@@ -145,10 +145,10 @@ fn golden_relevant_test_join_fires_for_the_right_pairs() {
     );
 
     // A2's negative half: the function-only tests never pair with the
-    // branch site; all three tests pair with fn:safe_divide.
+    // branch site; all three tests pair with fn:src/lib.rs::safe_divide.
     for p in &logged {
         assert!(
-            !(p.contains("branch:safe_divide:")
+            !(p.contains("branch:src/lib.rs::safe_divide:")
                 && (p.contains("divides_positive_values")
                     || p.contains("divides_negative_values"))),
             "function-only tests must not pair with the branch region: {p}"
@@ -158,8 +158,8 @@ fn golden_relevant_test_join_fires_for_the_right_pairs() {
         assert!(
             logged
                 .iter()
-                .any(|p| p.contains(test) && p.contains("fn:safe_divide")),
-            "{test} must be relevant to fn:safe_divide"
+                .any(|p| p.contains(test) && p.contains("fn:src/lib.rs::safe_divide")),
+            "{test} must be relevant to fn:src/lib.rs::safe_divide"
         );
     }
 }

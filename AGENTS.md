@@ -485,7 +485,11 @@ differ from HEAD, staged or unstaged. Untracked files and `.phronesis/` tool
 state are ignored. Commit or stash first; `--allow-dirty` proceeds with a
 warning. `select` lists a test under `coverage_observation` only for regions
 the store saw it hit; statically reached regions appear under `static_reach`,
-so one test can have an entry of each kind.
+so one test can have an entry of each kind. Hits imported at a revision
+other than HEAD are listed under `coverage_observation_stale` (and never
+suppress `region_without_dynamic_evidence`); a store whose records do not
+match its index is reported as corrupt (`coverage_note` in `--json`, and a
+`store_corrupt(coverage, <reason>)` fact at hook time) rather than as empty.
 
 Requires cargo-llvm-cov 0.8.x and a nightly toolchain (rust-version >= 1.90).
 

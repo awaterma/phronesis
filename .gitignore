@@ -54,5 +54,6 @@ docs/phronesis-evaluation-*.html
 # Coverage evidence derived state (SPEC-coverage-evidence)
 .phronesis/coverage.jsonl
 .phronesis/coverage.index
+.phronesis/coverage.lock
 *.profraw
 crates/phronesis-mcp/tests/fixtures/coverage-sample/target/

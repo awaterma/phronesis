@@ -25,6 +25,26 @@ const NEW_SRC: &str = r#"pub fn safe_divide(numerator: i32, denominator: i32) ->
 
 const FIXTURE_REV: &str = "0ef2e37d80ee4be6d551cb9c7429a8a22720e712";
 
+/// The temp repo's HEAD: a store imported at any other revision is stale,
+/// and stale hits are labeled `coverage_observation_stale` (D3).
+fn head_rev(root: &std::path::Path) -> String {
+    let out = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(root)
+        .output()
+        .expect("git rev-parse");
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn at_rev(hits: Vec<HitRecord>, rev: &str) -> Vec<HitRecord> {
+    hits.into_iter()
+        .map(|h| HitRecord {
+            revision: rev.to_string(),
+            ..h
+        })
+        .collect()
+}
+
 fn hit(test: &str, region: &str, file: &str, kind: &str) -> HitRecord {
     HitRecord {
         v: COVERAGE_FORMAT,
@@ -44,35 +64,36 @@ fn write_coverage_store(root: &std::path::Path) {
     let hits = vec![
         hit(
             "divides_positive_values",
-            "fn:safe_divide",
+            "fn:src/lib.rs::safe_divide",
             "src/lib.rs",
             "region",
         ),
         hit(
             "divides_negative_values",
-            "fn:safe_divide",
+            "fn:src/lib.rs::safe_divide",
             "src/lib.rs",
             "region",
         ),
         hit(
             "rejects_zero_denominator",
-            "fn:safe_divide",
+            "fn:src/lib.rs::safe_divide",
             "src/lib.rs",
             "region",
         ),
         hit(
             "rejects_zero_denominator",
-            "branch:safe_divide:cd6054b02dde",
+            "branch:src/lib.rs::safe_divide:cd6054b02dde",
             "src/lib.rs",
             "branch",
         ),
     ];
+    let rev = head_rev(root);
     write_store(
         root,
-        &hits,
+        &at_rev(hits, &rev),
         &CoverageIndex {
             format: COVERAGE_FORMAT,
-            revision: FIXTURE_REV.into(),
+            revision: rev.clone(),
             imported_at: 1,
             tool: "cargo-llvm-cov".into(),
         },
@@ -127,15 +148,15 @@ fn test_select_returns_rejects_zero_at_branch_granularity() {
     // Changed regions must include the branch site and the function.
     assert!(
         sel.changed_functions
-            .contains(&"fn:safe_divide".to_string()),
-        "changed_functions must include fn:safe_divide: {:?}",
+            .contains(&"fn:src/lib.rs::safe_divide".to_string()),
+        "changed_functions must include fn:src/lib.rs::safe_divide: {:?}",
         sel.changed_functions
     );
     assert!(
         sel.changed_branches
             .iter()
-            .any(|b| b.starts_with("branch:safe_divide:")),
-        "changed_branches must include a branch:safe_divide:* site: {:?}",
+            .any(|b| b.starts_with("branch:src/lib.rs::safe_divide:")),
+        "changed_branches must include a branch:src/lib.rs::safe_divide:* site: {:?}",
         sel.changed_branches
     );
 
@@ -155,12 +176,13 @@ fn test_select_returns_rejects_zero_at_branch_granularity() {
     assert!(
         rzd.regions
             .iter()
-            .any(|r| r.starts_with("branch:safe_divide:")),
+            .any(|r| r.starts_with("branch:src/lib.rs::safe_divide:")),
         "rejects_zero_denominator must carry the branch region: {:?}",
         rzd.regions
     );
     assert!(
-        rzd.regions.contains(&"fn:safe_divide".to_string()),
+        rzd.regions
+            .contains(&"fn:src/lib.rs::safe_divide".to_string()),
         "rejects_zero_denominator must also carry the function region: {:?}",
         rzd.regions
     );
@@ -172,15 +194,17 @@ fn test_select_returns_rejects_zero_at_branch_granularity() {
             .find(|t| &t.test == name)
             .expect("{name} must be selected at function level");
         assert!(
-            entry.regions.contains(&"fn:safe_divide".to_string()),
-            "{name} must carry fn:safe_divide: {:?}",
+            entry
+                .regions
+                .contains(&"fn:src/lib.rs::safe_divide".to_string()),
+            "{name} must carry fn:src/lib.rs::safe_divide: {:?}",
             entry.regions
         );
         assert!(
             !entry
                 .regions
                 .iter()
-                .any(|r| r.starts_with("branch:safe_divide:")),
+                .any(|r| r.starts_with("branch:src/lib.rs::safe_divide:")),
             "{name} must NOT carry a branch region: {:?}",
             entry.regions
         );
@@ -371,12 +395,21 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
         })
         .expect("graph must carry a static edge from a test to beta");
 
+    let rev = head_rev(dir);
     write_store(
         dir,
-        &[hit(&test_id, "fn:alpha", "src/lib.rs", "region")],
+        &at_rev(
+            vec![hit(
+                &test_id,
+                "fn:src/lib.rs::alpha",
+                "src/lib.rs",
+                "region",
+            )],
+            &rev,
+        ),
         &CoverageIndex {
             format: COVERAGE_FORMAT,
-            revision: FIXTURE_REV.into(),
+            revision: rev.clone(),
             imported_at: 1,
             tool: "cargo-llvm-cov".into(),
         },
@@ -402,14 +435,16 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
         .collect();
     assert_eq!(dynamic.len(), 1, "one dynamic entry: {:?}", sel.tests);
     assert_eq!(stat.len(), 1, "one static entry: {:?}", sel.tests);
-    assert_eq!(dynamic[0].regions, vec!["fn:alpha".to_string()]);
+    assert_eq!(dynamic[0].regions, vec!["fn:src/lib.rs::alpha".to_string()]);
     assert!(
-        stat[0].regions.contains(&"fn:beta".to_string()),
-        "static entry must carry fn:beta: {:?}",
+        stat[0].regions.contains(&"fn:src/lib.rs::beta".to_string()),
+        "static entry must carry fn:src/lib.rs::beta: {:?}",
         stat[0].regions
     );
     assert!(
-        !stat[0].regions.contains(&"fn:alpha".to_string()),
+        !stat[0]
+            .regions
+            .contains(&"fn:src/lib.rs::alpha".to_string()),
         "alpha has no static edge from this test: {:?}",
         stat[0].regions
     );
@@ -422,8 +457,8 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
         .and_then(|rest| rest.split("static_reach (graph edges):").next())
         .expect("dynamic section must be rendered");
     assert!(
-        !dynamic_section.contains("fn:beta"),
-        "fn:beta leaked into the dynamic section: {table}"
+        !dynamic_section.contains("fn:src/lib.rs::beta"),
+        "fn:src/lib.rs::beta leaked into the dynamic section: {table}"
     );
     assert!(
         table.contains("static_reach (graph edges):"),
@@ -433,5 +468,54 @@ fn test_select_static_region_never_labeled_as_coverage_observation() {
     assert!(
         table.contains("1 test(s) selected."),
         "footer counts distinct tests: {table}"
+    );
+}
+
+// A store collected before per-site region ids holds leaf-name ids that can
+// match nothing. Selection must say so and name the remedy, not claim the
+// store is empty or merely unmatched.
+#[test]
+fn test_select_on_legacy_store_tells_the_user_to_recollect() {
+    let root = tempfile::tempdir().unwrap();
+    init_git_repo(root.path());
+    write_store(
+        root.path(),
+        &[hit(
+            "divides_positive_values",
+            "fn:safe_divide",
+            "src/lib.rs",
+            "region",
+        )],
+        &CoverageIndex {
+            format: COVERAGE_FORMAT,
+            revision: FIXTURE_REV.into(),
+            imported_at: 1,
+            tool: "cargo-llvm-cov".into(),
+        },
+    )
+    .unwrap();
+    apply_edit(root.path());
+
+    let sel = select(root.path(), None).unwrap();
+    assert!(
+        sel.tests.is_empty(),
+        "legacy hits never match: {:?}",
+        sel.tests
+    );
+    let table = render_table(&sel);
+    assert!(
+        table.contains("phr-mcp coverage collect"),
+        "table must name the remedy: {table}"
+    );
+    assert!(
+        !table.contains("the coverage store is empty"),
+        "the store is not empty: {table}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&render_json(&sel)).unwrap();
+    assert!(
+        json["coverage_note"]
+            .as_str()
+            .is_some_and(|n| n.contains("phr-mcp coverage collect")),
+        "json must carry coverage_note: {json}"
     );
 }

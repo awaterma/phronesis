@@ -6,7 +6,7 @@
 // code in `crates/phronesis-mcp/src/coverage/`:
 //
 //   1. valid_identifier_char — mirrors the charset rule from
-//      `validate_identifier_field` in `coverage/import.rs`:
+//      `validate_identifier_field` in `coverage/store.rs`:
 //      A-Za-z0-9 and `_ : . / -` are the only allowed characters.
 //
 //   2. fnv1a_64_determinism — the FNV-1a hash in `coverage/region_map.rs`

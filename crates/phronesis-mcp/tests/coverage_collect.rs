@@ -1,6 +1,6 @@
 //! Coverage collector tests: the collector's records must be exactly what
 //! `region_map` independently produces — no reimplementation, no drift.
-//! Golden anchor: the committed fixture's `branch:safe_divide:cd6054b02dde`.
+//! Golden anchor: the committed fixture's `cd6054b02dde` branch anchor.
 
 use phronesis_mcp::coverage::collect::{
     LlvmCovDocument, collect_from_documents, leaf_ident, repo_rel,
@@ -57,7 +57,7 @@ fn collector_emits_the_region_map_anchor_for_the_fixture_branch() {
 
     let regions: Vec<&str> = records.iter().map(|r| r.region.as_str()).collect();
     assert!(
-        regions.contains(&"fn:safe_divide"),
+        regions.contains(&"fn:crates/phronesis-mcp/src/fixture-src/sample.rs::safe_divide"),
         "fn hit expected, got: {regions:?}"
     );
     // The branch hit must carry exactly the anchor the region map computes —
@@ -67,7 +67,8 @@ fn collector_emits_the_region_map_anchor_for_the_fixture_branch() {
         .find(|r| r.hit_kind == "branch")
         .expect("branch hit expected");
     assert_eq!(
-        branch.region, "branch:safe_divide:cd6054b02dde",
+        branch.region,
+        "branch:crates/phronesis-mcp/src/fixture-src/sample.rs::safe_divide:cd6054b02dde",
         "{branch:?}"
     );
 }
@@ -92,7 +93,10 @@ fn collector_drops_records_that_region_map_does_not_name() {
     let docs = vec![docs.into_iter().next().unwrap(), ("p".to_string(), phantom)];
     let records = collect_from_documents(root.path(), &"a".repeat(40), &docs).unwrap();
     assert_eq!(records.len(), 1, "only the real fn survives: {records:?}");
-    assert_eq!(records[0].region, "fn:safe_divide");
+    assert_eq!(
+        records[0].region,
+        "fn:crates/phronesis-mcp/src/fixture-src/sample.rs::safe_divide"
+    );
 }
 
 #[test]

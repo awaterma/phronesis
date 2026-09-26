@@ -20,7 +20,9 @@ use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::coverage::region_map::{extract_branch_sites, extract_functions};
+use crate::coverage::region_map::{
+    BranchSite, FunctionSite, extract_branch_sites, extract_function_sites,
+};
 use crate::coverage::store::HitRecord;
 
 /// One llvm-cov JSON export: `{"data": [{files, functions, totals}]}`.
@@ -52,7 +54,9 @@ struct LlvmCovFunction {
 }
 
 /// Leaf identifier from a demangled path, filtered to what tree-sitter would
-/// name a function: plain identifiers only — closures (`{closure#0}`),
+/// name a function. It only narrows the candidate sites in the covered file;
+/// the qualified site is chosen by span (see `collect_from_documents`).
+/// Plain identifiers only — closures (`{closure#0}`),
 /// generic wrappers (`<impl ...>`), and anonymous items are dropped.
 /// Public because the leaf-ident contract is part of the collector's
 /// testable surface (impl methods pass; closures do not).
@@ -95,9 +99,11 @@ fn is_wanted_source(rel: &str) -> bool {
 
 /// Convert already-collected llvm-cov JSON exports into per-test hit
 /// records. `docs` pairs a test label with the parsed export; `root` resolves
-/// the repo-relative source paths. Self-validating: fn idents must be
-/// functions tree-sitter names in that exact file, and branch hits must fall
-/// inside an `extract_branch_sites` span for the same function.
+/// the repo-relative source paths. Self-validating: every fn hit must land on
+/// a function site tree-sitter names in that exact file (same leaf name, span
+/// holding the function's first region), and branch hits must fall inside an
+/// `extract_branch_sites` span for that same site. Region ids are the sites'
+/// qualified ids (`region_map` grammar), never rebuilt here.
 pub fn collect_from_documents(
     root: &Path,
     revision: &str,
@@ -105,8 +111,8 @@ pub fn collect_from_documents(
 ) -> Result<Vec<HitRecord>> {
     let mut out: Vec<HitRecord> = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut fn_maps: HashMap<String, BTreeSet<String>> = HashMap::new();
-    let mut branch_maps: HashMap<String, Vec<BranchSiteFull>> = HashMap::new();
+    let mut fn_maps: HashMap<String, Vec<FunctionSite>> = HashMap::new();
+    let mut branch_maps: HashMap<String, Vec<BranchSite>> = HashMap::new();
 
     for (test, doc) in docs {
         let Some(data) = doc.data.first() else {
@@ -126,10 +132,6 @@ pub fn collect_from_documents(
             let Some(ident) = leaf_ident(&dem) else {
                 continue;
             };
-            let fns = fn_map(root, &mut fn_maps, &rel)?;
-            if !fns.contains(&ident) {
-                continue;
-            }
             if f.regions.is_empty() {
                 continue;
             }
@@ -140,11 +142,24 @@ pub fn collect_from_documents(
                 .and_then(|s| s.get(2))
                 .copied()
                 .unwrap_or(start);
+            // The leaf name narrows the candidates; the span picks the site.
+            // Same-named functions (two `new`s in one file under different
+            // impls, a nested `fn helper`) are told apart by which site's
+            // span holds the function's first region — tightest wins.
+            let fns = fn_map(root, &mut fn_maps, &rel)?;
+            let Some(site) = fns
+                .iter()
+                .filter(|s| s.name() == ident)
+                .filter(|s| start >= s.start_line && start <= s.end_line)
+                .min_by_key(|s| (s.end_line.saturating_sub(s.start_line), s.start_line))
+            else {
+                continue;
+            };
             let rec = HitRecord {
                 v: crate::coverage::store::COVERAGE_FORMAT,
                 kind: "hit".into(),
                 test: test.clone(),
-                region: format!("fn:{ident}"),
+                region: site.region_id(&rel),
                 file: rel.clone(),
                 start_line: start,
                 end_line: end,
@@ -155,6 +170,7 @@ pub fn collect_from_documents(
             if seen.insert((test.clone(), rec.region.clone(), rec.file.clone())) {
                 out.push(rec);
             }
+            let item_path = site.item_path.clone();
             let sites = branch_map(root, &mut branch_maps, &rel)?;
             for br in &f.branches {
                 if br.len() < 5 || br[4] == 0 {
@@ -163,7 +179,7 @@ pub fn collect_from_documents(
                 let (line, _col, eline, _ecol, _count) = (br[0], br[1], br[2], br[3], br[4]);
                 let best = sites
                     .iter()
-                    .filter(|s| s.function == ident)
+                    .filter(|s| s.function == item_path)
                     .filter(|s| line >= s.start_line && line <= s.end_line)
                     .min_by_key(|s| (s.end_line.saturating_sub(s.start_line), s.start_line));
                 let Some(site) = best else { continue };
@@ -171,7 +187,7 @@ pub fn collect_from_documents(
                     v: crate::coverage::store::COVERAGE_FORMAT,
                     kind: "hit".into(),
                     test: test.clone(),
-                    region: format!("branch:{}:{}", ident, site.anchor),
+                    region: site.region_id(&rel),
                     file: rel.clone(),
                     start_line: line,
                     end_line: eline,
@@ -190,46 +206,26 @@ pub fn collect_from_documents(
 
 fn fn_map<'m>(
     root: &Path,
-    cache: &'m mut HashMap<String, BTreeSet<String>>,
+    cache: &'m mut HashMap<String, Vec<FunctionSite>>,
     rel: &str,
-) -> Result<&'m BTreeSet<String>> {
+) -> Result<&'m Vec<FunctionSite>> {
     if !cache.contains_key(rel) {
         let src = std::fs::read_to_string(root.join(rel))
             .with_context(|| format!("reading covered source: {rel}"))?;
-        let map = extract_functions(&src)?
-            .into_iter()
-            .map(|(name, _, _)| name)
-            .collect();
-        cache.insert(rel.to_string(), map);
+        cache.insert(rel.to_string(), extract_function_sites(&src)?);
     }
     Ok(cache.get(rel).expect("just inserted"))
 }
 
-struct BranchSiteFull {
-    function: String,
-    anchor: String,
-    start_line: u64,
-    end_line: u64,
-}
-
 fn branch_map<'m>(
     root: &Path,
-    cache: &'m mut HashMap<String, Vec<BranchSiteFull>>,
+    cache: &'m mut HashMap<String, Vec<BranchSite>>,
     rel: &str,
-) -> Result<&'m Vec<BranchSiteFull>> {
+) -> Result<&'m Vec<BranchSite>> {
     if !cache.contains_key(rel) {
         let src = std::fs::read_to_string(root.join(rel))
             .with_context(|| format!("reading covered source: {rel}"))?;
-        let sites = extract_branch_sites(&src)?
-            .into_iter()
-            .map(|s| BranchSiteFull {
-                function: s.function,
-                anchor: s.anchor,
-                start_line: s.start_line,
-                end_line: s.end_line,
-            })
-            .collect();
-        cache.insert(rel.to_string(), sites);
+        cache.insert(rel.to_string(), extract_branch_sites(&src)?);
     }
     Ok(cache.get(rel).expect("just inserted"))
 }

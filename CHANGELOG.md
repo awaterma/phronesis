@@ -8,6 +8,63 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **Coverage evidence joined different functions that shared a name.** Region
+  ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
+  test that executed `new` in one file counted as evidence for every other
+  `new`: `region_without_dynamic_evidence` stayed silent for code no test had
+  run, `phr-mcp coverage select` picked tests that never touched the edited
+  function, and two identical `if` conditions in one function shared one
+  branch id. Region ids are now unique per code site —
+  `fn:<file>::<item-path>` and `branch:<file>::<item-path>:<anchor>[.<n>]`,
+  qualified by file, module, impl type (generics included), and trait, with a
+  source-order ordinal for repeated conditions (SPEC-coverage-evidence §3.2).
+  Hooks make the edited path repo-relative first, so the absolute
+  `file_path` Claude Code sends — including one through a symlinked project
+  root — joins the store; an edit outside the project root names no region.
+  The importer rejects the old ids, so re-importing an old export fails — run
+  `phr-mcp coverage collect` again (see the upgrade note below). Property `depends_on` entries still using
+  the old ids keep matching conservatively (every same-named site) until
+  rewritten.
+- **A coverage import interrupted between its two writes no longer passes
+  off new hits as the old revision's evidence.** The coverage index now
+  records a digest and count of the records file it commits, and every read
+  checks them — plus each record's revision and tool — against the index. A
+  torn or mismatched store reads as corrupt instead of fresh. Imports and
+  reads share a lock, so a hook firing during an import sees the old store
+  or the new one, never a spurious corruption; a hook waits at most 200 ms
+  for that lock, so a hung import cannot hang it.
+
+- **Coverage records the importer would refuse are refused on read too, and
+  import no longer accepts inconsistent exports.** One validator runs on
+  import and on every store read: absolute paths, unknown `hit_kind`, short
+  revisions, and inverted line spans are rejected wherever they appear, and
+  `hit_kind` must agree with the region id (`region` ⇒ `fn:…`, `branch` ⇒
+  `branch:…`). Import now lowercases revisions (an uppercase sha was treated
+  as permanently stale, and mixed-case spellings of one sha were rejected as
+  "mixes revisions"), collapses duplicate records instead of counting them,
+  and rejects an empty `tool` or an export that mixes tools.
+
+- **Stale coverage no longer hides untested changes.** Hits imported at a
+  revision other than HEAD never suppress `region_without_dynamic_evidence`,
+  and `phr-mcp coverage select` labels them `coverage_observation_stale`
+  (with a `coverage_note` in `--json`) instead of presenting them as current.
+
+- **A corrupt coverage store no longer silences every coverage gap
+  warning.** The hook used to print one stderr line and drop all coverage
+  facts. It now asserts `store_corrupt(coverage, <reason>)` for rules to warn
+  or block on, still warns on stderr, and reports changed regions as having
+  no dynamic evidence. `phr-mcp coverage select` says the store is corrupt
+  instead of "the coverage store is empty".
+
+- **Upgrade note: re-collect coverage after upgrading.** A coverage store
+  written by an earlier version has no records digest, so it reads as
+  `store_corrupt(coverage, unverifiable_index)`: the hook warns on stderr,
+  reports changed regions as untested, and `phr-mcp coverage select` notes
+  the corruption. Re-importing the old export does not help — the importer
+  now rejects its leaf-name region ids. Re-run `phr-mcp coverage collect`
+  (it re-imports; an export collected elsewhere then goes through
+  `phr-mcp coverage import`).
+
 - **A predicate provider could forge the evidence a gate rule trusts.**
   Providers in `.phronesis/predicates/` — which an agent can write through
   `add_predicate_provider` — could `emit_fact` any predicate, so a two-line
