@@ -176,6 +176,7 @@ line).
 
 Two new entries in the `rust_rules()` JSON value, both audit-phase:
 
+<!-- rule-example: proposed -->
 ```jsonc
 {
   "id": "audit-rust-let-mut-count-high",

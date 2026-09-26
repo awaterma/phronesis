@@ -693,7 +693,7 @@ fn rules_only_dry_run_writes_nothing() {
 fn rules_only_without_force_respects_existing_rules() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
-    let custom = r#"{"rules":[{"id":"mine","phase":"pre","priority":1,"conditions":[],"actions":[{"action_type":"constraint_violation","params":["custom"]}]}]}"#;
+    let custom = r#"{"rules":[{"id":"mine","phase":"pre","priority":1,"conditions":[{"predicate":"new_content_contains","args":["custom"]}],"actions":[{"action_type":"constraint_violation","params":["custom"]}]}]}"#;
     std::fs::write(dir.path().join(".phronesis/rules.json"), custom).unwrap();
 
     let out = run_init(&["--rules-only", "--packs", "llm,rust"], dir.path());
@@ -1096,7 +1096,7 @@ fn rules_sync_preserves_metadata_backups_and_dry_run() {
     let config = dir.path().join(".phronesis");
     std::fs::create_dir_all(&config).unwrap();
     let path = config.join("rules.json");
-    let original = r#"{"metadata":{"owner":"example-app"},"rules":[{"id":"mine","phase":"pre","priority":1,"conditions":[],"actions":[{"action_type":"constraint_violation","params":["custom"]}]}]}"#;
+    let original = r#"{"metadata":{"owner":"example-app"},"rules":[{"id":"mine","phase":"pre","priority":1,"conditions":[{"predicate":"new_content_contains","args":["custom"]}],"actions":[{"action_type":"constraint_violation","params":["custom"]}]}]}"#;
     std::fs::write(&path, original).unwrap();
     assert!(
         run_init(
@@ -1150,6 +1150,8 @@ fn rules_sync_rejects_invalid_files_without_writing() {
         r#"{"rules":null}"#,
         r#"{"rules":[{}]}"#,
         r#"{"rules":[{"id":"duplicate","conditions":[],"actions":[{"action_type":"constraint_violation","params":["custom"]}]},{"id":"duplicate","conditions":[],"actions":[{"action_type":"constraint_violation","params":["custom"]}]}]}"#,
+        r#"{"rules":[{"id":"typo","phase":"Pre","when":[{"new_content_contains":"x"}],"then":{"block":"m"}}]}"#,
+        r#"{"rules":[{"id":"typo","when":[{"new_content_contains":"x"}],"then":{"Block":"m"}}]}"#,
     ] {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join(".phronesis");

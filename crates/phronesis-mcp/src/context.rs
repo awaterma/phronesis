@@ -219,10 +219,16 @@ pub async fn run_interaction_context_configured(
     last_n: usize,
     legacy_max_bytes: usize,
 ) -> String {
-    match render::render(project_root, ContextEvent::Interaction, last_n).await {
+    let out = match render::render(project_root, ContextEvent::Interaction, last_n).await {
         None => run_interaction_context(project_root, last_n, legacy_max_bytes),
         Some(result) => emit(project_root, &result),
-    }
+    };
+    with_rules_load_error(
+        project_root,
+        ContextEvent::Interaction.hook_event_name(),
+        out,
+        legacy_max_bytes,
+    )
 }
 
 /// Turn a render result into the payload a hook prints, recording the
@@ -316,10 +322,62 @@ pub async fn run_charter_context_configured(
     legacy_max_bytes: usize,
 ) -> String {
     let _ = crate::journey::current_sid(project_root);
-    match render::render(project_root, event, 0).await {
+    let out = match render::render(project_root, event, 0).await {
         None => run_session_context(project_root, legacy_max_bytes),
         Some(result) => emit(project_root, &result),
-    }
+    };
+    with_rules_load_error(project_root, event.hook_event_name(), out, legacy_max_bytes)
+}
+
+/// Lead the context with the rules load error, when the rules on disk do not
+/// load. Every hook blocks until they do, and without this the agent sees
+/// only "BLOCKED" on each call and never the reason or the file to fix.
+fn with_rules_load_error(
+    project_root: &Path,
+    hook_event_name: &str,
+    envelope: String,
+    max_bytes: usize,
+) -> String {
+    let Some(notice) = rules_load_notice(project_root) else {
+        return envelope;
+    };
+    let existing = serde_json::from_str::<serde_json::Value>(&envelope)
+        .ok()
+        .and_then(|v| {
+            v["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .map(String::from)
+        })
+        .unwrap_or_default();
+    let body = if existing.is_empty() {
+        notice
+    } else {
+        format!("{notice}\n\n{existing}")
+    };
+    wrap_additional_context(hook_event_name, &body, max_bytes.max(notice_floor(&body)))
+}
+
+/// The notice context hooks lead with while the rules on disk do not load,
+/// or `None` when they load.
+pub fn rules_load_notice(project_root: &Path) -> Option<String> {
+    let error = crate::rule_layers::resolve(project_root).err()?;
+    let failing = error.failing_file(project_root);
+    let how = if crate::rule_layers::is_repairable(project_root, &failing) {
+        "edits to that file are allowed"
+    } else {
+        "it is outside `.phronesis/`, so the hooks do not allow editing it — a human must fix it"
+    };
+    Some(format!(
+        "**Phronesis rules do not load — every tool call is blocked until they do.** \
+         Fix {} ({how}): {error}",
+        failing.display()
+    ))
+}
+
+/// Never truncate the notice itself away: it is the one line that explains
+/// why every tool call is blocked.
+fn notice_floor(body: &str) -> usize {
+    body.find("\n\n").unwrap_or(body.len())
 }
 
 /// Host-neutral context body for one event, with the observation labelled
@@ -366,6 +424,22 @@ pub async fn run_body_configured(
             };
             unwrap_envelope(&envelope)
         }
+    }
+}
+
+/// [`run_body_configured`] led by the rules load notice, when the rules on
+/// disk do not load. Codex carries this body directly.
+pub async fn run_body_with_load_notice(
+    project_root: &Path,
+    event: ContextEvent,
+    last_n: usize,
+    metric_event: &str,
+) -> String {
+    let body = run_body_configured(project_root, event, last_n, metric_event).await;
+    match rules_load_notice(project_root) {
+        None => body,
+        Some(notice) if body.is_empty() => notice,
+        Some(notice) => format!("{notice}\n\n{body}"),
     }
 }
 
@@ -746,7 +820,7 @@ mod tests {
         let mut f = std::fs::File::create(&rules_path).unwrap();
         write!(
             f,
-            r#"{{"rules":[{{"id":"r1","phase":"pre","priority":10,"conditions":[],"actions":[{{"action_type":"constraint_violation","params":["Don't do X"]}}]}}]}}"#
+            r#"{{"rules":[{{"id":"r1","phase":"pre","priority":10,"conditions":[{{"predicate":"p","args":["x"]}}],"actions":[{{"action_type":"constraint_violation","params":["Don't do X"]}}]}}]}}"#
         )
         .unwrap();
 
@@ -790,7 +864,7 @@ mod tests {
         let mut f = std::fs::File::create(ep.join("rules.json")).unwrap();
         write!(
             f,
-            r#"{{"rules":[{{"id":"r1","phase":"pre","priority":10,"conditions":[],"actions":[{{"action_type":"constraint_violation","params":["Don't do X"]}}]}}]}}"#
+            r#"{{"rules":[{{"id":"r1","phase":"pre","priority":10,"conditions":[{{"predicate":"p","args":["x"]}}],"actions":[{{"action_type":"constraint_violation","params":["Don't do X"]}}]}}]}}"#
         ).unwrap();
         let out = run_session_context(dir.path(), DEFAULT_MAX_BYTES);
         let body = serde_json::from_str::<serde_json::Value>(&out).unwrap()
@@ -887,7 +961,7 @@ mod tests {
         std::fs::write(ep.join("kernel.md"), "Always-on kernel line.\n").expect("write kernel");
         std::fs::write(
             ep.join("rules.json"),
-            r#"{"rules":[{"id":"r1","phase":"pre","priority":10,"conditions":[],"actions":[{"action_type":"constraint_violation","params":["Don't do X"]}]}]}"#,
+            r#"{"rules":[{"id":"r1","phase":"pre","priority":10,"conditions":[{"predicate":"p","args":["x"]}],"actions":[{"action_type":"constraint_violation","params":["Don't do X"]}]}]}"#,
         )
         .expect("write rules");
         let entry = LogEntry::new("hook", "pre_check")

@@ -1159,7 +1159,7 @@ Agent types are lowercased, so Claude Code’s <code>Explore</code> is
 
 { "id": "suggest-rule-after-two-corrections",
   "when": [ { "__script__": "facts_count('journey_count', ['lifecycle:prompt:correction','s']) &gt;= 2" } ],
-  "then": { "suggestion": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }</code></pre>
+  "then": { "warn": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }</code></pre>
 <blockquote>
 <p><strong>Lifecycle selectors need <code>s</code> or a time window, not
 <code>Nc</code>.</strong> Positional call windows count <em>tool</em>

@@ -76,7 +76,6 @@ definition needs none of it:
 ```json
 { "id": "enforce-no-allow-clippy",
   "phase": "pre",
-  "code_only": true,
   "when": [
     { "new_content_contains": "#[allow(clippy::" },
     { "file_path_matches": "src" }
@@ -268,7 +267,9 @@ disappears. That should be the first thing tried.
 
 `enforce-no-allow-clippy` and any `.expect`-based rule **must carry
 `code_only: true`**, which does not exist yet — it is specified in
-`SPEC-non-code-span-masking.md`. Without it, `#[allow(clippy::` or
+`SPEC-non-code-span-masking.md`. (The §3 example omits the field for now: the
+loader rejects unknown rule keys, so a rule carrying `code_only` would make
+every hook block until the field is implemented.) Without it, `#[allow(clippy::` or
 `.await.expect(` inside a doc comment or a string literal is a false positive,
 at `block` or `warn` level, in a codebase whose own guidance quotes these
 tokens constantly.

@@ -161,7 +161,7 @@ mod tests {
     use super::*;
 
     fn rule(id: &str, priority: u32) -> Value {
-        json!({"id": id, "phase": "pre", "priority": priority, "when": [], "then": {"block": "test rule"}})
+        json!({"id": id, "phase": "pre", "priority": priority, "when": [{"new_content_contains": "x"}], "then": {"block": "test rule"}})
     }
 
     #[test]

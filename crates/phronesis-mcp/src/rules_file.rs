@@ -108,9 +108,106 @@ pub struct SourceRule {
     pub binds: Option<bool>,
 }
 
-/// Map a v2 `then` object (`{"block": "msg"}`) to an internal action.
-/// `block`→constraint_violation, `warn`→constraint_warning, `log`→log,
-/// anything else passes through as its own action_type (forward-compat).
+/// Phases a rules file may name. `pre` blocks at the pre-tool hook, `post`
+/// warns after the tool ran, `audit` is only seen by the whole-tree audit,
+/// and `none` parks a rule without deleting it. Anything else — including a
+/// mis-cased `"Pre"` — is a load error: an unrecognized phase used to load
+/// silently and never fire, so the rule allowed everything it was written to
+/// stop.
+pub const RULE_PHASES: &[&str] = &["pre", "post", "audit", "none"];
+
+/// `then` verbs and the internal action type each one maps to. The single
+/// source of truth for which actions a rule may take: the loader, the v1
+/// `action_type` check, and the MCP `add_rule` tool all read this table.
+/// An unknown verb is a load error, not a forward-compatible pass-through —
+/// the hook only acts on these action types, so an unknown one loaded and
+/// then did nothing (decision D1).
+pub const ACTION_VERBS: &[(&str, &str)] = &[
+    ("block", "constraint_violation"),
+    ("warn", "constraint_warning"),
+    ("log", "log"),
+    ("emit_capsule", "emit_capsule"),
+];
+
+/// Top-level keys a rule object may carry (v2 and v1 legacy forms). A key
+/// outside this set is a load error: the serializer never writes it back, and
+/// a mis-cased `"Phase"` would otherwise be ignored while the rule silently
+/// took the default phase.
+const RULE_KEYS: &[&str] = &[
+    "id",
+    "phase",
+    "priority",
+    "audit",
+    "silent",
+    "doc_excepted",
+    "binds",
+    "when",
+    "then",
+    "conditions",
+    "actions",
+];
+
+/// Comma-separated list, for "allowed: …" messages.
+fn listed<'a>(items: impl IntoIterator<Item = &'a str>) -> String {
+    items.into_iter().collect::<Vec<_>>().join(", ")
+}
+
+/// The internal action type for a `then` verb. The internal names
+/// themselves (`constraint_violation`, …) are accepted as verbs too; that is
+/// how older files and fixtures spell them, and it is unambiguous.
+fn action_type_for_verb(verb: &str) -> Option<&'static str> {
+    ACTION_VERBS
+        .iter()
+        .find(|(v, internal)| *v == verb || *internal == verb)
+        .map(|(_, internal)| *internal)
+}
+
+/// Validate an internal action type (the v1 `action_type` field and the MCP
+/// `add_rule` tool), returning the load-error message when it is unknown.
+pub fn check_action_type(rule_id: &str, field: &str, value: &str) -> Result<(), String> {
+    if ACTION_VERBS.iter().any(|(_, internal)| *internal == value) {
+        return Ok(());
+    }
+    Err(format!(
+        "rule `{rule_id}`: field `{field}` has unknown value `{value}`; allowed: {}",
+        listed(ACTION_VERBS.iter().map(|(_, internal)| *internal))
+    ))
+}
+
+/// Validate a rule's condition count. A rule with no conditions never
+/// fires, so an empty `when` loaded and silently allowed everything.
+pub fn check_conditions_nonempty(rule_id: &str, field: &str, len: usize) -> Result<(), String> {
+    if len == 0 {
+        return Err(format!(
+            "rule `{rule_id}`: field `{field}` is empty; a rule needs at least one condition"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate a rule's action count. A rule carries exactly one action; a
+/// second one used to be dropped without a word.
+pub fn check_single_action(rule_id: &str, field: &str, len: usize) -> Result<(), String> {
+    if len != 1 {
+        return Err(format!(
+            "rule `{rule_id}`: field `{field}` must hold exactly one action, got {len}"
+        ));
+    }
+    Ok(())
+}
+
+fn check_phase(phase: &str) -> anyhow::Result<()> {
+    if RULE_PHASES.contains(&phase) {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "field `phase` has invalid value `{phase}`; allowed: {}",
+        listed(RULE_PHASES.iter().copied())
+    )
+}
+
+/// Map a v2 `then` object (`{"block": "msg"}`) to an internal action via
+/// [`ACTION_VERBS`]. An unknown verb is an error (fail closed at load).
 fn parse_then_action(value: &serde_json::Value) -> anyhow::Result<DiskAction> {
     let obj = value
         .as_object()
@@ -119,14 +216,15 @@ fn parse_then_action(value: &serde_json::Value) -> anyhow::Result<DiskAction> {
         return Err(anyhow!("then must have exactly one verb key"));
     }
     let (verb, msg_val) = obj.iter().next().expect("len==1");
-    let action_type = match verb.as_str() {
-        "block" => "constraint_violation",
-        "warn" => "constraint_warning",
-        "log" => "log",
-        other => other,
-    }
-    .to_string();
-    if verb == "emit_capsule" {
+    let action_type = action_type_for_verb(verb)
+        .ok_or_else(|| {
+            anyhow!(
+                "field `then` has unknown verb `{verb}`; allowed: {}",
+                listed(ACTION_VERBS.iter().map(|(v, _)| *v))
+            )
+        })?
+        .to_string();
+    if action_type == "emit_capsule" {
         if !msg_val.is_object() {
             anyhow::bail!("emit_capsule must be an object");
         }
@@ -214,13 +312,39 @@ impl SourceRule {
     }
 }
 
+/// A v1 string-array field. A non-string element is an error: it used to be
+/// dropped by a `filter_map`, which could empty a condition's arguments and
+/// leave a rule that never matched.
+fn string_array(value: Option<&serde_json::Value>, field: &str) -> anyhow::Result<Vec<String>> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    let items = value
+        .as_array()
+        .ok_or_else(|| anyhow!("field `{field}` must be an array of strings, got `{value}`"))?;
+    items
+        .iter()
+        .map(|item| {
+            item.as_str().map(String::from).ok_or_else(|| {
+                anyhow!("field `{field}` has non-string value `{item}`; args must be strings")
+            })
+        })
+        .collect()
+}
+
 fn parse_when_field(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> anyhow::Result<Vec<WhenClause>> {
+    if obj.contains_key("when") && obj.contains_key("conditions") {
+        anyhow::bail!("rule has both `when` and `conditions`; use one");
+    }
     if let Some(when_val) = obj.get("when") {
         let arr = when_val
             .as_array()
             .ok_or_else(|| anyhow!("`when` must be an array"))?;
+        if arr.is_empty() {
+            anyhow::bail!("field `when` is empty; a rule needs at least one condition");
+        }
         arr.iter()
             .map(|c| serde_json::from_value::<WhenClause>(c.clone()).map_err(|e| anyhow!("{}", e)))
             .collect()
@@ -229,26 +353,39 @@ fn parse_when_field(
         let arr = cond_val
             .as_array()
             .ok_or_else(|| anyhow!("`conditions` must be an array"))?;
+        if arr.is_empty() {
+            anyhow::bail!("field `conditions` is empty; a rule needs at least one condition");
+        }
         arr.iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(i, c)| {
                 let co = c
                     .as_object()
                     .ok_or_else(|| anyhow!("v1 condition must be an object"))?;
+                if let Some(key) = co
+                    .keys()
+                    .find(|k| !["predicate", "args", "script"].contains(&k.as_str()))
+                {
+                    anyhow::bail!(
+                        "field `conditions[{i}]` has unknown key `{key}`; allowed: predicate, args, script"
+                    );
+                }
                 let predicate = co
                     .get("predicate")
                     .and_then(|x| x.as_str())
                     .ok_or_else(|| anyhow!("v1 condition missing `predicate`"))?
                     .to_string();
-                let args = co
-                    .get("args")
-                    .and_then(|x| x.as_array())
-                    .map(|a| {
-                        a.iter()
-                            .filter_map(|s| s.as_str().map(String::from))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let script = co.get("script").and_then(|x| x.as_str()).map(String::from);
+                let args = string_array(co.get("args"), &format!("conditions[{i}].args"))?;
+                let script = match co.get("script") {
+                    None => None,
+                    Some(x) => Some(
+                        x.as_str()
+                            .ok_or_else(|| {
+                                anyhow!("field `conditions[{i}].script` must be a string, got `{x}`")
+                            })?
+                            .to_string(),
+                    ),
+                };
                 Ok(WhenClause::Leaf(DiskCondition {
                     predicate,
                     args,
@@ -264,30 +401,51 @@ fn parse_when_field(
 fn parse_then_field(
     obj: &serde_json::Map<String, serde_json::Value>,
 ) -> anyhow::Result<DiskAction> {
+    if obj.contains_key("then") && obj.contains_key("actions") {
+        anyhow::bail!("rule has both `then` and `actions`; use one");
+    }
     if let Some(then_val) = obj.get("then") {
         parse_then_action(then_val)
     } else if let Some(actions_val) = obj.get("actions") {
-        let first = actions_val
+        let actions = actions_val
             .as_array()
-            .and_then(|a| a.first())
-            .ok_or_else(|| anyhow!("v1 `actions` must be a non-empty array"))?;
-        let ao = first
+            .ok_or_else(|| anyhow!("v1 `actions` must be an array"))?;
+        if actions.len() != 1 {
+            anyhow::bail!(
+                "field `actions` must hold exactly one action, got {}",
+                actions.len()
+            );
+        }
+        let ao = actions[0]
             .as_object()
             .ok_or_else(|| anyhow!("v1 action must be an object"))?;
+        if let Some(key) = ao
+            .keys()
+            .find(|k| !["action_type", "params"].contains(&k.as_str()))
+        {
+            anyhow::bail!(
+                "field `actions[0]` has unknown key `{key}`; allowed: action_type, params"
+            );
+        }
         let action_type = ao
             .get("action_type")
             .and_then(|x| x.as_str())
             .ok_or_else(|| anyhow!("v1 action missing `action_type`"))?
             .to_string();
-        let params = ao
-            .get("params")
-            .and_then(|x| x.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|s| s.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // `emit_capsule` needs a structured body, which only the v2 `then`
+        // form carries; the v1 form can name the three message actions.
+        if action_type == "emit_capsule" || !ACTION_VERBS.iter().any(|(_, t)| *t == action_type) {
+            anyhow::bail!(
+                "field `actions[0].action_type` has unknown value `{action_type}`; allowed: {} (use the v2 `then` form for emit_capsule)",
+                listed(
+                    ACTION_VERBS
+                        .iter()
+                        .map(|(_, t)| *t)
+                        .filter(|t| *t != "emit_capsule")
+                )
+            );
+        }
+        let params = string_array(ao.get("params"), "actions[0].params")?;
         Ok(DiskAction {
             action_type,
             params,
@@ -310,27 +468,67 @@ impl<'de> Deserialize<'de> for SourceRule {
         let id = obj
             .get("id")
             .and_then(|x| x.as_str())
-            .ok_or_else(|| de::Error::custom("rule missing string `id`"))?
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| de::Error::custom("rule missing non-empty string `id`"))?
             .to_string();
-        let phase = obj
-            .get("phase")
-            .and_then(|x| x.as_str())
-            .unwrap_or("pre")
-            .to_string();
-        let when = parse_when_field(obj).map_err(de::Error::custom)?;
-        let then = parse_then_field(obj).map_err(de::Error::custom)?;
-        Ok(SourceRule {
-            id,
-            phase,
-            priority: obj.get("priority").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
-            when,
-            then,
-            silent: obj.get("silent").and_then(|x| x.as_bool()),
-            audit: obj.get("audit").and_then(|x| x.as_bool()),
-            doc_excepted: obj.get("doc_excepted").and_then(|x| x.as_bool()),
-            binds: obj.get("binds").and_then(|x| x.as_bool()),
-        })
+        // Every semantic error names the rule, so a hook that refuses the
+        // file tells the human exactly which rule and field to fix.
+        let in_rule = |e: anyhow::Error| de::Error::custom(format!("rule `{id}`: {e}"));
+        parse_source_rule(&id, obj).map_err(in_rule)
     }
+}
+
+/// Validate and parse one rule object once its `id` is known. Malformed
+/// semantics fail closed here, at load, exactly like malformed JSON: every
+/// reader of a rules file (hooks, Codex adapter, audit, MCP tools) goes
+/// through this function, so they all reject the same shapes with the same
+/// message.
+fn parse_source_rule(
+    id: &str,
+    obj: &serde_json::Map<String, serde_json::Value>,
+) -> anyhow::Result<SourceRule> {
+    if let Some(key) = obj.keys().find(|k| !RULE_KEYS.contains(&k.as_str())) {
+        anyhow::bail!(
+            "unknown key `{key}`; allowed keys: {}",
+            listed(RULE_KEYS.iter().copied())
+        );
+    }
+    let phase = match obj.get("phase") {
+        // A missing phase keeps its documented default.
+        None => "pre".to_string(),
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| anyhow!("field `phase` must be a string, got `{value}`"))?
+            .to_string(),
+    };
+    check_phase(&phase)?;
+    let priority = match obj.get("priority") {
+        None => 0,
+        Some(value) => value
+            .as_i64()
+            .and_then(|p| i32::try_from(p).ok())
+            .ok_or_else(|| anyhow!("field `priority` must be a 32-bit integer, got `{value}`"))?,
+    };
+    let flag = |key: &str| -> anyhow::Result<Option<bool>> {
+        match obj.get(key) {
+            None => Ok(None),
+            Some(value) => value
+                .as_bool()
+                .map(Some)
+                .ok_or_else(|| anyhow!("field `{key}` must be true or false, got `{value}`")),
+        }
+    };
+    Ok(SourceRule {
+        id: id.to_string(),
+        phase,
+        priority,
+        when: parse_when_field(obj)?,
+        then: parse_then_field(obj)?,
+        silent: flag("silent")?,
+        audit: flag("audit")?,
+        doc_excepted: flag("doc_excepted")?,
+        binds: flag("binds")?,
+    })
 }
 
 impl Serialize for WhenClause {
@@ -460,8 +658,23 @@ pub enum RulesFileError {
     },
     #[error("serialization error: {0}")]
     Serialize(#[from] serde_json::Error),
+    #[error("rules file at {path} is invalid: {message}")]
+    Invalid { path: String, message: String },
     #[error("rules file at {path} could not be expanded: {message}")]
     Unfold { path: String, message: String },
+}
+
+impl RulesFileError {
+    /// The file this error is about, when it names one.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            RulesFileError::Io { path, .. }
+            | RulesFileError::Malformed { path, .. }
+            | RulesFileError::Invalid { path, .. }
+            | RulesFileError::Unfold { path, .. } => Some(path),
+            RulesFileError::Serialize(_) => None,
+        }
+    }
 }
 
 /// Default state of the rules file under the project root.
@@ -503,7 +716,63 @@ pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
         path: path.display().to_string(),
         source: e,
     })?;
-    Ok(w.rules)
+    dedupe_identical(path, &content, w.rules)
+}
+
+/// Two rules with one id are ambiguous: which one the engine keeps depends
+/// on load order, so differing copies are a load error. (Layer overrides
+/// across files are the supported way to replace a rule.) Copies that are
+/// identical JSON are not ambiguous — older MCP servers wrote them when a
+/// guide was extracted twice — so they load as one rule, with a warning
+/// asking for the extras to be deleted.
+fn dedupe_identical(
+    path: &Path,
+    content: &str,
+    rules: Vec<SourceRule>,
+) -> Result<Vec<SourceRule>, RulesFileError> {
+    let mut seen = std::collections::HashSet::new();
+    if rules.iter().all(|r| seen.insert(r.id.as_str())) {
+        return Ok(rules);
+    }
+    // Only reached with duplicates: compare the raw JSON of each copy.
+    #[derive(Deserialize)]
+    struct Raw {
+        rules: Vec<serde_json::Value>,
+    }
+    let raw: Raw = serde_json::from_str(content).map_err(|e| RulesFileError::Malformed {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    let mut first: HashMap<&str, &serde_json::Value> = HashMap::new();
+    let mut keep = Vec::with_capacity(rules.len());
+    let mut warned = std::collections::HashSet::new();
+    for (rule, value) in rules.iter().zip(&raw.rules) {
+        match first.get(rule.id.as_str()) {
+            None => {
+                first.insert(rule.id.as_str(), value);
+                keep.push(rule.clone());
+            }
+            Some(previous) if *previous == value => {
+                if warned.insert(rule.id.as_str()) {
+                    eprintln!(
+                        "phronesis: warning: {} lists rule `{}` more than once with identical content; using one copy — delete the extras",
+                        path.display(),
+                        rule.id
+                    );
+                }
+            }
+            Some(_) => {
+                return Err(RulesFileError::Invalid {
+                    path: path.display().to_string(),
+                    message: format!(
+                        "duplicate rule id `{}` with differing definitions; keep the one you want and delete the others (each rule id must appear once per file)",
+                        rule.id
+                    ),
+                });
+            }
+        }
+    }
+    Ok(keep)
 }
 
 /// Cartesian product of per-position alternative condition sets, tracking the
@@ -624,14 +893,29 @@ pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
 /// Atomically write a rules file to `path`. Creates parent directories if needed
 /// and preserves a single `.bak` of the previous contents. Emits v2 shape.
 pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError> {
-    let existing: HashMap<String, SourceRule> = read_source(path)
-        .unwrap_or_default()
+    // Refuse rather than overwrite a file that does not load: carrying its
+    // metadata forward is impossible, and replacing it would discard the
+    // user's rules (plus the `.bak` rotation would lose the last good copy).
+    let existing: HashMap<String, SourceRule> = read_source(path)?
         .into_iter()
         .map(|rule| (rule.id.clone(), rule))
         .collect();
-    let sources: Vec<SourceRule> = file
-        .rules
-        .iter()
+    // Backstop: never write a duplicate id, which the loader would reject
+    // and lock every hook. The last definition of an id wins, at the
+    // position of its first.
+    let mut deduped: Vec<&DiskRule> = Vec::with_capacity(file.rules.len());
+    let mut position: HashMap<&str, usize> = HashMap::new();
+    for rule in &file.rules {
+        match position.get(rule.id.as_str()) {
+            Some(&at) => deduped[at] = rule,
+            None => {
+                position.insert(rule.id.as_str(), deduped.len());
+                deduped.push(rule);
+            }
+        }
+    }
+    let sources: Vec<SourceRule> = deduped
+        .into_iter()
         .map(|rule| {
             let mut source = diskrule_to_source(rule);
             if let Some(previous) = existing.get(&rule.id) {
@@ -1010,7 +1294,11 @@ mod tests {
                 id: "r1".into(),
                 phase: "pre".into(),
                 priority: 1,
-                conditions: vec![],
+                conditions: vec![DiskCondition {
+                    predicate: "p".to_string(),
+                    args: vec!["x".to_string()],
+                    script: None,
+                }],
                 actions: vec![DiskAction {
                     action_type: "log".into(),
                     params: vec!["m".into()],
@@ -1035,7 +1323,11 @@ mod tests {
                 id: "r1".into(),
                 phase: "pre".into(),
                 priority: 1,
-                conditions: vec![],
+                conditions: vec![DiskCondition {
+                    predicate: "p".to_string(),
+                    args: vec!["x".to_string()],
+                    script: None,
+                }],
                 actions: vec![DiskAction {
                     action_type: "log".into(),
                     params: vec!["m".into()],
@@ -1064,7 +1356,11 @@ mod tests {
                 id: "r1".into(),
                 phase: "pre".into(),
                 priority: 1,
-                conditions: vec![],
+                conditions: vec![DiskCondition {
+                    predicate: "p".to_string(),
+                    args: vec!["x".to_string()],
+                    script: None,
+                }],
                 actions: vec![DiskAction {
                     action_type: "log".into(),
                     params: vec!["m".into()],
@@ -1117,7 +1413,11 @@ mod tests {
                 id: "r1".into(),
                 phase: "pre".into(),
                 priority: 1,
-                conditions: vec![],
+                conditions: vec![DiskCondition {
+                    predicate: "p".to_string(),
+                    args: vec!["x".to_string()],
+                    script: None,
+                }],
                 actions: vec![DiskAction {
                     action_type: "log".into(),
                     params: vec!["m".into()],

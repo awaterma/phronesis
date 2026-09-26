@@ -124,6 +124,39 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   the agenda, where firing one failed with `ProductionStateNotFound`. Removing
   a rule now clears both.
 
+- **A rule with a typo loaded silently and allowed everything it was written
+  to stop.** A rule meant to block `git push --force` let the push through
+  (exit 0) when its verb was `"Block"`, its phase was `"Pre"`, its `when` was
+  empty, a v1 argument was not a string, a v1 rule carried a second action or
+  named a v2 verb as its `action_type`, or a key was mis-cased (`"Phase"`).
+  These shapes now fail closed at load, exactly like malformed JSON:
+  `pre-check` blocks, `post-check` warns, `codex-hook` denies, `phr-mcp audit`
+  exits non-zero (it used to print the load error and exit 0, so
+  `--fail-on block` passed in CI), and the MCP `load_rules_file` and
+  `add_rule` tools return an error. The message names the rule id, the field,
+  the bad value, and the allowed values. Duplicate rule ids within one file
+  are rejected too. Unknown predicate names are still accepted, because
+  project Rhai providers define predicates at run time. While the file does
+  not load, an edit (or Codex patch) whose target is that file is allowed with
+  a warning so an agent can repair it, and `session-context` /
+  `interaction-context` lead with the load error instead of printing nothing.
+- **The MCP server could erase every rule in a rules file it could not
+  load.** On startup it loaded nothing from such a file, and the next
+  `add_rule` autosaved only the new rule over it; a second call rotated the
+  last good copy out of `rules.json.bak`, and the now-valid file lifted the
+  block with every user rule gone. `add_rule`, `remove_rule`, `extract_rules`
+  and `save_rules` now refuse while the rules on disk do not load, naming the
+  error and the file to fix, and never write or rotate `.bak`; `list_rules`
+  reports the error as `load_error` (also with `PHRONESIS_NO_AUTOPERSIST`).
+  Once the file is fixed, the same server reloads it — the repaired file
+  wins over the copy the server held — before the next write.
+- **`add_rule` with an existing id, or extracting the same guide twice,
+  wrote a duplicate rule id.** Under the stricter loader that duplicate
+  blocked every tool call. `add_rule` now replaces a rule with the same id
+  (keeping its phase unless one is given) and says `replaced`;
+  `extract_rules` replaces by id; and every rules-file write keeps only the
+  last definition of an id.
+
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
   `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose
@@ -257,6 +290,39 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   than 64 brackets are refused instead of overflowing the stack, and an
   interpolated value is refused if any occurrence touches code rather than a
   string, char, or comment.
+
+### Upgrading
+
+- **A rules file that loaded before may now block every tool call.** Rule
+  shapes the engine silently ignored are now load errors, so run
+  `phr-mcp audit` right after upgrading: it exits non-zero and names the rule,
+  field, and bad value if the file no longer loads. Newly rejected shapes:
+  - extra rule keys (for example `description` or a comment field) — only
+    `id`, `phase`, `priority`, `audit`, `silent`, `doc_excepted`, `binds`,
+    `when`, `then` (v1: `conditions`, `actions`) are allowed;
+  - custom `then` verbs, including those written by an older MCP `add_rule`
+    autosave as `"then": {"<custom action type>": ...}` — use `block`,
+    `warn`, `log`, or `emit_capsule`;
+  - a mis-cased verb or phase (`"Block"`, `"Pre"`);
+  - an empty `when` / `conditions`;
+  - a float or string `priority`, and `null` or non-boolean `audit`,
+    `silent`, `doc_excepted`, `binds`;
+  - a missing, empty, or non-string `id`; a non-string `phase` or
+    `__script__`/`script`; a `priority` outside the 32-bit integer range;
+  - `when` together with `conditions`, or `then` together with `actions`;
+  - v1 rules with non-string args, more or fewer than one action, an unknown
+    `action_type` (including `emit_capsule`, which needs the v2 `then` form),
+    or an unknown key inside a `conditions[i]` or `actions[0]` object;
+  - the same rule id twice in one file **with differing definitions**. Older
+    MCP servers wrote these: `add_rule` with an existing id appended a second
+    copy instead of replacing it. Keep the definition you want and delete the
+    others; the error names the id. Byte-identical copies (from extracting a
+    guide twice) still load as one rule, with a stderr warning.
+
+  While the file does not load, the hooks still allow edits to
+  `.phronesis/rules.json` and `.phronesis/loader.json` (only those), and the
+  MCP rule-writing tools refuse rather than overwrite it. A broken layer file
+  outside `.phronesis/` must be fixed by a human.
 
 ## [0.35.0] - 2026-09-21
 

@@ -404,7 +404,7 @@ replying to a finished turn. Agent types are lowercased, so Claude Code's
   "when": [
     { "__script__": "facts_count('journey_count', ['lifecycle:prompt:correction','s']) >= 2" }
   ],
-  "then": { "suggestion": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." }
+  "then": { "warn": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." }
 }
 ```
 

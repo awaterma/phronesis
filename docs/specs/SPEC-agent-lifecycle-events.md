@@ -974,12 +974,13 @@ in this spec already carry it as `subject`. This section adds three things.
 
    ```json
    { "id": "suggest-name-the-work-item",
-     "conditions": [
+     "phase": "pre",
+     "priority": 1,
+     "when": [
        { "journey_seen": ["lifecycle:prompt:fresh", "s"] },
        { "__script__": "facts_count('journey_seen', ['lifecycle:unit_start','s']) == 0" }
      ],
-     "action": { "type": "suggestion",
-                 "message": "No work item is named this session. Ask which bug or spec this is for, then call submit_suggestion with `bug_id` or `spec`." } }
+     "then": { "warn": "No work item is named this session. Ask which bug or spec this is for, then call submit_suggestion with `bug_id` or `spec`." } }
    ```
 2. **`subject` on rule evaluations.** `pre_check` / `post_check` action-log
    entries (`hook/mod.rs::log_hook_event`) gain `subject` when a unit is open.
@@ -1065,25 +1066,23 @@ vocabulary. Rollout node 6 owns this section (§Rollout).
 
 ```json
 { "id": "warn-subagent-ended-without-tests",
-  "conditions": [
+  "when": [
     { "journey_seen": ["lifecycle:subagent_stop", "s"] },
     { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:subagent_stop','tests',1]) == 0" }
   ],
-  "action": { "type": "warning", "message": "A sub-agent finished this session and no test ran since." } }
+  "then": { "warn": "A sub-agent finished this session and no test ran since." } }
 
 { "id": "warn-many-interventions-since-last-commit",
-  "conditions": [
+  "when": [
     { "__script__": "facts_count('journey_filtered_since_ge', ['lifecycle:commit','lifecycle:intervention',3]) >= 1" }
   ],
-  "action": { "type": "warning",
-              "message": "Three interventions since the last commit. Stop and re-plan before continuing." } }
+  "then": { "warn": "Three interventions since the last commit. Stop and re-plan before continuing." } }
 
 { "id": "suggest-rule-after-two-corrections",
-  "conditions": [
+  "when": [
     { "__script__": "facts_count('journey_count', ['lifecycle:prompt:correction','s']) >= 2" }
   ],
-  "action": { "type": "suggestion",
-              "message": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }
+  "then": { "warn": "Two corrections this session. `phr-mcp journey --corrections` lists them; consider a rule." } }
 ```
 
 ## Privacy and scrubbing

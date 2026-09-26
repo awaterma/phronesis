@@ -122,6 +122,14 @@ The deserializer routes a `__script__` key into
 | `{"block": "msg"}` | `constraint_violation` |
 | `{"warn": "msg"}`  | `constraint_warning` |
 | `{"log": "msg"}`   | `log` |
+| `{"emit_capsule": {...}}` | `emit_capsule` (structured object, not a string) |
+
+The table is closed. An unknown verb — including a case variant such as
+`"Block"` — is a load error, not a forward-compatible pass-through: the
+hook only acts on these action types, so an unknown verb used to load
+and then silently allow everything the rule was written to stop
+(decision D1, fail closed at load). The source of truth is
+`ACTION_VERBS` in `crates/phronesis-mcp/src/rules_file.rs`.
 
 `then` is a single object, not an array. The internal
 `Rule.actions: Vec<Action>` wraps the single action in a one-element
@@ -133,6 +141,48 @@ breaking the single-object form.
 
 `id`, `phase`, `priority`, `audit`, `silent`, `doc_excepted` keep
 their current names and semantics.
+
+### Load-time validation (fails closed)
+
+A rules file that parses as JSON but names a rule shape the engine cannot
+honor is rejected at load, the same way malformed JSON is: `pre-check`
+blocks (exit 2), `post-check` warns (exit 1), `codex-hook PreToolUse`
+denies, `phr-mcp audit` exits non-zero, and the MCP `load_rules_file` and
+`add_rule` tools return an error. The message names the rule id, the
+field, the bad value, and the allowed values. Rejected shapes:
+
+- a `then` verb outside `block`, `warn`, `log`, `emit_capsule` (the
+  internal names `constraint_violation`/`constraint_warning` are accepted
+  as aliases); verbs are case-sensitive, so `"Block"` is rejected;
+- a `phase` outside `pre`, `post`, `audit`, `none` (case-sensitive; a
+  missing `phase` still defaults to `pre`);
+- an empty `when` (or v1 `conditions`) — such a rule never fires;
+- a rule key outside `id`, `phase`, `priority`, `audit`, `silent`,
+  `doc_excepted`, `binds`, `when`, `then` (v1: `conditions`, `actions`);
+- a non-integer `priority` or a non-boolean flag;
+- v1 legacy only: a non-string `args`/`params` element, an `actions` array
+  that does not hold exactly one action, or an `action_type` outside
+  `constraint_violation`, `constraint_warning`, `log`;
+- two rules with the same `id` and differing definitions in one file
+  (replacing a rule across files is what `loader.json` layers are for);
+  byte-identical copies load as one rule with a warning. The MCP tools never
+  write duplicates: `add_rule` and `extract_rules` replace a rule by id.
+
+Unknown condition *predicate names* are not rejected: predicates come from
+built-in fact sources and from project Rhai providers discovered at run
+time, so the loader cannot know the full set.
+
+While the file does not load, two things keep the failure recoverable:
+an edit (Claude `Edit`/`Write`/`MultiEdit`, Gemini `replace`/`write_file`,
+Codex `apply_patch` — not a delete or a `Move to:` elsewhere) whose target
+is exactly the file that failed is allowed with a warning, when that file is
+`.phronesis/rules.json` or `.phronesis/loader.json` (a broken layer file
+elsewhere needs a human); and the context hooks (`session-context`,
+`interaction-context`, Codex `SessionStart`/`UserPromptSubmit`) lead with
+the load error. The MCP server records the error at startup
+(`list_rules` reports it as `load_error`), and `add_rule`, `remove_rule`,
+`extract_rules` and `save_rules` refuse until the file loads — its network
+does not hold the user's rules, so any write would replace them.
 
 ## The OR operator
 

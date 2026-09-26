@@ -29,10 +29,13 @@ use crate::outcomes;
 use crate::security;
 use fs2::FileExt as _;
 
+/// The rules on disk did not load. `failing_file` is the file to edit to
+/// fix it — the one tool call a load error does not block.
 #[derive(Debug, Error)]
-enum RulesLoadError {
-    #[error("rules file at {path} could not be loaded: {message}")]
-    Load { path: String, message: String },
+#[error("rules could not be loaded: {message}")]
+struct RulesLoadError {
+    message: String,
+    failing_file: std::path::PathBuf,
 }
 
 /// Hook-internal error type. Engine failures arrive typed as
@@ -217,9 +220,20 @@ fn load_rules(phase: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
     if !project_path.exists() && !loader_path.exists() {
         return Ok(None);
     }
-    let resolved = crate::rule_layers::resolve(&root).map_err(|e| RulesLoadError::Load {
-        path: loader_path.display().to_string(),
-        message: e.to_string(),
+    let resolved = crate::rule_layers::resolve(&root).map_err(|e| {
+        let failing_file = e.failing_file(&root);
+        let shown = failing_file.display().to_string();
+        let message = e.to_string();
+        // Most errors already name their file; the rest get it prefixed.
+        let message = if message.contains(&shown) {
+            message
+        } else {
+            format!("{shown}: {message}")
+        };
+        RulesLoadError {
+            message,
+            failing_file,
+        }
     })?;
 
     let override_facts = crate::rule_layers::override_facts(&resolved.overrides);

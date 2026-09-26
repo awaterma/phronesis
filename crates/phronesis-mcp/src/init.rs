@@ -2843,6 +2843,44 @@ fn helm3_rules() -> Value {
 mod tests {
     use super::*;
 
+    /// Load-time rule validation fails closed (decision D1), so a starter
+    /// pack that no longer validates would make every hook in a freshly
+    /// initialized project block. Every pack, alone and composed, must load.
+    #[test]
+    fn every_starter_pack_passes_load_time_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rules.json");
+        let mut sets: Vec<(String, Value)> = Pack::ALL
+            .iter()
+            .map(|p| (p.label().to_string(), p.rules()))
+            .collect();
+        let composable: Vec<Pack> = Pack::ALL
+            .iter()
+            .copied()
+            .filter(|p| *p != Pack::None)
+            .collect();
+        sets.push(("all packs composed".to_string(), compose_packs(&composable)));
+        for (label, rules) in sets {
+            std::fs::write(&path, serde_json::to_vec(&rules).unwrap()).unwrap();
+            if let Err(e) = crate::rules_file::read(&path) {
+                panic!("pack `{label}` fails load-time validation: {e}");
+            }
+        }
+    }
+
+    /// This repository's own `.phronesis/rules.json` must load too. The file
+    /// is not tracked, so the check runs only in a checkout that has one.
+    #[test]
+    fn this_repos_rules_pass_load_time_validation() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../.phronesis/rules.json");
+        if path.exists()
+            && let Err(e) = crate::rules_file::read(&path)
+        {
+            panic!("{} fails load-time validation: {e}", path.display());
+        }
+    }
+
     #[test]
     fn pack_parse_accepts_aliases() {
         assert_eq!(Pack::parse("llm").unwrap(), Pack::Llm);

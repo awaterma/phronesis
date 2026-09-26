@@ -87,6 +87,60 @@ pub enum LayerError {
     Rules(#[from] RulesFileError),
 }
 
+impl LayerError {
+    /// The file a human (or agent) has to edit to fix this error: the rules
+    /// file that failed to parse, or `loader.json` for a layer-config error.
+    pub fn failing_file(&self, project_root: &Path) -> PathBuf {
+        match self {
+            LayerError::Io { path, .. } | LayerError::Malformed { path, .. } => PathBuf::from(path),
+            LayerError::Rules(error) => error
+                .path()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| config_path(project_root)),
+            _ => config_path(project_root),
+        }
+    }
+}
+
+/// Whether `target` (a tool's `file_path`, absolute or project-relative) is
+/// the file whose load error is blocking every hook. Editing that file is
+/// the one tool call a load error must not block, or an agent can never
+/// repair it.
+///
+/// Only the project's own `.phronesis/rules.json` and `.phronesis/loader.json`
+/// ever qualify. The failing file can be any layer path `loader.json` names,
+/// and `loader.json` is itself agent-writable, so trusting the failing path
+/// alone would let a layer entry pointing at `src/main.rs` open that source
+/// file to unchecked edits.
+pub fn is_repair_target(project_root: &Path, failing: &Path, target: &str) -> bool {
+    if target.is_empty() {
+        return false;
+    }
+    let target = Path::new(target);
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        project_root.join(target)
+    };
+    is_repairable(project_root, failing) && canonical(&target) == canonical(failing)
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// Whether a load error in `failing` may be repaired through the hooks: only
+/// the project's `.phronesis/rules.json` or `.phronesis/loader.json`.
+pub fn is_repairable(project_root: &Path, failing: &Path) -> bool {
+    let failing = canonical(failing);
+    [
+        rules_file::default_path(project_root),
+        config_path(project_root),
+    ]
+    .iter()
+    .any(|p| canonical(p) == failing)
+}
+
 fn config_version() -> u8 {
     1
 }

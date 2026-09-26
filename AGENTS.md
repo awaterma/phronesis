@@ -212,12 +212,20 @@ hook exiting non-zero would discard the human's prompt.
 
 **Rule Fields:**
 - `id`: Unique identifier
-- `phase`: `"pre"` (block), `"post"` (warn), `"audit"` (audit-only)
+- `phase`: `"pre"` (block), `"post"` (warn), `"audit"` (audit-only), `"none"` (parked)
 - `priority`: Higher fires first
 - `audit`: Whether this rule participates in `phr-mcp audit`
 - `silent`: Suppress console output (default false)
 - `conditions`: Array of predicate+args
 - `actions`: Array of action_type+params
+
+A rule shape the engine cannot honor — an unknown `then` verb or `phase`
+(both case-sensitive), an empty `when`, an unknown rule key, a duplicate id in
+one file, a non-string v1 arg — **fails closed at load** like malformed JSON:
+`pre-check` blocks, `post-check` warns, Codex denies, `audit` and the MCP
+`load_rules_file`/`add_rule` tools error, each naming the rule, field, bad
+value, and allowed values. Valid verbs and phases live in `ACTION_VERBS` /
+`RULE_PHASES` in `crates/phronesis-mcp/src/rules_file.rs`.
 
 #### Available Predicates
 
