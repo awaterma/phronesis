@@ -154,7 +154,7 @@ Every entry has `ts` (Unix seconds), `kind` (`"hook"` or `"mcp"`), and
 `event`. Event-specific fields are flattened alongside:
 
 ```jsonl
-{"ts":1715717111,"kind":"hook","event":"pre_check","phase":"pre","tool":"Edit","file":"src/foo.rs","exit":2,"violations":["Avoid .unwrap() in src/"],"rules_fired":["constraint_violation"]}
+{"ts":1715717111,"kind":"hook","event":"pre_check","phase":"pre","tool":"Edit","file":"src/foo.rs","exit":2,"consequences":[{"rule_id":"no-unwrap-in-src","action_type":"constraint_violation","message":"Avoid .unwrap() in src/"}],"blocked_by":[{"kind":"rule","rule":"no-unwrap-in-src","message":"Avoid .unwrap() in src/"}]}
 {"ts":1715717115,"kind":"mcp","event":"add_rule","rule_id":"tdd-required","priority":10,"phase":"pre"}
 {"ts":1715717118,"kind":"mcp","event":"fire_rules","actions_fired":3,"consequences_generated":3,"action_types":["constraint_violation"]}
 ```

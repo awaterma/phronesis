@@ -11,6 +11,7 @@ use std::path::Path;
 use phr::{Fact, ReteNetwork, Rule};
 
 use crate::diff_extract;
+use crate::fact_id::fact_id;
 use crate::hook::HookError;
 use crate::syntax;
 
@@ -92,7 +93,7 @@ pub(crate) async fn assert_diff_facts(
         for (i, item) in items.iter().enumerate() {
             network
                 .assert_fact(Fact {
-                    id: format!("{}_{}_{}", predicate, item, i),
+                    id: fact_id(predicate, &[file_path, item, &i.to_string()]),
                     predicate: predicate.to_string(),
                     args: vec![file_path.to_string(), item.clone()],
                     timestamp: 0,
@@ -215,7 +216,7 @@ pub(crate) async fn assert_test_facts(
         };
         network
             .assert_fact(Fact {
-                id: format!("{}_{}_{}", predicate, name, i),
+                id: fact_id(predicate, &[name, &i.to_string()]),
                 predicate: predicate.to_string(),
                 args: vec![name.clone()],
                 timestamp: 0,
@@ -293,10 +294,9 @@ pub(crate) async fn assert_common_facts(
 
     for part in file_path.split('/') {
         if !part.is_empty() {
-            let fact_id = format!("file_path_matches_{}", part);
             network
                 .assert_fact(Fact {
-                    id: fact_id,
+                    id: fact_id("file_path_matches", &[part]),
                     predicate: "file_path_matches".to_string(),
                     args: vec![part.to_string()],
                     timestamp: 0,
@@ -312,10 +312,9 @@ pub(crate) async fn assert_common_facts(
         .rsplit_once('.')
         .map(|(_, e)| e.to_ascii_lowercase())
     {
-        let fact_id = format!("file_extension_is_{}", ext);
         network
             .assert_fact(Fact {
-                id: fact_id,
+                id: fact_id("file_extension_is", &[&ext]),
                 predicate: "file_extension_is".to_string(),
                 args: vec![ext],
                 timestamp: 0,
@@ -332,10 +331,11 @@ pub(crate) async fn assert_common_facts(
     // rules condition on when the hook is firing. Cheap; read the local
     // clock once per invocation.
     for cf in crate::clock_facts::now() {
-        let fact_id = format!("{}_{}", cf.predicate, cf.args.join("_"));
+        let args: Vec<&str> = cf.args.iter().map(String::as_str).collect();
+        let id = fact_id(cf.predicate, &args);
         network
             .assert_fact(Fact {
-                id: fact_id,
+                id,
                 predicate: cf.predicate.to_string(),
                 args: cf.args,
                 timestamp: 0,
@@ -360,13 +360,9 @@ pub(crate) async fn check_content_patterns(
 
     for pattern in patterns {
         if production.contains(pattern.as_str()) {
-            let fact_id = format!(
-                "new_content_contains_{}",
-                sanitize_fact_id_fragment(pattern)
-            );
             network
                 .assert_fact(Fact {
-                    id: fact_id,
+                    id: fact_id("new_content_contains", &[pattern]),
                     predicate: "new_content_contains".to_string(),
                     args: vec![pattern.clone()],
                     timestamp: 0,
@@ -403,13 +399,9 @@ pub(crate) async fn check_bash_command_patterns(
             }
         };
         if re.is_match(command) {
-            let fact_id = format!(
-                "bash_command_matches_{}",
-                sanitize_fact_id_fragment(pattern)
-            );
             network
                 .assert_fact(Fact {
-                    id: fact_id,
+                    id: fact_id("bash_command_matches", &[pattern]),
                     predicate: "bash_command_matches".to_string(),
                     args: vec![pattern.clone()],
                     timestamp: 0,
@@ -432,15 +424,6 @@ pub(crate) fn collect_bash_command_patterns(rules: &[Rule]) -> Vec<String> {
         .filter_map(|c| c.args.first())
         .filter(|s| seen.insert((*s).clone()))
         .cloned()
-        .collect()
-}
-
-/// Make a fact-id-safe fragment from an arbitrary pattern string. Whitespace
-/// and any character that isn't ASCII alphanumeric becomes `_`. Stable for a
-/// given input, but not necessarily reversible — IDs are opaque keys.
-fn sanitize_fact_id_fragment(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
 }
 
@@ -646,13 +629,9 @@ pub(crate) async fn check_missing_patterns(
 ) -> Result<(), HookError> {
     for pattern in patterns {
         if !content.contains(pattern.as_str()) {
-            let fact_id = format!(
-                "file_missing_pattern_{}",
-                sanitize_fact_id_fragment(pattern)
-            );
             network
                 .assert_fact(Fact {
-                    id: fact_id,
+                    id: fact_id("file_missing_pattern", &[pattern]),
                     predicate: "file_missing_pattern".to_string(),
                     args: vec![pattern.clone()],
                     timestamp: 0,

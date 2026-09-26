@@ -273,6 +273,8 @@ impl SyntaxFacts {
 
     /// Flatten every populated field into a `Vec<Fact>` ready for assertion.
     /// `file_path` is the first arg of every fact (matches existing convention).
+    /// Ids are assigned once at the end by [`crate::fact_id::assign_ids`], so
+    /// no two facts here can share one.
     pub fn all_facts(&self, file_path: &str) -> Vec<Fact> {
         let mut out = Vec::new();
         let language = std::path::Path::new(file_path)
@@ -281,9 +283,9 @@ impl SyntaxFacts {
             .unwrap_or("unknown");
         let source = Some(format!("ast:{language}"));
 
-        for (i, name) in self.functions_returning_result_string.iter().enumerate() {
+        for name in self.functions_returning_result_string.iter() {
             out.push(Fact {
-                id: format!("function_returns_result_string_{}_{}", name, i),
+                id: String::new(),
                 predicate: "function_returns_result_string".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
@@ -291,9 +293,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, param, ty)) in self.function_param_types.iter().enumerate() {
+        for (fn_name, param, ty) in self.function_param_types.iter() {
             out.push(Fact {
-                id: format!("function_param_type_{}_{}_{}", fn_name, param, i),
+                id: String::new(),
                 predicate: "function_param_type".to_string(),
                 args: vec![
                     file_path.to_string(),
@@ -306,9 +308,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, param)) in self.vec_ref_params.iter().enumerate() {
+        for (fn_name, param) in self.vec_ref_params.iter() {
             out.push(Fact {
-                id: format!("function_param_is_vec_ref_{}_{}_{}", fn_name, param, i),
+                id: String::new(),
                 predicate: "function_param_is_vec_ref".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), param.clone()],
                 timestamp: 0,
@@ -316,9 +318,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, param)) in self.box_ref_params.iter().enumerate() {
+        for (fn_name, param) in self.box_ref_params.iter() {
             out.push(Fact {
-                id: format!("function_param_is_box_ref_{}_{}_{}", fn_name, param, i),
+                id: String::new(),
                 predicate: "function_param_is_box_ref".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), param.clone()],
                 timestamp: 0,
@@ -326,9 +328,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.function_param_counts_high.iter().enumerate() {
+        for (fn_name, count) in self.function_param_counts_high.iter() {
             out.push(Fact {
-                id: format!("function_param_count_high_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "function_param_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -336,9 +338,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.function_clone_counts.iter().enumerate() {
+        for (fn_name, count) in self.function_clone_counts.iter() {
             out.push(Fact {
-                id: format!("function_clone_count_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "function_clone_count".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -346,9 +348,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.function_clone_counts_high.iter().enumerate() {
+        for (fn_name, count) in self.function_clone_counts_high.iter() {
             out.push(Fact {
-                id: format!("function_clone_count_high_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "function_clone_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -356,9 +358,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.function_let_binding_counts_high.iter().enumerate() {
+        for (fn_name, count) in self.function_let_binding_counts_high.iter() {
             out.push(Fact {
-                id: format!("function_let_binding_count_high_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "function_let_binding_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -366,9 +368,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.function_let_mut_counts_high.iter().enumerate() {
+        for (fn_name, count) in self.function_let_mut_counts_high.iter() {
             out.push(Fact {
-                id: format!("function_let_mut_count_high_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "function_let_mut_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -376,9 +378,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, name) in self.pub_fns_without_doc_comment.iter().enumerate() {
+        for name in self.pub_fns_without_doc_comment.iter() {
             out.push(Fact {
-                id: format!("pub_fn_without_doc_comment_{}_{}", name, i),
+                id: String::new(),
                 predicate: "pub_fn_without_doc_comment".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
@@ -386,9 +388,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, fn_name) in self.tests_without_assertion.iter().enumerate() {
+        for fn_name in self.tests_without_assertion.iter() {
             out.push(Fact {
-                id: format!("test_without_assertion_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "test_without_assertion".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
@@ -396,9 +398,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, name) in self.public_functions.iter().enumerate() {
+        for name in self.public_functions.iter() {
             out.push(Fact {
-                id: format!("function_is_public_{}_{}", name, i),
+                id: String::new(),
                 predicate: "function_is_public".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
@@ -406,9 +408,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, name) in self.async_functions.iter().enumerate() {
+        for name in self.async_functions.iter() {
             out.push(Fact {
-                id: format!("function_is_async_{}_{}", name, i),
+                id: String::new(),
                 predicate: "function_is_async".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
@@ -416,9 +418,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (struct_name, trait_name)) in self.struct_derives.iter().enumerate() {
+        for (struct_name, trait_name) in self.struct_derives.iter() {
             out.push(Fact {
-                id: format!("struct_derives_{}_{}_{}", struct_name, trait_name, i),
+                id: String::new(),
                 predicate: "struct_derives".to_string(),
                 args: vec![
                     file_path.to_string(),
@@ -430,9 +432,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, fn_name) in self.engine_eval_string_literals.iter().enumerate() {
+        for fn_name in self.engine_eval_string_literals.iter() {
             out.push(Fact {
-                id: format!("engine_eval_string_literal_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "engine_eval_string_literal".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
@@ -440,9 +442,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, fn_name) in self.unsafe_blocks_without_safety_comment.iter().enumerate() {
+        for fn_name in self.unsafe_blocks_without_safety_comment.iter() {
             out.push(Fact {
-                id: format!("rust_unsafe_without_safety_comment_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "rust_unsafe_without_safety_comment".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
@@ -450,14 +452,13 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, callee)) in self
+        for (fn_name, callee) in self
             .async_blocking_calls
             .iter()
             .filter(|_| !is_test_target(file_path))
-            .enumerate()
         {
             out.push(Fact {
-                id: format!("rust_async_blocking_call_{}_{}_{}", fn_name, callee, i),
+                id: String::new(),
                 predicate: "rust_async_blocking_call".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), callee.clone()],
                 timestamp: 0,
@@ -465,17 +466,13 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, guard)) in self
+        for (fn_name, guard) in self
             .sync_lock_guards_across_await
             .iter()
             .filter(|_| !is_test_target(file_path))
-            .enumerate()
         {
             out.push(Fact {
-                id: format!(
-                    "rust_sync_lock_guard_across_await_{}_{}_{}",
-                    fn_name, guard, i
-                ),
+                id: String::new(),
                 predicate: "rust_sync_lock_guard_across_await".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), guard.clone()],
                 timestamp: 0,
@@ -483,9 +480,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, construct)) in self.rust_governed_invocations.iter().enumerate() {
+        for (fn_name, construct) in self.rust_governed_invocations.iter() {
             out.push(Fact {
-                id: format!("rust_governed_invocation_{}_{}_{}", fn_name, construct, i),
+                id: String::new(),
                 predicate: "rust_governed_invocation".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), construct.clone()],
                 timestamp: 0,
@@ -493,9 +490,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, attribute) in self.rust_governed_attributes.iter().enumerate() {
+        for attribute in self.rust_governed_attributes.iter() {
             out.push(Fact {
-                id: format!("rust_governed_attribute_{}_{}", attribute, i),
+                id: String::new(),
                 predicate: "rust_governed_attribute".to_string(),
                 args: vec![file_path.to_string(), attribute.clone()],
                 timestamp: 0,
@@ -503,9 +500,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (implementing_type, trait_name)) in self.rust_trait_impls.iter().enumerate() {
+        for (implementing_type, trait_name) in self.rust_trait_impls.iter() {
             out.push(Fact {
-                id: format!("rust_trait_impl_{}_{}_{}", implementing_type, trait_name, i),
+                id: String::new(),
                 predicate: "rust_trait_impl".to_string(),
                 args: vec![
                     file_path.to_string(),
@@ -517,12 +514,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (implementing_type, construct)) in self.rust_panic_in_drop.iter().enumerate() {
+        for (implementing_type, construct) in self.rust_panic_in_drop.iter() {
             out.push(Fact {
-                id: format!(
-                    "rust_panic_in_drop_{}_{}_{}",
-                    implementing_type, construct, i
-                ),
+                id: String::new(),
                 predicate: "rust_panic_in_drop".to_string(),
                 args: vec![
                     file_path.to_string(),
@@ -534,9 +528,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, shape)) in self.rust_governed_match_arms.iter().enumerate() {
+        for (fn_name, shape) in self.rust_governed_match_arms.iter() {
             out.push(Fact {
-                id: format!("rust_governed_match_arm_{}_{}_{}", fn_name, shape, i),
+                id: String::new(),
                 predicate: "rust_governed_match_arm".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), shape.clone()],
                 timestamp: 0,
@@ -544,9 +538,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (field, primitive)) in self.rust_primitive_id_fields.iter().enumerate() {
+        for (field, primitive) in self.rust_primitive_id_fields.iter() {
             out.push(Fact {
-                id: format!("rust_primitive_id_field_{}_{}_{}", field, primitive, i),
+                id: String::new(),
                 predicate: "rust_primitive_id_field".to_string(),
                 args: vec![file_path.to_string(), field.clone(), primitive.clone()],
                 timestamp: 0,
@@ -556,7 +550,7 @@ impl SyntaxFacts {
 
         if self.rust_rc_refcell_count > 0 {
             out.push(Fact {
-                id: "rust_rc_refcell_type_0".to_string(),
+                id: String::new(),
                 predicate: "rust_rc_refcell_type".to_string(),
                 args: vec![
                     file_path.to_string(),
@@ -567,9 +561,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.swift_force_unwraps.iter().enumerate() {
+        for (fn_name, count) in self.swift_force_unwraps.iter() {
             out.push(Fact {
-                id: format!("function_uses_force_unwrap_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "function_uses_force_unwrap".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -577,9 +571,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, name) in self.swift_throwing_functions.iter().enumerate() {
+        for name in self.swift_throwing_functions.iter() {
             out.push(Fact {
-                id: format!("function_throws_{}_{}", name, i),
+                id: String::new(),
                 predicate: "function_throws".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
@@ -587,9 +581,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, name) in self.swift_async_functions.iter().enumerate() {
+        for name in self.swift_async_functions.iter() {
             out.push(Fact {
-                id: format!("function_is_async_{}_{}", name, i),
+                id: String::new(),
                 predicate: "function_is_async".to_string(),
                 args: vec![file_path.to_string(), name.clone()],
                 timestamp: 0,
@@ -597,9 +591,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, construct)) in self.swift_governed_constructs.iter().enumerate() {
+        for (fn_name, construct) in self.swift_governed_constructs.iter() {
             out.push(Fact {
-                id: format!("swift_governed_construct_{}_{}_{}", fn_name, construct, i),
+                id: String::new(),
                 predicate: "swift_governed_construct".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), construct.clone()],
                 timestamp: 0,
@@ -607,9 +601,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, fn_name) in self.python_bare_excepts.iter().enumerate() {
+        for fn_name in self.python_bare_excepts.iter() {
             out.push(Fact {
-                id: format!("python_bare_except_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "python_bare_except".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
@@ -617,9 +611,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, param)) in self.python_mutable_default_args.iter().enumerate() {
+        for (fn_name, param) in self.python_mutable_default_args.iter() {
             out.push(Fact {
-                id: format!("python_mutable_default_arg_{}_{}_{}", fn_name, param, i),
+                id: String::new(),
                 predicate: "python_mutable_default_arg".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), param.clone()],
                 timestamp: 0,
@@ -627,9 +621,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.python_function_param_counts_high.iter().enumerate() {
+        for (fn_name, count) in self.python_function_param_counts_high.iter() {
             out.push(Fact {
-                id: format!("python_function_param_count_high_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "python_function_param_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -637,9 +631,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, fn_name) in self.python_functions_missing_docstring.iter().enumerate() {
+        for fn_name in self.python_functions_missing_docstring.iter() {
             out.push(Fact {
-                id: format!("python_function_missing_docstring_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "python_function_missing_docstring".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
@@ -647,9 +641,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, fn_name) in self.python_print_calls.iter().enumerate() {
+        for fn_name in self.python_print_calls.iter() {
             out.push(Fact {
-                id: format!("python_print_call_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "python_print_call".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
@@ -657,12 +651,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, param, callee)) in self.python_call_in_default_args.iter().enumerate() {
+        for (fn_name, param, callee) in self.python_call_in_default_args.iter() {
             out.push(Fact {
-                id: format!(
-                    "python_call_in_default_arg_{}_{}_{}_{}",
-                    fn_name, param, callee, i
-                ),
+                id: String::new(),
                 predicate: "python_call_in_default_arg".to_string(),
                 args: vec![
                     file_path.to_string(),
@@ -675,9 +666,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, exc)) in self.python_exception_handler_passes.iter().enumerate() {
+        for (fn_name, exc) in self.python_exception_handler_passes.iter() {
             out.push(Fact {
-                id: format!("python_exception_handler_passes_{}_{}_{}", fn_name, exc, i),
+                id: String::new(),
                 predicate: "python_exception_handler_passes".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), exc.clone()],
                 timestamp: 0,
@@ -685,9 +676,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, callee) in self.python_import_time_io.iter().enumerate() {
+        for callee in self.python_import_time_io.iter() {
             out.push(Fact {
-                id: format!("python_import_time_io_{}_{}", callee, i),
+                id: String::new(),
                 predicate: "python_import_time_io".to_string(),
                 args: vec![file_path.to_string(), callee.clone()],
                 timestamp: 0,
@@ -695,9 +686,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, fn_name) in self.python_is_literal_comparisons.iter().enumerate() {
+        for fn_name in self.python_is_literal_comparisons.iter() {
             out.push(Fact {
-                id: format!("python_is_literal_comparison_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "python_is_literal_comparison".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone()],
                 timestamp: 0,
@@ -705,9 +696,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, global)) in self.python_mutated_module_globals.iter().enumerate() {
+        for (fn_name, global) in self.python_mutated_module_globals.iter() {
             out.push(Fact {
-                id: format!("python_mutated_module_global_{}_{}_{}", fn_name, global, i),
+                id: String::new(),
                 predicate: "python_mutated_module_global".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), global.clone()],
                 timestamp: 0,
@@ -715,9 +706,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, module) in self.python_star_imports.iter().enumerate() {
+        for module in self.python_star_imports.iter() {
             out.push(Fact {
-                id: format!("python_star_import_{}_{}", module, i),
+                id: String::new(),
                 predicate: "python_star_import".to_string(),
                 args: vec![file_path.to_string(), module.clone()],
                 timestamp: 0,
@@ -727,60 +718,60 @@ impl SyntaxFacts {
 
         // python-patterns.guide derived facts. Shapes: (file, a) / (file, a, b)
         // / (file, a, b, c) in the field order documented on the struct.
-        let mut push2 = |predicate: &str, a: &str, i: usize| {
+        let mut push2 = |predicate: &str, a: &str| {
             out.push(Fact {
-                id: format!("{}_{}_{}", predicate, a, i),
+                id: String::new(),
                 predicate: predicate.to_string(),
                 args: vec![file_path.to_string(), a.to_string()],
                 timestamp: 0,
                 source: source.clone(),
             });
         };
-        for (i, f) in self.python_globals_subscript_assignments.iter().enumerate() {
-            push2("python_globals_subscript_assignment", f, i);
+        for f in self.python_globals_subscript_assignments.iter() {
+            push2("python_globals_subscript_assignment", f);
         }
-        for (i, f) in self.python_dynamic_class_creations.iter().enumerate() {
-            push2("python_dynamic_class_creation", f, i);
+        for f in self.python_dynamic_class_creations.iter() {
+            push2("python_dynamic_class_creation", f);
         }
-        for (i, c) in self.python_containers_own_iterator.iter().enumerate() {
-            push2("python_container_is_own_iterator", c, i);
+        for c in self.python_containers_own_iterator.iter() {
+            push2("python_container_is_own_iterator", c);
         }
-        for (i, c) in self.python_mixins_with_init.iter().enumerate() {
-            push2("python_mixin_with_init", c, i);
+        for c in self.python_mixins_with_init.iter() {
+            push2("python_mixin_with_init", c);
         }
-        for (i, f) in self.python_equality_with_none.iter().enumerate() {
-            push2("python_equality_with_none", f, i);
+        for f in self.python_equality_with_none.iter() {
+            push2("python_equality_with_none", f);
         }
-        let mut push3 = |predicate: &str, a: &str, b: &str, i: usize| {
+        let mut push3 = |predicate: &str, a: &str, b: &str| {
             out.push(Fact {
-                id: format!("{}_{}_{}_{}", predicate, a, b, i),
+                id: String::new(),
                 predicate: predicate.to_string(),
                 args: vec![file_path.to_string(), a.to_string(), b.to_string()],
                 timestamp: 0,
                 source: source.clone(),
             });
         };
-        for (i, (f, g)) in self.python_global_statements.iter().enumerate() {
-            push3("python_global_statement", f, g, i);
+        for (f, g) in self.python_global_statements.iter() {
+            push3("python_global_statement", f, g);
         }
-        for (i, (c, shape)) in self.python_new_overrides.iter().enumerate() {
-            push3("python_new_override", c, shape, i);
+        for (c, shape) in self.python_new_overrides.iter() {
+            push3("python_new_override", c, shape);
         }
-        for (i, (f, n)) in self.python_isinstance_chains.iter().enumerate() {
-            push3("python_isinstance_chain", f, &n.to_string(), i);
+        for (f, n) in self.python_isinstance_chains.iter() {
+            push3("python_isinstance_chain", f, &n.to_string());
         }
-        for (i, (c, n)) in self.python_multiple_inheritance.iter().enumerate() {
-            push3("python_multiple_inheritance", c, &n.to_string(), i);
+        for (c, n) in self.python_multiple_inheritance.iter() {
+            push3("python_multiple_inheritance", c, &n.to_string());
         }
-        for (i, (c, n)) in self.python_inheritance_depths.iter().enumerate() {
-            push3("python_inheritance_depth", c, &n.to_string(), i);
+        for (c, n) in self.python_inheritance_depths.iter() {
+            push3("python_inheritance_depth", c, &n.to_string());
         }
-        for (i, (c, a)) in self.python_mutable_class_attributes.iter().enumerate() {
-            push3("python_mutable_class_attribute", c, a, i);
+        for (c, a) in self.python_mutable_class_attributes.iter() {
+            push3("python_mutable_class_attribute", c, a);
         }
-        for (i, (c, attr, n)) in self.python_static_delegation_wrappers.iter().enumerate() {
+        for (c, attr, n) in self.python_static_delegation_wrappers.iter() {
             out.push(Fact {
-                id: format!("python_static_delegation_wrapper_{}_{}_{}", c, attr, i),
+                id: String::new(),
                 predicate: "python_static_delegation_wrapper".to_string(),
                 args: vec![
                     file_path.to_string(),
@@ -793,9 +784,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.ts_explicit_anys.iter().enumerate() {
+        for (fn_name, count) in self.ts_explicit_anys.iter() {
             out.push(Fact {
-                id: format!("ts_explicit_any_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "ts_explicit_any".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -803,9 +794,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.ts_non_null_assertions.iter().enumerate() {
+        for (fn_name, count) in self.ts_non_null_assertions.iter() {
             out.push(Fact {
-                id: format!("ts_non_null_assertion_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "ts_non_null_assertion".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -815,7 +806,7 @@ impl SyntaxFacts {
 
         if self.ts_suppression_comment_count > 0 {
             out.push(Fact {
-                id: "ts_suppression_comment_0".to_string(),
+                id: String::new(),
                 predicate: "ts_suppression_comment".to_string(),
                 args: vec![
                     file_path.to_string(),
@@ -826,9 +817,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.ts_function_param_counts_high.iter().enumerate() {
+        for (fn_name, count) in self.ts_function_param_counts_high.iter() {
             out.push(Fact {
-                id: format!("ts_function_param_count_high_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "ts_function_param_count_high".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -836,9 +827,9 @@ impl SyntaxFacts {
             });
         }
 
-        for (i, (fn_name, count)) in self.ts_console_log_calls.iter().enumerate() {
+        for (fn_name, count) in self.ts_console_log_calls.iter() {
             out.push(Fact {
-                id: format!("ts_console_log_call_{}_{}", fn_name, i),
+                id: String::new(),
                 predicate: "ts_console_log_call".to_string(),
                 args: vec![file_path.to_string(), fn_name.clone(), count.to_string()],
                 timestamp: 0,
@@ -846,6 +837,7 @@ impl SyntaxFacts {
             });
         }
 
+        crate::fact_id::assign_ids(&mut out);
         out
     }
 }

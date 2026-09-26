@@ -364,11 +364,8 @@ fn extract_multiedit_field(input: &serde_json::Value, field: &str) -> Option<Str
 /// pack is active. See `docs/specs/SPEC-pack-opt-in-facts.md`.
 pub(crate) async fn assert_pack_marker_facts(network: &ReteNetwork, project_root: &Path) {
     for marker in clock_facts::pack_markers(project_root) {
-        let fact_id = if marker.args.is_empty() {
-            marker.predicate.to_string()
-        } else {
-            format!("{}_{}", marker.predicate, marker.args.join("_"))
-        };
+        let args: Vec<&str> = marker.args.iter().map(String::as_str).collect();
+        let fact_id = crate::fact_id::fact_id(marker.predicate, &args);
         if let Err(e) = network
             .assert_fact(Fact {
                 id: fact_id,
@@ -429,6 +426,7 @@ pub(crate) async fn build_rule_network(
 ) -> Result<ReteNetwork, NetworkBuildError> {
     let mut net = crate::net::build_network();
     for rule in input.rules {
+        report_unbound_at_load(rule);
         net.add_rule(rule.clone())
             .await
             .map_err(NetworkBuildError::AddRule)?;
@@ -518,7 +516,8 @@ pub(crate) async fn assert_confidence_signals(network: &ReteNetwork) {
         Err(_) => return,
     };
     for fact in signals {
-        let id = format!("{}:{}", fact.predicate, fact.args.join(":"));
+        let args: Vec<&str> = fact.args.iter().map(String::as_str).collect();
+        let id = crate::fact_id::fact_id(fact.predicate, &args);
         let _ = network
             .assert_fact(Fact {
                 id,
@@ -550,7 +549,87 @@ pub(super) struct LogEventInput<'a> {
     pub(super) subject: Option<&'a str>,
 }
 
+/// One reason a hook blocked, written to the action log as an element of
+/// `blocked_by` on every exit-2 entry. `kind` is `"rule"` for a rule verdict
+/// (with the rule id) or `"fail_closed"` when the hook could not evaluate and
+/// blocked rather than allow (with the `stage` that failed, when known).
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct BlockReason {
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rule: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stage: Option<&'static str>,
+    message: String,
+}
+
+impl BlockReason {
+    pub(crate) fn fail_closed(stage: Option<&'static str>, message: impl Into<String>) -> Self {
+        Self {
+            kind: "fail_closed",
+            rule: None,
+            stage,
+            message: message.into(),
+        }
+    }
+
+    /// One `rule` reason per blocking consequence (after any demotion).
+    pub(crate) fn from_violations(items: &[LoggedConsequence]) -> Vec<Self> {
+        items
+            .iter()
+            .filter(|c| c.action_type == "constraint_violation")
+            .map(|c| Self {
+                kind: "rule",
+                rule: Some(c.rule_id.to_string()),
+                stage: None,
+                message: c.message.clone(),
+            })
+            .collect()
+    }
+}
+
+/// Log a pre-hook block that happened before or instead of a rule verdict —
+/// a load error, a fact-assertion failure, a provider error. Every exit-2
+/// path writes an entry, so the audit trail can always explain a block.
+pub(super) fn log_fail_closed(
+    tool_name: &str,
+    file_path: &str,
+    stage: &'static str,
+    message: &str,
+) {
+    let subject = outcomes::subject::current(&security::project_root());
+    let entry = hook_log_entry(&LogEventInput {
+        phase: "pre",
+        tool_name,
+        file_path,
+        exit: 2,
+        command_exit: None,
+        consequences: &[],
+        subject: subject.as_deref(),
+    })
+    .with(
+        "blocked_by",
+        serde_json::to_value([BlockReason::fail_closed(Some(stage), message)])
+            .unwrap_or(serde_json::Value::Null),
+    );
+    let path = action_log::default_path(&security::project_root());
+    let _ = action_log::append(&path, &entry);
+}
+
 pub(super) fn log_hook_event(input: &LogEventInput<'_>) {
+    let mut entry = hook_log_entry(input);
+    if input.exit == 2 {
+        let reasons = BlockReason::from_violations(input.consequences);
+        entry = entry.with(
+            "blocked_by",
+            serde_json::to_value(reasons).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    let path = action_log::default_path(&security::project_root());
+    let _ = action_log::append(&path, &entry);
+}
+
+fn hook_log_entry(input: &LogEventInput<'_>) -> LogEntry {
     let LogEventInput {
         phase,
         tool_name,
@@ -578,8 +657,7 @@ pub(super) fn log_hook_event(input: &LogEventInput<'_>) {
     if let Some(s) = subject {
         entry = entry.with("subject", (*s).to_string());
     }
-    let path = action_log::default_path(&security::project_root());
-    let _ = action_log::append(&path, &entry);
+    entry
 }
 
 pub(crate) use crate::hook_logged::{LoggedConsequence, split_messages_by_action_type};
@@ -588,7 +666,7 @@ pub(crate) use crate::hook_logged::{LoggedConsequence, split_messages_by_action_
 /// `content` that is missing `--workspace`. Shared by pre- and post-check.
 pub(super) async fn assert_cargo_workspace_facts(network: &ReteNetwork, content: &str) {
     for cmd in crate::diff_extract::cargo_commands_lacking_workspace(content) {
-        let fact_id = format!("cargo_command_lacks_workspace_{}", cmd.replace(' ', "_"));
+        let fact_id = crate::fact_id::fact_id("cargo_command_lacks_workspace", &[&cmd]);
         network
             .assert_fact(Fact {
                 id: fact_id,
@@ -599,6 +677,40 @@ pub(super) async fn assert_cargo_workspace_facts(network: &ReteNetwork, content:
             })
             .await
             .ok();
+    }
+}
+
+/// Load-time diagnostic: a rule whose action names a `?var` no condition
+/// binds still loads and still fires — the variable renders literally — but
+/// the author almost certainly meant something else. A warning, never a load
+/// failure: rejecting it would turn a message typo into a blocked project.
+fn report_unbound_at_load(rule: &Rule) {
+    for var in rule.unbound_action_variables() {
+        eprintln!(
+            "phronesis: NOTE — rule `{}` names `{var}` in its message, but no condition binds it (unbound); it renders literally",
+            rule.id
+        );
+    }
+}
+
+/// Fire-time diagnostic for the same case, naming the rule that actually
+/// fired with an unbound variable. The consequence itself is kept: a block
+/// rule with an unbound variable in its message still blocks.
+pub(crate) fn report_unbound_at_fire(consequences: &[Consequence]) {
+    for c in consequences {
+        let Some(vars) = c
+            .payload
+            .get("unbound_variables")
+            .and_then(|v| v.as_array())
+        else {
+            continue;
+        };
+        for var in vars.iter().filter_map(|v| v.as_str()) {
+            eprintln!(
+                "phronesis: NOTE — rule `{}` fired with unbound `{var}`; rendered literally",
+                c.predicate
+            );
+        }
     }
 }
 

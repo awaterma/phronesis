@@ -23,7 +23,13 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     let payload = match super::read_payload("pre") {
         Ok(p) => p,
         Err(e) => {
-            eprintln!("phronesis: BLOCKED — invalid hook payload: {}", e);
+            let message = format!("invalid hook payload: {e}");
+            eprintln!("phronesis: BLOCKED — {message}");
+            // Logged only under a governed root: an ungoverned one must not
+            // grow a stray `.phronesis/` just to record this.
+            if security::is_governed(&security::project_root()) {
+                super::log_fail_closed("", "", "payload", &message);
+            }
             process::exit(2);
         }
     };
@@ -83,11 +89,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                     process::exit(1);
                 }
                 eprintln!("phronesis: BLOCKED — {}", e);
-                blocked_exit(
-                    &root,
-                    &inflight_key,
-                    payload.tool_name.as_deref().unwrap_or_default(),
-                );
+                fail_closed_exit(&root, &inflight_key, &payload, "load_rules", &e.to_string());
             }
         };
         let rules = loaded.rules;
@@ -121,10 +123,12 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             Ok(net) => net,
             Err(e) => {
                 eprintln!("phronesis: BLOCKED — {e}");
-                blocked_exit(
+                fail_closed_exit(
                     &root,
                     &inflight_key,
-                    payload.tool_name.as_deref().unwrap_or_default(),
+                    &payload,
+                    "build_network",
+                    &e.to_string(),
                 );
             }
         };
@@ -171,7 +175,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     };
 
     if let Some(content) = &new_content
-        && assert_pre_content_facts(
+        && let Err(e) = assert_pre_content_facts(
             &network,
             PreContentInput {
                 payload: &payload,
@@ -184,12 +188,13 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             },
         )
         .await
-        .is_err()
     {
-        blocked_exit(
+        fail_closed_exit(
             &root,
             &inflight_key,
-            payload.tool_name.as_deref().unwrap_or_default(),
+            &payload,
+            "content_facts",
+            &e.to_string(),
         );
     }
 
@@ -202,33 +207,30 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     .await
     {
         eprintln!("phronesis: BLOCKED — {error}");
-        blocked_exit(
+        fail_closed_exit(
             &root,
             &inflight_key,
-            payload.tool_name.as_deref().unwrap_or_default(),
+            &payload,
+            "predicate_provider",
+            &error.to_string(),
         );
     }
 
     if let Err(e) = network.update_agenda().await {
-        eprintln!("phronesis: BLOCKED — agenda update failed: {}", e);
-        blocked_exit(
-            &root,
-            &inflight_key,
-            payload.tool_name.as_deref().unwrap_or_default(),
-        );
+        let message = format!("agenda update failed: {e}");
+        eprintln!("phronesis: BLOCKED — {message}");
+        fail_closed_exit(&root, &inflight_key, &payload, "update_agenda", &message);
     }
     let consequences = match network.fire_all_consequences() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("phronesis: BLOCKED — rule execution failed: {}", e);
-            blocked_exit(
-                &root,
-                &inflight_key,
-                payload.tool_name.as_deref().unwrap_or_default(),
-            );
+            let message = format!("rule execution failed: {e}");
+            eprintln!("phronesis: BLOCKED — {message}");
+            fail_closed_exit(&root, &inflight_key, &payload, "fire_rules", &message);
         }
     };
     crate::capsule::capture_for_hook(&security::project_root(), &consequences);
+    super::report_unbound_at_fire(&consequences);
 
     let (mut logged, violations, warnings) =
         super::collect_logged(&consequences, &security::project_root());
@@ -316,6 +318,26 @@ fn is_file_edit(tool_name: &str) -> bool {
 fn blocked_exit(root: &std::path::Path, key: &str, tool_name: &str) -> ! {
     super::lifecycle_wiring::undo_blocked_pre(root, key, tool_name);
     process::exit(2)
+}
+
+/// Log a block the hook imposed because it could not evaluate (`stage` names
+/// what failed), then exit 2 through [`blocked_exit`]. Every fail-closed exit
+/// goes through here so none is missing from the audit trail.
+fn fail_closed_exit(
+    root: &std::path::Path,
+    key: &str,
+    payload: &HookPayload,
+    stage: &'static str,
+    message: &str,
+) -> ! {
+    let tool_name = payload.tool_name.as_deref().unwrap_or_default();
+    super::log_fail_closed(
+        tool_name,
+        &super::extract_file_path(payload),
+        stage,
+        message,
+    );
+    blocked_exit(root, key, tool_name)
 }
 
 /// Assert all content-derived facts for the pre-check phase: new_content,

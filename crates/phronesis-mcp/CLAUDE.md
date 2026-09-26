@@ -232,9 +232,16 @@ JSON, `phr-mcp codex-hook` exits 0 even when its `PreToolUse` response contains
 `permissionDecision: "deny"`. Warnings use `additionalContext` or
 `systemMessage`. Claude-compatible `pre-check`/`post-check` remain a process
 exit contract (0 clean, 1 advisory, 2 pre-tool block). The shared action log
-records the logical 0/1/2 verdict for either host. External automation must
-therefore parse Codex stdout rather than interpreting its process exit as the
-rule verdict.
+records the logical 0/1/2 verdict for either host, and every block (exit 2 or
+Codex deny) names its reasons in `blocked_by` — `kind: "rule"` with the rule
+id, or `kind: "fail_closed"` when the hook could not evaluate and blocked
+rather than allow. External automation must therefore parse Codex stdout
+rather than interpreting its process exit as the rule verdict.
+
+A rule's message may name `?var` bindings from its conditions. A variable no
+condition binds renders literally (the rule still fires, and a `block` still
+blocks); the hook prints a `NOTE` naming the rule and variable at load and
+again when the rule fires.
 
 ## Setting up a project
 

@@ -338,10 +338,16 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
   "tool": "Edit",
   "file": "src/foo.rs",
   "exit": 2,
-  "violations": ["Avoid .unwrap() in src/"],
-  "rules_fired": ["constraint_violation"]
+  "consequences": [{"rule_id": "no-unwrap-in-src", "action_type": "constraint_violation", "message": "Avoid .unwrap() in src/"}],
+  "blocked_by": [{"kind": "rule", "rule": "no-unwrap-in-src", "message": "Avoid .unwrap() in src/"}]
 }
 ```
+
+Every exit-2 (or Codex deny) entry carries `blocked_by`: one element per
+reason, `kind: "rule"` with the rule id, or `kind: "fail_closed"` (with the
+failing `stage` for `pre-check`) when the hook could not evaluate — a load
+error, a fact-assertion failure, a provider error — and blocked rather than
+allow.
 
 **Entry kinds:**
 - `kind: "hook"` - Hook invocation (pre_check, post_check)
@@ -509,7 +515,7 @@ Requires cargo-llvm-cov 0.8.x and a nightly toolchain (rust-version >= 1.90).
 cargo run -- -p phronesis-mcp pre-check  # or post-check
 
 # 3. If rule fires, check log
-cat .phronesis/log.jsonl | jq 'select(.rules_fired | contains(["my-new-rule"]))'
+cat .phronesis/log.jsonl | jq 'select(.consequences[]?.rule_id == "my-new-rule")'
 
 # 4. Add test case if needed (see crates/phronesis-mcp/tests/)
 ```

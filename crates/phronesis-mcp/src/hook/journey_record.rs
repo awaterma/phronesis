@@ -201,7 +201,7 @@ fn tagger_facts(
     for part in file_path.split('/') {
         if !part.is_empty() {
             facts.push(Fact {
-                id: format!("file_path_matches_{}", part),
+                id: crate::fact_id::fact_id("file_path_matches", &[part]),
                 predicate: "file_path_matches".to_string(),
                 args: vec![part.to_string()],
                 timestamp: 0,
@@ -214,7 +214,7 @@ fn tagger_facts(
         .map(|(_, e)| e.to_ascii_lowercase())
     {
         facts.push(Fact {
-            id: format!("file_extension_is_{}", ext),
+            id: crate::fact_id::fact_id("file_extension_is", &[&ext]),
             predicate: "file_extension_is".to_string(),
             args: vec![ext],
             timestamp: 0,
@@ -249,7 +249,7 @@ fn tagger_facts(
                 };
                 if re.is_match(&content) {
                     facts.push(Fact {
-                        id: format!("bash_command_matches_{}", sanitize_pattern(&pattern)),
+                        id: crate::fact_id::fact_id("bash_command_matches", &[&pattern]),
                         predicate: "bash_command_matches".to_string(),
                         args: vec![pattern],
                         timestamp: 0,
@@ -305,14 +305,6 @@ fn collect_bash_patterns_from_value(
             out.push(pat.to_string());
         }
     }
-}
-
-/// Fact-id-safe transform: same rule `hook_facts::sanitize_fact_id_fragment`
-/// uses — ASCII alphanumeric survive, everything else becomes `_`.
-fn sanitize_pattern(s: &str) -> String {
-    s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect()
 }
 
 #[cfg(test)]
