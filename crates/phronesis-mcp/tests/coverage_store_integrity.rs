@@ -583,3 +583,82 @@ fn concurrent_reads_during_imports_never_see_corruption() {
         &corrupt[..corrupt.len().min(5)]
     );
 }
+
+// ---------------------------------------------------------------- review nits
+
+/// An index written before the digest fields existed is unverifiable: it
+/// must read as corrupt with that reason, naming the remedy exactly once.
+#[test]
+fn index_without_digest_reads_as_unverifiable_index() {
+    use phronesis_mcp::coverage::store::{StoreState, load_store};
+    let root = tempfile::tempdir().unwrap();
+    let rev = "a".repeat(40);
+    write_store(root.path(), &covering_hits(&rev), &index(&rev)).unwrap();
+    let (_, index_path) = store_paths(root.path());
+    let mut idx: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    let obj = idx.as_object_mut().unwrap();
+    assert!(
+        obj.remove("records_fnv1a64").is_some(),
+        "digest field written"
+    );
+    assert!(obj.remove("record_count").is_some(), "count field written");
+    std::fs::write(&index_path, idx.to_string()).unwrap();
+
+    match load_store(root.path()) {
+        StoreState::Corrupt(c) => assert_eq!(c.reason, "unverifiable_index", "{c}"),
+        other => panic!("expected unverifiable_index, got {other:?}"),
+    }
+
+    let (repo, _head) = git_project();
+    write_store(repo.path(), &covering_hits(&rev), &index(&rev)).unwrap();
+    std::fs::write(store_paths(repo.path()).1, idx.to_string()).unwrap();
+    let note = select(repo.path(), None).unwrap().coverage_note.unwrap();
+    assert_eq!(
+        note.matches("phr-mcp coverage collect").count(),
+        1,
+        "remedy must appear once: {note}"
+    );
+}
+
+/// A tampered digest is a digest mismatch, not a fresh store.
+#[test]
+fn tampered_records_digest_reads_as_digest_mismatch() {
+    use phronesis_mcp::coverage::store::{StoreState, load_store};
+    let root = tempfile::tempdir().unwrap();
+    let rev = "a".repeat(40);
+    write_store(root.path(), &covering_hits(&rev), &index(&rev)).unwrap();
+    let (_, index_path) = store_paths(root.path());
+    let mut idx: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+    idx["records_fnv1a64"] = serde_json::json!("0000000000000000");
+    std::fs::write(&index_path, idx.to_string()).unwrap();
+    match load_store(root.path()) {
+        StoreState::Corrupt(c) => assert_eq!(c.reason, "digest_mismatch", "{c}"),
+        other => panic!("expected digest_mismatch, got {other:?}"),
+    }
+}
+
+/// Import into a project whose lock file cannot be opened names the file
+/// instead of a bare "Permission denied".
+#[test]
+fn import_permission_error_names_the_lock_file() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join(".phronesis");
+    std::fs::create_dir_all(&dir).unwrap();
+    let lock = dir.join("coverage.lock");
+    std::fs::write(&lock, "").unwrap();
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o444)).unwrap();
+    let rev = "a".repeat(40);
+    let err = write_store(root.path(), &covering_hits(&rev), &index(&rev));
+    std::fs::set_permissions(&lock, std::fs::Permissions::from_mode(0o644)).unwrap();
+    // Running as root ignores file modes; nothing to assert then.
+    if let Err(e) = err {
+        let msg = format!("{e:#}");
+        assert!(
+            msg.contains("coverage.lock"),
+            "error must name the file: {msg}"
+        );
+    }
+}

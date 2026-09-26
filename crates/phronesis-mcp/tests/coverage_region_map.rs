@@ -296,3 +296,40 @@ fn capped_ids_stay_qualified_and_keep_their_leaf() {
         &branch_region_id(&long_path, &deep_item, "cd6054b02dde", 7)
     ));
 }
+
+// A new file in a new directory, named through a different spelling of the
+// root (macOS temp dirs: /var -> /private/var), still maps into the root.
+#[test]
+fn new_file_in_new_dir_via_symlinked_spelling_is_repo_relative() {
+    use phronesis_mcp::coverage::region_map::repo_relative_path;
+    let root = tempfile::tempdir().unwrap();
+    let canonical = root.path().canonicalize().unwrap();
+    let new_file = canonical.join("src/brand_new/deeper/mod.rs");
+    assert_eq!(
+        repo_relative_path(root.path(), &new_file.display().to_string()).as_deref(),
+        Some("src/brand_new/deeper/mod.rs")
+    );
+}
+
+// Absolute paths with `..` are normalized lexically before the root is
+// stripped; escapes outside the root still name nothing.
+#[test]
+fn absolute_paths_with_parent_components_are_normalized() {
+    use phronesis_mcp::coverage::region_map::repo_relative_path;
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("src")).unwrap();
+    let dotted = root.path().join("sub/../src/lib.rs");
+    assert_eq!(
+        repo_relative_path(root.path(), &dotted.display().to_string()).as_deref(),
+        Some("src/lib.rs")
+    );
+    assert_eq!(
+        repo_relative_path(root.path(), "src/../src/lib.rs").as_deref(),
+        Some("src/lib.rs")
+    );
+    let escape = root.path().join("src/../../elsewhere/lib.rs");
+    assert_eq!(
+        repo_relative_path(root.path(), &escape.display().to_string()),
+        None
+    );
+}

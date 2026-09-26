@@ -326,3 +326,31 @@ fn corrupt_store_surfaces_store_corrupt_and_keeps_the_gap_warning() {
         "a corrupt store must not silence the gap warning: {stderr}"
     );
 }
+
+// A hung import holding the store lock must not hang the hook: the read
+// gives up on the lock after a bounded wait and falls back.
+#[test]
+fn hook_does_not_hang_behind_an_exclusive_store_lock() {
+    use fs2::FileExt;
+    let d = project();
+    import_fixture(d.path());
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(d.path().join(".phronesis/coverage.lock"))
+        .expect("open lock");
+    lock.lock_exclusive().expect("hold lock");
+    std::fs::write(d.path().join("src/lib.rs"), NEW_SRC).expect("apply edit");
+
+    let dir = d.path().to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(hook(&dir, "post", edit_event(&dir)));
+    });
+    let outcome = rx.recv_timeout(std::time::Duration::from_secs(5));
+    drop(lock);
+    let (code, stderr) = outcome.expect("hook blocked behind the store lock for 5 s");
+    assert_eq!(code, 0, "fixture covers the regions: {stderr}");
+}

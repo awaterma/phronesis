@@ -90,27 +90,26 @@ fn cap_item_path(item_path: &str) -> String {
 
 /// The repo-relative spelling of an edited path — the `file` every region id
 /// is qualified with. Hooks pass the host's `file_path` through unmodified,
-/// and Claude Code sends it absolute, so an absolute path is made relative
-/// to `root`: lexically first, then with both sides canonicalized (symlinked
-/// roots, `/var` vs `/private/var`); a file that does not exist yet
-/// canonicalizes through its parent. A relative path is already
-/// root-relative. `None` when the path lies outside the root (or climbs out
-/// with `..`): such an edit names no region of this project.
+/// and Claude Code sends it absolute. A relative path is root-relative (the
+/// hook's own `resolve_safe_path` contract, which reads the file the same
+/// way). The path is joined to `root` and normalized lexically (`.` and `..`
+/// resolved) before the root is stripped; failing that, both sides are
+/// canonicalized (symlinked roots, `/var` vs `/private/var`), a path that
+/// does not exist yet canonicalizing through its deepest existing ancestor.
+/// `None` when the path lies outside the root (or climbs out with `..`):
+/// such an edit names no region of this project.
 pub fn repo_relative_path(root: &Path, path: &str) -> Option<String> {
     let p = Path::new(path);
-    let rel = if p.is_absolute() {
-        match p.strip_prefix(root) {
-            Ok(rel) => rel.to_path_buf(),
-            Err(_) => {
-                let canonical_root = root.canonicalize().ok()?;
-                canonicalize_lenient(p)?
-                    .strip_prefix(&canonical_root)
-                    .ok()?
-                    .to_path_buf()
-            }
+    let joined = normalize_lexically(&root.join(p))?;
+    let rel = match joined.strip_prefix(normalize_lexically(root)?) {
+        Ok(rel) => rel.to_path_buf(),
+        Err(_) => {
+            let canonical_root = root.canonicalize().ok()?;
+            canonicalize_lenient(&joined)?
+                .strip_prefix(&canonical_root)
+                .ok()?
+                .to_path_buf()
         }
-    } else {
-        p.to_path_buf()
     };
     let mut parts: Vec<String> = Vec::new();
     for component in rel.components() {
@@ -126,12 +125,42 @@ pub fn repo_relative_path(root: &Path, path: &str) -> Option<String> {
     Some(parts.join("/"))
 }
 
-fn canonicalize_lenient(path: &Path) -> Option<PathBuf> {
-    if let Ok(canonical) = path.canonicalize() {
-        return Some(canonical);
+/// Resolve `.` and `..` without touching the filesystem. `None` for a `..`
+/// that would climb above the filesystem root.
+fn normalize_lexically(path: &Path) -> Option<PathBuf> {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
     }
-    let parent = path.parent()?.canonicalize().ok()?;
-    Some(parent.join(path.file_name()?))
+    Some(out)
+}
+
+/// Canonicalize the deepest existing ancestor and re-append the rest, so a
+/// file in a directory the edit is about to create still maps through a
+/// symlinked spelling of the root. `path` must already be lexically
+/// normalized (no `..` left to resolve against a symlink).
+fn canonicalize_lenient(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut rest: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        if let Ok(canonical) = existing.canonicalize() {
+            let mut out = canonical;
+            for part in rest.iter().rev() {
+                out.push(part);
+            }
+            return Some(out);
+        }
+        rest.push(existing.file_name()?);
+        existing = existing.parent()?;
+    }
 }
 
 /// The `file` production of the grammar: the path itself when it is already
