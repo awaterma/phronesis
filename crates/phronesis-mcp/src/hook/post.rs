@@ -245,6 +245,7 @@ fn evaluate_network(
         process::exit(1);
     });
     crate::capsule::capture_for_hook(&security::project_root(), &consequences);
+    super::report_unbound_at_fire(&consequences);
     let (logged, violations, warnings) =
         super::collect_logged(&consequences, &security::project_root());
     let command_exit = matches!(tool_name, "Bash" | "run_shell_command")

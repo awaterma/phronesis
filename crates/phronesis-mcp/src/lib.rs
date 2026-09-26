@@ -11,6 +11,7 @@ pub mod coverage;
 pub mod diff_extract;
 pub mod drift;
 pub mod durable_migrate;
+pub(crate) mod fact_id;
 pub mod graph;
 pub mod hook;
 pub(crate) mod hook_facts;

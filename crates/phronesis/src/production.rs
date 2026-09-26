@@ -192,14 +192,10 @@ impl ProductionNetwork {
                         substituted_params.push(apply_bindings(param, &agenda_item.bindings));
                     }
 
-                    // Defense-in-depth: skip actions with unbound variables (Forgy integrity check)
-                    if substituted_params.iter().any(|p| p.starts_with('?')) {
-                        warn!(
-                            "RETE integrity: unbound variables in rule '{}' action '{}': {:?}",
-                            agenda_item.rule.id, action.action_type, substituted_params
-                        );
-                        continue;
-                    }
+                    // An unbound variable renders literally; the action still
+                    // runs. Dropping it would turn a firing block rule into a
+                    // silent allow.
+                    warn_unbound(&agenda_item.rule.id, action, &agenda_item.bindings);
 
                     substituted_actions.push(Action {
                         action_type: action.action_type.clone(),
@@ -260,15 +256,11 @@ impl ProductionNetwork {
                 .map(|p| apply_bindings(p, &agenda_item.bindings))
                 .collect();
 
-            // Defense in depth: skip actions with any residual unbound variable
-            // in their first character — preserves the Forgy integrity check.
-            if substituted.iter().any(|p| p.starts_with('?')) {
-                warn!(
-                    "RETE integrity: unbound variables in rule '{}' action '{}': {:?}",
-                    agenda_item.rule.id, action.action_type, substituted
-                );
-                continue;
-            }
+            // An unbound variable renders literally and the action still
+            // fires: a block rule whose message names an unbound `?var` (or
+            // simply starts with `?`) must still block. The payload names the
+            // variables so hosts can report them.
+            let unbound = warn_unbound(&agenda_item.rule.id, action, &agenda_item.bindings);
 
             let kind = match action.action_type.as_str() {
                 "constraint_violation" | "constraint_warning" => ConsequenceKind::Constraint,
@@ -277,12 +269,15 @@ impl ProductionNetwork {
 
             let message = substituted.join(" ");
             let data = substituted_action_data(action, &agenda_item.bindings);
-            let payload = json!({
+            let mut payload = json!({
                 "action_type": action.action_type,
                 "message": message,
                 "params": substituted,
                 "data": data,
             });
+            if !unbound.is_empty() {
+                payload["unbound_variables"] = json!(unbound);
+            }
 
             out.push(Consequence {
                 kind,
@@ -301,17 +296,51 @@ impl ProductionNetwork {
     }
 }
 
-/// Substitute every `?var` occurrence in `param` with the bound value from
+/// Variable-shaped tokens in `action`'s params and data that `bindings`
+/// leaves unsubstituted, logged at `warn`. They render literally.
+fn warn_unbound(rule_id: &str, action: &Action, bindings: &Bindings) -> Vec<String> {
+    let mut unbound: Vec<String> = Vec::new();
+    for text in action.texts() {
+        for token in crate::engine_types::variable_tokens(text) {
+            let bound = bindings.bindings.contains_key(token);
+            if !bound && !unbound.iter().any(|u| u == token) {
+                unbound.push(token.to_string());
+            }
+        }
+    }
+    if !unbound.is_empty() {
+        warn!(
+            "rule '{}' action '{}' names unbound variable(s) {:?}; rendered literally",
+            rule_id, action.action_type, unbound
+        );
+    }
+    unbound
+}
+
+/// Substitute every whole `?var` token in `param` with the bound value from
 /// `bindings`. Variables not present in `bindings` are left as-is so that
 /// the Forgy integrity check in `execute_agenda_item` can still detect them.
 ///
-/// The keys in `Bindings::bindings` already include the leading `?`, so a
-/// straight string-replace per entry produces the right output.
+/// Tokenization uses [`crate::engine_types::variable_token_spans`], the same
+/// tokenizer `warn_unbound`/`unbound_action_variables` use for detection, so
+/// a bound `?f` substitutes only the exact token `?f` and never the longer,
+/// still-unbound `?file`.
 pub(crate) fn apply_bindings(param: &str, bindings: &Bindings) -> String {
-    let mut out = param.to_string();
-    for (var, value) in &bindings.bindings {
-        out = out.replace(var, value);
+    let spans = crate::engine_types::variable_token_spans(param);
+    if spans.is_empty() {
+        return param.to_string();
     }
+    let mut out = String::with_capacity(param.len());
+    let mut last = 0;
+    for (range, token) in spans {
+        out.push_str(&param[last..range.start]);
+        match bindings.bindings.get(token) {
+            Some(value) => out.push_str(value),
+            None => out.push_str(token),
+        }
+        last = range.end;
+    }
+    out.push_str(&param[last..]);
     out
 }
 
@@ -397,6 +426,43 @@ mod apply_bindings_tests {
             "no variables here"
         );
     }
+
+    /// Regression: `?f` bound must not match inside the longer token
+    /// `?file` — substitution is by whole `?ident` token, not substring.
+    #[test]
+    fn does_not_substitute_a_longer_variable_that_has_the_bound_name_as_a_prefix() {
+        let bindings = b(&[("?f", "src/lib.rs")]);
+        assert_eq!(
+            apply_bindings("Function added in ?file (file var is ?f)", &bindings),
+            "Function added in ?file (file var is src/lib.rs)"
+        );
+    }
+
+    #[test]
+    fn substitutes_a_variable_immediately_followed_by_punctuation() {
+        let bindings = b(&[("?f", "greet")]);
+        assert_eq!(apply_bindings("see ?f.", &bindings), "see greet.");
+        assert_eq!(apply_bindings("(?f)", &bindings), "(greet)");
+    }
+
+    #[test]
+    fn does_not_substitute_a_different_variable_with_a_shared_prefix() {
+        let bindings = b(&[("?f", "greet")]);
+        // `?f_x` is a distinct token from `?f` and must be left alone.
+        assert_eq!(
+            apply_bindings("?f_x is separate", &bindings),
+            "?f_x is separate"
+        );
+    }
+
+    #[test]
+    fn substitutes_a_repeated_variable_at_every_occurrence() {
+        let bindings = b(&[("?f", "greet")]);
+        assert_eq!(
+            apply_bindings("?f and ?f again", &bindings),
+            "greet and greet again"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -446,6 +512,89 @@ mod execute_agenda_item_substitution_tests {
             actions[0].params,
             vec!["Function `greet` is bad".to_string()]
         );
+    }
+
+    fn agenda_item(rule: Rule) -> AgendaItem {
+        AgendaItem {
+            rule,
+            wme_list: vec![],
+            bindings: Bindings::new(),
+            salience: 0,
+            id: "ai-unbound".to_string(),
+            seq: 0,
+        }
+    }
+
+    /// A firing block rule must always produce its consequence. The action
+    /// used to be dropped whenever a param began with `?`, which turned
+    /// `{"block": "?reason: ..."}` into a silent allow.
+    #[test]
+    fn unbound_leading_variable_renders_literally_and_still_fires() {
+        let mut net = ProductionNetwork::new();
+        let mut rule = rule_with_mixed_param();
+        rule.actions[0].params = vec!["?reason: force push rewrites history".to_string()];
+        net.add_rule(rule.clone(), 0);
+
+        let consequences = net.fire_agenda_item(&agenda_item(rule.clone())).unwrap();
+        assert_eq!(consequences.len(), 1, "the block must not be dropped");
+        assert_eq!(
+            consequences[0].payload["message"],
+            "?reason: force push rewrites history"
+        );
+        assert_eq!(
+            consequences[0].payload["unbound_variables"],
+            serde_json::json!(["?reason"])
+        );
+
+        let actions = net.execute_agenda_item(&agenda_item(rule)).unwrap();
+        assert_eq!(actions.len(), 1, "the action must not be dropped");
+    }
+
+    /// Regression: `?f` bound must not be substituted or counted as bound
+    /// inside the longer token `?file` — detection and substitution must
+    /// agree on whole-token boundaries.
+    #[test]
+    fn prefix_bound_variable_does_not_mask_or_corrupt_a_longer_unbound_variable() {
+        let mut net = ProductionNetwork::new();
+        let mut rule = rule_with_mixed_param();
+        rule.conditions[0].args = vec!["?f".to_string()];
+        rule.actions[0].params = vec!["Function added in ?file (file var is ?f)".to_string()];
+        net.add_rule(rule.clone(), 0);
+
+        let mut bindings = Bindings::new();
+        bindings.add_binding("?f", "src/lib.rs").unwrap();
+        let agenda_item = AgendaItem {
+            rule: rule.clone(),
+            wme_list: vec![],
+            bindings,
+            salience: 0,
+            id: "ai-prefix".to_string(),
+            seq: 0,
+        };
+
+        let consequences = net.fire_agenda_item(&agenda_item).unwrap();
+        assert_eq!(consequences.len(), 1);
+        assert_eq!(
+            consequences[0].payload["message"],
+            "Function added in ?file (file var is src/lib.rs)"
+        );
+        assert_eq!(
+            consequences[0].payload["unbound_variables"],
+            serde_json::json!(["?file"])
+        );
+    }
+
+    #[test]
+    fn literal_question_marks_are_text_not_variables() {
+        let mut net = ProductionNetwork::new();
+        let mut rule = rule_with_mixed_param();
+        rule.actions[0].params = vec!["?? are you sure".to_string()];
+        net.add_rule(rule.clone(), 0);
+
+        let consequences = net.fire_agenda_item(&agenda_item(rule)).unwrap();
+        assert_eq!(consequences.len(), 1);
+        assert_eq!(consequences[0].payload["message"], "?? are you sure");
+        assert!(consequences[0].payload.get("unbound_variables").is_none());
     }
 
     #[test]

@@ -181,6 +181,41 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   (keeping its phase unless one is given) and says `replaced`;
   `extract_rules` replaces by id; and every rules-file write keeps only the
   last definition of an id.
+- **A `block` rule whose message started with `?` fired but did not block.**
+  `{"block": "?reason: force-pushing rewrites history"}` — or any message
+  whose first word was a `?var` no condition binds — made the engine drop the
+  action, so the rule matched and the hook exited 0. A firing rule now always
+  produces its consequence: an unbound variable renders literally, and the
+  hook prints a `NOTE` naming the rule and variable when the rules load and
+  again when the rule fires. A message that is merely text (`?? are you
+  sure`) is left alone.
+
+- **A bound short variable name could corrupt or hide a longer one.** A
+  message like `"Function added in ?file (file var is ?f)"` with only `?f`
+  bound rendered as `"Function added in <value>ile (file var is <value>)"` —
+  substitution matched `?f` as a substring of `?file` — and the load-time
+  diagnostic wrongly treated `?file` as bound for the same reason, so no
+  `NOTE` warned about it. Substitution and unbound-variable detection now
+  share one tokenizer and match whole `?ident` tokens only, so `?f` never
+  touches `?file`.
+
+- **Two warn rules could produce a spurious block.** Hook-derived fact ids were
+  built by replacing punctuation with `_`, so `new_content_contains` patterns
+  `a.b` and `a-b` both became `new_content_contains_a_b`; an edit containing
+  both was blocked with `duplicate fact id`. The same `_`-join let facts from
+  different predicates collide (`function_clone_count` for `high_x` versus
+  `function_clone_count_high` for `x`). Fact ids are now escaped reversibly
+  and cannot collide; identical patterns from different rules still share
+  one fact.
+
+- **Some blocks left no trace in the action log.** When `pre-check` failed
+  closed — a rules-file load error, a fact-assertion error, a predicate
+  provider error — it exited 2 without writing a log entry, and the Codex
+  adapter's fail-closed denies were not logged either, so `log.jsonl` could
+  not explain them. Every exit-2 entry and Codex deny is now logged with a
+  `blocked_by` list naming each reason: `kind: "rule"` with the rule id, or
+  `kind: "fail_closed"` with the message (and, for `pre-check`, the failing
+  stage).
 
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
