@@ -113,8 +113,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   verdict depended on assertion order (a `facts_count(...) <= 1` guard kept
   blocking after a provider emitted two facts). Guards are now judged at fire
   time against the final working memory; an activation whose guard is false
-  stays latched and is judged again on the next fire, and `agenda_snapshot`
-  lists only activations that would fire now.
+  is dropped without being latched, so the next `update_agenda` rediscovers
+  and re-judges it, and `agenda_snapshot` lists only activations that would
+  fire now. A `__script__` condition with no script text is now a guard
+  error (fails closed) instead of a guard that silently passes.
+
+- **A rule removed and re-added under the same id never fired again.**
+  `remove_rule` left the rule's fired-activation keys behind, so the new
+  rule's matches looked already fired, and left its pending activations on
+  the agenda, where firing one failed with `ProductionStateNotFound`. Removing
+  a rule now clears both.
 
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule

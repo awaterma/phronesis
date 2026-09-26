@@ -11,7 +11,13 @@
 //!   never printed ("treating as blocked"), so a block rule silently
 //!   allowed.
 
-use phronesis::{Action, Condition, Consequence, Fact, ReteNetwork, Rule};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use phronesis::{
+    Action, BuiltinScriptEvaluator, Condition, Consequence, Fact, ReteNetwork, Rule, ScriptEval,
+};
 
 fn fact(id: &str, predicate: &str, args: &[&str]) -> Fact {
     Fact {
@@ -169,8 +175,8 @@ async fn pure_script_rule_is_order_independent() {
 #[tokio::test]
 async fn guard_that_becomes_true_later_fires_on_a_later_cycle() {
     // Serve mode: fire, assert more, fire again. A guard that was false at
-    // the first fire must still be judged again, without an explicit
-    // `update_agenda`, once the fact it waits for arrives.
+    // the first fire is not consumed: the next `update_agenda` rediscovers
+    // the activation and judges it against the new working memory.
     let net = ReteNetwork::new();
     net.add_rule(rule(
         "waits-for-b",
@@ -186,15 +192,17 @@ async fn guard_that_becomes_true_later_fires_on_a_later_cycle() {
     );
 
     net.assert_fact(fact("b1", "b", &["1"])).await.unwrap();
+    net.update_agenda().await.unwrap();
     assert_eq!(net.agenda_snapshot().unwrap().len(), 1);
     let fired = net.fire_all_consequences().unwrap();
     assert_eq!(fired.len(), 1, "guard is now true: {fired:?}");
     // Refraction still holds: the activation is consumed.
+    net.update_agenda().await.unwrap();
     assert!(net.fire_all_consequences().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn retracting_the_trigger_drops_a_deferred_activation() {
+async fn retracting_the_trigger_drops_a_guard_false_activation() {
     let net = ReteNetwork::new();
     net.add_rule(rule(
         "waits-for-b",
@@ -206,6 +214,7 @@ async fn retracting_the_trigger_drops_a_deferred_activation() {
     assert!(net.fire_all_consequences().unwrap().is_empty());
     net.retract_fact("a1").await.unwrap();
     net.assert_fact(fact("b1", "b", &["1"])).await.unwrap();
+    net.update_agenda().await.unwrap();
     assert!(
         net.fire_all_consequences().unwrap().is_empty(),
         "an activation whose trigger was retracted must never fire"
@@ -286,4 +295,110 @@ async fn legacy_action_path_applies_the_same_guard_semantics() {
         .unwrap();
     net.update_agenda().await.unwrap();
     assert!(net.execute_all_agenda_items().unwrap().is_empty());
+}
+
+/// Delegates to the builtin evaluator and counts evaluations.
+#[derive(Debug)]
+struct CountingEvaluator(Arc<AtomicUsize>);
+
+impl ScriptEval for CountingEvaluator {
+    fn evaluate(
+        &self,
+        script: &str,
+        facts: &[Fact],
+        bindings: &HashMap<String, String>,
+    ) -> Result<bool, String> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        ScriptEval::evaluate(&BuiltinScriptEvaluator::new(), script, facts, bindings)
+    }
+}
+
+#[tokio::test]
+async fn guard_false_activations_do_not_accumulate_across_drains() {
+    // A long-lived session: every round adds one guard-false activation,
+    // fires, and snapshots the agenda. Each activation must be judged a
+    // bounded number of times, not re-judged on every later drain.
+    let calls = Arc::new(AtomicUsize::new(0));
+    let net = ReteNetwork::with_script_evaluator(Box::new(CountingEvaluator(Arc::clone(&calls))));
+    net.add_rule(rule(
+        "waits-for-b",
+        vec![cond("a", &["?x"]), script("facts_contain('b', ['?x'])")],
+    ))
+    .await
+    .unwrap();
+    let rounds = 200;
+    for i in 0..rounds {
+        net.assert_fact(fact(&format!("a{i}"), "a", &[&i.to_string()]))
+            .await
+            .unwrap();
+        assert!(net.fire_all_consequences().unwrap().is_empty());
+        assert!(net.agenda_snapshot().unwrap().is_empty());
+    }
+    let judged = calls.load(Ordering::Relaxed);
+    assert!(
+        judged <= rounds,
+        "{judged} guard evaluations over {rounds} rounds: guard-false activations are being re-judged every drain"
+    );
+}
+
+#[tokio::test]
+async fn re_adding_a_removed_rule_fires_again() {
+    // remove_rule must forget the rule's refraction keys: a rule re-added
+    // under the same id is a new rule.
+    let net = ReteNetwork::new();
+    net.add_rule(rule(
+        "r",
+        vec![cond("a", &["?x"]), script("facts_contain('never', ['*'])")],
+    ))
+    .await
+    .unwrap();
+    net.assert_fact(fact("a1", "a", &["1"])).await.unwrap();
+    assert!(net.fire_all_consequences().unwrap().is_empty());
+    net.remove_rule("r").unwrap();
+    net.add_rule(rule(
+        "r",
+        vec![cond("a", &["?x"]), script("facts_contain('a', ['*'])")],
+    ))
+    .await
+    .unwrap();
+    net.update_agenda().await.unwrap();
+    assert_eq!(net.fire_all_consequences().unwrap().len(), 1);
+
+    // And after it has fired: removed and re-added, it fires again.
+    net.remove_rule("r").unwrap();
+    net.add_rule(rule("r", vec![cond("a", &["?x"])]))
+        .await
+        .unwrap();
+    net.update_agenda().await.unwrap();
+    assert_eq!(net.fire_all_consequences().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn removing_a_rule_drops_its_pending_activations() {
+    let net = ReteNetwork::new();
+    net.add_rule(rule("r", vec![cond("a", &["?x"])]))
+        .await
+        .unwrap();
+    net.assert_fact(fact("a1", "a", &["1"])).await.unwrap();
+    net.remove_rule("r").unwrap();
+    assert!(net.agenda_snapshot().unwrap().is_empty());
+    let fired = net
+        .fire_all_consequences()
+        .expect("a removed rule's activation must not reach the production network");
+    assert!(fired.is_empty());
+}
+
+#[tokio::test]
+async fn script_condition_without_script_text_fails_closed() {
+    let net = ReteNetwork::new();
+    let mut missing = script("unused");
+    missing.script = None;
+    net.add_rule(rule("no-text", vec![cond("a", &["?x"]), missing]))
+        .await
+        .unwrap();
+    net.assert_fact(fact("a1", "a", &["1"])).await.unwrap();
+    let fired = net.fire_all_consequences().unwrap();
+    assert_eq!(fired.len(), 1);
+    let error = guard_error(&fired[0]).expect("missing script is a guard error");
+    assert!(error.contains("no script"), "{error}");
 }

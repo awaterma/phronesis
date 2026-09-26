@@ -375,7 +375,9 @@ fn realistic_facts() -> Vec<Fact> {
             fact(
                 &format!("f{i}"),
                 "file_path_matches",
-                &[&format!("component-{i:04}-padding-padding-padding-padding-pad")],
+                &[&format!(
+                    "component-{i:04}-padding-padding-padding-padding-pad"
+                )],
             )
         })
         .collect();

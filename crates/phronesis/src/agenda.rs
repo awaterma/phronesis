@@ -87,12 +87,6 @@ impl Agenda {
         self.items.push(agenda_item);
     }
 
-    /// Re-insert a previously popped item, keeping its `id` and `seq` so it
-    /// resumes its original place in firing order.
-    pub fn restore_item(&mut self, item: AgendaItem) {
-        self.items.push(item);
-    }
-
     /// Get the next highest priority agenda item
     pub fn pop_next(&mut self) -> Option<AgendaItem> {
         self.items.pop()

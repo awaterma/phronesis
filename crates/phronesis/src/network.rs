@@ -61,8 +61,9 @@ impl ActivationKey {
 /// arrive after the trigger (a predicate provider's, say) sees them.
 ///
 /// - `Pass`: the activation fires.
-/// - `Fail`: the activation is not consumed; it stays latched and is judged
-///   again at the next drain.
+/// - `Fail`: the activation is dropped and un-latched (its refraction key is
+///   cleared), so the next `update_agenda` rediscovers it and judges it
+///   against the working memory of that cycle.
 /// - `Error`: the guard could not be evaluated. The rule is treated as
 ///   matched (fail closed) — a broken guard on a block rule blocks — and each
 ///   consequence carries the error as `payload.guard_error` and in its
@@ -111,10 +112,6 @@ pub struct ReteNetwork {
     /// Script condition evaluator for `__script__` pseudo-predicate conditions (038-xp-progression).
     /// Defaults to [`BuiltinScriptEvaluator`]; swap via [`ReteNetwork::with_script_evaluator`].
     script_evaluator: Box<dyn ScriptEval>,
-    /// Activations whose `__script__` guard was false at the last drain.
-    /// They stay latched (refraction) and are judged again at the next
-    /// drain, so a guard that becomes true later still fires.
-    guard_deferred: Arc<Mutex<Vec<AgendaItem>>>,
 }
 
 impl Default for ReteNetwork {
@@ -134,7 +131,6 @@ impl ReteNetwork {
             performance_stats: Arc::new(Mutex::new(PerformanceStats::new())),
             fired_activations: Arc::new(Mutex::new(HashSet::new())),
             script_evaluator: Box::new(BuiltinScriptEvaluator::new()),
-            guard_deferred: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -343,10 +339,6 @@ impl ReteNetwork {
                 .map_err(|_| ReteError::poisoned("agenda"))?;
             agenda.remove_by_condition(|item| item.wme_list.iter().any(|w| w.id == wme_id));
         }
-        self.guard_deferred
-            .lock()
-            .map_err(|_| ReteError::poisoned("guard_deferred"))?
-            .retain(|item| item.wme_list.iter().all(|w| w.id != wme_id));
 
         // Update agenda after removal
         self.update_agenda().await?;
@@ -683,7 +675,14 @@ impl ReteNetwork {
         facts: &[Fact],
     ) -> GuardVerdict {
         let mut verdict = GuardVerdict::Pass;
-        for script in Self::guard_scripts(rule) {
+        for condition in Self::guard_conditions(rule) {
+            let Some(script) = condition.script.as_deref() else {
+                warn!(
+                    "Script condition in rule '{}' has no script text — failing closed",
+                    rule.id
+                );
+                return GuardVerdict::Error("__script__ condition has no script text".to_string());
+            };
             match self
                 .script_evaluator
                 .evaluate(script, facts, &bindings.bindings)
@@ -705,12 +704,11 @@ impl ReteNetwork {
         verdict
     }
 
-    /// The `__script__` guard expressions on `rule`.
-    fn guard_scripts(rule: &Rule) -> impl Iterator<Item = &str> {
+    /// The `__script__` guard conditions on `rule`.
+    fn guard_conditions(rule: &Rule) -> impl Iterator<Item = &Condition> {
         rule.conditions
             .iter()
             .filter(|c| c.predicate == "__script__")
-            .filter_map(|c| c.script.as_deref())
     }
 
     /// Clone the facts in working memory — the snapshot guards are judged
@@ -733,7 +731,7 @@ impl ReteNetwork {
         item: &AgendaItem,
         facts: &mut Option<Vec<Fact>>,
     ) -> Result<GuardVerdict, ReteError> {
-        if Self::guard_scripts(&item.rule).next().is_none() {
+        if Self::guard_conditions(&item.rule).next().is_none() {
             return Ok(GuardVerdict::Pass);
         }
         if facts.is_none() {
@@ -743,35 +741,19 @@ impl ReteNetwork {
         Ok(self.judge_guards(&item.rule, &item.bindings, facts))
     }
 
-    /// Move activations deferred by an earlier drain back onto the agenda
-    /// (keeping their insertion order) so their guards are judged again.
-    fn restore_deferred(&self) -> Result<(), ReteError> {
-        let deferred = std::mem::take(
-            &mut *self
-                .guard_deferred
-                .lock()
-                .map_err(|_| ReteError::poisoned("guard_deferred"))?,
-        );
-        if deferred.is_empty() {
-            return Ok(());
-        }
-        let mut agenda = self
-            .agenda
-            .lock()
-            .map_err(|_| ReteError::poisoned("agenda"))?;
-        for item in deferred {
-            agenda.restore_item(item);
-        }
-        Ok(())
-    }
-
     /// Pop the next activation whose guards do not currently fail, with the
-    /// guard error it must be annotated with, if any. Activations whose
-    /// guard is false are pushed onto `deferred`, not consumed.
+    /// guard error it must be annotated with, if any.
+    ///
+    /// An activation whose guard is false is dropped *and un-latched*: its
+    /// refraction key is cleared, so the next [`update_agenda`] rediscovers
+    /// it and it is judged again against the working memory of that cycle.
+    /// Nothing is retained between drains, so a long-lived session never
+    /// re-judges an ever-growing set of guard-false activations.
+    ///
+    /// [`update_agenda`]: Self::update_agenda
     fn pop_firable(
         &self,
         facts: &mut Option<Vec<Fact>>,
-        deferred: &mut Vec<AgendaItem>,
     ) -> Result<Option<(AgendaItem, Option<String>)>, ReteError> {
         loop {
             let next = self
@@ -785,20 +767,18 @@ impl ReteNetwork {
             match self.verdict_for(&item, facts)? {
                 GuardVerdict::Pass => return Ok(Some((item, None))),
                 GuardVerdict::Error(e) => return Ok(Some((item, Some(e)))),
-                GuardVerdict::Fail => deferred.push(item),
+                GuardVerdict::Fail => {
+                    let key = ActivationKey::new(
+                        &item.rule.id,
+                        item.wme_list.iter().map(|w| w.id.as_str()),
+                    );
+                    self.fired_activations
+                        .lock()
+                        .map_err(|_| ReteError::poisoned("fired_activations"))?
+                        .remove(&key);
+                }
             }
         }
-    }
-
-    /// Keep guard-false activations latched for the next drain.
-    fn stash_deferred(&self, deferred: Vec<AgendaItem>) -> Result<(), ReteError> {
-        if !deferred.is_empty() {
-            self.guard_deferred
-                .lock()
-                .map_err(|_| ReteError::poisoned("guard_deferred"))?
-                .extend(deferred);
-        }
-        Ok(())
     }
 
     /// Count the number of real (non-script) conditions in a rule
@@ -831,10 +811,7 @@ impl ReteNetwork {
         &self,
         facts: &mut Option<Vec<Fact>>,
     ) -> Result<Vec<Action>, ReteError> {
-        let mut deferred = Vec::new();
-        let next = self.pop_firable(facts, &mut deferred);
-        self.stash_deferred(deferred)?;
-        match next? {
+        match self.pop_firable(facts)? {
             Some((item, _guard_error)) => {
                 let production_network = self
                     .production_network
@@ -853,7 +830,6 @@ impl ReteNetwork {
     /// [`execute_all_agenda_items`](Self::execute_all_agenda_items).
     #[cfg(feature = "embedding-host")]
     pub fn execute_next_agenda_item(&self) -> Result<Vec<Action>, ReteError> {
-        self.restore_deferred()?;
         self.execute_next_agenda_item_inner(&mut None)
     }
 
@@ -862,7 +838,6 @@ impl ReteNetwork {
         let start = Instant::now();
 
         let mut all_actions = Vec::new();
-        self.restore_deferred()?;
         let mut facts = None;
         loop {
             match self.execute_next_agenda_item_inner(&mut facts) {
@@ -897,32 +872,18 @@ impl ReteNetwork {
         let start = Instant::now();
         let mut all = Vec::new();
 
-        self.restore_deferred()?;
         let mut facts = None;
-        let mut deferred = Vec::new();
-        let drained = loop {
-            let (item, guard_error) = match self.pop_firable(&mut facts, &mut deferred) {
-                Ok(Some(next)) => next,
-                Ok(None) => break Ok(()),
-                Err(e) => break Err(e),
-            };
-            let fired = self
+        while let Some((item, guard_error)) = self.pop_firable(&mut facts)? {
+            let mut consequences = self
                 .production_network
                 .lock()
-                .map_err(|_| ReteError::poisoned("production_network"))
-                .and_then(|pn| pn.fire_agenda_item(&item));
-            match fired {
-                Ok(mut consequences) => {
-                    if let Some(error) = guard_error {
-                        annotate_guard_error(&mut consequences, &item.rule.id, &error);
-                    }
-                    all.extend(consequences);
-                }
-                Err(e) => break Err(e),
+                .map_err(|_| ReteError::poisoned("production_network"))?
+                .fire_agenda_item(&item)?;
+            if let Some(error) = guard_error {
+                annotate_guard_error(&mut consequences, &item.rule.id, &error);
             }
-        };
-        self.stash_deferred(deferred)?;
-        drained?;
+            all.extend(consequences);
+        }
 
         {
             let mut values = self
@@ -1149,11 +1110,11 @@ impl ReteNetwork {
     /// hold an internal agenda lock or mutate scheduling state.
     ///
     /// "Pending" means firable now: activations whose `__script__` guard is
-    /// false against current working memory are left out (they stay latched
-    /// and reappear once the guard holds); a guard that errors is included,
-    /// because firing fails closed.
+    /// false against current working memory are left out (firing would
+    /// drop them); a guard that errors is included, because firing fails
+    /// closed.
     pub fn agenda_snapshot(&self) -> Result<Vec<AgendaItem>, ReteError> {
-        let mut items: Vec<AgendaItem> = self
+        let items: Vec<AgendaItem> = self
             .agenda
             .lock()
             .map_err(|_| ReteError::poisoned("agenda"))?
@@ -1161,13 +1122,6 @@ impl ReteNetwork {
             .into_iter()
             .cloned()
             .collect();
-        items.extend(
-            self.guard_deferred
-                .lock()
-                .map_err(|_| ReteError::poisoned("guard_deferred"))?
-                .iter()
-                .cloned(),
-        );
         let mut facts = None;
         let mut pending = Vec::with_capacity(items.len());
         for item in items {
@@ -1175,7 +1129,6 @@ impl ReteNetwork {
                 pending.push(item);
             }
         }
-        pending.sort_by(|a, b| b.cmp(a)); // firing order, as `pop_next`
         Ok(pending)
     }
 
@@ -1255,10 +1208,17 @@ impl ReteNetwork {
             .single_cond_index
             .retain(|_, entries| !entries.is_empty());
         drop(production_network);
-        self.guard_deferred
+        // A removed rule leaves nothing behind: its pending activations
+        // would fail at fire time (no production state), and its refraction
+        // keys would stop a rule re-added under the same id from firing.
+        self.agenda
             .lock()
-            .map_err(|_| ReteError::poisoned("guard_deferred"))?
-            .retain(|item| item.rule.id != rule_id);
+            .map_err(|_| ReteError::poisoned("agenda"))?
+            .remove_by_condition(|item| item.rule.id == rule_id);
+        self.fired_activations
+            .lock()
+            .map_err(|_| ReteError::poisoned("fired_activations"))?
+            .retain(|key| key.rule_id != rule_id);
         Ok(())
     }
 }
