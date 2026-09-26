@@ -32,9 +32,12 @@ pub fn deny_list(language: &str) -> &'static [&'static str] {
             "#[path",
             "extern crate",
             "unsafe",
+            "macro_rules!",
+            "$",
             "std::process",
             "std::fs",
             "std::net",
+            "std::os",
             "Command::new",
             "env::var",
             "env::var_os",
@@ -56,14 +59,30 @@ const RUST_DENIED_MACROS: &[&str] = &[
     "option_env",
 ];
 
+/// Denied `std` modules (rust): denied wherever they occur below `std`
+/// (`std::fs`, `std::os::unix::fs`, `std::os::unix::net`), since the
+/// platform extension modules re-home the same capabilities. `std::os` is
+/// denied outright: it is nothing but those extensions (raw fds, `CommandExt`,
+/// symlinks, Unix sockets) and a harness has no use for it.
+const RUST_DENIED_STD_MODULES: &[(&str, &str)] = &[
+    ("process", "std::process"),
+    ("fs", "std::fs"),
+    ("net", "std::net"),
+    ("os", "std::os"),
+];
+
+/// Maximum bracket nesting in a rendered rust body. The parser and the
+/// validator's own walks recurse per level, so unbounded nesting would
+/// overflow the stack and abort the process; generated harnesses nest a
+/// handful of levels, and 64 leaves headroom on a 2 MiB thread in debug.
+const RUST_MAX_NESTING: usize = 64;
+
 /// Denied adjacent path segments (rust), matched across `::` with any
 /// whitespace/comments and through expanded `use` trees. A glob import of, or
 /// an `as` rename of, the first segment is denied too (it would reach the
 /// second segment under another name).
 const RUST_DENIED_PATHS: &[(&str, &str, &str)] = &[
     ("std", "process", "std::process"),
-    ("std", "fs", "std::fs"),
-    ("std", "net", "std::net"),
     ("Command", "new", "Command::new"),
     ("env", "var", "env::var"),
     ("env", "var_os", "env::var_os"),
@@ -157,6 +176,13 @@ fn check_rust_body(body: &str, interpolated: &[&str]) -> Result<(), BodyValidati
     let tokens: TokenStream = body
         .parse()
         .map_err(|e: proc_macro2::LexError| unparseable(e.to_string()))?;
+    // Before anything recursive (syn, the walks below) sees the stream.
+    let depth = max_nesting(&tokens);
+    if depth > RUST_MAX_NESTING {
+        return Err(unparseable(format!(
+            "bracket nesting depth {depth} exceeds {RUST_MAX_NESTING}"
+        )));
+    }
     syn::parse2::<syn::File>(tokens.clone()).map_err(|e| unparseable(e.to_string()))?;
 
     if let Some(construct) = rust_denied_construct(&tokens) {
@@ -184,6 +210,26 @@ fn check_rust_body(body: &str, interpolated: &[&str]) -> Result<(), BodyValidati
         }
     }
     Ok(())
+}
+
+/// Deepest group nesting in `tokens`, computed without recursion (the lexer
+/// and the token stream's drop are iterative too).
+fn max_nesting(tokens: &TokenStream) -> usize {
+    let mut max = 0;
+    let mut stack = vec![tokens.clone().into_iter()];
+    while let Some(top) = stack.last_mut() {
+        match top.next() {
+            Some(TokenTree::Group(g)) => {
+                stack.push(g.stream().into_iter());
+                max = max.max(stack.len() - 1);
+            }
+            Some(_) => {}
+            None => {
+                stack.pop();
+            }
+        }
+    }
+    max
 }
 
 /// Set `live[i]` for every byte of a code token. A doc comment lexes as a
@@ -259,6 +305,8 @@ struct PathHit {
     segments: Vec<String>,
     glob: bool,
     renamed: bool,
+    /// Followed by `!`: a macro invocation through this path.
+    bang: bool,
 }
 
 /// The first deny-listed construct in `tokens` (recursing into groups).
@@ -280,9 +328,20 @@ fn rust_denied_construct(tokens: &TokenStream) -> Option<&'static str> {
                 return Some("#[path");
             }
         }
+        // `macro_rules!` / `macro` definitions and `$` metavariables can
+        // assemble a denied path or macro name from pieces no single token
+        // shows, so a rendered body may not define macros at all.
+        if is_punct(tts.get(i), '$') {
+            return Some("$");
+        }
         if let Some(name) = ident_name(&tts[i]) {
             if name == "unsafe" {
                 return Some("unsafe");
+            }
+            if name == "macro_rules"
+                || (name == "macro" && tts.get(i + 1).and_then(ident_name).is_some())
+            {
+                return Some("macro_rules!");
             }
             if name == "extern" && tts.get(i + 1).and_then(ident_name).as_deref() == Some("crate") {
                 return Some("extern crate");
@@ -344,6 +403,19 @@ fn denied_path(hit: &PathHit) -> Option<&'static str> {
         .map(String::as_str)
         .filter(|s| *s != "self")
         .collect();
+    if hit.bang
+        && let Some(construct) = segs.last().and_then(|last| denied_macro(last))
+    {
+        return Some(construct);
+    }
+    if let Some(std_at) = segs.iter().position(|s| *s == "std") {
+        let below = &segs[std_at + 1..];
+        for (module, construct) in RUST_DENIED_STD_MODULES {
+            if below.contains(module) {
+                return Some(construct);
+            }
+        }
+    }
     for (a, b, construct) in RUST_DENIED_PATHS {
         let adjacent = segs.windows(2).any(|w| w[0] == *a && w[1] == *b);
         let reaches = (hit.glob || hit.renamed) && segs.last() == Some(a);
@@ -390,6 +462,7 @@ fn parse_path(
                     segments: prefix,
                     glob: true,
                     renamed: false,
+                    bang: false,
                 });
                 return i + 1;
             }
@@ -401,6 +474,7 @@ fn parse_path(
         segments: prefix,
         glob: false,
         renamed,
+        bang: is_punct(tts.get(i), '!'),
     });
     i
 }
@@ -418,6 +492,7 @@ fn expand_use_group(group: &TokenStream, prefix: &[String], hits: &mut Vec<PathH
                     segments: prefix.to_vec(),
                     glob: true,
                     renamed: false,
+                    bang: false,
                 });
                 i += 1;
             }
@@ -623,6 +698,91 @@ mod tests {
         validate_body("rust", body, &["safe_divide.zero", "safe_divide"]).expect("benign");
     }
 
+    #[test]
+    fn path_qualified_denied_macro_is_denied() {
+        assert!(rejects("fn h() { let _ = std::env!(\"HOME\"); }", &[]));
+        assert!(rejects("fn h() { let _ = ::core::env!(\"HOME\"); }", &[]));
+        assert!(rejects(
+            "fn h() { let _ = core :: include_str ! (\"x\"); }",
+            &[]
+        ));
+        // A module path through `env` is still fine.
+        assert!(!rejects("fn h() { let _ = std::env::args(); }", &[]));
+    }
+
+    #[test]
+    fn macro_rules_cannot_rebuild_denied_names() {
+        assert!(rejects(
+            "macro_rules! p{($x:ident)=>{std::$x::read_to_string(\"/etc/passwd\")}}\nfn h() { p!(fs); }",
+            &[]
+        ));
+        assert!(rejects(
+            "macro_rules! m{($n:ident)=>{$n!(\"/etc/passwd\")}}\nfn h() { m!(include_str); }",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn std_fs_net_process_anywhere_under_std_are_denied() {
+        assert!(rejects(
+            "fn h() { std::os::unix::fs::symlink(\"a\", \"b\"); }",
+            &[]
+        ));
+        assert!(rejects(
+            "fn h() { std::os::unix::net::UnixStream::connect(\"/s\"); }",
+            &[]
+        ));
+        assert!(rejects("use std::os::unix::net as n;\nfn h() {}", &[]));
+        assert!(rejects(
+            "use std::os::unix as u;\nfn h() { u::fs::symlink(\"a\", \"b\"); }",
+            &[]
+        ));
+        assert!(rejects(
+            "use std::{os::{unix::{process::CommandExt}}};\nfn h() {}",
+            &[]
+        ));
+    }
+
+    #[test]
+    fn deep_bracket_nesting_is_refused_without_overflowing_the_stack() {
+        let depth = 5000;
+        let body = format!(
+            "fn h() {{ let _ = {}1{}; }}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        // A small stack: recursion over the nesting would overflow and abort.
+        let handle = std::thread::Builder::new()
+            .stack_size(256 * 1024)
+            .spawn(move || validate_body("rust", &body, &[]).map_err(|e| e.to_string()))
+            .expect("spawn");
+        let result = handle
+            .join()
+            .expect("validator must not overflow the stack");
+        let err = result.expect_err("deep nesting must be refused");
+        assert!(err.contains("nesting"), "{err}");
+        // Nesting right at the cap validates on a default-sized (2 MiB)
+        // thread in a debug build: the cap leaves headroom for syn.
+        let at_cap = RUST_MAX_NESTING - 1;
+        let body = format!(
+            "fn h() {{ let _ = {}1{}; }}",
+            "(".repeat(at_cap),
+            ")".repeat(at_cap)
+        );
+        let handle = std::thread::Builder::new()
+            .stack_size(2 * 1024 * 1024)
+            .spawn(move || validate_body("rust", &body, &[]).is_ok())
+            .expect("spawn");
+        assert!(handle.join().expect("no overflow at the cap"));
+        // Ordinary nesting still validates.
+        let body = format!(
+            "fn h() {{ let _ = {}1{}; }}",
+            "(".repeat(20),
+            ")".repeat(20)
+        );
+        assert!(validate_body("rust", &body, &[]).is_ok());
+    }
+
     /// Differential check: random benign bodies with a deny item spliced in
     /// through random whitespace / grouping / renaming must all be rejected,
     /// and the benign bodies alone must all validate.
@@ -643,7 +803,7 @@ mod tests {
             let picks: Vec<&str> = (0..4).map(|_| ws[rng.gen_range(0..ws.len())]).collect();
             let mut next = picks.iter().cycle();
             let mut w = || next.next().copied().unwrap_or(" ");
-            let (item, top_level): (String, bool) = match rng.gen_range(0..9) {
+            let (item, top_level): (String, bool) = match rng.gen_range(0..12) {
                 0 => (
                     format!("std{}::{}fs{}::{}read(\"x\");", w(), w(), w(), w()),
                     false,
@@ -661,6 +821,17 @@ mod tests {
                     true,
                 ),
                 7 => (format!("env{}::{}var(\"HOME\");", w(), w()), false),
+                9 => (
+                    format!(
+                        "std{}::{}os::unix{}::fs::symlink(\"a\", \"b\");",
+                        w(),
+                        w(),
+                        w()
+                    ),
+                    false,
+                ),
+                10 => (format!("std{}::{}env{}!(\"HOME\");", w(), w(), w()), false),
+                11 => (format!("macro_rules!{}m{{ () => {{}} }}", w()), true),
                 _ => (format!("Command{}::{}new(\"sh\");", w(), w()), false),
             };
             let mut stmts: Vec<&str> = (0..rng.gen_range(0..4))
