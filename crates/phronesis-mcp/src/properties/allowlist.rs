@@ -61,6 +61,12 @@ fn entry_problem(e: &AllowlistEntry) -> Option<String> {
     if e.artifact_sha256.is_empty() {
         return Some("artifact_sha256 is empty".to_string());
     }
+    if !is_sha256_hex(&e.artifact_sha256) {
+        return Some(format!(
+            "artifact_sha256 {:?} is not a SHA-256 digest (64 lowercase hex)",
+            e.artifact_sha256
+        ));
+    }
     if e.template_sha256.is_empty() {
         return Some("template_sha256 is empty — approval must bind the template too".to_string());
     }
@@ -76,6 +82,12 @@ fn entry_problem(e: &AllowlistEntry) -> Option<String> {
         return Some("date is empty".to_string());
     }
     None
+}
+
+fn is_sha256_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// Load the allowlist (empty when absent — a fresh project has approved
@@ -97,6 +109,20 @@ pub fn load(root: &Path) -> Result<AllowlistFile, AllowlistError> {
         return Err(AllowlistError::Malformed {
             message: format!("unsupported format {}", file.version),
         });
+    }
+    // Fail closed on any entry `record` would have refused: a hand-edited
+    // entry with an empty hash or principal is not an approval, and one bad
+    // entry makes the whole file untrustworthy.
+    for (index, entry) in file.entries.iter().enumerate() {
+        if let Some(problem) = entry_problem(entry) {
+            return Err(AllowlistError::InvalidEntry {
+                message: format!(
+                    "entry {index} (artifact_sha256 {:?}) in {}: {problem}",
+                    entry.artifact_sha256,
+                    path.display()
+                ),
+            });
+        }
     }
     Ok(file)
 }
@@ -156,6 +182,9 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// SHA-256 of `abc` (the published test vector).
+    const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
     fn entry(hash: &str, principal: &str) -> AllowlistEntry {
         AllowlistEntry {
             artifact_sha256: hash.into(),
@@ -170,23 +199,66 @@ mod tests {
     #[test]
     fn records_and_recognizes_by_hash() {
         let root = tempdir().unwrap();
-        assert!(!contains(root.path(), "abc").unwrap());
-        record(root.path(), entry("abc", "awaterma (human)")).unwrap();
-        assert!(contains(root.path(), "abc").unwrap());
+        assert!(!contains(root.path(), ABC).unwrap());
+        record(root.path(), entry(ABC, "awaterma (human)")).unwrap();
+        assert!(contains(root.path(), ABC).unwrap());
         // Idempotent.
-        record(root.path(), entry("abc", "awaterma (human)")).unwrap();
+        record(root.path(), entry(ABC, "awaterma (human)")).unwrap();
         assert_eq!(load(root.path()).unwrap().entries.len(), 1);
+    }
+
+    /// C14 (pre-fix probe): a hand-edited entry that `record` would refuse
+    /// must fail `load` closed, so `contains("")` can never be true.
+    #[test]
+    fn c14_load_rejects_invalid_hand_edited_entries() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".phronesis")).unwrap();
+        std::fs::write(
+            allowlist_path(root.path()),
+            r#"{"version":1,"entries":[{"artifact_sha256":"","template_sha256":"","property_id":"","property_revision":"","approver_principal":"","date":""}]}"#,
+        )
+        .unwrap();
+        let err = load(root.path()).unwrap_err();
+        assert!(matches!(err, AllowlistError::InvalidEntry { .. }), "{err}");
+        assert!(
+            err.to_string().contains("entry 0"),
+            "error names the entry: {err}"
+        );
+        assert!(contains(root.path(), "").is_err());
+
+        // A non-digest hash is refused at record and at load alike.
+        assert!(matches!(
+            record(root.path(), entry("abc", "human")),
+            Err(AllowlistError::InvalidEntry { .. })
+        ));
+        let mut bad = entry(ABC, "human");
+        bad.artifact_sha256 = "self-added".into();
+        std::fs::write(
+            allowlist_path(root.path()),
+            serde_json::to_string(&AllowlistFile {
+                version: ALLOWLIST_FORMAT,
+                entries: vec![entry(ABC, "human"), bad],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let err = load(root.path()).unwrap_err();
+        assert!(err.to_string().contains("entry 1"), "{err}");
+        assert!(
+            contains(root.path(), ABC).is_err(),
+            "one bad entry fails closed"
+        );
     }
 
     #[test]
     fn empty_principal_rejected_the_review_gate_is_not_a_rubber_stamp() {
         let root = tempdir().unwrap();
         assert!(matches!(
-            record(root.path(), entry("abc", "")),
+            record(root.path(), entry(ABC, "")),
             Err(AllowlistError::InvalidEntry { .. })
         ));
         assert!(matches!(
-            record(root.path(), entry("abc", "   ")),
+            record(root.path(), entry(ABC, "   ")),
             Err(AllowlistError::InvalidEntry { .. })
         ));
         // And the hooked session's attribution is not a principal: entries

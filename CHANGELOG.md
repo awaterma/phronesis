@@ -94,6 +94,26 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   stray shape above — for a boundary no hook would ever record against. They
   now fail with a message pointing at `phr-mcp init` and write nothing.
 
+- **The macOS verifier sandbox let the verifier write anywhere.** The
+  sandbox-exec profile allowed every write and named `verification/` as a
+  relative path Seatbelt never matches, so a verifier run could write any file
+  the user could. Writes are now denied except under a fresh per-run directory
+  (the artifact copy and `TMPDIR`), with network still denied; the real Verus
+  harness still proves under it.
+- **The devcontainer tier ran whatever image the verifier command named.** The
+  `docker run` line had no image and no mount, so the first verifier word was
+  pulled from a registry as the image and any image that printed the summary
+  line recorded `passed`. The image now comes from
+  `verification/templates/devcontainer.json`, must be pinned by digest (the
+  tier is refused otherwise), is never pulled, and sees only the artifact's
+  run directory, mounted read-only.
+- **A tampered artifact ran as approved.** Verifier execution trusted the hash
+  the caller passed in, so edited bytes ran under an old approval, and a
+  hand-edited allowlist entry with an empty hash or principal was accepted.
+  Execution now computes the artifact's SHA-256 from disk and refuses on a
+  mismatch or when that hash is not approved, and the allowlist refuses to load
+  when any entry is invalid, naming the entry.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added

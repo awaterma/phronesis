@@ -808,7 +808,7 @@ fn collapse_whitespace(raw: &str) -> String {
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         out.push(HEX_DIGITS[usize::from(byte >> 4)] as char);
@@ -831,7 +831,7 @@ const SHA256_K: [u32; 64] = [
 /// SHA-256, implemented here because the workspace has no digest dependency
 /// and adding one needs the user's approval. D7 names SHA-256 specifically, and
 /// a `sha256:` marker computed from anything else would be a lie in the graph.
-fn sha256(data: &[u8]) -> [u8; 32] {
+pub(crate) fn sha256(data: &[u8]) -> [u8; 32] {
     let mut state: [u32; 8] = [
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
         0x5be0cd19,
