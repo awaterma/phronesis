@@ -50,28 +50,47 @@ pub fn detect_tier(root: &Path) -> Option<ConfinementTier> {
     let has_devcontainer = root
         .join("verification/templates/devcontainer.json")
         .is_file();
-    if has_devcontainer {
-        for runtime in ["docker", "podman"] {
-            if std::process::Command::new(runtime)
-                .arg("--version")
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
-            {
-                return Some(ConfinementTier::Devcontainer);
-            }
-        }
+    resolve_tier(
+        has_devcontainer,
+        container_runtime_available,
+        sandbox_exec_available,
+        || raw_execution_allowed(root),
+    )
+}
+
+/// The S9 ladder over host probes. Probes run lazily, in ladder order, so a
+/// stronger tier short-circuits the weaker probes (and no container runtime
+/// is spawned unless a devcontainer is declared).
+fn resolve_tier(
+    devcontainer_declared: bool,
+    container_runtime: impl FnOnce() -> bool,
+    sandbox_exec: impl FnOnce() -> bool,
+    raw_allowed: impl FnOnce() -> bool,
+) -> Option<ConfinementTier> {
+    if devcontainer_declared && container_runtime() {
+        return Some(ConfinementTier::Devcontainer);
     }
-    if sandbox_exec_available() {
+    if sandbox_exec() {
         return Some(ConfinementTier::SandboxExec);
     }
-    if raw_execution_allowed(root) {
+    if raw_allowed() {
         // The raw tier: the human set the config (S1 marker discipline).
         // Selection still records it (S7) — raw-everywhere drift is visible.
         return Some(ConfinementTier::Raw);
     }
     None
+}
+
+/// Tier-1 availability: a working docker or podman CLI.
+fn container_runtime_available() -> bool {
+    ["docker", "podman"].into_iter().any(|runtime| {
+        std::process::Command::new(runtime)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    })
 }
 
 /// Tier-2 availability: the macOS Seatbelt frontend.
@@ -322,30 +341,43 @@ pub fn execute(
 mod tests {
     use super::*;
 
-    /// S9 tier resolution: this host has docker AND sandbox-exec — the
-    /// container tier wins. On a host with neither, raw applies only when
-    /// the human-set config allows it; otherwise refusal.
+    /// S9 tier resolution over every probe combination: the strongest
+    /// available tier wins, a container needs a declared devcontainer, and
+    /// raw is reached only when nothing stronger exists and the human-set
+    /// config allows it. Host-independent — the probes are injected.
     #[test]
     fn s9_tier_resolution_ladder() {
+        use ConfinementTier::{Devcontainer, Raw, SandboxExec};
+        for bits in 0u8..16 {
+            let [declared, runtime, seatbelt, raw] = [0, 1, 2, 3].map(|i| bits & (1 << i) != 0);
+            let expected = if declared && runtime {
+                Some(Devcontainer)
+            } else if seatbelt {
+                Some(SandboxExec)
+            } else if raw {
+                Some(Raw)
+            } else {
+                None
+            };
+            let tier = resolve_tier(declared, || runtime, || seatbelt, || raw);
+            assert_eq!(
+                tier, expected,
+                "declared={declared} runtime={runtime} seatbelt={seatbelt} raw={raw}"
+            );
+        }
+        // No container runtime is probed without a declared devcontainer.
+        let tier = resolve_tier(false, || panic!("probed runtime"), || true, || false);
+        assert_eq!(tier, Some(SandboxExec));
+    }
+
+    /// `detect_tier` wires the real probes: with no devcontainer declared and
+    /// no raw config, this host lands on sandbox-exec exactly when Seatbelt
+    /// works here, and is refused otherwise (e.g. Linux CI).
+    #[test]
+    fn detect_tier_matches_the_hosts_seatbelt_probe() {
         let root = tempfile::tempdir().unwrap();
-        // Without a declared devcontainer, the ladder falls to sandbox-exec.
-        let tier = detect_tier(root.path());
-        assert!(
-            matches!(tier, Some(ConfinementTier::SandboxExec)),
-            "no devcontainer declared -> sandbox-exec tier: {tier:?}"
-        );
-        // With one declared, the container tier claims it.
-        std::fs::create_dir_all(root.path().join("verification/templates")).unwrap();
-        std::fs::write(
-            root.path().join("verification/templates/devcontainer.json"),
-            "{}",
-        )
-        .unwrap();
-        let tier = detect_tier(root.path());
-        assert!(
-            matches!(tier, Some(ConfinementTier::Devcontainer)),
-            "{tier:?}"
-        );
+        let expected = sandbox_exec_available().then_some(ConfinementTier::SandboxExec);
+        assert_eq!(detect_tier(root.path()), expected);
     }
 
     /// S9 discipline 1: raw is never a default — without the human-set config
