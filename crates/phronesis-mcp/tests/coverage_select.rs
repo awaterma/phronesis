@@ -278,3 +278,160 @@ fn test_select_table_lists_coverage_and_static_separately() {
         "table must mention static reach: {table}"
     );
 }
+
+const TWO_FN_OLD: &str = r#"pub fn alpha(x: i32) -> i32 {
+    x + 1
+}
+
+pub fn beta(x: i32) -> i32 {
+    x * 2
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exercises_beta() {
+        assert_eq!(beta(2), 4);
+    }
+}
+"#;
+
+const TWO_FN_NEW: &str = r#"pub fn alpha(x: i32) -> i32 {
+    x + 10
+}
+
+pub fn beta(x: i32) -> i32 {
+    x * 20
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exercises_beta() {
+        assert_eq!(beta(2), 40);
+    }
+}
+"#;
+
+/// A test with a real store hit on `alpha` and only a static graph edge to
+/// `beta` must not have `beta` reported as dynamic evidence: the store never
+/// observed that test executing `beta`.
+#[test]
+fn test_select_static_region_never_labeled_as_coverage_observation() {
+    use phronesis_mcp::graph::store as graph_store;
+
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path();
+    Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .expect("git init");
+    for (k, v) in [("user.email", "test@test.com"), ("user.name", "Test")] {
+        Command::new("git")
+            .args(["config", k, v])
+            .current_dir(dir)
+            .output()
+            .expect("git config");
+    }
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::write(dir.join("src/lib.rs"), TWO_FN_OLD).unwrap();
+    for args in [&["add", "."][..], &["commit", "-m", "initial"][..]] {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+    }
+    std::fs::write(dir.join("src/lib.rs"), TWO_FN_NEW).unwrap();
+    // Rebuild after the edit so the graph is fresh against the working tree.
+    phronesis_mcp::graph::sync::rebuild(dir).expect("graph rebuild");
+
+    // Use the graph's own test identity so the dynamic and static halves key
+    // the same test.
+    let edges = graph_store::load(&graph_store::graph_path(dir)).expect("graph");
+    let test_id = edges
+        .iter()
+        .find_map(|e| {
+            let reaches_beta = |f: &str| f.rsplit("::").next() == Some("beta");
+            match e.p.as_str() {
+                "tested_by" if e.a.len() == 2 && reaches_beta(&e.a[0]) => Some(e.a[1].clone()),
+                "test_reaches" if e.a.len() == 2 && reaches_beta(&e.a[1]) => Some(e.a[0].clone()),
+                _ => None,
+            }
+        })
+        .expect("graph must carry a static edge from a test to beta");
+
+    write_store(
+        dir,
+        &[hit(&test_id, "fn:alpha", "src/lib.rs", "region")],
+        &CoverageIndex {
+            format: COVERAGE_FORMAT,
+            revision: FIXTURE_REV.into(),
+            imported_at: 1,
+            tool: "cargo-llvm-cov".into(),
+        },
+    )
+    .unwrap();
+
+    let sel = select(dir, None).unwrap();
+    assert!(
+        sel.static_reach_available,
+        "graph must be fresh: {:?}",
+        sel.static_note
+    );
+
+    let dynamic: Vec<&SelectedTest> = sel
+        .tests
+        .iter()
+        .filter(|t| t.test == test_id && t.evidence == "coverage_observation")
+        .collect();
+    let stat: Vec<&SelectedTest> = sel
+        .tests
+        .iter()
+        .filter(|t| t.test == test_id && t.evidence == "static_reach")
+        .collect();
+    assert_eq!(dynamic.len(), 1, "one dynamic entry: {:?}", sel.tests);
+    assert_eq!(stat.len(), 1, "one static entry: {:?}", sel.tests);
+    assert_eq!(dynamic[0].regions, vec!["fn:alpha".to_string()]);
+    assert!(
+        stat[0].regions.contains(&"fn:beta".to_string()),
+        "static entry must carry fn:beta: {:?}",
+        stat[0].regions
+    );
+    assert!(
+        !stat[0].regions.contains(&"fn:alpha".to_string()),
+        "alpha has no static edge from this test: {:?}",
+        stat[0].regions
+    );
+
+    // Table: beta must not appear in the dynamic section.
+    let table = render_table(&sel);
+    let dynamic_section = table
+        .split("coverage_observation (dynamic):")
+        .nth(1)
+        .and_then(|rest| rest.split("static_reach (graph edges):").next())
+        .expect("dynamic section must be rendered");
+    assert!(
+        !dynamic_section.contains("fn:beta"),
+        "fn:beta leaked into the dynamic section: {table}"
+    );
+    assert!(
+        table.contains("static_reach (graph edges):"),
+        "static section must be rendered: {table}"
+    );
+    // Two entries, one test.
+    assert!(
+        table.contains("1 test(s) selected."),
+        "footer counts distinct tests: {table}"
+    );
+}

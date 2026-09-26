@@ -6,7 +6,9 @@
 //!   edges from the graph store, when fresh)
 //!
 //! Each entry is labeled by evidence kind (`coverage_observation` vs
-//! `static_reach`), deduplicated, and carries its justifying regions.
+//! `static_reach`), deduplicated, and carries its justifying regions. A test
+//! with both kinds of evidence yields one entry per kind, so a statically
+//! reached region is never reported as observed.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -19,6 +21,11 @@ use crate::coverage::store::load_hits;
 use crate::graph::model::Edge;
 use crate::graph::store as graph_store;
 use crate::graph::sync::{self, Freshness};
+
+/// Evidence label for a region the coverage store observed a test hitting.
+const COVERAGE_OBSERVATION: &str = "coverage_observation";
+/// Evidence label for a region a test reaches only via a graph edge.
+const STATIC_REACH: &str = "static_reach";
 
 /// One selected test with its evidence kind and justifying regions.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +46,8 @@ pub struct Selection {
     pub changed_functions: Vec<String>,
     /// Changed branch region IDs (e.g. `branch:safe_divide:cd6054b02dde`).
     pub changed_branches: Vec<String>,
-    /// Selected tests, sorted by name then evidence kind.
+    /// Selected tests, sorted by name then evidence kind. A test may appear
+    /// twice: once per evidence kind.
     pub tests: Vec<SelectedTest>,
     /// Whether the static (graph) half was available.
     pub static_reach_available: bool,
@@ -151,21 +159,15 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         .map(|s| s.as_str())
         .collect();
 
-    // test -> (evidence, regions)
-    let mut by_test: BTreeMap<String, SelectedTest> = BTreeMap::new();
+    // (test, evidence) -> entry. Keyed by evidence kind too, so a test with
+    // both a store hit and a static edge gets one entry per kind: a region
+    // is only ever labeled `coverage_observation` when the store holds a hit
+    // for that (test, region) pair.
+    let mut by_test: BTreeMap<(String, &'static str), SelectedTest> = BTreeMap::new();
 
     for hit in &hits {
         if changed_region_set.contains(hit.region.as_str()) {
-            let entry = by_test
-                .entry(hit.test.clone())
-                .or_insert_with(|| SelectedTest {
-                    test: hit.test.clone(),
-                    evidence: "coverage_observation".to_string(),
-                    regions: Vec::new(),
-                });
-            if !entry.regions.contains(&hit.region) {
-                entry.regions.push(hit.region.clone());
-            }
+            add_entry(&mut by_test, &hit.test, COVERAGE_OBSERVATION, &hit.region);
         }
     }
 
@@ -190,7 +192,7 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
                 let test = &edge.a[1];
                 if fn_matches(func, &changed_fn_names) {
                     let region = format!("fn:{}", func.rsplit("::").next().unwrap_or(func));
-                    add_static_entry(&mut by_test, test, &region);
+                    add_entry(&mut by_test, test, STATIC_REACH, &region);
                 }
             }
         }
@@ -202,18 +204,14 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
                 let func = &edge.a[1];
                 if fn_matches(func, &changed_fn_names) {
                     let region = format!("fn:{}", func.rsplit("::").next().unwrap_or(func));
-                    add_static_entry(&mut by_test, test, &region);
+                    add_entry(&mut by_test, test, STATIC_REACH, &region);
                 }
             }
         }
     }
 
-    let mut tests: Vec<SelectedTest> = by_test.into_values().collect();
-    tests.sort_by(|a, b| {
-        a.test
-            .cmp(&b.test)
-            .then_with(|| a.evidence.cmp(&b.evidence))
-    });
+    // BTreeMap order is (test, evidence kind): deterministic, no re-sort.
+    let tests: Vec<SelectedTest> = by_test.into_values().collect();
 
     Ok(Selection {
         change,
@@ -235,13 +233,18 @@ fn fn_matches(graph_func: &str, changed_names: &[&str]) -> bool {
         .any(|name| *name == bare || *name == graph_func)
 }
 
-/// Add or merge a static_reach entry for a test.
-fn add_static_entry(by_test: &mut BTreeMap<String, SelectedTest>, test: &str, region: &str) {
+/// Add or merge a region into the entry for `(test, evidence)`.
+fn add_entry(
+    by_test: &mut BTreeMap<(String, &'static str), SelectedTest>,
+    test: &str,
+    evidence: &'static str,
+    region: &str,
+) {
     let entry = by_test
-        .entry(test.to_string())
+        .entry((test.to_string(), evidence))
         .or_insert_with(|| SelectedTest {
             test: test.to_string(),
-            evidence: "static_reach".to_string(),
+            evidence: evidence.to_string(),
             regions: Vec::new(),
         });
     if !entry.regions.contains(&region.to_string()) {
@@ -317,12 +320,12 @@ pub fn render_table(sel: &Selection) -> String {
     let coverage_entries: Vec<&SelectedTest> = sel
         .tests
         .iter()
-        .filter(|t| t.evidence == "coverage_observation")
+        .filter(|t| t.evidence == COVERAGE_OBSERVATION)
         .collect();
     let static_entries: Vec<&SelectedTest> = sel
         .tests
         .iter()
-        .filter(|t| t.evidence == "static_reach")
+        .filter(|t| t.evidence == STATIC_REACH)
         .collect();
 
     if !coverage_entries.is_empty() {
@@ -355,7 +358,10 @@ pub fn render_table(sel: &Selection) -> String {
         out.push_str(&format!("static reach: {note}\n"));
     }
 
-    out.push_str(&format!("\n{} test(s) selected.\n", sel.tests.len()));
+    // Count distinct tests: one with both evidence kinds has two entries.
+    let distinct: std::collections::BTreeSet<&str> =
+        sel.tests.iter().map(|t| t.test.as_str()).collect();
+    out.push_str(&format!("\n{} test(s) selected.\n", distinct.len()));
 
     out
 }
