@@ -5,7 +5,7 @@
 //!
 //! Trust-anchor defense: the allowlist file is protected by ordinary
 //! governance rules (a pre-phase rule blocks agent-seam Edit/Write to
-//! trust-anchor paths — see the properties rules fixture), and `record`
+//! trust-anchor paths — shipped in the `llm` pack, see `init.rs`), and `record`
 //! requires a non-empty approver principal: an approval whose attribution
 //! comes from the hooked session is not a review.
 

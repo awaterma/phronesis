@@ -1824,6 +1824,52 @@ fn deflection_rules() -> Value {
                     {"bash_command_matches": "\\b(pkill|killall|kill)\\b[^;|&]*\\b(cargo|rustc)\\b"}
                 ],
                 "then": {"warn": "Builds are I/O-bound: a rustc at 0% CPU is usually in disk-wait, not hung. Give it time or check `ps` state before killing the build."}
+            },
+            // SPEC-verification-artifact-generation.md S1/S3 (acceptance C7):
+            // the verification trust anchors are human-principal acts, so the
+            // agent seam is refused. File tools are matched on path segments;
+            // shell writes on the command text (redirects, tee, cp/mv/rm and
+            // friends, in-place sed/perl). Command matching is lexical: a
+            // write through an interpreter or a variable that never spells
+            // the anchor path is not caught (the spec's enforcement note).
+            {
+                "id": "block-agent-write-to-verification-allowlist",
+                "phase": "pre",
+                "priority": 100,
+                "when": [
+                    {"file_path_matches": ".phronesis"},
+                    {"file_path_matches": "verification-allowlist.json"}
+                ],
+                "then": {"block": "The verification allowlist is a trust anchor: approvals are human-principal acts (SPEC-C S3). An approval written by the agent is not a review — ask the human to approve the artifact."}
+            },
+            {
+                "id": "block-agent-write-to-verification-optin",
+                "phase": "pre",
+                "priority": 100,
+                "when": [
+                    {"file_path_matches": ".phronesis"},
+                    {"file_path_matches": "verification.json"}
+                ],
+                "then": {"block": "`.phronesis/verification.json` is the verification opt-in (including `raw_execution`) and a trust anchor (SPEC-C S1). Only the human changes it."}
+            },
+            {
+                "id": "block-agent-write-to-verification-templates",
+                "phase": "pre",
+                "priority": 100,
+                "when": [
+                    {"file_path_matches": "verification"},
+                    {"file_path_matches": "templates"}
+                ],
+                "then": {"block": "`verification/templates/` is a trust anchor (SPEC-C S1/S3): templates and the devcontainer declaration are human-principal content. Propose the change to the human instead of writing it."}
+            },
+            {
+                "id": "block-agent-shell-write-to-trust-anchors",
+                "phase": "pre",
+                "priority": 100,
+                "when": [
+                    {"bash_command_matches": "(>>?\\|?\\s*[\"']?[^\\s;&|<>\"']*(verification(-allowlist)?\\.json|verification/templates\\b))|((^|[;&|(`\\n]|\\b(git|sudo|xargs|command|env))\\s*(tee|cp|mv|install|ln|rsync|truncate|touch|rm|unlink|dd|patch)\\s[^;&|]*(verification(-allowlist)?\\.json|verification/templates\\b))|((^|[;&|(`\\n]|\\b(git|sudo|xargs|command|env))\\s*(sed|perl|ruby)\\s([^;&|]*\\s)?(-[A-Za-z]*i|--in-place)[^;&|]*(verification(-allowlist)?\\.json|verification/templates\\b))"}
+                ],
+                "then": {"block": "This command writes a verification trust anchor (`.phronesis/verification-allowlist.json`, `.phronesis/verification.json`, or `verification/templates/`). Those are human-principal acts (SPEC-C S1/S3) — reading them is fine; changing them is the human's call."}
             }
         ]
     })
@@ -3274,6 +3320,31 @@ mod tests {
         let err = parse_packs("none,rust").expect_err("none must be exclusive");
         assert!(matches!(err, InitError::InvalidPackSelection(_)));
         assert!(err.to_string().contains("cannot be combined"));
+    }
+
+    /// SPEC-C S1: the trust-anchor refusal ships in the default platform,
+    /// with or without a language pack, and every rule blocks.
+    #[test]
+    fn default_platform_blocks_trust_anchor_writes() {
+        for selection in ["", "rust", "python,typescript"] {
+            let v = compose_packs(&parse_packs(selection).unwrap());
+            for id in [
+                "block-agent-write-to-verification-allowlist",
+                "block-agent-write-to-verification-optin",
+                "block-agent-write-to-verification-templates",
+                "block-agent-shell-write-to-trust-anchors",
+            ] {
+                let rule = v["rules"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|r| r["id"] == id)
+                    .unwrap_or_else(|| panic!("`{selection}` must install {id}"));
+                assert_eq!(rule["phase"], "pre", "{id}");
+                assert!(rule["then"]["block"].is_string(), "{id} must block");
+                assert!(rule.get("audit").is_none(), "{id}: path rules never audit");
+            }
+        }
     }
 
     #[test]

@@ -301,6 +301,11 @@ The packs are composable and **independent**:
   build (all three via the `bash_command_matches` regex predicate; the two
   git ones tolerate global options, absolute paths, and `command`/`env`
   wrappers between the binary and the subcommand — see `confidence` below).
+  Blocks agent writes to the verification trust anchors
+  (`.phronesis/verification-allowlist.json`, `.phronesis/verification.json`,
+  `verification/templates/`) — through Edit/Write/MultiEdit (and Gemini's
+  `replace`/`write_file`) by path segment, and through shell redirects,
+  `tee`, `cp`/`mv`/`rm`, and in-place `sed`/`perl` by command text.
   These rules fire from disk at every hook invocation, so they remain
   active even when CLAUDE.md content has been compressed out of context.
 - `rust` — Rust code-shape enforcement. Blocks: `.unwrap()` /

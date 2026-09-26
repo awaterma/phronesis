@@ -414,12 +414,15 @@ fn c7_agent_seam_writes_to_trust_anchor_paths_are_blocked_by_the_hook() {
     use std::process::{Command, Stdio};
 
     let d = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(d.path().join("verification")).unwrap();
-    std::fs::create_dir_all(d.path().join(".phronesis")).unwrap();
-    // The rules fixture, loaded live: the refusal rule is an ordinary pre-phase rule.
-    let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/properties-rules.json");
-    std::fs::copy(&fixture, d.path().join(".phronesis/rules.json")).unwrap();
+    // The refusal rules ship in the default platform: the rules a plain
+    // `phr-mcp init` installs, loaded live (tests/trust_anchor_integration.rs
+    // covers every anchor path x tool).
+    let init = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["init", "--rules-only"])
+        .current_dir(d.path())
+        .output()
+        .expect("spawn init");
+    assert!(init.status.success(), "init failed: {init:?}");
 
     let payload = json!({
         "session_id": "s-agent",
@@ -427,7 +430,7 @@ fn c7_agent_seam_writes_to_trust_anchor_paths_are_blocked_by_the_hook() {
         "hook_event_name": "PreToolUse",
         "tool_name": "Write",
         "tool_input": {
-            "file_path": "verification/allowlist/entries.json",
+            "file_path": ".phronesis/verification-allowlist.json",
             "content": "{\"version\":1,\"entries\":[{\"artifact_sha256\":\"self-added\"}]}"
         }
     });

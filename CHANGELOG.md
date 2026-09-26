@@ -287,6 +287,28 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   hash, so the first hook after upgrading reports the graph as unverified
   until `phr-mcp graph rebuild` or the next hooked save rewrites it.
 
+- **An agent could approve its own verification artifact.** The rule that
+  refuses agent writes to the verification trust anchors lived only in a test
+  fixture, so no `phr-mcp init` installed it — and even that fixture matched a
+  directory the code never reads, letting `.phronesis/verification-allowlist.json`,
+  `.phronesis/verification.json` (the `raw_execution` opt-in), and shell
+  writes like `echo > verification/templates/x.rhai` through. The `llm` pack in
+  the default platform now blocks Edit/Write/MultiEdit (and Gemini
+  `replace`/`write_file`) to all three anchors, plus shell redirects, `tee`,
+  `cp`/`mv`/`rm`, and in-place `sed`/`perl` that name them. Shell matching is
+  lexical, and the spec now says so: that seam is advisory. Re-run
+  `phr-mcp init --rules-only` to pick the rules up.
+
+- **`set_property_status` could promote a property without leaving an audit
+  line, lose concurrent transitions, and rewrite a store every reader rejects.**
+  A failed `log.jsonl` append was ignored after the status had already been
+  written; two transitions at once raced on one unlocked read-modify-write and
+  a shared `properties.json.tmp`; and a store with an unsupported version or a
+  hostile id was rewritten as if valid. The transition is now journaled before
+  it commits (a journal failure refuses it and leaves the store untouched), the
+  update holds a lock with a unique temp file, and the store is read through the
+  same validator every reader uses, so a rejected store is refused.
+
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
   `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose
