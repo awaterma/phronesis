@@ -28,9 +28,10 @@ pub const INDEX_REL_PATH: &str = ".phronesis/graph.index";
 ///
 /// Stored as a JSON object mapping file paths to `[unresolved, ambiguous]`.
 /// A sidecar keeps the index format (plain text hashes) untouched and avoids
-/// embedding a JSON blob inside a line-oriented file. The stats are rebuilt
-/// from scratch on every `rebuild`/`persist`, so a missing or stale sidecar
-/// is never dangerous — the next rebuild restores it.
+/// embedding a JSON blob inside a line-oriented file. Every rebuild writes
+/// the stats from scratch; an incremental save merges its file's counts into
+/// them. A missing or stale sidecar is never dangerous — the next rebuild
+/// restores it.
 pub const RESOLUTION_STATS_REL_PATH: &str = ".phronesis/graph.resolution.json";
 
 /// Version of what the extractor writes. Bumped whenever entity naming *or*

@@ -119,8 +119,9 @@ impl EpistemeMcp {
         let derived_edges = edges.len().saturating_sub(base_edges);
         let deprecated_rule_predicates =
             sync::deprecated_graph_rule_predicates(root).map_err(|e| Self::err(e.to_string()))?;
+        // Derived state: a corrupt sidecar means no hotspots, not no status.
         let per_file_resolution = sync::load_resolution_stats(root)
-            .map_err(|e| Self::err(e.to_string()))?
+            .unwrap_or_default()
             .into_iter()
             .map(|(file, (unresolved, ambiguous))| {
                 (

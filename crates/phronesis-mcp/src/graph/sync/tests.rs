@@ -1262,3 +1262,44 @@ fn per_file_resolution_stats_survive_an_incremental_save() {
         (total_u, total_a)
     );
 }
+
+#[test]
+fn incremental_save_adds_other_files_newly_dropped_edges_to_their_rebuild_counts() {
+    // Removing `helper` from b.rs strands a.rs's stored canonical call to it;
+    // that drop is counted under a.rs on top of a.rs's rebuild counts.
+    let d = project();
+    write(
+        d.path(),
+        "src/lib.rs",
+        "pub mod a;\npub mod b;\npub mod c;\n",
+    );
+    write(
+        d.path(),
+        "src/a.rs",
+        "use crate::b::helper;\nuse crate::b::dup;\nuse crate::c::dup;\npub fn entry() { helper(); missing(); dup(); }\n",
+    );
+    write(
+        d.path(),
+        "src/b.rs",
+        "pub fn dup() {}\npub fn helper() {}\n",
+    );
+    write(d.path(), "src/c.rs", "pub fn dup() {}\n");
+    rebuild(d.path()).expect("rebuild");
+    assert_eq!(
+        load_resolution_stats(d.path())
+            .expect("load")
+            .get("src/a.rs"),
+        Some(&(1, 1))
+    );
+
+    let b_without_helper = "pub fn dup() {}\n";
+    write(d.path(), "src/b.rs", b_without_helper);
+    let outcome = on_save(d.path(), "src/b.rs", b_without_helper).expect("save b");
+    let after_save = load_resolution_stats(d.path()).expect("load after save");
+    let full = rebuild(d.path()).expect("full rebuild");
+    assert_eq!(after_save, full.per_file_resolution);
+    assert_eq!(
+        (outcome.unresolved_calls, outcome.ambiguous_calls),
+        (full.unresolved_calls, full.ambiguous_calls)
+    );
+}

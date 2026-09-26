@@ -61,11 +61,13 @@ fn verify_persisted(path: &Path, n_base: usize, n_derived: usize) -> std::io::Re
 
 /// Recompute derived edges over `base` and persist both sets.
 ///
-/// `saved_file` is the file an incremental save re-extracted. Every other
-/// stored edge is already canonical, so canonicalization only sees that
-/// file's raw edges: its breakdown replaces the file's sidecar entry and the
-/// other files' entries from the last rebuild are kept. The returned totals
-/// are the sums over the merged breakdown, as they are after a rebuild.
+/// `saved_file` is the file an incremental save re-extracted. Its raw edges
+/// are canonicalized afresh, so its breakdown replaces its sidecar entry.
+/// Other files' stored edges were canonical at the last rebuild; they are
+/// counted here only if the save removed their target (a stored edge that no
+/// longer matches), so their counts are added to the entries kept from that
+/// rebuild. The returned totals are the sums over the merged breakdown, as
+/// they are after a rebuild.
 fn persist(
     root: &Path,
     mut base: Vec<Edge>,
@@ -75,7 +77,11 @@ fn persist(
     if let Some(saved_file) = saved_file {
         let mut merged = load_resolution_stats(root).unwrap_or_default();
         merged.remove(saved_file);
-        merged.extend(per_file);
+        for (file, (u, a)) in per_file {
+            let entry = merged.entry(file).or_default();
+            entry.0 += u;
+            entry.1 += a;
+        }
         unresolved = merged.values().map(|(u, _)| u).sum();
         ambiguous = merged.values().map(|(_, a)| a).sum();
         per_file = merged;
