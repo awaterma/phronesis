@@ -219,10 +219,16 @@ pub async fn run_interaction_context_configured(
     last_n: usize,
     legacy_max_bytes: usize,
 ) -> String {
-    match render::render(project_root, ContextEvent::Interaction, last_n).await {
+    let out = match render::render(project_root, ContextEvent::Interaction, last_n).await {
         None => run_interaction_context(project_root, last_n, legacy_max_bytes),
         Some(result) => emit(project_root, &result),
-    }
+    };
+    with_rules_load_error(
+        project_root,
+        ContextEvent::Interaction.hook_event_name(),
+        out,
+        legacy_max_bytes,
+    )
 }
 
 /// Turn a render result into the payload a hook prints, recording the
@@ -316,10 +322,50 @@ pub async fn run_charter_context_configured(
     legacy_max_bytes: usize,
 ) -> String {
     let _ = crate::journey::current_sid(project_root);
-    match render::render(project_root, event, 0).await {
+    let out = match render::render(project_root, event, 0).await {
         None => run_session_context(project_root, legacy_max_bytes),
         Some(result) => emit(project_root, &result),
-    }
+    };
+    with_rules_load_error(project_root, event.hook_event_name(), out, legacy_max_bytes)
+}
+
+/// Lead the context with the rules load error, when the rules on disk do not
+/// load. Every hook blocks until they do, and without this the agent sees
+/// only "BLOCKED" on each call and never the reason or the file to fix.
+fn with_rules_load_error(
+    project_root: &Path,
+    hook_event_name: &str,
+    envelope: String,
+    max_bytes: usize,
+) -> String {
+    let Err(error) = crate::rule_layers::resolve(project_root) else {
+        return envelope;
+    };
+    let notice = format!(
+        "**Phronesis rules do not load — every tool call is blocked until they do.** \
+         Edit {} to fix it (edits to that file are allowed): {error}",
+        error.failing_file(project_root).display()
+    );
+    let existing = serde_json::from_str::<serde_json::Value>(&envelope)
+        .ok()
+        .and_then(|v| {
+            v["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .map(String::from)
+        })
+        .unwrap_or_default();
+    let body = if existing.is_empty() {
+        notice
+    } else {
+        format!("{notice}\n\n{existing}")
+    };
+    wrap_additional_context(hook_event_name, &body, max_bytes.max(notice_floor(&body)))
+}
+
+/// Never truncate the notice itself away: it is the one line that explains
+/// why every tool call is blocked.
+fn notice_floor(body: &str) -> usize {
+    body.find("\n\n").unwrap_or(body.len())
 }
 
 /// Host-neutral context body for one event, with the observation labelled

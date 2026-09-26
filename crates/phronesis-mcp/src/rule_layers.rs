@@ -87,6 +87,39 @@ pub enum LayerError {
     Rules(#[from] RulesFileError),
 }
 
+impl LayerError {
+    /// The file a human (or agent) has to edit to fix this error: the rules
+    /// file that failed to parse, or `loader.json` for a layer-config error.
+    pub fn failing_file(&self, project_root: &Path) -> PathBuf {
+        match self {
+            LayerError::Io { path, .. } | LayerError::Malformed { path, .. } => PathBuf::from(path),
+            LayerError::Rules(error) => error
+                .path()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| config_path(project_root)),
+            _ => config_path(project_root),
+        }
+    }
+}
+
+/// Whether `target` (a tool's `file_path`, absolute or project-relative) is
+/// the file whose load error is blocking every hook. Editing that file is
+/// the one tool call a load error must not block, or an agent can never
+/// repair it.
+pub fn is_repair_target(project_root: &Path, failing: &Path, target: &str) -> bool {
+    if target.is_empty() {
+        return false;
+    }
+    let target = Path::new(target);
+    let target = if target.is_absolute() {
+        target.to_path_buf()
+    } else {
+        project_root.join(target)
+    };
+    let canonical = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    canonical(&target) == canonical(failing)
+}
+
 fn config_version() -> u8 {
     1
 }

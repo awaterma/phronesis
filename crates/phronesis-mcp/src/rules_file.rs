@@ -664,6 +664,19 @@ pub enum RulesFileError {
     Unfold { path: String, message: String },
 }
 
+impl RulesFileError {
+    /// The file this error is about, when it names one.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            RulesFileError::Io { path, .. }
+            | RulesFileError::Malformed { path, .. }
+            | RulesFileError::Invalid { path, .. }
+            | RulesFileError::Unfold { path, .. } => Some(path),
+            RulesFileError::Serialize(_) => None,
+        }
+    }
+}
+
 /// Default state of the rules file under the project root.
 pub fn default_path(project_root: &Path) -> PathBuf {
     project_root.join(".phronesis").join("rules.json")
@@ -711,8 +724,8 @@ pub fn read_source(path: &Path) -> Result<Vec<SourceRule>, RulesFileError> {
         return Err(RulesFileError::Invalid {
             path: path.display().to_string(),
             message: format!(
-                "rule `{}`: duplicate id `{}`; each rule id must appear once per file",
-                dup.id, dup.id
+                "duplicate rule id `{}`; each rule id must appear once per file",
+                dup.id
             ),
         });
     }
@@ -837,8 +850,10 @@ pub fn unfold_or(source: &SourceRule) -> anyhow::Result<Vec<DiskRule>> {
 /// Atomically write a rules file to `path`. Creates parent directories if needed
 /// and preserves a single `.bak` of the previous contents. Emits v2 shape.
 pub fn write_atomic(path: &Path, file: &RulesFile) -> Result<(), RulesFileError> {
-    let existing: HashMap<String, SourceRule> = read_source(path)
-        .unwrap_or_default()
+    // Refuse rather than overwrite a file that does not load: carrying its
+    // metadata forward is impossible, and replacing it would discard the
+    // user's rules (plus the `.bak` rotation would lose the last good copy).
+    let existing: HashMap<String, SourceRule> = read_source(path)?
         .into_iter()
         .map(|rule| (rule.id.clone(), rule))
         .collect();

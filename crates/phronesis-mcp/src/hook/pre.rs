@@ -61,6 +61,27 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
             Ok(Some(r)) => r,
             Ok(None) => super::exit_ok(),
             Err(e) => {
+                let file_path = super::extract_file_path(&payload);
+                if is_file_edit(&tool_name)
+                    && crate::rule_layers::is_repair_target(&root, &e.failing_file, &file_path)
+                {
+                    // The one edit a load error must not block: without it an
+                    // agent can never repair the file. Allowed with a warning
+                    // so the error stays in front of the agent.
+                    eprintln!(
+                        "phronesis: WARNING — allowing this edit because it targets the rules file that failed to load; every other tool call stays blocked until it loads. {e}"
+                    );
+                    super::log_hook_event(&super::LogEventInput {
+                        phase: "pre",
+                        tool_name: &tool_name,
+                        file_path: &file_path,
+                        exit: 1,
+                        command_exit: None,
+                        consequences: &[],
+                        subject: None,
+                    });
+                    process::exit(1);
+                }
                 eprintln!("phronesis: BLOCKED — {}", e);
                 blocked_exit(
                     &root,
@@ -283,6 +304,15 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
 /// ran, so the `inflight` entry must not survive to make the next prompt look
 /// like a correction, and an `invoke_agent`'s `agents` entry must not survive to
 /// be popped LIFO by the next real sub-agent stop.
+/// File-writing tools (Claude Code and Gemini names). Bash is excluded: its
+/// target cannot be known before it runs.
+fn is_file_edit(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "Edit" | "Write" | "MultiEdit" | "replace" | "write_file"
+    )
+}
+
 fn blocked_exit(root: &std::path::Path, key: &str, tool_name: &str) -> ! {
     super::lifecycle_wiring::undo_blocked_pre(root, key, tool_name);
     process::exit(2)

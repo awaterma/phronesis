@@ -136,7 +136,19 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `add_rule` tools return an error. The message names the rule id, the field,
   the bad value, and the allowed values. Duplicate rule ids within one file
   are rejected too. Unknown predicate names are still accepted, because
-  project Rhai providers define predicates at run time.
+  project Rhai providers define predicates at run time. While the file does
+  not load, an edit (or Codex patch) whose target is that file is allowed with
+  a warning so an agent can repair it, and `session-context` /
+  `interaction-context` lead with the load error instead of printing nothing.
+- **The MCP server could erase every rule in a rules file it could not
+  load.** On startup it loaded nothing from such a file, and the next
+  `add_rule` autosaved only the new rule over it; a second call rotated the
+  last good copy out of `rules.json.bak`, and the now-valid file lifted the
+  block with every user rule gone. `add_rule`, `remove_rule`, `extract_rules`
+  and `save_rules` now refuse while the rules on disk do not load, naming the
+  error and the file to fix, and never write or rotate `.bak`; `list_rules`
+  reports the error as `load_error`. Once the file is fixed, the same server
+  loads its rules before the next write.
 
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
@@ -260,6 +272,29 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   than 64 brackets are refused instead of overflowing the stack, and an
   interpolated value is refused if any occurrence touches code rather than a
   string, char, or comment.
+
+### Upgrading
+
+- **A rules file that loaded before may now block every tool call.** Rule
+  shapes the engine silently ignored are now load errors, so run
+  `phr-mcp audit` right after upgrading: it exits non-zero and names the rule,
+  field, and bad value if the file no longer loads. Newly rejected shapes:
+  - extra rule keys (for example `description` or a comment field) — only
+    `id`, `phase`, `priority`, `audit`, `silent`, `doc_excepted`, `binds`,
+    `when`, `then` (v1: `conditions`, `actions`) are allowed;
+  - custom `then` verbs, including those written by an older MCP `add_rule`
+    autosave as `"then": {"<custom action type>": ...}` — use `block`,
+    `warn`, `log`, or `emit_capsule`;
+  - a mis-cased verb or phase (`"Block"`, `"Pre"`);
+  - an empty `when` / `conditions`;
+  - a float or string `priority`, and `null` or non-boolean `audit`,
+    `silent`, `doc_excepted`, `binds`;
+  - v1 rules with non-string args, more or fewer than one action, or an
+    unknown `action_type`;
+  - the same rule id twice in one file.
+
+  While the file does not load, the hooks still allow edits to it, and the
+  MCP rule-writing tools refuse rather than overwrite it.
 
 ## [0.35.0] - 2026-09-21
 

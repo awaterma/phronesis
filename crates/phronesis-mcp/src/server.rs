@@ -50,6 +50,11 @@ pub struct EpistemeMcp {
     /// Project definitions currently shadowed by a later layer. They remain
     /// on disk unchanged even though their winner is the external definition.
     pub(crate) shadowed_project_rules: Arc<Mutex<HashMap<String, rules_file::DiskRule>>>,
+    /// Why the rules on disk did not load at startup (or at the last
+    /// rule-writing call). While set, the in-memory network does not hold the
+    /// user's rules, so every rule-writing tool refuses rather than replace
+    /// the file with a partial set. Cleared once the file loads again.
+    pub(crate) disk_load_error: Arc<Mutex<Option<String>>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -68,6 +73,7 @@ impl EpistemeMcp {
             phase_map: Arc::new(Mutex::new(HashMap::new())),
             persistent_rule_ids: Arc::new(Mutex::new(HashSet::new())),
             shadowed_project_rules: Arc::new(Mutex::new(HashMap::new())),
+            disk_load_error: Arc::new(Mutex::new(None)),
             tool_router: Self::tool_router(),
         }
     }
@@ -287,6 +293,7 @@ impl EpistemeMcp {
         Parameters(params): Parameters<AddRuleParams>,
     ) -> Result<CallToolResult, McpError> {
         Self::validate_rule_params(&params).map_err(|e| Self::err(e.to_string()))?;
+        self.ensure_autosave_safe().await?;
         // The same shape checks the rules-file loader applies, so a rule the
         // hook would refuse to load is refused here instead of being saved.
         rules_file::check_conditions_nonempty(&params.id, "conditions", params.conditions.len())
@@ -381,7 +388,16 @@ impl EpistemeMcp {
     async fn list_rules(&self) -> Result<CallToolResult, McpError> {
         let network = self.network.lock().await;
         let rules = network.get_all_rules().map_err(Self::err)?;
-        Self::ok_collection("rules", rules)
+        drop(network);
+        // An empty list is ambiguous; say when it is empty because the rules
+        // on disk do not load.
+        match self.disk_load_error.lock().await.clone() {
+            None => Self::ok_collection("rules", rules),
+            Some(error) => Self::ok_json(serde_json::json!({
+                "rules": rules,
+                "load_error": error,
+            })),
+        }
     }
 
     #[tool(description = "Get a specific rule by its ID")]
@@ -408,6 +424,7 @@ impl EpistemeMcp {
         &self,
         Parameters(params): Parameters<RuleIdParam>,
     ) -> Result<CallToolResult, McpError> {
+        self.ensure_autosave_safe().await?;
         let network = self.network.lock().await;
         network
             .remove_rule(params.rule_id.as_str())
@@ -829,6 +846,7 @@ impl EpistemeMcp {
 
         let rules = extract_rules_from_markdown(&content, &params.file_path);
         let count = rules.len();
+        self.ensure_autosave_safe().await?;
 
         let network = self.network.lock().await;
         let existing = network.get_all_rules().map_err(Self::err)?.len();
@@ -869,6 +887,7 @@ impl EpistemeMcp {
         Parameters(params): Parameters<SaveRulesParams>,
     ) -> Result<CallToolResult, McpError> {
         let default_phase = Self::validate_default_phase(params.phase.as_deref().unwrap_or("pre"))?;
+        self.ensure_disk_rules_load().await?;
 
         let path = {
             let root = security::project_root();

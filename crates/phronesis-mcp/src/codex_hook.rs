@@ -814,6 +814,17 @@ async fn handle_pre_patch(payload: &CodexPayload) -> CodexDecision {
                 files: paths,
             };
         }
+        // A patch that only touches the file whose load error blocks every
+        // hook is the repair; blocking it would leave no way to fix the file.
+        Err(e)
+            if paths
+                .iter()
+                .all(|p| crate::rule_layers::is_repair_target(&root, &e.failing_file, p)) =>
+        {
+            return warn_decision(format!(
+                "allowing this patch because it only edits the rules file that failed to load; every other tool call stays blocked until it loads. rules error: {e}"
+            ));
+        }
         Err(e) => return block_decision(format!("rules error: {}", e)),
     };
     let call = ToolCall {
@@ -1203,14 +1214,29 @@ struct LoadedRules {
     override_facts: Vec<phr::Fact>,
 }
 
-fn load_rules(phase: &str) -> Result<Option<LoadedRules>, String> {
+/// The rules on disk did not load; `failing_file` is the file to edit.
+struct RulesLoadError {
+    message: String,
+    failing_file: std::path::PathBuf,
+}
+
+impl std::fmt::Display for RulesLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+fn load_rules(phase: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
     let root = security::project_root();
     let project_path = crate::rules_file::default_path(&root);
     let loader_path = crate::rule_layers::config_path(&root);
     if !project_path.exists() && !loader_path.exists() {
         return Ok(None);
     }
-    let resolved = crate::rule_layers::resolve(&root).map_err(|e| e.to_string())?;
+    let resolved = crate::rule_layers::resolve(&root).map_err(|e| RulesLoadError {
+        message: e.to_string(),
+        failing_file: e.failing_file(&root),
+    })?;
     let override_facts = crate::rule_layers::override_facts(&resolved.overrides);
     let rules: Vec<phr::Rule> = resolved
         .rules

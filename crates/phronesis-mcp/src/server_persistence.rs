@@ -47,58 +47,111 @@ pub(crate) async fn hydrate_rules(
 impl EpistemeMcp {
     /// Hydrate the in-memory network from `.phronesis/rules.json` at startup.
     ///
-    /// Best-effort: silently returns when no rules file exists, or if it
-    /// exists but is malformed (the hook surfaces malformed-rules errors
-    /// with the right exit code; failing startup here would prevent the
-    /// user from ever inspecting the broken file via MCP tools).
+    /// Never fails startup: a server that refused to start could not be used
+    /// to inspect the broken file. When the rules on disk do not load, the
+    /// error is recorded instead; `list_rules` reports it and every
+    /// rule-writing tool refuses until the file loads (see
+    /// [`Self::ensure_disk_rules_load`]). Without that, autosave would
+    /// replace the unloadable file with only the rules added since startup.
     pub async fn autoload(&self) {
         if Self::autopersist_disabled() {
             return;
         }
         let root = security::project_root();
-        let project_path = rules_file::default_path(&root);
-        let resolved = match crate::rule_layers::resolve(&root) {
-            Ok(resolved) => resolved,
-            Err(_) => return,
-        };
-        let network = self.network.lock().await;
-        let mut phase_map = self.phase_map.lock().await;
-        // Best-effort: bail on the first add_rule error and discard it;
-        // rules before the failure stay loaded. (Unreachable in practice —
-        // save_rules dedups ids before writing.)
-        if hydrate_rules(&network, &mut phase_map, &resolved.rules, &HashSet::new())
-            .await
-            .is_err()
-        {
-            return;
-        }
-        for fact in crate::rule_layers::override_facts(&resolved.overrides) {
-            if network.assert_fact(fact).await.is_err() {
-                return;
+        match crate::rule_layers::resolve(&root) {
+            Ok(resolved) => {
+                // Best-effort: an add_rule error leaves the rules before it
+                // loaded. (Unreachable in practice — the loader rejects
+                // duplicate ids.)
+                let _ = self.hydrate_from(&root, resolved).await;
             }
+            Err(error) => *self.disk_load_error.lock().await = Some(error.to_string()),
+        }
+    }
+
+    /// Add the resolved on-disk rules the network does not hold yet, and
+    /// record which ids autosave owns and which project rules are shadowed.
+    async fn hydrate_from(
+        &self,
+        root: &std::path::Path,
+        resolved: crate::rule_layers::ResolvedRules,
+    ) -> Result<(), ReteError> {
+        let project_path = rules_file::default_path(root);
+        let network = self.network.lock().await;
+        let existing: HashSet<String> = network
+            .get_all_rules()?
+            .into_iter()
+            .map(|rule| rule.id)
+            .collect();
+        let mut phase_map = self.phase_map.lock().await;
+        hydrate_rules(&network, &mut phase_map, &resolved.rules, &existing).await?;
+        for fact in crate::rule_layers::override_facts(&resolved.overrides) {
+            network.assert_fact(fact).await?;
         }
         drop(phase_map);
         drop(network);
-        let project_ids = resolved
-            .origins
-            .iter()
-            .filter_map(|(id, origin)| (origin.path == project_path).then_some(id.clone()))
-            .collect();
-        *self.persistent_rule_ids.lock().await = project_ids;
+        self.persistent_rule_ids.lock().await.extend(
+            resolved
+                .origins
+                .iter()
+                .filter_map(|(id, origin)| (origin.path == project_path).then_some(id.clone())),
+        );
+        // `resolve` succeeded, so the project file loads too.
         let project_file =
             rules_file::read(&project_path).unwrap_or(rules_file::RulesFile { rules: Vec::new() });
-        let shadowed = project_file
-            .rules
-            .into_iter()
-            .filter(|rule| {
-                resolved
-                    .origins
-                    .get(&rule.id)
-                    .is_some_and(|origin| origin.path != project_path)
-            })
-            .map(|rule| (rule.id.clone(), rule))
-            .collect();
-        *self.shadowed_project_rules.lock().await = shadowed;
+        let shadowed = project_file.rules.into_iter().filter(|rule| {
+            resolved
+                .origins
+                .get(&rule.id)
+                .is_some_and(|origin| origin.path != project_path)
+        });
+        self.shadowed_project_rules
+            .lock()
+            .await
+            .extend(shadowed.map(|rule| (rule.id.clone(), rule)));
+        Ok(())
+    }
+
+    /// Refuse a rule-writing call while the rules on disk do not load.
+    ///
+    /// The network then does not hold the user's rules, and every write path
+    /// (autosave's full replace, `save_rules`) would overwrite the file with a
+    /// partial set — and rotate the last good copy out of `.bak`. When a file
+    /// that failed earlier loads again, its rules are hydrated first so the
+    /// next write keeps them.
+    pub(crate) async fn ensure_disk_rules_load(&self) -> Result<(), McpError> {
+        let root = security::project_root();
+        match crate::rule_layers::resolve(&root) {
+            Err(error) => {
+                let message = error.to_string();
+                *self.disk_load_error.lock().await = Some(message.clone());
+                Err(Self::err(format!(
+                    "refusing to change rules: the rules on disk do not load, and writing now \
+                     would replace them with the partial set this server holds. Fix {} first \
+                     (the hooks block every tool call until it loads, but allow edits to it): \
+                     {message}",
+                    error.failing_file(&root).display()
+                )))
+            }
+            Ok(resolved) => {
+                let recovered = self.disk_load_error.lock().await.take().is_some();
+                if recovered && !Self::autopersist_disabled() {
+                    self.hydrate_from(&root, resolved)
+                        .await
+                        .map_err(Self::err)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// [`Self::ensure_disk_rules_load`] for tools that write only through
+    /// autosave: with autopersist disabled they never touch disk.
+    pub(crate) async fn ensure_autosave_safe(&self) -> Result<(), McpError> {
+        if Self::autopersist_disabled() {
+            return Ok(());
+        }
+        self.ensure_disk_rules_load().await
     }
 
     /// Persist the current in-memory rules to `.phronesis/rules.json` as

@@ -863,6 +863,15 @@ Unknown condition *predicate names* are not rejected: predicates come from
 built-in fact sources and from project Rhai providers discovered at run
 time, so the loader cannot know the full set.
 
+While the file does not load, two things keep the failure recoverable:
+an edit (Claude `Edit`/`Write`/`MultiEdit`, Gemini `replace`/`write_file`,
+Codex `apply_patch`) whose target is exactly the file that failed is
+allowed with a warning, and `session-context` / `interaction-context` lead
+with the load error. The MCP server records the error at startup
+(`list_rules` reports it as `load_error`), and `add_rule`, `remove_rule`,
+`extract_rules` and `save_rules` refuse until the file loads — its network
+does not hold the user's rules, so any write would replace them.
+
 ### Full example
 
 ```json
