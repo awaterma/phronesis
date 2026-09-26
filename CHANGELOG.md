@@ -8,6 +8,18 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **A coverage import in progress could make hooks report a corrupt
+  coverage store.** A hook that could not get the store lock within its
+  200 ms bound (an import running back to back starves it — flock queues no
+  one) fell back to an unlocked read, and a read that landed between the
+  import's two renames asserted `store_corrupt(coverage, digest_mismatch)`,
+  which rules may block on; the store concurrency tests failed at random on
+  Linux CI for the same reason. That read now reports the store as busy: the
+  evidence is treated as stale (`coverage_stale`, no gap suppressed, a
+  stderr note) and `phr-mcp coverage select` says an import is in progress.
+  A torn store with no one holding the lock — a crashed import — is still
+  `store_corrupt`.
+
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other

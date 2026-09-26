@@ -185,6 +185,14 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
             }
         }
         StoreState::Missing => (Vec::new(), COVERAGE_OBSERVATION, None),
+        StoreState::Busy => (
+            Vec::new(),
+            COVERAGE_OBSERVATION,
+            Some(
+                "coverage store is being replaced by an import in progress; dynamic evidence skipped — re-run select when the import finishes"
+                    .to_string(),
+            ),
+        ),
         StoreState::Corrupt(c) => (
             Vec::new(),
             COVERAGE_OBSERVATION,

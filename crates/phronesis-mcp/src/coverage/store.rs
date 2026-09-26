@@ -81,8 +81,8 @@ impl std::fmt::Display for StoreCorruption {
 
 impl std::error::Error for StoreCorruption {}
 
-/// The three states a reader can observe. Only `Loaded` carries evidence,
-/// and only after the records have been verified against the index.
+/// The states a reader can observe. Only `Loaded` carries evidence, and
+/// only after the records have been verified against the index.
 #[derive(Debug, Clone, PartialEq)]
 pub enum StoreState {
     /// Neither file exists: nothing has been imported.
@@ -93,6 +93,11 @@ pub enum StoreState {
         index: CoverageIndex,
         hits: Vec<HitRecord>,
     },
+    /// An import held the store lock past the bounded wait and the unlocked
+    /// read found the store mid-replacement (records and index from
+    /// different imports). Not corruption — the import will finish — but
+    /// not evidence either: consumers treat it as stale.
+    Busy,
     /// Anything else. Consumers treat this as "no evidence" and say so.
     Corrupt(StoreCorruption),
 }
@@ -152,6 +157,17 @@ fn open_lock(dir: &Path) -> std::io::Result<File> {
 /// import. A crash before the first index rename leaves records without an
 /// index, which also reads as corrupt.
 pub fn write_store(root: &Path, records: &[HitRecord], index: &CoverageIndex) -> Result<()> {
+    write_store_with(root, records, index, &mut || {})
+}
+
+/// [`write_store`] with a hook between the two renames, still under the
+/// exclusive lock (tests pause a writer there deterministically).
+fn write_store_with(
+    root: &Path,
+    records: &[HitRecord],
+    index: &CoverageIndex,
+    between_renames: &mut dyn FnMut(),
+) -> Result<()> {
     let (records_path, index_path) = store_paths(root);
     let dir = records_path
         .parent()
@@ -175,6 +191,7 @@ pub fn write_store(root: &Path, records: &[HitRecord], index: &CoverageIndex) ->
         file.sync_all()?;
     }
     fs::rename(&tmp_records, &records_path)?;
+    between_renames();
 
     let on_disk = IndexFile {
         index: index.clone(),
@@ -203,7 +220,10 @@ fn read_optional(path: &Path) -> std::io::Result<Option<Vec<u8>>> {
 /// How long a read waits for an import holding the lock before reading
 /// unlocked. Bounded so a hung or stopped import never hangs a hook.
 const LOCK_WAIT: Duration = Duration::from_millis(200);
-/// Poll interval while waiting for the lock.
+/// Poll interval while waiting for the lock. flock queues no one: a writer
+/// that re-imports back to back can starve a polling reader whatever the
+/// interval (measured: 1 ms and 10 ms fall back equally often), which is
+/// why a torn read behind a contended lock is `Busy`, not `Corrupt`.
 const LOCK_POLL: Duration = Duration::from_millis(10);
 /// Unlocked reads: how many attempts before a mismatch is reported.
 const READ_ATTEMPTS: usize = 4;
@@ -211,14 +231,18 @@ const READ_ATTEMPTS: usize = 4;
 const RETRY_PAUSE: Duration = Duration::from_millis(25);
 
 /// Read and verify the whole store. Never errors: every failure mode is a
-/// [`StoreState::Corrupt`] with a stable reason code.
+/// [`StoreState::Corrupt`] with a stable reason code, or
+/// [`StoreState::Busy`].
 ///
 /// Reads take the store lock shared, so an import in flight is either
 /// wholly before or wholly after the read. The wait is bounded
-/// ([`LOCK_WAIT`]); if the lock cannot be taken in time (a hung import, a
-/// read-only checkout) the read proceeds unlocked and retries, after a short
-/// pause, any read whose index changed underneath it or that looks torn
-/// (the window between an import's two renames) before reporting corrupt.
+/// ([`LOCK_WAIT`]); if the lock cannot be taken in time (a hung or
+/// back-to-back import, a read-only checkout) the read proceeds unlocked and
+/// retries, after a short pause, any read whose index changed underneath it
+/// or that looks torn (the window between an import's two renames). A tear
+/// that survives the retries is `Busy` when the lock was held by someone
+/// (an import may be in flight), and `Corrupt` only when no one held it (a
+/// crash leftover).
 pub fn load_store(root: &Path) -> StoreState {
     load_store_with(root, LOCK_WAIT, &mut |attempt| {
         std::thread::sleep(RETRY_PAUSE * attempt as u32)
@@ -232,13 +256,17 @@ fn load_store_with(root: &Path, lock_wait: Duration, pause: &mut dyn FnMut(usize
     let lock = records_path
         .parent()
         .filter(|dir| dir.is_dir())
-        .and_then(|dir| open_lock(dir).ok())
-        .filter(|lock| try_lock_shared_for(lock, lock_wait));
-    if lock.is_some() {
+        .and_then(|dir| open_lock(dir).ok());
+    let contended = match &lock {
         // Under the lock no import is mid-flight: one read is the truth.
-        return load_store_once(root);
+        Some(lock) if try_lock_shared_for(lock, lock_wait) => return load_store_once(root),
+        Some(_) => true,
+        None => false,
+    };
+    match load_store_unlocked(root, pause) {
+        StoreState::Corrupt(c) if contended && is_transient(c.reason) => StoreState::Busy,
+        state => state,
     }
-    load_store_unlocked(root, pause)
 }
 
 fn try_lock_shared_for(lock: &File, wait: Duration) -> bool {
@@ -384,16 +412,19 @@ fn load_verified(
 pub fn load_index(root: &Path) -> Option<CoverageIndex> {
     match load_store(root) {
         StoreState::Loaded { index, .. } => Some(index),
-        StoreState::Missing | StoreState::Corrupt(_) => None,
+        StoreState::Missing | StoreState::Busy | StoreState::Corrupt(_) => None,
     }
 }
 
 /// Verified hits: empty when nothing is imported, an error when the store
-/// is corrupt.
+/// is corrupt or busy.
 pub fn load_hits(root: &Path) -> Result<Vec<HitRecord>> {
     match load_store(root) {
         StoreState::Loaded { hits, .. } => Ok(hits),
         StoreState::Missing => Ok(Vec::new()),
+        StoreState::Busy => Err(anyhow!(
+            "coverage store busy: an import is replacing it; try again"
+        )),
         StoreState::Corrupt(c) => Err(anyhow!(c)),
     }
 }
@@ -469,8 +500,6 @@ fn validate_identifier_field(field: &str, name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn hit(rev: &str, n: usize) -> Vec<HitRecord> {
         (0..n)
@@ -504,42 +533,59 @@ mod tests {
         lock
     }
 
-    /// The lock alone keeps concurrent reads consistent: with a generous
-    /// lock wait, a read never falls into the unlocked retry path. Removing
-    /// the lock from either side makes `pause` fire (or a read corrupt).
+    /// The lock alone keeps a read from pairing one import's records with
+    /// another's index. Deterministic: the writer is parked between its two
+    /// renames (records new, index old — a torn store on disk) while holding
+    /// the lock. A reader with a generous lock wait must block until the
+    /// import completes, then load the new store without ever entering the
+    /// unlocked retry. Remove the writer's or the reader's lock and the read
+    /// returns early with the torn store.
     #[test]
     fn lock_isolates_reads_from_in_flight_imports() {
+        use std::sync::mpsc;
         let root = tempfile::tempdir().unwrap();
         let (a, b) = ("a".repeat(40), "b".repeat(40));
         write_store(root.path(), &hit(&a, 2), &index(&a)).unwrap();
-        let done = Arc::new(AtomicBool::new(false));
+
+        let (parked_tx, parked_rx) = mpsc::channel::<()>();
+        let (resume_tx, resume_rx) = mpsc::channel::<()>();
         let writer = {
-            let (root, done) = (root.path().to_path_buf(), Arc::clone(&done));
-            let (a, b) = (a.clone(), b.clone());
+            let (root, b) = (root.path().to_path_buf(), b.clone());
             std::thread::spawn(move || {
-                for i in 0..300 {
-                    let (rev, n) = if i % 2 == 0 { (&b, 3) } else { (&a, 2) };
-                    write_store(&root, &hit(rev, n), &index(rev)).unwrap();
-                }
-                done.store(true, Ordering::SeqCst);
+                write_store_with(&root, &hit(&b, 3), &index(&b), &mut || {
+                    parked_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                })
+                .unwrap();
             })
         };
-        let mut retries = 0usize;
-        let mut reads = 0usize;
-        while !done.load(Ordering::SeqCst) {
-            reads += 1;
-            let state =
-                load_store_with(root.path(), Duration::from_secs(10), &mut |_| retries += 1);
-            assert!(
-                matches!(state, StoreState::Loaded { .. }),
-                "read {reads}: {state:?}"
-            );
-        }
-        writer.join().unwrap();
-        assert_eq!(
-            retries, 0,
-            "{retries} of {reads} reads needed the unlocked retry"
+        parked_rx.recv().unwrap(); // records renamed, index not, lock held
+
+        let (done_tx, done_rx) = mpsc::channel();
+        let reader = {
+            let root = root.path().to_path_buf();
+            std::thread::spawn(move || {
+                let mut retries = 0usize;
+                let state = load_store_with(&root, Duration::from_secs(30), &mut |_| retries += 1);
+                done_tx.send(()).unwrap();
+                (state, retries)
+            })
+        };
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(300)).is_err(),
+            "the read returned while an import held the lock"
         );
+        resume_tx.send(()).unwrap();
+        writer.join().unwrap();
+        let (state, retries) = reader.join().unwrap();
+        assert_eq!(retries, 0, "the read fell into the unlocked retry");
+        match state {
+            StoreState::Loaded { index, hits } => {
+                assert_eq!(index.revision, b);
+                assert_eq!(hits.len(), 3);
+            }
+            other => panic!("expected the completed import, got {other:?}"),
+        }
     }
 
     /// A hung import holding the lock: the read gives up within the bound
@@ -588,21 +634,38 @@ mod tests {
         }
     }
 
-    /// A genuinely torn store (crashed import) is still reported after the
-    /// bounded retries.
-    #[test]
-    fn unlocked_read_reports_a_persistently_torn_store() {
-        let root = tempfile::tempdir().unwrap();
+    /// Torn store (records renamed, index not) as a helper.
+    fn torn_store(root: &Path) {
         let (a, b) = ("a".repeat(40), "b".repeat(40));
-        write_store(root.path(), &hit(&a, 2), &index(&a)).unwrap();
-        let (_, index_path) = store_paths(root.path());
+        write_store(root, &hit(&a, 2), &index(&a)).unwrap();
+        let (_, index_path) = store_paths(root);
         let old_index = fs::read(&index_path).unwrap();
-        write_store(root.path(), &hit(&b, 3), &index(&b)).unwrap();
+        write_store(root, &hit(&b, 3), &index(&b)).unwrap();
         fs::write(&index_path, &old_index).unwrap();
+    }
+
+    /// Behind a contended lock a torn read may be an import in flight (a
+    /// writer that keeps re-acquiring the lock can starve the bounded
+    /// wait): it must never read as corrupt — that is a governance signal
+    /// rules can block on.
+    #[test]
+    fn torn_read_behind_a_contended_lock_is_not_corrupt() {
+        let root = tempfile::tempdir().unwrap();
+        torn_store(root.path());
         let _held = external_lock(root.path());
         let mut pauses = 0usize;
         let state = load_store_with(root.path(), Duration::ZERO, &mut |_| pauses += 1);
         assert_eq!(pauses, READ_ATTEMPTS - 1);
+        assert_eq!(state, StoreState::Busy);
+    }
+
+    /// With the lock free, no import is in flight: a torn store is a crash
+    /// leftover and reads as corrupt.
+    #[test]
+    fn crash_leftover_with_the_lock_free_reads_corrupt() {
+        let root = tempfile::tempdir().unwrap();
+        torn_store(root.path());
+        let state = load_store(root.path());
         assert!(
             matches!(&state, StoreState::Corrupt(c) if c.reason == "digest_mismatch"),
             "{state:?}"
