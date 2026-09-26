@@ -70,18 +70,22 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   calling themselves (`LogEntry::new` "calling" `LogEntry::new` when it really
   called `serde_json::Map::new`), and tests "directly testing" methods they
   never touch (`f.predicate.clone()` on a `String` counted as a test of
-  `TaggerConfig::clone`). A `Type::f()` call now carries its type; a
-  `module::f()` call binds only to a function in a module that path names
-  (following `use … as` aliases and re-exports), so `std::fs::write` inside a
-  local `fn write` is no longer recursion; a bare call never binds to a method
-  of the enclosing `impl`; a method call on a receiver whose type is unknown
-  stays unresolved instead of binding to the one project method of that name;
-  and a typed receiver must name a type the caller can see, so
-  `reqwest::Client::get` no longer binds to a local `net::Client::get`. Typed
-  function parameters and calls inside macros now count as receiver evidence.
-  Dropped calls are counted as unresolved. A project whose only function
-  identity was an unqualified name could also fail the whole rebuild on a raw
-  `@method:` hint; that is fixed too.
+  `TaggerConfig::clone`). Paths are now resolved the way Rust resolves them: a
+  `Type::f()` call carries its type; the first segment of `module::f()` is
+  read through the file's `use` bindings, so under `use std::fs;` a call to
+  `fs::write` is never the project's own `fs::write`, and
+  `crate::capsule::load()` inside `context` is never `context::capsule::load`;
+  a module path reaches a nested function only through a `pub use`. A bare
+  call never binds to a method of the enclosing `impl`; a method call on a
+  receiver whose type is unknown stays unresolved instead of binding to the
+  one project method of that name; a typed receiver must name a type the
+  caller can see, so `reqwest::Client::get` no longer binds to a local
+  `net::Client::get` and `io::Error::kind` no longer binds to the project's
+  own `Error::kind`; and a `let` that shadows a typed parameter clears its
+  type. Typed function parameters and calls inside macros now count as
+  receiver evidence. Dropped calls are counted as unresolved. A project whose
+  only function identity was an unqualified name could also fail the whole
+  rebuild on a raw `@method:` hint; that is fixed too.
 
 - **A predicate provider could forge the evidence a gate rule trusts.**
   Providers in `.phronesis/predicates/` — which an agent can write through

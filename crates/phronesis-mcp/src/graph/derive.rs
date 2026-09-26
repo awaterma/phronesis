@@ -147,14 +147,49 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
             hint.rsplit_once(':')
                 .map_or((None, hint), |(ty, method)| (Some(ty), method))
         });
-        // `@path:<module>:name`: a call written through a module path.
-        let (module_path, callee) = match raw_callee
+        // `@extern:…`: the extractor resolved the written path outside the
+        // project (`fs::write` under `use std::fs;`).
+        if raw_callee.starts_with("@extern:") {
+            unresolved += 1;
+            per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
+            continue;
+        }
+        // `@path:<module>[|<module>…]:name`: a call through a module path,
+        // already resolved by the extractor to the absolute modules it can
+        // name. Only a free function defined in one of them, or re-exported
+        // by one of them with `pub use`, qualifies — never a module that
+        // merely ends in the same spelling.
+        if let Some((modules, name)) = raw_callee
             .strip_prefix("@path:")
             .and_then(|hint| hint.rsplit_once(':'))
         {
-            Some((path, name)) => (Some(path), name),
-            None => (None, callee),
-        };
+            let pool = if edge.p == "tested_by" {
+                &production_definitions
+            } else {
+                &definitions
+            };
+            let mut found = BTreeSet::new();
+            for module in modules.split('|').filter(|module| !module.is_empty()) {
+                resolve_in_module(module, name, pool, &methods, &reexports, 0, &mut found);
+            }
+            match found.len() {
+                1 => {
+                    if let Some(target) = found.into_iter().next() {
+                        edge.a[callee_index] = target;
+                        normalized.push(edge);
+                    }
+                }
+                0 => {
+                    unresolved += 1;
+                    per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
+                }
+                _ => {
+                    ambiguous += 1;
+                    per_file.entry(edge.src.clone()).or_insert((0, 0)).1 += 1;
+                }
+            }
+            continue;
+        }
         let method_call = method_hint.is_some();
         let (eligible, candidates_by_leaf) = if edge.p == "tested_by" && method_call {
             (&production_methods, &production_method_by_leaf)
@@ -195,10 +230,12 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
             continue;
         };
         let receiver = receiver_type.map(normalize_receiver);
+        // A qualified receiver is a path the extractor resolved (absolute,
+        // `|`-separated alternatives) or an impl type as written: it must
+        // match the candidate's type path. An unqualified one is compared by
+        // its last segment, under the visibility rules below.
         let qualified_receiver = receiver.is_some_and(|r| r.contains("::"));
-        // `by_path`: a qualified receiver must suffix-match the candidate's
-        // type path; otherwise only the type's last segment is compared.
-        let filter_candidates = |by_path: bool| {
+        let filter_candidates = || {
             candidates
                 .iter()
                 .filter(|candidate| {
@@ -210,30 +247,19 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
                     if !method_call && methods.contains(*candidate) {
                         return false;
                     }
-                    // A written module path is its own visibility evidence,
-                    // and only a module it can name qualifies:
-                    // `std::fs::write()` is never the caller's own `write`.
-                    // First the module itself or a recorded re-export from
-                    // it; failing that (`by_path == false`), a module below
-                    // it, which is how `pub use post::run_post_check;` lets
-                    // `hook::run_post_check()` name `hook::post`.
-                    if let Some(path) = module_path {
-                        return if by_path {
-                            module_path_matches(module, path)
-                                || reexports.iter().any(|((reexporter, item), targets)| {
-                                    item == callee
-                                        && targets.contains(module)
-                                        && module_path_matches(reexporter, path)
-                                })
-                        } else {
-                            module_path_contains(module, path)
-                        };
-                    }
                     let method_scope = method_call.then(|| module.rsplit_once("::")).flatten();
                     if receiver.is_some_and(|receiver| {
                         let candidate_type = strip_generic_args(module);
-                        if by_path && receiver.contains("::") {
-                            !receiver_matches_qualified(candidate_type, receiver)
+                        if qualified_receiver {
+                            !receiver.split('|').any(|alternative| {
+                                qualified_type_matches(
+                                    candidate_type,
+                                    alternative,
+                                    &reexports,
+                                    &imports,
+                                    0,
+                                )
+                            })
                         } else {
                             last_path_segment(candidate_type) != last_path_segment(receiver)
                         }
@@ -242,8 +268,8 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
                     }
                     // A qualified receiver that names the candidate's type
                     // path (`phronesis_rhai::RhaiFactProvider::new()`) is its
-                    // own visibility evidence, like a written module path.
-                    if by_path && receiver.is_some_and(|receiver| receiver.contains("::")) {
+                    // own visibility evidence.
+                    if qualified_receiver {
                         return true;
                     }
                     let visible_imports = caller_module.into_iter().flat_map(|caller| {
@@ -292,14 +318,10 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
                 })
                 .collect::<Vec<_>>()
         };
-        let mut resolved = filter_candidates(true);
-        // A qualified path that names no known type (an alias such as
-        // `use crate::python as py; py::Sensor`) falls back to its last
-        // segment. It is then no longer a statement about which module the
-        // type lives in, so the same-type preference below does not apply.
-        if (qualified_receiver || module_path.is_some()) && resolved.is_empty() {
-            resolved = filter_candidates(false);
-        }
+        // No fallback from a qualified path to its last segment: a path that
+        // names no project type (`io::Error`) must not become the caller's
+        // own same-named `Error`.
+        let resolved = filter_candidates();
         // An unqualified typed hint names a type by its last segment, which
         // several modules can share (one `Sensor` per language extractor).
         // When the caller is itself a method of exactly one of the matching
@@ -324,60 +346,6 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
             }
         } else {
             resolved
-        };
-        // Two modules can end in the same written path (`context::config`
-        // and `graph::ownership::config` both answer `config::load()`). Rust
-        // resolves the path's first segment in the caller's module: a child
-        // module, or a name brought in by `use`. Prefer the candidate that
-        // anchoring reaches when exactly one does.
-        let resolved = match module_path {
-            Some(path) if resolved.len() > 1 => {
-                let caller_mod = if methods.contains(caller) {
-                    caller_module
-                        .and_then(|module| module.rsplit_once("::"))
-                        .map(|(parent, _)| parent)
-                } else {
-                    caller_module
-                };
-                let anchors = caller_mod
-                    .into_iter()
-                    .chain(caller_mod.into_iter().flat_map(|caller_mod| {
-                        imports
-                            .iter()
-                            .filter(move |(module, _)| {
-                                caller_mod == module.as_str()
-                                    || caller_mod
-                                        .strip_prefix(module.as_str())
-                                        .is_some_and(|suffix| suffix.starts_with("::"))
-                            })
-                            .flat_map(|(_, targets)| targets.iter().map(String::as_str))
-                    }))
-                    .collect::<Vec<_>>();
-                let anchored = resolved
-                    .iter()
-                    .copied()
-                    .filter(|candidate| {
-                        candidate.rsplit_once("::").is_some_and(|(module, _)| {
-                            anchors.iter().any(|anchor| {
-                                module_path_matches(module, path)
-                                    && (module == *anchor
-                                        || module
-                                            .strip_prefix(anchor)
-                                            .and_then(|rest| rest.strip_prefix("::"))
-                                            .is_some_and(|rest| {
-                                                rest.replace('-', "_") == path.replace('-', "_")
-                                            }))
-                            })
-                        })
-                    })
-                    .collect::<Vec<_>>();
-                if anchored.len() == 1 {
-                    anchored
-                } else {
-                    resolved
-                }
-            }
-            _ => resolved,
         };
         if resolved.len() == 1 {
             edge.a[callee_index] = (*resolved[0]).clone();
@@ -462,24 +430,95 @@ fn receiver_matches_qualified(candidate_type: &str, hint: &str) -> bool {
                 .is_some_and(|&c| c == b':'))
 }
 
-/// Whether a written module path (`graph::derive`, `phronesis_mcp::graph`)
-/// names `module` (`rust:phronesis-mcp::graph::derive`): a suffix aligned on
-/// a `::` boundary (or the `rust:` tag), with crate-name `-` read as `_`.
-fn module_path_matches(module: &str, path: &str) -> bool {
-    let module = module.replace('-', "_");
-    let path = path.replace('-', "_");
-    module
-        .strip_suffix(path.as_str())
-        .is_some_and(|rest| rest.ends_with(':'))
+/// The modules `module` re-exports `item` from: by name, or by a glob
+/// (`pub use network::*;`, recorded as item `*`).
+fn reexported_from<'r>(
+    reexports: &'r BTreeMap<(String, String), BTreeSet<String>>,
+    module: &str,
+    item: &str,
+) -> impl Iterator<Item = &'r String> {
+    [item, "*"].into_iter().flat_map(move |item| {
+        reexports
+            .get(&(module.to_string(), item.to_string()))
+            .into_iter()
+            .flatten()
+    })
 }
 
-/// Whether `module` lies strictly below a module the written `path` names.
-fn module_path_contains(module: &str, path: &str) -> bool {
-    let module = module.replace('-', "_");
-    let needle = format!("{}::", path.replace('-', "_"));
-    module
-        .match_indices(needle.as_str())
-        .any(|(at, _)| module[..at].ends_with(':') && module.len() > at + needle.len())
+/// Collect into `found` the free function `name` that `module` defines, or
+/// re-exports with `pub use` (followed a few levels).
+fn resolve_in_module(
+    module: &str,
+    name: &str,
+    pool: &BTreeSet<String>,
+    methods: &BTreeSet<String>,
+    reexports: &BTreeMap<(String, String), BTreeSet<String>>,
+    depth: usize,
+    found: &mut BTreeSet<String>,
+) {
+    let id = format!("{module}::{name}");
+    if pool.contains(&id) && !methods.contains(&id) {
+        found.insert(id);
+        return;
+    }
+    if depth >= 4 {
+        return;
+    }
+    for target in reexported_from(reexports, module, name) {
+        resolve_in_module(target, name, pool, methods, reexports, depth + 1, found);
+    }
+}
+
+/// Whether a qualified receiver type `hint` names the type a candidate
+/// method's identity carries (`candidate_type`, which is the path of the
+/// module holding the `impl` block plus the type).
+///
+/// Besides a direct path match, two Rust facts are followed for a path the
+/// extractor resolved to an absolute one (`rust:app::net::Client`): the type
+/// can be re-exported (`pub use network::ReteNetwork;` at the crate root,
+/// followed through `reexports`), and its `impl` block can live in another
+/// module that imports the type's module (`impl EpistemeMcp` in
+/// `server_persistence`). A written relative path (an impl type such as
+/// `a::Foo`) keeps plain suffix matching.
+fn qualified_type_matches(
+    candidate_type: &str,
+    hint: &str,
+    reexports: &BTreeMap<(String, String), BTreeSet<String>>,
+    imports: &BTreeMap<String, BTreeSet<String>>,
+    depth: usize,
+) -> bool {
+    if receiver_matches_qualified(candidate_type, hint) {
+        return true;
+    }
+    let absolute = hint
+        .split("::")
+        .next()
+        .is_some_and(|root| root.contains(':'));
+    let Some((module, ty)) = hint.rsplit_once("::") else {
+        return false;
+    };
+    if !absolute {
+        return false;
+    }
+    if let Some((impl_module, candidate_ty)) = candidate_type.rsplit_once("::")
+        && candidate_ty == ty
+        && (impl_module == module
+            || imports
+                .get(impl_module)
+                .is_some_and(|targets| targets.contains(module)))
+    {
+        return true;
+    }
+    depth < 4
+        && reexported_from(reexports, module, ty).any(|target| {
+            qualified_type_matches(
+                candidate_type,
+                &format!("{target}::{ty}"),
+                reexports,
+                imports,
+                depth + 1,
+            )
+        })
 }
 
 /// Whether a function identity belongs to a language whose extractor emits
@@ -2491,84 +2530,87 @@ mod tests {
     }
 
     #[test]
-    fn c6_module_path_call_resolves_only_to_a_module_that_path_names() {
-        // `std::fs::write(..)` inside a local `fn write` is not recursion;
-        // `helpers::build()` names the child module without a `use`.
+    fn module_path_hint_binds_only_to_a_function_of_a_named_module() {
+        // The extractor resolved `helpers::build()` to the absolute child
+        // module and `std::fs::write()` to `@extern:`. Neither may fall
+        // back to a same-named project function.
         let caller = "rust:app::sync::write";
         let build = "rust:app::sync::helpers::build";
-        let mut base = vec![defines("src/sync.rs", caller), defines("src/h.rs", build)];
-        base.push(Edge::base(
-            "calls",
-            &[caller, "@path:std::fs:write"],
-            "src/sync.rs",
-        ));
-        base.push(Edge::base(
-            "calls",
-            &[caller, "@path:helpers:build"],
-            "src/sync.rs",
-        ));
-        let (unresolved, _, _) = canonicalize_function_edges(&mut base);
+        let mut base = vec![
+            defines("src/sync.rs", caller),
+            defines("src/h.rs", build),
+            defines("src/fs.rs", "rust:app::fs::write"),
+        ];
+        for hint in [
+            "@extern:std::fs:write",
+            "@path:rust:app::sync::helpers:build",
+            // A module that does not exist names nothing, even though
+            // `rust:app::fs::write` ends in the same spelling.
+            "@path:rust:app::sync::fs:write",
+        ] {
+            base.push(Edge::base("calls", &[caller, hint], "src/sync.rs"));
+        }
+        let (unresolved, ambiguous, _) = canonicalize_function_edges(&mut base);
         assert_eq!(
             calls_edges(&base),
             vec![&vec![caller.to_string(), build.to_string()]]
         );
-        assert_eq!(unresolved, 1);
-        // A crate name is written with `_` but identified with `-`.
-        assert!(module_path_matches(
-            "rust:phronesis-mcp::graph",
-            "phronesis_mcp::graph"
-        ));
-        assert!(!module_path_matches("rust:app::xgraph", "graph"));
+        assert_eq!((unresolved, ambiguous), (2, 0));
     }
 
     #[test]
-    fn module_path_call_follows_a_submodule_reexport() {
-        // `hook::run_post_check()` where `hook/mod.rs` has
-        // `pub use post::run_post_check;` (a form not recorded as `reexports`).
+    fn module_path_hint_follows_a_pub_use_and_never_a_bare_descendant() {
         let caller = "rust:app#bin:app::main";
         let target = "rust:app::hook::post::run_post_check";
+        let hidden = "rust:app::hook::inner::exit";
         let mut base = vec![
             defines("src/main.rs", caller),
             defines("src/hook/post.rs", target),
-        ];
-        base.push(Edge::base(
-            "calls",
-            &[caller, "@path:hook:run_post_check"],
-            "src/main.rs",
-        ));
-        let _ = canonicalize_function_edges(&mut base);
-        assert_eq!(
-            calls_edges(&base),
-            vec![&vec![caller.to_string(), target.to_string()]]
-        );
-        assert!(!module_path_contains("rust:app::hook", "hook"));
-        assert!(module_path_contains("rust:app::hook::post", "hook"));
-        assert!(!module_path_contains("rust:app::xhook::post", "hook"));
-    }
-
-    #[test]
-    fn a_module_path_shared_by_two_modules_prefers_the_one_the_caller_imports() {
-        // `use super::config; config::load()` in `context::render`, while
-        // `graph::ownership::config::load` also exists.
-        let caller = "rust:app::context::render::render";
-        let wanted = "rust:app::context::config::load";
-        let other = "rust:app::graph::ownership::config::load";
-        let mut base = vec![
-            defines("src/context/render.rs", caller),
-            defines("src/context/config.rs", wanted),
-            defines("src/graph/ownership/config.rs", other),
-            imports("rust:app::context::render", "rust:app::context"),
+            defines("src/hook/mod.rs", hidden),
+            Edge::base(
+                "reexports",
+                &["rust:app::hook", "rust:app::hook::post", "run_post_check"],
+                "src/hook/mod.rs",
+            ),
             Edge::base(
                 "calls",
-                &[caller, "@path:config:load"],
-                "src/context/render.rs",
+                &[caller, "@path:rust:app::hook:run_post_check"],
+                "src/main.rs",
+            ),
+            Edge::base(
+                "calls",
+                &[caller, "@path:rust:app::hook:exit"],
+                "src/main.rs",
             ),
         ];
         let _ = canonicalize_function_edges(&mut base);
         assert_eq!(
             calls_edges(&base),
-            vec![&vec![caller.to_string(), wanted.to_string()]]
+            vec![&vec![caller.to_string(), target.to_string()]]
         );
+    }
+
+    #[test]
+    fn module_path_hint_with_two_existing_candidates_is_ambiguous() {
+        // A glob import can make a path name two modules; both defining the
+        // function is not resolved by preference.
+        let caller = "rust:app::a::tests::t";
+        let mut base = vec![
+            defines("src/a.rs", caller),
+            defines("src/a.rs", "rust:app::a::tests::config::load"),
+            defines("src/a.rs", "rust:app::a::config::load"),
+            Edge::base(
+                "calls",
+                &[
+                    caller,
+                    "@path:rust:app::a::config|rust:app::a::tests::config:load",
+                ],
+                "src/a.rs",
+            ),
+        ];
+        let (_, ambiguous, _) = canonicalize_function_edges(&mut base);
+        assert!(calls_edges(&base).is_empty());
+        assert_eq!(ambiguous, 1);
     }
 
     #[test]
@@ -2588,6 +2630,43 @@ mod tests {
         assert_eq!(
             calls_edges(&base),
             vec![&vec![caller.to_string(), target.to_string()]]
+        );
+    }
+
+    #[test]
+    fn an_absolute_receiver_follows_a_type_reexport_and_an_impl_elsewhere() {
+        // `use phr::ReteNetwork;` names the crate-root re-export of
+        // `network::ReteNetwork`; `impl EpistemeMcp` lives in
+        // `server_persistence`, which imports `server`.
+        let caller = "rust:app::run";
+        let add_rule = "rust:phr::network::ReteNetwork::add_rule";
+        let autoload = "rust:app::server_persistence::EpistemeMcp::autoload";
+        let unrelated = "rust:app::other::EpistemeMcp::autoload2";
+        let mut base = method_def("src/lib.rs", caller);
+        base.extend(method_def("src/network.rs", add_rule));
+        base.extend(method_def("src/server_persistence.rs", autoload));
+        base.extend(method_def("src/other.rs", unrelated));
+        base.push(Edge::base(
+            "reexports",
+            &["rust:phr", "rust:phr::network", "ReteNetwork"],
+            "src/lib.rs",
+        ));
+        base.push(imports("rust:app::server_persistence", "rust:app::server"));
+        for hint in [
+            "@method:rust:phr::ReteNetwork:add_rule",
+            "@method:rust:app::server::EpistemeMcp:autoload",
+            // `other` does not import `server`: its same-named type is not it.
+            "@method:rust:app::server::EpistemeMcp:autoload2",
+        ] {
+            base.push(Edge::base("calls", &[caller, hint], "src/lib.rs"));
+        }
+        let _ = canonicalize_function_edges(&mut base);
+        assert_eq!(
+            calls_edges(&base),
+            vec![
+                &vec![caller.to_string(), add_rule.to_string()],
+                &vec![caller.to_string(), autoload.to_string()]
+            ]
         );
     }
 }

@@ -14,7 +14,7 @@ use super::ownership::config::OwnershipConfig;
 use super::ownership::extract::FileOwnership;
 use super::unit::UnitContext;
 use crate::syntax::parsed::ParsedFile;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::LazyLock;
 use tree_sitter::Node;
 
@@ -314,21 +314,175 @@ struct Sensor<'a> {
     /// re-deriving function ids, per decision D13.
     ownership: Option<FileOwnership<'a>>,
     skipped: usize,
-    /// `use a::b as c;` aliases in this file, `c` → `a::b`, so a call
-    /// written `c::f()` keeps the module (or type) path it really names.
-    use_aliases: std::collections::BTreeMap<String, String>,
+    /// `use` bindings per module scope in this file, so a written path is
+    /// resolved from what its first segment is bound to, not by its spelling.
+    uses: UseMap,
 }
 
 impl Sensor<'_> {
-    /// `path` with a leading `use … as` alias replaced by what it names.
-    fn unalias(&self, path: &str) -> String {
-        let (head, rest) = path
-            .split_once("::")
-            .map_or((path, None), |(h, r)| (h, Some(r)));
-        match (self.use_aliases.get(head.trim()), rest) {
-            (Some(target), Some(rest)) => format!("{target}::{rest}"),
-            (Some(target), None) => target.clone(),
-            (None, _) => path.to_string(),
+    /// The absolute module paths a written path can name from `module`, or
+    /// `None` when it names nothing in the project: its first segment is
+    /// bound to `std`/`core`/`alloc` or to a crate that is not a sibling in
+    /// this project, or `super` climbs past the crate root.
+    ///
+    /// This is Rust's own order: `crate`/`self`/`super` anchors; then a
+    /// name the module binds with `use` (an explicit binding shadows a glob
+    /// and never falls back to a same-named project module); then a sibling
+    /// crate; then an item of the module itself or of a module it glob-
+    /// imports. Only the last can yield several candidates.
+    fn resolve_path(
+        &self,
+        segments: &[String],
+        module: &[String],
+        depth: usize,
+    ) -> Option<Vec<Vec<String>>> {
+        self.resolve_path_in(segments, module, depth, true)
+    }
+
+    /// [`Self::resolve_path`]; `globs` is false while resolving a glob's
+    /// own path, which is never read through the module's other globs
+    /// (that would nest `agenda::agenda::…` for `pub use agenda::*;`).
+    fn resolve_path_in(
+        &self,
+        segments: &[String],
+        module: &[String],
+        depth: usize,
+        globs: bool,
+    ) -> Option<Vec<Vec<String>>> {
+        let (first, rest) = segments.split_first()?;
+        let under =
+            |base: &[String], tail: &[String]| base.iter().chain(tail).cloned().collect::<Vec<_>>();
+        match first.as_str() {
+            "crate" => return Some(vec![under(std::slice::from_ref(&self.unit.id), rest)]),
+            "self" => return Some(vec![under(module, rest)]),
+            "super" => {
+                let supers = segments.iter().take_while(|s| *s == "super").count();
+                // The crate root is `module[0]`; climbing past it names nothing.
+                if module.len() <= supers {
+                    return None;
+                }
+                return Some(vec![under(
+                    &module[..module.len() - supers],
+                    &segments[supers..],
+                )]);
+            }
+            _ => {}
+        }
+        if depth > MAX_USE_DEPTH {
+            return None;
+        }
+        let uses = self.uses.get(&module.join("::"));
+        // A binding whose path starts with the name it binds (`use foo;`,
+        // `pub use rebuild::{rebuild};`) leaves that name's module reading
+        // in place: a path prefix is a module, and the imported item lives
+        // in another namespace. Following it would also loop.
+        if let Some(bound) = uses
+            .and_then(|uses| uses.names.get(first))
+            .filter(|bound| bound.first() != Some(first))
+        {
+            return self
+                .resolve_path(bound, module, depth + 1)
+                .map(|found| found.into_iter().map(|base| under(&base, rest)).collect());
+        }
+        // Cargo names a dependency `phronesis-metrics`; source writes
+        // `phronesis_metrics`.
+        if let Some(unit) = self.unit.siblings.get(first).or_else(|| {
+            self.unit
+                .siblings
+                .iter()
+                .find(|(name, _)| name.replace('-', "_") == *first)
+                .map(|(_, unit)| unit)
+        }) {
+            return Some(vec![under(std::slice::from_ref(unit), rest)]);
+        }
+        if EXTERNAL_ROOTS.contains(&first.as_str()) {
+            return None;
+        }
+        let mut found = vec![under(module, segments)];
+        let glob_paths = uses
+            .filter(|_| globs)
+            .map(|uses| uses.globs.as_slice())
+            .unwrap_or_default();
+        for glob in glob_paths {
+            for base in self
+                .resolve_path_in(glob, module, depth + 1, false)
+                .unwrap_or_default()
+            {
+                found.extend(
+                    self.resolve_path(segments, &base, depth + 1)
+                        .unwrap_or_default(),
+                );
+            }
+        }
+        found.sort();
+        found.dedup();
+        Some(found)
+    }
+
+    /// What a written type names as a receiver: the enclosing impl type for
+    /// `Self`; the written name for an unbound single segment (a local,
+    /// prelude or glob-imported type, which the resolver's visibility rules
+    /// judge); otherwise the absolute path(s) its first segment resolves
+    /// to, `|`-separated, or [`TypeRef::Outside`] for a type outside the
+    /// project (`io::Error` under `use std::io;`).
+    fn type_ref(&self, written: &str, scope: &Scope) -> Option<TypeRef> {
+        let impl_type = scope.impl_type.as_deref();
+        let TypePath::Type(path) = classify_type_path(written, impl_type) else {
+            return None;
+        };
+        if strip_generic_args(written.trim())
+            .trim_end_matches("::")
+            .rsplit("::")
+            .next()
+            == Some("Self")
+        {
+            return Some(TypeRef::Named(path));
+        }
+        let segments = path_segments(&path);
+        let bound = self
+            .uses
+            .get(&scope.path.join("::"))
+            .is_some_and(|uses| uses.names.contains_key(&segments[0]));
+        if segments.len() == 1 && !bound {
+            return Some(TypeRef::Named(path));
+        }
+        Some(match self.resolve_path(&segments, &scope.path, 0) {
+            Some(found) => TypeRef::Named(
+                found
+                    .iter()
+                    .map(|segments| segments.join("::"))
+                    .collect::<Vec<_>>()
+                    .join("|"),
+            ),
+            None => TypeRef::Outside(path),
+        })
+    }
+
+    /// The callee hint for a call through `path::name`.
+    ///
+    /// A type path gives a typed method hint. A module path gives
+    /// `@path:<module>[|<module>…]:name` with every module the path can
+    /// name from the caller, so the resolver never matches a module by
+    /// spelling alone: under `use std::fs;`, `fs::write()` is `@extern:`,
+    /// never the project's own `fs::write`.
+    fn scoped_call_hint(&self, path: &str, name: &str, scope: &Scope) -> String {
+        match classify_type_path(path, scope.impl_type.as_deref()) {
+            TypePath::Type(_) => match self.type_ref(path, scope) {
+                Some(receiver) => receiver.hint(name),
+                None => format!("@method:{name}"),
+            },
+            TypePath::Module => match self.resolve_path(&path_segments(path), &scope.path, 0) {
+                Some(found) => format!(
+                    "@path:{}:{name}",
+                    found
+                        .iter()
+                        .map(|segments| segments.join("::"))
+                        .collect::<Vec<_>>()
+                        .join("|")
+                ),
+                None => format!("@extern:{path}:{name}"),
+            },
+            TypePath::Unknown => format!("@method:{name}"),
         }
     }
 
@@ -456,22 +610,25 @@ impl Sensor<'_> {
         found
     }
 
-    /// Local variable name → the type path as written (`crate::python::Sensor`,
-    /// `Sensor`) of its declared or constructed type, for every `let` in
-    /// `body` whose type can be read off syntax. The written qualification is
-    /// kept so the resolver can tell same-named types apart.
+    /// Local variable name → every binding of that name in `body`, as the
+    /// byte offset it takes effect at and the receiver type it carries:
+    /// typed parameters (offset 0), and `let`s whose type can be read off
+    /// syntax — a declared type or a `Type::f()` constructor path. A module
+    /// function's result (`helpers::build()`) says nothing about its type.
     ///
-    /// A path that names a module rather than a type (`helpers::build()`)
-    /// says nothing about the value's type and is not recorded; `Self` reads
-    /// as the enclosing impl type. Typed parameters of the function owning
-    /// `body` count as declarations too.
-    fn receiver_types(
-        &self,
-        body: Node,
-        scope: &Scope,
-    ) -> std::collections::BTreeMap<String, String> {
-        let mut receiver_types = std::collections::BTreeMap::new();
-        let impl_type = scope.impl_type.as_deref();
+    /// Any other binding of the name — an untyped `let` (`let c =
+    /// c.render();`), an `if let`/`match`/`for` pattern, a closure parameter
+    /// — shadows it with no type from that point. Block scope is not
+    /// tracked, so a shadow can outlive its block: the call then stays
+    /// unresolved, which is the safe direction.
+    fn receiver_types(&self, body: Node, scope: &Scope) -> Receivers {
+        let mut receivers = Receivers::new();
+        let mut bind = |name: &str, at: usize, ty: Option<TypeRef>| {
+            receivers
+                .entry(name.to_string())
+                .or_default()
+                .push((at, ty));
+        };
         if let Some(parameters) = body
             .parent()
             .and_then(|function| function.child_by_field_name("parameters"))
@@ -481,60 +638,73 @@ impl Sensor<'_> {
                 if parameter.kind() == "parameter"
                     && let Some(pattern) = parameter.child_by_field_name("pattern")
                     && pattern.kind() == "identifier"
-                    && let Some(ty) = parameter.child_by_field_name("type")
-                    && let TypePath::Type(ty) = classify_type_path(
-                        &self.unalias(written_type_path(text(ty, self.source))),
-                        impl_type,
-                    )
                 {
-                    receiver_types.insert(text(pattern, self.source).to_string(), ty);
+                    let ty = parameter.child_by_field_name("type").and_then(|ty| {
+                        self.type_ref(written_type_path(text(ty, self.source)), scope)
+                    });
+                    bind(text(pattern, self.source), 0, ty);
                 }
             }
         }
         let mut declarations = vec![body];
         while let Some(node) = declarations.pop() {
-            if node.kind() == "let_declaration"
-                && let Some(pattern) = node.child_by_field_name("pattern")
-                && pattern.kind() == "identifier"
-            {
-                let inferred = node
-                    .child_by_field_name("type")
-                    .map(|ty| text(ty, self.source).to_string())
-                    .or_else(|| {
-                        let value = node.child_by_field_name("value")?;
-                        if value.kind() == "call_expression" {
-                            let function = value.child_by_field_name("function")?;
-                            if function.kind() == "scoped_identifier" {
-                                return function
-                                    .child_by_field_name("path")
-                                    .map(|path| text(path, self.source).to_string());
+            match node.kind() {
+                "let_declaration" => {
+                    if let Some(pattern) = node.child_by_field_name("pattern") {
+                        let inferred = (pattern.kind() == "identifier")
+                            .then(|| self.let_type(node, scope))
+                            .flatten();
+                        match inferred {
+                            Some(ty) => bind(text(pattern, self.source), node.end_byte(), Some(ty)),
+                            None => {
+                                for name in pattern_identifiers(pattern, self.source) {
+                                    bind(name, node.end_byte(), None);
+                                }
                             }
                         }
-                        None
-                    })
-                    .and_then(|ty| {
-                        match classify_type_path(&self.unalias(written_type_path(&ty)), impl_type) {
-                            TypePath::Type(ty) => Some(ty),
-                            _ => None,
-                        }
-                    });
-                if let Some(inferred) = inferred {
-                    receiver_types.insert(text(pattern, self.source).to_string(), inferred);
+                    }
                 }
+                "let_condition" | "for_expression" | "match_arm" => {
+                    if let Some(pattern) = node.child_by_field_name("pattern") {
+                        for name in pattern_identifiers(pattern, self.source) {
+                            bind(name, node.start_byte(), None);
+                        }
+                    }
+                }
+                "closure_expression" => {
+                    if let Some(parameters) = node.child_by_field_name("parameters") {
+                        for name in pattern_identifiers(parameters, self.source) {
+                            bind(name, node.start_byte(), None);
+                        }
+                    }
+                }
+                _ => {}
             }
             push_children(node, &mut declarations);
         }
-        receiver_types
+        receivers
+    }
+
+    /// The receiver type a `let` states: its declared type, or the type
+    /// path of a `Type::f()` initializer.
+    fn let_type(&self, node: Node, scope: &Scope) -> Option<TypeRef> {
+        let written = match node.child_by_field_name("type") {
+            Some(ty) => text(ty, self.source).to_string(),
+            None => {
+                let value = node.child_by_field_name("value")?;
+                let function = (value.kind() == "call_expression")
+                    .then(|| value.child_by_field_name("function"))
+                    .flatten()
+                    .filter(|function| function.kind() == "scoped_identifier")?;
+                text(function.child_by_field_name("path")?, self.source).to_string()
+            }
+        };
+        self.type_ref(written_type_path(&written), scope)
     }
 
     /// The name a call's `function` node contributes, or empty for shapes
     /// that name nothing resolvable.
-    fn call_name(
-        &self,
-        f: Node,
-        receiver_types: &std::collections::BTreeMap<String, String>,
-        scope: &Scope,
-    ) -> String {
+    fn call_name(&self, f: Node, receiver_types: &Receivers, scope: &Scope) -> String {
         match f.kind() {
             "identifier" => text(f, self.source).to_string(),
             "scoped_identifier" => {
@@ -553,9 +723,7 @@ impl Sensor<'_> {
                     .child_by_field_name("path")
                     .map(|p| text(p, self.source).to_string());
                 match path {
-                    Some(path) => {
-                        scoped_call_hint(&self.unalias(&path), &name, scope.impl_type.as_deref())
-                    }
+                    Some(path) => self.scoped_call_hint(&path, &name, scope),
                     None => name,
                 }
             }
@@ -566,18 +734,17 @@ impl Sensor<'_> {
                     let receiver = f.child_by_field_name("value");
                     let receiver_type = receiver.and_then(|r| {
                         if r.kind() == "self" {
-                            scope.impl_type.as_deref().map(str::to_string)
+                            scope
+                                .impl_type
+                                .as_deref()
+                                .map(|ty| TypeRef::Named(ty.to_string()))
                         } else if r.kind() == "identifier" {
-                            let name = text(r, self.source);
-                            receiver_types.get::<str>(name.as_ref()).cloned()
+                            receiver_at(receiver_types, text(r, self.source), r.start_byte())
                         } else {
                             None
                         }
                     });
-                    receiver_type.map_or_else(
-                        || format!("@method:{method}"),
-                        |ty| format!("@method:{}:{method}", strip_generic_args(&ty)),
-                    )
+                    receiver_type.map_or_else(|| format!("@method:{method}"), |ty| ty.hint(method))
                 })
                 .unwrap_or_default(),
             _ => String::new(),
@@ -594,7 +761,7 @@ impl Sensor<'_> {
     fn called_names_in_macro(
         &self,
         macro_node: Node,
-        receiver_types: &std::collections::BTreeMap<String, String>,
+        receiver_types: &Receivers,
         scope: &Scope,
     ) -> BTreeSet<String> {
         let shaped = String::from_utf8_lossy(&self.masked_macro_source(macro_node)).into_owned();
@@ -606,17 +773,15 @@ impl Sensor<'_> {
                 let field_receiver = captures.get(1).is_some();
                 if let Some(receiver) = captures.get(2) {
                     let receiver = receiver.as_str();
+                    let at = macro_node.start_byte() + captures.get(0).map_or(0, |m| m.start());
                     let ty = if field_receiver {
                         None
                     } else if receiver == "self" {
-                        impl_type.map(str::to_string)
+                        impl_type.map(|ty| TypeRef::Named(ty.to_string()))
                     } else {
-                        receiver_types.get(receiver).cloned()
+                        receiver_at(receiver_types, receiver, at)
                     };
-                    return Some(ty.map_or_else(
-                        || format!("@method:{name}"),
-                        |ty| format!("@method:{}:{name}", strip_generic_args(&ty)),
-                    ));
+                    return Some(ty.map_or_else(|| format!("@method:{name}"), |ty| ty.hint(name)));
                 }
                 if captures.get(3).is_some() {
                     return Some(format!("@method:{name}"));
@@ -629,7 +794,7 @@ impl Sensor<'_> {
                         .filter(|segment| !segment.is_empty())
                         .collect::<Vec<_>>()
                         .join("::");
-                    return Some(scoped_call_hint(&self.unalias(&path), name, impl_type));
+                    return Some(self.scoped_call_hint(&path, name, scope));
                 }
                 Some(name.to_string())
             })
@@ -716,7 +881,7 @@ impl Sensor<'_> {
             .named_child(0)
             .is_some_and(|child| child.kind() == "visibility_modifier")
         {
-            self.visit_reexport(raw, scope);
+            self.visit_reexport(arg, scope);
         }
         // Take the path prefix before any brace group or glob.
         let head = raw.split(['{', '*']).next().unwrap_or("").trim();
@@ -797,39 +962,39 @@ impl Sensor<'_> {
         Some(resolved.join("::"))
     }
 
-    /// Record bounded public re-exports so a test's `use super::*` can resolve
-    /// names that the parent module deliberately places in its public scope.
-    fn visit_reexport(&mut self, raw: &str, scope: &Scope) {
-        let Some((prefix, group)) = raw.split_once("::{") else {
-            return;
-        };
-        let Some(group) = group.strip_suffix('}') else {
-            return;
-        };
-        let mut target = match prefix.split("::").next() {
-            Some("crate") => vec![self.unit.id.clone()],
-            Some("self") => scope.path.clone(),
-            Some("super") => {
-                if scope.path.len() <= 1 {
-                    return;
-                }
-                scope.path[..scope.path.len() - 1].to_vec()
+    /// Record public re-exports so a test's `use super::*`, or a call
+    /// written through the re-exporting module (`hook::run_post_check()`),
+    /// can resolve names a module deliberately places in its public scope.
+    /// Every `pub use` form counts — `a::b`, `a::{b, c}`, nested groups, and
+    /// a glob, recorded with item `*` — except a renaming `as` (the exported
+    /// name is not the defined one) and a path outside the project
+    /// (`pub use std::process::exit;`).
+    fn visit_reexport(&mut self, arg: Node, scope: &Scope) {
+        let mut exported = ModuleUses::default();
+        parse_use_tree(arg, &[], self.source, &mut exported, false);
+        let from = scope.path.join("::");
+        for (item, path) in exported.names {
+            let Some((last, module)) = path.split_last() else {
+                continue;
+            };
+            if *last != item || module.is_empty() {
+                continue;
             }
-            Some(_) => scope.path.clone(),
-            None => return,
-        };
-        target.extend(
-            prefix
-                .split("::")
-                .filter(|part| !part.is_empty() && !matches!(*part, "crate" | "self" | "super"))
-                .map(str::to_string),
-        );
-        let target = target.join("::");
-        let from = self.self_module.clone();
-        for item in group.split(',') {
-            let item = item.split_whitespace().next().unwrap_or("");
-            if !item.is_empty() && item != "*" && !item.contains("::") {
-                self.emit("reexports", &[&from, &target, item]);
+            // Not read through the module's globs: a `pub use` prefix names
+            // a child module or an anchored path.
+            for target in self
+                .resolve_path_in(module, &scope.path, 0, false)
+                .unwrap_or_default()
+            {
+                self.emit("reexports", &[&from, &target.join("::"), &item]);
+            }
+        }
+        for glob in exported.globs {
+            for target in self
+                .resolve_path_in(&glob, &scope.path, 0, false)
+                .unwrap_or_default()
+            {
+                self.emit("reexports", &[&from, &target.join("::"), "*"]);
             }
         }
     }
@@ -870,36 +1035,176 @@ fn strip_generic_args(ty: &str) -> &str {
     }
 }
 
-/// Every `use … as alias` in the file: alias → the full path written,
-/// including the prefix of an enclosing `a::{b as c}` group. Scope is
-/// ignored (a function-local alias counts file-wide), matching how
-/// `receiver_types` treats `let`.
-fn use_aliases(root: Node, source: &[u8]) -> std::collections::BTreeMap<String, String> {
-    let mut aliases = std::collections::BTreeMap::new();
-    let mut pending = vec![root];
+/// How many `use` bindings deep path resolution follows before giving up.
+const MAX_USE_DEPTH: usize = 4;
+
+/// Crates always outside the project. Other external crates are recognized
+/// by not being a project sibling and naming no module that exists.
+const EXTERNAL_ROOTS: &[&str] = &["std", "core", "alloc"];
+
+/// `use` bindings of one module scope, as written.
+#[derive(Debug, Default)]
+struct ModuleUses {
+    /// Bound name → the path it was bound to (`fs` → `std::fs`).
+    names: BTreeMap<String, Vec<String>>,
+    /// Glob-imported module paths (`super` for `use super::*`).
+    globs: Vec<Vec<String>>,
+}
+
+/// Module path (`::`-joined) → that module's `use` bindings.
+type UseMap = BTreeMap<String, ModuleUses>;
+
+/// Local name → `(offset the binding takes effect at, its receiver type)`.
+type Receivers = BTreeMap<String, Vec<(usize, Option<TypeRef>)>>;
+
+/// A receiver's type for a method hint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TypeRef {
+    /// A project-resolvable type: written unqualified, or absolute
+    /// path(s) separated by `|`.
+    Named(String),
+    /// A type outside the project; the call can name no project method.
+    Outside(String),
+}
+
+impl TypeRef {
+    fn hint(&self, method: &str) -> String {
+        match self {
+            TypeRef::Named(ty) => format!("@method:{}:{method}", strip_generic_args(ty)),
+            TypeRef::Outside(ty) => format!("@extern:{}:{method}", strip_generic_args(ty)),
+        }
+    }
+}
+
+/// The type of the binding of `name` in effect at byte `at`.
+fn receiver_at(receivers: &Receivers, name: &str, at: usize) -> Option<TypeRef> {
+    receivers
+        .get(name)?
+        .iter()
+        .filter(|(from, _)| *from <= at)
+        .max_by_key(|(from, _)| *from)?
+        .1
+        .clone()
+}
+
+/// Names a pattern binds: its `identifier` nodes.
+fn pattern_identifiers<'s>(pattern: Node, source: &'s [u8]) -> Vec<&'s str> {
+    let mut names = Vec::new();
+    let mut pending = vec![pattern];
     while let Some(node) = pending.pop() {
-        if node.kind() == "use_as_clause"
-            && let (Some(path), Some(alias)) = (
-                node.child_by_field_name("path"),
-                node.child_by_field_name("alias"),
-            )
-        {
-            let mut full = text(path, source).to_string();
-            let mut ancestor = node.parent();
-            while let Some(list) = ancestor.filter(|n| n.kind() == "use_list") {
-                let Some(group) = list.parent().filter(|n| n.kind() == "scoped_use_list") else {
-                    break;
-                };
-                if let Some(prefix) = group.child_by_field_name("path") {
-                    full = format!("{}::{full}", text(prefix, source));
-                }
-                ancestor = group.parent();
-            }
-            aliases.insert(text(alias, source).to_string(), full);
+        if node.kind() == "identifier" {
+            names.push(text(node, source));
         }
         push_children(node, &mut pending);
     }
-    aliases
+    names
+}
+
+fn path_segments(path: &str) -> Vec<String> {
+    path.split("::")
+        .map(str::trim)
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every `use` in the file, grouped by the module scope it is written in
+/// (inline `mod` blocks nest; a function-local `use` counts for its whole
+/// module, the same approximation `receiver_types` makes for blocks).
+fn collect_uses(root: Node, source: &[u8], root_path: Vec<String>) -> UseMap {
+    let mut uses = UseMap::new();
+    let mut pending = vec![(root, root_path)];
+    while let Some((node, path)) = pending.pop() {
+        match node.kind() {
+            "mod_item" => {
+                if let (Some(name), Some(body)) = (
+                    node.child_by_field_name("name"),
+                    node.child_by_field_name("body"),
+                ) {
+                    let mut inner = path.clone();
+                    inner.push(text(name, source).to_string());
+                    pending.push((body, inner));
+                }
+            }
+            "use_declaration" => {
+                if let Some(arg) = node.child_by_field_name("argument") {
+                    let module = uses.entry(path.join("::")).or_default();
+                    parse_use_tree(arg, &[], source, module, true);
+                }
+            }
+            _ => {
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    pending.push((child, path.clone()));
+                }
+            }
+        }
+    }
+    uses
+}
+
+/// Add the bindings of one `use` tree under `prefix`. `aliases` keeps
+/// `a as b` (bound as `b`); without it a renaming import is skipped.
+fn parse_use_tree(
+    node: Node,
+    prefix: &[String],
+    source: &[u8],
+    uses: &mut ModuleUses,
+    aliases: bool,
+) {
+    let under = |path: &str| {
+        prefix
+            .iter()
+            .cloned()
+            .chain(path_segments(path))
+            .collect::<Vec<_>>()
+    };
+    match node.kind() {
+        "use_as_clause" => {
+            if let (true, Some(path), Some(alias)) = (
+                aliases,
+                node.child_by_field_name("path"),
+                node.child_by_field_name("alias"),
+            ) && text(alias, source) != "_"
+            {
+                uses.names
+                    .insert(text(alias, source).to_string(), under(text(path, source)));
+            }
+        }
+        "scoped_use_list" => {
+            let inner = node
+                .child_by_field_name("path")
+                .map_or_else(|| prefix.to_vec(), |path| under(text(path, source)));
+            if let Some(list) = node.child_by_field_name("list") {
+                parse_use_tree(list, &inner, source, uses, aliases);
+            }
+        }
+        "use_list" => {
+            let mut cursor = node.walk();
+            for child in node.named_children(&mut cursor) {
+                parse_use_tree(child, prefix, source, uses, aliases);
+            }
+        }
+        "use_wildcard" => {
+            let written = text(node, source).trim_end_matches('*');
+            uses.globs.push(under(written));
+        }
+        _ => {
+            let path = under(text(node, source));
+            // `a::{self}` binds `a`.
+            let path = if path.last().map(String::as_str) == Some("self") && path.len() > 1 {
+                path[..path.len() - 1].to_vec()
+            } else {
+                path
+            };
+            if let Some(name) = path
+                .last()
+                .filter(|name| !matches!(name.as_str(), "self" | "super" | "crate"))
+            {
+                uses.names.insert(name.clone(), path.clone());
+            }
+        }
+    }
 }
 
 /// What a written path names, as far as syntax can tell.
@@ -941,31 +1246,6 @@ fn classify_type_path(path: &str, impl_type: Option<&str>) -> TypePath {
         TypePath::Type(path.to_string())
     } else {
         TypePath::Module
-    }
-}
-
-/// The callee hint for a call through `path::name`.
-///
-/// A module path is kept as `@path:<module>:name` so the resolver only
-/// matches a function in a module that path can name: `std::fs::write()`
-/// is not the caller's own `write`. `crate::`/`self::`/`super::` anchors
-/// are dropped; a path that is only anchors leaves the bare name.
-fn scoped_call_hint(path: &str, name: &str, impl_type: Option<&str>) -> String {
-    match classify_type_path(path, impl_type) {
-        TypePath::Type(ty) => format!("@method:{ty}:{name}"),
-        TypePath::Module => {
-            let module = path
-                .split("::")
-                .skip_while(|segment| matches!(*segment, "crate" | "self" | "super"))
-                .collect::<Vec<_>>()
-                .join("::");
-            if module.is_empty() {
-                name.to_string()
-            } else {
-                format!("@path:{module}:{name}")
-            }
-        }
-        TypePath::Unknown => format!("@method:{name}"),
     }
 }
 
@@ -1074,7 +1354,11 @@ pub fn extract_rust_file(
         out: BTreeSet::new(),
         ownership: collector,
         skipped: 0,
-        use_aliases: use_aliases(tree.root_node(), source.as_bytes()),
+        uses: collect_uses(
+            tree.root_node(),
+            source.as_bytes(),
+            self_module.split("::").map(str::to_string).collect(),
+        ),
     };
     sensor.emit("file_type", &[file_path, file_type(file_path)]);
     // Links a file to its module, so a rule matching on module-keyed
@@ -2379,7 +2663,7 @@ fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
         );
         let calls = callees(&out);
         assert!(
-            calls.contains(&"@method:serde_json::Map:new".to_string()),
+            calls.contains(&"@method:rust:crate::log::serde_json::Map:new".to_string()),
             "{calls:?}"
         );
         assert!(calls.contains(&"@method:Vec:new".to_string()), "{calls:?}");
@@ -2406,13 +2690,19 @@ fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
         );
         let calls = callees(&out);
         assert!(
-            calls.contains(&"@path:helpers:build".to_string()),
+            calls.contains(&"@path:rust:crate::a::helpers:build".to_string()),
             "{calls:?}"
         );
-        assert!(calls.contains(&"@path:m:go".to_string()), "{calls:?}");
-        assert!(calls.contains(&"up".to_string()), "{calls:?}");
         assert!(
-            calls.contains(&"@path:std::fs:write".to_string()),
+            calls.contains(&"@path:rust:crate::m:go".to_string()),
+            "{calls:?}"
+        );
+        assert!(
+            calls.contains(&"@path:rust:crate:up".to_string()),
+            "{calls:?}"
+        );
+        assert!(
+            calls.contains(&"@extern:std::fs:write".to_string()),
             "{calls:?}"
         );
         assert!(
@@ -2481,14 +2771,121 @@ fn t_fire() { assert_eq!(fire(1), 2, "fake_call() is prose"); }"#,
         );
         let calls = callees(&out);
         for want in [
-            "@path:phronesis_mcp::graph::query:query",
-            "@path:coverage::hydrate:facts_for_event",
-            "@method:crate::net::Client:new",
+            "@path:rust:crate::phronesis_mcp::graph::query:query",
+            "@path:rust:crate::coverage::hydrate:facts_for_event",
+            "@method:rust:crate::net::Client:new",
         ] {
             assert!(
                 calls.contains(&want.to_string()),
                 "missing {want}: {calls:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_glob_import_reaches_the_parents_bindings_and_child_modules() {
+        let out = run(
+            "src/a.rs",
+            "use crate::context::config;\nuse std::fs;\n\
+             #[cfg(test)]\nmod tests {\n    use super::*;\n    \
+             fn t() { config::load(); fs::write(); helpers::go(); }\n}\n",
+        );
+        let calls = edges_of(&out, "tested_by")
+            .iter()
+            .map(|args| args[0].clone())
+            .collect::<Vec<_>>();
+        for want in [
+            "@path:rust:crate::a::tests::config|rust:crate::context::config:load",
+            "@path:rust:crate::a::helpers|rust:crate::a::tests::helpers:go",
+        ] {
+            assert!(
+                calls.contains(&want.to_string()),
+                "missing {want}: {calls:?}"
+            );
+        }
+        // The explicit `use std::fs` binding reaches the test through the
+        // glob, but the test's own child-module reading remains possible.
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("@path:rust:crate::a::tests::fs:")),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn pattern_bindings_shadow_a_typed_receiver() {
+        let out = run(
+            "src/a.rs",
+            "struct Foo; fn f(x: Foo, o: Option<u8>) { x.a(); \
+             if let Some(x) = o { x.b(); } let g = |x| x.c(); x.d(); }",
+        );
+        let calls = callees(&out);
+        assert!(calls.contains(&"@method:Foo:a".to_string()), "{calls:?}");
+        assert!(calls.contains(&"@method:b".to_string()), "{calls:?}");
+        assert!(calls.contains(&"@method:c".to_string()), "{calls:?}");
+        // Block scope is not tracked: after a shadow the name stays untyped.
+        assert!(calls.contains(&"@method:d".to_string()), "{calls:?}");
+    }
+
+    #[test]
+    fn a_reexport_of_a_same_named_child_item_resolves_the_module() {
+        // `pub use rebuild::{rebuild};` must not make the `rebuild` prefix
+        // resolve through its own binding.
+        let out = run(
+            "src/sync/mod.rs",
+            "mod rebuild;\npub use rebuild::{on_save, rebuild};\n",
+        );
+        let reexports = edges_of(&out, "reexports");
+        assert!(
+            reexports.contains(&vec![
+                "rust:crate::sync".to_string(),
+                "rust:crate::sync::rebuild".to_string(),
+                "rebuild".to_string()
+            ]),
+            "{reexports:?}"
+        );
+    }
+
+    #[test]
+    fn a_dashed_sibling_crate_is_reached_by_its_underscore_name() {
+        let mut unit = UnitContext::default();
+        unit.siblings
+            .insert("phronesis-metrics".into(), "rust:phronesis-metrics".into());
+        let out = extract_rust(
+            "src/a.rs",
+            "fn f() { phronesis_metrics::serve::bind(); }",
+            DEFAULT_WATCHLIST,
+            &unit,
+        );
+        let calls = callees(&out);
+        assert!(
+            calls.contains(&"@path:rust:phronesis-metrics::serve:bind".to_string()),
+            "{calls:?}"
+        );
+    }
+
+    #[test]
+    fn glob_reexports_are_recorded_once_without_nesting() {
+        let out = run(
+            "src/lib.rs",
+            "mod agenda;\nmod network;\npub use agenda::*;\npub use network::*;\n",
+        );
+        let reexports = edges_of(&out, "reexports");
+        assert_eq!(
+            reexports,
+            vec![
+                vec![
+                    "rust:crate".to_string(),
+                    "rust:crate::agenda".to_string(),
+                    "*".to_string()
+                ],
+                vec![
+                    "rust:crate".to_string(),
+                    "rust:crate::network".to_string(),
+                    "*".to_string()
+                ],
+            ]
+        );
     }
 }
