@@ -69,6 +69,11 @@ syn = { version = "2", default-features = false, features = ["full", "parsing"] 
 globset = "0.4"
 tempfile = "3"
 
+# S9 verifier time limit: killpg reaches the verifier's whole process group
+# (solver children included). Already in the lock file.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 cucumber = "0.23"
 criterion = { version = "0.5", features = ["async_tokio"] }

@@ -9,6 +9,11 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::properties::process::{RunOutcome, run_with_timeout};
+
+/// How long `<runtime> kill` may take to stop a timed-out container.
+const CONTAINER_KILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Which confinement tier ran (S9 resolved-decisions): recorded in the
 /// result record so the audit trail answers "how was this confined?".
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +64,13 @@ fn devcontainer_path(root: &Path) -> std::path::PathBuf {
 /// the human-set config allows) → refused. Host-enforced: the strongest
 /// available tier wins; raw is never a default.
 pub fn detect_tier(root: &Path) -> Option<ConfinementTier> {
+    detect_confinement(root).map(|(tier, _)| tier)
+}
+
+/// `detect_tier` plus, for the devcontainer tier, the container runtime the
+/// probe actually found — the argv must invoke that one (a podman-only host
+/// has no `docker`).
+pub fn detect_confinement(root: &Path) -> Option<(ConfinementTier, Option<ContainerRuntime>)> {
     // The devcontainer tier requires the (language, verifier) instantiation to
     // ship its devcontainer.json — a running daemon without a declared image
     // is not a Tier-1 claim (S9: the host composes the container from the
@@ -77,34 +89,53 @@ pub fn detect_tier(root: &Path) -> Option<ConfinementTier> {
 /// is spawned unless a devcontainer is declared).
 fn resolve_tier(
     devcontainer_declared: bool,
-    container_runtime: impl FnOnce() -> bool,
+    container_runtime: impl FnOnce() -> Option<ContainerRuntime>,
     sandbox_exec: impl FnOnce() -> bool,
     raw_allowed: impl FnOnce() -> bool,
-) -> Option<ConfinementTier> {
-    if devcontainer_declared && container_runtime() {
-        return Some(ConfinementTier::Devcontainer);
+) -> Option<(ConfinementTier, Option<ContainerRuntime>)> {
+    if devcontainer_declared && let Some(runtime) = container_runtime() {
+        return Some((ConfinementTier::Devcontainer, Some(runtime)));
     }
     if sandbox_exec() {
-        return Some(ConfinementTier::SandboxExec);
+        return Some((ConfinementTier::SandboxExec, None));
     }
     if raw_allowed() {
         // The raw tier: the human set the config (S1 marker discipline).
         // Selection still records it (S7) — raw-everywhere drift is visible.
-        return Some(ConfinementTier::Raw);
+        return Some((ConfinementTier::Raw, None));
     }
     None
 }
 
-/// Tier-1 availability: a working docker or podman CLI.
-fn container_runtime_available() -> bool {
-    ["docker", "podman"].into_iter().any(|runtime| {
-        std::process::Command::new(runtime)
-            .arg("--version")
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
+/// The container CLI the devcontainer tier runs. Both accept the same
+/// forced-confinement flag set (`verifier_argv`), so only the program differs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerRuntime {
+    Docker,
+    Podman,
+}
+
+impl ContainerRuntime {
+    pub fn program(self) -> &'static str {
+        match self {
+            Self::Docker => "docker",
+            Self::Podman => "podman",
+        }
+    }
+}
+
+/// Tier-1 availability: the first working CLI, docker preferred.
+fn container_runtime_available() -> Option<ContainerRuntime> {
+    [ContainerRuntime::Docker, ContainerRuntime::Podman]
+        .into_iter()
+        .find(|runtime| {
+            std::process::Command::new(runtime.program())
+                .arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        })
 }
 
 /// Tier-2 availability: the macOS Seatbelt frontend.
@@ -135,6 +166,28 @@ fn raw_execution_allowed(root: &Path) -> bool {
     serde_json::from_str::<VerificationConfig>(&raw)
         .map(|c| c.raw_execution)
         .unwrap_or(false)
+}
+
+/// The S9 wall-clock limit when `.phronesis/verification.json` sets none.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 300;
+
+/// The verifier's wall-clock limit (S9 "CPU/time limits", every tier):
+/// `.phronesis/verification.json` field `timeout_secs`, a positive integer.
+/// Absent, zero, malformed, or an unreadable file → the default — a bad
+/// config never removes the limit.
+pub fn verification_timeout(root: &Path) -> std::time::Duration {
+    #[derive(serde::Deserialize)]
+    struct TimeoutConfig {
+        timeout_secs: Option<u64>,
+    }
+    let path = root.join(".phronesis").join("verification.json");
+    let secs = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<TimeoutConfig>(&raw).ok())
+        .and_then(|c| c.timeout_secs)
+        .filter(|&secs| secs > 0)
+        .unwrap_or(DEFAULT_TIMEOUT_SECS);
+    std::time::Duration::from_secs(secs)
 }
 
 /// The (artifact hash, tree revision) dedup key (spec §Execution discipline):
@@ -170,11 +223,29 @@ const SEATBELT_PROFILE: &str = "(version 1)(allow default)(deny network*)\
 
 /// What the host decided for one verifier run: the canonical per-run
 /// scratch directory (holds the hashed artifact copy and TMPDIR; the only
-/// writable path) and, for the devcontainer tier, the pinned image.
+/// writable path) and, for the devcontainer tier, the pinned image and the
+/// container runtime `detect_confinement` found.
 #[derive(Debug, Clone)]
 pub struct RunConfinement<'a> {
     pub run_dir: &'a Path,
     pub image: Option<&'a str>,
+    pub runtime: Option<ContainerRuntime>,
+}
+
+/// The devcontainer run's container name, derived from the (random) run
+/// directory name so the host can stop exactly this container on timeout —
+/// killing the CLI client leaves the container running. Characters outside
+/// the container-name charset are dropped.
+pub fn container_name(run_dir: &Path) -> String {
+    let base = run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let safe: String = base
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        .collect();
+    format!("phr-{safe}")
 }
 
 /// The devcontainer tier's image, read from the instantiation's declared
@@ -230,6 +301,11 @@ pub fn verifier_argv(
                     message: "no pinned image declared for the devcontainer tier".to_string(),
                 });
             };
+            let Some(runtime) = confinement.runtime else {
+                return Err(ExecutionError::Failed {
+                    message: "no container runtime for the devcontainer tier".to_string(),
+                });
+            };
             // The artifact is reachable only through the read-only run-dir
             // mount; its host path means nothing inside the container.
             let relative =
@@ -249,14 +325,17 @@ pub fn verifier_argv(
             if source.contains(',') {
                 return Err(ExecutionError::Failed {
                     message: format!(
-                        "run directory {source} contains a comma, which docker --mount cannot carry"
+                        "run directory {source} contains a comma, which --mount cannot carry"
                     ),
                 });
             }
+            // docker and podman take this flag set verbatim (podman's
+            // `--mount` accepts the same `readonly` bind option).
             let mut argv = vec![
-                "docker".to_string(),
+                runtime.program().to_string(),
                 "run".to_string(),
                 "--rm".to_string(),
+                format!("--name={}", container_name(confinement.run_dir)),
                 "--pull=never".to_string(),
                 "--network=none".to_string(),
                 "--read-only".to_string(),
@@ -268,7 +347,7 @@ pub fn verifier_argv(
                 "--pids-limit=512".to_string(),
                 format!("--mount=type=bind,source={source},target={CONTAINER_RUN_DIR},readonly"),
                 format!("--workdir={CONTAINER_RUN_DIR}"),
-                // `--` ends docker's options: the image is the next token,
+                // `--` ends the runtime's options: the image is the next token,
                 // never a verifier token.
                 "--".to_string(),
                 image.to_string(),
@@ -326,6 +405,26 @@ pub fn inconclusive_from(
     tier: ConfinementTier,
     raw_output: &str,
 ) -> ProofOutcome {
+    unparsed_outcome(
+        "inconclusive",
+        property,
+        verifier,
+        revision,
+        tier,
+        raw_output,
+    )
+}
+
+/// A non-evidence outcome (`inconclusive`, `timeout`) journaled with the raw
+/// output tail (S8).
+fn unparsed_outcome(
+    status: &str,
+    property: &str,
+    verifier: &str,
+    revision: &str,
+    tier: ConfinementTier,
+    raw_output: &str,
+) -> ProofOutcome {
     let tail: String = raw_output
         .chars()
         .rev()
@@ -335,7 +434,7 @@ pub fn inconclusive_from(
         .rev()
         .collect();
     tracing_like(&format!(
-        "inconclusive verifier run for {property}: raw output tail {}",
+        "{status} verifier run for {property}: raw output tail {}",
         tail.escape_default()
     ));
     ProofOutcome {
@@ -343,7 +442,7 @@ pub fn inconclusive_from(
         kind: "verification_result".to_string(),
         property: property.to_string(),
         verifier: verifier.to_string(),
-        status: "inconclusive".to_string(),
+        status: status.to_string(),
         revision: revision.to_string(),
         tool: verifier.to_string(),
         tier: format!("{tier:?}"),
@@ -438,7 +537,7 @@ pub fn execute(
     if !crate::properties::allowlist::contains(root, &actual).map_err(|e| failed(e.to_string()))? {
         return Err(ExecutionError::NotApproved { hash: actual });
     }
-    let Some(tier) = detect_tier(root) else {
+    let Some((tier, runtime)) = detect_confinement(root) else {
         // S9 fail-closed: no confinement available, execution refused.
         tracing_like("execution refused: no confinement tier available");
         return Err(ExecutionError::Failed {
@@ -476,14 +575,50 @@ pub fn execute(
     let confinement = RunConfinement {
         run_dir: &run_dir,
         image: image.as_deref(),
+        runtime,
     };
     let argv = verifier_argv(tier, &confinement, &run_artifact, verifier_command)?;
-    let output = std::process::Command::new(&argv[0])
+    let mut command = std::process::Command::new(&argv[0]);
+    command
         .args(&argv[1..])
         .current_dir(&run_dir)
-        .env("TMPDIR", &tmp_dir)
-        .output()
-        .map_err(|e| failed(e.to_string()))?;
+        .env("TMPDIR", &tmp_dir);
+    // S9 time limit, every tier. The devcontainer's container is not in the
+    // CLI's process group: stop it by name before the group is killed.
+    let stop_container = || {
+        if let (ConfinementTier::Devcontainer, Some(runtime)) = (tier, runtime) {
+            let mut kill = std::process::Command::new(runtime.program());
+            kill.args(["kill", &container_name(&run_dir)]);
+            let _ = run_with_timeout(kill, CONTAINER_KILL_TIMEOUT, || {});
+        }
+    };
+    let timeout = verification_timeout(root);
+    let output = match run_with_timeout(command, timeout, stop_container)
+        .map_err(|e| failed(e.to_string()))?
+    {
+        RunOutcome::Finished(output) => output,
+        RunOutcome::TimedOut { stdout, stderr } => {
+            let raw = format!(
+                "{}{}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
+            );
+            tracing_like(&format!(
+                "verifier killed after the {}s wall-clock limit",
+                timeout.as_secs()
+            ));
+            // S8: timeout never upgrades confidence; same record shape as the
+            // unparsed-output path (result binding is owned elsewhere).
+            return Ok(unparsed_outcome(
+                "timeout",
+                "unknown-property",
+                verifier_command,
+                tree_revision,
+                tier,
+                &raw,
+            ));
+        }
+    };
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let raw = format!("{stdout}{stderr}");
@@ -541,16 +676,17 @@ mod tests {
         use ConfinementTier::{Devcontainer, Raw, SandboxExec};
         for bits in 0u8..16 {
             let [declared, runtime, seatbelt, raw] = [0, 1, 2, 3].map(|i| bits & (1 << i) != 0);
+            let found = runtime.then_some(ContainerRuntime::Podman);
             let expected = if declared && runtime {
-                Some(Devcontainer)
+                Some((Devcontainer, found))
             } else if seatbelt {
-                Some(SandboxExec)
+                Some((SandboxExec, None))
             } else if raw {
-                Some(Raw)
+                Some((Raw, None))
             } else {
                 None
             };
-            let tier = resolve_tier(declared, || runtime, || seatbelt, || raw);
+            let tier = resolve_tier(declared, || found, || seatbelt, || raw);
             assert_eq!(
                 tier, expected,
                 "declared={declared} runtime={runtime} seatbelt={seatbelt} raw={raw}"
@@ -558,7 +694,7 @@ mod tests {
         }
         // No container runtime is probed without a declared devcontainer.
         let tier = resolve_tier(false, || panic!("probed runtime"), || true, || false);
-        assert_eq!(tier, Some(SandboxExec));
+        assert_eq!(tier, Some((SandboxExec, None)));
     }
 
     /// `detect_tier` wires the real probes: with no devcontainer declared and
@@ -608,6 +744,7 @@ mod tests {
             &RunConfinement {
                 run_dir: Path::new("/run"),
                 image: None,
+                runtime: None,
             },
             Path::new("/run/h.rs"),
             "verus",
@@ -659,6 +796,7 @@ mod confinement_tests {
         let confinement = RunConfinement {
             run_dir,
             image: None,
+            runtime: None,
         };
         let argv = verifier_argv(
             ConfinementTier::SandboxExec,
@@ -706,6 +844,7 @@ mod confinement_tests {
             &RunConfinement {
                 run_dir,
                 image: None,
+                runtime: None,
             },
             &run_dir.join("h.rs"),
             "verifier",
@@ -850,6 +989,7 @@ mod confinement_tests {
             &RunConfinement {
                 run_dir,
                 image: Some(&image),
+                runtime: Some(ContainerRuntime::Docker),
             },
             &run_dir.join("h.rs"),
             "verus",
@@ -870,6 +1010,7 @@ mod confinement_tests {
             &RunConfinement {
                 run_dir: hostile,
                 image: None,
+                runtime: None,
             },
             &hostile.join("h.rs"),
             "verus",
@@ -906,6 +1047,7 @@ mod confinement_tests {
             &RunConfinement {
                 run_dir,
                 image: Some(&declared),
+                runtime: Some(ContainerRuntime::Docker),
             },
             &run_dir.join("h.rs"),
             "verus --crate-type=lib",
@@ -945,6 +1087,113 @@ mod confinement_tests {
         );
     }
 
+    fn devcontainer_argv(runtime: ContainerRuntime) -> Vec<String> {
+        let run_dir = Path::new("/private/var/folders/x/phr-verify-AbC123");
+        let image = format!("verus@sha256:{DIGEST}");
+        verifier_argv(
+            ConfinementTier::Devcontainer,
+            &RunConfinement {
+                run_dir,
+                image: Some(&image),
+                runtime: Some(runtime),
+            },
+            &run_dir.join("artifact/h.rs"),
+            "verus",
+        )
+        .unwrap()
+    }
+
+    /// S9 on a podman-only host: the devcontainer argv invokes the runtime
+    /// the probe found — `docker` there fails closed — with the identical
+    /// forced-confinement flag set (podman accepts every flag verbatim).
+    #[test]
+    fn devcontainer_argv_invokes_the_detected_runtime() {
+        let docker = devcontainer_argv(ContainerRuntime::Docker);
+        let podman = devcontainer_argv(ContainerRuntime::Podman);
+        assert_eq!(docker[0], "docker");
+        assert_eq!(podman[0], "podman");
+        assert_eq!(docker[1..], podman[1..], "flag sets must be identical");
+        for forced in [
+            "run",
+            "--rm",
+            "--name=phr-phr-verify-AbC123",
+            "--pull=never",
+            "--network=none",
+            "--read-only",
+            "--tmpfs=/tmp",
+            "--cap-drop=ALL",
+            "--security-opt=no-new-privileges",
+            "--memory=2g",
+            "--cpus=2",
+            "--pids-limit=512",
+            "--mount=type=bind,source=/private/var/folders/x/phr-verify-AbC123,target=/verification,readonly",
+            "--workdir=/verification",
+            "--",
+        ] {
+            assert!(
+                podman.iter().any(|a| a == forced),
+                "{forced} missing: {podman:?}"
+            );
+        }
+        assert_eq!(
+            podman.last().map(String::as_str),
+            Some("/verification/artifact/h.rs")
+        );
+        // No runtime found → the tier refuses rather than guessing one.
+        let run_dir = Path::new("/run");
+        let image = format!("verus@sha256:{DIGEST}");
+        assert!(matches!(
+            verifier_argv(
+                ConfinementTier::Devcontainer,
+                &RunConfinement {
+                    run_dir,
+                    image: Some(&image),
+                    runtime: None,
+                },
+                &run_dir.join("h.rs"),
+                "verus",
+            ),
+            Err(ExecutionError::Failed { .. })
+        ));
+    }
+
+    /// The container name is derived from the run directory and stays in the
+    /// container-name charset whatever the directory is called.
+    #[test]
+    fn container_name_is_charset_safe() {
+        assert_eq!(
+            container_name(Path::new("/tmp/phr-verify-AbC123")),
+            "phr-phr-verify-AbC123"
+        );
+        assert_eq!(container_name(Path::new("/tmp/a b/x;y$z")), "phr-xyz");
+    }
+
+    /// S9 time limit config: default 300 s; a positive `timeout_secs`
+    /// overrides; zero or malformed values keep the default (never unbounded).
+    #[test]
+    fn verification_timeout_reads_config_and_never_unbounds() {
+        use std::time::Duration;
+        let root = tempfile::tempdir().unwrap();
+        let default = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
+        assert_eq!(verification_timeout(root.path()), default);
+        std::fs::create_dir_all(root.path().join(".phronesis")).unwrap();
+        let config = root.path().join(".phronesis/verification.json");
+        for (raw, expected) in [
+            (
+                r#"{"timeout_secs": 42, "raw_execution": true}"#,
+                Duration::from_secs(42),
+            ),
+            (r#"{"raw_execution": true}"#, default),
+            (r#"{"timeout_secs": 0}"#, default),
+            (r#"{"timeout_secs": -5}"#, default),
+            (r#"{"timeout_secs": "60"}"#, default),
+            ("not json", default),
+        ] {
+            std::fs::write(&config, raw).unwrap();
+            assert_eq!(verification_timeout(root.path()), expected, "{raw}");
+        }
+    }
+
     /// C13: no declared image, or one not pinned by digest, refuses the
     /// devcontainer tier with a clear error.
     #[test]
@@ -972,7 +1221,8 @@ mod confinement_tests {
                 ConfinementTier::Devcontainer,
                 &RunConfinement {
                     run_dir,
-                    image: None
+                    image: None,
+                    runtime: Some(ContainerRuntime::Docker),
                 },
                 &run_dir.join("h.rs"),
                 "verus",
@@ -1005,6 +1255,39 @@ mod confinement_tests {
         )
         .unwrap();
         sha
+    }
+
+    /// S9 time limit: a hung verifier is killed at the configured wall-clock
+    /// timeout and reported as `timeout` — never waited on forever, never
+    /// read as passed/failed/inconclusive.
+    #[test]
+    fn s9_hung_verifier_times_out_at_the_configured_limit() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".phronesis")).unwrap();
+        std::fs::write(
+            root.path().join(".phronesis/verification.json"),
+            r#"{"timeout_secs": 1}"#,
+        )
+        .unwrap();
+        let script = b"sleep 60 & wait\n";
+        let artifact = root.path().join("hang.sh");
+        std::fs::write(&artifact, script).unwrap();
+        let sha = approve(root.path(), script);
+        let started = std::time::Instant::now();
+        let result = execute(root.path(), &artifact, &sha, "/bin/sh", "r1");
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(&result, Ok(o) if o.status == "timeout"),
+            "a hung verifier must report timeout: {result:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "timeout not enforced: took {elapsed:?}"
+        );
     }
 
     /// C14: a tampered artifact is refused even when the caller passes the

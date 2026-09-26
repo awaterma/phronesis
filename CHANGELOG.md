@@ -226,6 +226,17 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `verification/templates/devcontainer.json`, must be pinned by digest (the
   tier is refused otherwise), is never pulled, and sees only the artifact's
   run directory, mounted read-only.
+- **A hung verifier hung its caller forever.** Verifier runs had no time
+  limit on any tier, although S9 promises one, and a verifier that filled a
+  pipe while its solver child kept running could deadlock. Runs now get a
+  wall-clock limit — `timeout_secs` in `.phronesis/verification.json`,
+  default 300 — after which the verifier's whole process group (z3 children
+  included) is killed, a devcontainer run's container is stopped by name, and
+  the result is recorded as `timeout`. Output is drained concurrently.
+- **The devcontainer tier failed on podman-only hosts.** Tier detection
+  accepted podman, but the run always invoked `docker`, so a host with only
+  podman selected the tier and then could not run anything. The run now
+  invokes whichever runtime the probe found, with the same confinement flags.
 - **A tampered artifact ran as approved.** Verifier execution trusted the hash
   the caller passed in, so edited bytes ran under an old approval, and a
   hand-edited allowlist entry with an empty hash or principal was accepted.
