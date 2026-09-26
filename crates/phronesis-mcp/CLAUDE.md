@@ -274,6 +274,17 @@ Use `list_predicate_providers`, `get_predicate_provider`, and
 providers require explicit `replace: true`; pre-hook provider failures block,
 while post-hook failures warn because the action has already executed.
 
+Providers may not emit **host-owned predicates** — the facts the hook asserts
+itself and rules trust (`signal_*`, `journey_*`, `rule_overridden`, the
+outcome ledger, clock facts, coverage/property/graph/ownership relations, AST
+facts, hook content facts, `store_corrupt`; full list in
+`reserved_predicates()` in `src/predicate_provider.rs`). Emitting one fails the
+provider: all of its facts for that event are dropped and the pre-hook blocks.
+`add_predicate_provider` also refuses a script with a literal
+`emit_fact("<reserved>", ...)`. Provider-defined vocabularies such as
+`change_set_*` are unaffected. `eval` is disabled in provider and guard
+scripts.
+
 The packs are composable and **independent**:
 - `llm` — LLM-behavior rules. Blocks the deflection family (disclaimers
   that shift blame to pre-existing code or to "the test environment")

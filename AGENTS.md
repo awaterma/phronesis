@@ -238,6 +238,11 @@ Project-defined predicates can be emitted by sandboxed Rhai providers under
 `.phronesis/predicates/*.rhai`. Multi-file operations expose batch
 `event.files`; per-file evaluation exposes `event.file_path`. Built-in AST
 predicates still live under `src/syntax/` and are asserted by the hook.
+Providers may not emit host-owned predicates (`signal_*`, `journey_*`,
+`rule_overridden`, outcome/clock/coverage/graph/AST facts, …; see
+`reserved_predicates()` in `predicate_provider.rs`) — doing so fails the
+provider and drops all its facts. `eval` is disabled in provider and guard
+scripts.
 
 This repository's `change_set.rhai` provider emits
 `change_set_production_rust`, `change_set_test`,

@@ -1,4 +1,4 @@
-use phronesis_rhai::{FactProviderEvent, RhaiFactProvider};
+use phronesis_rhai::{FactProviderEvent, ReservedPredicates, RhaiFactProvider};
 
 fn edit_event() -> FactProviderEvent {
     FactProviderEvent {
@@ -147,4 +147,73 @@ fn the_event_exposes_a_repo_relative_path_for_joining_graph_facts() {
         .evaluate(r#"emit_fact("touched", [event.file_rel]);"#, &event)
         .expect("provider evaluates");
     assert_eq!(facts[0].args, ["src/parser/mod.rs"]);
+}
+
+fn host_reserved() -> ReservedPredicates {
+    ReservedPredicates::new()
+        .with_exact(["signal_pass", "rule_overridden"])
+        .with_prefixes(["journey_"])
+}
+
+#[test]
+fn provider_emitting_a_reserved_predicate_fails_and_drops_all_its_facts() {
+    // A provider that forges a host-owned fact (here the confidence signal a
+    // commit gate counts) must fail loudly — and its other, legitimate facts
+    // for this event are dropped too, so a half-forged set never reaches RETE.
+    let provider = RhaiFactProvider::with_reserved(host_reserved());
+    let script = r#"
+        emit_fact("parser_changed", [event.file_path]);
+        emit_fact("signal_pass", ["unit", "tests"]);
+    "#;
+    let error = provider
+        .evaluate(script, &edit_event())
+        .expect_err("reserved predicate must be rejected");
+    assert!(
+        error.contains("reserved") && error.contains("signal_pass"),
+        "{error}"
+    );
+}
+
+#[test]
+fn reserved_prefixes_cover_a_whole_host_namespace() {
+    let provider = RhaiFactProvider::with_reserved(host_reserved());
+    let error = provider
+        .evaluate(r#"emit_fact("journey_seen", ["x", "1"]);"#, &edit_event())
+        .expect_err("reserved prefix must be rejected");
+    assert!(error.contains("journey_seen"), "{error}");
+    // Exact names do not act as prefixes: `signal_pass_extra` is allowed.
+    let facts = provider
+        .evaluate(r#"emit_fact("signal_pass_extra", []);"#, &edit_event())
+        .expect("a name that merely starts with a reserved exact name is allowed");
+    assert_eq!(facts[0].predicate, "signal_pass_extra");
+}
+
+#[test]
+fn validate_rejects_a_literal_reserved_emit_statically() {
+    let provider = RhaiFactProvider::with_reserved(host_reserved());
+    let error = provider
+        .validate("if false { emit_fact( \"rule_overridden\", []); }")
+        .expect_err("a literal reserved emit is detectable before the provider runs");
+    assert!(error.contains("rule_overridden"), "{error}");
+    assert!(
+        provider
+            .validate(r#"emit_fact("change_set_test", ["tests/a.rs"]);"#)
+            .is_ok()
+    );
+}
+
+#[test]
+fn provider_engine_rejects_eval() {
+    // `eval` of a string-returning expression would otherwise build a
+    // predicate name the static check cannot see.
+    let provider = RhaiFactProvider::new();
+    let script = r#"emit_fact(eval("\"parser\" + \"_changed\""), []);"#;
+    assert!(
+        provider.validate(script).is_err(),
+        "validate must reject eval"
+    );
+    assert!(
+        provider.evaluate(script, &edit_event()).is_err(),
+        "evaluate must reject eval"
+    );
 }
