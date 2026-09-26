@@ -1845,6 +1845,7 @@ mod tests {
         let pf = PatchFile {
             path: rel_path.to_string(),
             added: String::new(),
+            deleted: false,
         };
 
         let result = evaluate_patch_file(&call, &loaded, &pf, root).await;
