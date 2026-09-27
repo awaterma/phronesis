@@ -19,7 +19,7 @@ use std::process::Command;
 use anyhow::{Context, Result};
 
 use crate::coverage::region_map::{
-    ChangedRegions, changed_regions, file_segment, is_qualified_region_id,
+    ChangedRegions, changed_regions, file_region_id, file_segment, is_qualified_region_id,
 };
 use crate::coverage::store::{RECOLLECT_HINT, StoreState, is_stale, load_store};
 use crate::graph::model::Edge;
@@ -132,6 +132,7 @@ fn git_show_head(root: &Path, path: &str) -> Result<String> {
 pub fn changed_regions_from_diffs(diffs: &[FileDiff]) -> Result<ChangedRegions> {
     let mut functions = std::collections::BTreeSet::new();
     let mut branches = std::collections::BTreeSet::new();
+    let mut files = std::collections::BTreeSet::new();
     for diff in diffs {
         let regions = changed_regions(&diff.path, diff.old.as_deref().unwrap_or(""), &diff.new)?;
         for f in regions.functions {
@@ -140,10 +141,12 @@ pub fn changed_regions_from_diffs(diffs: &[FileDiff]) -> Result<ChangedRegions> 
         for b in regions.branches {
             branches.insert(b);
         }
+        files.extend(regions.files);
     }
     Ok(ChangedRegions {
         functions: functions.into_iter().collect(),
         branches: branches.into_iter().collect(),
+        files: files.into_iter().collect(),
     })
 }
 
@@ -212,8 +215,14 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
     // for that (test, region) pair.
     let mut by_test: BTreeMap<(String, &'static str), SelectedTest> = BTreeMap::new();
 
+    // A file too large to map per site changed as a whole: every hit in it
+    // is relevant (over-select rather than miss).
+    let whole_files: std::collections::BTreeSet<&str> =
+        regions.files.iter().map(String::as_str).collect();
     for hit in &hits {
-        if changed_region_set.contains(hit.region.as_str()) {
+        if changed_region_set.contains(hit.region.as_str())
+            || whole_files.contains(file_region_id(&hit.file).as_str())
+        {
             add_entry(&mut by_test, &hit.test, observation, &hit.region);
         }
     }
@@ -239,10 +248,14 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
                 return Vec::new();
             };
             let leaf = func.rsplit("::").next().unwrap_or(func);
+            // A function in a file that changed as a whole is reached
+            // through that file's region: over-select rather than miss.
+            let whole_file = file_region_id(file);
             regions
                 .functions
                 .iter()
                 .filter(|region| static_region_matches(region, file, leaf))
+                .chain(regions.files.iter().filter(|region| **region == whole_file))
                 .collect()
         };
 

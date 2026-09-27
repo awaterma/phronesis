@@ -43,6 +43,9 @@ pub struct EditedFile<'a> {
     pub path: String,
     pub old: Option<&'a str>,
     pub new: &'a str,
+    /// The file changed but its content could not be read (or was over the
+    /// read cap): it maps to one coarse whole-file region, never to none.
+    pub whole_file: bool,
 }
 
 pub struct PropertyHydrationInput<'a> {
@@ -69,11 +72,15 @@ fn changed_region_ids(input: &PropertyHydrationInput) -> HashSet<String> {
         else {
             continue;
         };
-        if let Ok(regions) =
+        let regions = if edit.whole_file {
+            Ok(crate::coverage::region_map::ChangedRegions::whole_file(
+                &rel,
+            ))
+        } else {
             crate::coverage::region_map::changed_regions(&rel, edit.old.unwrap_or(""), edit.new)
-        {
-            changed.extend(regions.functions);
-            changed.extend(regions.branches);
+        };
+        if let Ok(regions) = regions {
+            changed.extend(regions.all().cloned());
         }
     }
     changed

@@ -33,6 +33,10 @@
 //! becomes `_h` + 12 hex of FNV-1a(item path) + `::` + its last segment
 //! (dropped too when that alone would not fit).
 //!
+//! A file too large to map per region (over [`REGION_MAP_MAX_BYTES`]) or
+//! unreadable is one coarse region, `file:` file, standing for the whole
+//! file: it joins no hit, so every gap rule fires on it.
+//!
 //! Ids from before this grammar (`fn:<leaf>`, `branch:<leaf>:<anchor>`)
 //! carry no `::`; [`is_qualified_region_id`] tells them apart so hydration
 //! can report such a store as stale instead of joining on leaf names.
@@ -53,6 +57,22 @@ const MAX_FILE_SEGMENT_BYTES: usize = 120;
 const MAX_ITEM_PATH_BYTES: usize = 100;
 /// `.h` + 12 hex.
 const HASH_SUFFIX_BYTES: usize = 14;
+
+/// Largest input (per side, in bytes) mapped per function and branch site.
+/// Region mapping runs on the synchronous pre-check path; past this budget
+/// the file is one coarse [`file_region_id`] region instead — gap rules
+/// still fire (over-report), and the hook's latency stays bounded.
+pub const REGION_MAP_MAX_BYTES: usize = 1024 * 1024;
+
+/// Most cells the line-diff table may hold after the common prefix and
+/// suffix are trimmed. Past it, every line in the untrimmed middle counts
+/// as changed (over-report, never under-report).
+const LCS_MAX_CELLS: usize = 4_000_000;
+
+/// The coarse region standing for a whole file that was not mapped per site.
+pub fn file_region_id(file: &str) -> String {
+    format!("file:{}", file_segment(file))
+}
 
 pub fn function_region_id(file: &str, item_path: &str) -> String {
     format!("fn:{}::{}", file_segment(file), cap_item_path(item_path))
@@ -202,9 +222,22 @@ pub fn is_qualified_region_id(id: &str) -> bool {
 /// meant, so it matches every changed site with that leaf name (and, for a
 /// branch, that anchor) — over-approximating keeps a stale property store
 /// raising obligations rather than silently never matching.
+///
+/// A coarse whole-file region matches every reference into that file, and
+/// every legacy reference (which names no file): the file changed somewhere.
 pub fn reference_matches(reference: &str, changed: &str) -> bool {
     if reference == changed {
         return true;
+    }
+    if let Some(file) = changed.strip_prefix("file:") {
+        return match reference
+            .strip_prefix("fn:")
+            .or_else(|| reference.strip_prefix("branch:"))
+            .and_then(|rest| rest.split_once("::"))
+        {
+            Some((ref_file, _)) => ref_file == file,
+            None => true,
+        };
     }
     if is_qualified_region_id(reference) {
         return false;
@@ -302,18 +335,54 @@ fn compute_anchor(condition: &str) -> String {
     hash12(&normalized)
 }
 
+/// One node of the tree with the ancestry the site extractors need,
+/// captured top-down: tree-sitter's `Node::parent()` rescans the parent's
+/// children, so walking up from each of N sibling items is O(N²).
+struct Visit<'t> {
+    node: Node<'t>,
+    /// Item path of the node itself plus every enclosing scope, outermost
+    /// first.
+    scopes: std::rc::Rc<Vec<String>>,
+    /// Id of the innermost enclosing named `function_item`, excluding the
+    /// node itself.
+    enclosing_fn: Option<usize>,
+}
+
 /// Depth-first collection of every node — `root.children()` alone only
 /// visits top-level items, and `if_expression`s live inside function bodies.
 /// Returned in source order (by start byte), which the ordinals rely on.
-fn all_nodes<'t>(root: Node<'t>) -> Vec<Node<'t>> {
+fn all_nodes<'t>(root: Node<'t>, source: &str) -> Vec<Visit<'t>> {
     let mut out = Vec::new();
-    let mut stack = vec![root];
-    while let Some(node) = stack.pop() {
-        out.push(node);
-        stack.extend(node.children(&mut node.walk()));
+    let mut stack = vec![(root, std::rc::Rc::new(Vec::new()), None)];
+    while let Some((node, parent_scopes, enclosing_fn)) = stack.pop() {
+        let scopes = match scope_segment(node, source) {
+            Some(segment) => {
+                let mut v = Vec::clone(&parent_scopes);
+                v.push(segment);
+                std::rc::Rc::new(v)
+            }
+            None => parent_scopes,
+        };
+        let child_fn = if is_named_function(node) {
+            Some(node.id())
+        } else {
+            enclosing_fn
+        };
+        for child in node.children(&mut node.walk()) {
+            stack.push((child, std::rc::Rc::clone(&scopes), child_fn));
+        }
+        out.push(Visit {
+            node,
+            scopes,
+            enclosing_fn,
+        });
     }
-    out.sort_by_key(|n| (n.start_byte(), std::cmp::Reverse(n.end_byte())));
+    out.sort_by_key(|v| (v.node.start_byte(), std::cmp::Reverse(v.node.end_byte())));
     out
+}
+
+fn is_named_function(node: Node) -> bool {
+    node.kind() == "function_item" && node.child_by_field_name("name").is_some()
 }
 
 /// `name`/`type`/`trait` production: whitespace dropped, `::` -> `.`,
@@ -352,20 +421,6 @@ fn scope_segment(node: Node, source: &str) -> Option<String> {
     }
 }
 
-/// Item path of `node` itself plus every enclosing scope, outermost first.
-fn scope_path(node: Node, source: &str) -> Vec<String> {
-    let mut segments = Vec::new();
-    let mut current = Some(node);
-    while let Some(n) = current {
-        if let Some(segment) = scope_segment(n, source) {
-            segments.push(segment);
-        }
-        current = n.parent();
-    }
-    segments.reverse();
-    segments
-}
-
 fn parse(source: &str) -> Result<tree_sitter::Tree> {
     let mut parser = Parser::new();
     parser
@@ -376,14 +431,14 @@ fn parse(source: &str) -> Result<tree_sitter::Tree> {
 
 /// Function sites keyed by tree-sitter node id, so branch sites can name
 /// their enclosing function by the same (ordinal-disambiguated) item path.
-fn function_sites_by_node(tree: &tree_sitter::Tree, source: &str) -> Vec<(usize, FunctionSite)> {
+fn function_sites_by_node(visits: &[Visit]) -> Vec<(usize, FunctionSite)> {
     let mut seen: HashMap<String, u32> = HashMap::new();
     let mut sites = Vec::new();
-    for node in all_nodes(tree.root_node()) {
-        if node.kind() != "function_item" || node.child_by_field_name("name").is_none() {
+    for Visit { node, scopes, .. } in visits {
+        if !is_named_function(*node) {
             continue;
         }
-        let base = scope_path(node, source).join("::");
+        let base = scopes.join("::");
         let count = seen.entry(base.clone()).or_insert(0);
         *count += 1;
         let item_path = if *count > 1 {
@@ -407,7 +462,7 @@ fn function_sites_by_node(tree: &tree_sitter::Tree, source: &str) -> Vec<(usize,
 /// fns), in source order, with its qualified item path.
 pub fn extract_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
     let tree = parse(source)?;
-    Ok(function_sites_by_node(&tree, source)
+    Ok(function_sites_by_node(&all_nodes(tree.root_node(), source))
         .into_iter()
         .map(|(_, site)| site)
         .collect())
@@ -417,14 +472,24 @@ pub fn extract_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
 /// the span covering the whole expression (so edits to the branch body count
 /// as changes to the branch).
 pub fn extract_branch_sites(source: &str) -> Result<Vec<BranchSite>> {
+    extract_sites(source).map(|(_, branches)| branches)
+}
+
+/// Function and branch sites from one parse and one tree walk.
+fn extract_sites(source: &str) -> Result<(Vec<FunctionSite>, Vec<BranchSite>)> {
     let tree = parse(source)?;
-    let functions: HashMap<usize, String> = function_sites_by_node(&tree, source)
-        .into_iter()
-        .map(|(id, site)| (id, site.item_path))
+    let visits = all_nodes(tree.root_node(), source);
+    let function_sites = function_sites_by_node(&visits);
+    let functions: HashMap<usize, &str> = function_sites
+        .iter()
+        .map(|(id, site)| (*id, site.item_path.as_str()))
         .collect();
     let mut ordinals: HashMap<(String, String), u32> = HashMap::new();
     let mut sites = Vec::new();
-    for node in all_nodes(tree.root_node()) {
+    for &Visit {
+        node, enclosing_fn, ..
+    } in &visits
+    {
         if node.kind() != "if_expression" {
             continue;
         }
@@ -433,7 +498,9 @@ pub fn extract_branch_sites(source: &str) -> Result<Vec<BranchSite>> {
         };
         let condition_text = condition.utf8_text(source.as_bytes()).unwrap_or_default();
         let anchor = compute_anchor(condition_text);
-        let function = enclosing_function(node, &functions).unwrap_or_else(|| "_".to_string());
+        let function = enclosing_fn
+            .and_then(|id| functions.get(&id))
+            .map_or_else(|| "_".to_string(), |path| path.to_string());
         let ordinal = ordinals
             .entry((function.clone(), anchor.clone()))
             .or_insert(0);
@@ -446,18 +513,8 @@ pub fn extract_branch_sites(source: &str) -> Result<Vec<BranchSite>> {
             end_line: node.end_position().row as u64 + 1,
         });
     }
-    Ok(sites)
-}
-
-fn enclosing_function(node: Node, functions: &HashMap<usize, String>) -> Option<String> {
-    let mut current = node.parent();
-    while let Some(n) = current {
-        if let Some(path) = functions.get(&n.id()) {
-            return Some(path.clone());
-        }
-        current = n.parent();
-    }
-    None
+    let function_sites = function_sites.into_iter().map(|(_, site)| site).collect();
+    Ok((function_sites, sites))
 }
 
 /// One step of the LCS walk: a matched pair (old line, new line), a
@@ -527,12 +584,36 @@ fn lcs_table(old: &[&str], new: &[&str]) -> Vec<Vec<usize>> {
 fn changed_lines(old: &str, new: &str) -> (HashSet<u64>, HashSet<u64>) {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
+    // An edit touches a small window of a large file: trim the common
+    // prefix and suffix, then diff only the middle. Lines are 1-based.
+    let prefix = old_lines
+        .iter()
+        .zip(&new_lines)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let suffix = old_lines[prefix..]
+        .iter()
+        .rev()
+        .zip(new_lines[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let old_mid = &old_lines[prefix..old_lines.len() - suffix];
+    let new_mid = &new_lines[prefix..new_lines.len() - suffix];
+    let line_no = |i: usize| (prefix + i) as u64;
+
+    if old_mid.len().saturating_mul(new_mid.len()) > LCS_MAX_CELLS {
+        // Too scattered to diff within budget: the whole middle changed.
+        return (
+            (1..=old_mid.len()).map(line_no).collect(),
+            (1..=new_mid.len()).map(line_no).collect(),
+        );
+    }
     let steps: Vec<WalkStep> = LcsWalk {
-        dp: &lcs_table(&old_lines, &new_lines),
-        old: &old_lines,
-        new: &new_lines,
-        i: old_lines.len(),
-        j: new_lines.len(),
+        dp: &lcs_table(old_mid, new_mid),
+        old: old_mid,
+        new: new_mid,
+        i: old_mid.len(),
+        j: new_mid.len(),
     }
     .collect();
     let matched = steps
@@ -544,13 +625,13 @@ fn changed_lines(old: &str, new: &str) -> (HashSet<u64>, HashSet<u64>) {
             }
             acc
         });
-    let changed_old = (1..=old_lines.len())
+    let changed_old = (1..=old_mid.len())
         .filter(|i| !matched.0.contains(i))
-        .map(|i| i as u64)
+        .map(line_no)
         .collect();
-    let changed_new = (1..=new_lines.len())
+    let changed_new = (1..=new_mid.len())
         .filter(|j| !matched.1.contains(j))
-        .map(|j| j as u64)
+        .map(line_no)
         .collect();
     (changed_old, changed_new)
 }
@@ -558,32 +639,54 @@ fn changed_lines(old: &str, new: &str) -> (HashSet<u64>, HashSet<u64>) {
 pub struct ChangedRegions {
     pub functions: Vec<String>,
     pub branches: Vec<String>,
+    /// Coarse [`file_region_id`] regions: files changed but not mapped per
+    /// site (over budget, or unreadable). Each stands for the whole file.
+    pub files: Vec<String>,
+}
+
+impl ChangedRegions {
+    /// The whole of `file` changed, unmapped.
+    pub fn whole_file(file: &str) -> Self {
+        Self {
+            functions: Vec::new(),
+            branches: Vec::new(),
+            files: vec![file_region_id(file)],
+        }
+    }
+
+    /// Every changed region id: functions, branch sites, coarse files.
+    pub fn all(&self) -> impl Iterator<Item = &String> {
+        self.functions
+            .iter()
+            .chain(&self.branches)
+            .chain(&self.files)
+    }
 }
 
 /// Overlap policy: any changed line inside a function's or branch site's
 /// span flags that region (SPEC-coverage-evidence §"region identity").
 /// `file` is the repo-relative path the ids are qualified with.
-/// Branch mapping is skipped for inputs over 100_000 lines (documented cap).
+/// Either side over [`REGION_MAP_MAX_BYTES`] maps to one coarse whole-file
+/// region instead of per-site regions.
 pub fn changed_regions(file: &str, old: &str, new: &str) -> Result<ChangedRegions> {
+    if old.len() > REGION_MAP_MAX_BYTES || new.len() > REGION_MAP_MAX_BYTES {
+        return Ok(ChangedRegions::whole_file(file));
+    }
     let (changed_old, changed_new) = changed_lines(old, new);
 
     let mut functions = HashSet::new();
+    let mut branches = HashSet::new();
     for (source, changed) in [(old, &changed_old), (new, &changed_new)] {
-        for site in extract_function_sites(source)? {
-            if (site.start_line..=site.end_line).any(|line| changed.contains(&line)) {
+        let touched = |start: u64, end: u64| (start..=end).any(|line| changed.contains(&line));
+        let (function_sites, branch_sites) = extract_sites(source)?;
+        for site in function_sites {
+            if touched(site.start_line, site.end_line) {
                 functions.insert(site.region_id(file));
             }
         }
-    }
-
-    let mut branches = HashSet::new();
-    let too_big = old.lines().count() > 100_000 || new.lines().count() > 100_000;
-    if !too_big {
-        for (source, changed) in [(old, &changed_old), (new, &changed_new)] {
-            for site in extract_branch_sites(source)? {
-                if (site.start_line..=site.end_line).any(|line| changed.contains(&line)) {
-                    branches.insert(site.region_id(file));
-                }
+        for site in branch_sites {
+            if touched(site.start_line, site.end_line) {
+                branches.insert(site.region_id(file));
             }
         }
     }
@@ -591,5 +694,6 @@ pub fn changed_regions(file: &str, old: &str, new: &str) -> Result<ChangedRegion
     Ok(ChangedRegions {
         functions: functions.into_iter().collect(),
         branches: branches.into_iter().collect(),
+        files: Vec::new(),
     })
 }

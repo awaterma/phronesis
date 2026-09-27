@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::coverage::region_map::{changed_regions, is_qualified_region_id, repo_relative_path};
+use crate::coverage::region_map::{
+    ChangedRegions, changed_regions, is_qualified_region_id, repo_relative_path,
+};
 use crate::coverage::store::{StoreCorruption, StoreState, is_stale, load_store};
 
 /// Every relation this module can assert. The hook demand-gates on this
@@ -43,6 +45,9 @@ pub struct EditedFile<'a> {
     pub path: String,
     pub old: Option<&'a str>,
     pub new: &'a str,
+    /// The file changed but its content could not be read (or was over the
+    /// read cap): it maps to one coarse whole-file region, never to none.
+    pub whole_file: bool,
 }
 
 pub struct HydrationInput<'a> {
@@ -168,8 +173,12 @@ pub fn hydrate(input: &HydrationInput) -> anyhow::Result<Hydration> {
             .unwrap_or_else(|| "head:unknown".to_string());
 
         for (rel, edit) in &edited {
-            let regions = changed_regions(rel, edit.old.unwrap_or(""), edit.new)?;
-            for region in regions.functions.iter().chain(regions.branches.iter()) {
+            let regions = if edit.whole_file {
+                ChangedRegions::whole_file(rel)
+            } else {
+                changed_regions(rel, edit.old.unwrap_or(""), edit.new)?
+            };
+            for region in regions.all() {
                 changed_regions_out.push(region.clone());
                 if wants("changed_region") {
                     facts.push(fact(

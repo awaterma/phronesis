@@ -857,6 +857,33 @@ pub(crate) fn collect_rule_predicates(rules: &[Rule]) -> HashSet<String> {
         .collect()
 }
 
+/// One edited file as region mapping sees it: the whole pre-edit file
+/// (`None` = nothing before) and the whole post-edit file. `unmapped` holds
+/// the reason when the content could not be read: the file then maps to one
+/// coarse whole-file region, never to none.
+pub(crate) struct EditedImage {
+    pub path: String,
+    pub old: Option<String>,
+    pub new: String,
+    pub unmapped: Option<String>,
+}
+
+/// Say once per hook run, and only when a loaded rule asks for regions,
+/// that a file was not mapped per region.
+fn note_unmapped(edited: &[EditedImage]) {
+    static NOTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    for e in edited {
+        if let Some(reason) = &e.unmapped
+            && !NOTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!(
+                "phronesis: NOTE — {} not mapped to regions ({reason}); the whole file counts as changed.",
+                e.path
+            );
+        }
+    }
+}
+
 /// Hydrate coverage-evidence facts into the network for this event.
 ///
 /// Demand-gated twice: the hydrate module gates on `rule_relations` itself,
@@ -871,7 +898,7 @@ pub(crate) async fn assert_coverage_facts(
     network: &ReteNetwork,
     project_root: &Path,
     rule_predicates: &HashSet<String>,
-    edited: &[(String, Option<String>, String)],
+    edited: &[EditedImage],
 ) -> Result<(), HookError> {
     use crate::coverage::hydrate::{EditedFile, HydrationInput, RELATIONS, hydrate};
 
@@ -884,12 +911,14 @@ pub(crate) async fn assert_coverage_facts(
         return Ok(());
     }
 
+    note_unmapped(edited);
     let edited_files: Vec<EditedFile> = edited
         .iter()
-        .map(|(path, old, new)| EditedFile {
-            path: path.clone(),
-            old: old.as_deref(),
-            new,
+        .map(|e| EditedFile {
+            path: e.path.clone(),
+            old: e.old.as_deref(),
+            new: &e.new,
+            whole_file: e.unmapped.is_some(),
         })
         .collect();
     let head_sha = match crate::lifecycle::outcome::git_head_probe(project_root) {
@@ -951,7 +980,7 @@ pub(crate) async fn assert_properties_facts(
     network: &ReteNetwork,
     project_root: &Path,
     rule_predicates: &HashSet<String>,
-    edited: &[(String, Option<String>, String)],
+    edited: &[EditedImage],
 ) -> Result<(), HookError> {
     use crate::properties::hydrate::{EditedFile, PropertyHydrationInput, RELATIONS, hydrate};
 
@@ -961,12 +990,14 @@ pub(crate) async fn assert_properties_facts(
     if !RELATIONS.iter().any(|r| rule_predicates.contains(*r)) {
         return Ok(());
     }
+    note_unmapped(edited);
     let edited_files: Vec<EditedFile> = edited
         .iter()
-        .map(|(path, old, new)| EditedFile {
-            path: path.clone(),
-            old: old.as_deref(),
-            new,
+        .map(|e| EditedFile {
+            path: e.path.clone(),
+            old: e.old.as_deref(),
+            new: &e.new,
+            whole_file: e.unmapped.is_some(),
         })
         .collect();
     let head_sha = match crate::lifecycle::outcome::git_head_probe(project_root) {

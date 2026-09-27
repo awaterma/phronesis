@@ -74,6 +74,7 @@ fn golden_relevant_test_join_fires_for_the_right_pairs() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: Some("a".repeat(40)),
     };

@@ -2,8 +2,6 @@ use std::process;
 
 use phr::Fact;
 
-use std::collections::HashSet;
-
 use crate::diff_extract;
 use crate::hook_facts::{
     assert_coverage_facts, assert_diff_facts, assert_language_pack_facts, assert_properties_facts,
@@ -151,10 +149,6 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         process::exit(1);
     }
 
-    // Coverage hydration wants the event's old content (the payload's
-    // old_string) so changed-region mapping can see both sides even though
-    // disk already holds the new content.
-    let old_content = super::extract_old_content(&payload, &tool_name);
     // Validate the file path is inside the project root before reading.
     // An empty file_path means the hook input didn't include one — skip file read.
     if let Some(content) = read_disk_content(&file_path).unwrap_or_else(|_| process::exit(1)) {
@@ -165,12 +159,40 @@ pub async fn run_post_check() -> anyhow::Result<()> {
                 content: &content,
                 content_patterns: &content_patterns,
                 missing_patterns: &missing_patterns,
-                rule_predicates: &rule_predicates,
-                old_content: old_content.as_deref(),
             },
         )
         .await
         .unwrap_or_else(|_| process::exit(1));
+    }
+
+    // Coverage/property hydration: demand-gated, fail-open, opt-out via
+    // PHRONESIS_NO_COVERAGE / PHRONESIS_NO_PROPERTIES. Region mapping needs
+    // the whole pre-edit file, and disk already holds the new content: the
+    // pre-image is reconstructed from the edit (see `edit_images`). Read
+    // separately from the content facts above so a file that is unreadable
+    // or over the cap still counts as wholly changed instead of vanishing.
+    if !file_path.is_empty() {
+        let edited: Vec<_> = super::edit_images::post_edited(
+            &tool_name,
+            payload
+                .tool_input
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
+            payload.tool_output.as_ref(),
+            super::edit_images::read_disk_image(&file_path, &root),
+            &file_path,
+        )
+        .into_iter()
+        .collect();
+        if assert_coverage_facts(&network, &root, &rule_predicates, &edited)
+            .await
+            .is_err()
+            || assert_properties_facts(&network, &root, &rule_predicates, &edited)
+                .await
+                .is_err()
+        {
+            process::exit(1);
+        }
     }
 
     let provider_event = super::provider_event(&payload, &tool_name, &file_path, "post");
@@ -299,8 +321,6 @@ struct PostContentInput<'a> {
     content: &'a str,
     content_patterns: &'a [String],
     missing_patterns: &'a [String],
-    rule_predicates: &'a HashSet<String>,
-    old_content: Option<&'a str>,
 }
 
 async fn assert_post_content_facts(
@@ -312,8 +332,6 @@ async fn assert_post_content_facts(
         content,
         content_patterns,
         missing_patterns,
-        rule_predicates,
-        old_content,
     } = input;
     // Only assert the full content as a fact when small enough to keep
     // working-memory growth bounded. Pattern checks below still operate on
@@ -392,23 +410,6 @@ async fn assert_post_content_facts(
             eprintln!("phronesis: WARNING — test-fact assertion failed: {}", e);
             e
         })?;
-
-    // Coverage-evidence hydration: demand-gated, fail-open, opt-out via
-    // PHRONESIS_NO_COVERAGE. At post-check the edit has already applied, so
-    // disk holds the new content and old content is unavailable — the
-    // changed-region computation still maps both sides from the payload's
-    // old_string when the event carried one.
-    let edited: Vec<(String, Option<String>, String)> = if file_path.is_empty() {
-        Vec::new()
-    } else {
-        vec![(
-            file_path.to_string(),
-            old_content.map(str::to_string),
-            content.to_string(),
-        )]
-    };
-    assert_coverage_facts(network, &project_root, rule_predicates, &edited).await?;
-    assert_properties_facts(network, &project_root, rule_predicates, &edited).await?;
 
     Ok(())
 }

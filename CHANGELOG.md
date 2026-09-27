@@ -116,6 +116,28 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   blocks at `PreToolUse` and warns (not silently) at `PostToolUse`; and
   `evaluate_patch_file` fails closed on a genuine read error while still
   treating a missing file (a patch's own Add File target) as empty.
+
+- **Coverage and property gap rules misfired on real editor payloads.** A
+  Claude Code `Edit` sends a one-line `old_string`/`new_string`, and the
+  hooks diffed that snippet as if it were the file: pre-check found no
+  changed region, so a gap rule never fired before the edit, and post-check
+  compared the snippet with the whole file, so every function — tests
+  included — was reported as a changed, untested region. The integration
+  tests passed only because they sent the whole file as `old_string`. The
+  hooks now diff whole files: pre-check applies the edit to the file on disk
+  (honouring `replace_all`, `MultiEdit` order, Gemini's
+  `expected_replacements`, and `Write` content), post-check reconstructs the
+  pre-edit file by reversing the edit (checked by re-applying it) or from
+  Claude Code's `tool_response.originalFile`. When the edit does not match
+  the file, or the pre-image cannot be recovered, the whole file counts as
+  changed — gaps are over-reported, never missed. Property obligations use
+  the same regions. A file that exists but cannot be read, or is over the
+  `PHRONESIS_MAX_FILE_BYTES` read cap, or over 1 MiB for region mapping,
+  counts as one whole-file region `file:<path>` instead of silently mapping
+  to nothing; a stray non-UTF-8 byte no longer hides a file. Region mapping
+  is now linear in file size: a pre-check on a large file that took minutes
+  (tree-sitter parent walks and a full line-diff table, both quadratic)
+  returns promptly.
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other

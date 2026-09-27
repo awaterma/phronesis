@@ -4,6 +4,7 @@
 //! re-exported from the sub-modules where they live.  Shared primitives
 //! (payload parsing, rule loading, fact helpers, logging) stay here.
 
+mod edit_images;
 mod journey_record;
 mod lifecycle_wiring;
 mod post;

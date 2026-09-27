@@ -365,6 +365,7 @@ async fn when_edit_hydrates(world: &mut World) {
                 path: "src/lib.rs".into(),
                 old: Some(&old_src),
                 new: &new_src,
+                whole_file: false,
             }],
             head_sha: None,
         })
