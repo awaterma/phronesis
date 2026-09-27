@@ -787,7 +787,11 @@ fn bounded(value: &str) -> String {
 
 /// Get current session ID from environment or generate one.
 pub fn get_session_id() -> String {
-    std::env::var("PHRONESIS_SESSION_ID").unwrap_or_else(|_| format!("session-{}", unix_secs_now()))
+    session_id_from(std::env::var("PHRONESIS_SESSION_ID").ok(), unix_secs_now())
+}
+
+fn session_id_from(env_value: Option<String>, now_secs: u64) -> String {
+    env_value.unwrap_or_else(|| format!("session-{now_secs}"))
 }
 
 pub fn unix_secs_now() -> u64 {
@@ -970,6 +974,38 @@ mod tests {
             acknowledged: None,
             lease_token: None,
         }
+    }
+
+    #[test]
+    fn acknowledgement_and_cleanup_have_lifecycle_specific_effects() {
+        let mut storage = CapsuleStorage::default();
+        storage
+            .emit(record("next", CapsuleLifecycle::NextInteraction, "s"))
+            .unwrap();
+        storage
+            .emit(record("session", CapsuleLifecycle::Session, "s"))
+            .unwrap();
+        let acknowledged = storage.acknowledge("next").expect("existing capsule");
+        assert_eq!(acknowledged.acknowledged, Some(true));
+        assert!(storage.acknowledge("missing").is_none());
+        assert_eq!(storage.remove_acknowledged(), ["next"]);
+        assert!(storage.get_capsule("session").is_some());
+        let mut expired = record("expired", CapsuleLifecycle::Persistent, "s");
+        expired.expires_at = Some(10);
+        storage.emit(expired).unwrap();
+        assert!(storage.remove_expired(10).is_empty(), "expiry is exclusive");
+        assert_eq!(storage.remove_expired(11), ["expired"]);
+        storage.clear();
+        assert!(storage.is_empty());
+    }
+
+    #[test]
+    fn session_id_uses_environment_or_generates_a_timestamped_id() {
+        assert_eq!(
+            session_id_from(Some("test-session-override".to_owned()), 42),
+            "test-session-override"
+        );
+        assert_eq!(session_id_from(None, 42), "session-42");
     }
 
     #[test]

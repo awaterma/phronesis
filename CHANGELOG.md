@@ -15,6 +15,32 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **A benign Python property body could be refused for "interpolating
+  outside a string" when the value only ever sat inside a `'...'` string or
+  a `#` comment.** The rendered-body validator's non-Rust fallback only knew
+  `"..."` string literals and `//` comments, so it never recognized Python's
+  own syntax — single quotes, triple-quoted strings, string prefixes
+  (`r`/`b`/`u`/`f`/`t`, any case, `rb`/`fr`/`tr` combinations), or `#`
+  comments — and treated all of that as live code. The fallback is now
+  language-aware: Python bodies get a dedicated lexer that ends every string
+  where CPython's tokenizer does. A backslash always takes the next
+  character with it, raw strings included (`r'x\' y '` is one string, as in
+  CPython, so the code after it can no longer be misread as string text);
+  a single-quoted string ends at an unescaped newline. Line ends follow
+  CPython's universal newlines: a bare CR or CRLF ends a line as LF does,
+  so `# comment\rVAL=1` leaves `VAL=1` live, a CR inside a single-quoted
+  string fails safe, and backslash-CRLF is one line continuation. Form
+  feed, `\v`, NEL, U+2028 and the other Unicode line breaks do not end a
+  line in CPython and do not end one here. In f-strings and
+  t-strings the literal text stays inert but a `{expr}` replacement field
+  is code (an interpolated value placed inside `{}` is still rejected;
+  `{{`/`}}` are literal braces, and `\{` still opens a field). Fields are
+  read with the Python 3.12+ grammar, so a quote, `}` or `#` inside a nested
+  string, comment or format spec cannot end a field early. Every occurrence
+  of a value must now lie wholly inside inert text, so a value that
+  straddles a literal boundary is rejected. An unterminated string fails
+  safe, for Python and the generic fallback alike: the dangling text and
+  everything after it stay live, never guessed closed.
 - **The nudge README that `init` writes showed a capsule that could never
   fire.** Its `journey_seen` example used the window `"session"`, which is not
   a window token; the session window is `"s"`. The example now uses `"s"`, and

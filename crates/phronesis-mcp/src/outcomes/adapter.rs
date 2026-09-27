@@ -266,6 +266,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn config_adapter_parse_returns_build_evidence() {
+        let dir = tempfile::tempdir().unwrap();
+        let def = matching_def(dir.path(), "cargo build").unwrap();
+        let adapter = ConfigAdapter { def };
+        let facts = adapter.parse("unit", "cargo build", "Finished dev profile", Some(0));
+        assert!(
+            facts
+                .iter()
+                .any(|fact| fact.predicate == "build_outcome" && fact.args[1] == "pass")
+        );
+    }
+
+    #[test]
     fn unknown_command_yields_no_facts() {
         let dir = tempfile::tempdir().unwrap();
         let facts = extract(ExtractInput {
