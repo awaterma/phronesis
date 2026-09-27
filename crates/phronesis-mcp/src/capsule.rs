@@ -973,6 +973,38 @@ mod tests {
     }
 
     #[test]
+    fn acknowledgement_and_cleanup_have_lifecycle_specific_effects() {
+        let mut storage = CapsuleStorage::default();
+        storage
+            .emit(record("next", CapsuleLifecycle::NextInteraction, "s"))
+            .unwrap();
+        storage
+            .emit(record("session", CapsuleLifecycle::Session, "s"))
+            .unwrap();
+        let acknowledged = storage.acknowledge("next").expect("existing capsule");
+        assert_eq!(acknowledged.acknowledged, Some(true));
+        assert!(storage.acknowledge("missing").is_none());
+        assert_eq!(storage.remove_acknowledged(), ["next"]);
+        assert!(storage.get_capsule("session").is_some());
+        let mut expired = record("expired", CapsuleLifecycle::Persistent, "s");
+        expired.expires_at = Some(10);
+        storage.emit(expired).unwrap();
+        assert!(storage.remove_expired(10).is_empty(), "expiry is exclusive");
+        assert_eq!(storage.remove_expired(11), ["expired"]);
+        storage.clear();
+        assert!(storage.is_empty());
+    }
+
+    #[test]
+    fn session_id_uses_environment_or_generates_a_timestamped_id() {
+        let id = get_session_id();
+        assert!(
+            id.starts_with("session-") && id.len() > "session-".len(),
+            "{id}"
+        );
+    }
+
+    #[test]
     fn transaction_is_schema_versioned_and_concurrent_writers_do_not_lose_records() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();

@@ -719,6 +719,52 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
+    fn legacy_turn_body_alias_renders_activity() {
+        let entry = hook_entry(
+            "pre_check",
+            "src/alias.rs",
+            2,
+            json!([{
+                "rule_id": "alias-rule", "action_type": "constraint_violation",
+                "message": "blocked", "bindings": {}
+            }]),
+        );
+        let body = build_turn_body(&[entry], 1_700_000_060);
+        assert!(
+            body.contains("alias-rule") && body.contains("src/alias.rs"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_turn_context_alias_reads_recent_hook_activity() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let log = crate::action_log::default_path(dir.path());
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let entry = hook_entry(
+            "pre_check",
+            "src/legacy.rs",
+            2,
+            json!([{
+                "rule_id": "legacy-rule", "action_type": "constraint_violation",
+                "message": "blocked", "bindings": {}
+            }]),
+        );
+        std::fs::write(&log, serde_json::to_string(&entry).unwrap() + "\n").unwrap();
+        let output = run_turn_context(dir.path(), 10, DEFAULT_MAX_BYTES);
+        let envelope: serde_json::Value = serde_json::from_str(&output).unwrap();
+        let body = envelope["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(
+            body.contains("legacy-rule") && body.contains("src/legacy.rs"),
+            "{body}"
+        );
+    }
+
+    #[test]
     fn turn_body_renders_warned_consequence() {
         let entries = vec![hook_entry(
             "post_check",

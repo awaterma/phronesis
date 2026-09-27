@@ -1290,6 +1290,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn journey_hydration_does_not_fabricate_seen_facts_for_empty_journal() {
+        let d = tempfile::tempdir().expect("tempdir");
+        let capsule = Capsule {
+            id: "seen".into(),
+            priority: 1,
+            max_bytes: 100,
+            when: CapsuleCondition::Leaf {
+                predicate: "journey_seen".into(),
+                args: vec!["lifecycle:prompt".into(), "s".into()],
+            },
+            body: "seen event".into(),
+            path: PathBuf::from("seen.md"),
+        };
+        let rules = rules(&[capsule]).expect("compile demanded journey rule");
+        let mut network = ReteNetwork::new();
+        let diagnostic = hydrate_journey(d.path(), &rules, 1_700_000_000, &mut network).await;
+        assert!(diagnostic.is_none(), "{diagnostic:?}");
+        let facts = network.facts_snapshot().expect("hydrated fact snapshot");
+        assert!(
+            !facts.iter().any(|fact| fact.predicate == "journey_seen"),
+            "empty journal must not fabricate seen fact: {facts:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn no_capsules_means_no_hydration_and_no_diagnostics() {
         let d = tempfile::tempdir().expect("tempdir");
         let found = matched(d.path(), &[], 1).await;

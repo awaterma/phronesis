@@ -423,6 +423,15 @@ mod tests {
     }
 
     #[test]
+    fn packed_context_token_estimate_uses_rendered_body_bytes() {
+        let packed = PackedContext {
+            body: "1234".into(),
+            ..Default::default()
+        };
+        assert_eq!(packed.estimated_tokens(), 2);
+    }
+
+    #[test]
     fn body_never_exceeds_hard_limit() {
         let config = byte_only(100);
         let items = (0..20)

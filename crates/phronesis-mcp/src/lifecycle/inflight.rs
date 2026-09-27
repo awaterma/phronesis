@@ -194,3 +194,38 @@ pub(crate) fn confidence_band(root: &Path) -> Option<&'static str> {
         outcomes::Band::High => "high",
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::skipped;
+
+    #[test]
+    fn skipped_reports_a_detection_marker_and_ignores_absence() {
+        const CHILD: &str = "PHRONESIS_TEST_SKIPPED_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            skipped("Bash", None);
+            skipped("Bash", Some("timeout"));
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "lifecycle::inflight::tests::skipped_reports_a_detection_marker_and_ignores_absence",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .expect("run isolated stderr assertion");
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8(output.stderr).expect("UTF-8 stderr");
+        assert!(
+            stderr.contains("commit detection skipped for Bash: timeout"),
+            "{stderr:?}"
+        );
+        assert!(!stderr.contains("commit detection skipped for Bash: \n"));
+    }
+}

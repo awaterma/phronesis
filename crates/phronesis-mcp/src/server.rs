@@ -2173,6 +2173,37 @@ mod tool_registration_tests {
 }
 
 #[cfg(test)]
+mod clear_consequences_tool_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn clear_consequences_reports_count_and_empties_memory() {
+        let server = EpistemeMcp::new();
+        server.consequences.lock().await.extend([
+            Consequence {
+                kind: ConsequenceKind::Event,
+                predicate: "one".into(),
+                payload: serde_json::json!({}),
+                provenance: phr::Provenance::Asserted { by: "test".into() },
+            },
+            Consequence {
+                kind: ConsequenceKind::Constraint,
+                predicate: "two".into(),
+                payload: serde_json::json!({}),
+                provenance: phr::Provenance::Asserted { by: "test".into() },
+            },
+        ]);
+        let result = server.clear_consequences().await.expect("tool response");
+        let text = match &result.content[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            other => panic!("unexpected response: {other:?}"),
+        };
+        assert_eq!(text, "Cleared 2 consequence(s)");
+        assert!(server.consequences.lock().await.is_empty());
+    }
+}
+
+#[cfg(test)]
 mod audit_tool_tests {
     use super::*;
 

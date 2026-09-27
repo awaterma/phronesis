@@ -239,7 +239,34 @@ pub fn counts_by_kind(packed: &PackedContext) -> BTreeMap<ItemKind, usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::packing::{OmissionReason, OmittedItem};
     use crate::context::render::{ContextEvent, render};
+
+    #[test]
+    fn omitted_item_counts_are_grouped_by_kind() {
+        let packed = PackedContext {
+            omitted: vec![
+                OmittedItem {
+                    stable_id: "k1".into(),
+                    kind: ItemKind::Kernel,
+                    reason: OmissionReason::ByteCapacity,
+                },
+                OmittedItem {
+                    stable_id: "k2".into(),
+                    kind: ItemKind::Kernel,
+                    reason: OmissionReason::ByteCapacity,
+                },
+                OmittedItem {
+                    stable_id: "r".into(),
+                    kind: ItemKind::Rule,
+                    reason: OmissionReason::ByteCapacity,
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(counts_by_kind(&packed).get(&ItemKind::Kernel), Some(&2));
+        assert_eq!(counts_by_kind(&packed).get(&ItemKind::Rule), Some(&1));
+    }
 
     /// An opted-in project whose kernel is far over its ceiling, so an
     /// interaction render produces both selections and omissions.

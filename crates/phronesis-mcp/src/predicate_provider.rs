@@ -437,7 +437,22 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{ProviderError, list};
+    use super::{ProviderError, get, list};
+
+    #[test]
+    fn get_reads_named_provider_and_reports_missing_provider() {
+        let project = tempdir().expect("project tempdir");
+        let path = project.path().join(".phronesis/predicates/example.rhai");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("mkdir predicates");
+        std::fs::write(&path, "emit_fact(\"example\", []);").expect("write provider");
+        assert_eq!(
+            get(project.path(), "example").expect("provider"),
+            "emit_fact(\"example\", []);"
+        );
+        assert!(
+            matches!(get(project.path(), "missing"), Err(ProviderError::NotFound(name)) if name == "missing")
+        );
+    }
 
     #[test]
     fn list_rejects_provider_symlink_that_escapes_project_root() {
