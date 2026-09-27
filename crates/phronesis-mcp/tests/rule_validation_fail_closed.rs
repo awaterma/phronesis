@@ -261,7 +261,7 @@ fn audit_rejects_every_malformed_rule_shape() {
 
 struct Mcp {
     child: std::process::Child,
-    stdin: std::process::ChildStdin,
+    stdin: Option<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
     next_id: u64,
 }
@@ -282,7 +282,7 @@ impl Mcp {
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         let mut mcp = Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout,
             next_id: 0,
         };
@@ -295,15 +295,19 @@ impl Mcp {
             }),
         );
         let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}});
-        writeln!(mcp.stdin, "{note}").expect("write");
+        writeln!(mcp.stdin.as_mut().expect("server stdin is open"), "{note}").expect("write");
         mcp
     }
 
     fn call(&mut self, method: &str, params: Value) -> Value {
         self.next_id += 1;
         let msg = json!({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").expect("write");
-        self.stdin.flush().expect("flush");
+        writeln!(self.stdin.as_mut().expect("server stdin is open"), "{msg}").expect("write");
+        self.stdin
+            .as_mut()
+            .expect("server stdin is open")
+            .flush()
+            .expect("flush");
         let mut line = String::new();
         self.stdout.read_line(&mut line).expect("read");
         serde_json::from_str(&line).expect("JSON-RPC response")
@@ -328,6 +332,14 @@ impl Mcp {
 
 impl Drop for Mcp {
     fn drop(&mut self) {
+        drop(self.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

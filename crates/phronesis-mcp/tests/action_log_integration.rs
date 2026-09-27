@@ -148,7 +148,7 @@ fn no_action_log_env_var_suppresses_writes() {
 
 struct McpClient {
     child: Child,
-    stdin: ChildStdin,
+    stdin: Option<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
 }
@@ -169,7 +169,7 @@ impl McpClient {
         let stdout = BufReader::new(child.stdout.take().unwrap());
         let mut c = Self {
             child,
-            stdin,
+            stdin: Some(stdin),
             stdout,
             next_id: 0,
         };
@@ -188,16 +188,34 @@ impl McpClient {
         let msg = serde_json::json!({
             "jsonrpc":"2.0","id":self.next_id,"method":method,"params":params
         });
-        writeln!(self.stdin, "{}", msg).unwrap();
-        self.stdin.flush().unwrap();
+        writeln!(
+            self.stdin.as_mut().expect("server stdin is open"),
+            "{}",
+            msg
+        )
+        .unwrap();
+        self.stdin
+            .as_mut()
+            .expect("server stdin is open")
+            .flush()
+            .unwrap();
         let mut line = String::new();
         self.stdout.read_line(&mut line).unwrap();
         serde_json::from_str(&line).unwrap()
     }
     fn notify(&mut self, method: &str, params: serde_json::Value) {
         let msg = serde_json::json!({"jsonrpc":"2.0","method":method,"params":params});
-        writeln!(self.stdin, "{}", msg).unwrap();
-        self.stdin.flush().unwrap();
+        writeln!(
+            self.stdin.as_mut().expect("server stdin is open"),
+            "{}",
+            msg
+        )
+        .unwrap();
+        self.stdin
+            .as_mut()
+            .expect("server stdin is open")
+            .flush()
+            .unwrap();
     }
     fn tool(&mut self, name: &str, args: serde_json::Value) -> serde_json::Value {
         let r = self.call(
@@ -211,6 +229,14 @@ impl McpClient {
 
 impl Drop for McpClient {
     fn drop(&mut self) {
+        drop(self.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -431,7 +457,7 @@ fn get_action_log_reads_across_rotation_boundary() {
     let stdout = BufReader::new(child.stdout.take().unwrap());
     let mut c = McpClient {
         child,
-        stdin,
+        stdin: Some(stdin),
         stdout,
         next_id: 0,
     };
