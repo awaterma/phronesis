@@ -841,8 +841,16 @@ fn load_rules_file_after_repair_takes_the_repaired_file() {
     let repaired = r#"{"rules":[{"id":"A","phase":"pre","priority":1,"when":[{"new_content_contains":"a"}],"then":{"log":"NEW"}}]}"#;
     std::fs::write(rules_path(root), repaired).expect("repair");
 
-    mcp.tool("load_rules_file", json!({}))
-        .done("load_rules_file after repair");
+    let summary: Value = serde_json::from_str(
+        &mcp.tool("load_rules_file", json!({}))
+            .done("load_rules_file after repair"),
+    )
+    .expect("summary json");
+    assert_eq!(
+        summary["loaded"], 1,
+        "the repaired file's rule is loaded: {summary}"
+    );
+    assert_eq!(summary["skipped_duplicate_ids"], 0, "{summary}");
     let listed = mcp.list_rules();
     assert!(listed.get("load_error").is_none(), "{listed}");
     let rules = listed["rules"].as_array().expect("rules");

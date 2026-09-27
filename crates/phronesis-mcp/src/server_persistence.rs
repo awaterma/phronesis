@@ -118,7 +118,7 @@ impl EpistemeMcp {
     /// each rule in the network came from disk (at startup, or before the
     /// file broke) and may be stale. The repaired file is authoritative:
     /// changed rules come from it and rules deleted from it stay deleted.
-    async fn reload_from(
+    pub(crate) async fn reload_from(
         &self,
         root: &std::path::Path,
         resolved: crate::rule_layers::ResolvedRules,
