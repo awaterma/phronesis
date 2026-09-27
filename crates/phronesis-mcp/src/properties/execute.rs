@@ -33,14 +33,31 @@ pub enum ConfinementTier {
     Refused,
 }
 
+impl ConfinementTier {
+    /// The snake_case name recorded in a result's `tier` field (and in the
+    /// `result_tier` fact), so rules can refuse raw-tier evidence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Devcontainer => "devcontainer",
+            Self::SandboxExec => "sandbox_exec",
+            Self::Raw => "raw",
+            Self::Refused => "refused",
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ExecutionError {
     #[error("no confinement tier available: execution refused (S9 fail-closed)")]
     RefusedNoSandbox,
     #[error("verifier execution failed: {message}")]
     Failed { message: String },
-    #[error("artifact not approved: hash {hash} is not in the review-gate allowlist (S3)")]
-    NotApproved { hash: String },
+    #[error(
+        "artifact not approved: hash {hash} is not in the review-gate allowlist for property {property} (S3)"
+    )]
+    NotApproved { hash: String, property: String },
+    #[error("tree revision {revision:?} is not a 40-hex commit id: a result must bind to a commit")]
+    InvalidRevision { revision: String },
     #[error(
         "artifact bytes changed since approval: on-disk sha256 {actual} does not match {expected} (S3)"
     )]
@@ -382,49 +399,50 @@ pub fn verifier_argv(
     })
 }
 
-/// The S8 fourth state: a run whose output parses to zero proof outcomes is
-/// `inconclusive` — never a pass, never silent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProofOutcome {
-    pub v: u32,
-    pub kind: String, // "verification_result"
-    pub property: String,
-    pub verifier: String,
-    pub status: String, // passed | failed | inconclusive | timeout | unknown
-    pub revision: String,
-    pub tool: String,
-    /// The confinement tier that ran (S7 audit trail).
-    pub tier: String,
+/// A verifier run's result: the persisted sidecar record itself
+/// (`property-results.jsonl`), bound to property, revision, tier, artifact
+/// hash, and verifier (D9). The S8 fourth state: a run whose output parses to
+/// zero proof outcomes is `inconclusive` — never a pass, never silent.
+pub type ProofOutcome = crate::properties::store::ResultRecord;
+
+/// What a run is bound to: everything a result record must carry to count
+/// as evidence (D9).
+#[derive(Debug, Clone, Copy)]
+pub struct RunBinding<'a> {
+    pub property: &'a str,
+    pub verifier: &'a str,
+    pub tool: &'a str,
+    pub revision: &'a str,
+    pub tier: ConfinementTier,
+    pub artifact_sha256: &'a str,
+}
+
+impl RunBinding<'_> {
+    fn outcome(&self, status: &str) -> ProofOutcome {
+        ProofOutcome {
+            v: crate::properties::store::RESULTS_FORMAT,
+            kind: "verification_result".to_string(),
+            property: self.property.to_string(),
+            verifier: self.verifier.to_string(),
+            status: status.to_string(),
+            revision: self.revision.to_string(),
+            tool: self.tool.to_string(),
+            tier: Some(self.tier.as_str().to_string()),
+            artifact_sha256: Some(self.artifact_sha256.to_string()),
+        }
+    }
 }
 
 /// Journal an inconclusive outcome with the raw output tail (S8).
-pub fn inconclusive_from(
-    property: &str,
-    verifier: &str,
-    revision: &str,
-    tier: ConfinementTier,
-    raw_output: &str,
-) -> ProofOutcome {
-    unparsed_outcome(
-        "inconclusive",
-        property,
-        verifier,
-        revision,
-        tier,
-        raw_output,
-    )
+pub fn inconclusive_from(binding: &RunBinding<'_>, raw_output: &str) -> ProofOutcome {
+    unparsed_outcome("inconclusive", binding, raw_output)
 }
 
 /// A non-evidence outcome (`inconclusive`, `timeout`) journaled with the raw
-/// output tail (S8).
-fn unparsed_outcome(
-    status: &str,
-    property: &str,
-    verifier: &str,
-    revision: &str,
-    tier: ConfinementTier,
-    raw_output: &str,
-) -> ProofOutcome {
+/// output tail (S8). Bound the same way every other outcome is (D9): the
+/// caller's `RunBinding` carries property/verifier/revision/tier/artifact, so
+/// a timeout record hydrates as bound evidence exactly like a parsed result.
+fn unparsed_outcome(status: &str, binding: &RunBinding<'_>, raw_output: &str) -> ProofOutcome {
     let tail: String = raw_output
         .chars()
         .rev()
@@ -434,19 +452,11 @@ fn unparsed_outcome(
         .rev()
         .collect();
     tracing_like(&format!(
-        "{status} verifier run for {property}: raw output tail {}",
+        "{status} verifier run for {}: raw output tail {}",
+        binding.property,
         tail.escape_default()
     ));
-    ProofOutcome {
-        v: 1,
-        kind: "verification_result".to_string(),
-        property: property.to_string(),
-        verifier: verifier.to_string(),
-        status: status.to_string(),
-        revision: revision.to_string(),
-        tool: verifier.to_string(),
-        tier: format!("{tier:?}"),
-    }
+    binding.outcome(status)
 }
 
 /// The verus summary line's prefix. Only a line that *starts* with it (after
@@ -514,11 +524,16 @@ fn tracing_like(message: &str) {
 /// Execute the verifier for an approved artifact through the confinement
 /// tiers. `artifact_sha256` is the hash the caller believes it approved; this
 /// layer re-hashes the bytes on disk itself and refuses on mismatch or when
-/// the on-disk hash is not allowlisted (S3 condition iii). The verifier runs
-/// against a copy of exactly the hashed bytes in a fresh per-run directory,
-/// so the file cannot change between the check and the run.
+/// the on-disk hash is not allowlisted for `property` (S3 condition iii). The
+/// verifier runs against a copy of exactly the hashed bytes in a fresh
+/// per-run directory, so the file cannot change between the check and the
+/// run. The outcome is bound (D9) to `property`, `verifier` (the encoding's
+/// verifier name), `tree_revision` (a 40-hex commit), the tier that ran, and
+/// the on-disk hash.
 pub fn execute(
     root: &Path,
+    property: &str,
+    verifier: &str,
     artifact: &Path,
     artifact_sha256: &str,
     verifier_command: &str,
@@ -534,8 +549,23 @@ pub fn execute(
             actual,
         });
     }
-    if !crate::properties::allowlist::contains(root, &actual).map_err(|e| failed(e.to_string()))? {
-        return Err(ExecutionError::NotApproved { hash: actual });
+    let approved = crate::properties::allowlist::load(root)
+        .map_err(|e| failed(e.to_string()))?
+        .entries
+        .iter()
+        .any(|e| e.artifact_sha256 == actual && e.property_id == property);
+    if !approved {
+        return Err(ExecutionError::NotApproved {
+            hash: actual,
+            property: property.to_string(),
+        });
+    }
+    // A result must name the commit it ran against, or it never binds —
+    // refuse before a minutes-long proof rather than record unbound evidence.
+    if !(tree_revision.len() == 40 && tree_revision.bytes().all(|b| b.is_ascii_hexdigit())) {
+        return Err(ExecutionError::InvalidRevision {
+            revision: tree_revision.to_string(),
+        });
     }
     let Some((tier, runtime)) = detect_confinement(root) else {
         // S9 fail-closed: no confinement available, execution refused.
@@ -548,8 +578,14 @@ pub fn execute(
         ConfinementTier::Devcontainer => Some(devcontainer_image(root)?),
         _ => None,
     };
-    let _ = tree_revision; // dedup ledger keyed by (hash, revision); the
-    // ledger write lands with the results sidecar (property-results.jsonl).
+    let binding = RunBinding {
+        property,
+        verifier,
+        tool: verifier_command,
+        revision: tree_revision,
+        tier,
+        artifact_sha256: &actual,
+    };
 
     // The per-run directory: the only writable path under confinement.
     let run = tempfile::Builder::new()
@@ -608,15 +644,9 @@ pub fn execute(
                 timeout.as_secs()
             ));
             // S8: timeout never upgrades confidence; same record shape as the
-            // unparsed-output path (result binding is owned elsewhere).
-            return Ok(unparsed_outcome(
-                "timeout",
-                "unknown-property",
-                verifier_command,
-                tree_revision,
-                tier,
-                &raw,
-            ));
+            // unparsed-output path, bound to this run (D9) like every other
+            // outcome.
+            return Ok(unparsed_outcome("timeout", &binding, &raw));
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -629,24 +659,9 @@ pub fn execute(
     let status = verus_status(&output);
     let Some(status) = status else {
         // S8's fourth state: the parser matched nothing — loud silence.
-        return Ok(inconclusive_from(
-            "unknown-property",
-            verifier_command,
-            tree_revision,
-            tier,
-            &raw,
-        ));
+        return Ok(inconclusive_from(&binding, &raw));
     };
-    Ok(ProofOutcome {
-        v: 1,
-        kind: "verification_result".to_string(),
-        property: String::new(),
-        verifier: verifier_command.to_string(),
-        status,
-        revision: String::new(),
-        tool: verifier_command.to_string(),
-        tier: format!("{tier:?}"),
-    })
+    Ok(binding.outcome(&status))
 }
 
 #[cfg(test)]
@@ -761,11 +776,17 @@ mod tests {
     /// Acceptance C10: garbage verifier output → inconclusive, never a pass.
     #[test]
     fn c10_garbage_output_is_inconclusive_not_silent() {
+        let revision = "a".repeat(40);
+        let sha = artifact_sha256(b"fn h() {}");
         let outcome = inconclusive_from(
-            "safe_divide.zero_returns_error",
-            "verus",
-            "a".repeat(40).as_str(),
-            ConfinementTier::SandboxExec,
+            &RunBinding {
+                property: "safe_divide.zero_returns_error",
+                verifier: "verus",
+                tool: "verus",
+                revision: &revision,
+                tier: ConfinementTier::SandboxExec,
+                artifact_sha256: &sha,
+            },
             "<html>totally unparseable verifier output</html>",
         );
         assert_eq!(outcome.status, "inconclusive");
@@ -781,7 +802,15 @@ mod tests {
         let artifact = root.path().join("h.rs");
         std::fs::write(&artifact, "fn h() {}").unwrap();
         let sha = artifact_sha256(b"fn h() {}");
-        let result = execute(root.path(), &artifact, &sha, "verus", "r1");
+        let result = execute(
+            root.path(),
+            "p",
+            "verus",
+            &artifact,
+            &sha,
+            "verus",
+            &"a".repeat(40),
+        );
         assert!(matches!(result, Err(ExecutionError::NotApproved { .. })));
     }
 }
@@ -791,6 +820,97 @@ mod confinement_tests {
     use super::*;
 
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    const REV: &str = "0ef2e37d80ee4be6d551cb9c7429a8a22720e712";
+
+    /// D9: the outcome is bound — property, verifier, 40-hex revision, the
+    /// tier that ran, and the on-disk artifact hash — and it round-trips
+    /// through the results sidecar loader as a v2 record.
+    #[test]
+    fn d9_execute_binds_the_outcome() {
+        if !sandbox_exec_available() {
+            eprintln!("skipping D9 execute binding: sandbox-exec unavailable (non-macOS host)");
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let artifact = root.path().join("h.rs");
+        std::fs::write(&artifact, "fn h() {}").unwrap();
+        let sha = approve(root.path(), b"fn h() {}");
+        let fake_verus = root.path().join("fake-verus.sh");
+        std::fs::write(
+            &fake_verus,
+            "#!/bin/sh\necho 'verification results:: 1 verified, 0 errors'\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&fake_verus, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let command = fake_verus.display().to_string();
+        let outcome = execute(root.path(), "p", "verus", &artifact, &sha, &command, REV)
+            .expect("fake verifier runs");
+        assert_eq!(outcome.status, "passed");
+        assert_eq!(outcome.property, "p");
+        assert_eq!(outcome.verifier, "verus");
+        assert_eq!(outcome.revision, REV);
+        assert_eq!(outcome.tier.as_deref(), Some("sandbox_exec"));
+        assert_eq!(outcome.artifact_sha256.as_deref(), Some(sha.as_str()));
+        assert_eq!(outcome.v, crate::properties::store::RESULTS_FORMAT);
+
+        // The sidecar loader accepts it as written.
+        std::fs::write(
+            crate::properties::store::results_path(root.path()),
+            serde_json::to_string(&outcome).unwrap() + "\n",
+        )
+        .unwrap();
+        let loaded = crate::properties::store::load_results(root.path()).unwrap();
+        assert_eq!(loaded, vec![outcome]);
+
+        // An inconclusive run still names the property it ran for.
+        let outcome =
+            execute(root.path(), "p", "cat", &artifact, &sha, "/bin/cat", REV).expect("cat runs");
+        assert_eq!(outcome.status, "inconclusive");
+        assert_eq!(outcome.property, "p");
+        assert_eq!(outcome.revision, REV);
+    }
+
+    /// D9: approval binds bytes to a property — an artifact approved for
+    /// another property does not run for this one; and a run must name a
+    /// commit, or its result could never bind.
+    #[test]
+    fn d9_execute_refuses_foreign_approval_and_revisionless_runs() {
+        let root = tempfile::tempdir().unwrap();
+        let artifact = root.path().join("h.rs");
+        std::fs::write(&artifact, "fn h() {}").unwrap();
+        let sha = approve(root.path(), b"fn h() {}");
+        let result = execute(
+            root.path(),
+            "other.property",
+            "verus",
+            &artifact,
+            &sha,
+            "/usr/bin/true",
+            REV,
+        );
+        assert!(
+            matches!(result, Err(ExecutionError::NotApproved { .. })),
+            "{result:?}"
+        );
+        for revision in ["", "r1", "HEAD"] {
+            let result = execute(
+                root.path(),
+                "p",
+                "verus",
+                &artifact,
+                &sha,
+                "/usr/bin/true",
+                revision,
+            );
+            assert!(
+                matches!(result, Err(ExecutionError::InvalidRevision { .. })),
+                "{revision:?}: {result:?}"
+            );
+        }
+    }
 
     fn run_sandboxed(run_dir: &Path, target: &Path) -> bool {
         let confinement = RunConfinement {
@@ -971,7 +1091,7 @@ mod confinement_tests {
         let artifact = root.path().join(RUN_TMP_DIR);
         std::fs::write(&artifact, "fn h() {}").unwrap();
         let sha = approve(root.path(), b"fn h() {}");
-        let result = execute(root.path(), &artifact, &sha, "/bin/cat", "r1");
+        let result = execute(root.path(), "p", "cat", &artifact, &sha, "/bin/cat", REV);
         assert!(
             matches!(&result, Ok(o) if o.status == "inconclusive"),
             "an artifact named {RUN_TMP_DIR:?} must stage and run: {result:?}"
@@ -1278,7 +1398,7 @@ mod confinement_tests {
         std::fs::write(&artifact, script).unwrap();
         let sha = approve(root.path(), script);
         let started = std::time::Instant::now();
-        let result = execute(root.path(), &artifact, &sha, "/bin/sh", "r1");
+        let result = execute(root.path(), "p", "sh", &artifact, &sha, "/bin/sh", REV);
         let elapsed = started.elapsed();
         assert!(
             matches!(&result, Ok(o) if o.status == "timeout"),
@@ -1298,14 +1418,30 @@ mod confinement_tests {
         let artifact = root.path().join("h.rs");
         let approved = approve(root.path(), b"fn approved() {}");
         std::fs::write(&artifact, "fn tampered() {}").unwrap();
-        let result = execute(root.path(), &artifact, &approved, "/usr/bin/true", "r1");
+        let result = execute(
+            root.path(),
+            "p",
+            "true",
+            &artifact,
+            &approved,
+            "/usr/bin/true",
+            REV,
+        );
         assert!(
             matches!(result, Err(ExecutionError::HashMismatch { .. })),
             "tampered artifact must be refused: {result:?}"
         );
         // Passing the tampered bytes' true hash does not help: not approved.
         let tampered = artifact_sha256(b"fn tampered() {}");
-        let result = execute(root.path(), &artifact, &tampered, "/usr/bin/true", "r1");
+        let result = execute(
+            root.path(),
+            "p",
+            "true",
+            &artifact,
+            &tampered,
+            "/usr/bin/true",
+            REV,
+        );
         assert!(
             matches!(result, Err(ExecutionError::NotApproved { .. })),
             "unapproved bytes must be refused: {result:?}"
@@ -1313,10 +1449,12 @@ mod confinement_tests {
         // A missing artifact fails closed.
         let result = execute(
             root.path(),
+            "p",
+            "true",
             &root.path().join("gone.rs"),
             &approved,
             "/usr/bin/true",
-            "r1",
+            REV,
         );
         assert!(matches!(result, Err(ExecutionError::Failed { .. })));
     }

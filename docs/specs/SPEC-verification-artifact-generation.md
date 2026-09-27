@@ -53,7 +53,10 @@ host validates (S5: field-class contract + rendered-body re-parse) and writes ve
         ↓  review gate (S3: human-principal approval, content-hash-bound)
 execution via registered ToolchainDefs — composed as argv, never interpolated shell strings (S4, sandboxed per S9)
         ↓  structured result
-verification_result fact + result_revision + journey tag + provenance (SPEC B §3); band lift per S8
+bound result record (property, 40-hex revision, tier, artifact SHA-256, verifier — SPEC B §2 "Result binding")
+        ↓
+verification_result + result_revision + result_tier facts + journey tag + provenance (SPEC B §3); band lift per S8
+[a record missing any binding hydrates as unbound_evidence, never verification_result]
 ```
 
 ## Safety requirements
@@ -74,7 +77,7 @@ verification_result fact + result_revision + journey tag + provenance (SPEC B §
 
 1. **Raw is opt-in per project** — a config the human sets (S1 marker discipline), never a default. The ladder: devcontainer → sandbox-exec → **raw (explicitly configured)** → fail-closed refusal.
 2. **Raw still requires allowlisted bytes** — the S3 human-approved-hash gate applies before execution regardless of tier.
-3. **The tier is recorded in the audit trail** (S7) — a proof that ran raw is visible evidence, so a project drifting to raw-everywhere is visible rather than silent.
+3. **The tier is recorded in the audit trail** (S7) — a proof that ran raw is visible evidence, so a project drifting to raw-everywhere is visible rather than silent. The result record carries `tier`, and a bound result hydrates `result_tier(property, verifier, "raw")`, so a rule can refuse raw-tier evidence.
 4. **Tier selection stays host-enforced** — the runner picks the strongest available tier and falls back to raw only when the config explicitly allows it.
 
 **S5 — Templates are trusted; property data and rendered output are not.** Template scripts are version-controlled, **human-principal-owned** repo content, loaded under the same constraints as predicate providers. Two validation layers: (1) the **field-class contract** at property ingest *and* render — identifier-shaped fields (id, subject) validated against an identifier charset; free-text fields embedded only through host-side escaped-literal encoding (escape *before* the value enters Rhai scope); property ids containing quotes/delimiters rejected at ingest; (2) the rendered body is re-parsed and every interpolated value asserted to appear only in its sanctioned syntactic position; dangerous constructs are rejected from a **per-language deny-list** registered with the template (rust: `include!`/`include_str!`/`include_bytes!`/`env!`/`option_env!`, `#[path]`, `extern crate`, `unsafe`, `macro_rules!`/`$` metavariables, `std::process`/`fs`/`net`/`os`, `Command::new`, `env::var`/`var_os`/`vars`/`vars_os`; python: `eval`/`exec`/`os.system`/`subprocess`; etc.) — the deny-lists are part of the (language, verifier) instantiation, not the pipeline. For rust the check is **tokenizer-based, never textual**: the body is lexed by a real Rust lexer (`proc-macro2`) and must parse as a Rust file (`syn`) — a body that fails to lex or parse, or whose bracket nesting exceeds 64 levels (checked iteratively before any recursive pass, so hostile nesting cannot overflow the stack), is refused (fail closed). Denied constructs are matched on the token stream: macros as an identifier or path (`std::env!`) followed by `!` (any whitespace), or named as a segment of a multi-segment path (so `use std::include_str as inc;` is refused); macro definitions (`macro_rules!`, `macro`) and `$` metavariables are refused outright, since they can assemble a denied name from pieces no single token shows; `process`/`fs`/`net`/`os` are denied anywhere below `std` (`std::os::unix::net`), `std::os` because it only re-homes those capabilities; paths as adjacent segments across `::` regardless of whitespace or comments, with `use` trees expanded (`use std::{io::{self}, fs as f}` yields `std::fs`), and a glob or `as`-rename of a denied path's first segment (`use std::*`, `use std as s`) refused because it reaches the second under another name; `#[path]` as `path` anywhere inside an attribute (covering `cfg_attr`). The interpolation check is byte-exact: `Ok` ⇒ no occurrence of an interpolated value overlaps a code token — only string/raw/byte/C-string/char literal tokens, comments (doc comments included), and whitespace may contain one. Text inside literals and comments is inert for both checks. Validation failure journals the refusal and writes nothing. No string reaches a written artifact unvalidated.
@@ -83,7 +86,7 @@ verification_result fact + result_revision + journey tag + provenance (SPEC B §
 
 **S7 — Full audit trail.** Every generation and execution appends: `log.jsonl` entry, journey tag, and the resulting facts with `Fact.source` and revision — sufficient to answer "who decided this artifact could run, and on what evidence?" Artifact bodies journal as hash + path, never inline.
 
-**S8 — Failures never silently count — and silence is a state.** Result statuses are `passed` | `failed` | `inconclusive` | `timeout` | `unknown`. Failed/inconclusive/timeout never upgrade confidence. **A run whose output parses to zero outcomes emits `verification_result` with status `inconclusive` plus the raw output tail in the journal and never lifts the proof signal** — verifier version drift changing output format must degrade to loud silence, not a green light.
+**S8 — Failures never silently count — and silence is a state.** Result statuses are `passed` | `failed` | `inconclusive` | `timeout` | `unknown` — a closed set: a results record with any other status makes the sidecar corrupt (`store_corrupt(properties, invalid_result)`), never a new state. Failed/inconclusive/timeout never upgrade confidence. **A run whose output parses to zero outcomes emits `verification_result` with status `inconclusive` plus the raw output tail in the journal and never lifts the proof signal** — verifier version drift changing output format must degrade to loud silence, not a green light.
 
 ## Known-bug precedence
 
@@ -91,7 +94,7 @@ An open known-bug entry referencing a property blocks band lift from `signal_pas
 
 ## Execution discipline
 
-Proofs are minutes-long; the post-check seam never blocks the current call. Executions dedup by **(artifact content hash, tree revision)** — at most one execution per revision; `result_revision` and the dirty flag are recorded at *run start*. Queue executions to a once-per-revision drain rather than per-fire.
+Proofs are minutes-long; the post-check seam never blocks the current call. Executions dedup by **(artifact content hash, tree revision)** — at most one execution per revision; `result_revision` and the dirty flag are recorded at *run start*. `execute` refuses a tree revision that is not a 40-hex commit id, since its result could never bind. Queue executions to a once-per-revision drain rather than per-fire.
 
 ## Non-goals
 
@@ -105,7 +108,7 @@ Proofs are minutes-long; the post-check seam never blocks the current call. Exec
 **C1 — Real proof, no simulation (first instantiation: verus-native).** A Verus-native `safe_divide` postcondition property renders a compiling Verus harness that proves it with real `cargo-verus`/`verus` (opt-in integration test; skipped when the toolchain is absent, never faked, never `assume`d green). The test doubles as the template for later (language, verifier) pairs — a python/dafny instantiation repeats this criterion with its own def, unchanged in shape.
 **C2 — S2 refusal.** A `candidate` property's generation request is refused and journaled; the refusal reads the record, not the fact stream (a fact stream claiming `accepted` while the record says `candidate` is refused — C8).
 **C3 — Same-fire prohibition.** An artifact created in this fire is not executed in that fire — even when it matches an allowlisted hash.
-**C4 — Provenance.** Execution appends `verification_result` with source, revision, and evidence kind; a failed proof does not lift the confidence Band.
+**C4 — Provenance.** Execution produces a bound result record — property, the 40-hex commit it ran against, verifier, confinement tier, and the SHA-256 of the artifact bytes that ran — and only such a record hydrates as `verification_result` (SPEC B §2 "Result binding"); a failed proof does not lift the confidence Band.
 **C5 — Injection containment.** A property record carrying hostile Rust payloads renders inert (escaped) or generation refuses — journaled either way; nothing is written unvalidated.
 **C6 — Mutation detection.** Introduce the exact bug the property forbids into the subject function, re-run the pipeline: the proof must fail. (The only test that catches claim-binding drift.)
 **C7 — Trust-anchor tamper.** Agent-seam writes to the allowlist/opt-in/templates are refused; an artifact whose hash was self-added is refused execution.

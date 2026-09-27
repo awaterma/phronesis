@@ -83,11 +83,39 @@ Corroboration claims are part of the reviewed record — a corroboration is itse
 | `property_status` | `[property, status]` | `observed` \| `candidate` \| `corroborated` \| `accepted` \| `verified` \| `rejected` \| `superseded` |
 | `property_corroborated_by` | `[property, source_entity]` | Independent corroboration for promotion policy |
 | `property_encoding` | `[property, language, verifier, artifact]` | Where the claim is encoded (sketch §14) |
-| `verification_result` | `[property, verifier, status]` | Result at the recorded revision |
-| `result_revision` | `[property, verifier, sha]` | Revision at which the result was produced |
-| `stale_evidence` | `[property, verifier]` | Host-derived: result predates a change to a dependent region |
+| `verification_result` | `[property, verifier, status]` | A **bound** result at the recorded revision (see *Result binding*) |
+| `result_revision` | `[property, verifier, sha]` | Commit (40 hex) at which the bound result was produced |
+| `result_tier` | `[property, verifier, tier]` | Confinement tier that ran the bound result: `devcontainer` \| `sandbox_exec` \| `raw` — rules can refuse `raw` |
+| `unbound_evidence` | `[property, verifier, reason]` | A result record that does not bind; never evidence (reasons below) |
+| `stale_evidence` | `[property, verifier]` | Host-derived: a bound result predates a change to a dependent region |
+| `property_obligation` | `[property, "first_proof"]` | Host-derived: an accepted/verified property's dependent region changed and no bound result is at HEAD |
+| `store_corrupt` | `["properties", reason]` | properties.json or property-results.jsonl could not be read or validated (reasons below) |
 
 **Result statuses** are `passed` \| `failed` \| `inconclusive` \| `timeout` \| `unknown`. The sketch §14's evidence-kind list had no failure semantics; the three-state `unknown` discipline from `outcomes/toolchain.rs` ("never a silent pass") is mandatory here. Evidence *kinds* (`deductive_proof`, `bounded_model_check`, `runtime_unit_test`, …) are a function of the verifier and live in the results record payload, not as RETE args, unless a rule needs them — demand-gated philosophy.
+
+**Result binding (D9).** A results-sidecar record (`.phronesis/property-results.jsonl`, format `v: 2`) is evidence only when it is *bound*:
+
+```json
+{"v": 2, "kind": "verification_result", "property": "safe_divide.zero_returns_error",
+ "verifier": "verus", "status": "passed", "revision": "<40-hex commit>", "tool": "<verifier command>",
+ "tier": "sandbox_exec", "artifact_sha256": "<64-hex SHA-256 of the artifact bytes that ran>"}
+```
+
+`properties::execute::execute` fills every field from the run: the property it was asked to prove, the encoding's verifier name, the commit it ran against (a non-commit revision is refused before running), the tier that ran, and the SHA-256 it computed from the on-disk bytes (which must be allowlisted *for that property*). At hydration a record binds only when all of these hold, checked in this order; the first failure is the `unbound_evidence` reason:
+
+| Reason | Failure |
+|---|---|
+| `legacy_record` | `v: 1` record (written before binding; no tier, no artifact hash) |
+| `missing_revision` / `invalid_revision` | revision empty / not 40 hex |
+| `missing_tier` / `invalid_tier` | tier absent / not `devcontainer`, `sandbox_exec`, or `raw` |
+| `missing_artifact` / `invalid_artifact` | artifact hash absent / not 64 lowercase hex |
+| `unknown_property` | no curated property with that id |
+| `no_encoding` | the property has no encoding for that verifier |
+| `allowlist_unreadable` / `artifact_not_approved` | the artifact hash is not an S3-approved artifact for that property |
+
+An unbound record never asserts `verification_result`, `result_revision`, `result_tier`, or `stale_evidence`, and never satisfies the first-proof obligation. A bound result is "at HEAD" only when HEAD is known and equals its revision, so with no git HEAD every accepted property with a changed dependency stays obligated; staleness is not claimed without a HEAD.
+
+**Store integrity (D8).** Loading validates the closed `kind` and status sets, the format (`v` 1 or 2), and field shapes (identifier charset for `property`; bounded, control-free strings elsewhere). Any failure makes that file corrupt: the hook prints a stderr warning and asserts `store_corrupt(properties, <reason>)` when a rule mentions it, and derives everything else as if the corrupt file were empty — unreadable results are no evidence, so obligations still fire. Reasons: `properties_unreadable`, `invalid_properties`, `invalid_record` (properties.json), `results_unreadable`, `invalid_result` (property-results.jsonl), `unsupported_format` (either). A corrupt properties.json leaves no properties to derive from, so rules that must not pass silently should also match `store_corrupt(properties, ?reason)`.
 
 All facts carry `Fact.source` (`SPEC-fact-provenance.md`) so "why did this rule fire?" shows whether evidence came from a verifier run, the curated record, or an agent assertion.
 
@@ -140,7 +168,7 @@ Promotion itself is `set_property_status` — an MCP tool whose every invocation
 
 ## 5. Staleness — sketch §6, honestly named
 
-The engine cannot order revision SHAs, so `verification_required` from the sketch is host-derived: when `changed_region(change, region)` ⋈ `property_depends_on(property, region)` and the recorded `result_revision` ≠ `head_revision` (SPEC A), the resolver asserts `stale_evidence(property, verifier)`. The evidence is stale; rerunning is the action it recommends — the consequence is a warning, the derivation is host-side, and the name says what it is:
+The engine cannot order revision SHAs, so `verification_required` from the sketch is host-derived: when `changed_region(change, region)` ⋈ `property_depends_on(property, region)` and a bound result's recorded `result_revision` ≠ `head_revision` (SPEC A), the resolver asserts `stale_evidence(property, verifier)`. Unbound records (§2) are never stale — they were never evidence. The evidence is stale; rerunning is the action it recommends — the consequence is a warning, the derivation is host-side, and the name says what it is:
 
 ```json
 {

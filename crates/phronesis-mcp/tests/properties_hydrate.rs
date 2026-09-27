@@ -87,6 +87,47 @@ fn write_results(
         .expect("write results");
 }
 
+/// Give the branch property a kani encoding, so a kani result for it can
+/// bind (D9: a result binds only to a property encoded for its verifier).
+fn kani_encoded(mut props: Vec<Property>) -> Vec<Property> {
+    for p in &mut props {
+        if p.id == "safe_divide.zero_returns_error" {
+            p.encodings
+                .push(phronesis_mcp::properties::store::Encoding {
+                    language: "rust".into(),
+                    verifier: "kani".into(),
+                    artifact: "verification/safe_divide_zero.rs".into(),
+                });
+        }
+    }
+    props
+}
+
+/// A bound kani `passed` result for the branch property at revision `aaa…`,
+/// its artifact approved in the allowlist (D9).
+fn bound_kani_pass(root: &std::path::Path) -> phronesis_mcp::properties::store::ResultRecord {
+    let sha = phronesis_mcp::properties::execute::artifact_sha256(b"kani harness");
+    phronesis_mcp::properties::allowlist::record(
+        root,
+        phronesis_mcp::properties::allowlist::AllowlistEntry {
+            artifact_sha256: sha.clone(),
+            template_sha256: "template-hash".into(),
+            property_id: "safe_divide.zero_returns_error".into(),
+            property_revision: "r1".into(),
+            approver_principal: "awaterma (human)".into(),
+            date: "2026-09-26".into(),
+        },
+    )
+    .expect("record approval");
+    phronesis_mcp::properties::store::ResultRecord::sample(
+        "safe_divide.zero_returns_error",
+        "kani",
+        "passed",
+        &"a".repeat(40),
+        &sha,
+    )
+}
+
 fn relations(rels: &[&str]) -> HashSet<String> {
     rels.iter().map(|s| s.to_string()).collect()
 }
@@ -116,17 +157,9 @@ fn edit_input<'a>(
 #[test]
 fn b1_staleness_join_names_only_the_branch_property() {
     let d = TempDir::new().unwrap();
-    let props = fixture_properties();
+    let props = kani_encoded(fixture_properties());
     write_properties(d.path(), &props);
-    write_results(
-        d.path(),
-        &[phronesis_mcp::properties::store::ResultRecord::sample(
-            "safe_divide.zero_returns_error",
-            "kani",
-            "passed",
-            &"a".repeat(40),
-        )],
-    );
+    write_results(d.path(), &[bound_kani_pass(d.path())]);
     let head = "b".repeat(40); // store revision "aaa…" ≠ HEAD → stale
     let rel = relations(&[
         "changed_region",
@@ -311,17 +344,9 @@ fn b2_observation_property_never_becomes_intent() {
 fn b4_gap_rule_still_warns_for_unpromoted_properties() {
     let d = TempDir::new().unwrap();
     // Empty coverage store: no dynamic evidence at all.
-    let props = fixture_properties();
+    let props = kani_encoded(fixture_properties());
     write_properties(d.path(), &props);
-    write_results(
-        d.path(),
-        &[phronesis_mcp::properties::store::ResultRecord::sample(
-            "safe_divide.zero_returns_error",
-            "kani",
-            "passed",
-            &"a".repeat(40),
-        )],
-    );
+    write_results(d.path(), &[bound_kani_pass(d.path())]);
     // Coverage gap facts (the SPEC A §5.2 mechanism) assert when a rule
     // mentions them — the property facts must not satisfy them.
     // Coverage facts come from the coverage hydrate — the same division of
@@ -635,6 +660,8 @@ fn main() {}
     //    the PROVEN local verus binary.
     let result = execute(
         d.path(),
+        "safe_divide.zero_returns_error",
+        "verus",
         &artifact,
         &sha,
         &verify_bin,
@@ -648,9 +675,14 @@ fn main() {}
                 "the rendered property must PROVE: {outcome:?}"
             );
             assert_eq!(
-                outcome.tier, "SandboxExec",
+                outcome.tier.as_deref(),
+                Some("sandbox_exec"),
                 "tier recorded in the audit trail"
             );
+            // D9: the outcome is bound to what ran.
+            assert_eq!(outcome.property, "safe_divide.zero_returns_error");
+            assert_eq!(outcome.revision, "b".repeat(40));
+            assert_eq!(outcome.artifact_sha256.as_deref(), Some(sha.as_str()));
         }
         Err(e) => panic!("C1 end-to-end failed: {e:?}"),
     }
@@ -758,6 +790,8 @@ fn main() {}
     .expect("record approval");
     let result = execute(
         d.path(),
+        "safe_divide.zero_returns_error",
+        "verus",
         &artifact,
         &sha,
         &verify_bin,

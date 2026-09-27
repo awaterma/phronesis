@@ -10,7 +10,15 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const PROPERTIES_FORMAT: u32 = 1;
-pub const RESULTS_FORMAT: u32 = 1;
+/// Results sidecar format. v2 records carry the binding fields (`tier`,
+/// `artifact_sha256`); v1 records still load but read as unbound legacy
+/// evidence, never as a verification (D9).
+pub const RESULTS_FORMAT: u32 = 2;
+/// The v1 results format: loads, never binds.
+pub const LEGACY_RESULTS_FORMAT: u32 = 1;
+
+/// The closed result-status set (SPEC-verification-artifact-generation §S8).
+pub const RESULT_STATUSES: &[&str] = &["passed", "failed", "inconclusive", "timeout", "unknown"];
 
 pub fn properties_path(root: &Path) -> PathBuf {
     root.join(".phronesis").join("properties.json")
@@ -82,6 +90,12 @@ pub struct PropertiesFile {
 /// One verifier result, from the derived sidecar. Result statuses carry the
 /// three-state `unknown` discipline from `outcomes/toolchain.rs`: never a
 /// silent pass (spec §2).
+///
+/// A record is evidence only when it is *bound* (D9): it names the property,
+/// the 40-hex commit the proof ran against, the confinement tier, and the
+/// SHA-256 of the approved artifact bytes, and those match the curated
+/// record and the allowlist. `properties::hydrate::binding` decides; an
+/// unbound record hydrates as `unbound_evidence`, never `verification_result`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResultRecord {
     pub v: u32,
@@ -91,10 +105,25 @@ pub struct ResultRecord {
     pub status: String, // passed | failed | inconclusive | timeout | unknown
     pub revision: String,
     pub tool: String,
+    /// The confinement tier that ran (`ConfinementTier`, snake_case). Absent
+    /// on v1 records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
+    /// SHA-256 (64 lowercase hex) of the artifact bytes that ran. Absent on
+    /// v1 records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_sha256: Option<String>,
 }
 
 impl ResultRecord {
-    pub fn sample(property: &str, verifier: &str, status: &str, revision: &str) -> Self {
+    /// A bound-shaped record: `tier` `sandbox_exec`, the given artifact hash.
+    pub fn sample(
+        property: &str,
+        verifier: &str,
+        status: &str,
+        revision: &str,
+        artifact_sha256: &str,
+    ) -> Self {
         Self {
             v: RESULTS_FORMAT,
             kind: "verification_result".into(),
@@ -103,6 +132,8 @@ impl ResultRecord {
             status: status.into(),
             revision: revision.into(),
             tool: verifier.into(),
+            tier: Some("sandbox_exec".into()),
+            artifact_sha256: Some(artifact_sha256.into()),
         }
     }
 }
@@ -120,8 +151,29 @@ pub enum PropertyStoreError {
     UnsupportedFormat { found: u32 },
     #[error("property {id}: {message}")]
     InvalidRecord { id: String, message: String },
-    #[error("results line {line}: {message}")]
+    #[error("property-results.jsonl unreadable: {source}")]
+    ResultsIo { source: std::io::Error },
+    #[error("property-results.jsonl line {line}: {message}")]
     InvalidResult { line: usize, message: String },
+    #[error("property-results.jsonl line {line}: unsupported format {found}")]
+    UnsupportedResultFormat { line: usize, found: u32 },
+}
+
+impl PropertyStoreError {
+    /// The stable reason code carried by `store_corrupt(properties, <reason>)`
+    /// (the coverage store's vocabulary, SPEC-coverage-evidence §3.1).
+    pub fn reason(&self) -> &'static str {
+        match self {
+            Self::Io { .. } => "properties_unreadable",
+            Self::Malformed { .. } => "invalid_properties",
+            Self::UnsupportedFormat { .. } | Self::UnsupportedResultFormat { .. } => {
+                "unsupported_format"
+            }
+            Self::InvalidRecord { .. } => "invalid_record",
+            Self::ResultsIo { .. } => "results_unreadable",
+            Self::InvalidResult { .. } => "invalid_result",
+        }
+    }
 }
 
 /// Identifier-shaped field check (S5): the coverage charset only — quotes,
@@ -223,13 +275,54 @@ pub fn load_properties(root: &Path) -> Result<Vec<Property>, PropertyStoreError>
     Ok(file.properties)
 }
 
-/// Load the derived results sidecar (empty when absent).
+/// Record-level validation at load: the closed kind and status sets and the
+/// field shapes. A failure makes the whole sidecar corrupt. Binding fields
+/// are only shape-checked here (bounded, no control characters); whether a
+/// record *binds* is a hydration decision — an unbound record still loads.
+fn result_problem(rec: &ResultRecord) -> Option<String> {
+    if rec.kind != "verification_result" {
+        return Some(format!("kind {:?} is not verification_result", rec.kind));
+    }
+    if !RESULT_STATUSES.contains(&rec.status.as_str()) {
+        return Some(format!(
+            "status {:?} is outside the closed set {RESULT_STATUSES:?}",
+            rec.status
+        ));
+    }
+    if let Some(problem) = identifier_field_problem(&rec.property, "property") {
+        return Some(problem);
+    }
+    for (value, field) in [(&rec.verifier, "verifier"), (&rec.tool, "tool")] {
+        if let Some(problem) = string_field_problem(value, field) {
+            return Some(problem);
+        }
+    }
+    // Possibly-empty binding fields: an empty value is an unbound record,
+    // not a corrupt one.
+    for (value, field) in [
+        (Some(&rec.revision), "revision"),
+        (rec.tier.as_ref(), "tier"),
+        (rec.artifact_sha256.as_ref(), "artifact_sha256"),
+    ] {
+        if let Some(value) = value.filter(|v| !v.is_empty())
+            && let Some(problem) = string_field_problem(value, field)
+        {
+            return Some(problem);
+        }
+    }
+    None
+}
+
+/// Load the derived results sidecar (empty when absent). All-or-nothing: one
+/// malformed line, unsupported format, or out-of-set status makes the sidecar
+/// corrupt — the caller treats that as no evidence (D8).
 pub fn load_results(root: &Path) -> Result<Vec<ResultRecord>, PropertyStoreError> {
     let path = results_path(root);
     if !path.exists() {
         return Ok(Vec::new());
     }
-    let raw = std::fs::read_to_string(&path)?;
+    let raw = std::fs::read_to_string(&path)
+        .map_err(|source| PropertyStoreError::ResultsIo { source })?;
     let mut out = Vec::new();
     for (i, line) in raw.lines().enumerate() {
         if line.trim().is_empty() {
@@ -240,10 +333,16 @@ pub fn load_results(root: &Path) -> Result<Vec<ResultRecord>, PropertyStoreError
                 line: i + 1,
                 message: e.to_string(),
             })?;
-        if rec.v != RESULTS_FORMAT {
+        if rec.v != RESULTS_FORMAT && rec.v != LEGACY_RESULTS_FORMAT {
+            return Err(PropertyStoreError::UnsupportedResultFormat {
+                line: i + 1,
+                found: rec.v,
+            });
+        }
+        if let Some(message) = result_problem(&rec) {
             return Err(PropertyStoreError::InvalidResult {
                 line: i + 1,
-                message: format!("unsupported format {}", rec.v),
+                message,
             });
         }
         out.push(rec);
