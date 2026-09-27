@@ -7,6 +7,7 @@
 //! Both are pure functions of the edge set — no source parsing, no I/O — which
 //! is why they can run on *every* save without reparsing the repository.
 
+use super::binary_runs::{BIN_HINT, package_of};
 use super::model::Edge;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -127,6 +128,16 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
         },
     );
 
+    // (package, binary name) -> the binary's `main`, for `@bin:` hints.
+    let binary_mains = base_edges(base, "cargo_bin")
+        .filter_map(|edge| match edge.a.as_slice() {
+            [package, name, target] => {
+                Some(((package.clone(), name.clone()), format!("{target}::main")))
+            }
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+
     let impl_of = base_edges(base, "impl_of").fold(
         BTreeMap::<String, BTreeSet<String>>::new(),
         |mut map, edge| {
@@ -165,6 +176,30 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
             hint.rsplit_once(':')
                 .map_or((None, hint), |(ty, method)| (Some(ty), method))
         });
+        // `@bin:<name>`: a Cargo binary run through
+        // `env!("CARGO_BIN_EXE_<name>")`. It names the `main` of a bin target
+        // of the caller's own package, and only one that is in the graph.
+        if let Some(name) = raw_callee.strip_prefix(BIN_HINT) {
+            let pool = if edge.p == "tested_by" {
+                &production_definitions
+            } else {
+                &definitions
+            };
+            match binary_mains
+                .get(&(package_of(caller).to_string(), name.to_string()))
+                .filter(|main| pool.contains(*main))
+            {
+                Some(main) => {
+                    edge.a[callee_index] = main.clone();
+                    normalized.push(edge);
+                }
+                None => {
+                    unresolved += 1;
+                    per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
+                }
+            }
+            continue;
+        }
         // `@extern:…`: the extractor resolved the written path outside the
         // project (`fs::write` under `use std::fs;`).
         if raw_callee.starts_with("@extern:") {

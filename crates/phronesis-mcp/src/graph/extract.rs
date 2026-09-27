@@ -9,6 +9,7 @@
 //! This tier parses the edited file *only*. Whole-graph facts (`untested`,
 //! `in_cycle`) are computed separately in `super::derive`.
 
+use super::binary_runs::{FunctionRuns, binary_run_edges, cargo_bin_exe_names};
 use super::model::Edge;
 use super::ownership::config::OwnershipConfig;
 use super::ownership::extract::FileOwnership;
@@ -317,6 +318,9 @@ struct Sensor<'a> {
     /// `use` bindings per module scope in this file, so a written path is
     /// resolved from what its first segment is bound to, not by its spelling.
     uses: UseMap,
+    /// Per-function evidence of running a Cargo binary, resolved once the
+    /// whole file is walked (see `super::binary_runs`).
+    binary_runs: Vec<FunctionRuns>,
 }
 
 impl Sensor<'_> {
@@ -604,12 +608,15 @@ impl Sensor<'_> {
         // runs under test, so emitting `defines_fn` + `calls_api` for it would
         // let `warn-untested-risky-call` flag fixture code, while recording
         // its callees as `tested_by` keeps test reachability honest.
-        if has_test_attribute(node, self.source) || within_test_module(node, self.source) {
+        let test_attribute = has_test_attribute(node, self.source);
+        if test_attribute || within_test_module(node, self.source) {
             let file_path = self.file_path.to_string();
             self.emit("defines_test", &[&file_path, &qualified]);
-            for callee in self.called_names(body, scope) {
-                self.emit("tested_by", &[&callee, &qualified]);
+            let callees = self.called_names(body, scope);
+            for callee in &callees {
+                self.emit("tested_by", &[callee, &qualified]);
             }
+            self.record_binary_runs(&qualified, scope, true, !test_attribute, body, callees);
             return;
         }
 
@@ -618,9 +625,11 @@ impl Sensor<'_> {
         if scope.impl_type.is_some() {
             self.emit("defines_method", &[&file_path, &qualified]);
         }
-        for callee in self.called_names(body, scope) {
-            self.emit("calls", &[&qualified, &callee]);
+        let callees = self.called_names(body, scope);
+        for callee in &callees {
+            self.emit("calls", &[&qualified, callee]);
         }
+        self.record_binary_runs(&qualified, scope, false, true, body, callees);
         for api in self.watched_calls(body) {
             self.emit("calls_api", &[&qualified, &api]);
         }
@@ -638,6 +647,29 @@ impl Sensor<'_> {
         {
             collector.visit_function(&qualified, body);
         }
+    }
+
+    /// Keep what `super::binary_runs` needs about one function: the Cargo
+    /// binaries its body names, and its raw callees. `helper` is false for a
+    /// `#[test]` function; methods are never helpers, since a call to one is
+    /// not resolved within the file.
+    fn record_binary_runs(
+        &mut self,
+        qualified: &str,
+        scope: &Scope,
+        is_test: bool,
+        helper: bool,
+        body: Node,
+        callees: BTreeSet<String>,
+    ) {
+        self.binary_runs.push(FunctionRuns {
+            qualified: qualified.to_string(),
+            module: scope.path.join("::"),
+            is_test,
+            helper: helper && scope.impl_type.is_none(),
+            direct: cargo_bin_exe_names(body, self.source),
+            callees,
+        });
     }
 
     /// Bare names of functions invoked in a body. Persistence resolves these
@@ -1515,6 +1547,7 @@ pub fn extract_rust_file(
             source.as_bytes(),
             self_module.split("::").map(str::to_string).collect(),
         ),
+        binary_runs: Vec::new(),
     };
     sensor.emit("file_type", &[file_path, file_type(file_path)]);
     // Links a file to its module, so a rule matching on module-keyed
@@ -1529,6 +1562,9 @@ pub fn extract_rust_file(
         impl_type: None,
     };
     sensor.walk(tree.root_node(), &root_scope);
+    for (p, args) in binary_run_edges(&sensor.binary_runs) {
+        sensor.out.insert((p.to_string(), args));
+    }
 
     emit_rhai_boundary(&mut sensor, tree.root_node(), source);
 

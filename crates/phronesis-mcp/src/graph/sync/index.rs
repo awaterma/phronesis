@@ -69,8 +69,9 @@ pub(super) fn tracked_files(root: &Path) -> Vec<String> {
     walk(root).0
 }
 
-/// One walk yielding both the tracked-language files and the Java build
-/// manifests. `check_freshness` needs both sets; collecting them in separate
+/// One walk yielding both the tracked-language files and the build
+/// manifests (Java's, and every `Cargo.toml`). `check_freshness` needs both
+/// sets; collecting them in separate
 /// traversals charged every repository — including those containing no Java
 /// at all — for a second full `ignore` walk of the tree.
 ///
@@ -99,7 +100,7 @@ fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
         let rel = rel.replace('\\', "/");
         // No manifest name carries a tracked extension, so the two sets stay
         // disjoint and a manifest never enters the tracked list.
-        if crate::graph::java::project::is_manifest(&rel) {
+        if crate::graph::java::project::is_manifest(&rel) || is_cargo_manifest(&rel) {
             manifests.push(rel);
             continue;
         }
@@ -132,6 +133,12 @@ fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
     tracked.sort();
     manifests.sort();
     (tracked, manifests)
+}
+
+/// A `Cargo.toml`: build metadata whose package names and bin targets the
+/// graph's identities and binary-reach edges are resolved against.
+fn is_cargo_manifest(rel: &str) -> bool {
+    rel == "Cargo.toml" || rel.ends_with("/Cargo.toml")
 }
 
 pub(super) fn decision_input_files(root: &Path) -> Vec<String> {

@@ -61,7 +61,10 @@ pub const RESOLUTION_STATS_REL_PATH: &str = ".phronesis/graph.resolution.json";
 /// generations.
 /// 20 — Java package identities and build-metadata freshness inputs.
 /// 21 — structural Rhai registration and forwarding-closure backing extraction.
-pub const GRAPH_FORMAT: u32 = 21;
+/// 22 — `cargo_bin` build metadata, and `tested_by`/`calls` edges to a Cargo
+/// binary's `main` from tests that run it through `CARGO_BIN_EXE_<name>`;
+/// `Cargo.toml` becomes a freshness input.
+pub const GRAPH_FORMAT: u32 = 22;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -201,6 +204,8 @@ pub fn index_path(root: &Path) -> PathBuf {
     root.join(INDEX_REL_PATH)
 }
 
+#[cfg(test)]
+mod binary_tests;
 #[cfg(test)]
 mod java_tests;
 #[cfg(test)]

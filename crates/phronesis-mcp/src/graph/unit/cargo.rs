@@ -1,7 +1,7 @@
 //! `Cargo.toml` parsing: the package name and dependency aliases, plus the
 //! small TOML line scanner that `pyproject.toml` parsing shares.
 
-use super::Manifest;
+use super::{BinDecl, Manifest};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -66,8 +66,8 @@ fn dep_table(section: &str) -> Option<DepTable> {
     is_local.then_some(DepTable::Local)
 }
 
-/// Parse the subset of `Cargo.toml` that bears on identity: the package name
-/// and the dependency aliases.
+/// Parse the subset of `Cargo.toml` that bears on identity: the package name,
+/// the dependency aliases, and the `[[bin]]` targets.
 ///
 /// Hand-written rather than pulling in a TOML parser, because the subset is
 /// small and stable: a section header, `name = "…"`, and `package = "…"`
@@ -107,6 +107,11 @@ impl CargoScan {
 
         if line.starts_with('[') {
             self.section = line.trim_matches(['[', ']']).trim().to_string();
+            // `[[bin]]` opens a new element of the array of tables.
+            if line.starts_with("[[") && self.section == "bin" {
+                self.out.bins.push(BinDecl::default());
+                return;
+            }
             // `[dependencies.foo]` names its alias in the header; a bare
             // restatement with no `package` key still needs recording.
             if let Some(alias) = self
@@ -127,6 +132,24 @@ impl CargoScan {
 
         if self.section == "package" && key == "name" {
             self.out.package = Some(unquote(value).to_string());
+            return;
+        }
+        if self.section == "package" && key == "autobins" {
+            self.out.autobins = match value {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            };
+            return;
+        }
+        if self.section == "bin" {
+            if let Some(bin) = self.out.bins.last_mut() {
+                match key {
+                    "name" => bin.name = Some(unquote(value).to_string()),
+                    "path" => bin.path = Some(unquote(value).to_string()),
+                    _ => {}
+                }
+            }
             return;
         }
         if dep_table(&self.section).is_none() {

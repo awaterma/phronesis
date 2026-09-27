@@ -28,6 +28,74 @@ mod core_tests {
     }
 
     #[test]
+    fn bin_tables_and_autobins_are_read() {
+        let m = parse_cargo_manifest(
+            "[package]\nname = \"tool\"\nautobins = false\n\n[[bin]]\nname = \"tool-cli\"\npath = \"src/main.rs\"\n\n[[bin]]\nname = \"extra\"\n\n[dependencies]\nserde = \"1\"\n",
+        );
+        assert_eq!(m.autobins, Some(false));
+        assert_eq!(
+            m.bins,
+            [
+                BinDecl {
+                    name: Some("tool-cli".into()),
+                    path: Some("src/main.rs".into()),
+                },
+                BinDecl {
+                    name: Some("extra".into()),
+                    path: None,
+                },
+            ]
+        );
+        assert_eq!(m.deps.get("serde").map(String::as_str), Some("serde"));
+    }
+
+    #[test]
+    fn cargo_bins_follow_cargo_target_discovery() {
+        let d = TempDir::new().unwrap();
+        let write = |rel: &str, body: &str| {
+            let p = d.path().join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, body).unwrap();
+        };
+        write(
+            "Cargo.toml",
+            "[package]\nname = \"tool\"\n\n[[bin]]\nname = \"tool-cli\"\npath = \"src/main.rs\"\n\n[[bin]]\nname = \"missing\"\n\n[[bin]]\nname = \"elsewhere\"\npath = \"cli/run.rs\"\n",
+        );
+        write("src/main.rs", "fn main() {}");
+        write("src/bin/one.rs", "fn main() {}");
+        write("src/bin/two/main.rs", "fn main() {}");
+        write("cli/run.rs", "fn main() {}");
+        let named = |m: &UnitMap| {
+            m.cargo_bins()
+                .iter()
+                .map(|b| (b.name.clone(), b.target.clone()))
+                .collect::<Vec<_>>()
+        };
+        let m = UnitMap::discover(d.path());
+        // `src/main.rs` is claimed by `tool-cli`, so no `tool` binary is
+        // inferred; `missing` has no crate root; `elsewhere` has one the
+        // graph names as no `#bin:` target.
+        assert_eq!(
+            named(&m),
+            [
+                ("one".to_string(), "rust:tool#bin:one".to_string()),
+                ("tool-cli".to_string(), "rust:tool#bin:tool".to_string()),
+                ("two".to_string(), "rust:tool#bin:two".to_string()),
+            ]
+        );
+        assert!(m.cargo_manifests().contains_key("Cargo.toml"));
+
+        write(
+            "Cargo.toml",
+            "[package]\nname = \"tool\"\nautobins = false\n\n[[bin]]\nname = \"one\"\n",
+        );
+        assert_eq!(
+            named(&UnitMap::discover(d.path())),
+            [("one".to_string(), "rust:tool#bin:one".to_string())]
+        );
+    }
+
+    #[test]
     fn a_simple_dependency_maps_its_alias_to_itself() {
         let m = parse_cargo_manifest("[dependencies]\nserde = \"1\"\n");
         assert_eq!(m.deps.get("serde").map(String::as_str), Some("serde"));

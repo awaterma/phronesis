@@ -26,6 +26,7 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     "imports",
     "test_imports",
     "includes_file",
+    "cargo_bin",
     "reexports",
     "tested_by",
     "test_reaches",

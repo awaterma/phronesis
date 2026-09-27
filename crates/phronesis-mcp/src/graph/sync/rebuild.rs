@@ -163,7 +163,11 @@ fn forces_rebuild(root: &Path, file_path: &str, content: &str) -> std::io::Resul
                     && edge.a.first().is_some_and(|owner| owner == file_path)
             }));
     let data_contract_input = declared_artifact(root, file_path);
+    // A manifest names units and bin targets that other files' edges resolve
+    // against; no single file's re-extraction can apply that change.
+    let cargo_manifest = file_path == "Cargo.toml" || file_path.ends_with("/Cargo.toml");
     Ok(file_path.ends_with(".cue")
+        || cargo_manifest
         || path_module_owner
         || file_path == ".phronesis/graph.toml"
         || file_path == ".phronesis/rules.json"
@@ -450,6 +454,18 @@ fn extract_tracked(root: &Path, scan: &RebuildScan, index: &mut Index) -> (Vec<E
     base.extend(scan.rust_inclusions.iter().map(|(file, included)| {
         Edge::base("includes_file", &[&included.owner, file], &included.owner)
     }));
+    // Build metadata, attributed to the manifest that declares it: the
+    // targets `env!("CARGO_BIN_EXE_<name>")` resolves against.
+    base.extend(scan.units.cargo_bins().iter().map(|bin| {
+        Edge::base(
+            "cargo_bin",
+            &[&bin.package, &bin.name, &bin.target],
+            &bin.manifest,
+        )
+    }));
+    for (manifest, hash) in scan.units.cargo_manifests() {
+        index.entries.insert(manifest.clone(), *hash);
+    }
     (base, skipped)
 }
 
