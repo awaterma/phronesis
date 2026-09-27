@@ -37,8 +37,9 @@ touching D4's no-guessing invariant.
 
 ## Evidence: sample classification
 
-Stratified sample of 70 of the 389 (random seed over the full list, so
-distribution should track the full set at the ±10pp level given `n=70`).
+Stratified sample of 70 of the 389 (random seed over the full list; sample
+distribution is an estimate, roughly ±11 percentage points at 95% confidence
+for a proportion near 50%, not a guarantee for each class).
 Classes were confirmed by grepping call sites and impl blocks per function,
 not just by name pattern — see the worked traces below the table for the
 non-obvious ones.
@@ -57,7 +58,7 @@ non-obvious ones.
 
 The "unclassified" bucket is large by construction: most `graph/` subtree
 misses are several hops downstream of a single unresolved dispatch point
-(the top-level language dispatch, or the `#[tool_router]` boundary), so one
+(the top-level language dispatch, or the generated `#[tool_router]` boundary), so one
 root cause produces a chain of dependent misses. Classifying the *chain
 root* is more tractable than classifying each leaf; §Strategies below is
 organized around chain roots for this reason.
@@ -102,7 +103,7 @@ organized around chain roots for this reason.
   hook-pipeline closure downstream of `main` is invisible even though
   `main`'s own resolved closure is otherwise intact. This is not a *new*
   gap in the resolver's per-call policy; it's a gap in how narrowly
-  `record_binary_runs`'s helper-following rule is scoped (§4.4: "a bare
+  `extract.rs::record_binary_runs`'s helper-following rule is scoped (§4.4: "a bare
   call to a free function the caller's own module defines... never through
   a glob import or a method").
 
@@ -129,8 +130,8 @@ about which implementor is live at runtime.
   conflated with `calls` in reachability without a policy decision (§Plan).
 - **Cost:** moderate — needs a project-wide impl-set index already largely
   present via `impl_of`.
-- **Expected recovery (from sample):** ~23 functions crateside, entirely
-  within the "dyn Trait / generic T: Trait" class.
+- **Sample estimate (from the 70/389 sample):** ~23 functions, extrapolated from the 70/389 sample; the class also
+  includes generic dispatch, which remains excluded.
 
 ### 2. Generic `T: Bound` dispatch — do NOT resolve statically
 
@@ -146,97 +147,93 @@ run," which is the only sound source of truth for generic dispatch.
 ### 3. `fmt`/`Ord`/`Hash`/other std-macro-invoked trait methods — recoverable, cheap, high confidence
 
 **Strategy:** when a function is the sole method in an `impl <StdTrait> for
-X` block for a small, closed set of traits the extractor already
-recognizes by name (`Display`, `Debug`, `Ord`, `PartialOrd`, `Hash`,
-`PartialEq`, `Eq`, `Default`, `From`/`Into` where the source/target type is
-visible), do not try to find call sites — instead emit a direct
-`tested_by`-eligible synthetic reachability fact conditioned on the
-*type* `X` being constructed and formatted/compared/hashed/cloned anywhere
-reachable from a test. Concretely: `emit_std_trait_edge(caller_context, X,
-trait_method)` fires when `{}`/`{:?}` is used on an expression whose
-static type resolves to `X` (the same typed-receiver machinery §4.4
-already uses for method-call resolution), or when `X` participates in a
-`.sort()`/`.cmp()`/`HashMap<X, _>` key position under a resolvable type.
+X` block for the specifically invoked trait methods (`Display`, `Debug`,
+`Ord`, `PartialOrd`, `Hash`, `PartialEq`, or `Eq`), do not infer reach from
+type participation alone. Emit an edge
+only at a source-visible operation site whose syntactic shape invokes that
+trait operation and whose receiver/operand type resolution succeeds. The
+closed recognized shapes are: `format!`/`println!`/`write!` format strings
+containing `{}` (Display) or `{:?}` (Debug), `==`/`!=` (PartialEq/Eq),
+`<`/`<=`/`>`/`>=` and `.cmp()` (Ord/PartialOrd), `.sort()`/`.sort_by()`
+and `.sort_by_key()` (Ord or an explicitly visible comparator), and a
+resolved `HashMap<X, _>` key insertion/lookup position (Hash and Eq).
+Formatting braces and comparison operators must be parsed from the actual
+macro/token or expression shape; ambiguous formatting arguments, operators,
+or sort closures are not evidence. No Clone edge is proposed.
 
-- **Precision risk:** low — this only fires where the extractor can already
-  name the receiver's type by the same rule it uses for ordinary method
-  resolution; it merely maps a formatting/comparison *macro or std-lib
-  call* to a trait-impl entry point rather than requiring a literal
-  `.fmt(`/`.cmp(` call.
+- **Precision risk:** low only when receiver/operand types and the operation
+  shape both resolve. Mere construction or participation of `X` is not a
+  call site and never emits an edge.
 - **Cost:** low. A few new call-site shapes (`format!`, `{}`/`{:?}` in
   `println!`/`write!`, `.sort()`, `.sort_by_key()`) recognized alongside
   the existing method-call grammar.
-- **Expected recovery:** ~27 (fmt) + ~2 (cmp/hash family) ≈ 29 functions.
+- **Sample estimate:** ~27 (fmt) + ~2 (cmp/hash family) ≈ 29 functions, extrapolated from the
+70/389 sample.
   This is the single best cost/precision ratio in the set.
 
-### 4. serde `Deserialize`/`Serialize`/`Visitor` — do NOT resolve statically, but *can* be special-cased narrowly
+### 4. serde `Deserialize`/`Serialize`/`Visitor` — source-visible hand-written impls only
 
 Full serde-generic resolution (trait method invoked through
-`serde_json::from_str::<T>()`) is the same class as #2 — the dependency
-crate's own generic machinery, not project code. However, a narrower,
-sound sub-case exists: where the extractor already sees
-`serde_json::from_str::<ConcreteType>(...)` or `#[derive(Deserialize)]` on
-a named struct/enum whose `Deserialize` impl (derived or hand-written) is
-in-crate, it can emit an edge from the call site directly to that type's
-`deserialize`/`Visitor::visit_*` methods — the concrete type is named at
-the call site, exactly the same evidence bar as a typed-hint method call.
-**Recommendation:** implement only the named-concrete-type sub-case;
-leave `Deserialize<'de> for T` behind a fully generic `T` unresolved.
+`serde_json::from_str::<T>()`) is dependency-crate generic dispatch, not
+project code. The only eligible sub-case is a source-visible, hand-written
+call chain: the extractor sees `serde_json::from_str::<ConcreteType>(...)`
+(or an equivalent explicit call) and the concrete type's hand-written
+`Deserialize::deserialize` implementation visibly calls a hand-written
+`Visitor::visit_*` method, with each call resolving by ordinary scope and
+type evidence. A derive attribute, named concrete type, generated Visitor
+name, or compiler-generated implementation is not evidence for a calls
+edge. Derived cases and dependency generic dispatch remain coverage-only.
 
-- **Precision risk:** low for the named sub-case; the unresolved-generic
-  case stays unresolved (correctly).
-- **Cost:** moderate — needs to associate a derive/impl with its generated
-  or hand-written `Visitor`, which for `#[derive(Deserialize)]` is
-  compiler-generated and has no source text to anchor to at all (only the
-  hand-written case in `rules_file.rs::SourceRule` is anchorable).
-- **Expected recovery:** small — most of this repo's `Deserialize` traffic
-  goes through `#[derive(Deserialize)]`, which is compiler-generated code
-  the extractor cannot see by definition (tree-sitter parses source, not
-  macro output). Estimate 1–2 of the ~35 extrapolated. The rest — mostly
-  derive-generated visitors — belong to class 7 below.
+- **Precision risk:** low for the fully source-visible chain; any missing
+  source call hop means no synthetic edge is emitted.
+- **Cost:** moderate — follow only explicit hand-written impl and Visitor
+  calls; no association to generated impls is attempted.
+- **Sample estimate:** small; at most 1–2 of the ~35 extrapolated from the
+  70/389 sample. Derived visitors stay in class 7.
 
-### 5. `rmcp` tool-macro dispatch — recoverable, crate-local, high confidence
+### 5. `rmcp` tool-macro dispatch — coverage only absent a verified expansion contract
 
-**Strategy:** recognize `#[tool_router]` on an `impl` block and `#[tool(...)]`
-on its methods as a closed, in-crate dispatch table: the macro's dispatch
-target set *is* exactly the annotated methods, with no external
-implementors to enumerate (unlike class 1). Emit a synthetic entry-point
-fact — `graph_definition` for the tool router, `calls` from that
-definition to each `#[tool]` method — and connect it to test reachability
-via the *actual* call sites already in test code (`server.serve(...)` /
-direct method calls in `server.rs`'s own `#[cfg(test)] mod tests`, which
-the sample shows exists).
+**Recommendation: do not emit calls edges for macro-generated routing.**
+`#[tool_router]` and `#[tool(...)]` attributes identify declarations, but
+the source has no syntactic call expression from the generated router to
+those methods. The repository dependency specifies `rmcp` version `0.17` (Cargo.lock
+pins the resolved release), but a dependency version alone does not
+establish a verified expansion contract. Reconsider only if
+a version-specific, auditable expansion contract is documented and tested
+to enumerate exactly these dispatch targets and call behavior, or if a
+separate explicitly weak relation is designed outside certain `calls` and
+`test_reaches`.
 
-- **Precision risk:** very low. The macro's expansion is closed and
-  syntactically declared (the attribute, not a guess); every `#[tool]`
-  method genuinely is a dispatch target.
-- **Cost:** low — one recognizer for two attribute names, scoped to this
-  crate's actual macro usage (no general proc-macro-expansion engine
-  needed).
-- **Expected recovery:** ~23, concentrated in `server.rs` and
-  `server_handlers/`.
+- **Precision risk:** unresolved under D4; attributes alone do not ground
+  caller-to-callee edges.
+- **Cost:** high if a closed macro contract is later established; attribute
+  recognition by itself is insufficient.
+- **Sample estimate:** 0 under this proposal; ~23 functions were attributed
+  to this class in the 70/389 sample, but remain for coverage absent a
+  separately justified contract/relation.
 
-### 6. Function pointers / dispatch tables — recoverable, narrow
+### 6. Function pointers / dispatch tables — conditional, disjunctive recovery
 
 **Strategy:** when a `match` arm's body is exactly a bare function name (an
 fn item, not a call) assigned to a variable, returned, or stored in a
 `const`/`static` array/map keyed by a literal (extension string, enum
 discriminant), and every array/map entry is a *named, in-crate* free
-function or associated function, emit `calls` from the table's usage site
-to each entry.
+function or associated function, emit `calls_dyn` from the reached lookup site to each entry. These
+entries are disjunctive alternatives, not certain calls, and may not feed
+`calls`, `test_reaches`, or coverage selection as certain reachability.
+Emit only when the lookup site itself is syntactically present and its
+table/key relationship is resolved; runtime-dependent keys retain all
+alternatives as disjunctions. Never emit edges from an unreachable table
+definition.
 
-- **Precision risk:** low — the table's entries are syntactically named,
-  not inferred. Risk is scope creep if "the table's usage site" isn't
-  itself provably reached; the resolver should attach the edge to the
-  *lookup call* (`table[key]()`), and let ordinary reachability rules
-  decide whether the lookup call itself is reached (no special-casing of
-  which key is picked at runtime — every entry gets the edge, same
-  disjunctive-truth caveat as class 1).
+- **Precision risk:** low as a disjunctive relation — table entries are
+  syntactically named, not inferred. Attach alternatives to the reached
+  lookup call (`table[key]()`), never to the table definition.
 - **Cost:** moderate — needs a syntax shape for "value position is a bare
   path to a function," which the grammar mostly already has via
   `@method:Type:name` typed-hint resolution; extending it to non-call
   positions is new surface.
-- **Expected recovery:** ~17.
+- **Sample estimate:** ~17, extrapolated from the 70/389 sample.
 
 ### 7. Macro-generated call sites the parser cannot see at all — do NOT resolve statically
 
@@ -272,29 +269,41 @@ under-scoped.
 - **Precision risk:** low — same evidence bar as the existing rule, just
   one hop deeper, with the same non-glob/non-ambiguous restriction.
 - **Cost:** low — a bounded extension to existing logic in
-  `graph/derive.rs`'s `record_binary_runs`.
-- **Expected recovery:** ~78 — the largest single number in the sample,
-  and it fixes a *root cause* that several downstream chain misses hang
-  off of, so the true recovery from fixing this alone is likely higher
-  than its own extrapolated count once dependent chain members are
-  included.
+  `graph/extract.rs::record_binary_runs` (with helper propagation in
+`graph/binary_runs.rs`).
+
+Only unconditional, unambiguous helper propagation is eligible: every path
+through a followed helper must reach exactly one identical `env!` binary
+reference. A helper with conditional invocation, multiple branches that
+invoke different binaries, or a path that can return without invoking the
+binary is not followed for a `tested_by` edge. This conservatively treats
+any optional branch as insufficient proof of an unconditional binary run. Methods remain excluded
+unless their receiver resolves under the existing D4 rules. This avoids
+treating syntactic presence somewhere in a helper body as proof that the
+test runs that binary.
+- **Sample estimate:** ~78, extrapolated from the 70/389 sample. This is the largest sample
+  estimate; downstream dependent recovery remains unmeasured.
 
 ## Summary table: strategy vs. class vs. recommendation
 
 | # | Class | Static resolution? | Recovered (est.) | Precision risk |
 |---|---|---|---|---|
-| 1 | `dyn Trait` dispatch, closed impl set | Yes — new `calls_dyn` edge kind | ~23 | medium |
+| 1 | `dyn Trait` dispatch, closed impl set | Conditional — disjunctive `calls_dyn` only | ~23 | medium |
 | 2 | Generic `T: Bound` dispatch | No | 0 | n/a |
 | 3 | `fmt`/`Ord`/`Hash` std-trait macros | Yes | ~29 | low |
 | 4 | serde Deserialize/Visitor (named-concrete-type only) | Partial | ~1–2 | low |
-| 5 | `rmcp` `#[tool_router]` macro dispatch | Yes | ~23 | very low |
+| 5 | `rmcp` `#[tool_router]` macro dispatch | No — coverage only | 0 (sample estimate; ~23 classified) | unresolved |
 | 6 | fn-pointer / dispatch tables | Yes | ~17 | low |
 | 7 | Derive-generated call sites (no source text at all) | No | 0 | n/a |
 | 8 | CLI-subprocess boundary (scoping fix) | Yes | ~78 (+ dependents) | low |
 
-Total confidently recoverable without guessing: roughly **170–190 of the
-389** (44–49%), concentrated in classes 3, 5, 6, and 8. The remainder is a
-mix of genuinely unresolvable generic/derive dispatch (classes 2 and 7,
+Sample-based estimated recovery without guessing: roughly **120–150 of the
+389** (31–39%), extrapolated from the 70/389 sample and highly uncertain;
+this range is an approximate sum, not a confidence interval.
+This excludes class 5 (~23) because macro attributes alone do not ground a
+call edge, class 1 (~23) pending a decision for disjunctive edges, and class
+4 except its source-visible hand-written subset. It is not a measured total.
+The remainder is a mix of genuinely unresolvable generic/derive dispatch (classes 2 and 7,
 correctly left to coverage) and the "unclassified" 31% that likely
 decomposes into combinations of the above once traced hop-by-hop — the
 phased plan below front-loads class 8 partly *because* fixing chain roots
@@ -307,59 +316,73 @@ should shrink that bucket automatically before it needs its own strategy.
 existing coverage store (`SPEC-coverage-evidence.md`) so every subsequent
 phase can be checked against dynamic evidence, not just count deltas.
 
-**Phase 1 — class 8 (CLI-subprocess helper scoping).** Smallest, most
-self-contained change (one function in `derive.rs`), largest single
-expected recovery, and a bug-fix framing (existing rule under-scoped) more
-than a new feature. Ship first; re-run the sample classification afterward
-to see how much of the "unclassified" 31% collapses.
+**Phase 1 — class 8 (CLI-subprocess helper scoping).** This targets the
+largest sample-estimated class (about 78 extrapolated from 70/389), subject
+to the unconditional-path acceptance criteria. Reclassify the sample after
+implementation to measure how much of the unclassified bucket changes.
 
-**Phase 2 — class 3 and class 5 (std-trait macros, `rmcp` macro).** Both
-are closed, in-crate, low-risk, and independent of each other — can ship
-together. New edge kinds are not needed (these connect to ordinary
-`calls`/`tested_by`), which keeps the change footprint inside
-`derive.rs`'s existing call-recognition grammar.
+**Phase 2 — class 3 (std-trait operations).** Implement only the enumerated
+source call shapes with resolved receiver/operand types. Class 5 remains
+coverage-only unless a version-specific audited macro contract is established.
 
 **Phase 3 — class 6 (fn-pointer/dispatch tables).** Needs new grammar
 surface (bare-path-in-value-position); ship after 1–2 have proven the
 measurement harness catches regressions.
 
-**Phase 4 — class 1 (`dyn Trait`, closed impl set).** Introduces the
-`calls_dyn` edge kind and the disjunctive-truth question of whether it
-should count toward `test_reaches` at all, or only toward a weaker
-"reachable-if-this-impl-is-live" fact. This needs its own design decision
-(see Open Questions) and should not block phases 1–3.
+**Phase 4 — class 1 (`dyn Trait`, closed impl set).** Before implementation,
+decide whether `calls_dyn` remains separate and whether any explicit opt-in
+consumer may use it. By default, it does not count as `calls`, `test_reaches`,
+`bin_reaches`, or certain coverage. Reject the phase unless its tests prove
+that separation. Exclude any trait with a `cfg`/feature-gated implementor
+or any implementor whose presence is conditional; do not emit `calls_dyn`
+for such a trait.
 
-**Phase 5 — re-run the 389-function sample classification** (or the full
-set, now cheaper since phases 1–4 should have shrunk it) to validate the
-extrapolations above and decide whether classes 2/4/7's "leave to
-coverage" boundary needs revisiting once `SPEC-coverage-evidence.md` is
-further along.
+**Phase 5 — reclassify the full original 389-function set.** Attribute each
+miss first to its earliest unresolved chain root, then count functions by
+root cause (classes 1–8 plus generic, derive-generated, and unknown).
+Report both root counts and downstream dependent counts to avoid double
+counting. For every remaining miss record whether it is generic dispatch,
+derive/macro-generated with no source call, or unknown after tracing. Keep
+unknown as a visible bucket; do not redistribute it by inference.
 
 ## Acceptance criteria
 
-1. **No increase in wrong edges.** Every edge added by phases 1–4 is
-   checked against the coverage store where coverage data exists: a new
-   static edge `calls(A, B)` (or `tested_by`/`test_reaches`) that coverage
-   *never* confirms for any test claiming to reach it is flagged as
-   suspect and reported (not silently kept) — mirroring how
-   `region_without_dynamic_evidence` already reports the inverse gap. This
-   check is the primary defense against a resolver bug reintroducing D4's
-   original sin (a coincidental-name match masquerading as evidence).
-2. **`unresolved` count moves down**, not just `no_direct_test`. A phase
-   that reduces `no_direct_test` by reclassifying calls as `tested_by`
-   without reducing the underlying `unresolved`/`ambiguous` counters from
-   §4.4 has not actually resolved anything — it would indicate a bug in
-   how the new edge kind is counted.
-3. **Incremental update equals full rebuild.** Each new recognizer must be
-   exercised by the existing two-tier extraction model (§4.5: parse the
-   edited file only, derive over the whole graph). A test asserting that a
-   single-file edit plus incremental derive produces byte-identical
-   results to a from-scratch rebuild is required per phase, following the
-   pattern already used for the base extractor.
-4. **`calls_dyn` (if phase 4 ships) never silently merges into `calls`.**
-   Any rule or query that currently treats `test_reaches` as certain
-   coverage must make an explicit choice about whether to join through
-   `calls_dyn`, documented at the point of use.
+1. **Evidence provenance audit for every phase.** Independently of coverage,
+   audit every added edge and record the exact source site(s), syntax shape,
+   resolved caller/callee identities, receiver/operand type evidence, and
+   recognizer that produced it. Reject edges supported only by matching
+   names, attributes, type participation, or dynamic co-occurrence. Each
+   phase adds fixtures for positive and negative provenance cases, including
+   same-named unrelated definitions.
+2. **Coverage is a secondary cross-check, not proof of grounding.** Where
+   coverage exists, compare proposed reach against per-test hits and flag
+   disagreements for review. A hit never validates source provenance; lack
+   of a hit is not alone proof that an edge is wrong.
+3. **`unresolved` count moves down**, not just `no_direct_test`. A phase that
+   reduces `no_direct_test` by reclassifying calls as `tested_by` without
+   reducing the underlying `unresolved`/`ambiguous` counters from §4.4 has
+   not actually resolved anything.
+4. **Incremental update equals full rebuild.** Each new recognizer is tested
+   against the two-tier extraction model (§4.5): a single-file edit plus
+   incremental derive produces byte-identical results to a from-scratch
+   rebuild.
+5. **Disjunctive relations stay distinct.** `calls_dyn` and class 6 table
+   alternatives are never counted as certain `calls` or included in
+   `test_reaches`/`bin_reaches` unless a consumer explicitly opts into that
+   weaker meaning. Acceptance tests assert default exclusion and separately
+   verify any opt-in behavior.
+6. **Class 6 lookup scope.** Tests prove no table-entry edges arise from an
+   unreachable table, and runtime-dependent keys produce only disjunctive
+   alternatives at the reached lookup site.
+7. **Class 8 path behavior.** Tests cover a helper that conditionally runs
+   the binary, a helper with multiple branches (same and differing binary
+   references), and a helper reached only on some paths. Emit a certain
+   `tested_by` edge only if every eligible path invokes exactly one same
+   binary; otherwise retain the unresolved/missed case.
+8. **Per-phase recognizer audit and no name-only matching.** Acceptance
+   tests for each phase verify that every newly recognized edge has the
+   recorded syntax and resolution evidence and that same-name-only matches
+   are rejected, in addition to coverage cross-checks.
 
 ## Non-goals
 
@@ -374,27 +397,28 @@ further along.
 - Changing D4's no-guess policy itself. Every strategy above is scoped to
   stay inside it; none proposes probabilistic or heuristic edges.
 
-## Open questions
+## Review response
 
-1. Should `calls_dyn` (class 1) count toward `test_reaches` at all, or
-   should it live as a separate, explicitly-weaker relation that rules opt
-   into? The disjunctive-truth property (one of N implementors, not a
-   certainty) is a different epistemic status than every other edge in
-   the current schema (§2.1's table — all current relations are asserted
-   as facts, not "possibly true" facts). This may need a `RULE_PHASES`-style
-   explicit-opt-in decision rather than silent inclusion.
-2. Is the `record_binary_runs` one-hop extension (class 8) itself
-   conservative enough, or does it reopen the same "helper indirection"
-   risk §4.4 originally fenced off by restricting to same-module free
-   functions? The risk is a test helper that conditionally invokes the
-   binary only in some branches, which a syntactic one-hop rule cannot
-   distinguish from an unconditional call.
-3. For class 6 (dispatch tables), should the edge be attached at the
-   table's *definition* site or every *lookup* call site? Attaching at
-   definition risks the same "unconditional inclusion" problem as class 1;
-   attaching at each lookup is more edges but keeps each one closer to
-   actual evidence of use.
-4. How much of the 31% "unclassified" bucket is actually class 8's
-   dependents versus genuinely new shapes? Phase 1's re-classification
-   (Phase 5) is the cheapest way to answer this empirically rather than by
-   further manual tracing now.
+- **Blocker — derived serde code:** Class 4 now permits only hand-written,
+  source-visible impl and Visitor call chains; derive-generated cases stay
+  with coverage.
+- **Blocker — tool router:** Class 5 emits no `calls` edges from attributes;
+  reconsideration requires a version-specific audited contract or a separate
+  weak relation.
+- **Blocker — coverage as grounding:** Acceptance criteria require an
+  independent provenance audit for every edge; coverage is only a secondary
+  cross-check.
+
+## Resolved design points
+
+1. Resolved for this proposal: `calls_dyn` is separate and excluded from
+   certain `calls`, `test_reaches`, and `bin_reaches` by default. Any future
+   opt-in consumer requires documented semantics and tests before phase 4.
+2. Class 8 remains limited to same-file free-function helpers and only to
+   unconditional, unambiguous paths as specified above; conditional or
+   partial-path helpers are negative cases in acceptance tests.
+3. Resolved for this proposal: class 6 alternatives attach only to a
+   reached lookup site, as disjunctive `calls_dyn` edges, never at definition.
+4. Phase 5 answers the unclassified question by tracing each miss to its
+   earliest chain root and reporting separate root-cause and dependent counts,
+   with remaining generic, derive/macro-generated, and unknown misses named.
