@@ -119,6 +119,9 @@ fn is_hex_of_len(value: &str, len: usize) -> bool {
 /// - `missing_revision` / `invalid_revision` — not a 40-hex commit id;
 /// - `missing_tier` / `invalid_tier` — not a confinement tier that runs;
 /// - `missing_artifact` / `invalid_artifact` — not a SHA-256 digest;
+/// - `draft_template` — rendered from `verification/template-drafts/`
+///   (`phr-mcp verify run --allow-drafts`): dev evidence, never a
+///   verification; `invalid_template_origin` — an origin outside the set;
 /// - `unknown_property` — no curated property with that id;
 /// - `no_encoding` — the property has no encoding for that verifier;
 /// - `allowlist_unreadable` / `artifact_not_approved` — the artifact hash is
@@ -149,6 +152,11 @@ fn binding(
         }
         Some(a) => a,
     };
+    match r.template_origin.as_deref() {
+        None | Some("templates") => {}
+        Some("template_drafts") => return Err("draft_template"),
+        Some(_) => return Err("invalid_template_origin"),
+    }
     let Some(property) = properties.iter().find(|p| p.id == r.property) else {
         return Err("unknown_property");
     };

@@ -461,6 +461,14 @@ enum Command {
         #[command(subcommand)]
         cmd: phronesis_mcp::lifecycle::unit_cli::UnitCmd,
     },
+    /// Render and run property verification artifacts
+    /// (SPEC-verification-artifact-generation): `render` writes a validated
+    /// artifact into verification/unreviewed/ for human review; `run`
+    /// executes an approved one and records the bound result.
+    Verify {
+        #[command(subcommand)]
+        cmd: phronesis_mcp::properties::verify_cli::VerifyCmd,
+    },
     /// Manage the coverage evidence store (SPEC-coverage-evidence).
     Coverage {
         #[command(subcommand)]
@@ -894,6 +902,12 @@ async fn main() -> anyhow::Result<()> {
             let cmd =
                 cmd.unwrap_or(phronesis_mcp::lifecycle::kalpa_cli::KalpaCmd::Show { name: None });
             let out = phronesis_mcp::lifecycle::kalpa_cli::run(&root, cmd)?;
+            println!("{out}");
+            Ok(())
+        }
+        Command::Verify { cmd } => {
+            let root = phronesis_mcp::security::project_root();
+            let out = phronesis_mcp::properties::verify_cli::run(&root, cmd)?;
             println!("{out}");
             Ok(())
         }

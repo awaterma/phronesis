@@ -5,9 +5,11 @@ pub mod allowlist;
 pub mod execute;
 pub mod hydrate;
 pub mod process;
+pub mod render;
 pub mod status;
 pub mod store;
 pub mod validate;
+pub mod verify_cli;
 
 pub use hydrate::{
     EditedFile, PropertyFact, PropertyHydration, PropertyHydrationInput, RELATIONS,

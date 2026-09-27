@@ -429,6 +429,7 @@ impl RunBinding<'_> {
             tool: self.tool.to_string(),
             tier: Some(self.tier.as_str().to_string()),
             artifact_sha256: Some(self.artifact_sha256.to_string()),
+            template_origin: None,
         }
     }
 }

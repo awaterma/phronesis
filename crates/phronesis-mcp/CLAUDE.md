@@ -46,7 +46,42 @@ cargo run -- scrub-payload <path> [--write] [--home DIR] [--project-root DIR]  #
 cargo run -- coverage collect [--from-dir DIR] [--bins a,b] [--allow-dirty]  # llvm-cov per-test collection, imported at HEAD; refuses when tracked files differ from HEAD (untracked and .phronesis/ ignored) unless --allow-dirty
 cargo run -- coverage import <export.jsonl>  # Import a normalized per-test coverage export into the evidence store
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
+cargo run -- verify render <property-id> [--verifier V] [--allow-drafts] [--dry-run] [--json]  # Render + S5-validate a property's verification artifact into verification/unreviewed/ (needs .phronesis/verification.json and an accepted/verified property)
+cargo run -- verify run <property-id> [--verifier V] [--allow-drafts] [--verifier-command CMD] [--json]  # Execute a previously rendered, allowlisted artifact confined; append the bound result to .phronesis/property-results.jsonl
 ```
+
+### Verification artifacts (`phr-mcp verify`)
+
+`verify render` is the production render step of
+`docs/specs/SPEC-verification-artifact-generation.md`. It reads the
+property record from `.phronesis/properties.json`, and the property must be
+`accepted` or `verified` (S2). It picks the encoding (`--verifier` when
+there are several) and loads `verification/templates/<verifier>-<kind>.rhai`.
+The template runs through the dedicated Rhai render entry: a read-only
+`property` map whose values the host has already escaped, a frozen and sorted
+`facts` array, no `emit_fact`, and no `eval`. The template returns one
+string. The host stamps a provenance header and validates the whole body
+with `validate_body`: the Rust lexer and parser, the deny-list, and a check
+that every property value sits only inside a literal or comment. Only then
+does it write `verification/unreviewed/<slug>__<verifier>_<hash12>.rs`. A
+body that fails validation is never written or executed. Every generation
+and every refusal lands in `log.jsonl` as `kind: "verification"`.
+
+`verify run` re-renders the artifact in memory. It requires the identical
+bytes already on disk, which means an earlier `verify render` wrote them;
+it never executes what it just wrote (S3). The executor then re-hashes the
+file, requires an entry for it in `.phronesis/verification-allowlist.json`,
+which a human records, runs the verifier confined, and binds the result to
+`HEAD`.
+
+`verification/template-drafts/` is read only with `--allow-drafts`, and only
+when no trusted template of the same name exists. Without the flag, a
+matching draft is a named refusal. A result from a draft is recorded with
+`template_origin: "template_drafts"` and hydrates as
+`unbound_evidence(<property>, <verifier>, draft_template)`, never as
+`verification_result`. Humans promote drafts into `verification/templates/`;
+see `verification/template-drafts/README.md`. Rendering is registered for
+`rust` encodings only.
 
 ### Payload-contract corpus
 

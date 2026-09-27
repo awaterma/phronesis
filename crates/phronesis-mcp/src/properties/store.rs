@@ -113,6 +113,13 @@ pub struct ResultRecord {
     /// v1 records.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_sha256: Option<String>,
+    /// Which template directory rendered the artifact (`templates` or
+    /// `template_drafts`; `properties::render::TemplateOrigin`). Absent on
+    /// records not produced by `phr-mcp verify run`. A `template_drafts`
+    /// record never binds as verified evidence (it hydrates as
+    /// `unbound_evidence(…, draft_template)`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_origin: Option<String>,
 }
 
 impl ResultRecord {
@@ -134,6 +141,7 @@ impl ResultRecord {
             tool: verifier.into(),
             tier: Some("sandbox_exec".into()),
             artifact_sha256: Some(artifact_sha256.into()),
+            template_origin: None,
         }
     }
 }
@@ -303,6 +311,7 @@ fn result_problem(rec: &ResultRecord) -> Option<String> {
         (Some(&rec.revision), "revision"),
         (rec.tier.as_ref(), "tier"),
         (rec.artifact_sha256.as_ref(), "artifact_sha256"),
+        (rec.template_origin.as_ref(), "template_origin"),
     ] {
         if let Some(value) = value.filter(|v| !v.is_empty())
             && let Some(problem) = string_field_problem(value, field)
@@ -348,4 +357,32 @@ pub fn load_results(root: &Path) -> Result<Vec<ResultRecord>, PropertyStoreError
         out.push(rec);
     }
     Ok(out)
+}
+
+/// Append one result to the derived sidecar (creating `.phronesis/` and the
+/// file). The record is shape-checked with the same rule the loader applies,
+/// so the writer can never make the sidecar corrupt. The append holds an
+/// exclusive lock on the sidecar so concurrent runs never interleave lines.
+pub fn append_result(root: &Path, rec: &ResultRecord) -> Result<(), PropertyStoreError> {
+    use fs2::FileExt as _;
+    use std::io::Write as _;
+    if let Some(message) = result_problem(rec) {
+        return Err(PropertyStoreError::InvalidResult { line: 0, message });
+    }
+    let line = serde_json::to_string(rec).map_err(|e| PropertyStoreError::Malformed {
+        message: e.to_string(),
+    })?;
+    let path = results_path(root);
+    let io = |source| PropertyStoreError::ResultsIo { source };
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(io)?;
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(io)?;
+    file.lock_exclusive().map_err(io)?;
+    file.write_all(format!("{line}\n").as_bytes()).map_err(io)?;
+    Ok(())
 }

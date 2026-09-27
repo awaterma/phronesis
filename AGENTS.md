@@ -163,6 +163,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `trend` | Debt-over-time from audit snapshots |
 | `graph rebuild\|query\|status\|ownership` | Structural code-graph helpers: rebuild the derived `.phronesis/graph.jsonl` (rebuild after `git checkout`, `git mv`, or rebase), query by relation, check whether it matches disk, and explain indexed Rust ownership evidence |
 | `confidence` | Confidence band + grounded signals for the open work unit |
+| `verify render\|run <property-id>` | Render a property's verification artifact from `verification/templates/<verifier>-<kind>.rhai` through the Rhai render entry, S5-validate it, and write it to `verification/unreviewed/` (`render`; `--dry-run`); execute a previously rendered, allowlisted artifact confined and record the bound result (`run`). `--allow-drafts` (dev only) reads `verification/template-drafts/`; draft-derived results are recorded `template_origin: template_drafts` and never hydrate as `verification_result` |
 | `toolchains` | List active toolchain definitions (built-in + project) with ID, source, match patterns, and active signal refinements |
 | `signal <name> <outcome>` | Record a `compile`/`tests` pass/fail signal explicitly for the open work unit — the escape hatch when a test runner has no toolchain definition or ran outside the hook; requires the `confidence` pack |
 | `journey` | `journey_*` facts asserted right now (`--json`/`--explain`/`--lifecycle`/`--corrections`) |
@@ -334,6 +335,7 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/security.rs` | Path canonicalization, size caps, validators |
 | `crates/phronesis-mcp/src/diff_extract.rs` | Regex-based diff facts (function_added, import_added, etc.) |
 | `crates/phronesis-mcp/src/syntax/` | Tree-sitter AST predicates (rust, swift, python, typescript) |
+| `crates/phronesis-mcp/src/properties/render.rs` | Verification render pipeline — template lookup (trusted vs. `--allow-drafts`), render → `validate_body` → write `verification/unreviewed/`, and `run` (allowlist gate → executor → bound, origin-tagged result); CLI in `properties/verify_cli.rs` |
 | `crates/phronesis-mcp/src/coverage/` | Coverage evidence store, importer, region mapping, demand-gated hydration, collector (`collect.rs`: llvm-cov JSON → per-test hits, validated against the region map) (SPEC-coverage-evidence.md) |
 | `crates/phronesis-mcp/src/outcomes/` | Confidence scoring — per-toolchain adapter (`cargo` first), per-subject signal derivation, gate-rule input |
 | `crates/phronesis-mcp/src/journey/` | Journey facts — append-only journal, project-defined taggers, rule-driven aggregator derivation |
