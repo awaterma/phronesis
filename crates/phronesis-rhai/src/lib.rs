@@ -686,9 +686,30 @@ pub fn render(template: &str, input: &RenderInput) -> Result<String, RenderError
         .collect();
     scope.push_constant("facts", Dynamic::from(facts));
 
-    let out: Dynamic = engine
-        .eval_with_scope(&mut scope, template)
-        .map_err(|e| render_eval_error(&e))?;
+    // Rhai 1.25 panics (`unreachable!`) on a field or index assignment to a
+    // constant (`property.id = "x"`) instead of returning an error. A
+    // template must never crash the host: the panic is caught and reported as
+    // a render failure. Unwind safety: the engine and scope are local and
+    // dropped here, and the caller's input was cloned into the scope, so a
+    // panic leaves no host state half-updated.
+    let evaluated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        engine.eval_with_scope::<Dynamic>(&mut scope, template)
+    }));
+    let out: Dynamic = match evaluated {
+        Ok(result) => result.map_err(|e| render_eval_error(&e))?,
+        Err(payload) => {
+            let detail = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("engine panic");
+            return Err(RenderError::Eval {
+                message: format!(
+                    "template attempted a forbidden operation (render inputs are read-only): {detail}"
+                ),
+            });
+        }
+    };
     if !out.is_string() {
         // A template that produces nothing is a template bug — loud, not silent.
         return Err(RenderError::NotAString {
@@ -722,12 +743,17 @@ const FORBIDDEN_RENDER_PROBES: &[&str] = &[
     "\"`x`\".eval()",
     // Modules.
     "import \"std\" as s; `imported`",
+    // Mutation of the read-only inputs (field, index, method, reassignment).
+    "property.id = \"forged\"; property.id",
+    "property.remove(\"id\"); `removed`",
+    "property = #{}; `reassigned`",
+    "facts.push(#{}); `pushed`",
 ];
 
 /// The scope-freeze check, callable: runs every forbidden-capability probe
 /// through [`render`] and holds only if each one is rejected. Fact
-/// emission, file I/O, module import, and `eval` (direct or through a
-/// function pointer) must fail loudly in render scope instead of
+/// emission, file I/O, module import, `eval` (direct or through a function
+/// pointer), and any mutation of `property` or `facts` must fail loudly in render scope instead of
 /// half-working; any future host registration or engine change that makes a
 /// probe render flips this to `false`.
 pub fn render_scope_freeze_holds() -> bool {

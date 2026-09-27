@@ -241,6 +241,43 @@ fn check(input: int)
         );
     }
 
+    /// Scope freeze (SPEC-C render contract): the property record and the
+    /// dependency facts are read-only. Every attempt to mutate them — field
+    /// assignment, index assignment, a mutating method, reassignment — is a
+    /// render failure, never a silently-accepted edit. Each probe returns a
+    /// string when the mutation goes through, so an `Eval` error can only
+    /// mean the mutation was refused.
+    #[test]
+    fn render_refuses_mutation_of_the_property_record_and_inputs() {
+        let mut fact = Map::new();
+        fact.insert("predicate".into(), "property_depends_on".into());
+        fact.insert("args".into(), rhai::Dynamic::from(rhai::Array::new()));
+        let input = RenderInput::frozen(property_map("p.id", "safe_divide"), vec![fact]);
+        for probe in [
+            r#"property.id = "forged"; property.id"#,
+            r#"property["id"] = "forged"; property.id"#,
+            r#"property.remove("id"); `removed`"#,
+            r#"property.clear(); `cleared`"#,
+            r#"property += #{ status: "verified" }; `merged`"#,
+            r#"property = #{}; `reassigned`"#,
+            r#"facts.push(#{ predicate: "forged" }); `pushed`"#,
+            r#"facts.clear(); `cleared`"#,
+            r#"facts[0].predicate = "forged"; `edited`"#,
+            r#"facts = []; `reassigned`"#,
+        ] {
+            match phronesis_rhai::render(probe, &input) {
+                Err(RenderError::Eval { .. }) => {}
+                other => panic!("render inputs must be read-only: {probe} -> {other:?}"),
+            }
+        }
+        // And the host's input is untouched by the attempts.
+        assert_eq!(
+            input.property.get("id").map(|v| v.to_string()),
+            Some("p.id".to_string())
+        );
+        assert_eq!(input.dependency_facts.len(), 1);
+    }
+
     #[test]
     fn render_is_deterministic_over_the_frozen_input() {
         let mut facts = vec![];
