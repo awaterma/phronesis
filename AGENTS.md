@@ -2,10 +2,11 @@
 
 ## Quick Overview
 
-This is a Rust workspace with three crates:
+This is a Rust workspace with four crates:
 
 - **`phronesis`** - Core RETE rules engine library
 - **`phronesis-mcp`** - MCP server for LLM-agent governance (CLAUDE.md hook integration)
+- **`phronesis-metrics`** - Prometheus `/metrics` endpoint and `phr-mcp metrics` exporter, pulled in by the default `metrics` feature
 - **`phronesis-rhai`** - Sandboxed Rhai evaluator for `__script__` guard conditions and extensible predicate providers; enabled by default in the MCP binary
 
 **Project type:** Rust workspace with MCP (Model Context Protocol) integration for AI agent governance.
@@ -32,13 +33,13 @@ cargo fmt --all
 ### Development Server
 ```bash
 # Start MCP server (stdio)
-cargo run -- -p phronesis-mcp serve
+cargo run -p phronesis-mcp -- serve
 
 # Pre-tool-use hook (blocks violations)
-cargo run -- -p phronesis-mcp pre-check
+cargo run -p phronesis-mcp -- pre-check
 
 # Post-tool-use hook (warns on violations)
-cargo run -- -p phronesis-mcp post-check
+cargo run -p phronesis-mcp -- post-check
 ```
 
 ### CLI Commands (after cargo install)
@@ -157,14 +158,24 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `kalpa start\|end\|show` | Name the theme (kalpa) a run of sessions belongs to, and report its counts |
 | `unit start\|end\|show` | Name the work item being built (`--spec`, `--bug`) and report on it |
 | `stats` | Read `.phronesis/log.jsonl`, show per-rule summary plus a lifecycle section (`--kalpa <name>`) |
+| `metrics` | Render Prometheus metrics from `.phronesis/log.jsonl` (one scrape to stdout or `--out FILE`, or a standalone `--listen` exporter serving `/metrics`) |
 | `audit` | Scan whole tree for rule violations |
 | `trend` | Debt-over-time from audit snapshots |
+| `graph rebuild\|query\|status\|ownership` | Structural code-graph helpers: rebuild the derived `.phronesis/graph.jsonl` (rebuild after `git checkout`, `git mv`, or rebase), query by relation, check whether it matches disk, and explain indexed Rust ownership evidence |
 | `confidence` | Confidence band + grounded signals for the open work unit |
+| `toolchains` | List active toolchain definitions (built-in + project) with ID, source, match patterns, and active signal refinements |
+| `signal <name> <outcome>` | Record a `compile`/`tests` pass/fail signal explicitly for the open work unit — the escape hatch when a test runner has no toolchain definition or ran outside the hook; requires the `confidence` pack |
 | `journey` | `journey_*` facts asserted right now (`--json`/`--explain`/`--lifecycle`/`--corrections`) |
 | `drift` | Consolidated guidance/rule drift across `claude_md`, `memory`, `wiki`, and `code` sources |
 | `claude-md-drift`, `memory-drift`, `wiki-drift` | Frozen compatibility commands for the original single-source reports |
+| `context list\|acknowledge\|retract\|inspect\|predicates\|stats` | Inspect and measure token-aware durable context: list, acknowledge, and retract rule-emitted capsules, render the configured payload for one event, list the nudge predicate allowlist, and summarize payload cost and latency |
 | `decision new <slug>` | Scaffold an ADR page under `.phronesis/wiki/decisions/` |
 | `migrate-rules <path>` | Convert v1 rules.json to v2 in place |
+| `migrate-durable [path]` | Bring `.phronesis/durable.md` up to the current shipped template — rewrites only a file matching a known prior template verbatim, leaves customized files alone, backs up to `durable.md.bak` |
+| `migrate-extracted-rules <path>` | Rewrite pre-0.14.0 `extract_rules` output in a rules.json — strip bracketed metadata prefixes, demote `block` to `warn`, demote rules the Rust pack already enforces structurally to `log`; idempotent, backs up to `rules.json.bak` |
+| `clean` | Conservatively remove rebuildable local state (`--cache` removes `graph.jsonl`, `graph.index`, and `bindings.json`); journals, captures, rules, decisions, and backups are never removed |
+| `state` | Classify authored configuration, rebuildable caches, local history, backups, and sensitive captures under `.phronesis` |
+| `scrub-payload <path>` | Anonymize a captured payload for committing as a fixture; detects several common leak classes — review the result before committing |
 | `init` | One-command project setup (hooks + rules) |
 | `install` | Register MCP server at user scope |
 
@@ -732,6 +743,13 @@ The `phr-mcp serve` command exposes these tools:
 | `rebuild_code_graph` | Rebuild the server-rooted derived graph and reconcile bindings | `{ "status": "fresh", "generation": N, ... }` |
 | `get_journey` | Journey facts; optional `include_lifecycle` (default `false`) adds lifecycle records, never prompt text | `[...]`, or `{ "facts": [...], "lifecycle": [...] }` |
 | `submit_suggestion` | Set the explicit work item; optional `spec` / `bug_id` record a `unit_start` through the same path as `phr-mcp unit start` | `CallToolResult` |
+| `list_emitted_capsules` | List rule-emitted durable context capsules | `CallToolResult` |
+| `acknowledge_emitted_capsule` | Acknowledge delivery of a next_interaction emitted capsule; idempotent | `CallToolResult` |
+| `retract_emitted_capsule` | Retract a rule-emitted durable context capsule; idempotent | `CallToolResult` |
+| `get_drift` | Detect drift between written guidance and enforced rules across every corpus | `CallToolResult` |
+| `query_ownership_evidence` | Explain the indexed Rust ownership evidence for a function | `CallToolResult` |
+| `get_confidence` | Report the confidence band and grounded signals for the open work unit | `{ "subject", "band", "signals" }` |
+| `set_property_status` | Transition a property's status (the promotion act); requires `because` | `CallToolResult` |
 
 ---
 
@@ -815,4 +833,4 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 ---
 
 *Last updated: 2026-08-09*
-*Based on phronesis v0.26.0*
+*Based on phronesis v0.35.0*

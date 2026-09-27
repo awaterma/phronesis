@@ -173,7 +173,7 @@ get_action_log {
 }
 ```
 
-Returns a JSON array of entries, oldest first.
+Returns `{entries: [...]}` structured JSON, oldest first.
 
 ### Reading from a shell
 

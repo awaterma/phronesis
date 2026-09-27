@@ -11,7 +11,7 @@ operator guide.
    conventional-commit shaped — `feat:`, `fix:`, `chore:`, ...).
 2. **release-plz opens/updates a Release PR** proposing the next version
    (pre-1.0 house rule: any user-visible feature bumps MINOR —
-   `features_always_increment_minor = true`). All three crates share one
+   `features_always_increment_minor = true`). All four crates share one
    version (`version_group = "workspace"`).
 3. **A human reviews the Release PR** — this is the approval gate:
    - Hand-write the `CHANGELOG.md` entry (release-plz does not touch the
@@ -49,7 +49,7 @@ operator guide.
      reusable binary workflow verifies that the expected `phronesis-mcp` tag
      points at the release commit, then waits for its GitHub release before
      uploading, so ordinary pushes are no-ops and versions cannot diverge.
-6. **Verify against crates.io**, not the job status: check all three
+6. **Verify against crates.io**, not the job status: check all four
    crates show the new version. A green release job does NOT guarantee
    a complete publish (see "Partial publish" below).
 7. **Locally**, after each release: `cargo install --path
@@ -154,7 +154,7 @@ publishes `phronesis-mcp` with its new optional dependency after
      sha that run checked out. Without the tag, release-plz checks
      crates.io per crate, skips the ones already published, publishes
      the remainder via OIDC, and recreates the tag.
-  3. Confirm all three crates show the new version on crates.io. The
+  3. Confirm all four crates show the new version on crates.io. The
      log wording distinguishes the two paths: `already published` is a
      registry check; `Already published - Tag vX.Y.Z already exists` is
      the tag shortcut that hides the bug.
