@@ -233,6 +233,10 @@ value, and allowed values. Valid verbs and phases live in `ACTION_VERBS` /
 |-----------|-------------|
 | `file_path_matches(?path)` | Path substring match |
 | `file_extension_is(?ext)` | Extension check |
+| `bash_command_matches(?regex)` | Regex over the raw shell command |
+| `bash_command_code_matches(?regex)` | Regex over the command's code: heredoc bodies removed (unless fed to a shell), `sh -c`/`eval` scripts unwrapped |
+| `project_path_is(?rel)` | Exact path relative to the project root (normalized; symlinked dirs resolved) |
+| `project_path_under(?dir)` | File lies under this root-relative directory, e.g. `verification/templates` |
 | `new_content_contains(?pattern)` | Regex substring in new content |
 | `function_added(?file, ?name)` | Function introduced in diff |
 | `function_removed(?file, ?name)` | Function removed in diff |
@@ -261,7 +265,7 @@ This repository's `change_set.rhai` provider emits
 
 | Pack | Contents |
 |------|----------|
-| `llm` | Deflection rules (blocks blame-shifting, unverified completion claims), governed `git commit` warning (bypass-tolerant: global options, absolute paths, `command`/`env` wrappers) |
+| `llm` | Deflection rules (blocks blame-shifting, unverified completion claims), governed `git commit` warning (bypass-tolerant: global options, absolute paths, `command`/`env` wrappers), verification trust-anchor write refusal (allowlist, opt-in, `verification/templates/`) |
 | `rust` | Existing panic/error/API/design rules plus synchronous lock guards across `.await`, unsafe blocks without `SAFETY:` rationale, and known blocking calls inside `async fn` |
 | `rhai` | `engine.eval(<string literal>)` (use `compile_file`), `print(` in `.rhai` scripts |
 | `python` | Bare `except:`, `print()`, mutable/call defaults, swallowed exceptions, import-time I/O, `is` with value literals, mutated module globals, and star imports |

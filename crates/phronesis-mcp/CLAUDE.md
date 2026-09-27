@@ -301,6 +301,18 @@ The packs are composable and **independent**:
   build (all three via the `bash_command_matches` regex predicate; the two
   git ones tolerate global options, absolute paths, and `command`/`env`
   wrappers between the binary and the subcommand — see `confidence` below).
+  Blocks agent writes to the verification trust anchors
+  (`.phronesis/verification-allowlist.json`, `.phronesis/verification.json`,
+  `verification/templates/`) through Edit/Write/MultiEdit (Gemini's
+  `replace`/`write_file`, Codex `apply_patch` including `*** Move to:`), by
+  the path relative to the project root (`project_path_is` /
+  `project_path_under`, so a nested `src/verification/templates/` or a
+  lookalike `email-verification.json` is not caught). Shell writes —
+  redirects, `tee`, `rm`, in-place `sed`/`perl`, and `cp`/`mv`/`rsync` whose
+  destination is an anchor — only **warn**, since command matching is
+  lexical; they are matched on `bash_command_code_matches`, the command with
+  heredoc bodies removed and `sh -c` scripts unwrapped, outside quoted
+  strings (copying an anchor out is a read).
   These rules fire from disk at every hook invocation, so they remain
   active even when CLAUDE.md content has been compressed out of context.
 - `rust` — Rust code-shape enforcement. Blocks: `.unwrap()` /

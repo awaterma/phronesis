@@ -74,22 +74,6 @@
       "then": {
         "warn": "property ?p depends on changed region ?region; proof by ?v is stale \u2014 reprove"
       }
-    },
-    {
-      "id": "block-agent-write-to-trust-anchors",
-      "phase": "pre",
-      "priority": 100,
-      "audit": true,
-      "when": [
-        {
-          "file_path_matches": [
-            "verification"
-          ]
-        }
-      ],
-      "then": {
-        "constraint_violation": "trust-anchor paths (verification allowlist/templates) are human-principal acts - agent-seam writes are refused (SPEC-C S3/C7)"
-      }
     }
   ]
 }

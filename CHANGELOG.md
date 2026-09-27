@@ -287,6 +287,47 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   hash, so the first hook after upgrading reports the graph as unverified
   until `phr-mcp graph rebuild` or the next hooked save rewrites it.
 
+- **An agent could approve its own verification artifact.** The rule that
+  refuses agent writes to the verification trust anchors lived only in a test
+  fixture, so no `phr-mcp init` installed it — and even that fixture matched a
+  directory the code never reads, letting `.phronesis/verification-allowlist.json`,
+  `.phronesis/verification.json` (the `raw_execution` opt-in), and shell
+  writes like `echo > verification/templates/x.rhai` through. The `llm` pack in
+  the default platform now blocks Edit/Write/MultiEdit (Gemini
+  `replace`/`write_file`, and Codex `apply_patch`, whose `*** Move to:`
+  destination was previously ignored) to all three anchors, matched on the
+  path relative to the project root (new `project_path_is` /
+  `project_path_under` facts), so `src/verification/templates/`,
+  `templates/verification/`, or a checkout that itself lives under such a
+  directory is not caught. Shell commands that write an anchor — redirects,
+  `tee`, `rm`, in-place `sed`/`perl`, `cp`/`mv`/`rsync` with the anchor as the
+  destination, including through `bash -c` — now **warn**, because shell
+  matching is lexical and the spec calls that seam advisory. The shell rule
+  reads the new `bash_command_code_matches` fact, the command with heredoc
+  bodies removed, so a commit message or a document that mentions an anchor
+  is not flagged; copying an anchor out, another project's `.phronesis/`,
+  and lookalike files such as `fixtures/email-verification.json` are left
+  alone. That heredoc stripping mistook a shell arithmetic `<<` (`$((1<<2))`,
+  `(( x <<= 1 ))`) for a heredoc operator, captured the arithmetic's trailing
+  digits as a bogus delimiter, and swallowed every following line as its
+  body — hiding a real anchor write later in the same command from the scan.
+  `<<` inside an open `((`/`$((` arithmetic context is now tracked as a shift
+  operator, not a heredoc start. Re-run `phr-mcp init --rules-only` to pick
+  the rules up.
+
+- **`set_property_status` could promote a property without leaving an audit
+  line, lose concurrent transitions, and rewrite a store every reader rejects.**
+  A failed `log.jsonl` append was ignored after the status had already been
+  written; two transitions at once raced on one unlocked read-modify-write and
+  a shared `properties.json.tmp`; and a store with an unsupported version or a
+  hostile id was rewritten as if valid. The transition is now journaled before
+  it commits (a journal failure refuses it and leaves the store untouched), the
+  update holds a lock with a unique temp file, and the store is read through the
+  same validator every reader uses, so a rejected store is refused.
+  `PHRONESIS_NO_ACTION_LOG` no longer silences this journal line, an unknown
+  property id no longer creates `.phronesis/`, and a staging file left by a
+  crashed transition is cleaned up by the next one.
+
 - **Rules could silently stop firing when an id contained `:` or `,`.** The
   engine remembered fired activations as `rule:fact1,fact2` strings, so rule
   `a` over fact `b:c` collided with rule `a:b` over fact `c`, and a rule whose

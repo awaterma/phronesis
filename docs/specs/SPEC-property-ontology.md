@@ -136,6 +136,8 @@ Rules in exact v2 format:
 
 Promotion itself is `set_property_status` — an MCP tool whose every invocation lands in `log.jsonl` (kind `mcp`) with property, old status, new status, and a required `--because <reason>`. Never rule-driven; this is sketch §17's "observed ≠ intended" given teeth.
 
+*As shipped:* the journal line is written **before** the store is replaced, and a journal failure refuses the transition; `PHRONESIS_NO_ACTION_LOG` does not suppress it. The line is therefore a record of intent: a failed rename appends `set_property_status_aborted`, but a crash between the append and the rename leaves a line for a transition that never landed. `properties.json` is the source of truth for current status; the log is the audit trail of attempts.
+
 ## 5. Staleness — sketch §6, honestly named
 
 The engine cannot order revision SHAs, so `verification_required` from the sketch is host-derived: when `changed_region(change, region)` ⋈ `property_depends_on(property, region)` and the recorded `result_revision` ≠ `head_revision` (SPEC A), the resolver asserts `stale_evidence(property, verifier)`. The evidence is stale; rerunning is the action it recommends — the consequence is a warning, the derivation is host-side, and the name says what it is:

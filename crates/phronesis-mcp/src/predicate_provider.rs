@@ -90,6 +90,9 @@ const RESERVED_EXACT: &[&str] = &[
     "file_extension_is",
     "new_content_contains",
     "bash_command_matches",
+    "bash_command_code_matches",
+    "project_path_is",
+    "project_path_under",
     "file_missing_pattern",
     "file_line_count_above",
     "function_added",
@@ -534,6 +537,23 @@ mod reserved_tests {
                 "change_set_production_without_test",
             ]
         );
+    }
+
+    /// The hook's root-anchored path facts and derived command facts back
+    /// the trust-anchor rules; a provider must not be able to forge them.
+    #[test]
+    fn path_and_command_code_facts_are_reserved() {
+        for host_owned in [
+            "project_path_is",
+            "project_path_under",
+            "bash_command_code_matches",
+        ] {
+            let script = format!("emit_fact(\"{host_owned}\", []);");
+            assert!(
+                validate_script(&script).is_err(),
+                "{host_owned} must be reserved"
+            );
+        }
     }
 
     #[test]

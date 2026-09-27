@@ -192,6 +192,11 @@ suppress writes. The log is opt-out, not opt-in — the default is on
 because the most common debugging question ("did the hook fire?") has no
 other clear answer.
 
+One exception: audited acts ignore the opt-out. A `set_property_status`
+transition (SPEC-property-ontology §4) is journaled even with
+`PHRONESIS_NO_ACTION_LOG=1`, and a transition whose journal line cannot be
+written is refused.
+
 ### Rotation
 
 When the active log reaches **50 MB**, it's atomically renamed to

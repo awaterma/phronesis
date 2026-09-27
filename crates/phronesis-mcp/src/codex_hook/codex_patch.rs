@@ -16,7 +16,8 @@ use super::PatchFile;
 /// - `*** Add File: <path>` — new file being created
 /// - `*** Delete File: <path>` — file being removed (`deleted: true`)
 /// - `*** Move to: <path>` — the preceding Update renames its file; the
-///   destination is a touched file too, and receives the hunks that follow
+///   destination is a touched file too (its own entry), and receives the
+///   hunks that follow (the content lands at the new path)
 ///
 /// Returns an empty vec when the input doesn't match any recognised blocks.
 pub fn parse_patch(input: &str) -> Vec<PatchFile> {
@@ -129,6 +130,27 @@ mod tests {
     fn parse_non_patch_text_is_malformed() {
         let files = parse_patch("some random text");
         assert!(files.is_empty());
+    }
+
+    /// A rename writes its destination: `*** Move to:` must surface the new
+    /// path (with the hunk's added lines) so path rules see it.
+    #[test]
+    fn parse_move_to_reports_the_destination() {
+        let input = "\
+*** Begin Patch
+*** Update File: src/x.json
+*** Move to: .phronesis/verification-allowlist.json
+@@
++{\"entries\": []}
+*** End Patch
+";
+        let files = parse_patch(input);
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        let dest = files
+            .iter()
+            .find(|f| f.path == ".phronesis/verification-allowlist.json")
+            .unwrap_or_else(|| panic!("move destination missing: {paths:?}"));
+        assert!(dest.added.contains("entries"), "{}", dest.added);
     }
 
     #[test]
