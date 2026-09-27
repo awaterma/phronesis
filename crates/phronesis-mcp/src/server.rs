@@ -963,7 +963,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Hydrate the in-memory network from .phronesis/rules.json. Disk rules replace same-ID in-memory rules and preserve their phase. After a load error, a repaired file replaces the loaded rules wholesale (with autopersist on; without it the load stays additive, keeping rules added in memory)."
+        description = "Hydrate the in-memory network from .phronesis/rules.json. Adds each rule (preserving its phase) and skips rules whose ID already exists. After a load error, a repaired file replaces the loaded rules wholesale (with autopersist on; without it the load stays additive, keeping rules added in memory)."
     )]
     async fn load_rules_file(
         &self,
@@ -998,20 +998,27 @@ impl EpistemeMcp {
             return Self::ok_text(json);
         }
 
-        let (loaded, replaced) = {
+        let (loaded, skipped) = {
             let network = self.network.lock().await;
+            let existing_ids: std::collections::HashSet<String> = network
+                .get_all_rules()
+                .map_err(Self::err)?
+                .into_iter()
+                .map(|r| r.id)
+                .collect();
             let mut phase_map = self.phase_map.lock().await;
-            let (loaded, replaced) = crate::server_persistence::reconcile_rules(
+            let (loaded, skipped) = crate::server_persistence::hydrate_rules(
                 &network,
                 &mut phase_map,
                 &resolved.rules,
+                &existing_ids,
             )
             .await
             .map_err(Self::err)?;
             for fact in crate::rule_layers::override_facts(&resolved.overrides) {
                 network.assert_fact(fact).await.map_err(Self::err)?;
             }
-            (loaded, replaced)
+            (loaded, skipped)
         };
 
         let project_ids = resolved
@@ -1034,7 +1041,7 @@ impl EpistemeMcp {
         let summary = serde_json::json!({
             "path": path.display().to_string(),
             "loaded": loaded,
-            "replaced_duplicate_ids": replaced,
+            "skipped_duplicate_ids": skipped,
             "overrides": resolved.overrides.len(),
         });
         let json = serde_json::to_string_pretty(&summary).map_err(|e| Self::err(e.to_string()))?;

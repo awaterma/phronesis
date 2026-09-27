@@ -69,15 +69,18 @@
       "id": "rules_file.load_convergence",
       "subject": "rules_file",
       "kind": "postcondition",
-      "condition": "load_rules_file runs while in-memory rules share ids with disk rules whose field values differ",
-      "guarantee": "after load_rules_file, every rule in memory equals its on-disk record; a duplicate id never leaves a stale in-memory field value",
+      "condition": "load_rules_file runs while in-memory rules share ids with disk rules, or a load error is later repaired",
+      "guarantee": "load_rules_file never overwrites an in-memory rule whose id is already loaded (it is skipped and counted in skipped_duplicate_ids); after a load error, loading the repaired file replaces the loaded rules wholesale, so memory matches disk (autopersist on)",
       "depends_on": [
         "file:crates/phronesis-mcp/src/rules_file.rs",
-        "file:crates/phronesis-mcp/src/server.rs"
+        "file:crates/phronesis-mcp/src/server.rs",
+        "file:crates/phronesis-mcp/src/server_persistence.rs"
       ],
       "source": "agent_inference",
-      "status": "candidate",
+      "status": "corroborated",
       "corroborated_by": [
+        "crates/phronesis-mcp/src/property_tests.rs",
+        "crates/phronesis-mcp/tests/save_rules_integration.rs",
         ".phronesis/log.jsonl"
       ],
       "encodings": []

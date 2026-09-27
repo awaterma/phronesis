@@ -817,7 +817,7 @@ fn load_rules_file_hydrates_from_disk() {
     let mut c = McpClient::spawn(dir.path());
     let summary = c.tool("load_rules_file", serde_json::json!({}));
     assert_eq!(summary["loaded"], 2);
-    assert_eq!(summary["replaced_duplicate_ids"], 0);
+    assert_eq!(summary["skipped_duplicate_ids"], 0);
 
     let result: serde_json::Value =
         serde_json::from_str(&c.tool_text("list_rules", serde_json::json!({}))).unwrap();
@@ -826,7 +826,7 @@ fn load_rules_file_hydrates_from_disk() {
 }
 
 #[test]
-fn load_rules_file_replaces_existing_ids() {
+fn load_rules_file_skips_existing_ids() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
     std::fs::write(
@@ -840,18 +840,10 @@ fn load_rules_file_replaces_existing_ids() {
     .unwrap();
 
     let mut c = McpClient::spawn(dir.path());
-    c.tool(
-        "add_rule",
-        simple_rule("a", "stale_predicate", "stale_value"),
-    );
+    c.tool("add_rule", simple_rule("a", "p", "x"));
     let summary = c.tool("load_rules_file", serde_json::json!({}));
-    assert_eq!(summary["loaded"], 1);
-    assert_eq!(summary["replaced_duplicate_ids"], 1);
-    let listed = c.tool("list_rules", serde_json::json!({}));
-    let rule = &listed["rules"][0];
-    assert_eq!(rule["priority"], 1);
-    assert_eq!(rule["conditions"][0]["predicate"], "p");
-    assert_eq!(rule["conditions"][0]["args"][0], "x");
+    assert_eq!(summary["loaded"], 0);
+    assert_eq!(summary["skipped_duplicate_ids"], 1);
 }
 
 #[test]

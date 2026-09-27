@@ -44,28 +44,6 @@ pub(crate) async fn hydrate_rules(
     Ok((loaded, skipped))
 }
 
-/// Reconcile an explicit disk reload by replacing same-ID rules in memory.
-pub(crate) async fn reconcile_rules(
-    network: &ReteNetwork,
-    phase_map: &mut HashMap<String, String>,
-    rules: &[DiskRule],
-) -> Result<(usize, usize), ReteError> {
-    let mut loaded = 0;
-    let mut replaced = 0;
-    for disk in rules {
-        let (rule, phase) = rules_file::rule_from_disk(disk);
-        if network.get_rule_by_id(&rule.id)?.is_some() {
-            network.remove_rule(&rule.id)?;
-            replaced += 1;
-        }
-        let id = rule.id.clone();
-        network.add_rule(rule).await?;
-        phase_map.insert(id, phase);
-        loaded += 1;
-    }
-    Ok((loaded, replaced))
-}
-
 impl EpistemeMcp {
     /// Hydrate the in-memory network from `.phronesis/rules.json` at startup.
     ///
