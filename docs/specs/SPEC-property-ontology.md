@@ -69,6 +69,8 @@ Version-controlled, reviewed in PRs, loaded alongside rules at hook fire. Hydrat
 }
 ```
 
+A record may also carry `mutations: [{ "verifier": "verus", "find": "…", "replace": "…" }]` — single-line textual replacements the host applies to a copy of the rendered artifact during an agent-quorum approval (SPEC C "Agent-verified evidence", check (b)); the verifier must fail on the mutant. Absent means empty (and the property revision of a record without mutations is unchanged).
+
 Corroboration claims are part of the reviewed record — a corroboration is itself an assertion someone stands behind, which is why `corroborated_by` is curated rather than mined (non-goal 2).
 
 ## 2. Relations
@@ -80,16 +82,20 @@ Corroboration claims are part of the reviewed record — a corroboration is itse
 | `property_kind` | `[property, kind]` | `postcondition` \| `precondition` \| `invariant` \| … |
 | `property_depends_on` | `[property, region]` | Region dependency (SPEC A §3.2 per-site region IDs; a legacy leaf-name id matches every same-leaf changed site) |
 | `property_source` | `[property, source]` | `explicit_spec` \| `existing_verifier_contract` \| `test_assertion` \| `documentation` \| `code_inference` \| `runtime_observation` \| `agent_inference` |
-| `property_status` | `[property, status]` | `observed` \| `candidate` \| `corroborated` \| `accepted` \| `verified` \| `rejected` \| `superseded` |
+| `property_status` | `[property, status]` | `observed` \| `candidate` \| `corroborated` \| `accepted` \| `agent_verified` \| `verified` \| `rejected` \| `superseded` (ladder below) |
 | `property_corroborated_by` | `[property, source_entity]` | Independent corroboration for promotion policy |
 | `property_encoding` | `[property, language, verifier, artifact]` | Where the claim is encoded (sketch §14) |
-| `verification_result` | `[property, verifier, status]` | A **bound** result at the recorded revision (see *Result binding*) |
+| `verification_result` | `[property, verifier, status]` | A **bound** result at the recorded revision (see *Result binding*) whose artifact a **human** principal approved |
+| `agent_verification_result` | `[property, verifier, status]` | A bound result whose artifact an **agent review quorum** approved (D10, SPEC C "Agent-verified evidence") — never asserted as `verification_result` |
+| `result_principal` | `[property, verifier, kind]` | Principal kind of the approval behind a bound result: `human` \| `agent_quorum` |
 | `result_revision` | `[property, verifier, sha]` | Commit (40 hex) at which the bound result was produced |
 | `result_tier` | `[property, verifier, tier]` | Confinement tier that ran the bound result: `devcontainer` \| `sandbox_exec` \| `raw` — rules can refuse `raw` |
 | `unbound_evidence` | `[property, verifier, reason]` | A result record that does not bind; never evidence (reasons below) |
 | `stale_evidence` | `[property, verifier]` | Host-derived: a bound result predates a change to a dependent region |
-| `property_obligation` | `[property, "first_proof"]` | Host-derived: an accepted/verified property's dependent region changed and no bound result is at HEAD |
+| `property_obligation` | `[property, "first_proof"]` | Host-derived: an accepted/agent_verified/verified property's dependent region changed and no **human**-bound result is at HEAD (agent-quorum results never discharge it) |
 | `store_corrupt` | `["properties", reason]` | properties.json or property-results.jsonl could not be read or validated (reasons below) |
+
+**Status ladder.** `observed → candidate → corroborated → accepted → agent_verified → verified`; `rejected` and `superseded` are terminal side exits. `agent_verified` (D10, 2026-09-27) sits strictly below `verified`: it is reachable with evidence approved by an agent review quorum (principal kind `agent_quorum`), while `verified` requires evidence approved by a human principal. `set_property_status` checks evidence for exactly these two targets (SPEC C "Agent-verified evidence" has the table); every other transition is unchecked, as before.
 
 **Result statuses** are `passed` \| `failed` \| `inconclusive` \| `timeout` \| `unknown`. The sketch §14's evidence-kind list had no failure semantics; the three-state `unknown` discipline from `outcomes/toolchain.rs` ("never a silent pass") is mandatory here. Evidence *kinds* (`deductive_proof`, `bounded_model_check`, `runtime_unit_test`, …) are a function of the verifier and live in the results record payload, not as RETE args, unless a rule needs them — demand-gated philosophy.
 
@@ -112,6 +118,8 @@ Corroboration claims are part of the reviewed record — a corroboration is itse
 | `unknown_property` | no curated property with that id |
 | `no_encoding` | the property has no encoding for that verifier |
 | `allowlist_unreadable` / `artifact_not_approved` | the artifact hash is not an S3-approved artifact for that property |
+
+A bound result carries the approving entry's **principal kind** (`human` for entries that predate the field). Human-approved results hydrate as `verification_result`; agent-quorum-approved results hydrate as `agent_verification_result`; both assert `result_principal`.
 
 An unbound record never asserts `verification_result`, `result_revision`, `result_tier`, or `stale_evidence`, and never satisfies the first-proof obligation. A bound result is "at HEAD" only when HEAD is known and equals its revision, so with no git HEAD every accepted property with a changed dependency stays obligated; staleness is not claimed without a HEAD.
 
