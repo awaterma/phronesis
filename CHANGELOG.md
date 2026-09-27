@@ -26,7 +26,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   where CPython's tokenizer does. A backslash always takes the next
   character with it, raw strings included (`r'x\' y '` is one string, as in
   CPython, so the code after it can no longer be misread as string text);
-  a single-quoted string ends at an unescaped newline. In f-strings and
+  a single-quoted string ends at an unescaped newline. Line ends follow
+  CPython's universal newlines: a bare CR or CRLF ends a line as LF does,
+  so `# comment\rVAL=1` leaves `VAL=1` live, a CR inside a single-quoted
+  string fails safe, and backslash-CRLF is one line continuation. Form
+  feed, `\v`, NEL, U+2028 and the other Unicode line breaks do not end a
+  line in CPython and do not end one here. In f-strings and
   t-strings the literal text stays inert but a `{expr}` replacement field
   is code (an interpolated value placed inside `{}` is still rejected;
   `{{`/`}}` are literal braces, and `\{` still opens a field). Fields are

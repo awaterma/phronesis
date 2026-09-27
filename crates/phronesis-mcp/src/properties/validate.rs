@@ -568,7 +568,8 @@ fn generic_inert_chars(chars: &[char]) -> Vec<bool> {
             }
             '/' if chars.get(i + 1) == Some(&'/') => {
                 let start = i;
-                while i < chars.len() && chars[i] != '\n' {
+                // Ending at a CR too is conservative: text after it is live.
+                while i < chars.len() && !is_python_line_end(chars[i]) {
                     i += 1;
                 }
                 inert[start..i].fill(true);
@@ -653,7 +654,7 @@ fn python_inert_chars(chars: &[char]) -> Vec<bool> {
     while i < chars.len() {
         if chars[i] == '#' {
             let start = i;
-            while i < chars.len() && chars[i] != '\n' {
+            while i < chars.len() && !is_python_line_end(chars[i]) {
                 i += 1;
             }
             inert[start..i].fill(true);
@@ -706,13 +707,13 @@ fn scan_python_string(
             return Some(end);
         }
         match d {
-            '\n' if !triple => return None,
+            '\n' | '\r' if !triple => return None,
             '\\' => {
                 let next = *chars.get(j + 1)?;
                 j += if interpolates && (next == '{' || next == '}') {
                     1
                 } else {
-                    2
+                    python_escape_len(chars, j)
                 };
             }
             '{' if interpolates => {
@@ -733,6 +734,25 @@ fn scan_python_string(
 
 fn closes_python_string(chars: &[char], j: usize, qc: char, triple: bool) -> bool {
     chars[j] == qc && (!triple || (chars.get(j + 1) == Some(&qc) && chars.get(j + 2) == Some(&qc)))
+}
+
+/// A character that ends a physical line. CPython reads source with
+/// universal newlines, so a bare CR (and CRLF, whose LF then follows) ends a
+/// line as LF does. Other Unicode line breaks — form feed, `\v`,
+/// `\x1c`–`\x1e`, NEL, U+2028/U+2029 — do not end a line in CPython's
+/// tokenizer, so they never end a comment or a single-quoted literal here.
+fn is_python_line_end(c: char) -> bool {
+    c == '\n' || c == '\r'
+}
+
+/// Characters consumed by the backslash at `chars[j]` and what it escapes:
+/// three for a backslash-CRLF line continuation, otherwise two.
+fn python_escape_len(chars: &[char], j: usize) -> usize {
+    if chars.get(j + 1) == Some(&'\r') && chars.get(j + 2) == Some(&'\n') {
+        3
+    } else {
+        2
+    }
 }
 
 /// Scan an f-/t-string replacement field whose `{` sits just before
@@ -757,11 +777,11 @@ fn scan_python_field(
         }
         match c {
             '#' => {
-                while chars.get(j).is_some_and(|c| *c != '\n') {
+                while chars.get(j).is_some_and(|c| !is_python_line_end(*c)) {
                     j += 1;
                 }
             }
-            '\\' => j += 2,
+            '\\' => j += python_escape_len(chars, j),
             '(' | '[' | '{' => {
                 brackets += 1;
                 j += 1;
@@ -800,10 +820,14 @@ fn scan_python_format_spec(
             return None;
         }
         match c {
-            '\n' if !triple => return None,
+            '\n' | '\r' if !triple => return None,
             '\\' => {
                 let next = *chars.get(j + 1)?;
-                j += if next == '{' || next == '}' { 1 } else { 2 };
+                j += if next == '{' || next == '}' {
+                    1
+                } else {
+                    python_escape_len(chars, j)
+                };
             }
             '{' => j = scan_python_field(chars, j + 1, qc, triple, depth + 1)?,
             '}' => return Some(j + 1),
@@ -952,6 +976,62 @@ mod tests {
         assert!(python_live("s = 'a\nunsafe_value'"));
         // An escaped newline is a line continuation inside the literal.
         assert!(!python_live("s = 'a\\\nunsafe_value'"));
+    }
+
+    #[test]
+    fn python_bare_cr_and_crlf_end_a_comment() {
+        // CPython normalizes universal newlines: a bare CR ends the line, so
+        // the assignment after it is live code.
+        assert!(validate_body("python", "# comment\rVAL=1", &["VAL"]).is_err());
+        assert!(python_live("# comment\runsafe_value = 1"));
+        assert!(python_live("# comment\r\nunsafe_value = 1"));
+        assert!(python_live("x = 1  # comment\runsafe_value()"));
+        // The value inside the comment itself stays inert.
+        assert!(!python_live("# unsafe_value\r\nx = 1"));
+    }
+
+    #[test]
+    fn python_cr_inside_single_quoted_string_fails_safe() {
+        // CPython reads the CR as a newline: the literal is unterminated.
+        assert!(python_live("s = 'a\runsafe_value'"));
+        assert!(python_live("s = 'a\r\nunsafe_value'"));
+        assert!(python_live("s = f'{x:a\runsafe_value}'"));
+        // A triple-quoted literal may span CR line ends.
+        assert!(!python_live("s = '''a\runsafe_value\r\n'''"));
+    }
+
+    #[test]
+    fn python_backslash_crlf_continues_a_string() {
+        // `\` + CRLF is one line continuation, as `\` + LF is.
+        assert!(!python_live("s = 'a\\\r\nunsafe_value'"));
+        assert!(!python_live("s = 'a\\\runsafe_value'"));
+        // ...in a format spec too: the literal still closes, and the plain
+        // string after it is inert.
+        assert!(!python_live("s = f'{x:a\\\r\n}' + 'unsafe_value'"));
+    }
+
+    #[test]
+    fn python_cr_ends_a_comment_inside_an_fstring_field() {
+        assert!(python_live("s = f'''{x # c\r+ unsafe_value}'''"));
+        assert!(python_live("s = f'''{x # c\r\n+ unsafe_value}'''"));
+        // CPython closes the field and the literal on the CR line, so the
+        // value is a live statement; an LF-only comment end would run the
+        // field on to the dict's `}` and read the value as literal text.
+        assert!(python_live(
+            "f'''{x #\r}'''; d = {1: 2 #\n}; unsafe_value; ''''''"
+        ));
+    }
+
+    #[test]
+    fn python_non_newline_line_breaks_do_not_end_a_comment() {
+        // CPython's tokenizer ends lines only at LF, CR, and CRLF; these stay
+        // inside the comment, and the value in it is inert.
+        for sep in [
+            '\x0c', '\x0b', '\x1c', '\x1d', '\x1e', '\u{85}', '\u{2028}', '\u{2029}',
+        ] {
+            let body = format!("# c{sep}unsafe_value = 1");
+            assert!(!python_live(&body), "{body:?}");
+        }
     }
 
     #[test]
