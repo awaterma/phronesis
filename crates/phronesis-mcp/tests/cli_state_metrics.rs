@@ -55,6 +55,7 @@ fn migrate_durable_cli_reports_absent_target_without_writing() {
     assert!(!path.exists());
 }
 
+#[cfg(feature = "metrics")]
 #[test]
 fn metrics_cli_writes_a_scrape_and_accepts_since_cutoff() {
     let dir = tempfile::tempdir().unwrap();
@@ -74,4 +75,23 @@ fn metrics_cli_writes_a_scrape_and_accepts_since_cutoff() {
     );
     let scrape = fs::read_to_string(outpath).unwrap();
     assert!(scrape.contains("phronesis"));
+}
+
+/// Without the `metrics` feature the subcommand exists but refuses, naming
+/// the feature and how to get it.
+#[cfg(not(feature = "metrics"))]
+#[test]
+fn metrics_cli_without_the_feature_explains_how_to_get_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(phr())
+        .current_dir(dir.path())
+        .arg("metrics")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("built without Prometheus support"),
+        "{stderr}"
+    );
 }
