@@ -163,6 +163,7 @@ fn hydrate_edit(root: &Path, head: Option<&str>) -> Vec<PropertyFact> {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: head.map(str::to_string),
     };
@@ -393,6 +394,7 @@ fn d8_store_corrupt_is_demand_gated() {
             path: "src/lib.rs".into(),
             old: Some(OLD_SRC),
             new: NEW_SRC,
+            whole_file: false,
         }],
         head_sha: None,
     };
