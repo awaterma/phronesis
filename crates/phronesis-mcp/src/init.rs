@@ -986,7 +986,7 @@ competing under a false assertion.
 {"when": {"predicate": "context_confidence_band", "args": ["low"]}}
 
 {"when": {"all": [
-  {"predicate": "journey_seen", "args": ["rule-blocked", "session"]},
+  {"predicate": "journey_seen", "args": ["rule-blocked", "s"]},
   {"predicate": "context_confidence_band", "args": ["low"]}
 ]}}
 ```
@@ -994,6 +994,9 @@ competing under a false assertion.
 - `args` are exact constant matches. Variables (`?name`) are rejected —
   the body cannot use bindings, so a binding would buy nothing.
 - `all` and `any` nest, up to 16 levels and 256 expanded alternatives.
+- `journey_*` window args are `s` (this session), `<N>c` (last N tool
+  calls), or `<N>s`/`<N>m`/`<N>h`/`<N>d`. Lifecycle selectors need `s` or a
+  time window. `inspect` reports a bad window token as a derivation error.
 - `not`, `unless`, empty groups, scripts, and actions are rejected. There is
   no absence-based trigger: a capsule fires on facts that are true, never on
   facts that are missing.
