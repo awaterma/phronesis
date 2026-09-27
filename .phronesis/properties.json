@@ -40,8 +40,8 @@
       "id": "rules_file.load_convergence",
       "subject": "rules_file",
       "kind": "postcondition",
-      "condition": "load_rules_file runs while in-memory rules share ids with disk rules whose field values differ",
-      "guarantee": "after load_rules_file, every rule in memory equals its on-disk record; a duplicate id never leaves a stale in-memory field value",
+      "condition": "load_rules_file runs while in-memory rules share ids with disk rules, or a load error is later repaired",
+      "guarantee": "load_rules_file never overwrites an in-memory rule whose id is already loaded (it is skipped and counted in skipped_duplicate_ids); after a load error, loading the repaired file replaces the loaded rules wholesale, so memory matches disk (autopersist on)",
       "depends_on": [
         "fn:crates/phronesis-mcp/src/rules_file.rs::read",
         "fn:crates/phronesis-mcp/src/server_persistence.rs::reload_from"
@@ -49,7 +49,10 @@
       "source": "test_assertion",
       "status": "corroborated",
       "corroborated_by": [
-        "crates/phronesis-mcp/tests/rule_load_error_recovery.rs::load_rules_file_after_repair_takes_the_repaired_file"
+        "crates/phronesis-mcp/tests/rule_load_error_recovery.rs::load_rules_file_after_repair_takes_the_repaired_file",
+        "crates/phronesis-mcp/src/property_tests.rs::prop_load_skips_existing_duplicate_ids",
+        "crates/phronesis-mcp/src/property_tests.rs::prop_reload_from_repaired_file_replaces_wholesale",
+        "crates/phronesis-mcp/tests/save_rules_integration.rs::load_rules_file_skips_existing_ids"
       ],
       "encodings": []
     },
@@ -65,8 +68,10 @@
         "fn:crates/phronesis-mcp/src/server_persistence.rs::reload_from"
       ],
       "source": "agent_inference",
-      "status": "candidate",
-      "corroborated_by": [],
+      "status": "corroborated",
+      "corroborated_by": [
+        "crates/phronesis-mcp/src/property_tests.rs::prop_audit_opt_in_survives_write_load_and_merge"
+      ],
       "encodings": []
     },
     {
@@ -100,9 +105,10 @@
         "fn:crates/phronesis-mcp/src/hook_facts.rs::assert_language_pack_facts"
       ],
       "source": "runtime_observation",
-      "status": "observed",
+      "status": "corroborated",
       "corroborated_by": [
-        "crates/phronesis-mcp/tests/features/hooks.feature"
+        "crates/phronesis-mcp/tests/features/hooks.feature",
+        "crates/phronesis-mcp/src/property_tests.rs::prop_single_file_gating_rule_fires_only_for_matching_path"
       ],
       "encodings": []
     },
@@ -116,9 +122,10 @@
         "fn:crates/phronesis-mcp/src/coverage/hydrate.rs::hydrate"
       ],
       "source": "runtime_observation",
-      "status": "observed",
+      "status": "corroborated",
       "corroborated_by": [
-        "crates/phronesis-mcp/tests/features/coverage-evidence.feature"
+        "crates/phronesis-mcp/tests/features/coverage-evidence.feature",
+        "crates/phronesis-mcp/src/property_tests.rs::prop_coverage_facts_require_a_demanded_relation"
       ],
       "encodings": []
     },
@@ -164,9 +171,10 @@
         "fn:crates/phronesis/src/beta_network.rs::join_tokens"
       ],
       "source": "runtime_observation",
-      "status": "observed",
+      "status": "corroborated",
       "corroborated_by": [
-        "crates/phronesis/tests/rete_smoke.rs"
+        "crates/phronesis/tests/rete_smoke.rs",
+        "crates/phronesis/src/beta_network.rs::stateful_properties::prop_join_tokens_are_consistent_and_keep_exact_wmes"
       ],
       "encodings": []
     },

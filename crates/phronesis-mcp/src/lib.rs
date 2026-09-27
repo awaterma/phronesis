@@ -39,3 +39,6 @@ pub mod stats;
 pub mod syntax;
 pub mod wiki;
 pub mod wiki_drift;
+
+#[cfg(test)]
+mod property_tests;

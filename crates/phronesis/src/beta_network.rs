@@ -382,3 +382,74 @@ mod tests {
         assert_eq!(network.input_index.get("alpha:b").map(Vec::len), Some(1));
     }
 }
+
+#[cfg(test)]
+mod stateful_properties {
+    use super::*;
+    use crate::{Fact, WorkingMemoryElement};
+    use proptest::prelude::*;
+
+    fn token(value: &str, id: &str) -> Token {
+        let mut bindings = crate::Bindings::new();
+        bindings.add_binding("?key", value).expect("valid binding");
+        Token::new_with_bindings(
+            vec![WorkingMemoryElement::new(Fact {
+                id: id.to_string(),
+                predicate: "item".into(),
+                args: vec![value.into()],
+                timestamp: 0,
+                source: None,
+            })],
+            bindings,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+        // Keys are drawn from a two-letter alphabet ("a"/"b"/"aa"/...) so
+        // that matching and non-matching keys both occur often across
+        // cases — an "[a-z]{1,8}" alphabet makes an exact match a ~1-in-26^n
+        // coincidence and the join branch of `join_tokens` would almost
+        // never actually run. Multiple tokens on each side exercise the
+        // beta memory's full cross-join, not just a single left/right pair.
+        #[test]
+        fn prop_join_tokens_are_consistent_and_keep_exact_wmes(
+            lefts in prop::collection::vec("[ab]{1,2}", 1..4),
+            rights in prop::collection::vec("[ab]{1,2}", 1..4),
+        ) {
+            let mut network = BetaNetwork::new();
+            let state = network.add_join("left".into(), "right".into(), "?key".into());
+            network.mark_as_p_state(&state, "r", 1);
+
+            // All left tokens are stored first (right memory is still empty,
+            // so this phase produces no activations); processing the right
+            // tokens afterward joins each against the full accumulated left
+            // memory, exercising every left/right pair exactly once.
+            for (i, l) in lefts.iter().enumerate() {
+                let none_yet = network.process_token_from_source("left", token(l, &format!("l{i}")));
+                prop_assert!(none_yet.is_empty());
+            }
+            let mut activations = Vec::new();
+            for (i, r) in rights.iter().enumerate() {
+                activations.extend(network.process_token_from_source("right", token(r, &format!("r{i}"))));
+            }
+
+            let expected: std::collections::HashSet<(String, String)> = lefts.iter().enumerate()
+                .flat_map(|(li, l)| rights.iter().enumerate().filter(move |(_, r)| *r == l).map(move |(ri, _)| (format!("l{li}"), format!("r{ri}"))))
+                .collect();
+            prop_assert_eq!(activations.len(), expected.len());
+
+            let mut actual = std::collections::HashSet::new();
+            for activation in &activations {
+                let ids: Vec<&str> = activation.token.wmes.iter().map(|w| w.id.as_str()).collect();
+                prop_assert_eq!(ids.len(), 2);
+                let left_key = &lefts[ids[0][1..].parse::<usize>().expect("left id suffix")];
+                let right_key = &rights[ids[1][1..].parse::<usize>().expect("right id suffix")];
+                prop_assert_eq!(left_key, right_key);
+                prop_assert_eq!(activation.token.bindings.get_binding("?key"), Some(left_key));
+                actual.insert((ids[0].to_string(), ids[1].to_string()));
+            }
+            prop_assert_eq!(actual, expected);
+        }
+    }
+}

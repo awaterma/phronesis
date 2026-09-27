@@ -584,7 +584,7 @@ fn absolute_edit_path_still_matches_qualified_depends_on() {
 #[test]
 fn c1_render_validate_gate_execute_prove_end_to_end() {
     use phronesis_mcp::properties::allowlist;
-    use phronesis_mcp::properties::execute::execute;
+    use phronesis_mcp::properties::execute::{detect_confinement, execute};
 
     // The verus toolchain gate: skip (never fake) when absent.
     let verify_bin = std::env::var("VERUS_BIN").ok().or_else(which_verus);
@@ -592,6 +592,10 @@ fn c1_render_validate_gate_execute_prove_end_to_end() {
         eprintln!("skipping C1: no verus toolchain on this host");
         return;
     };
+    if detect_confinement(std::path::Path::new(".")).is_none() {
+        eprintln!("skipping C1: no supported verifier confinement tier on this host");
+        return;
+    }
 
     let d = TempDir::new().unwrap();
     std::fs::create_dir_all(d.path().join("verification")).unwrap();
@@ -725,11 +729,15 @@ fn which_verus() -> Option<String> {
 #[test]
 fn c6_introducing_the_forbidden_bug_flips_the_proof_to_failed() {
     use phronesis_mcp::properties::allowlist;
-    use phronesis_mcp::properties::execute::execute;
+    use phronesis_mcp::properties::execute::{detect_confinement, execute};
 
     let Some(verify_bin) = std::env::var("VERUS_BIN").ok().or_else(which_verus) else {
         return;
     };
+    if detect_confinement(std::path::Path::new(".")).is_none() {
+        eprintln!("skipping C6: no supported verifier confinement tier on this host");
+        return;
+    }
 
     // The mutated claim: the property forbids "zero returns Ok" — introduce
     // exactly that bug into the rendered harness.
