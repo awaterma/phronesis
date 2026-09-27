@@ -752,6 +752,12 @@ mod tests {
                 "message": "blocked", "bindings": {}
             }]),
         );
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut entry = entry;
+        entry.ts = now;
         std::fs::write(&log, serde_json::to_string(&entry).unwrap() + "\n").unwrap();
         let output = run_turn_context(dir.path(), 10, DEFAULT_MAX_BYTES);
         let envelope: serde_json::Value = serde_json::from_str(&output).unwrap();
