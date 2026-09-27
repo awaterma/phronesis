@@ -1016,3 +1016,20 @@ fn cross_revision_persistence_semantic_preserving_changes_keep_joins() {
         "the new function must gap or be changed"
     );
 }
+
+#[test]
+fn curated_repository_properties_file_loads_through_store_loader() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let root = root.canonicalize().expect("repository root");
+    let properties = phronesis_mcp::properties::store::load_properties(&root)
+        .expect("curated properties.json must load");
+    assert!(
+        properties.iter().all(|p| !p.id.starts_with("safe_divide.")),
+        "spec-example properties do not belong in the repository's own store"
+    );
+    assert!(
+        properties
+            .iter()
+            .any(|property| property.id == "rules_file.load_convergence")
+    );
+}
