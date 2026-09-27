@@ -17,6 +17,8 @@ cargo run -- interaction-context # UserPromptSubmit / BeforeAgent hook (injects 
 cargo run -- context inspect   # dry-run the configured context payload (writes nothing)
 cargo run -- context predicates # allowlisted predicates for nudge capsules
 cargo run -- context stats     # observed context cost, omissions, latency
+cargo run -- context acknowledge <id> [--lease-token <token>]  # Acknowledge a delivered next-interaction capsule
+cargo run -- context retract <id>  # Retract an emitted capsule (never a static capsule file)
 cargo run -- stats             # Read-only per-rule summary of .phronesis/log.jsonl
 cargo run -- stats --kalpa lifecycle-events  # ...with the lifecycle section restricted to one kalpa
 cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly: --fail-on block)
@@ -32,6 +34,7 @@ cargo run -- unit start [<id>] [--spec <path>|--bug <id>]  # Name the work item 
 cargo run -- drift            # Multi-source drift across CLAUDE.md, memory, wiki decisions, and code
 cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
 cargo run -- graph rebuild        # Rescan every Rust file into .phronesis/graph.jsonl (resync after git checkout/rebase)
+cargo run -- graph query [relation] [args...]  # Query the graph by relation and positional arguments (`*` is a wildcard in any position; omitting the relation lists the vocabulary); --json for JSON output, --limit caps rows (0 = no limit)
 cargo run -- graph status         # Does the code graph still match the working tree?
 cargo run -- graph ownership <fn> # Grouped Rust ownership evidence for a function (or glob): sites, spans, relationships, evidence level/provider, type & MIR availability, and the limit of each claim. Evidence with stated limits — never proof. Opt-in via `[ownership.rust]` in `.phronesis/graph.toml`.
 cargo run -- state                # Classify authored/cache/history/sensitive .phronesis state
@@ -175,7 +178,7 @@ source is missing only when no guidance file is found anywhere in that bounded
 search.
 
 `phr-mcp claude-md-drift` is a frozen compatibility command retaining its
-existing single-source output and `--suggest` behavior. It extracts imperative
+existing single-source output. It extracts imperative
 bullets from CLAUDE.md ("Don't X", "Always Y", "Prefer Z") and matches each
 one against the current rule pack by token overlap. Output flags bullets with
 no confident match — candidates that either should become rules or should be
@@ -430,7 +433,7 @@ The packs are composable and **independent**:
   cycles. Java has no packaged risky-call rule. Java source and build-metadata
   edits refresh the repository-wide declaration index and unchanged importers.
   A content-validated `.phronesis/java-declarations.json` cache reuses parses
-  across hook processes; `state` lists it and `clean --cache` removes it.
+  across hook processes; `state` lists it.
   Discovery diagnostics expose unsupported build constructs and classpath
   approximations. Both rules remain `warn`; measured
   precision is recorded in the spec and promotion to `block` requires broader
@@ -1023,8 +1026,8 @@ Follow patterns in `docs/RUST-PATTERNS-GUIDE.md`. Key points:
 
 ## Architecture
 
-- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `stats`, `confidence`, `journey`, `audit`, `trend`, `drift`, `claude-md-drift`, `migrate-rules`, `migrate-extracted-rules`, `memory-drift`, `wiki-drift`, `decision`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`, `codex-hook`, `claude-hook`, `kalpa`, `unit`, `coverage` (import, select).
-- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, predicate-provider create/read/test/list/remove, graph query/status/rebuild, get_stats, audit_codebase, get_debt_trend, get_drift, get_confidence, submit_suggestion — which takes optional `spec` / `bug_id` and records a `unit_start` through `lifecycle::unit_cli::start` — and get_journey, whose optional `include_lifecycle` (default `false`) switches the bare fact array for `{"facts": [...], "lifecycle": [...]}`; prompt text is never included)
+- `src/main.rs` — CLI entry point (clap). Dispatches one `handle_<variant>` fn per subcommand: `serve`, `pre-check`, `post-check`, `session-context`, `interaction-context` (legacy alias: `turn-context`), `metrics`, `stats`, `confidence`, `signal`, `toolchains`, `journey`, `audit`, `trend`, `claude-md-drift`, `drift`, `migrate-durable`, `migrate-rules`, `migrate-extracted-rules`, `catalogue`, `memory-drift`, `wiki-drift`, `decision`, `context`, `graph`, `state`, `clean`, `init` (aliases: `setup`, `configure`), `install`, `uninstall`, `scrub-payload`, `codex-hook`, `claude-hook`, `kalpa`, `unit`, `coverage` (collect, import, select).
+- `src/server.rs` — `EpistemeMcp` with MCP tools via rmcp macros (rules, facts, fire/agenda, markdown extract/section context, save/load rules file, predicate-provider create/read/test/list/remove, emitted-capsule list/acknowledge/retract, graph query/status/rebuild, query_ownership_evidence, get_action_log, set_property_status, get_stats, audit_codebase, get_debt_trend, get_drift, get_confidence, submit_suggestion — which takes optional `spec` / `bug_id` and records a `unit_start` through `lifecycle::unit_cli::start` — and get_journey, whose optional `include_lifecycle` (default `false`) switches the bare fact array for `{"facts": [...], "lifecycle": [...]}`; prompt text is never included)
 - `src/wiki.rs` — Page primitives: Decision struct, YAML-frontmatter parser, `walk_decisions` iterator. Shared by wiki_drift and future wiki-consuming modules.
 - `src/wiki_drift.rs` — Drift extractor: scores decisions vs rules.json, surfaces `Uncovered` ones; `enforces:` frontmatter shortcut beats Jaccard.
 - `src/clock_facts.rs` — Local-clock-derived facts (`business_hours_local`, `weekday_local`, `hour_local`) asserted at every hook invocation; lets rules condition on the wall clock.

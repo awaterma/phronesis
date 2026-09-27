@@ -639,7 +639,7 @@
         <text font-family="Manrope, serif" font-size="9" font-weight="600"
               letter-spacing="3" fill="#0F766E">
           <textPath xlink:href="#circle-text" startOffset="0">
-            PHRONESIS · RULES ENGINE · v 0.30 · MCP HOSTED · A DURABLE INSTRUMENT ·
+            PHRONESIS · RULES ENGINE · v 0.35 · MCP HOSTED · A DURABLE INSTRUMENT ·
           </textPath>
         </text>
         <!-- states in center: tiny RETE network -->
@@ -1046,8 +1046,10 @@
 
     <p style="margin-top: 2.5rem; max-width: var(--measure);">
       We have kept the picture deliberately small. There is no
-      daemon, no socket, no shared state between invocations of any
-      kind. Every hook fire is a fresh process that reads the rules
+      daemon or socket on the hook path, and no shared in-memory state
+      between hook invocations (the separate <code>metrics</code> exporter is
+      the one mode that serves <code>/metrics</code> over HTTP, via
+      <code>--listen</code>). Every hook fire is a fresh process that reads the rules
       from disk, evaluates them against the current tool call's
       facts, and exits. The persistence we care about comes from the
       file system, not from anything the engine itself is asked to
@@ -1061,7 +1063,9 @@
       earlier versions, the alpha-network was built only from rules
       that had at least one ordinary leaf condition; rules whose
       <code>when</code> consisted entirely of <code>__script__</code>
-      clauses (the small expression DSL that handles
+      clauses (evaluated by the sandboxed Rhai evaluator by default,
+      with the dependency-minimal builtin DSL retained under
+      <code>--no-default-features</code>; it handles
       <code>facts_count(…) &gt;= N</code> and
       <code>facts_count(…) == 0</code>) were silently skipped at
       alpha-state creation and never reached the agenda. As of
@@ -1883,7 +1887,7 @@ $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold
 
   <nav class="doc-web" aria-label="Documentation" style="margin: 3rem auto 0; text-align: center; font-size: 0.85rem; opacity: 0.85;">
     <a href="./index.html">Home</a> &middot; <span class="doc-web-here">Explainer</span> &middot; <a href="./catalogue.html">Catalogue</a> &middot; <a href="./guide.html">Guide</a> &middot; <a href="./changelog.html">Changelog</a> &middot; <a href="https://github.com/awaterma/phronesis">GitHub</a>
-    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.30.0</span>
+    <span class="doc-web-version" style="opacity: 0.6;">&nbsp;&middot;&nbsp;v 0.35.0</span>
   </nav>
   <footer>
     <div>
@@ -1898,7 +1902,7 @@ $ <span class="k">phr-mcp</span> decision new my-slug <span class="c"># scaffold
     </div>
     <div class="folio">
       ⁂
-      <small>End · Vol. 0.30.0</small>
+      <small>End · Vol. 0.35.0</small>
     </div>
   </footer>
 
