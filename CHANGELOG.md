@@ -566,7 +566,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   target is dropped and counted as unresolved, never guessed. On this
   repository 521 tests gain the edge and, through `main`'s 1318-function
   closure, reach about 748 thousand (test, function) pairs instead of 61
-  thousand, while the graph stays near its old size (17.9 MB to 18.3 MB): a
+  thousand, while the graph stays near its old size (17.9 MB to about 18.8 MB): a
   rule that asks whether a test can exercise a function must join
   `test_reaches` with `bin_reaches` the same way. `Cargo.toml` is
   now a graph freshness input, and saving one rebuilds the graph.
