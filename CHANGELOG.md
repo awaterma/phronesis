@@ -8,6 +8,19 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **After a broken rules file was repaired, `load_rules_file` reported
+  success but the MCP server kept its stale rules and still reported the
+  file as failing.** The server held its startup copy (rules since changed
+  or deleted on disk stayed loaded) and `list_rules` kept returning the old
+  `load_error` until the next rule-writing call. `load_rules_file` now
+  recovers the way a write does: it clears the error and, with autopersist
+  on, reloads the repaired file wholesale and reports how many rules it
+  loaded. With autopersist off the load stays additive, so rules added in
+  memory are kept.
+- **An MCP `add_rule` phase typo did not say which rule it was.** `"Pre"`
+  was refused with `phase must be "pre" or "post", got: Pre`. The message now
+  names the rule, the field, the bad value and the allowed values, like the
+  other rule-shape errors.
 - **A coverage import in progress could make hooks report a corrupt
   coverage store.** A hook that could not get the store lock within its
   200 ms bound (an import running back to back starves it — flock queues no

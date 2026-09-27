@@ -46,7 +46,8 @@ fn bak_path(root: &Path) -> PathBuf {
 
 struct Mcp {
     child: std::process::Child,
-    stdin: std::process::ChildStdin,
+    /// `None` once `Drop` has closed it to shut the server down.
+    stdin: Option<std::process::ChildStdin>,
     stdout: BufReader<std::process::ChildStdout>,
     next_id: u64,
 }
@@ -96,7 +97,7 @@ impl Mcp {
             .stderr(Stdio::null())
             .spawn()
             .expect("spawn server");
-        let stdin = child.stdin.take().expect("stdin");
+        let stdin = Some(child.stdin.take().expect("stdin"));
         let stdout = BufReader::new(child.stdout.take().expect("stdout"));
         let mut mcp = Self {
             child,
@@ -113,15 +114,19 @@ impl Mcp {
             }),
         );
         let note = json!({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}});
-        writeln!(mcp.stdin, "{note}").expect("write");
+        writeln!(mcp.stdin(), "{note}").expect("write");
         mcp
+    }
+
+    fn stdin(&mut self) -> &mut std::process::ChildStdin {
+        self.stdin.as_mut().expect("server stdin is open")
     }
 
     fn call(&mut self, method: &str, params: Value) -> Value {
         self.next_id += 1;
         let msg = json!({"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params});
-        writeln!(self.stdin, "{msg}").expect("write");
-        self.stdin.flush().expect("flush");
+        writeln!(self.stdin(), "{msg}").expect("write");
+        self.stdin().flush().expect("flush");
         let mut line = String::new();
         self.stdout.read_line(&mut line).expect("read");
         serde_json::from_str(&line).expect("JSON-RPC response")
@@ -148,8 +153,19 @@ impl Mcp {
     }
 }
 
+/// Close stdin so the server exits on its own. A clean exit is what writes
+/// the child's coverage profile; `kill` (SIGKILL) left every server-side line
+/// these tests drive reported as never executed. Kill only as a fallback.
 impl Drop for Mcp {
     fn drop(&mut self) {
+        drop(self.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            if let Ok(Some(_)) = self.child.try_wait() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -541,5 +557,308 @@ fn list_rules_reports_the_load_error_without_autopersist() {
             .as_str()
             .is_some_and(|e| e.contains("keep-a")),
         "{listed}"
+    );
+}
+
+// ── add_rule applies the loader's shape checks (D1) ───────────────────────
+
+const ONE_GOOD_RULE: &str = r#"{"rules":[
+  {"id":"keep","phase":"pre","priority":1,
+   "when":[{"new_content_contains":"k"}],"then":{"warn":"k"}}
+]}"#;
+
+/// A rule the hook would refuse to load must be refused by `add_rule` too,
+/// with a message naming the rule, the field, the bad value and what is
+/// allowed — and it must never reach disk, where it would block every hook.
+#[test]
+fn add_rule_refuses_the_shapes_the_loader_rejects() {
+    let dir = project(ONE_GOOD_RULE);
+    let root = dir.path();
+    let mut mcp = Mcp::spawn(root);
+
+    let mut bad_verb = new_rule("bad-verb");
+    bad_verb["actions"][0]["action_type"] = json!("Block");
+    let err = mcp.tool("add_rule", bad_verb).refused("unknown verb");
+    for part in [
+        "rule `bad-verb`",
+        "field `action_type`",
+        "`Block`",
+        "allowed:",
+        "constraint_violation",
+    ] {
+        assert!(err.contains(part), "unknown verb: missing {part:?}: {err}");
+    }
+
+    let mut no_when = new_rule("no-when");
+    no_when["conditions"] = json!([]);
+    let err = mcp.tool("add_rule", no_when).refused("empty conditions");
+    for part in ["rule `no-when`", "field `conditions`", "is empty"] {
+        assert!(err.contains(part), "empty when: missing {part:?}: {err}");
+    }
+
+    let mut two_actions = new_rule("two-actions");
+    two_actions["actions"] = json!([
+        {"action_type": "log", "params": ["a"]},
+        {"action_type": "log", "params": ["b"]}
+    ]);
+    let err = mcp.tool("add_rule", two_actions).refused("two actions");
+    for part in ["rule `two-actions`", "field `actions`", "got 2"] {
+        assert!(err.contains(part), "two actions: missing {part:?}: {err}");
+    }
+
+    let mut bad_phase = new_rule("bad-phase");
+    bad_phase["phase"] = json!("Pre");
+    let err = mcp.tool("add_rule", bad_phase).refused("phase typo");
+    for part in [
+        "rule `bad-phase`",
+        "field `phase`",
+        "`Pre`",
+        "allowed:",
+        "pre",
+        "post",
+    ] {
+        assert!(err.contains(part), "phase typo: missing {part:?}: {err}");
+    }
+
+    // Nothing reached disk or the network.
+    assert_eq!(
+        std::fs::read_to_string(rules_path(root)).expect("rules"),
+        ONE_GOOD_RULE
+    );
+    assert!(
+        !bak_path(root).exists(),
+        "a refused rule must not rotate .bak"
+    );
+    let ids: Vec<String> = mcp.list_rules()["rules"]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .filter_map(|r| r["id"].as_str().map(str::to_string))
+        .collect();
+    assert_eq!(ids, vec!["keep"]);
+
+    // The refusals left the server usable: a well-formed rule still saves.
+    mcp.tool("add_rule", new_rule("good"))
+        .done("valid add_rule");
+    assert_eq!(disk_ids(root), vec!["keep", "good"]);
+}
+
+// ── Load errors without autopersist ───────────────────────────────────────
+
+/// With `PHRONESIS_NO_AUTOPERSIST` the server writes only through
+/// `save_rules`. `add_rule` then never touches disk and may proceed, but
+/// `save_rules` must refuse while the file does not load, and work again once
+/// it is repaired — keeping the repaired file's rules.
+#[test]
+fn without_autopersist_save_rules_refuses_until_the_file_loads() {
+    let dir = project(ORIGINAL);
+    let root = dir.path();
+    let mut mcp = Mcp::spawn_with(root, false);
+
+    mcp.tool("add_rule", new_rule("in-memory"))
+        .done("add_rule never writes without autopersist");
+    let err = mcp.tool("save_rules", json!({})).refused("save_rules");
+    assert!(
+        err.contains("refusing to change rules")
+            && err.contains("keep-a")
+            && err.contains("description")
+            && err.contains("rules.json"),
+        "save_rules must name the failing file and the load error: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(rules_path(root)).expect("rules"),
+        ORIGINAL
+    );
+    assert!(!bak_path(root).exists(), "no .bak rotation on refusal");
+
+    std::fs::write(
+        rules_path(root),
+        ORIGINAL.replace(r#""description":"mine","#, ""),
+    )
+    .expect("repair");
+    mcp.tool("save_rules", json!({}))
+        .done("save_rules after repair");
+    assert_eq!(disk_ids(root), vec!["keep-a", "keep-b", "in-memory"]);
+    let listed = mcp.list_rules();
+    assert!(listed.get("load_error").is_none(), "{listed}");
+}
+
+// ── Layered rules: refusal names the failing layer; recovery reloads all ──
+
+fn layered_project(project_rules: &str, personal_rules: &str) -> tempfile::TempDir {
+    let dir = project(project_rules);
+    std::fs::write(dir.path().join("personal.json"), personal_rules).expect("personal");
+    std::fs::write(
+        dir.path().join(".phronesis/loader.json"),
+        r#"{"layers":[
+            {"name":"project","path":".phronesis/rules.json"},
+            {"name":"personal","path":"personal.json","decision":"ADR-personal"}
+        ]}"#,
+    )
+    .expect("loader");
+    dir
+}
+
+const LAYER_PROJECT: &str = r#"{"rules":[
+  {"id":"shared","phase":"pre","priority":1,"when":[{"p":"project"}],"then":{"log":"project"}},
+  {"id":"mine","phase":"pre","priority":1,"when":[{"p":"mine"}],"then":{"log":"mine"}}
+]}"#;
+
+const LAYER_PERSONAL: &str = r#"{"rules":[
+  {"id":"shared","phase":"pre","priority":9,"when":[{"p":"personal"}],"then":{"log":"personal"}}
+]}"#;
+
+fn override_facts(mcp: &mut Mcp) -> Vec<Value> {
+    let text = mcp.tool("list_facts", json!({})).done("list_facts");
+    let facts: Value = serde_json::from_str(&text).expect("list_facts JSON");
+    facts["facts"]
+        .as_array()
+        .expect("facts")
+        .iter()
+        .filter(|f| f["predicate"] == "rule_overridden")
+        .cloned()
+        .collect()
+}
+
+/// A broken *layer* (not the project file) also blocks writes, and the
+/// refusal names that layer's file. After the repair the server reloads every
+/// layer: the project's shadowed definition stays on disk untouched, the
+/// personal layer's rule is never written into the project file, and the
+/// override provenance is re-derived once rather than duplicated.
+#[test]
+fn a_broken_layer_blocks_writes_and_recovery_reloads_every_layer() {
+    let dir = layered_project(LAYER_PROJECT, LAYER_PERSONAL);
+    let root = dir.path();
+    let mut mcp = Mcp::spawn(root);
+    assert_eq!(override_facts(&mut mcp).len(), 1);
+
+    let broken_personal = LAYER_PERSONAL.replace(r#""log""#, r#""Log""#);
+    std::fs::write(root.join("personal.json"), &broken_personal).expect("break layer");
+    let err = mcp
+        .tool("add_rule", new_rule("while-broken"))
+        .refused("add_rule while a layer is broken");
+    assert!(
+        err.contains("personal.json") && err.contains("`Log`"),
+        "refusal must name the failing layer file and the bad verb: {err}"
+    );
+    let listed = mcp.list_rules();
+    assert!(
+        listed["load_error"]
+            .as_str()
+            .is_some_and(|e| e.contains("`Log`")),
+        "a failed write records the load error for list_rules: {listed}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(rules_path(root)).expect("rules"),
+        LAYER_PROJECT,
+        "the project file is not rewritten while a layer is broken"
+    );
+
+    std::fs::write(root.join("personal.json"), LAYER_PERSONAL).expect("repair layer");
+    mcp.tool("add_rule", new_rule("after-repair"))
+        .done("add_rule after repair");
+
+    assert_eq!(disk_ids(root), vec!["shared", "mine", "after-repair"]);
+    let disk: Value =
+        serde_json::from_str(&std::fs::read_to_string(rules_path(root)).expect("rules"))
+            .expect("json");
+    let shared = disk["rules"]
+        .as_array()
+        .expect("rules")
+        .iter()
+        .find(|r| r["id"] == "shared")
+        .expect("shared")
+        .clone();
+    assert_eq!(
+        shared["priority"], 1,
+        "the shadowed project definition must stay as written: {shared}"
+    );
+    let overrides = override_facts(&mut mcp);
+    assert_eq!(overrides.len(), 1, "override facts: {overrides:?}");
+    assert_eq!(overrides[0]["args"][0], "shared");
+    let listed = mcp.list_rules();
+    assert!(listed.get("load_error").is_none(), "{listed}");
+}
+
+// ── load_rules_file on a file that does not load ──────────────────────────
+
+/// The explicit reload tool reports the load error instead of loading a
+/// partial set, and loads the file once it is repaired.
+#[test]
+fn load_rules_file_reports_the_error_then_loads_the_repaired_file() {
+    let dir = project(ORIGINAL);
+    let root = dir.path();
+    let mut mcp = Mcp::spawn_with(root, false);
+
+    let err = mcp
+        .tool("load_rules_file", json!({}))
+        .refused("load_rules_file on a broken file");
+    assert!(
+        err.contains("keep-a") && err.contains("description"),
+        "{err}"
+    );
+    assert!(
+        mcp.list_rules()["rules"]
+            .as_array()
+            .expect("rules")
+            .is_empty()
+    );
+
+    std::fs::write(
+        rules_path(root),
+        ORIGINAL.replace(r#""description":"mine","#, ""),
+    )
+    .expect("repair");
+    let text = mcp
+        .tool("load_rules_file", json!({}))
+        .done("load_rules_file after repair");
+    let summary: Value = serde_json::from_str(&text).expect("summary JSON");
+    assert_eq!(summary["loaded"], 2, "{summary}");
+    let listed = mcp.list_rules();
+    assert!(
+        listed.get("load_error").is_none(),
+        "a file that loads again must not still be reported as failing: {listed}"
+    );
+}
+
+/// With autopersist on, a file that broke after startup and was then
+/// repaired is reloaded wholesale by `load_rules_file`, as a write would:
+/// the repaired definitions win over the server's startup copy, rules
+/// deleted from the file stay deleted, and the load error is cleared.
+#[test]
+fn load_rules_file_after_repair_takes_the_repaired_file() {
+    let dir = project(
+        r#"{"rules":[
+          {"id":"A","phase":"pre","priority":1,"when":[{"new_content_contains":"a"}],"then":{"log":"old"}},
+          {"id":"B","phase":"pre","priority":1,"when":[{"new_content_contains":"b"}],"then":{"log":"b"}}
+        ]}"#,
+    );
+    let root = dir.path();
+    let mut mcp = Mcp::spawn(root);
+    std::fs::write(rules_path(root), ORIGINAL).expect("break");
+    mcp.tool("add_rule", new_rule("C"))
+        .refused("add_rule while broken");
+    let repaired = r#"{"rules":[{"id":"A","phase":"pre","priority":1,"when":[{"new_content_contains":"a"}],"then":{"log":"NEW"}}]}"#;
+    std::fs::write(rules_path(root), repaired).expect("repair");
+
+    let summary: Value = serde_json::from_str(
+        &mcp.tool("load_rules_file", json!({}))
+            .done("load_rules_file after repair"),
+    )
+    .expect("summary json");
+    assert_eq!(
+        summary["loaded"], 1,
+        "the repaired file's rule is loaded: {summary}"
+    );
+    assert_eq!(summary["skipped_duplicate_ids"], 0, "{summary}");
+    let listed = mcp.list_rules();
+    assert!(listed.get("load_error").is_none(), "{listed}");
+    let rules = listed["rules"].as_array().expect("rules");
+    assert_eq!(rules.len(), 1, "B was deleted from the file: {listed}");
+    assert_eq!(rules[0]["actions"][0]["params"][0], "NEW", "{listed}");
+    assert_eq!(
+        std::fs::read_to_string(rules_path(root)).expect("rules"),
+        repaired,
+        "loading must not rewrite the file"
     );
 }
