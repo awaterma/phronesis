@@ -3,7 +3,8 @@
 //! Union of:
 //! - tests hitting changed regions (dynamic, from the coverage store)
 //! - tests statically reaching changed functions (`tested_by` / `test_reaches`
-//!   edges from the graph store, when fresh)
+//!   edges from the graph store, when fresh, joined through `bin_reaches` for
+//!   a test that runs a Cargo binary)
 //!
 //! Each entry is labeled by evidence kind (`coverage_observation` vs
 //! `static_reach`), deduplicated, and carries its justifying regions. A test
@@ -12,7 +13,7 @@
 //! at a revision other than HEAD are labeled `coverage_observation_stale`;
 //! a corrupt store contributes nothing and says so in `coverage_note`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 
@@ -259,6 +260,20 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
                 .collect()
         };
 
+        // A Cargo binary's `main` stands for its whole closure, stored once
+        // as `bin_reaches(main, function)` rather than per test: a test that
+        // reaches `main` reaches every region `main` does.
+        let mut main_regions: BTreeMap<&str, BTreeSet<&String>> = BTreeMap::new();
+        for edge in edges
+            .iter()
+            .filter(|e| e.p == "bin_reaches" && e.a.len() == 2)
+        {
+            main_regions
+                .entry(edge.a[0].as_str())
+                .or_default()
+                .extend(reached(&edge.a[1]));
+        }
+
         for edge in &edges {
             let (test, func) = match edge.p.as_str() {
                 // tested_by: [function, test]
@@ -267,7 +282,8 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
                 "test_reaches" if edge.a.len() == 2 => (&edge.a[0], &edge.a[1]),
                 _ => continue,
             };
-            for region in reached(func) {
+            let through_main = main_regions.get(func.as_str()).into_iter().flatten();
+            for region in reached(func).into_iter().chain(through_main.copied()) {
                 add_entry(&mut by_test, test, STATIC_REACH, region);
             }
         }

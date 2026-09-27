@@ -549,6 +549,29 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   interpolated value is refused if any occurrence touches code rather than a
   string, char, or comment.
 
+- **Tests that run the `phr-mcp` binary reached nothing in the code graph.**
+  An integration test that spawns its package's binary through
+  `env!("CARGO_BIN_EXE_<name>")` makes no Rust call the graph can follow, so
+  `test_reaches` gave it nothing — per-test coverage shows such tests
+  executing code in 32–68 source files each — and code tested only through
+  the binary looked untested to `no_direct_test` and to the static half of
+  `phr-mcp coverage select`. A test that names the binary, directly or through
+  a same-file helper, now gets `tested_by(<bin>::main, test)` and
+  `test_reaches(test, <bin>::main)`; `main`'s resolved-call closure is stored
+  once as the new derived relation `bin_reaches(main, function)`, and
+  `coverage select` joins the two. The name resolves through
+  the new `cargo_bin(package, name, target)` relation, read from `[[bin]]`
+  tables, `autobins`, `src/main.rs` and `src/bin/` the way Cargo discovers
+  targets, and only within the test's own package; a name with no such bin
+  target is dropped and counted as unresolved, never guessed. On this
+  repository 521 tests gain the edge and, through `main`'s 1318-function
+  closure, reach about 748 thousand (test, function) pairs instead of 61
+  thousand, while the graph stays near its old size (17.9 MB to about 18.8 MB): a
+  rule that asks whether a test can exercise a function must join
+  `test_reaches` with `bin_reaches` the same way. `Cargo.toml` is
+  now a graph freshness input, and saving one rebuilds the graph.
+  `GRAPH_FORMAT` bumps to 22, so existing graphs rebuild on next use.
+
 ### Upgrading
 
 - **A rules file that loaded before may now block every tool call.** Rule

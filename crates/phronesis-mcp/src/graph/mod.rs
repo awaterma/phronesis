@@ -9,6 +9,7 @@
 //! `Fact { predicate, args }` with the relation as the predicate.
 
 pub mod audit;
+pub mod binary_runs;
 pub mod bindings;
 pub mod cue;
 pub mod data_contracts;

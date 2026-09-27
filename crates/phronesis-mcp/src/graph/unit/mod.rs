@@ -212,6 +212,33 @@ pub struct Manifest {
     /// Alias -> package name from `[workspace.dependencies]`, which members
     /// inherit via `dep.workspace = true` and therefore never restate.
     pub workspace_deps: BTreeMap<String, String>,
+    /// `[[bin]]` tables, in declaration order. Cargo only.
+    pub bins: Vec<BinDecl>,
+    /// `[package] autobins`; `None` when unstated, which Cargo reads as true.
+    pub autobins: Option<bool>,
+}
+
+/// One `[[bin]]` table as written: either key may be absent.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BinDecl {
+    pub name: Option<String>,
+    pub path: Option<String>,
+}
+
+/// A Cargo binary target, by the name `CARGO_BIN_EXE_<name>` uses, and the
+/// graph target its crate root is identified under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CargoBin {
+    /// The package's library-target id, e.g. `rust:phronesis-mcp`. Cargo sets
+    /// `CARGO_BIN_EXE_<name>` only for the package's own tests and benches.
+    pub package: String,
+    /// The binary's name as Cargo builds it (`phr-mcp`).
+    pub name: String,
+    /// The target id its crate root is named under, e.g.
+    /// `rust:phronesis-mcp#bin:phronesis-mcp`.
+    pub target: String,
+    /// Repo-relative path of the declaring `Cargo.toml`.
+    pub manifest: String,
 }
 
 /// The subset of `tsconfig.json` that decides import resolution.
@@ -233,6 +260,11 @@ pub struct UnitMap {
     units: Vec<Unit>,
     /// Aliases declared once at the workspace root and inherited by members.
     workspace_deps: BTreeMap<String, String>,
+    /// Every Cargo binary target, sorted.
+    cargo_bins: Vec<CargoBin>,
+    /// Repo-relative path -> content hash of every `Cargo.toml` read, so the
+    /// graph index can record the exact bytes its bin targets came from.
+    cargo_manifests: BTreeMap<String, u64>,
 }
 
 impl UnitMap {
@@ -241,6 +273,8 @@ impl UnitMap {
     pub fn discover(root: &Path) -> Self {
         let mut manifests = Vec::new();
         let mut workspace_deps = BTreeMap::new();
+        let mut cargo_bins = Vec::new();
+        let mut cargo_manifests = BTreeMap::new();
 
         for entry in ignore::WalkBuilder::new(root)
             .hidden(true)
@@ -281,15 +315,45 @@ impl UnitMap {
                 _ => parse_package_json(&text),
             };
             workspace_deps.extend(manifest.workspace_deps.clone());
+            let bin_decls = (lang == LANG_RUST).then(|| (manifest.bins.clone(), manifest.autobins));
+            if lang == LANG_RUST {
+                cargo_manifests.insert(
+                    join_rel(&dir, "Cargo.toml"),
+                    crate::graph::sync::hash_content(&text),
+                );
+            }
 
-            manifests.extend(unit_of_manifest(root, entry.path(), dir, lang, manifest));
+            let unit = unit_of_manifest(root, entry.path(), dir, lang, manifest);
+            if let (Some(unit), Some((decls, autobins))) = (&unit, bin_decls) {
+                cargo_bins.extend(bins_of(root, unit, &decls, autobins.unwrap_or(true)));
+            }
+            manifests.extend(unit);
         }
 
         manifests.sort_by(|a, b| b.root.len().cmp(&a.root.len()).then(a.name.cmp(&b.name)));
+        cargo_bins.sort_by(|a: &CargoBin, b: &CargoBin| {
+            (&a.package, &a.name, &a.target).cmp(&(&b.package, &b.name, &b.target))
+        });
         UnitMap {
             units: manifests,
             workspace_deps,
+            cargo_bins,
+            cargo_manifests,
         }
+    }
+
+    /// Every Cargo binary target in the project whose crate root the graph
+    /// names as a `#bin:` target. A binary whose `path` puts its crate root
+    /// anywhere else has no graph target to resolve to, and is left out
+    /// rather than attached to whatever target that file happens to land in.
+    pub fn cargo_bins(&self) -> &[CargoBin] {
+        &self.cargo_bins
+    }
+
+    /// Repo-relative path -> content hash of every `Cargo.toml` discovery
+    /// read, including virtual workspace manifests.
+    pub fn cargo_manifests(&self) -> &BTreeMap<String, u64> {
+        &self.cargo_manifests
     }
 
     /// Build a map directly, for tests and for callers that already know the
@@ -300,6 +364,8 @@ impl UnitMap {
         UnitMap {
             units,
             workspace_deps: BTreeMap::new(),
+            cargo_bins: Vec::new(),
+            cargo_manifests: BTreeMap::new(),
         }
     }
 
@@ -554,6 +620,75 @@ fn target_of(unit: &Unit, file_rel: &str) -> (String, String) {
         return (format!("{base}#build"), at("build"));
     }
     (base, at("src/lib"))
+}
+
+/// The binary targets one Cargo package builds, following Cargo's own
+/// target discovery: every `[[bin]]` table, then — unless `autobins = false`
+/// — `src/main.rs` under the package name and each `src/bin/<name>.rs` or
+/// `src/bin/<name>/main.rs`, skipping any an explicit table already claims
+/// by name or path. A declared binary whose crate root is not on disk builds
+/// nothing and is left out.
+fn bins_of(root: &Path, unit: &Unit, decls: &[BinDecl], autobins: bool) -> Vec<CargoBin> {
+    let package_dir = root.join(&unit.root);
+    let exists = |rel: &str| package_dir.join(rel).is_file();
+    let mut found: Vec<(String, String)> = Vec::new();
+    for decl in decls {
+        let Some(name) = decl.name.clone() else {
+            continue;
+        };
+        let path = match decl.path.as_deref() {
+            Some(path) => Some(path.trim_start_matches("./").to_string()),
+            None => [
+                format!("src/bin/{name}.rs"),
+                format!("src/bin/{name}/main.rs"),
+            ]
+            .into_iter()
+            .chain((name == unit.name).then(|| "src/main.rs".to_string()))
+            .find(|candidate| exists(candidate)),
+        };
+        if let Some(path) = path.filter(|path| exists(path)) {
+            found.push((name, path));
+        }
+    }
+    if autobins {
+        let mut inferred = Vec::new();
+        if exists("src/main.rs") {
+            inferred.push((unit.name.clone(), "src/main.rs".to_string()));
+        }
+        let mut entries = std::fs::read_dir(package_dir.join("src/bin"))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        entries.sort();
+        for entry in entries {
+            if let Some(stem) = entry.strip_suffix(".rs")
+                && exists(&format!("src/bin/{entry}"))
+            {
+                inferred.push((stem.to_string(), format!("src/bin/{entry}")));
+            } else if exists(&format!("src/bin/{entry}/main.rs")) {
+                inferred.push((entry.clone(), format!("src/bin/{entry}/main.rs")));
+            }
+        }
+        for (name, path) in inferred {
+            if !found.iter().any(|(n, p)| *n == name || *p == path) {
+                found.push((name, path));
+            }
+        }
+    }
+    found
+        .into_iter()
+        .filter_map(|(name, path)| {
+            let (target, _) = target_of(unit, &join_rel(&unit.root, &path));
+            target.contains("#bin:").then(|| CargoBin {
+                package: unit.id(),
+                name,
+                target,
+                manifest: join_rel(&unit.root, "Cargo.toml"),
+            })
+        })
+        .collect()
 }
 
 /// Repo-relative directory holding a manifest; empty at the repo root.

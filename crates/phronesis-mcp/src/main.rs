@@ -511,7 +511,8 @@ enum CoverageCmd {
     ///
     /// Union of tests hitting changed regions (dynamic coverage store) and
     /// tests statically reaching changed functions (graph tested_by /
-    /// test_reaches edges, when the graph is fresh). Each entry is labeled
+    /// test_reaches edges, joined through bin_reaches for tests that run a
+    /// Cargo binary, when the graph is fresh). Each entry is labeled
     /// by evidence kind and carries its justifying regions.
     Select {
         /// Select by a specific change id (defaults to head:<short-sha>).

@@ -7,6 +7,7 @@
 //! Both are pure functions of the edge set — no source parsing, no I/O — which
 //! is why they can run on *every* save without reparsing the repository.
 
+use super::binary_runs::{BIN_HINT, package_of};
 use super::model::Edge;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -127,6 +128,16 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
         },
     );
 
+    // (package, binary name) -> the binary's `main`, for `@bin:` hints.
+    let binary_mains = base_edges(base, "cargo_bin")
+        .filter_map(|edge| match edge.a.as_slice() {
+            [package, name, target] => {
+                Some(((package.clone(), name.clone()), format!("{target}::main")))
+            }
+            _ => None,
+        })
+        .collect::<BTreeMap<_, _>>();
+
     let impl_of = base_edges(base, "impl_of").fold(
         BTreeMap::<String, BTreeSet<String>>::new(),
         |mut map, edge| {
@@ -165,6 +176,30 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
             hint.rsplit_once(':')
                 .map_or((None, hint), |(ty, method)| (Some(ty), method))
         });
+        // `@bin:<name>`: a Cargo binary run through
+        // `env!("CARGO_BIN_EXE_<name>")`. It names the `main` of a bin target
+        // of the caller's own package, and only one that is in the graph.
+        if let Some(name) = raw_callee.strip_prefix(BIN_HINT) {
+            let pool = if edge.p == "tested_by" {
+                &production_definitions
+            } else {
+                &definitions
+            };
+            match binary_mains
+                .get(&(package_of(caller).to_string(), name.to_string()))
+                .filter(|main| pool.contains(*main))
+            {
+                Some(main) => {
+                    edge.a[callee_index] = main.clone();
+                    normalized.push(edge);
+                }
+                None => {
+                    unresolved += 1;
+                    per_file.entry(edge.src.clone()).or_insert((0, 0)).0 += 1;
+                }
+            }
+            continue;
+        }
         // `@extern:…`: the extractor resolved the written path outside the
         // project (`fs::write` under `use std::fs;`).
         if raw_callee.starts_with("@extern:") {
@@ -576,6 +611,15 @@ pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
 /// Statically resolved transitive test reachability. `tested_by` remains the
 /// direct call evidence; this relation follows only canonical function call
 /// edges and therefore makes no claim about dynamic dispatch or execution.
+///
+/// A Cargo binary's `main` (a `cargo_bin` target's `::main`) is a stop: the
+/// test gets `test_reaches(test, main)`, and `main`'s own closure is stored
+/// once as `bin_reaches(main, function)` instead of being copied into every
+/// test that runs the binary — hundreds of tests each reaching most of a
+/// CLI would otherwise multiply the graph several times over. What a test
+/// can exercise is therefore `test_reaches(T, F)`, or `test_reaches(T, M)`
+/// joined with `bin_reaches(M, F)`; one hop suffices because `bin_reaches`
+/// is `main`'s full closure.
 pub fn test_reachability(base: &[Edge]) -> Vec<Edge> {
     let mut calls: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for edge in base_edges(base, "calls") {
@@ -587,23 +631,49 @@ pub fn test_reachability(base: &[Edge]) -> Vec<Edge> {
         }
     }
 
-    let mut out = BTreeSet::new();
-    for edge in base_edges(base, "tested_by") {
-        let (Some(function), Some(test)) = (edge.a.first(), edge.a.get(1)) else {
-            continue;
-        };
-        let mut pending = vec![function.as_str()];
+    let binary_mains = base_edges(base, "cargo_bin")
+        .filter_map(|edge| edge.a.get(2))
+        .map(|target| format!("{target}::main"))
+        .collect::<BTreeSet<_>>();
+    // Everything reachable from `start`, `start` included. Under `stop`, a
+    // binary `main` is recorded but not entered.
+    fn closure<'a>(
+        start: &'a str,
+        calls: &BTreeMap<&'a str, BTreeSet<&'a str>>,
+        stop: Option<&BTreeSet<String>>,
+    ) -> BTreeSet<&'a str> {
+        let mut pending = vec![start];
         let mut seen = BTreeSet::new();
         while let Some(current) = pending.pop() {
             if !seen.insert(current) {
                 continue;
             }
-            out.insert((test.as_str(), current));
+            if stop.is_some_and(|mains| mains.contains(current)) {
+                continue;
+            }
             pending.extend(calls.get(current).into_iter().flatten().copied());
+        }
+        seen
+    }
+
+    let mut out = BTreeSet::new();
+    for edge in base_edges(base, "tested_by") {
+        let (Some(function), Some(test)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        for reached in closure(function, &calls, Some(&binary_mains)) {
+            out.insert(("test_reaches", test.as_str(), reached));
+        }
+    }
+    for main in &binary_mains {
+        for reached in closure(main, &calls, None) {
+            if reached != main {
+                out.insert(("bin_reaches", main.as_str(), reached));
+            }
         }
     }
     out.into_iter()
-        .map(|(test, function)| Edge::derived("test_reaches", &[test, function]))
+        .map(|(p, from, to)| Edge::derived(p, &[from, to]))
         .collect()
 }
 
