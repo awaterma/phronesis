@@ -606,6 +606,20 @@ fn add_rule_refuses_the_shapes_the_loader_rejects() {
         assert!(err.contains(part), "two actions: missing {part:?}: {err}");
     }
 
+    let mut bad_phase = new_rule("bad-phase");
+    bad_phase["phase"] = json!("Pre");
+    let err = mcp.tool("add_rule", bad_phase).refused("phase typo");
+    for part in [
+        "rule `bad-phase`",
+        "field `phase`",
+        "`Pre`",
+        "allowed:",
+        "pre",
+        "post",
+    ] {
+        assert!(err.contains(part), "phase typo: missing {part:?}: {err}");
+    }
+
     // Nothing reached disk or the network.
     assert_eq!(
         std::fs::read_to_string(rules_path(root)).expect("rules"),
@@ -764,4 +778,79 @@ fn a_broken_layer_blocks_writes_and_recovery_reloads_every_layer() {
     assert_eq!(overrides[0]["args"][0], "shared");
     let listed = mcp.list_rules();
     assert!(listed.get("load_error").is_none(), "{listed}");
+}
+
+// ── load_rules_file on a file that does not load ──────────────────────────
+
+/// The explicit reload tool reports the load error instead of loading a
+/// partial set, and loads the file once it is repaired.
+#[test]
+fn load_rules_file_reports_the_error_then_loads_the_repaired_file() {
+    let dir = project(ORIGINAL);
+    let root = dir.path();
+    let mut mcp = Mcp::spawn_with(root, false);
+
+    let err = mcp
+        .tool("load_rules_file", json!({}))
+        .refused("load_rules_file on a broken file");
+    assert!(
+        err.contains("keep-a") && err.contains("description"),
+        "{err}"
+    );
+    assert!(
+        mcp.list_rules()["rules"]
+            .as_array()
+            .expect("rules")
+            .is_empty()
+    );
+
+    std::fs::write(
+        rules_path(root),
+        ORIGINAL.replace(r#""description":"mine","#, ""),
+    )
+    .expect("repair");
+    let text = mcp
+        .tool("load_rules_file", json!({}))
+        .done("load_rules_file after repair");
+    let summary: Value = serde_json::from_str(&text).expect("summary JSON");
+    assert_eq!(summary["loaded"], 2, "{summary}");
+    let listed = mcp.list_rules();
+    assert!(
+        listed.get("load_error").is_none(),
+        "a file that loads again must not still be reported as failing: {listed}"
+    );
+}
+
+/// With autopersist on, a file that broke after startup and was then
+/// repaired is reloaded wholesale by `load_rules_file`, as a write would:
+/// the repaired definitions win over the server's startup copy, rules
+/// deleted from the file stay deleted, and the load error is cleared.
+#[test]
+fn load_rules_file_after_repair_takes_the_repaired_file() {
+    let dir = project(
+        r#"{"rules":[
+          {"id":"A","phase":"pre","priority":1,"when":[{"new_content_contains":"a"}],"then":{"log":"old"}},
+          {"id":"B","phase":"pre","priority":1,"when":[{"new_content_contains":"b"}],"then":{"log":"b"}}
+        ]}"#,
+    );
+    let root = dir.path();
+    let mut mcp = Mcp::spawn(root);
+    std::fs::write(rules_path(root), ORIGINAL).expect("break");
+    mcp.tool("add_rule", new_rule("C"))
+        .refused("add_rule while broken");
+    let repaired = r#"{"rules":[{"id":"A","phase":"pre","priority":1,"when":[{"new_content_contains":"a"}],"then":{"log":"NEW"}}]}"#;
+    std::fs::write(rules_path(root), repaired).expect("repair");
+
+    mcp.tool("load_rules_file", json!({}))
+        .done("load_rules_file after repair");
+    let listed = mcp.list_rules();
+    assert!(listed.get("load_error").is_none(), "{listed}");
+    let rules = listed["rules"].as_array().expect("rules");
+    assert_eq!(rules.len(), 1, "B was deleted from the file: {listed}");
+    assert_eq!(rules[0]["actions"][0]["params"][0], "NEW", "{listed}");
+    assert_eq!(
+        std::fs::read_to_string(rules_path(root)).expect("rules"),
+        repaired,
+        "loading must not rewrite the file"
+    );
 }

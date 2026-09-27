@@ -333,8 +333,8 @@ impl EpistemeMcp {
             Some("pre") | Some("post") => params.phase.clone(),
             Some(other) => {
                 return Err(Self::err(format!(
-                    "phase must be \"pre\" or \"post\", got: {}",
-                    other
+                    "rule `{}`: field `phase` has invalid value `{}`; allowed: pre, post",
+                    params.id, other
                 )));
             }
         };
@@ -963,7 +963,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Hydrate the in-memory network from .phronesis/rules.json. Adds each rule (preserving its phase) and skips rules whose ID already exists."
+        description = "Hydrate the in-memory network from .phronesis/rules.json. Adds each rule (preserving its phase) and skips rules whose ID already exists. After a load error, a repaired file replaces the loaded rules wholesale."
     )]
     async fn load_rules_file(
         &self,
@@ -978,6 +978,10 @@ impl EpistemeMcp {
             project_path.clone()
         };
         let resolved = crate::rule_layers::resolve(&root).map_err(|e| Self::err(e.to_string()))?;
+        // The file loads. If it failed earlier, recover exactly as a write
+        // would: clear the recorded error and reload wholesale, so the
+        // repaired file replaces the server's stale copy.
+        self.ensure_disk_rules_load().await?;
 
         let (loaded, skipped) = {
             let network = self.network.lock().await;
