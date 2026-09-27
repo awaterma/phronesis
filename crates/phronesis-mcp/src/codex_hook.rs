@@ -95,6 +95,7 @@ struct PatchFile {
     deleted: bool,
 }
 
+#[derive(Debug)]
 struct CodexDecision {
     block_messages: Vec<String>,
     warn_messages: Vec<String>,
@@ -527,6 +528,7 @@ fn warn_decision(message: String) -> CodexDecision {
 }
 
 /// Rule outcome of firing one network.
+#[derive(Debug)]
 struct Verdict {
     logged: Vec<crate::hook_logged::LoggedConsequence>,
     block_msgs: Vec<String>,
@@ -615,7 +617,10 @@ impl Verdict {
 /// purely from fact matching — every structural graph rule — is computed
 /// and then dropped.
 async fn fire_verdict(network: &phr::ReteNetwork, root: &Path) -> Result<Verdict, String> {
-    let _ = network.update_agenda().await;
+    network
+        .update_agenda()
+        .await
+        .map_err(|e| format!("agenda update failed: {}", e))?;
     let consequences = network
         .fire_all_consequences()
         .map_err(|e| format!("rule execution failed: {}", e))?;
@@ -734,8 +739,7 @@ async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> Result<CodexDecisi
     }
 
     // Content pattern checks
-    let (violations, warnings) =
-        check_bash_patterns(&network, &loaded.rules, &file_path, &command).await;
+    let violations = check_bash_patterns(&network, &loaded.rules, &file_path, &command).await;
 
     // Cargo workspace scanner (sync-safe)
     crate::hook::assert_cargo_workspace_facts(&network, &command).await;
@@ -755,32 +759,34 @@ async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> Result<CodexDecisi
     };
     verdict.demote_stale(&stale_graph_rules);
     verdict.block_msgs.extend(violations);
-    verdict.warn_msgs.extend(warnings);
     Ok(verdict.finish_pre(&call, Vec::new()))
 }
 
-/// Content-pattern violations and bash-command-pattern warnings for a command.
+/// Content-pattern and bash-command-pattern violations for a command.
+///
+/// Both checks only assert facts for rules to match against later; an `Err`
+/// here means fact assertion itself failed, which `hook/pre.rs` treats as a
+/// block for either pattern family ("pattern check failed" /
+/// "command pattern check failed") rather than a mere warning — matched here.
 async fn check_bash_patterns(
     network: &phr::ReteNetwork,
     rules: &[phr::Rule],
     file_path: &str,
     command: &str,
-) -> (Vec<String>, Vec<String>) {
+) -> Vec<String> {
     let cp = crate::hook_facts::collect_content_patterns(rules);
     let bcp = crate::hook_facts::collect_bash_command_patterns(rules);
-    let violations = crate::hook_facts::check_content_patterns(network, file_path, command, &cp)
-        .await
-        .err()
-        .map(|e| e.to_string())
-        .into_iter()
-        .collect();
-    let warnings = crate::hook_facts::check_bash_command_patterns(network, command, &bcp)
-        .await
-        .err()
-        .map(|e| e.to_string())
-        .into_iter()
-        .collect();
-    (violations, warnings)
+    let mut violations: Vec<String> =
+        crate::hook_facts::check_content_patterns(network, file_path, command, &cp)
+            .await
+            .err()
+            .map(|e| format!("pattern check failed: {}", e))
+            .into_iter()
+            .collect();
+    if let Err(e) = crate::hook_facts::check_bash_command_patterns(network, command, &bcp).await {
+        violations.push(format!("command pattern check failed: {}", e));
+    }
+    violations
 }
 
 /// The patch text of an `apply_patch` call.
@@ -917,10 +923,20 @@ async fn evaluate_patch_file(
     root: &Path,
 ) -> Result<Option<Verdict>, CodexDecision> {
     // Prefer the patch's own added lines (the file may not exist on disk
-    // yet for Add File), falling back to the current on-disk content.
+    // yet for Add File), falling back to the current on-disk content. A
+    // missing file is fine — Add File targets legitimately don't exist yet —
+    // but any other read error (permissions, a dangling symlink, I/O) must
+    // fail closed rather than silently evaluating content rules against
+    // empty text, which would let real content slip past every rule.
     let content = if pf.added.is_empty() {
         match security::resolve_safe_path(&pf.path, root) {
-            Ok(safe) => tokio::fs::read_to_string(&safe).await.unwrap_or_default(),
+            Ok(safe) => match tokio::fs::read_to_string(&safe).await {
+                Ok(text) => text,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => {
+                    return Err(block_decision(format!("failed to read {}: {}", pf.path, e)));
+                }
+            },
             Err(_) => return Ok(None),
         }
     } else {
@@ -1014,7 +1030,12 @@ async fn handle_post(payload: &CodexPayload, root: &Path) -> CodexDecision {
     } else {
         String::new()
     };
-    check_post_bash_command(&call, &network, &loaded.rules, &command).await;
+    if let Err(error) = check_post_bash_command(&call, &network, &loaded.rules, &command).await {
+        let message = error.to_string();
+        eprintln!("phronesis: WARNING — {message}");
+        journal_supported_post(payload, &file_path).await;
+        return warn_decision(message);
+    }
     if let Err(error) = crate::predicate_provider::assert_facts(
         &network,
         root,
@@ -1050,17 +1071,22 @@ fn record_post_edits(call: &ToolCall<'_>, root: &Path) {
 }
 
 /// Command pattern check on an already-executed Bash command.
+///
+/// The action already ran, so `hook/post.rs` treats a fact-assertion failure
+/// here as advisory (warn, exit 1), not silence — matched here.
 async fn check_post_bash_command(
     call: &ToolCall<'_>,
     network: &phr::ReteNetwork,
     rules: &[phr::Rule],
     command: &str,
-) {
+) -> anyhow::Result<()> {
     if call.tool_name != "Bash" {
-        return;
+        return Ok(());
     }
     let bcp = crate::hook_facts::collect_bash_command_patterns(rules);
-    let _ = crate::hook_facts::check_bash_command_patterns(network, command, &bcp).await;
+    crate::hook_facts::check_bash_command_patterns(network, command, &bcp)
+        .await
+        .map_err(|e| anyhow::anyhow!("command pattern check failed: {}", e))
 }
 
 /// Post-phase provider event; `apply_patch` calls list every patched file.
@@ -1573,7 +1599,10 @@ mod hook {
 
 #[cfg(test)]
 mod tests {
-    use super::{CodexPayload, ToolCall, assert_new_content};
+    use super::{
+        CodexPayload, LoadedRules, PatchFile, ToolCall, assert_new_content, check_bash_patterns,
+        check_post_bash_command, evaluate_patch_file,
+    };
 
     #[tokio::test]
     async fn new_content_assertion_surfaces_engine_errors() {
@@ -1609,5 +1638,153 @@ mod tests {
         assert_eq!(call.tool_name, "apply_patch");
         assert_eq!(call.file_path, "src/lib.rs");
         assert!(call.supported());
+    }
+
+    // -----------------------------------------------------------------
+    // Residual fail-opens (T15): `fire_verdict`, `check_bash_patterns`,
+    // `check_post_bash_command`, and `evaluate_patch_file` must match
+    // `hook/pre.rs` and `hook/post.rs` semantics rather than swallowing
+    // or downgrading errors.
+    // -----------------------------------------------------------------
+
+    /// A rule naming a `bash_command_matches` pattern whose derived fact id
+    /// is already held by different content. `hook_facts::check_bash_command_patterns`
+    /// then returns `Err`, which `hook/pre.rs` blocks on ("command pattern
+    /// check failed"). Before the fix, Codex's `check_bash_patterns` routed
+    /// this into `warnings` instead of `violations`.
+    fn seed_conflicting_bash_pattern_fact(pattern: &str) -> phr::Fact {
+        let fact_id = crate::fact_id::fact_id("bash_command_matches", &[pattern]);
+        phr::Fact {
+            id: fact_id,
+            predicate: "bash_command_matches".to_string(),
+            args: vec!["different-content".to_string()],
+            timestamp: 0,
+            source: Some("test-seed".to_string()),
+        }
+    }
+
+    fn bash_pattern_rule(id: &str, pattern: &str) -> phr::Rule {
+        phr::Rule {
+            id: id.to_string(),
+            priority: 1,
+            conditions: vec![phr::Condition {
+                predicate: "bash_command_matches".to_string(),
+                args: vec![pattern.to_string()],
+                script: None,
+            }],
+            actions: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_bash_patterns_blocks_on_command_pattern_fact_assertion_failure() {
+        let network = phr::ReteNetwork::new();
+        network
+            .assert_fact(seed_conflicting_bash_pattern_fact("danger"))
+            .await
+            .expect("seed fact");
+        let rules = vec![bash_pattern_rule("bash-pattern-rule", "danger")];
+
+        let violations = check_bash_patterns(&network, &rules, "", "danger-zone").await;
+
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.contains("command pattern check failed")),
+            "a fact-assertion failure in the command-pattern check must block \
+             like hook/pre.rs, not disappear into a warning: {violations:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn check_post_bash_command_warns_instead_of_discarding_the_failure() {
+        let network = phr::ReteNetwork::new();
+        network
+            .assert_fact(seed_conflicting_bash_pattern_fact("danger"))
+            .await
+            .expect("seed fact");
+        let rules = vec![bash_pattern_rule("bash-pattern-rule", "danger")];
+
+        let payload: CodexPayload = serde_json::from_value(serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {"command": "danger-zone"}
+        }))
+        .expect("payload");
+        let call = ToolCall::from_payload(&payload, "");
+
+        let error = check_post_bash_command(&call, &network, &rules, "danger-zone")
+            .await
+            .expect_err(
+                "a fact-assertion failure must surface as Err, matching hook/post.rs's \
+                 warn behavior, not be silently discarded",
+            );
+        assert!(error.to_string().contains("command pattern check failed"));
+    }
+
+    /// `evaluate_patch_file` must fail closed on a genuine read error (e.g. no
+    /// read permission) for a file the patch claims already exists, rather
+    /// than treating the error as empty content — which would let real
+    /// content slip past every content rule. A genuinely missing file (Add
+    /// File in the patch) must still be treated as empty, so this only
+    /// covers the non-`NotFound` branch.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn evaluate_patch_file_fails_closed_on_unreadable_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let rel_path = "src/unreadable.rs";
+        let abs_path = root.join(rel_path);
+        std::fs::create_dir_all(abs_path.parent().unwrap()).expect("mkdir");
+        std::fs::write(&abs_path, "fn existing() {}\n").expect("write file");
+        std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod 000");
+        if std::fs::read(&abs_path).is_ok() {
+            // Running as root: the mode bits do not apply, so there is nothing
+            // to test here.
+            return;
+        }
+
+        let loaded = LoadedRules {
+            rules: Vec::new(),
+            override_facts: Vec::new(),
+        };
+        let payload: CodexPayload = serde_json::from_value(serde_json::json!({
+            "tool_name": "apply_patch",
+            "tool_input": {"command": "*** Begin Patch\n*** End Patch"}
+        }))
+        .expect("payload");
+        let call = ToolCall {
+            payload: &payload,
+            tool_name: "apply_patch",
+            file_path: "",
+        };
+        // No added lines: `evaluate_patch_file` must fall back to reading
+        // disk content, and that read must fail (permission denied) rather
+        // than silently becoming empty.
+        let pf = PatchFile {
+            path: rel_path.to_string(),
+            added: String::new(),
+            deleted: false,
+        };
+
+        let result = evaluate_patch_file(&call, &loaded, &pf, root).await;
+
+        // Restore permissions so the tempdir can be cleaned up regardless of
+        // the assertion outcome below.
+        let _ = std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(0o644));
+
+        let decision = result.expect_err(
+            "an unreadable existing file must fail closed (deny), not be treated as empty content",
+        );
+        assert!(
+            !decision.block_messages.is_empty(),
+            "expected a block message, got {decision:?}"
+        );
+        assert!(
+            decision.block_messages[0].contains(rel_path),
+            "block message should name the unreadable file: {decision:?}"
+        );
     }
 }

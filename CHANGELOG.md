@@ -99,6 +99,23 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   if the corrupt file held no evidence, so obligations still fire. Loading
   also rejects a result status outside the closed `passed | failed |
   inconclusive | timeout | unknown` set.
+
+- **Codex's adapter could silently allow what `pre-check`/`post-check` would
+  block or warn on.** After PR #83 gave `codex-hook` the same rule-network
+  builder as `pre-check`, three edges kept the old, looser behavior: an
+  `update_agenda()` failure was discarded (`let _ = ...`), so a verdict
+  derived purely from fact matching could vanish without a trace instead of
+  denying the tool call; a `bash_command_matches` fact-assertion failure was
+  downgraded from a Claude-parity block ("command pattern check failed") to
+  a warning at `PreToolUse`, and silently dropped entirely at `PostToolUse`;
+  and `apply_patch`'s per-file content read treated any disk-read error
+  (permissions, a dangling symlink) as empty content, so a rule scanning
+  file content saw nothing instead of denying the call. All three now match
+  `hook/pre.rs` / `hook/post.rs`: `fire_verdict` propagates an agenda-update
+  failure as a deny (pre) or advisory (post); the command-pattern check
+  blocks at `PreToolUse` and warns (not silently) at `PostToolUse`; and
+  `evaluate_patch_file` fails closed on a genuine read error while still
+  treating a missing file (a patch's own Add File target) as empty.
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other

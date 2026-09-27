@@ -224,3 +224,69 @@ fn undefined_selector_warns_after_the_fact_on_both_hosts() {
     );
     assert!(body.get("continue").is_none(), "advisory only: {body}");
 }
+
+/// An `apply_patch` `Update File` block with no `+` hunk lines forces
+/// `evaluate_patch_file` down its disk-read fallback (the patch adds nothing
+/// itself). When that file exists on disk but cannot be read (permission
+/// denied), the call must deny rather than silently evaluate content rules
+/// against empty text — a real-binary regression test for the fix to
+/// `codex_hook::evaluate_patch_file`, which used to swallow any read error
+/// via `unwrap_or_default()`.
+#[cfg(unix)]
+#[test]
+fn apply_patch_denies_when_an_existing_target_file_is_unreadable() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let rules = json!({"rules": [{
+        "id": "never-fires", "phase": "pre", "priority": 1,
+        "when": [{"new_content_contains": "zzz-never-present"}],
+        "then": {"block": "never"}
+    }]});
+    let dir = setup(&rules, None);
+    let rel_path = "src/unreadable.rs";
+    let abs_path = dir.path().join(rel_path);
+    std::fs::create_dir_all(abs_path.parent().unwrap()).expect("mkdir");
+    std::fs::write(&abs_path, "fn existing() {}\n").expect("seed file");
+    std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(0o000)).expect("chmod 000");
+    if std::fs::read(&abs_path).is_ok() {
+        // Running as root: the mode bits do not apply, so there is nothing
+        // to test here.
+        return;
+    }
+
+    let payload = json!({
+        "hook_event_name": "PreToolUse",
+        "tool_name": "apply_patch",
+        "session_id": "codex-parity",
+        "turn_id": "codex-parity-turn",
+        "tool_use_id": "codex-parity-uid",
+        "tool_input": {"command": format!(
+            "*** Begin Patch\n*** Update File: {rel_path}\n@@ -1,1 +1,1 @@\n*** End Patch\n"
+        )},
+    });
+    let out = spawn(dir.path(), &["codex-hook", "PreToolUse"], &payload);
+
+    // Restore permissions so the tempdir can be cleaned up regardless of the
+    // assertion outcome below.
+    let _ = std::fs::set_permissions(&abs_path, std::fs::Permissions::from_mode(0o644));
+
+    let body = codex_body(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "Codex reads the JSON decision, not the exit code: {body}"
+    );
+    let hso = &body["hookSpecificOutput"];
+    assert_eq!(
+        hso["permissionDecision"],
+        "deny",
+        "an unreadable existing patch target must fail closed, not be treated as empty \
+         content; body: {body}; stderr: {}",
+        stderr(&out)
+    );
+    let reason = hso["permissionDecisionReason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains(rel_path),
+        "deny reason should name the unreadable file: {reason}"
+    );
+}
