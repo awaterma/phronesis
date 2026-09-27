@@ -159,7 +159,7 @@ The allowlist remains a human trust anchor that the `llm` pack refuses agent-sea
 | `verified` | a **bound** result (SPEC B §2) with status `passed` whose artifact hash is approved by a **`human`** allowlist entry for that property |
 | `agent_verified` | a bound `passed` result approved by an `agent_quorum` **or** a `human` entry |
 
-"Bound" means the D9 binding in `properties::hydrate`: a v2 record naming a 40-hex revision, a tier that runs, an approved artifact hash, a non-draft template origin, and a curated property with a matching encoding. The check does not require the result's revision to equal HEAD. A transition refused for missing evidence is journaled like every other attempt, and the store is left unchanged.
+"Bound" means the D9 binding in `properties::hydrate`: a v2 record naming a 40-hex revision, a tier that runs, an approved artifact hash, a non-draft template origin, and a curated property with a matching encoding. The check does not require the result's revision to equal HEAD. A transition refused for missing evidence changes nothing and is journaled as `set_property_status_refused` (reason `insufficient_evidence`). A corrupt properties or results store refuses both targets, since unreadable evidence justifies nothing.
 
 ### Hydration: distinct in facts
 

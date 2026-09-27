@@ -41,7 +41,10 @@ pub enum PropertySource {
     AgentInference,
 }
 
-/// Promotion lifecycle status (spec §2 — closed set).
+/// Promotion lifecycle status (spec §2 — closed set). The ladder runs
+/// observed → candidate → corroborated → accepted → agent_verified →
+/// verified; `AgentVerified` (D10) is evidence approved by an agent review
+/// quorum and sits strictly below the human-principal `Verified`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PropertyStatus {
@@ -49,6 +52,7 @@ pub enum PropertyStatus {
     Candidate,
     Corroborated,
     Accepted,
+    AgentVerified,
     Verified,
     Rejected,
     Superseded,
@@ -59,6 +63,26 @@ pub struct Encoding {
     pub language: String,
     pub verifier: String,
     pub artifact: String,
+}
+
+/// A textual mutation of a rendered artifact (D10 quorum check (b)): the
+/// host replaces the single occurrence of `find` with `replace` in a copy of
+/// the artifact, and the verifier must fail on the mutant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Mutation {
+    pub verifier: String,
+    pub find: String,
+    pub replace: String,
+}
+
+impl Property {
+    /// Whether generation may run for this record (S2): accepted or above.
+    pub fn generation_eligible(&self) -> bool {
+        matches!(
+            self.status,
+            PropertyStatus::Accepted | PropertyStatus::AgentVerified | PropertyStatus::Verified
+        )
+    }
 }
 
 /// The curated, version-controlled property record (spec §1).
@@ -78,6 +102,10 @@ pub struct Property {
     pub corroborated_by: Vec<String>,
     #[serde(default)]
     pub encodings: Vec<Encoding>,
+    /// Mutations for the agent-quorum mutation check. Omitted when empty, so
+    /// a record without mutations keeps its property revision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mutations: Vec<Mutation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -255,6 +283,28 @@ fn validate_property(p: &Property) -> Result<(), PropertyStoreError> {
             if let Some(problem) = string_field_problem(value, field) {
                 return Err(invalid(problem));
             }
+        }
+    }
+    for m in &p.mutations {
+        for (value, field) in [
+            (&m.verifier, "mutation.verifier"),
+            (&m.find, "mutation.find"),
+        ] {
+            if let Some(problem) = string_field_problem(value, field) {
+                return Err(invalid(problem));
+            }
+        }
+        // The replacement may be empty (a deletion), but is bounded and
+        // single-line like every other field.
+        if m.replace.len() > 256 || m.replace.chars().any(|c| c.is_control()) {
+            return Err(invalid(
+                "mutation.replace exceeds 256 bytes or carries control characters".to_string(),
+            ));
+        }
+        if m.find == m.replace {
+            return Err(invalid(
+                "mutation.replace equals mutation.find: not a mutation".to_string(),
+            ));
         }
     }
     Ok(())

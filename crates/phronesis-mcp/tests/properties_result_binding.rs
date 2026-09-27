@@ -53,6 +53,7 @@ fn sha(tag: char) -> String {
 
 fn property(encodings: Vec<Encoding>) -> Property {
     Property {
+        mutations: vec![],
         id: PROP.into(),
         subject: "safe_divide".into(),
         kind: "postcondition".into(),
@@ -91,6 +92,8 @@ fn approve(root: &Path, artifact_sha256: &str, property_id: &str) {
     allowlist::record(
         root,
         AllowlistEntry {
+            principal_kind: Default::default(),
+            quorum: None,
             artifact_sha256: artifact_sha256.into(),
             template_sha256: "template-hash".into(),
             property_id: property_id.into(),

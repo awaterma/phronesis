@@ -395,6 +395,7 @@ fn property_obligations_follow_the_full_file_regions_in_both_phases() {
     };
     let d = project(false);
     let property = |id: &str, region: &str| Property {
+        mutations: vec![],
         id: id.into(),
         subject: id.into(),
         kind: "postcondition".into(),

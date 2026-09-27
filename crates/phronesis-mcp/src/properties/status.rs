@@ -23,6 +23,14 @@ pub enum SetPropertyStatusError {
     NoSuchProperty { id: String },
     #[error("unsupported status: {found}")]
     UnsupportedStatus { found: String },
+    #[error(
+        "property {id} cannot become {status}: {required} (D10 — agent-quorum evidence never counts as human verification)"
+    )]
+    InsufficientEvidence {
+        id: String,
+        status: &'static str,
+        required: &'static str,
+    },
     #[error(transparent)]
     Store(#[from] PropertyStoreError),
     #[error("transition not journaled to log.jsonl, so not committed: {message}")]
@@ -48,6 +56,7 @@ fn status_name(s: &PropertyStatus) -> &'static str {
         PropertyStatus::Candidate => "candidate",
         PropertyStatus::Corroborated => "corroborated",
         PropertyStatus::Accepted => "accepted",
+        PropertyStatus::AgentVerified => "agent_verified",
         PropertyStatus::Verified => "verified",
         PropertyStatus::Rejected => "rejected",
         PropertyStatus::Superseded => "superseded",
@@ -60,6 +69,7 @@ fn parse_status_name(s: &str) -> Option<PropertyStatus> {
         "candidate" => PropertyStatus::Candidate,
         "corroborated" => PropertyStatus::Corroborated,
         "accepted" => PropertyStatus::Accepted,
+        "agent_verified" => PropertyStatus::AgentVerified,
         "verified" => PropertyStatus::Verified,
         "rejected" => PropertyStatus::Rejected,
         "superseded" => PropertyStatus::Superseded,
@@ -67,7 +77,62 @@ fn parse_status_name(s: &str) -> Option<PropertyStatus> {
     })
 }
 
+/// The evidence a transition to `new_status` needs (D10), or `Ok` when the
+/// target is not evidence-checked. Only `verified` and `agent_verified` are
+/// checked; every other transition is unchecked, as it was before D10.
+///
+/// - `verified`: a bound `passed` result whose artifact a **human** principal
+///   approved;
+/// - `agent_verified`: a bound `passed` result approved by an agent quorum
+///   or a human.
+fn evidence_check(
+    root: &Path,
+    property_id: &str,
+    new_status: PropertyStatus,
+) -> Result<(), SetPropertyStatusError> {
+    use crate::properties::allowlist::PrincipalKind;
+    let (status, required, accepts): (&'static str, &'static str, &[PrincipalKind]) =
+        match new_status {
+            PropertyStatus::Verified => (
+                "verified",
+                "it needs a bound passed result whose artifact a human principal approved",
+                &[PrincipalKind::Human],
+            ),
+            PropertyStatus::AgentVerified => (
+                "agent_verified",
+                "it needs a bound passed result approved by an agent quorum or a human",
+                &[PrincipalKind::AgentQuorum, PrincipalKind::Human],
+            ),
+            _ => return Ok(()),
+        };
+    let evidence = crate::properties::hydrate::bound_results(root)?;
+    let found = evidence.iter().any(|b| {
+        b.record.property == property_id
+            && b.record.status == "passed"
+            && accepts.contains(&b.principal)
+    });
+    if found {
+        return Ok(());
+    }
+    let _ = crate::action_log::append_audit(
+        &crate::action_log::default_path(root),
+        &crate::action_log::LogEntry::new("mcp", "set_property_status_refused")
+            .with("property", property_id)
+            .with("new_status", status)
+            .with("reason", "insufficient_evidence"),
+    );
+    Err(SetPropertyStatusError::InsufficientEvidence {
+        id: property_id.to_string(),
+        status,
+        required,
+    })
+}
+
 /// Set the status of one property. Returns the old and new status names.
+///
+/// `verified` and `agent_verified` are evidence-checked (D10,
+/// `evidence_check`); a refusal changes nothing and is journaled as
+/// `set_property_status_refused`.
 ///
 /// The whole read-modify-write runs under an exclusive lock on a sibling
 /// `properties.json.lock`, so concurrent transitions never lose an update.
@@ -127,6 +192,7 @@ pub fn set_status(
         .ok_or_else(|| SetPropertyStatusError::NoSuchProperty {
             id: property_id.to_string(),
         })?;
+    evidence_check(root, property_id, new_status)?;
     let old_name = status_name(&prop.status).to_string();
     let new_name = status_name(&new_status).to_string();
     prop.status = new_status;

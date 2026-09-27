@@ -568,6 +568,73 @@ pub fn execute(
             revision: tree_revision.to_string(),
         });
     }
+    let file_name = artifact
+        .file_name()
+        .ok_or_else(|| failed(format!("artifact {} has no file name", artifact.display())))?;
+    let run = run_confined(root, &bytes, Path::new(file_name), verifier_command)?;
+    let binding = RunBinding {
+        property,
+        verifier,
+        tool: verifier_command,
+        revision: tree_revision,
+        tier: run.tier,
+        artifact_sha256: &actual,
+    };
+    Ok(match run.status {
+        ConfinedStatus::Timeout { raw } => {
+            // S8: timeout never upgrades confidence; same record shape as the
+            // unparsed-output path, bound to this run (D9) like every other
+            // outcome.
+            unparsed_outcome("timeout", &binding, &raw)
+        }
+        // S8's fourth state: the parser matched nothing — loud silence.
+        ConfinedStatus::Unparsed { raw } => inconclusive_from(&binding, &raw),
+        ConfinedStatus::Parsed(status) => binding.outcome(&status),
+    })
+}
+
+/// How a confined verifier run ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfinedStatus {
+    /// The verifier's own summary parsed: `passed` or `failed`.
+    Parsed(String),
+    /// Output parsed to no outcome (S8 `inconclusive`); raw output kept.
+    Unparsed { raw: String },
+    /// Killed at the S9 wall-clock limit; raw output kept.
+    Timeout { raw: String },
+}
+
+impl ConfinedStatus {
+    /// The S8 result status name.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Parsed(s) => s,
+            Self::Unparsed { .. } => "inconclusive",
+            Self::Timeout { .. } => "timeout",
+        }
+    }
+}
+
+/// One confined verifier run: the tier that ran it and how it ended.
+#[derive(Debug, Clone)]
+pub struct ConfinedRun {
+    pub tier: ConfinementTier,
+    pub status: ConfinedStatus,
+}
+
+/// Run the verifier over `bytes` through the S9 tier ladder, staged as
+/// `file_name` in a fresh per-run directory, under the wall-clock limit.
+/// This is the confinement half of `execute`, with **no** allowlist gate:
+/// `execute` gates before calling it, and the only other caller is the D10
+/// agent-quorum admission check (`properties::quorum`), which runs
+/// host-derived variants of quorum-reviewed bytes and records no result.
+pub fn run_confined(
+    root: &Path,
+    bytes: &[u8],
+    file_name: &Path,
+    verifier_command: &str,
+) -> Result<ConfinedRun, ExecutionError> {
+    let failed = |message: String| ExecutionError::Failed { message };
     let Some((tier, runtime)) = detect_confinement(root) else {
         // S9 fail-closed: no confinement available, execution refused.
         tracing_like("execution refused: no confinement tier available");
@@ -578,14 +645,6 @@ pub fn execute(
     let image = match tier {
         ConfinementTier::Devcontainer => Some(devcontainer_image(root)?),
         _ => None,
-    };
-    let binding = RunBinding {
-        property,
-        verifier,
-        tool: verifier_command,
-        revision: tree_revision,
-        tier,
-        artifact_sha256: &actual,
     };
 
     // The per-run directory: the only writable path under confinement.
@@ -599,14 +658,14 @@ pub fn execute(
         .map_err(|e| failed(format!("cannot resolve run directory: {e}")))?;
     let tmp_dir = run_dir.join(RUN_TMP_DIR);
     std::fs::create_dir(&tmp_dir).map_err(|e| failed(format!("cannot create TMPDIR: {e}")))?;
-    let file_name = artifact
+    let file_name = file_name
         .file_name()
-        .ok_or_else(|| failed(format!("artifact {} has no file name", artifact.display())))?;
+        .ok_or_else(|| failed(format!("artifact {} has no file name", file_name.display())))?;
     let artifact_dir = run_dir.join(RUN_ARTIFACT_DIR);
     std::fs::create_dir(&artifact_dir)
         .map_err(|e| failed(format!("cannot create artifact directory: {e}")))?;
     let run_artifact = artifact_dir.join(file_name);
-    std::fs::write(&run_artifact, &bytes)
+    std::fs::write(&run_artifact, bytes)
         .map_err(|e| failed(format!("cannot stage artifact: {e}")))?;
 
     let confinement = RunConfinement {
@@ -644,10 +703,10 @@ pub fn execute(
                 "verifier killed after the {}s wall-clock limit",
                 timeout.as_secs()
             ));
-            // S8: timeout never upgrades confidence; same record shape as the
-            // unparsed-output path, bound to this run (D9) like every other
-            // outcome.
-            return Ok(unparsed_outcome("timeout", &binding, &raw));
+            return Ok(ConfinedRun {
+                tier,
+                status: ConfinedStatus::Timeout { raw },
+            });
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -657,12 +716,11 @@ pub fn execute(
     // Per-toolchain result parse (SPEC-C: the verus instantiation). Verus
     // prints `verification results:: N verified, M errors` — the aggregate is
     // the property's status for single-property harnesses (phase 1 shape).
-    let status = verus_status(&output);
-    let Some(status) = status else {
-        // S8's fourth state: the parser matched nothing — loud silence.
-        return Ok(inconclusive_from(&binding, &raw));
+    let status = match verus_status(&output) {
+        Some(status) => ConfinedStatus::Parsed(status),
+        None => ConfinedStatus::Unparsed { raw },
     };
-    Ok(binding.outcome(&status))
+    Ok(ConfinedRun { tier, status })
 }
 
 #[cfg(test)]
@@ -1366,6 +1424,8 @@ mod confinement_tests {
         crate::properties::allowlist::record(
             root,
             crate::properties::allowlist::AllowlistEntry {
+                principal_kind: Default::default(),
+                quorum: None,
                 artifact_sha256: sha.clone(),
                 template_sha256: "t".into(),
                 property_id: "p".into(),

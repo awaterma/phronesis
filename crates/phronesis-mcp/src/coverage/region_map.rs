@@ -248,6 +248,20 @@ pub fn reference_matches(reference: &str, changed: &str) -> bool {
     }
 }
 
+/// The function leaf name a `fn:` / `branch:` region reference names —
+/// qualified (`fn:src/lib.rs::m::f.1`) or legacy (`fn:f`,
+/// `branch:f:anchor`). `None` for any other reference (`file:` …).
+pub fn region_function_leaf(reference: &str) -> Option<&str> {
+    let parts = if is_qualified_region_id(reference) {
+        qualified_parts(reference)
+    } else {
+        legacy_parts(reference)
+    };
+    parts
+        .map(|(_, leaf, _)| leaf)
+        .filter(|leaf| !leaf.is_empty())
+}
+
 /// `(is_branch, leaf fn name, anchor)` of a legacy id.
 fn legacy_parts(id: &str) -> Option<(bool, &str, Option<&str>)> {
     if let Some(leaf) = id.strip_prefix("fn:") {
