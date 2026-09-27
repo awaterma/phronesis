@@ -8,6 +8,10 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **The nudge README that `init` writes showed a capsule that could never
+  fire.** Its `journey_seen` example used the window `"session"`, which is not
+  a window token; the session window is `"s"`. The example now uses `"s"`, and
+  the README lists the valid windows (`s`, `<N>c`, `<N>s`/`m`/`h`/`d`).
 - **After a broken rules file was repaired, `load_rules_file` reported
   success but the MCP server kept its stale rules and still reported the
   file as failing.** The server held its startup copy (rules since changed

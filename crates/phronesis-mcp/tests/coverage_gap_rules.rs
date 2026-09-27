@@ -349,8 +349,10 @@ fn hook_does_not_hang_behind_an_exclusive_store_lock() {
     std::thread::spawn(move || {
         let _ = tx.send(hook(&dir, "post", edit_event(&dir)));
     });
-    let outcome = rx.recv_timeout(std::time::Duration::from_secs(5));
+    // The lock wait is 200 ms; the hook itself takes ~2.4 s, and more under
+    // llvm-cov instrumentation. 30 s still separates a bounded wait from a hang.
+    let outcome = rx.recv_timeout(std::time::Duration::from_secs(30));
     drop(lock);
-    let (code, stderr) = outcome.expect("hook blocked behind the store lock for 5 s");
+    let (code, stderr) = outcome.expect("hook blocked behind the store lock for 30 s");
     assert_eq!(code, 0, "fixture covers the regions: {stderr}");
 }
