@@ -216,11 +216,26 @@ fn refusal_stages(root: &Path) -> Vec<String> {
 
 /// Assert a refusal: the expected stage, nothing allowlisted, journaled.
 fn assert_refused(root: &Path, out: Result<quorum::QuorumApproval, QuorumError>, stage: &str) {
+    assert_refused_with(root, out, stage, "");
+}
+
+/// `assert_refused`, and the refusal names `why` (so a refusal for some
+/// other rule at the same stage does not pass the test).
+fn assert_refused_with(
+    root: &Path,
+    out: Result<quorum::QuorumApproval, QuorumError>,
+    stage: &str,
+    why: &str,
+) {
     let err = match out {
         Ok(a) => panic!("expected a {stage} refusal, got an approval: {:?}", a.entry),
         Err(e) => e,
     };
     assert_eq!(err.stage(), stage, "wrong refusal: {err}");
+    assert!(
+        err.to_string().contains(why),
+        "refusal must name {why:?}: {err}"
+    );
     assert!(
         allowlisted(root).is_empty(),
         "a refused quorum writes nothing"
@@ -239,7 +254,12 @@ fn a_quorum_from_one_family_only_is_refused() {
     let (d, sha) = sound_project();
     review(d.path(), &sha, "model-one", "family-a", "approve");
     review(d.path(), &sha, "model-two", "Family-A", "approve");
-    assert_refused(d.path(), approve(d.path()), "quorum_rules");
+    assert_refused_with(
+        d.path(),
+        approve(d.path()),
+        "quorum_rules",
+        "distinct families",
+    );
 }
 
 #[test]
@@ -247,14 +267,24 @@ fn a_reviewer_from_the_authors_family_is_refused() {
     let (d, sha) = sound_project();
     good_quorum(d.path(), &sha);
     review(d.path(), &sha, "model-three", AUTHOR, "approve");
-    assert_refused(d.path(), approve(d.path()), "quorum_rules");
+    assert_refused_with(
+        d.path(),
+        approve(d.path()),
+        "quorum_rules",
+        "shares the author's family",
+    );
 }
 
 #[test]
 fn a_single_reviewer_is_refused() {
     let (d, sha) = sound_project();
     review(d.path(), &sha, "model-one", "family-a", "approve");
-    assert_refused(d.path(), approve(d.path()), "quorum_rules");
+    assert_refused_with(
+        d.path(),
+        approve(d.path()),
+        "quorum_rules",
+        "approving reviewer record(s)",
+    );
 }
 
 #[test]
@@ -262,7 +292,7 @@ fn one_reject_vetoes_and_reviews_of_other_bytes_do_not_count() {
     let (d, sha) = sound_project();
     good_quorum(d.path(), &sha);
     review(d.path(), &sha, "model-three", "family-c", "reject");
-    assert_refused(d.path(), approve(d.path()), "quorum_rules");
+    assert_refused_with(d.path(), approve(d.path()), "quorum_rules", "vetoes");
 }
 
 #[test]
