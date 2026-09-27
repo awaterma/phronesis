@@ -382,3 +382,44 @@ mod tests {
         assert_eq!(network.input_index.get("alpha:b").map(Vec::len), Some(1));
     }
 }
+
+#[cfg(test)]
+mod stateful_properties {
+    use super::*;
+    use crate::{Fact, WorkingMemoryElement};
+    use proptest::prelude::*;
+
+    fn token(value: &str, id: &str) -> Token {
+        let mut bindings = crate::Bindings::new();
+        bindings.add_binding("?key", value).expect("valid binding");
+        Token::new_with_bindings(
+            vec![WorkingMemoryElement::new(Fact {
+                id: id.to_string(),
+                predicate: "item".into(),
+                args: vec![value.into()],
+                timestamp: 0,
+                source: None,
+            })],
+            bindings,
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+        #[test]
+        fn prop_join_tokens_are_consistent_and_keep_exact_wmes(left in "[a-z]{1,8}", right in "[a-z]{1,8}") {
+            let mut network = BetaNetwork::new();
+            let state = network.add_join("left".into(), "right".into(), "?key".into());
+            network.mark_as_p_state(&state, "r", 1);
+            network.process_token_from_source("left", token(&left, "lw"));
+            let activations = network.process_token_from_source("right", token(&right, "rw"));
+            let should_join = left == right;
+            prop_assert_eq!(activations.len(), usize::from(should_join));
+            for activation in activations {
+                prop_assert_eq!(activation.token.bindings.get_binding("?key"), Some(&left));
+                let ids: std::collections::HashSet<_> = activation.token.wmes.iter().map(|w| w.id.as_str()).collect();
+                prop_assert_eq!(ids, ["lw", "rw"].into_iter().collect());
+            }
+        }
+    }
+}
