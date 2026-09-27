@@ -611,6 +611,15 @@ pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
 /// Statically resolved transitive test reachability. `tested_by` remains the
 /// direct call evidence; this relation follows only canonical function call
 /// edges and therefore makes no claim about dynamic dispatch or execution.
+///
+/// A Cargo binary's `main` (a `cargo_bin` target's `::main`) is a stop: the
+/// test gets `test_reaches(test, main)`, and `main`'s own closure is stored
+/// once as `bin_reaches(main, function)` instead of being copied into every
+/// test that runs the binary — hundreds of tests each reaching most of a
+/// CLI would otherwise multiply the graph several times over. What a test
+/// can exercise is therefore `test_reaches(T, F)`, or `test_reaches(T, M)`
+/// joined with `bin_reaches(M, F)`; one hop suffices because `bin_reaches`
+/// is `main`'s full closure.
 pub fn test_reachability(base: &[Edge]) -> Vec<Edge> {
     let mut calls: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for edge in base_edges(base, "calls") {
@@ -622,23 +631,49 @@ pub fn test_reachability(base: &[Edge]) -> Vec<Edge> {
         }
     }
 
-    let mut out = BTreeSet::new();
-    for edge in base_edges(base, "tested_by") {
-        let (Some(function), Some(test)) = (edge.a.first(), edge.a.get(1)) else {
-            continue;
-        };
-        let mut pending = vec![function.as_str()];
+    let binary_mains = base_edges(base, "cargo_bin")
+        .filter_map(|edge| edge.a.get(2))
+        .map(|target| format!("{target}::main"))
+        .collect::<BTreeSet<_>>();
+    // Everything reachable from `start`, `start` included. Under `stop`, a
+    // binary `main` is recorded but not entered.
+    fn closure<'a>(
+        start: &'a str,
+        calls: &BTreeMap<&'a str, BTreeSet<&'a str>>,
+        stop: Option<&BTreeSet<String>>,
+    ) -> BTreeSet<&'a str> {
+        let mut pending = vec![start];
         let mut seen = BTreeSet::new();
         while let Some(current) = pending.pop() {
             if !seen.insert(current) {
                 continue;
             }
-            out.insert((test.as_str(), current));
+            if stop.is_some_and(|mains| mains.contains(current)) {
+                continue;
+            }
             pending.extend(calls.get(current).into_iter().flatten().copied());
+        }
+        seen
+    }
+
+    let mut out = BTreeSet::new();
+    for edge in base_edges(base, "tested_by") {
+        let (Some(function), Some(test)) = (edge.a.first(), edge.a.get(1)) else {
+            continue;
+        };
+        for reached in closure(function, &calls, Some(&binary_mains)) {
+            out.insert(("test_reaches", test.as_str(), reached));
+        }
+    }
+    for main in &binary_mains {
+        for reached in closure(main, &calls, None) {
+            if reached != main {
+                out.insert(("bin_reaches", main.as_str(), reached));
+            }
         }
     }
     out.into_iter()
-        .map(|(test, function)| Edge::derived("test_reaches", &[test, function]))
+        .map(|(p, from, to)| Edge::derived(p, &[from, to]))
         .collect()
 }
 

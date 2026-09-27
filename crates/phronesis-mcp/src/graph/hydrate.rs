@@ -30,6 +30,7 @@ pub const GRAPH_RELATIONS: &[&str] = &[
     "reexports",
     "tested_by",
     "test_reaches",
+    "bin_reaches",
     "no_direct_test",
     "exposes",
     "calls",

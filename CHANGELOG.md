@@ -556,15 +556,19 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   executing code in 32–68 source files each — and code tested only through
   the binary looked untested to `no_direct_test` and to the static half of
   `phr-mcp coverage select`. A test that names the binary, directly or through
-  a same-file helper, now gets `tested_by(<bin>::main, test)`, and
-  `test_reaches` follows `main`'s resolved calls. The name resolves through
+  a same-file helper, now gets `tested_by(<bin>::main, test)` and
+  `test_reaches(test, <bin>::main)`; `main`'s resolved-call closure is stored
+  once as the new derived relation `bin_reaches(main, function)`, and
+  `coverage select` joins the two. The name resolves through
   the new `cargo_bin(package, name, target)` relation, read from `[[bin]]`
   tables, `autobins`, `src/main.rs` and `src/bin/` the way Cargo discovers
   targets, and only within the test's own package; a name with no such bin
   target is dropped and counted as unresolved, never guessed. On this
-  repository 521 tests gain the edge and `test_reaches` grows from about 61
-  thousand edges to about 748 thousand, because `main` reaches most of the
-  CLI; the graph file grows to match (about 18 MB to 147 MB). `Cargo.toml` is
+  repository 521 tests gain the edge and, through `main`'s 1318-function
+  closure, reach about 748 thousand (test, function) pairs instead of 61
+  thousand, while the graph stays near its old size (17.9 MB to 18.3 MB): a
+  rule that asks whether a test can exercise a function must join
+  `test_reaches` with `bin_reaches` the same way. `Cargo.toml` is
   now a graph freshness input, and saving one rebuilds the graph.
   `GRAPH_FORMAT` bumps to 22, so existing graphs rebuild on next use.
 

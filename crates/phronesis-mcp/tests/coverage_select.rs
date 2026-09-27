@@ -587,3 +587,89 @@ fn test_select_static_reach_into_a_whole_file_region() {
     assert_eq!(stat.len(), 1, "one static entry: {:?}", sel.tests);
     assert_eq!(stat[0].regions, vec!["file:src/lib.rs".to_string()]);
 }
+
+const BIN_LIB_OLD: &str = "pub fn engine() -> u32 {\n    1\n}\n";
+const BIN_LIB_NEW: &str = "pub fn engine() -> u32 {\n    2\n}\n";
+
+/// A test that runs the package's binary reaches what `main` calls. That
+/// reach is stored once as `bin_reaches(main, fn)`, not copied into every
+/// such test's `test_reaches`, so `select` must join the two to list the
+/// test for a changed function only `main` reaches.
+#[test]
+fn test_select_lists_a_binary_running_test_for_a_function_main_reaches() {
+    use phronesis_mcp::graph::store as graph_store;
+
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path();
+    Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .expect("git init");
+    for (k, v) in [("user.email", "test@test.com"), ("user.name", "Test")] {
+        Command::new("git")
+            .args(["config", k, v])
+            .current_dir(dir)
+            .output()
+            .expect("git config");
+    }
+    for (rel, body) in [
+        (
+            "Cargo.toml",
+            "[package]\nname = \"tool\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"tool-cli\"\npath = \"src/main.rs\"\n",
+        ),
+        ("src/lib.rs", BIN_LIB_OLD),
+        (
+            "src/main.rs",
+            "fn main() {\n    run();\n}\n\nfn run() {\n    let _ = tool::engine();\n}\n",
+        ),
+        (
+            "tests/cli.rs",
+            "use std::process::Command;\n\n#[test]\nfn runs_the_binary() {\n    let _ = Command::new(env!(\"CARGO_BIN_EXE_tool-cli\")).status();\n}\n",
+        ),
+    ] {
+        let path = dir.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, body).unwrap();
+    }
+    for args in [&["add", "."][..], &["commit", "-m", "initial"][..]] {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .expect("git");
+    }
+    std::fs::write(dir.join("src/lib.rs"), BIN_LIB_NEW).unwrap();
+    phronesis_mcp::graph::sync::rebuild(dir).expect("graph rebuild");
+
+    let test = "rust:tool#test:cli::runs_the_binary";
+    let main = "rust:tool#bin:tool::main";
+    let engine = "rust:tool::engine";
+    let edges = graph_store::load(&graph_store::graph_path(dir)).expect("graph");
+    let has = |p: &str, a: &[&str]| edges.iter().any(|e| e.p == p && e.a == a);
+    assert!(has("tested_by", &[main, test]));
+    assert!(has("test_reaches", &[test, main]));
+    assert!(
+        !has("test_reaches", &[test, engine]),
+        "main's closure is not copied into the test's test_reaches"
+    );
+    assert!(has("bin_reaches", &[main, engine]));
+
+    let sel = select(dir, None).unwrap();
+    assert!(
+        sel.static_reach_available,
+        "graph must be fresh: {:?}",
+        sel.static_note
+    );
+    let stat: Vec<&SelectedTest> = sel
+        .tests
+        .iter()
+        .filter(|t| t.test == test && t.evidence == "static_reach")
+        .collect();
+    assert_eq!(stat.len(), 1, "one static entry: {:?}", sel.tests);
+    assert!(
+        stat[0].regions.iter().any(|r| r == "fn:src/lib.rs::engine"),
+        "{:?}",
+        stat[0].regions
+    );
+}

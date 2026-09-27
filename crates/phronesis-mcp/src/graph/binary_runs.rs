@@ -6,8 +6,9 @@
 //! as untested. This module finds those references and turns them into edges
 //! to a `@bin:<name>` hint, which `derive::canonicalize_function_edges`
 //! resolves against the `cargo_bin` build-metadata edges to the binary's
-//! `main`, or counts as unresolved. From `main`, `test_reaches` follows the
-//! ordinary call closure.
+//! `main`, or counts as unresolved. The test then has
+//! `test_reaches(test, main)`, and `main`'s call closure is stored once as
+//! `bin_reaches(main, function)` (see `derive::test_reachability`).
 //!
 //! The reference may sit in the test itself or in a helper it calls. Helpers
 //! are followed only within the file and only where Rust's own resolution is

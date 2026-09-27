@@ -100,7 +100,24 @@ fn has(graph: &[Edge], p: &str, a: &[&str]) -> bool {
     graph.iter().any(|edge| edge.p == p && edge.a == a)
 }
 
+/// What `test` can exercise: its own `test_reaches`, joined through
+/// `bin_reaches` for every binary `main` it reaches.
 fn reached_by(graph: &[Edge], test: &str) -> BTreeSet<String> {
+    let direct = graph
+        .iter()
+        .filter(|edge| edge.p == "test_reaches" && edge.a[0] == test)
+        .map(|edge| edge.a[1].clone())
+        .collect::<BTreeSet<_>>();
+    let through_binaries = graph
+        .iter()
+        .filter(|edge| edge.p == "bin_reaches" && direct.contains(&edge.a[0]))
+        .map(|edge| edge.a[1].clone())
+        .collect::<BTreeSet<_>>();
+    direct.union(&through_binaries).cloned().collect()
+}
+
+/// `test_reaches` rows alone, without the `bin_reaches` join.
+fn test_reaches_rows(graph: &[Edge], test: &str) -> BTreeSet<String> {
     graph
         .iter()
         .filter(|edge| edge.p == "test_reaches" && edge.a[0] == test)
@@ -146,6 +163,15 @@ fn a_test_spawning_a_cargo_binary_reaches_its_main_and_mains_callees() {
             );
         }
     }
+    // main's closure is stored once, not per test.
+    assert_eq!(
+        test_reaches_rows(&graph, &test_id("spawns_directly")),
+        BTreeSet::from([MAIN_FN.to_string()])
+    );
+    for function in [RUN_FN, ENGINE_FN] {
+        assert!(has(&graph, "bin_reaches", &[MAIN_FN, function]));
+    }
+    assert!(!has(&graph, "bin_reaches", &[MAIN_FN, MAIN_FN]));
     assert!(
         reached_by(&graph, &test_id("spawns_nothing")).is_empty(),
         "a test that runs no binary reaches nothing"

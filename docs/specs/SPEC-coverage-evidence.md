@@ -237,7 +237,7 @@ Sketch §8's `minimal_relevant_test_set` cannot be a rule: no set-valued derivat
 
 `phr-mcp coverage select [--change <id>]` (CLI first, like `stats`/`audit`; MCP tool `select_relevant_tests` in Phase 3):
 
-- Union of tests hitting changed regions, plus tests statically reaching changed functions (`tested_by` / `test_reaches` edges), each entry labeled by evidence kind: `coverage_observation` vs `static_reach`. Hits from a stale store (index revision ≠ HEAD) are labeled `coverage_observation_stale` and listed in their own table section.
+- Union of tests hitting changed regions, plus tests statically reaching changed functions (`tested_by` / `test_reaches` edges, joined through `bin_reaches` for a test that reaches a Cargo binary's `main`), each entry labeled by evidence kind: `coverage_observation` vs `static_reach`. Hits from a stale store (index revision ≠ HEAD) are labeled `coverage_observation_stale` and listed in their own table section.
 - A stale or corrupt store sets `coverage_note` (a table line and a `--json` key present only when set, so a fresh store's output is unchanged). A corrupt store contributes no dynamic entries and the empty-selection message names the corruption instead of "the coverage store is empty".
 - Deduplicated; each entry carries its justifying regions (provenance), preserving the sketch's `affected_test != test_that_calls_function` distinction.
 - Output: human table + `--json`.
