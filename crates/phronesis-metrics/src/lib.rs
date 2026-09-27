@@ -3,9 +3,10 @@
 //! # Why this is a separate, optional crate
 //!
 //! An OpenMetrics endpoint needs an HTTP stack, and `phronesis-mcp` otherwise
-//! has none. Keeping the exporter here means the default `phr-mcp` build stays
-//! free of hyper and its transitive tree; a user who wants metrics opts in with
-//! `--features metrics`.
+//! has none. Keeping the exporter here means a dependency-minimal `phr-mcp`
+//! build (`--no-default-features --features rhai`) stays free of hyper and its
+//! transitive tree; the default build includes it through the `metrics`
+//! feature.
 //!
 //! This crate deliberately does **not** depend on `phronesis-mcp`. The action
 //! log is a stable JSON Lines format, so the exporter parses it directly and

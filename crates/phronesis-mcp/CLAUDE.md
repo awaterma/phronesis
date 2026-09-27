@@ -721,7 +721,7 @@ time too, so it also hides prompts already written, and it fails **closed**
 — an unreadable or malformed block is treated as `"none"`.
 `get_journey` never returns prompt text either way.
 
-**Metrics.** Two bounded families, behind `--features metrics`:
+**Metrics.** Two bounded families, in the default `metrics` feature:
 `phronesis_lifecycle_events_total{host,event,mode}` and
 `phronesis_subagent_duration_seconds{host}` (13 exponential buckets, 1 s to
 ~68 min). No kalpa label and no `agent_type` label — both are free text,

@@ -57,7 +57,7 @@ enum Command {
     },
     /// Render Prometheus metrics derived from `.phronesis/log.jsonl`.
     ///
-    /// Requires the `metrics` cargo feature. With no `--listen`, writes one
+    /// Built in by default (the `metrics` cargo feature). With no `--listen`, writes one
     /// scrape to stdout (or `--out FILE`, atomically) — the shape node_exporter's
     /// textfile collector expects. With `--listen`, runs as a standalone
     /// exporter serving `/metrics` until interrupted.
@@ -1033,8 +1033,8 @@ async fn handle_metrics(
     _out: Option<String>,
 ) -> anyhow::Result<()> {
     anyhow::bail!(
-        "this phr-mcp was built without Prometheus support; \
-         rebuild with `cargo install phronesis-mcp --features metrics`"
+        "this phr-mcp was built without Prometheus support (the `metrics` \
+         feature, on by default); rebuild with `cargo install phronesis-mcp`"
     )
 }
 

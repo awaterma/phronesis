@@ -22,14 +22,14 @@ name = "phr-mcp"
 path = "src/main.rs"
 
 [features]
-default = ["rhai"]
+default = ["rhai", "metrics"]
 # Route expressive `__script__` conditions through the sandboxed Rhai
 # evaluator and enable project predicate providers. Enabled by default;
 # `--no-default-features` retains the dependency-minimal builtin DSL.
 rhai = ["dep:phronesis-rhai"]
 # Expose a Prometheus `/metrics` endpoint and the `phr-mcp metrics` exporter.
-# Off by default: the endpoint needs an HTTP stack, and the default build has
-# no use for hyper and its transitive tree.
+# On by default. It pulls in an HTTP stack (hyper); a dependency-minimal build
+# can drop it with `--no-default-features --features rhai`.
 metrics = ["dep:phronesis-metrics"]
 
 [dependencies]
