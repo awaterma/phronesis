@@ -329,6 +329,24 @@ mod tests {
     }
 
     #[test]
+    fn unit_relative_require_resolves_dot_and_slash_files() {
+        let unit = ctx("lua:demo");
+        let files = vec!["src/core.lua".to_string(), "pkg/utils.lua".to_string()];
+        assert_eq!(
+            resolve_unit_require("src.core", &unit, &files),
+            "lua:demo::src::core"
+        );
+        assert_eq!(
+            resolve_unit_require("pkg/utils", &unit, &files),
+            "lua:demo::pkg::utils"
+        );
+        assert_eq!(
+            resolve_unit_require("missing.mod", &unit, &files),
+            "lua:demo::missing.mod"
+        );
+    }
+
+    #[test]
     fn empty_content_returns_unparseable() {
         let out = extract_lua("foo.lua", "", &ctx("lua:test"));
         assert!(out.parse_failed);

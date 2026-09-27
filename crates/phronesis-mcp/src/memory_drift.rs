@@ -126,6 +126,21 @@ pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
     run_with_dir(project_root, &memory_dir)
 }
 
+#[cfg(test)]
+mod run_entry_tests {
+    use super::*;
+
+    #[test]
+    fn run_uses_project_default_memory_directory_and_reports_missing() {
+        let root = tempfile::tempdir().unwrap();
+        let phr = root.path().join(".phronesis");
+        std::fs::create_dir_all(&phr).unwrap();
+        std::fs::write(phr.join("rules.json"), r#"{"rules":[]}"#).unwrap();
+        let error = run(root.path()).unwrap_err();
+        assert!(error.to_string().contains("memory"));
+    }
+}
+
 /// Same as [`run`], but with an explicit memory-directory path —
 /// useful for tests and for callers who don't store memory in the
 /// default Claude Code location.

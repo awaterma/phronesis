@@ -305,6 +305,14 @@ pub fn migrate(path: &Path, dry_run: bool) -> Result<Outcome, MigrateError> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn durable_path_is_project_scoped() {
+        assert_eq!(
+            durable_path(Path::new("/tmp/project")),
+            PathBuf::from("/tmp/project/.phronesis/durable.md")
+        );
+    }
+
     fn write_durable(root: &std::path::Path, body: &str) -> std::path::PathBuf {
         let dir = root.join(".phronesis");
         std::fs::create_dir_all(&dir).expect("mkdir");

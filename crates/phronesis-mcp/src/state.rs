@@ -117,6 +117,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn format_bytes_uses_byte_kib_and_mib_units() {
+        assert_eq!(format_bytes(7), "7 B");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(1_572_864), "1.5 MiB");
+    }
+
+    #[test]
     fn cleanup_removes_only_rebuildable_graph_files() {
         let dir = tempfile::tempdir().expect("tempdir");
         let phr = dir.path().join(".phronesis");

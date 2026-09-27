@@ -3038,6 +3038,27 @@ fn helm3_rules() -> Value {
 mod tests {
     use super::*;
 
+    #[test]
+    fn user_config_paths_are_based_on_home() {
+        let home = tempfile::tempdir().unwrap();
+        let old = std::env::var_os("HOME");
+        unsafe {
+            std::env::set_var("HOME", home.path());
+        }
+        assert_eq!(
+            user_claude_config_path(),
+            Some(home.path().join(".claude.json"))
+        );
+        assert_eq!(
+            user_gemini_config_path(),
+            Some(home.path().join(".gemini/settings.json"))
+        );
+        match old {
+            Some(value) => unsafe { std::env::set_var("HOME", value) },
+            None => unsafe { std::env::remove_var("HOME") },
+        }
+    }
+
     /// Load-time rule validation fails closed (decision D1), so a starter
     /// pack that no longer validates would make every hook in a freshly
     /// initialized project block. Every pack, alone and composed, must load.

@@ -141,12 +141,35 @@ pub fn validate_body(
             return Err(denied(language, construct));
         }
     }
-    let outside_strings = strip_string_literals(body);
+    // Every occurrence must lie wholly inside inert text: a value that
+    // straddles a literal boundary (`a' + x + 'b`) touches live code.
+    let live: Vec<bool> = non_rust_inert_mask(language, body)
+        .into_iter()
+        .map(|inert| !inert)
+        .collect();
+    check_interpolations(body, interpolated, &live)
+}
+
+/// Reject if any occurrence (overlapping ones included) of any non-empty
+/// interpolated value overlaps a live byte of `body`.
+fn check_interpolations(
+    body: &str,
+    interpolated: &[&str],
+    live: &[bool],
+) -> Result<(), BodyValidationError> {
     for value in interpolated {
-        if !value.is_empty() && outside_strings.contains(value) {
-            return Err(BodyValidationError::InterpolationOutsideString {
-                interpolated: (*value).to_string(),
-            });
+        if value.is_empty() {
+            continue;
+        }
+        let mut from = 0;
+        while let Some(pos) = body[from..].find(value) {
+            let start = from + pos;
+            if live[start..start + value.len()].iter().any(|b| *b) {
+                return Err(BodyValidationError::InterpolationOutsideString {
+                    interpolated: (*value).to_string(),
+                });
+            }
+            from = start + body[start..].chars().next().map_or(1, char::len_utf8);
         }
     }
     Ok(())
@@ -193,23 +216,7 @@ fn check_rust_body(body: &str, interpolated: &[&str]) -> Result<(), BodyValidati
     // tokens, comments, and whitespace stay unmarked.
     let mut live = vec![false; body.len()];
     mark_live(body, &tokens, &mut live);
-    for value in interpolated {
-        if value.is_empty() {
-            continue;
-        }
-        // Every occurrence, overlapping ones included.
-        let mut from = 0;
-        while let Some(pos) = body[from..].find(value) {
-            let start = from + pos;
-            if live[start..start + value.len()].iter().any(|b| *b) {
-                return Err(BodyValidationError::InterpolationOutsideString {
-                    interpolated: (*value).to_string(),
-                });
-            }
-            from = start + body[start..].chars().next().map_or(1, char::len_utf8);
-        }
-    }
-    Ok(())
+    check_interpolations(body, interpolated, &live)
 }
 
 /// Deepest group nesting in `tokens`, computed without recursion (the lexer
@@ -510,42 +517,299 @@ fn expand_use_group(group: &TokenStream, prefix: &[String], hits: &mut Vec<PathH
     }
 }
 
-/// Non-rust fallback: remove `"..."` literals and `//` line comments so what
-/// remains is code structure — the region where interpolated values are
-/// forbidden.
-fn strip_string_literals(body: &str) -> String {
-    let mut out = String::with_capacity(body.len());
-    let mut chars = body.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => {
-                out.push(' ');
-                // consume the literal, honoring backslash escapes
-                let mut escaped = false;
-                for d in chars.by_ref() {
-                    if escaped {
-                        escaped = false;
-                    } else if d == '\\' {
-                        escaped = true;
-                    } else if d == '"' {
-                        break;
-                    }
-                }
-            }
-            '/' if chars.peek() == Some(&'/') => {
-                // line comment: skip to end of line
-                out.push(' ');
-                for d in chars.by_ref() {
-                    if d == '\n' {
-                        out.push('\n');
-                        break;
-                    }
-                }
-            }
-            _ => out.push(c),
+/// Non-rust fallback: which bytes of `body` are inert — inside a string
+/// literal or a comment — so an interpolated value may sit there. Every other
+/// byte (code, whitespace between tokens) is live. Language-aware: python
+/// gets its own lexer (see `python_inert_chars`); every other non-rust
+/// language keeps the original `"..."` / `//` handling.
+///
+/// Fails safe: text the lexer cannot place with certainty (an unterminated
+/// literal and everything after it) stays live — over-rejecting is safe,
+/// under-rejecting is a bypass.
+fn non_rust_inert_mask(language: &str, body: &str) -> Vec<bool> {
+    let chars: Vec<char> = body.chars().collect();
+    let inert_chars = if language == "python" {
+        python_inert_chars(&chars)
+    } else {
+        generic_inert_chars(&chars)
+    };
+    let mut inert = vec![false; body.len()];
+    for ((byte, c), is_inert) in body.char_indices().zip(inert_chars) {
+        if is_inert {
+            inert[byte..byte + c.len_utf8()].fill(true);
         }
     }
-    out
+    inert
+}
+
+/// `"..."` string literals (backslash escapes honored) and `//` line
+/// comments. An unterminated string leaves it and the rest of the body live.
+fn generic_inert_chars(chars: &[char]) -> Vec<bool> {
+    let mut inert = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '"' => {
+                let mut j = i + 1;
+                let mut end = None;
+                while j < chars.len() {
+                    match chars[j] {
+                        '\\' => j += 2,
+                        '"' => {
+                            end = Some(j + 1);
+                            break;
+                        }
+                        _ => j += 1,
+                    }
+                }
+                let Some(end) = end else { break };
+                inert[i..end].fill(true);
+                i = end;
+            }
+            '/' if chars.get(i + 1) == Some(&'/') => {
+                let start = i;
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                inert[start..i].fill(true);
+            }
+            _ => i += 1,
+        }
+    }
+    inert
+}
+
+/// Nesting limit for Python f-/t-string replacement fields and the strings
+/// nested inside them. Deeper nesting fails safe (treated as unterminated),
+/// which also bounds the lexer's recursion.
+const PYTHON_MAX_NESTING: usize = 32;
+
+/// A Python identifier character, for the prefix boundary check. Any
+/// non-ASCII character counts: outside a string or comment CPython accepts
+/// non-ASCII only in identifiers, so `éf'{x}'` is the name `éf` followed by
+/// a plain string, never an f-string.
+fn is_python_ident_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || !c.is_ascii()
+}
+
+/// A Python string literal starting at `chars[i]`: a bare quote, or one or
+/// two prefix letters (`r`/`b`/`u`/`f`/`t`, any case) at a token boundary
+/// immediately followed by a quote. Returns `(prefix_len, interpolates)`,
+/// where `interpolates` marks an f-string or t-string (PEP 750), whose
+/// `{...}` replacement fields are code.
+///
+/// Any one- or two-letter combination is accepted, including ones CPython
+/// refuses (`ur`, `bf`, `ff`): CPython rejects such a program outright, so
+/// how it is lexed here cannot hide live code, and treating it as a string
+/// that interpolates is the conservative reading.
+fn python_string_start(chars: &[char], i: usize) -> Option<(usize, bool)> {
+    let c = chars[i];
+    if c == '\'' || c == '"' {
+        return Some((0, false));
+    }
+    if i > 0 && is_python_ident_char(chars[i - 1]) {
+        return None;
+    }
+    let is_prefix = |c: &char| "rRbBuUfFtT".contains(*c);
+    for len in [1usize, 2] {
+        let slice = chars.get(i..i + len)?;
+        if !slice.iter().all(is_prefix) {
+            return None;
+        }
+        if matches!(chars.get(i + len), Some('\'' | '"')) {
+            let interpolates = slice.iter().any(|c| "fFtT".contains(*c));
+            return Some((len, interpolates));
+        }
+    }
+    None
+}
+
+/// Python-aware fallback lexer: marks `'...'`/`"..."`/`'''...'''`/`"""..."""`
+/// string literals (with any prefix) and `#` line comments inert; everything
+/// else is code.
+///
+/// Termination follows CPython's tokenizer, not the literal's value: a
+/// backslash always takes the next character with it — in raw strings too,
+/// where the backslash stays in the value but `r'x\'` still does not close
+/// at the escaped quote — and a single-quoted literal ends at an unescaped
+/// newline (CPython rejects it). In an f-/t-string the one exception is `\{`
+/// / `\}`: the backslash is literal and the brace still opens a replacement
+/// field (or is a doubled brace), as CPython does.
+///
+/// f-/t-strings are only partly inert: a `{expr}` replacement field is code
+/// and stays live (so an interpolated value there is still caught), while
+/// `{{`/`}}` are literal braces and the rest of the literal text is inert.
+/// A field is scanned with the PEP 701 (Python 3.12+) grammar — nested
+/// strings of any quote, prefix, and escapes, `#` comments, brackets, and a
+/// `:` format spec with nested fields — so a `}` or quote inside any of those
+/// cannot end the field or the string early. Everything inside a field,
+/// nested strings included, stays live.
+///
+/// Fails safe: a literal that never finds its closing quote(s) (or nests
+/// deeper than `PYTHON_MAX_NESTING`) leaves it and the rest of the body live.
+fn python_inert_chars(chars: &[char]) -> Vec<bool> {
+    let mut inert = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '#' {
+            let start = i;
+            while i < chars.len() && chars[i] != '\n' {
+                i += 1;
+            }
+            inert[start..i].fill(true);
+            continue;
+        }
+        if let Some(prefix) = python_string_start(chars, i) {
+            let mut segments = Vec::new();
+            match scan_python_string(chars, i, prefix, 0, Some(&mut segments)) {
+                Some(end) => {
+                    for segment in segments {
+                        inert[segment].fill(true);
+                    }
+                    i = end;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        i += 1;
+    }
+    inert
+}
+
+/// Scan the string literal whose prefix starts at `chars[start]`; return the
+/// index just past its closing quote(s), or `None` if it is unterminated.
+/// With `segments`, record the literal (non-field) character ranges.
+fn scan_python_string(
+    chars: &[char],
+    start: usize,
+    (prefix_len, interpolates): (usize, bool),
+    depth: usize,
+    mut segments: Option<&mut Vec<std::ops::Range<usize>>>,
+) -> Option<usize> {
+    if depth > PYTHON_MAX_NESTING {
+        return None;
+    }
+    let q = start + prefix_len;
+    let qc = chars[q];
+    let triple = chars.get(q + 1) == Some(&qc) && chars.get(q + 2) == Some(&qc);
+    let quote_len = if triple { 3 } else { 1 };
+    let mut literal_start = start;
+    let mut j = q + quote_len;
+    loop {
+        let d = *chars.get(j)?;
+        if closes_python_string(chars, j, qc, triple) {
+            let end = j + quote_len;
+            if let Some(segments) = segments.as_deref_mut() {
+                segments.push(literal_start..end);
+            }
+            return Some(end);
+        }
+        match d {
+            '\n' if !triple => return None,
+            '\\' => {
+                let next = *chars.get(j + 1)?;
+                j += if interpolates && (next == '{' || next == '}') {
+                    1
+                } else {
+                    2
+                };
+            }
+            '{' if interpolates => {
+                if chars.get(j + 1) == Some(&'{') {
+                    j += 2;
+                    continue;
+                }
+                if let Some(segments) = segments.as_deref_mut() {
+                    segments.push(literal_start..j);
+                }
+                j = scan_python_field(chars, j + 1, qc, triple, depth + 1)?;
+                literal_start = j;
+            }
+            _ => j += 1,
+        }
+    }
+}
+
+fn closes_python_string(chars: &[char], j: usize, qc: char, triple: bool) -> bool {
+    chars[j] == qc && (!triple || (chars.get(j + 1) == Some(&qc) && chars.get(j + 2) == Some(&qc)))
+}
+
+/// Scan an f-/t-string replacement field whose `{` sits just before
+/// `chars[j]`; return the index just past its closing `}`. `qc`/`triple`
+/// describe the enclosing literal.
+fn scan_python_field(
+    chars: &[char],
+    mut j: usize,
+    qc: char,
+    triple: bool,
+    depth: usize,
+) -> Option<usize> {
+    if depth > PYTHON_MAX_NESTING {
+        return None;
+    }
+    let mut brackets = 0usize;
+    loop {
+        let c = *chars.get(j)?;
+        if let Some(prefix) = python_string_start(chars, j) {
+            j = scan_python_string(chars, j, prefix, depth + 1, None)?;
+            continue;
+        }
+        match c {
+            '#' => {
+                while chars.get(j).is_some_and(|c| *c != '\n') {
+                    j += 1;
+                }
+            }
+            '\\' => j += 2,
+            '(' | '[' | '{' => {
+                brackets += 1;
+                j += 1;
+            }
+            ')' | ']' => {
+                brackets = brackets.saturating_sub(1);
+                j += 1;
+            }
+            '}' if brackets == 0 => return Some(j + 1),
+            '}' => {
+                brackets -= 1;
+                j += 1;
+            }
+            ':' if brackets == 0 => {
+                return scan_python_format_spec(chars, j + 1, qc, triple, depth);
+            }
+            _ => j += 1,
+        }
+    }
+}
+
+/// Scan a replacement field's format spec (after its top-level `:`); return
+/// the index just past the field's closing `}`. The spec is literal text in
+/// which `{` opens a nested field and a backslash escapes as in the literal
+/// part; the enclosing literal's closing quote here is a CPython error.
+fn scan_python_format_spec(
+    chars: &[char],
+    mut j: usize,
+    qc: char,
+    triple: bool,
+    depth: usize,
+) -> Option<usize> {
+    loop {
+        let c = *chars.get(j)?;
+        if closes_python_string(chars, j, qc, triple) {
+            return None;
+        }
+        match c {
+            '\n' if !triple => return None,
+            '\\' => {
+                let next = *chars.get(j + 1)?;
+                j += if next == '{' || next == '}' { 1 } else { 2 };
+            }
+            '{' => j = scan_python_field(chars, j + 1, qc, triple, depth + 1)?,
+            '}' => return Some(j + 1),
+            _ => j += 1,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -554,6 +818,213 @@ mod tests {
 
     fn rejects(body: &str, interpolated: &[&str]) -> bool {
         validate_body("rust", body, interpolated).is_err()
+    }
+
+    #[test]
+    fn non_rust_validation_ignores_interpolation_inside_strings_and_comments() {
+        assert!(
+            validate_body(
+                "python",
+                "message = 'unsafe_value' # unsafe_value",
+                &["unsafe_value"]
+            )
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_body("python", "value = unsafe_value", &["unsafe_value"]),
+            Err(BodyValidationError::InterpolationOutsideString { .. })
+        ));
+    }
+
+    #[test]
+    fn python_single_quotes_and_triple_quotes_spanning_lines_are_inert() {
+        assert!(validate_body("python", "message = 'unsafe_value'", &["unsafe_value"]).is_ok());
+        let body = "message = \"\"\"line one\nunsafe_value\nline three\"\"\"";
+        assert!(validate_body("python", body, &["unsafe_value"]).is_ok());
+        let body = "message = '''line one\nunsafe_value\nline three'''";
+        assert!(validate_body("python", body, &["unsafe_value"]).is_ok());
+    }
+
+    #[test]
+    fn python_escaped_quote_inside_string_does_not_end_it() {
+        // The escaped quote must not terminate the literal early and expose
+        // the rest of the line as live code.
+        let body = r"message = 'a\'unsafe_value'";
+        assert!(validate_body("python", body, &["unsafe_value"]).is_ok());
+    }
+
+    fn python_live(body: &str) -> bool {
+        matches!(
+            validate_body("python", body, &["unsafe_value"]),
+            Err(BodyValidationError::InterpolationOutsideString { .. })
+        )
+    }
+
+    #[test]
+    fn python_raw_string_backslash_still_protects_the_next_character() {
+        // CPython: in `r'x\' y '` the backslash keeps the `'` from closing
+        // the literal (it stays in the value), so the string is `x\' y ` and
+        // `unsafe_value` is live code between two strings.
+        assert!(python_live(r"s = r'x\' y ' + unsafe_value + ' z'"));
+        // Unterminated under CPython rules: fails safe, stays live.
+        assert!(python_live(r"value = r'a\' unsafe_value"));
+        // A raw string containing the value with no embedded escapes is inert.
+        assert!(!python_live(r"value = r'unsafe_value'"));
+        // ...and one whose backslash-quote keeps the value inside is inert.
+        assert!(!python_live(r"value = r'a\' unsafe_value'"));
+    }
+
+    #[test]
+    fn python_raw_prefix_variants_do_not_misalign() {
+        for prefix in ["r", "R", "rb", "Rb", "bR", "BR", "rf", "Rf", "fR", "FR"] {
+            let body = format!(r"s = {prefix}'x\' y ' + unsafe_value + ' z'");
+            assert!(python_live(&body), "{body}");
+            let body = format!(r#"s = {prefix}"x\" y " + unsafe_value + " z""#);
+            assert!(python_live(&body), "{body}");
+            let body = format!(r"s = {prefix}'''x\''' y ''' + unsafe_value + ''' z'''");
+            assert!(python_live(&body), "{body}");
+            let body = format!(r#"s = {prefix}"""x\""" y """ + unsafe_value + """ z""""#);
+            assert!(python_live(&body), "{body}");
+        }
+    }
+
+    #[test]
+    fn python_backslash_quote_inside_raw_triple_string_does_not_end_it() {
+        // `\'''` inside a raw triple string: the backslash takes the first
+        // quote, so the literal ends at the second `'''`.
+        assert!(!python_live(r"s = r'''a\''' unsafe_value '''"));
+        assert!(python_live(r"s = rb'''a\'''b''' + unsafe_value"));
+        // A trailing backslash can never close the literal: fail safe.
+        assert!(python_live("s = r'unsafe_value\\"));
+    }
+
+    #[test]
+    fn python_fstring_field_nested_string_honors_escapes() {
+        // PEP 701: the nested `"\"}"` is one string, so its `}` does not end
+        // the field and `+ unsafe_value` is live inside it.
+        assert!(python_live(r#"s = f'{"\"}" + unsafe_value}'"#));
+        assert!(python_live(r#"s = f'{r"\"}" + unsafe_value}'"#));
+        assert!(python_live(r#"s = f'{f"{'}'}" + unsafe_value}'"#));
+    }
+
+    #[test]
+    fn python_fstring_field_comment_and_format_spec_do_not_end_it_early() {
+        // A `}` inside a field's comment does not close the field.
+        assert!(python_live("s = f'''{x # }\n + unsafe_value}'''"));
+        // A quote inside a format spec is literal text, not a nested string.
+        assert!(python_live(r#"s = f'{x:"}' + "}" + unsafe_value + "'""#));
+        // Nested fields in a format spec are live.
+        assert!(python_live("s = f'{x:{unsafe_value}}'"));
+    }
+
+    #[test]
+    fn python_backslash_brace_in_fstring_still_opens_a_field() {
+        // CPython: `\{` in an f-string is a literal backslash, then a field.
+        assert!(python_live(r"s = f'\{unsafe_value}'"));
+        assert!(python_live(r"s = rf'\{unsafe_value}'"));
+        assert!(!python_live(r"s = '\{unsafe_value}'"));
+    }
+
+    #[test]
+    fn python_tstring_replacement_field_is_live() {
+        for prefix in ["t", "T", "tr", "rt", "Rt", "TR"] {
+            let body = format!("s = {prefix}'{{unsafe_value}}'");
+            assert!(python_live(&body), "{body}");
+        }
+        assert!(!python_live("s = t'unsafe_value'"));
+    }
+
+    #[test]
+    fn python_prefix_letters_after_identifier_are_not_a_prefix() {
+        // `xf'...'` is the name `xf` then a plain string (CPython rejects the
+        // program; either way the braces are not a field).
+        assert!(!python_live("s = xf'{unsafe_value}'"));
+        // Non-ASCII identifier characters count too.
+        assert!(!python_live("s = éf'{unsafe_value}'"));
+        // `if` then a plain string, as CPython tokenizes `1if'...'`.
+        assert!(!python_live("s = 1if'{unsafe_value}'else'y'"));
+    }
+
+    #[test]
+    fn python_single_quoted_string_ends_at_unescaped_newline() {
+        // CPython refuses the newline; the lexer fails safe instead of
+        // reading on to the next line's quote.
+        assert!(python_live("s = 'a\nunsafe_value'"));
+        // An escaped newline is a line continuation inside the literal.
+        assert!(!python_live("s = 'a\\\nunsafe_value'"));
+    }
+
+    #[test]
+    fn value_straddling_a_python_literal_boundary_is_rejected() {
+        let body = "s = 'a' + unsafe + 'b'";
+        assert!(validate_body("python", body, &["a' + unsafe + 'b"]).is_err());
+        assert!(validate_body("python", body, &["a' "]).is_err());
+        assert!(validate_body("python", body, &["b"]).is_ok());
+    }
+
+    #[test]
+    fn generic_unterminated_string_fails_safe() {
+        assert!(validate_body("lean", "x := \"unsafe_value", &["unsafe_value"]).is_err());
+        assert!(
+            validate_body(
+                "lean",
+                "x := \"unsafe_value\" // unsafe_value",
+                &["unsafe_value"]
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn python_hash_inside_string_is_not_a_comment() {
+        let body = "message = 'unsafe_value # not a comment'\nlive_code()";
+        assert!(validate_body("python", body, &["unsafe_value"]).is_ok());
+        assert!(matches!(
+            validate_body("python", body, &["live_code"]),
+            Err(BodyValidationError::InterpolationOutsideString { .. })
+        ));
+    }
+
+    #[test]
+    fn python_fstring_literal_part_is_inert_but_replacement_field_is_live() {
+        // The value sitting in the literal text of an f-string is inert.
+        assert!(
+            validate_body(
+                "python",
+                "message = f'safe: unsafe_value'",
+                &["unsafe_value"]
+            )
+            .is_ok()
+        );
+        // The value sitting inside a `{}` replacement field is live code.
+        assert!(matches!(
+            validate_body("python", "message = f'{unsafe_value}'", &["unsafe_value"]),
+            Err(BodyValidationError::InterpolationOutsideString { .. })
+        ));
+    }
+
+    #[test]
+    fn python_fstring_escaped_braces_are_inert() {
+        assert!(
+            validate_body("python", "message = f'{{unsafe_value}}'", &["unsafe_value"]).is_ok()
+        );
+    }
+
+    #[test]
+    fn python_unterminated_string_fails_safe_never_accepts() {
+        // No closing quote: the dangling literal (and whatever text follows
+        // it on the line) must be treated as live code, not silently inert.
+        let body = "message = 'unsafe_value";
+        assert!(matches!(
+            validate_body("python", body, &["unsafe_value"]),
+            Err(BodyValidationError::InterpolationOutsideString { .. })
+        ));
+        // Unterminated triple-quoted string.
+        let body = "message = '''unsafe_value";
+        assert!(matches!(
+            validate_body("python", body, &["unsafe_value"]),
+            Err(BodyValidationError::InterpolationOutsideString { .. })
+        ));
     }
 
     #[test]

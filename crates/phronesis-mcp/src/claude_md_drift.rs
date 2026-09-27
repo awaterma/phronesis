@@ -420,6 +420,30 @@ pub fn render_json(report: &DriftReport) -> String {
     .to_string()
 }
 
+#[cfg(test)]
+mod render_json_tests {
+    use super::*;
+
+    #[test]
+    fn json_renderer_preserves_report_shape_and_coverage() {
+        let report = DriftReport {
+            claude_md_path: "CLAUDE.md".into(),
+            rules_path: "rules.json".into(),
+            items: vec![DriftItem {
+                imperative: "Use stable ids".into(),
+                guidance_paths: vec![],
+                best_match: None,
+                similarity: 0.0,
+            }],
+            coverage_threshold: 0.15,
+        };
+        let value: serde_json::Value = serde_json::from_str(&render_json(&report)).unwrap();
+        assert_eq!(value["claude_md_path"], "CLAUDE.md");
+        assert_eq!(value["items"][0]["imperative"], "Use stable ids");
+        assert_eq!(value["items"][0]["covered"], false);
+    }
+}
+
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n {
         s.to_string()

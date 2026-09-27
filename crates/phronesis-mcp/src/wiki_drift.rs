@@ -61,6 +61,21 @@ pub fn run(project_root: &Path) -> Result<DriftReport, DriftError> {
     run_with_dir(project_root, &dir)
 }
 
+#[cfg(test)]
+mod run_entry_tests {
+    use super::*;
+
+    #[test]
+    fn run_reads_default_decisions_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let phr = root.path().join(".phronesis");
+        std::fs::create_dir_all(phr.join("wiki/decisions")).unwrap();
+        std::fs::write(phr.join("rules.json"), r#"{"rules":[]}"#).unwrap();
+        let report = run(root.path()).unwrap();
+        assert!(report.items.is_empty());
+    }
+}
+
 /// Override entry: scan an arbitrary decisions directory. Useful for tests
 /// and for callers who put the wiki elsewhere.
 pub fn run_with_dir(project_root: &Path, decisions_dir: &Path) -> Result<DriftReport, DriftError> {

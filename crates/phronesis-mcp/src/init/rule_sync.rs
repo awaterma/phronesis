@@ -160,6 +160,19 @@ pub(super) fn write_rules_file(
 mod tests {
     use super::*;
 
+    #[test]
+    fn io_error_preserves_path_and_source() {
+        let error = io_error(
+            Path::new("rules.json"),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        let shown = error.to_string();
+        assert!(shown.contains("rules.json"));
+        assert!(
+            matches!(error, InitError::Io { source, .. } if source.kind() == std::io::ErrorKind::PermissionDenied)
+        );
+    }
+
     fn rule(id: &str, priority: u32) -> Value {
         json!({"id": id, "phase": "pre", "priority": priority, "when": [{"new_content_contains": "x"}], "then": {"block": "test rule"}})
     }
