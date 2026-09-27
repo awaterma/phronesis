@@ -10,11 +10,11 @@ context window at every tool call, and cannot be compressed away.
 ## Quick start
 
 ```sh
-# Install the binary
+# Install the binary (includes the local-only Prometheus/OpenMetrics exporter)
 cargo install phronesis-mcp
 
-# Optional: include the local-only Prometheus/OpenMetrics exporter
-cargo install phronesis-mcp --features metrics
+# Optional: a dependency-minimal build without the exporter
+cargo install phronesis-mcp --no-default-features --features rhai
 
 # Register globally for Claude Code + Gemini CLI.
 # Codex receives project-scoped MCP registration during init.

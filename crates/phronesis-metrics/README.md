@@ -21,10 +21,11 @@ scrape.
 
 ## Usage
 
-Metrics are off by default. Build `phr-mcp` with the `metrics` feature:
+Metrics are on by default: `cargo install phronesis-mcp` includes the
+exporter. A dependency-minimal build leaves it out:
 
 ```sh
-cargo install phronesis-mcp --features metrics
+cargo install phronesis-mcp --no-default-features --features rhai
 ```
 
 One scrape to stdout:

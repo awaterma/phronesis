@@ -32,10 +32,10 @@ jobs:
       # each get their own clippy + test pass.
       - run: cargo clippy -p phronesis --all-targets --features embedding-host -- -D warnings
       - run: cargo test -p phronesis --features embedding-host
-      - run: cargo clippy -p phronesis-mcp --all-targets --features rhai -- -D warnings
-      - run: cargo test -p phronesis-mcp --features rhai
-      - run: cargo clippy -p phronesis-mcp --all-targets --features metrics -- -D warnings
-      - run: cargo test -p phronesis-mcp --features metrics
+      # Default features now include metrics, so the workspace pass covers
+      # it; this pass keeps the dependency-minimal build from bit-rotting.
+      - run: cargo clippy -p phronesis-mcp --all-targets --no-default-features --features rhai -- -D warnings
+      - run: cargo test -p phronesis-mcp --no-default-features --features rhai
 
   # Forward-compat canary: tests on current stable. No clippy here, so new
   # stable lints can't fail the build.

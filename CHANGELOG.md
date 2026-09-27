@@ -6,6 +6,13 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Changed
+
+- **`phr-mcp` now ships with the Prometheus exporter.** The `metrics` feature
+  is on by default, so `cargo install phronesis-mcp` includes `phr-mcp
+  metrics` and the `/metrics` endpoint. A build without the HTTP stack is
+  still available with `--no-default-features --features rhai`.
+
 ### Fixed
 
 - **The nudge README that `init` writes showed a capsule that could never
