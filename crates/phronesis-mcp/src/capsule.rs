@@ -30,8 +30,6 @@ const MAX_RECORD_BYTES: usize = 8 * 1024;
 const MAX_PROVENANCE_ITEMS: usize = 32;
 pub const LEASE_SECS: u64 = 300;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-#[cfg(test)]
-static SESSION_ID_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -789,7 +787,11 @@ fn bounded(value: &str) -> String {
 
 /// Get current session ID from environment or generate one.
 pub fn get_session_id() -> String {
-    std::env::var("PHRONESIS_SESSION_ID").unwrap_or_else(|_| format!("session-{}", unix_secs_now()))
+    session_id_from(std::env::var("PHRONESIS_SESSION_ID").ok(), unix_secs_now())
+}
+
+fn session_id_from(env_value: Option<String>, now_secs: u64) -> String {
+    env_value.unwrap_or_else(|| format!("session-{now_secs}"))
 }
 
 pub fn unix_secs_now() -> u64 {
@@ -999,34 +1001,11 @@ mod tests {
 
     #[test]
     fn session_id_uses_environment_or_generates_a_timestamped_id() {
-        let _guard = SESSION_ID_ENV_LOCK.lock().unwrap();
-        let previous = std::env::var_os("PHRONESIS_SESSION_ID");
-
-        // SAFETY: This test holds the module lock while it mutates the process
-        // environment, and no other code reads this variable concurrently.
-        unsafe { std::env::set_var("PHRONESIS_SESSION_ID", "test-session-override") };
-        assert_eq!(get_session_id(), "test-session-override");
-
-        // SAFETY: Same serialization guarantee as above.
-        unsafe { std::env::remove_var("PHRONESIS_SESSION_ID") };
-        let before = unix_secs_now();
-        let id = get_session_id();
-        let after = unix_secs_now();
-        let secs: u64 = id
-            .strip_prefix("session-")
-            .and_then(|n| n.parse().ok())
-            .unwrap_or_else(|| panic!("generated id is not session-<unix secs>: {id}"));
-        assert!(
-            (before..=after).contains(&secs),
-            "generated id {id} is outside [{before}, {after}]"
+        assert_eq!(
+            session_id_from(Some("test-session-override".to_owned()), 42),
+            "test-session-override"
         );
-
-        // SAFETY: Restore the exact prior environment state while still
-        // holding the lock.
-        match previous {
-            Some(value) => unsafe { std::env::set_var("PHRONESIS_SESSION_ID", value) },
-            None => unsafe { std::env::remove_var("PHRONESIS_SESSION_ID") },
-        }
+        assert_eq!(session_id_from(None, 42), "session-42");
     }
 
     #[test]

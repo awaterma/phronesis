@@ -70,22 +70,35 @@ impl Client {
 
     fn finish(mut self) {
         drop(self.stdin.take());
+        let mut stdout = self.stdout;
+        let drain = std::thread::spawn(move || {
+            let mut remaining = String::new();
+            stdout
+                .read_to_string(&mut remaining)
+                .expect("drain server stdout");
+            remaining
+        });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         let status = loop {
-            if let Some(status) = self.child.try_wait().expect("poll MCP server exit") {
-                break status;
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => {}
+                Err(error) => {
+                    let _ = self.child.kill();
+                    let _ = self.child.wait();
+                    let _ = drain.join();
+                    panic!("poll MCP server exit: {error}");
+                }
             }
             if std::time::Instant::now() >= deadline {
-                self.child.kill().expect("kill hung MCP server");
+                let _ = self.child.kill();
                 let _ = self.child.wait();
+                let _ = drain.join();
                 panic!("MCP server did not exit within 10 seconds after stdin EOF");
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         };
-        let mut remaining = String::new();
-        self.stdout
-            .read_to_string(&mut remaining)
-            .expect("drain server stdout");
+        let remaining = drain.join().expect("stdout drain thread");
         assert!(
             status.success(),
             "server exited with {status}; trailing output: {remaining}"
