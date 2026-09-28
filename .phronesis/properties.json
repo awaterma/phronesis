@@ -2,32 +2,260 @@
   "version": 1,
   "properties": [
     {
-      "id": "safe_divide.nonzero_returns_quotient",
-      "subject": "safe_divide",
-      "kind": "postcondition",
+      "id": "rules_file.loader_fail_closed",
+      "subject": "rules_file",
+      "kind": "totality",
+      "condition": "a rule object with an unknown key, an unknown phase, an unknown then verb, an empty when, a duplicate id, or a non-string v1 arg is presented to the rules loader or the add_rule tool",
+      "guarantee": "loading fails with an error naming the rule id, the offending field, and the allowed values; no malformed rule is silently dropped or defaulted into the network",
       "depends_on": [
-        "fn:safe_divide"
+        "fn:crates/phronesis-mcp/src/rules_file.rs::check_action_type",
+        "fn:crates/phronesis-mcp/src/rules_file.rs::check_conditions_nonempty",
+        "fn:crates/phronesis-mcp/src/rules_file.rs::check_single_action"
       ],
-      "source": "explicit_spec",
-      "status": "accepted",
-      "corroborated_by": [],
+      "source": "runtime_observation",
+      "status": "corroborated",
+      "corroborated_by": [
+        "crates/phronesis-mcp/tests/rule_load_error_recovery.rs",
+        ".phronesis/log.jsonl"
+      ],
       "encodings": []
     },
     {
-      "id": "safe_divide.zero_returns_error",
-      "subject": "safe_divide",
-      "kind": "postcondition",
-      "condition": "denominator == 0",
-      "guarantee": "result is Error",
+      "id": "rules_file.or_expansion_equivalence",
+      "subject": "rules_file",
+      "kind": "equivalence",
+      "condition": "a rule containing an or block is loaded, expanded to orN-suffixed rules, and serialized back to disk",
+      "guarantee": "for every fact set, the union of firings of the expanded rules equals the firings of the original rule, with per-expansion priority, actions, and variable bindings preserved, and a deterministic expansion id set",
       "depends_on": [
-        "branch:safe_divide:cd6054b02dde"
+        "file:crates/phronesis-mcp/src/rules_file.rs"
       ],
-      "source": "explicit_spec",
-      "status": "accepted",
+      "source": "runtime_observation",
+      "status": "observed",
       "corroborated_by": [
-        "docs/specs/SPEC-property-ontology.md"
+        "crates/phronesis-mcp/tests/features/rules_management.feature",
+        ".phronesis/log.jsonl"
       ],
       "encodings": []
+    },
+    {
+      "id": "rules_file.load_convergence",
+      "subject": "rules_file",
+      "kind": "postcondition",
+      "condition": "load_rules_file runs while in-memory rules share ids with disk rules whose field values differ",
+      "guarantee": "after load_rules_file, every rule in memory equals its on-disk record; a duplicate id never leaves a stale in-memory field value",
+      "depends_on": [
+        "file:crates/phronesis-mcp/src/rules_file.rs",
+        "file:crates/phronesis-mcp/src/server.rs"
+      ],
+      "source": "agent_inference",
+      "status": "candidate",
+      "corroborated_by": [
+        ".phronesis/log.jsonl"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "rules_file.audit_flag_persistence",
+      "subject": "rules_file",
+      "kind": "invariant",
+      "condition": "a rule participates in audit (audit true) and any save, load, or autosave path rewrites the rules file or the in-memory network",
+      "guarantee": "the audit flag is preserved on disk and in memory across every save/load path; no path silently drops it",
+      "depends_on": [
+        "file:crates/phronesis-mcp/src/rules_file.rs",
+        "file:crates/phronesis-mcp/src/server.rs"
+      ],
+      "source": "agent_inference",
+      "status": "candidate",
+      "corroborated_by": [
+        ".phronesis/log.jsonl"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "rete_network.collision_free_fact_ids",
+      "subject": "rete_network",
+      "kind": "invariant",
+      "condition": "facts are asserted with caller-supplied ids and later retracted by id",
+      "guarantee": "each id addresses exactly one fact; retraction by id removes exactly that fact; a retract-and-clear cycle leaves no residual facts in working memory",
+      "depends_on": [
+        "file:crates/phronesis/src/network.rs",
+        "file:crates/phronesis/src/wme.rs"
+      ],
+      "source": "runtime_observation",
+      "status": "corroborated",
+      "corroborated_by": [
+        "crates/phronesis-mcp/tests/features/facts_management.feature",
+        ".phronesis/log.jsonl"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "hook_facts.single_file_gating_soundness",
+      "subject": "hook_facts",
+      "kind": "soundness",
+      "condition": "a per-file hook event carries exactly one edited file",
+      "guarantee": "a rule whose when clause contains a file_path_matches literal L fires only if the event file matches L; the literal cannot gate a different file's facts (multi-file batch events are out of scope: a documented cross-join boundary)",
+      "depends_on": [
+        "file:crates/phronesis-mcp/src/hook_facts.rs",
+        "file:crates/phronesis-mcp/src/hook/mod.rs"
+      ],
+      "source": "runtime_observation",
+      "status": "observed",
+      "corroborated_by": [
+        "crates/phronesis-mcp/tests/features/hooks.feature",
+        ".phronesis/log.jsonl"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "coverage_hydrate.demand_gated_assertion",
+      "subject": "coverage_hydrate",
+      "kind": "invariant",
+      "condition": "rules are loaded and an edit event is evaluated at hook fire",
+      "guarantee": "a coverage, graph, or property relation is asserted only when some loaded rule mentions that relation; no evidence store is read when nothing demands it",
+      "depends_on": [
+        "fn:crates/phronesis-mcp/src/coverage/hydrate.rs::hydrate"
+      ],
+      "source": "runtime_observation",
+      "status": "observed",
+      "corroborated_by": [
+        "crates/phronesis-mcp/tests/features/coverage-evidence.feature"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "rete_production.agenda_determinism",
+      "subject": "rete_production",
+      "kind": "determinism",
+      "condition": "multiple rules activate in one session",
+      "guarantee": "agenda order is a total order by priority descending, then activation sequence; firing consumes activations in exactly that order",
+      "depends_on": [
+        "file:crates/phronesis/src/production.rs"
+      ],
+      "source": "code_inference",
+      "status": "observed",
+      "corroborated_by": [
+        "crates/phronesis/tests/salience_order.rs"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "variable_binding.substitution_totality",
+      "subject": "variable_binding",
+      "kind": "totality",
+      "condition": "a rule fires whose action params contain ?var placeholders",
+      "guarantee": "every placeholder is replaced by the value bound in the matching join before the action executes; an unbound or conflicting placeholder never leaks a literal ?var into an emitted message",
+      "depends_on": [
+        "fn:crates/phronesis/src/variable_binding.rs::can_bind",
+        "fn:crates/phronesis/src/variable_binding.rs::merge"
+      ],
+      "source": "code_inference",
+      "status": "observed",
+      "corroborated_by": [
+        "crates/phronesis/tests/variable_binding_tests.rs",
+        ".phronesis/log.jsonl"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "beta_network.join_consistency",
+      "subject": "beta_network",
+      "kind": "soundness",
+      "condition": "a multi-condition rule joins facts into a token",
+      "guarantee": "every token's WMEs jointly satisfy the rule's joined conditions; the firing's provenance bound_facts are exactly the joined facts",
+      "depends_on": [
+        "file:crates/phronesis/src/beta_network.rs"
+      ],
+      "source": "runtime_observation",
+      "status": "observed",
+      "corroborated_by": [
+        "crates/phronesis/tests/rete_smoke.rs",
+        ".phronesis/log.jsonl"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "alpha_network.wme_uniqueness",
+      "subject": "alpha_network",
+      "kind": "invariant",
+      "condition": "the same (predicate, args) fact is asserted twice",
+      "guarantee": "the alpha store holds at most one WME per (predicate, args) key; duplicate assertion does not duplicate join results",
+      "depends_on": [
+        "file:crates/phronesis/src/alpha_network.rs",
+        "file:crates/phronesis/src/wme.rs"
+      ],
+      "source": "code_inference",
+      "status": "observed",
+      "corroborated_by": [
+        "crates/phronesis/tests/fact_query.rs"
+      ],
+      "encodings": []
+    },
+    {
+      "id": "coverage_store.valid_identifier_charset",
+      "subject": "coverage_store",
+      "kind": "invariant",
+      "condition": "validate_identifier_field scans a byte of an identifier field",
+      "guarantee": "a byte is accepted if and only if it is in A-Za-z0-9 and _ : . / -",
+      "depends_on": [
+        "fn:crates/phronesis-mcp/src/coverage/store.rs::validate_identifier_field"
+      ],
+      "source": "existing_verifier_contract",
+      "status": "accepted",
+      "corroborated_by": [
+        "crates/phronesis-mcp/verification/RESULT.md"
+      ],
+      "encodings": [
+        {
+          "language": "rust",
+          "verifier": "verus",
+          "artifact": "crates/phronesis-mcp/verification/harness.rs"
+        }
+      ]
+    },
+    {
+      "id": "coverage_store.fnv1a_determinism",
+      "subject": "coverage_store",
+      "kind": "determinism",
+      "condition": "the FNV-1a 64 hash in coverage/region_map.rs runs on input bytes",
+      "guarantee": "the hash is a pure function: identical input bytes always produce identical output",
+      "depends_on": [
+        "file:crates/phronesis-mcp/src/coverage/region_map.rs"
+      ],
+      "source": "existing_verifier_contract",
+      "status": "accepted",
+      "corroborated_by": [
+        "crates/phronesis-mcp/verification/RESULT.md"
+      ],
+      "encodings": [
+        {
+          "language": "rust",
+          "verifier": "verus",
+          "artifact": "crates/phronesis-mcp/verification/harness.rs"
+        }
+      ]
+    },
+    {
+      "id": "coverage_store.line_ordering",
+      "subject": "coverage_store",
+      "kind": "invariant",
+      "condition": "validate_record checks a record's line span",
+      "guarantee": "a record is accepted only when start_line is less than or equal to end_line",
+      "depends_on": [
+        "file:crates/phronesis-mcp/src/coverage/store.rs"
+      ],
+      "source": "existing_verifier_contract",
+      "status": "accepted",
+      "corroborated_by": [
+        "crates/phronesis-mcp/verification/RESULT.md"
+      ],
+      "encodings": [
+        {
+          "language": "rust",
+          "verifier": "verus",
+          "artifact": "crates/phronesis-mcp/verification/harness.rs"
+        }
+      ]
     }
   ]
 }
