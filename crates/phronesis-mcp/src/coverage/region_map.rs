@@ -312,17 +312,10 @@ impl BranchSite {
 /// FNV-1a 64-bit over the condition source text, rendered as 12 lowercase
 /// hex chars of the 16-hex digest. Identity is the condition text; the span
 /// (below) is the whole `if_expression` so body edits flag the branch.
-fn fnv1a_64(data: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for &byte in data {
-        hash ^= byte as u64;
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
-}
-
+/// The hash is `pure_core::fnv1a_64`, the Verus-verified core shared with
+/// the coverage store's records digest.
 fn hash12(text: &str) -> String {
-    format!("{:016x}", fnv1a_64(text.as_bytes()))[..12].to_string()
+    format!("{:016x}", super::pure_core::fnv1a_64(text.as_bytes()))[..12].to_string()
 }
 
 fn compute_anchor(condition: &str) -> String {
