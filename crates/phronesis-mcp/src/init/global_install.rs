@@ -2,9 +2,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::json;
 
+use super::binary_on_path;
 use super::json_helpers::*;
 use super::types::*;
-use super::binary_on_path;
 
 /// Path to Claude Code's user-level config (`~/.claude.json` on Unix). Returns
 /// None when `$HOME` isn't set (rare; only happens in degenerate environments).
@@ -46,7 +46,7 @@ pub(crate) fn install_one_target(
 
     let servers = config
         .as_object_mut()
-        .unwrap()
+        .expect("config was just reset to an object when it was not one")
         .entry("mcpServers".to_string())
         .or_insert_with(|| json!({}));
     if !servers.is_object() {
@@ -62,7 +62,7 @@ pub(crate) fn install_one_target(
     } else {
         servers
             .as_object_mut()
-            .unwrap()
+            .expect("servers was just reset to an object when it was not one")
             .insert("phronesis".to_string(), our_entry);
 
         if dry_run {

@@ -82,7 +82,9 @@ pub(crate) fn upsert_hook(settings: &mut Value, event: &str, new_entry: Value) {
         *arr = json!([]);
     }
     let our_matcher = new_entry["matcher"].as_str().map(String::from);
-    let arr = arr.as_array_mut().unwrap();
+    let arr = arr
+        .as_array_mut()
+        .expect("arr was just reset to an array when it was not one");
     arr.retain(|m| m["matcher"].as_str().map(String::from) != our_matcher);
     arr.push(new_entry);
 }
@@ -139,7 +141,9 @@ pub(crate) fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entr
     if !arr.is_array() {
         *arr = json!([]);
     }
-    let arr = arr.as_array_mut().unwrap();
+    let arr = arr
+        .as_array_mut()
+        .expect("arr was just reset to an array when it was not one");
     arr.retain(|entry| {
         !entry["hooks"].as_array().is_some_and(|handlers| {
             handlers.iter().any(|hook| {
@@ -167,7 +171,9 @@ pub(crate) fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Va
         *arr = json!([]);
     }
     let command = format!("phr-mcp codex-hook {event}");
-    let arr = arr.as_array_mut().unwrap();
+    let arr = arr
+        .as_array_mut()
+        .expect("arr was just reset to an array when it was not one");
     arr.retain(|entry| {
         !entry["hooks"]
             .as_array()

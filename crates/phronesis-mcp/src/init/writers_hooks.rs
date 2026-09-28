@@ -5,7 +5,11 @@ use serde_json::json;
 use super::json_helpers::*;
 use super::types::*;
 
-pub(crate) fn write_settings(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Result<(), InitError> {
+pub(crate) fn write_settings(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
     let path = root.join(".claude").join("settings.local.json");
     let existing = read_json(&path)?;
 
@@ -55,7 +59,11 @@ pub(crate) fn write_settings(root: &Path, opts: &InitOpts, report: &mut InitRepo
     Ok(())
 }
 
-pub(crate) fn write_mcp_json(root: &Path, opts: &InitOpts, report: &mut InitReport) -> Result<(), InitError> {
+pub(crate) fn write_mcp_json(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
     let path = root.join(".mcp.json");
     let existing = read_json(&path)?;
     let mut mcp = existing.unwrap_or_else(|| json!({"mcpServers": {}}));
@@ -64,19 +72,22 @@ pub(crate) fn write_mcp_json(root: &Path, opts: &InitOpts, report: &mut InitRepo
     }
     let servers = mcp
         .as_object_mut()
-        .unwrap()
+        .expect("mcp was just reset to an object when it was not one")
         .entry("mcpServers".to_string())
         .or_insert_with(|| json!({}));
     if !servers.is_object() {
         *servers = json!({});
     }
-    servers.as_object_mut().unwrap().insert(
-        "phronesis".to_string(),
-        json!({
-            "command": "phr-mcp",
-            "args": ["serve"]
-        }),
-    );
+    servers
+        .as_object_mut()
+        .expect("servers was just reset to an object when it was not one")
+        .insert(
+            "phronesis".to_string(),
+            json!({
+                "command": "phr-mcp",
+                "args": ["serve"]
+            }),
+        );
 
     write_json(&path, &mcp, opts, ".mcp.json", report)?;
     Ok(())
@@ -97,16 +108,19 @@ pub(crate) fn write_gemini_settings(
     // MCP server registration
     let servers = settings
         .as_object_mut()
-        .unwrap()
+        .expect("settings was just reset to an object when it was not one")
         .entry("mcpServers".to_string())
         .or_insert_with(|| json!({}));
     if !servers.is_object() {
         *servers = json!({});
     }
-    servers.as_object_mut().unwrap().insert(
-        "phronesis".to_string(),
-        json!({"command": "phr-mcp", "args": ["serve"]}),
-    );
+    servers
+        .as_object_mut()
+        .expect("servers was just reset to an object when it was not one")
+        .insert(
+            "phronesis".to_string(),
+            json!({"command": "phr-mcp", "args": ["serve"]}),
+        );
 
     // BeforeTool / AfterTool hooks. Gemini treats `matcher` as an unanchored
     // regex, so the previous `replace|write_file|run_shell_command` matched
