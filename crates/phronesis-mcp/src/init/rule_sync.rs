@@ -3,7 +3,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
 
-use super::{InitError, InitOpts, InitReport, compose_packs, ensure_parent, with_extension};
+use super::types::{InitError, InitOpts, InitReport, compose_packs};
+use super::json_helpers::{ensure_parent, with_extension};
 use serde_json::{Value, json};
 
 fn io_error(path: &Path, source: std::io::Error) -> InitError {

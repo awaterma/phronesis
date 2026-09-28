@@ -402,7 +402,7 @@ fn no_shipped_artifact_names_the_removed_drift_tools() {
         .expect("repo root");
 
     let checked = [
-        repo.join("crates/phronesis-mcp/src/init.rs"),
+        repo.join("crates/phronesis-mcp/src/init/mod.rs"),
         repo.join("crates/phronesis-mcp/CLAUDE.md"),
     ];
 
