@@ -36,6 +36,12 @@ schemars = ["dep:schemars"]
 # the bundled MCP consumes — the compiler then enforces that symmetry.
 embedding-host = []
 
+[lints.rust]
+# `#[cfg(kani)]` gates the Kani proof harnesses in variable_binding.rs; it
+# is set by `cargo kani`, not declared as a Cargo feature, so rustc's
+# check-cfg lint needs to be told it is a recognized, intentional cfg.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
+
 [dev-dependencies]
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["macros", "rt"] }
