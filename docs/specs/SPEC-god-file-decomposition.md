@@ -16,6 +16,15 @@
 > guidance **remains live** and is deferred to the embedded-consumer-gated
 > engine spec.
 
+> **2026-09-27 status note:** `init.rs` (5,228 lines) and `audit.rs`
+> (3,926 lines) have been decomposed into `crates/phronesis-mcp/src/init/`
+> and `crates/phronesis-mcp/src/audit/` — production modules plus a
+> `tests/` directory each, every file under the `audit-file-loc-high`
+> threshold. The moves were verbatim (visibility, `use`/`mod` wiring and
+> re-exports only), verified by a normalized line-multiset diff against
+> `5e730ef` and independent review. `server.rs` (§A) and `network.rs` (§B)
+> remain as described in the 2026-08-12 correction.
+
 > **2026-08-12 maintenance correction:** the claim above no longer describes
 > the current tree. `audit.rs` has regrown to more than 3,300 physical lines,
 > `server.rs` to more than 1,700, and `init.rs` (not covered by the original

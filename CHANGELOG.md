@@ -8,6 +8,20 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Changed
 
+- **`init.rs` and `audit.rs` are now directory modules.** The two largest
+  files in `phronesis-mcp` (5,228 and 3,926 physical lines) were split into
+  `src/init/` (types, global install, hook and scaffold writers, JSON
+  helpers, per-language rule packs, rule sync) and `src/audit/` (types,
+  engine, run, diagnostics, trend, render, graph), each with its own
+  `tests/` directory. Every new file is under the 800-line
+  `audit-file-loc-high` threshold. Code moved verbatim; the only edits are
+  visibility (`pub(crate)`/`pub(super)`), `use`/`mod` wiring, and
+  re-exports, so `crate::init::*` and `crate::audit::*` resolve as before.
+  Nine production `.unwrap()` calls in the init writers, which
+  `enforce-no-unwrap-in-src` did not report while they sat inside the
+  monolithic file, are replaced with `?` or an `expect()` naming the
+  invariant.
+
 - **`phr-mcp` now ships with the Prometheus exporter.** The `metrics` feature
   is on by default, so `cargo install phronesis-mcp` includes `phr-mcp
   metrics` and the `/metrics` endpoint. A build without the HTTP stack is

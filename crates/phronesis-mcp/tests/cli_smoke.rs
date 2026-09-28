@@ -401,10 +401,26 @@ fn no_shipped_artifact_names_the_removed_drift_tools() {
         .and_then(|p| p.parent())
         .expect("repo root");
 
-    let checked = [
-        repo.join("crates/phronesis-mcp/src/init/mod.rs"),
-        repo.join("crates/phronesis-mcp/CLAUDE.md"),
-    ];
+    let mut checked = vec![repo.join("crates/phronesis-mcp/CLAUDE.md")];
+    let init_dir = repo.join("crates/phronesis-mcp/src/init");
+    let mut pending = vec![init_dir.clone()];
+    while let Some(dir) = pending.pop() {
+        for entry in
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()))
+        {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                checked.push(path);
+            }
+        }
+    }
+    assert!(
+        checked.len() > 2,
+        "expected the init/ module tree under {}",
+        init_dir.display()
+    );
 
     for path in checked {
         let body = std::fs::read_to_string(&path)
