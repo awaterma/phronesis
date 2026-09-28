@@ -206,7 +206,8 @@
       "status": "corroborated",
       "corroborated_by": [
         "crates/phronesis-mcp/verification/RESULT.md",
-        "Mirror caveat: verification/harness.rs proves hand-copied mirror logic, not production validate_identifier_field."
+        "crates/phronesis-mcp/verification/harness.rs (Verus, 9 verified, 0 errors): proves the shared core crates/phronesis-mcp/src/coverage/pure_core.rs that production validate_identifier_field calls; the wrapper itself (length checks, formatting, error mapping) is unit-tested, not verified",
+        "crates/phronesis-mcp/tests/verus_core_pin.rs"
       ],
       "encodings": [
         {
@@ -229,7 +230,8 @@
       "status": "corroborated",
       "corroborated_by": [
         "crates/phronesis-mcp/verification/RESULT.md",
-        "Mirror caveat: verification/harness.rs proves hand-copied mirror logic, not production fnv1a_64_hex."
+        "crates/phronesis-mcp/verification/harness.rs (Verus, 9 verified, 0 errors): proves the shared core crates/phronesis-mcp/src/coverage/pure_core.rs that production fnv1a_64_hex calls; the wrapper itself (length checks, formatting, error mapping) is unit-tested, not verified",
+        "crates/phronesis-mcp/tests/verus_core_pin.rs"
       ],
       "encodings": [
         {
@@ -252,7 +254,8 @@
       "status": "corroborated",
       "corroborated_by": [
         "crates/phronesis-mcp/verification/RESULT.md",
-        "Mirror caveat: verification/harness.rs proves hand-copied mirror logic, not production validate_record."
+        "crates/phronesis-mcp/verification/harness.rs (Verus, 9 verified, 0 errors): proves the shared core crates/phronesis-mcp/src/coverage/pure_core.rs that production validate_record calls; the wrapper itself (length checks, formatting, error mapping) is unit-tested, not verified",
+        "crates/phronesis-mcp/tests/verus_core_pin.rs"
       ],
       "encodings": [
         {
