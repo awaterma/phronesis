@@ -389,6 +389,11 @@ fn b4_gap_rule_still_warns_for_unpromoted_properties() {
     );
 }
 
+// D9 back-compat (a result record with no `template_origin` field still
+// binds as verified evidence) is pinned in
+// `properties_result_binding.rs::d9_missing_template_origin_still_binds_like_the_trusted_templates_origin`,
+// the dedicated home for D9 binding-rule tests.
+
 // ---- SPEC-C §S5 / acceptance C5: injection containment ----
 
 #[test]
@@ -437,7 +442,7 @@ fn c5_hostile_property_payload_renders_inert_or_refuses() {
     );
     // A body that somehow contains a denied construct is refused.
     let body_with_injection = format!("fn h() {{ {} }}", hostile);
-    assert!(validate_body("rust", &body_with_injection, &[]).is_err());
+    assert!(validate_body("rust", &body_with_injection, &[], &[]).is_err());
 }
 
 // ---- SPEC-C §S3 / acceptance C7: trust-anchor tamper refusal ----
@@ -646,6 +651,7 @@ fn main() {}
         "rust",
         &body,
         &["safe_divide.zero_returns_error", "safe_divide"],
+        &[],
     )
     .expect("rendered body validates");
     std::fs::create_dir_all(d.path().join("verification/unreviewed")).expect("mkdir verification");
@@ -791,6 +797,7 @@ fn main() {}
         "rust",
         &body,
         &["safe_divide.zero_returns_error", "safe_divide"],
+        &[],
     )
     .expect("the mutated body passes static validation (this is why C6 exists)");
 

@@ -36,6 +36,29 @@ pub const UNREVIEWED_DIR: &str = "verification/unreviewed";
 /// The S1 opt-in marker: nothing renders or runs without it.
 pub const OPT_IN_FILE: &str = ".phronesis/verification.json";
 
+/// The closed vocabulary of property `kind` values (SPEC-property-ontology.md
+/// §2 `property_kind`) — every value this repository's own
+/// `.phronesis/properties.json` and specs actually use. Checked at render
+/// time (store.rs's ingest-time field-class contract is a separate layer);
+/// an unrecognized `kind` is refused before it ever reaches template lookup
+/// or render scope. Because the value is drawn from a fixed, host-controlled
+/// set rather than free text, it can never carry an injection payload — a
+/// closed-vocabulary word cannot inject code — so `kind` is left out of both
+/// `validate_body` lists entirely (see `ScopeValues::inert_values`): the
+/// bug this guards against is a *false* refusal (a legitimate kind name that
+/// also happens to be a real language keyword, e.g. `invariant`, tripping
+/// the inert-only rule when it appears live in generated code), not an
+/// injection risk.
+const PROPERTY_KIND_VALUES: &[&str] = &[
+    "precondition",
+    "postcondition",
+    "invariant",
+    "equivalence",
+    "determinism",
+    "soundness",
+    "totality",
+];
+
 /// Which directory the template came from. Recorded on every result
 /// (`ResultRecord::template_origin`) so draft-derived evidence is visible and
 /// never binds as a verification.
@@ -127,6 +150,11 @@ pub enum RenderPipelineError {
     #[error("property {id} has several encodings ({verifiers}); pass --verifier to pick one")]
     AmbiguousEncoding { id: String, verifiers: String },
     #[error(
+        "property {id} has kind {kind:?}, outside the closed vocabulary ({}) — SPEC-property-ontology.md §2 property_kind",
+        PROPERTY_KIND_VALUES.join(", ")
+    )]
+    UnknownKind { id: String, kind: String },
+    #[error(
         "language {language:?} has no render instantiation (host escaping and comment syntax are registered for rust only)"
     )]
     UnsupportedLanguage { language: String },
@@ -178,6 +206,7 @@ impl RenderPipelineError {
             Self::NotAccepted { .. } => "not_accepted",
             Self::NoEncoding { .. } => "no_encoding",
             Self::AmbiguousEncoding { .. } => "ambiguous_encoding",
+            Self::UnknownKind { .. } => "unknown_kind",
             Self::UnsupportedLanguage { .. } => "unsupported_language",
             Self::InvalidTemplateKey { .. } => "invalid_template_key",
             Self::TemplateMissing { .. } => "template_missing",
@@ -268,6 +297,22 @@ fn load_template(
     if !path.is_file() {
         return Ok(None);
     }
+    // The trust anchor's directory entry itself must be a real directory,
+    // never a symlink (e.g. `verification/templates` -> `template-drafts`):
+    // otherwise the starts-with-`dir` containment check below would follow
+    // it and pass — the file really does resolve inside `dir`, because `dir`
+    // canonicalized to the drafts directory too — silently trusting
+    // draft-origin bytes under the `templates` origin. Refusing here makes
+    // this look like a missing trusted template, so the caller falls
+    // through to the ordinary draft-vs-trusted flow (and the correct origin
+    // label) rather than getting a bespoke error.
+    if origin == TemplateOrigin::Templates {
+        let anchor_is_symlink = std::fs::symlink_metadata(root.join(origin.dir()))
+            .is_ok_and(|m| m.file_type().is_symlink());
+        if anchor_is_symlink {
+            return Ok(None);
+        }
+    }
     let dir = root
         .join(origin.dir())
         .canonicalize()
@@ -327,14 +372,23 @@ fn resolve_template(
 }
 
 /// The values the host places in render scope, escaped host-side before
-/// they enter Rhai (S5 field-class contract), and the list of those values
-/// the body validator must find only in inert positions.
+/// they enter Rhai (S5 field-class contract), split into the two lists
+/// `validate_body` checks: free text, held to the inert-only rule, and
+/// identifier candidates (the subject and fn/type names parsed from
+/// `depends_on`), which may additionally appear in live code as a complete
+/// identifier or path token. `validate_body` re-checks each identifier
+/// candidate for being identifier-shaped itself — a non-identifier-shaped
+/// subject (or a `depends_on` entry too irregular to name a function) is
+/// still refused in live code, exactly as before this split existed.
 struct ScopeValues {
     /// The escaped id, as the `property_depends_on` fact's first argument.
     #[cfg_attr(not(feature = "rhai"), allow(dead_code))]
     id: String,
     fields: Vec<(&'static str, String)>,
     depends_on: Vec<String>,
+    /// Subject plus fn/type names parsed from `depends_on` (§ identifier
+    /// values above).
+    identifiers: Vec<String>,
 }
 
 impl ScopeValues {
@@ -344,28 +398,95 @@ impl ScopeValues {
         depends_on.sort();
         depends_on.dedup();
         let id = esc(&p.id);
+        let subject = esc(&p.subject);
+        let mut identifiers = vec![subject.clone()];
+        for region in &p.depends_on {
+            identifiers.extend(identifier_names_from_region(region));
+        }
+        identifiers.sort();
+        identifiers.dedup();
         Self {
             fields: vec![
                 ("id", id.clone()),
-                ("subject", esc(&p.subject)),
+                ("subject", subject),
                 ("kind", esc(&p.kind)),
                 ("condition", esc(p.condition.as_deref().unwrap_or(""))),
                 ("guarantee", esc(p.guarantee.as_deref().unwrap_or(""))),
             ],
             id,
             depends_on,
+            identifiers,
         }
     }
 
-    /// Every property-derived value in scope (non-empty ones are checked).
-    fn interpolated(&self) -> Vec<&str> {
+    /// Free-text scope values (non-empty ones are checked): every field
+    /// except `subject` (an identifier candidate instead, see
+    /// `identifier_values`) and `kind` (a closed-vocabulary word —
+    /// `PROPERTY_KIND_VALUES`, checked and refused before this is ever built
+    /// — so it is not free text at all, and holding it to the inert-only
+    /// rule would only produce false refusals when a kind name is also a
+    /// real language keyword, e.g. `invariant`), plus the raw `depends_on`
+    /// region strings — those remain inert-only even though fn names are
+    /// also parsed out of them, since a whole region id
+    /// (`fn:src/lib.rs::divide`) is never itself a valid Rust identifier or
+    /// path.
+    fn inert_values(&self) -> Vec<&str> {
         self.fields
             .iter()
+            .filter(|(key, _)| *key != "subject" && *key != "kind")
             .map(|(_, v)| v.as_str())
             .chain(self.depends_on.iter().map(String::as_str))
             .filter(|v| !v.is_empty())
             .collect()
     }
+
+    /// Identifier candidates: the subject and fn/type names parsed from
+    /// `depends_on` (non-empty ones are checked).
+    fn identifier_values(&self) -> Vec<&str> {
+        self.identifiers
+            .iter()
+            .map(String::as_str)
+            .filter(|v| !v.is_empty())
+            .collect()
+    }
+}
+
+/// Parse the fn/type name(s) named by one `depends_on` region id — `fn:` or
+/// `branch:` (`crate::coverage::region_map`: `"fn:" file "::" item-path` /
+/// `"branch:" file "::" item-path ":" anchor`) — into identifier candidates:
+/// the full item path (segments joined by `::`, with a branch entry's
+/// trailing `:anchor[.ordinal]` stripped from the last segment) and, on its
+/// own, that path's last segment (the fn/type name a template would call).
+/// Anything else (a bare/legacy region id with no `file::item-path` shape,
+/// or a segment stripped down to empty) yields no candidates — `identifiers`
+/// only ever grows the identifier list, never removes a value from the
+/// inert-only rule.
+fn identifier_names_from_region(region: &str) -> Vec<String> {
+    let Some(rest) = region
+        .strip_prefix("fn:")
+        .or_else(|| region.strip_prefix("branch:"))
+    else {
+        return Vec::new();
+    };
+    let Some((_file, item_path)) = rest.split_once("::") else {
+        return Vec::new();
+    };
+    let mut segments: Vec<&str> = item_path.split("::").collect();
+    if let Some(last) = segments.last_mut() {
+        // A branch entry's last segment is `name:anchor[.ordinal]`; a fn
+        // entry's has no such suffix, so `split_once` is a no-op for it.
+        if let Some((name, _anchor)) = last.split_once(':') {
+            *last = name;
+        }
+    }
+    if segments.iter().any(|s| s.is_empty()) {
+        return Vec::new();
+    }
+    let mut out = vec![segments.join("::")];
+    if let Some(last) = segments.last() {
+        out.push((*last).to_string());
+    }
+    out
 }
 
 /// Run the template through the dedicated render entry: `property` (a
@@ -469,6 +590,12 @@ pub fn prepare(root: &Path, req: &RenderRequest) -> Result<RenderedArtifact, Ren
             status: property.status,
         });
     }
+    if !PROPERTY_KIND_VALUES.contains(&property.kind.as_str()) {
+        return Err(RenderPipelineError::UnknownKind {
+            id: property.id,
+            kind: property.kind,
+        });
+    }
     let encoding = pick_encoding(&property, req.verifier.as_deref())?;
     if encoding.language != "rust" {
         return Err(RenderPipelineError::UnsupportedLanguage {
@@ -486,8 +613,15 @@ pub fn prepare(root: &Path, req: &RenderRequest) -> Result<RenderedArtifact, Ren
         body.push('\n');
     }
     // S5 layer 2: the whole body (header included) must lex, parse, avoid the
-    // deny-list, and hold every property-derived value only in inert text.
-    validate_body(&encoding.language, &body, &values.interpolated())?;
+    // deny-list, hold every free-text value only in inert text, and hold
+    // every identifier candidate either in inert text or as a sanctioned
+    // identifier/path token (never a substring, macro name, or sub-path).
+    validate_body(
+        &encoding.language,
+        &body,
+        &values.inert_values(),
+        &values.identifier_values(),
+    )?;
     let sha = artifact_sha256(body.as_bytes());
     let artifact_path = format!(
         "{UNREVIEWED_DIR}/{}",
@@ -583,6 +717,10 @@ pub fn render_to_disk(
     }
     let path = contained_artifact_path(root, &artifact.artifact_path, true)?;
     if std::fs::read(&path).is_ok_and(|on_disk| on_disk == artifact.body.as_bytes()) {
+        journal(
+            root,
+            &artifact_entry("verify_render", &artifact).with("outcome", "unchanged"),
+        )?;
         return Ok(RenderOutcome {
             artifact,
             disposition: "unchanged",

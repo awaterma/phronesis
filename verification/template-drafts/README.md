@@ -46,3 +46,7 @@ limited to lowercase ASCII letters, digits, and `_`.
   rendered artifact cannot `include!` it. The test
   `crates/phronesis-mcp/tests/verus_core_pin.rs` fails if that copy drifts
   from the production file. They refuse any other property id.
+
+## Reviewing a template for promotion
+
+`validate_body` lets a property's subject, and the function names in its `fn:`/`branch:` `depends_on`, appear in live code as a complete identifier (S5a). Property values are agent-writable, so a template that places one of those identifiers in a **call** position, like `{subject}(…)`, calls whatever function the property names. Before you promote a draft into `verification/templates/`, check that every identifier it interpolates into live code is one the proof is meant to call, and that nothing else is interpolated outside strings and comments.

@@ -3,8 +3,15 @@
 //!
 //! Layer 1 (the field-class contract) lives in `properties/store.rs` at
 //! ingest. This layer re-parses the rendered body and asserts:
-//! (a) every interpolated property value appears only inside string
-//!     literals or comments — hostile payloads render inert;
+//! (a) every *inert* interpolated property value (free text: condition,
+//!     guarantee, the property id, `depends_on` region strings) appears only
+//!     inside string literals or comments — hostile payloads render inert;
+//! (a') every *identifier* value (the property's `subject`, and fn/type
+//!     names parsed from its `fn:`/`branch:` `depends_on` entries) appears in
+//!     live code, if at all, only as a complete identifier or path token —
+//!     never as a substring of a longer identifier, a macro invocation name,
+//!     or part of a longer path — everywhere else it is held to the same
+//!     inert-only rule as (a) (see `is_identifier_value`, `mark_sanctioned`);
 //! (b) the (language, verifier) deny-list constructs are absent from the
 //!     body outside sanctioned positions.
 //!
@@ -13,6 +20,12 @@
 //! or unparseable body is refused. Matching is on tokens, never on text, so
 //! whitespace, comments, char literals (`'"'`), raw strings and grouped
 //! `use` trees cannot hide a denied construct or a live interpolation.
+//!
+//! The identifier/inert split is a rendering-side decision (`render.rs`
+//! classifies each property value into one list or the other); this module
+//! does not trust that classification blindly — a value that does not
+//! parse as identifier-shaped falls back to the ordinary inert-only rule
+//! even when passed in `identifier_values`.
 
 use proc_macro2::{Delimiter, TokenStream, TokenTree};
 
@@ -90,6 +103,52 @@ const RUST_DENIED_PATHS: &[(&str, &str, &str)] = &[
     ("env", "vars_os", "env::vars_os"),
 ];
 
+/// Rust strict and reserved keywords (the Reference's keyword list, minus
+/// the 2015-edition-only `async`/`await`/`dyn`/`try` distinction — all four
+/// are keywords in every edition this validator needs to reason about).
+/// Weak/contextual keywords (`union`, `macro_rules`, `raw`, `dyn` — already
+/// listed, `yeet`) are deliberately not banned: they are legal plain
+/// identifiers outside their special contexts, so excluding them would only
+/// over-refuse. A value naming one of these can never be the genuine subject
+/// or path segment the render pipeline computed it from, so it is refused
+/// identifier treatment defensively.
+const RUST_KEYWORDS: &[&str] = &[
+    // strict keywords
+    "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
+    "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
+    "self", "Self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where",
+    "while", "async", "await", "dyn", // reserved keywords
+    "abstract", "become", "box", "do", "final", "macro", "override", "priv", "try", "typeof",
+    "unsized", "virtual", "yield",
+];
+
+/// A single `::`-delimited segment of an identifier-value candidate: a plain
+/// Rust identifier — `[A-Za-z_][A-Za-z0-9_]*`, ASCII only — that is not a
+/// keyword. The charset already excludes `#`, so a raw identifier (`r#fn`)
+/// can never pass this check.
+fn is_plain_identifier_segment(seg: &str) -> bool {
+    let mut chars = seg.chars();
+    match chars.next() {
+        Some(c) if c == '_' || c.is_ascii_alphabetic() => {}
+        _ => return false,
+    }
+    if !chars.all(|c| c == '_' || c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    !RUST_KEYWORDS.contains(&seg)
+}
+
+/// Whether `value` is identifier-shaped: it matches
+/// `^[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*$` with no segment a
+/// Rust keyword. Only such a value is ever eligible for identifier-position
+/// sanctioning in live code (`mark_sanctioned`); the render pipeline uses
+/// this to decide whether a candidate goes in `identifier_values` at all,
+/// and `validate_body` re-checks it for every value it is handed, rather
+/// than trusting the caller's classification.
+pub fn is_identifier_value(value: &str) -> bool {
+    !value.is_empty() && value.split("::").all(is_plain_identifier_segment)
+}
+
 /// Escape a free-text property field for embedding as a Rust string literal:
 /// the HOST escapes before the value enters Rhai scope (S5) — templates never
 /// do their own escaping.
@@ -119,22 +178,36 @@ pub enum BodyValidationError {
     InterpolationOutsideString { interpolated: String },
 }
 
-/// Validate the rendered body: deny-list constructs must not appear, and
-/// every interpolated value must sit inside a string literal (or comment).
-/// `language` keys the deny-list; `interpolated` are the property values the
-/// render embedded (id, subject, condition/guarantee after escaping).
+/// Validate the rendered body: deny-list constructs must not appear, every
+/// *inert* value must sit inside a string literal (or comment), and every
+/// *identifier* value may additionally appear in live code as a complete
+/// identifier or path token (module doc comment above).
+///
+/// `language` keys the deny-list. `inert_values` are free-text property
+/// values (condition/guarantee, the property id, `depends_on` region
+/// strings). `identifier_values` are the property's subject and the fn/type
+/// names parsed from its `depends_on` entries — each still re-checked here
+/// for being identifier-shaped (`is_identifier_value`) before it is granted
+/// any live-code allowance; one that is not falls back to the `inert_values`
+/// rule. This distinction is Rust-specific: for every other language
+/// `identifier_values` is folded into the same inert-only check as
+/// `inert_values` (unaffected — no language but rust has a structural
+/// identifier notion here).
 ///
 /// Rust: `Ok` ⇒ the body lexes and parses as a Rust file, no deny-listed
-/// path/macro/attribute/keyword occurs in any token, and no occurrence of an
-/// interpolated value overlaps a code token (anything but a string/char/byte
-/// literal or a comment).
+/// path/macro/attribute/keyword occurs in any token, no occurrence of an
+/// inert value overlaps a code token (anything but a string/char/byte
+/// literal or a comment), and every occurrence of an identifier value either
+/// lies wholly inside such inert text or is itself a sanctioned identifier
+/// or path token.
 pub fn validate_body(
     language: &str,
     body: &str,
-    interpolated: &[&str],
+    inert_values: &[&str],
+    identifier_values: &[&str],
 ) -> Result<(), BodyValidationError> {
     if language == "rust" {
-        return validate_rust_body(body, interpolated);
+        return validate_rust_body(body, inert_values, identifier_values);
     }
     for construct in deny_list(language) {
         if body.contains(construct) {
@@ -147,7 +220,8 @@ pub fn validate_body(
         .into_iter()
         .map(|inert| !inert)
         .collect();
-    check_interpolations(body, interpolated, &live)
+    check_interpolations(body, inert_values, &live)?;
+    check_interpolations(body, identifier_values, &live)
 }
 
 /// Reject if any occurrence (overlapping ones included) of any non-empty
@@ -182,8 +256,12 @@ fn denied(language: &str, construct: &str) -> BodyValidationError {
     }
 }
 
-fn validate_rust_body(body: &str, interpolated: &[&str]) -> Result<(), BodyValidationError> {
-    let result = check_rust_body(body, interpolated);
+fn validate_rust_body(
+    body: &str,
+    inert_values: &[&str],
+    identifier_values: &[&str],
+) -> Result<(), BodyValidationError> {
+    let result = check_rust_body(body, inert_values, identifier_values);
     // The fallback lexer records every parsed source in a thread-local span
     // map; every span from this call is dropped by now, so release it rather
     // than grow it for the life of a long-running server.
@@ -191,7 +269,11 @@ fn validate_rust_body(body: &str, interpolated: &[&str]) -> Result<(), BodyValid
     result
 }
 
-fn check_rust_body(body: &str, interpolated: &[&str]) -> Result<(), BodyValidationError> {
+fn check_rust_body(
+    body: &str,
+    inert_values: &[&str],
+    identifier_values: &[&str],
+) -> Result<(), BodyValidationError> {
     let unparseable = |message: String| BodyValidationError::Unparseable {
         language: "rust".to_string(),
         message,
@@ -216,7 +298,109 @@ fn check_rust_body(body: &str, interpolated: &[&str]) -> Result<(), BodyValidati
     // tokens, comments, and whitespace stay unmarked.
     let mut live = vec![false; body.len()];
     mark_live(body, &tokens, &mut live);
-    check_interpolations(body, interpolated, &live)
+    check_interpolations(body, inert_values, &live)?;
+    check_identifier_interpolations(body, identifier_values, &live, &tokens)
+}
+
+/// Identifier-value occurrences (module doc comment (a')): a value that is
+/// not identifier-shaped (`is_identifier_value`) is held to the ordinary
+/// inert-only rule; one that is may additionally occur at a position
+/// `mark_sanctioned` finds — a complete identifier or path token, never a
+/// substring of a longer identifier, a macro invocation name, or part of a
+/// longer path.
+fn check_identifier_interpolations(
+    body: &str,
+    identifier_values: &[&str],
+    live: &[bool],
+    tokens: &TokenStream,
+) -> Result<(), BodyValidationError> {
+    for value in identifier_values {
+        if value.is_empty() {
+            continue;
+        }
+        if !is_identifier_value(value) {
+            check_interpolations(body, std::slice::from_ref(value), live)?;
+            continue;
+        }
+        let segments: Vec<&str> = value.split("::").collect();
+        let mut ranges = Vec::new();
+        mark_sanctioned(tokens, &segments, &mut ranges);
+        let mut sanctioned = vec![false; body.len()];
+        for range in ranges {
+            if let Some(slice) = sanctioned.get_mut(range) {
+                slice.iter_mut().for_each(|b| *b = true);
+            }
+        }
+        let mut from = 0;
+        while let Some(pos) = body[from..].find(value) {
+            let start = from + pos;
+            let end = start + value.len();
+            let occurrence_is_live = live[start..end].iter().any(|b| *b);
+            let occurrence_is_sanctioned = sanctioned
+                .get(start..end)
+                .is_some_and(|s| s.iter().all(|b| *b));
+            if occurrence_is_live && !occurrence_is_sanctioned {
+                return Err(BodyValidationError::InterpolationOutsideString {
+                    interpolated: (*value).to_string(),
+                });
+            }
+            from = start + body[start..].chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    Ok(())
+}
+
+/// Append the byte range of every place `segments` occurs in `tokens` as a
+/// *complete* identifier or path: `segments.len()` consecutive `Ident`
+/// tokens joined by exact `::` pairs (whitespace/comments between tokens are
+/// fine — spans are token spans, not text spans), with:
+/// - no `::` immediately before the first segment or after the last (either
+///   would make this a sub-path of a longer, different path: `x::divide`
+///   sanctions neither `divide` nor `x::divide` for a `divide` value read
+///   from a shorter path — conservative, since a leading `::`-qualified
+///   version of the very same absolute path is refused too);
+/// - no `!` immediately after (a macro invocation — identifier values are
+///   never sanctioned as macro names, however trusted the plain call is).
+///
+/// Recurses into groups the same way `mark_live`/`rust_denied_construct` do.
+fn mark_sanctioned(tokens: &TokenStream, segments: &[&str], out: &mut Vec<std::ops::Range<usize>>) {
+    let tts: Vec<TokenTree> = tokens.clone().into_iter().collect();
+    for i in 0..tts.len() {
+        if let TokenTree::Group(g) = &tts[i] {
+            mark_sanctioned(&g.stream(), segments, out);
+        }
+        let Some(end) = path_match_end(&tts, i, segments) else {
+            continue;
+        };
+        let preceded_by_path_sep = i >= 2 && is_path_sep(&tts, i - 2);
+        let followed_by_path_sep = is_path_sep(&tts, end);
+        let followed_by_bang = is_punct(tts.get(end), '!');
+        if preceded_by_path_sep || followed_by_path_sep || followed_by_bang {
+            continue;
+        }
+        let start = tts[i].span().byte_range().start;
+        let stop = tts[end - 1].span().byte_range().end;
+        out.push(start..stop);
+    }
+}
+
+/// If `segments` matches as a run of `Ident`-`::`-`Ident`... tokens starting
+/// at `tts[start]`, the index just past it; `None` otherwise.
+fn path_match_end(tts: &[TokenTree], start: usize, segments: &[&str]) -> Option<usize> {
+    let mut j = start;
+    for (k, seg) in segments.iter().enumerate() {
+        if ident_name(tts.get(j)?).as_deref() != Some(*seg) {
+            return None;
+        }
+        j += 1;
+        if k + 1 < segments.len() {
+            if !is_path_sep(tts, j) {
+                return None;
+            }
+            j += 2;
+        }
+    }
+    Some(j)
 }
 
 /// Deepest group nesting in `tokens`, computed without recursion (the lexer
@@ -841,7 +1025,11 @@ mod tests {
     use super::*;
 
     fn rejects(body: &str, interpolated: &[&str]) -> bool {
-        validate_body("rust", body, interpolated).is_err()
+        validate_body("rust", body, interpolated, &[]).is_err()
+    }
+
+    fn rejects_identifiers(body: &str, identifiers: &[&str]) -> bool {
+        validate_body("rust", body, &[], identifiers).is_err()
     }
 
     #[test]
@@ -850,23 +1038,26 @@ mod tests {
             validate_body(
                 "python",
                 "message = 'unsafe_value' # unsafe_value",
-                &["unsafe_value"]
+                &["unsafe_value"],
+                &[]
             )
             .is_ok()
         );
         assert!(matches!(
-            validate_body("python", "value = unsafe_value", &["unsafe_value"]),
+            validate_body("python", "value = unsafe_value", &["unsafe_value"], &[]),
             Err(BodyValidationError::InterpolationOutsideString { .. })
         ));
     }
 
     #[test]
     fn python_single_quotes_and_triple_quotes_spanning_lines_are_inert() {
-        assert!(validate_body("python", "message = 'unsafe_value'", &["unsafe_value"]).is_ok());
+        assert!(
+            validate_body("python", "message = 'unsafe_value'", &["unsafe_value"], &[]).is_ok()
+        );
         let body = "message = \"\"\"line one\nunsafe_value\nline three\"\"\"";
-        assert!(validate_body("python", body, &["unsafe_value"]).is_ok());
+        assert!(validate_body("python", body, &["unsafe_value"], &[]).is_ok());
         let body = "message = '''line one\nunsafe_value\nline three'''";
-        assert!(validate_body("python", body, &["unsafe_value"]).is_ok());
+        assert!(validate_body("python", body, &["unsafe_value"], &[]).is_ok());
     }
 
     #[test]
@@ -874,12 +1065,12 @@ mod tests {
         // The escaped quote must not terminate the literal early and expose
         // the rest of the line as live code.
         let body = r"message = 'a\'unsafe_value'";
-        assert!(validate_body("python", body, &["unsafe_value"]).is_ok());
+        assert!(validate_body("python", body, &["unsafe_value"], &[]).is_ok());
     }
 
     fn python_live(body: &str) -> bool {
         matches!(
-            validate_body("python", body, &["unsafe_value"]),
+            validate_body("python", body, &["unsafe_value"], &[]),
             Err(BodyValidationError::InterpolationOutsideString { .. })
         )
     }
@@ -982,7 +1173,7 @@ mod tests {
     fn python_bare_cr_and_crlf_end_a_comment() {
         // CPython normalizes universal newlines: a bare CR ends the line, so
         // the assignment after it is live code.
-        assert!(validate_body("python", "# comment\rVAL=1", &["VAL"]).is_err());
+        assert!(validate_body("python", "# comment\rVAL=1", &["VAL"], &[]).is_err());
         assert!(python_live("# comment\runsafe_value = 1"));
         assert!(python_live("# comment\r\nunsafe_value = 1"));
         assert!(python_live("x = 1  # comment\runsafe_value()"));
@@ -1037,19 +1228,20 @@ mod tests {
     #[test]
     fn value_straddling_a_python_literal_boundary_is_rejected() {
         let body = "s = 'a' + unsafe + 'b'";
-        assert!(validate_body("python", body, &["a' + unsafe + 'b"]).is_err());
-        assert!(validate_body("python", body, &["a' "]).is_err());
-        assert!(validate_body("python", body, &["b"]).is_ok());
+        assert!(validate_body("python", body, &["a' + unsafe + 'b"], &[]).is_err());
+        assert!(validate_body("python", body, &["a' "], &[]).is_err());
+        assert!(validate_body("python", body, &["b"], &[]).is_ok());
     }
 
     #[test]
     fn generic_unterminated_string_fails_safe() {
-        assert!(validate_body("lean", "x := \"unsafe_value", &["unsafe_value"]).is_err());
+        assert!(validate_body("lean", "x := \"unsafe_value", &["unsafe_value"], &[]).is_err());
         assert!(
             validate_body(
                 "lean",
                 "x := \"unsafe_value\" // unsafe_value",
-                &["unsafe_value"]
+                &["unsafe_value"],
+                &[]
             )
             .is_ok()
         );
@@ -1058,9 +1250,9 @@ mod tests {
     #[test]
     fn python_hash_inside_string_is_not_a_comment() {
         let body = "message = 'unsafe_value # not a comment'\nlive_code()";
-        assert!(validate_body("python", body, &["unsafe_value"]).is_ok());
+        assert!(validate_body("python", body, &["unsafe_value"], &[]).is_ok());
         assert!(matches!(
-            validate_body("python", body, &["live_code"]),
+            validate_body("python", body, &["live_code"], &[]),
             Err(BodyValidationError::InterpolationOutsideString { .. })
         ));
     }
@@ -1072,13 +1264,19 @@ mod tests {
             validate_body(
                 "python",
                 "message = f'safe: unsafe_value'",
-                &["unsafe_value"]
+                &["unsafe_value"],
+                &[]
             )
             .is_ok()
         );
         // The value sitting inside a `{}` replacement field is live code.
         assert!(matches!(
-            validate_body("python", "message = f'{unsafe_value}'", &["unsafe_value"]),
+            validate_body(
+                "python",
+                "message = f'{unsafe_value}'",
+                &["unsafe_value"],
+                &[]
+            ),
             Err(BodyValidationError::InterpolationOutsideString { .. })
         ));
     }
@@ -1086,7 +1284,13 @@ mod tests {
     #[test]
     fn python_fstring_escaped_braces_are_inert() {
         assert!(
-            validate_body("python", "message = f'{{unsafe_value}}'", &["unsafe_value"]).is_ok()
+            validate_body(
+                "python",
+                "message = f'{{unsafe_value}}'",
+                &["unsafe_value"],
+                &[]
+            )
+            .is_ok()
         );
     }
 
@@ -1096,13 +1300,13 @@ mod tests {
         // it on the line) must be treated as live code, not silently inert.
         let body = "message = 'unsafe_value";
         assert!(matches!(
-            validate_body("python", body, &["unsafe_value"]),
+            validate_body("python", body, &["unsafe_value"], &[]),
             Err(BodyValidationError::InterpolationOutsideString { .. })
         ));
         // Unterminated triple-quoted string.
         let body = "message = '''unsafe_value";
         assert!(matches!(
-            validate_body("python", body, &["unsafe_value"]),
+            validate_body("python", body, &["unsafe_value"], &[]),
             Err(BodyValidationError::InterpolationOutsideString { .. })
         ));
     }
@@ -1207,7 +1411,7 @@ mod tests {
     #[test]
     fn values_inside_literals_and_comments_are_inert() {
         let body = "//! p.id\n// Property: p.id\n/* p.id */\n/// p.id\n/** p.id */\nfn h() { let s = \"p.id\"; let c = 'x'; }";
-        assert!(validate_body("rust", body, &["p.id"]).is_ok());
+        assert!(validate_body("rust", body, &["p.id"], &[]).is_ok());
         // A doc comment does not make the code after it inert.
         let body = "/// p.id\nfn p_id() {}";
         assert!(rejects(body, &["p_id"]));
@@ -1224,21 +1428,21 @@ mod tests {
     fn denied_path_text_inside_strings_and_comments_is_inert() {
         let body =
             "// std::fs::read\nfn h() { let s = \"std::process::Command::new include_str!\"; }";
-        assert!(validate_body("rust", body, &[]).is_ok());
+        assert!(validate_body("rust", body, &[], &[]).is_ok());
     }
 
     #[test]
     fn unlexable_or_unparseable_body_fails_closed() {
         assert!(matches!(
-            validate_body("rust", "fn h() { let s = \"unterminated; }", &[]),
+            validate_body("rust", "fn h() { let s = \"unterminated; }", &[], &[]),
             Err(BodyValidationError::Unparseable { .. })
         ));
         assert!(matches!(
-            validate_body("rust", "fn h() { ( }", &[]),
+            validate_body("rust", "fn h() { ( }", &[], &[]),
             Err(BodyValidationError::Unparseable { .. })
         ));
         assert!(matches!(
-            validate_body("rust", "fn fn fn", &[]),
+            validate_body("rust", "fn fn fn", &[], &[]),
             Err(BodyValidationError::Unparseable { .. })
         ));
     }
@@ -1246,7 +1450,7 @@ mod tests {
     #[test]
     fn benign_verus_harness_validates() {
         let body = "// GENERATED - DO NOT EDIT\n// Property: safe_divide.zero (verus-native)\nuse vstd::prelude::*;\n\nverus! {\npub enum DivResult { Ok(i32), Err(i32) }\npub open spec fn zero(res: DivResult) -> bool { matches!(res, DivResult::Err(_)) }\npub fn divide_zero() -> (res: DivResult)\n    ensures zero(res),\n{\n    DivResult::Err(0)\n}\nfn main() {}\n} // verus!\n";
-        validate_body("rust", body, &["safe_divide.zero", "safe_divide"]).expect("benign");
+        validate_body("rust", body, &["safe_divide.zero", "safe_divide"], &[]).expect("benign");
     }
 
     #[test]
@@ -1305,7 +1509,7 @@ mod tests {
         // A small stack: recursion over the nesting would overflow and abort.
         let handle = std::thread::Builder::new()
             .stack_size(256 * 1024)
-            .spawn(move || validate_body("rust", &body, &[]).map_err(|e| e.to_string()))
+            .spawn(move || validate_body("rust", &body, &[], &[]).map_err(|e| e.to_string()))
             .expect("spawn");
         let result = handle
             .join()
@@ -1322,7 +1526,7 @@ mod tests {
         );
         let handle = std::thread::Builder::new()
             .stack_size(2 * 1024 * 1024)
-            .spawn(move || validate_body("rust", &body, &[]).is_ok())
+            .spawn(move || validate_body("rust", &body, &[], &[]).is_ok())
             .expect("spawn");
         assert!(handle.join().expect("no overflow at the cap"));
         // Ordinary nesting still validates.
@@ -1331,7 +1535,7 @@ mod tests {
             "(".repeat(20),
             ")".repeat(20)
         );
-        assert!(validate_body("rust", &body, &[]).is_ok());
+        assert!(validate_body("rust", &body, &[], &[]).is_ok());
     }
 
     /// Differential check: random benign bodies with a deny item spliced in
@@ -1389,7 +1593,7 @@ mod tests {
                 .map(|_| benign_stmts[rng.gen_range(0..benign_stmts.len())])
                 .collect();
             let benign = format!("fn h() {{ {} }}", stmts.join(" "));
-            assert!(validate_body("rust", &benign, &[]).is_ok(), "{benign}");
+            assert!(validate_body("rust", &benign, &[], &[]).is_ok(), "{benign}");
             let body = if top_level {
                 format!("{item}\n{benign}")
             } else {
@@ -1397,7 +1601,116 @@ mod tests {
                 stmts.insert(at, &item);
                 format!("fn h() {{ {} }}", stmts.join(" "))
             };
-            assert!(validate_body("rust", &body, &[]).is_err(), "{body}");
+            assert!(validate_body("rust", &body, &[], &[]).is_err(), "{body}");
         }
+    }
+
+    // ---- identifier-field values (S5 identifier-field rule) ----
+
+    #[test]
+    fn is_identifier_value_matches_the_documented_shape() {
+        assert!(is_identifier_value("divide"));
+        assert!(is_identifier_value("safe_divide"));
+        assert!(is_identifier_value("m::divide"));
+        assert!(is_identifier_value("a::b::c"));
+        assert!(!is_identifier_value(""));
+        assert!(!is_identifier_value("self")); // keyword
+        assert!(!is_identifier_value("fn")); // keyword
+        assert!(!is_identifier_value("m::fn")); // keyword segment
+        assert!(!is_identifier_value("r#fn")); // raw identifier (charset excludes `#`)
+        assert!(!is_identifier_value("foo(bar)"));
+        assert!(!is_identifier_value("::divide")); // empty leading segment
+        assert!(!is_identifier_value("a.b")); // not `::`-delimited
+    }
+
+    #[test]
+    fn identifier_value_called_directly_in_live_code_is_accepted() {
+        let body = "fn divide() -> i32 { 0 } fn main() { divide(); }";
+        assert!(
+            validate_body("rust", body, &[], &["divide"]).is_ok(),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn identifier_value_as_a_substring_of_a_longer_identifier_is_refused() {
+        // "divide" must never be granted a pass merely because it is a
+        // substring of the distinct identifier "divide_evil".
+        let body = "fn divide_evil() -> i32 { 0 } fn main() { divide_evil(); }";
+        assert!(rejects_identifiers(body, &["divide"]), "{body}");
+    }
+
+    #[test]
+    fn non_identifier_shaped_value_in_identifier_values_still_requires_inertness() {
+        // Not identifier-shaped (contains `(`/`)`): validate_body must fall
+        // back to the ordinary inert-only rule for it, not silently drop the
+        // check because it arrived via `identifier_values`.
+        let value = "foo(bar)";
+        let body = format!("fn main() {{ {value}; }}");
+        assert!(
+            matches!(
+                validate_body("rust", &body, &[], &[value]),
+                Err(BodyValidationError::InterpolationOutsideString { .. })
+            ),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn non_identifier_shaped_subject_value_in_live_code_is_refused() {
+        // The task's own example of a hostile, non-identifier-shaped
+        // "subject": it also happens to trip the `std::process` deny-list,
+        // but even a value that did not would still be refused (previous
+        // test) — this one pins the literal scenario a hostile property
+        // subject could look like.
+        let value = "foo(); std::process::exit(0)";
+        let body = format!("fn main() {{ {value}; }}");
+        assert!(rejects_identifiers(&body, &[value]), "{body}");
+    }
+
+    #[test]
+    fn identifier_value_used_as_a_macro_invocation_is_refused() {
+        let body = "fn main() { subject_name!(); }";
+        assert!(rejects_identifiers(body, &["subject_name"]), "{body}");
+    }
+
+    #[test]
+    fn free_text_value_in_live_code_is_still_refused_alongside_identifier_values() {
+        // The split into two lists must not weaken the inert-only rule for
+        // free text just because an identifier value is also being checked.
+        let body = "fn divide() {} fn main() { let x = condition_text; divide(); }";
+        assert!(
+            matches!(
+                validate_body("rust", body, &["condition_text"], &["divide"]),
+                Err(BodyValidationError::InterpolationOutsideString { .. })
+            ),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn identifier_value_full_path_used_as_a_qualified_call_is_accepted() {
+        let body = "mod m { pub fn divide() {} } fn main() { m::divide(); }";
+        assert!(
+            validate_body("rust", body, &[], &["m::divide"]).is_ok(),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn identifier_value_as_a_shorter_suffix_of_a_longer_path_is_refused() {
+        // "m::divide" must not be granted a pass by a call to the different
+        // path "x::m::divide".
+        let body = "mod x { pub mod m { pub fn divide() {} } } fn main() { x::m::divide(); }";
+        assert!(rejects_identifiers(body, &["m::divide"]), "{body}");
+    }
+
+    #[test]
+    fn identifier_value_inert_in_a_comment_or_string_is_still_fine() {
+        let body = "// calls divide() below\nfn main() { let s = \"divide\"; }";
+        assert!(
+            validate_body("rust", body, &[], &["divide"]).is_ok(),
+            "{body}"
+        );
     }
 }

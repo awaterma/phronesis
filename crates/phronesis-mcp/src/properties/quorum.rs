@@ -778,7 +778,7 @@ fn approve_inner(
     let mut sentinels = Vec::new();
     for site in &sites {
         let copy = sentinel_copy(body, site, statement);
-        validate_body(&artifact.language, &copy, &[]).map_err(|source| {
+        validate_body(&artifact.language, &copy, &[], &[]).map_err(|source| {
             QuorumError::SentinelInvalid {
                 site: site.name.clone(),
                 source,
@@ -802,7 +802,7 @@ fn approve_inner(
     let mut mutants = Vec::new();
     for m in &mutations {
         let mutant = apply_mutation(body, &m.find, &m.replace)?;
-        validate_body(&artifact.language, &mutant, &[]).map_err(QuorumError::MutantInvalid)?;
+        validate_body(&artifact.language, &mutant, &[], &[]).map_err(QuorumError::MutantInvalid)?;
         mutants.push((m.find.clone(), mutant));
     }
     let mut tier = "";

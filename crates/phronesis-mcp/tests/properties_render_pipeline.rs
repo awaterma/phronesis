@@ -144,6 +144,21 @@ fn journal_events(root: &Path) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
+/// `(event, outcome)` pairs, for the `verify_render` entries an unchanged
+/// re-render must also produce (unlike `reason`, only refusals carry).
+fn journal_outcomes(root: &Path) -> Vec<(String, Option<String>)> {
+    let raw = std::fs::read_to_string(action_log::default_path(root)).unwrap_or_default();
+    raw.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .map(|v| {
+            (
+                v["event"].as_str().unwrap_or_default().to_string(),
+                v["outcome"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
 /// The human review act the tests stand in for (S3): approve the bytes.
 fn approve(root: &Path, artifact_sha256: &str, template_sha256: &str, revision: &str) {
     allowlist::record(
@@ -270,6 +285,34 @@ fn trusted_template_renders_validates_and_writes_into_unreviewed() {
     assert_eq!(unreviewed_files(d.path()).len(), 1);
 }
 
+/// An `unchanged` re-render (identical bytes already on disk) still writes
+/// a `verify_render` journal entry — S7 covers every generation, not only
+/// the first one that actually wrote bytes.
+#[test]
+fn unchanged_rerender_is_journaled() {
+    let d = project();
+    trusted(d.path(), DRAFT_TEMPLATE);
+
+    render::render_to_disk(d.path(), &request(false), false).expect("first render");
+    let again = render::render_to_disk(d.path(), &request(false), false).expect("second render");
+    assert_eq!(again.disposition, "unchanged");
+
+    let verify_renders: Vec<_> = journal_events(d.path())
+        .into_iter()
+        .filter(|(event, _)| event == "verify_render")
+        .collect();
+    assert_eq!(
+        verify_renders.len(),
+        2,
+        "the unchanged re-render must be journaled too, not just the write: {verify_renders:?}"
+    );
+    assert!(
+        journal_outcomes(d.path()).contains(&("verify_render".into(), Some("unchanged".into()))),
+        "{:?}",
+        journal_outcomes(d.path())
+    );
+}
+
 // ---- determinism: same inputs → byte-identical output, across runs and
 // across input orderings ----
 
@@ -339,8 +382,12 @@ fn a_body_validate_body_rejects_is_never_written_or_executed() {
             "`fn main() { std::process::Command::new(\"touch\"); }`",
         ),
         (
-            "interpolated value in live code",
-            "`fn main() { let ${property.subject} = 1; }`",
+            // `subject` is an identifier candidate now (it may be called in
+            // live code — see `identifier_value_called_...` in validate.rs),
+            // but a free-text field never is: it must stay inert wherever it
+            // sits, live-code included.
+            "free-text value in live code",
+            "`fn main() { let _ = 1 + ${property.condition}; }`",
         ),
         ("unparseable body", "`fn main( {`"),
     ] {
@@ -440,6 +487,44 @@ fn a_draft_template_is_refused_without_the_flag() {
     assert!(
         out.artifact.body.contains("origin: template_drafts"),
         "the provenance header names the draft origin"
+    );
+}
+
+// `verification/templates` itself (the trust anchor's directory entry, not
+// one file inside it) replaced by a symlink to `verification/template-drafts`
+// must never be treated as the trust anchor: the existing per-file
+// containment check alone would follow it, since the canonicalized directory
+// and the canonicalized file both resolve into the same real (drafts) tree.
+#[test]
+fn templates_dir_itself_symlinked_to_drafts_is_refused_without_allow_drafts() {
+    let d = project();
+    let drafts_dir = d.path().join(render::TEMPLATE_DRAFTS_DIR);
+    std::fs::create_dir_all(&drafts_dir).expect("mkdir drafts");
+    std::fs::write(drafts_dir.join(TEMPLATE_NAME), DRAFT_TEMPLATE).expect("write draft");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&drafts_dir, d.path().join(render::TEMPLATES_DIR))
+        .expect("symlink verification/templates -> verification/template-drafts");
+
+    let err = render::render_to_disk(d.path(), &request(false), false)
+        .expect_err("a templates/ symlink to drafts must not count as the trust anchor");
+    match &err {
+        RenderPipelineError::DraftRefused { path } => {
+            assert_eq!(
+                path,
+                &format!("verification/template-drafts/{TEMPLATE_NAME}")
+            )
+        }
+        other => panic!("expected DraftRefused, got {other:?}"),
+    }
+    assert!(unreviewed_files(d.path()).is_empty());
+
+    // With the flag, the same bytes load — but honestly, as a draft, never
+    // mislabeled as the trust anchor.
+    let out = render::render_to_disk(d.path(), &request(true), false).expect("with the flag");
+    assert_eq!(
+        out.artifact.template_origin,
+        TemplateOrigin::TemplateDrafts,
+        "a templates/ symlink to drafts must never be recorded as the trust anchor"
     );
 }
 
@@ -617,4 +702,68 @@ fn c1_the_draft_template_renders_a_harness_verus_proves() {
     assert_eq!(record.template_origin.as_deref(), Some("template_drafts"));
     // A draft's real proof is still not verified evidence.
     assert!(with(&hydrate(d.path()), "verification_result").is_empty());
+}
+
+// ---- `kind` is a closed vocabulary, not free text (VT1) ----
+//
+// `property.kind` names come from a fixed set (SPEC-property-ontology.md §2
+// `property_kind`) that this repository's own properties.json exercises:
+// `precondition`, `postcondition`, `invariant`, `equivalence`,
+// `determinism`, `soundness`, `totality`. A closed-vocabulary word can never
+// carry an injection payload, so `kind` is not one of `validate_body`'s
+// inert values — before this fix it was, and a property of kind
+// `invariant` whose harness legitimately used Verus's `invariant`
+// loop-annotation keyword in live code was a false S5 refusal.
+
+#[test]
+fn property_of_kind_invariant_can_render_a_harness_using_the_verus_invariant_keyword() {
+    let d = project();
+    let mut p = property(PropertyStatus::Accepted, &["fn:safe_divide"]);
+    p.kind = "invariant".into();
+    write_properties(d.path(), vec![p]);
+
+    // `resolve_template` names the file `{verifier}-{kind}.rhai`.
+    std::fs::create_dir_all(d.path().join(render::TEMPLATES_DIR)).expect("mkdir templates");
+    std::fs::write(
+        d.path().join(render::TEMPLATES_DIR).join("verus-invariant.rhai"),
+        // Verus-specific `while ... invariant ...` syntax is not valid bare
+        // Rust grammar; like the shipped templates, it must sit inside a
+        // macro invocation (`verus! { ... }`), whose body `syn` treats as an
+        // opaque token tree rather than parsing as Rust items.
+        "`verus! {\nfn h() {\n    let mut i: u32 = 0;\n    while i < 10\n        invariant\n            i <= 10,\n    {\n        i = i + 1;\n    }\n}\n} // verus!\n`",
+    )
+    .expect("write template");
+
+    let out = render::render_to_disk(d.path(), &request(false), false).expect(
+        "a closed-vocabulary kind must never make its own text a live-code S5 hazard \
+         (the property's `kind` and the Verus `invariant` keyword are the same word)",
+    );
+    assert!(
+        out.artifact.body.contains("invariant"),
+        "the keyword must actually be live in the rendered body: {}",
+        out.artifact.body
+    );
+}
+
+#[test]
+fn an_unrecognized_kind_is_refused_at_render_time() {
+    let d = project();
+    let mut p = property(PropertyStatus::Accepted, &["fn:safe_divide"]);
+    p.kind = "not_a_real_kind".into();
+    write_properties(d.path(), vec![p]);
+
+    let err = render::render_to_disk(d.path(), &request(false), false)
+        .expect_err("an unrecognized kind must be refused before template lookup");
+    assert!(
+        matches!(err, RenderPipelineError::UnknownKind { .. }),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("not_a_real_kind"), "{err}");
+    assert!(unreviewed_files(d.path()).is_empty());
+    assert!(
+        journal_events(d.path())
+            .contains(&("verify_render_refused".into(), Some("unknown_kind".into()))),
+        "{:?}",
+        journal_events(d.path())
+    );
 }
