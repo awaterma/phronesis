@@ -38,13 +38,14 @@ proptest! {
     ) {
         prop_assume!(stem != sibling_stem);
 
-        let mut real_segments = dir_parts.clone();
-        real_segments.push(stem.clone());
-        let real_path = real_segments.join("/");
-
         let mut foreign_segments = dir_parts.clone();
         foreign_segments.push(sibling_stem.clone());
         let foreign_path = foreign_segments.join("/");
+        prop_assume!(!foreign_path.contains(&stem));
+
+        let mut real_segments = dir_parts.clone();
+        real_segments.push(stem.clone());
+        let real_path = real_segments.join("/");
 
         let gate_rule = Rule {
             id: "gate".into(),
@@ -202,6 +203,62 @@ proptest! {
         crate::rules_file::write_atomic(&path, &merged.merged).expect("rewrite");
         prop_assert_eq!(crate::rules_file::read(&path).expect("reread").rules[0].audit, Some(true));
     }
+}
+
+#[test]
+fn single_file_gating_uses_substring_path_matching() {
+    let dir_parts = vec!["i".to_string()];
+    let stem = "i".to_string();
+    let sibling_stem = "a".to_string();
+
+    let mut real_segments = dir_parts.clone();
+    real_segments.push(stem.clone());
+    let real_path = real_segments.join("/");
+
+    let mut foreign_segments = dir_parts;
+    foreign_segments.push(sibling_stem);
+    let foreign_path = foreign_segments.join("/");
+
+    // This counterexample is excluded by the property generator's
+    // precondition because the sibling path contains the pattern.
+    assert!(foreign_path.contains(&stem));
+
+    let gate_rule = Rule {
+        id: "gate".into(),
+        priority: 1,
+        conditions: vec![Condition {
+            predicate: "file_path_matches".into(),
+            args: vec![stem],
+            script: None,
+        }],
+        actions: vec![Action {
+            action_type: "constraint_violation".into(),
+            params: vec!["matched".into()],
+            data: None,
+        }],
+    };
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let fires_for_path = |path: &str| {
+        let network = ReteNetwork::new();
+        rt.block_on(async {
+            network.add_rule(gate_rule.clone()).await.expect("add rule");
+            crate::hook_facts::assert_common_facts(&network, path, "Edit", "pre")
+                .await
+                .expect("facts");
+            network.update_agenda().await.expect("update agenda");
+            Ok::<_, anyhow::Error>(
+                !network
+                    .execute_all_agenda_items()
+                    .expect("execute")
+                    .is_empty(),
+            )
+        })
+        .expect("async gating")
+    };
+
+    assert!(fires_for_path(&real_path));
+    assert!(fires_for_path(&foreign_path));
 }
 
 fn disk_rule(id: &str, priority: i32) -> crate::rules_file::DiskRule {
