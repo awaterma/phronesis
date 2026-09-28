@@ -142,6 +142,21 @@ fn journal_events(root: &Path) -> Vec<(String, Option<String>)> {
         .collect()
 }
 
+/// `(event, outcome)` pairs, for the `verify_render` entries an unchanged
+/// re-render must also produce (unlike `reason`, only refusals carry).
+fn journal_outcomes(root: &Path) -> Vec<(String, Option<String>)> {
+    let raw = std::fs::read_to_string(action_log::default_path(root)).unwrap_or_default();
+    raw.lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .map(|v| {
+            (
+                v["event"].as_str().unwrap_or_default().to_string(),
+                v["outcome"].as_str().map(str::to_string),
+            )
+        })
+        .collect()
+}
+
 /// The human review act the tests stand in for (S3): approve the bytes.
 fn approve(root: &Path, artifact_sha256: &str, template_sha256: &str, revision: &str) {
     allowlist::record(
@@ -266,6 +281,34 @@ fn trusted_template_renders_validates_and_writes_into_unreviewed() {
     assert_eq!(unreviewed_files(d.path()).len(), 1);
 }
 
+/// An `unchanged` re-render (identical bytes already on disk) still writes
+/// a `verify_render` journal entry — S7 covers every generation, not only
+/// the first one that actually wrote bytes.
+#[test]
+fn unchanged_rerender_is_journaled() {
+    let d = project();
+    trusted(d.path(), DRAFT_TEMPLATE);
+
+    render::render_to_disk(d.path(), &request(false), false).expect("first render");
+    let again = render::render_to_disk(d.path(), &request(false), false).expect("second render");
+    assert_eq!(again.disposition, "unchanged");
+
+    let verify_renders: Vec<_> = journal_events(d.path())
+        .into_iter()
+        .filter(|(event, _)| event == "verify_render")
+        .collect();
+    assert_eq!(
+        verify_renders.len(),
+        2,
+        "the unchanged re-render must be journaled too, not just the write: {verify_renders:?}"
+    );
+    assert!(
+        journal_outcomes(d.path()).contains(&("verify_render".into(), Some("unchanged".into()))),
+        "{:?}",
+        journal_outcomes(d.path())
+    );
+}
+
 // ---- determinism: same inputs → byte-identical output, across runs and
 // across input orderings ----
 
@@ -335,8 +378,12 @@ fn a_body_validate_body_rejects_is_never_written_or_executed() {
             "`fn main() { std::process::Command::new(\"touch\"); }`",
         ),
         (
-            "interpolated value in live code",
-            "`fn main() { let ${property.subject} = 1; }`",
+            // `subject` is an identifier candidate now (it may be called in
+            // live code — see `identifier_value_called_...` in validate.rs),
+            // but a free-text field never is: it must stay inert wherever it
+            // sits, live-code included.
+            "free-text value in live code",
+            "`fn main() { let _ = 1 + ${property.condition}; }`",
         ),
         ("unparseable body", "`fn main( {`"),
     ] {
@@ -436,6 +483,44 @@ fn a_draft_template_is_refused_without_the_flag() {
     assert!(
         out.artifact.body.contains("origin: template_drafts"),
         "the provenance header names the draft origin"
+    );
+}
+
+// `verification/templates` itself (the trust anchor's directory entry, not
+// one file inside it) replaced by a symlink to `verification/template-drafts`
+// must never be treated as the trust anchor: the existing per-file
+// containment check alone would follow it, since the canonicalized directory
+// and the canonicalized file both resolve into the same real (drafts) tree.
+#[test]
+fn templates_dir_itself_symlinked_to_drafts_is_refused_without_allow_drafts() {
+    let d = project();
+    let drafts_dir = d.path().join(render::TEMPLATE_DRAFTS_DIR);
+    std::fs::create_dir_all(&drafts_dir).expect("mkdir drafts");
+    std::fs::write(drafts_dir.join(TEMPLATE_NAME), DRAFT_TEMPLATE).expect("write draft");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&drafts_dir, d.path().join(render::TEMPLATES_DIR))
+        .expect("symlink verification/templates -> verification/template-drafts");
+
+    let err = render::render_to_disk(d.path(), &request(false), false)
+        .expect_err("a templates/ symlink to drafts must not count as the trust anchor");
+    match &err {
+        RenderPipelineError::DraftRefused { path } => {
+            assert_eq!(
+                path,
+                &format!("verification/template-drafts/{TEMPLATE_NAME}")
+            )
+        }
+        other => panic!("expected DraftRefused, got {other:?}"),
+    }
+    assert!(unreviewed_files(d.path()).is_empty());
+
+    // With the flag, the same bytes load — but honestly, as a draft, never
+    // mislabeled as the trust anchor.
+    let out = render::render_to_disk(d.path(), &request(true), false).expect("with the flag");
+    assert_eq!(
+        out.artifact.template_origin,
+        TemplateOrigin::TemplateDrafts,
+        "a templates/ symlink to drafts must never be recorded as the trust anchor"
     );
 }
 

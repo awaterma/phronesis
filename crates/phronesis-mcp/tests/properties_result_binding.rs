@@ -312,6 +312,29 @@ fn d9_bound_result_hydrates_with_its_tier() {
     );
 }
 
+/// D9 back-compat, pinned by name: `bound_record`'s baseline JSON has no
+/// `template_origin` key at all — the shape of a result written before this
+/// field existed. `hydrate.rs`'s `binding()` treats an absent field the same
+/// as `Some("templates")` (`None | Some("templates") => {}`), so it still
+/// binds as verified evidence. This is *not* a integrity guarantee — nothing
+/// stops a hand-written record from omitting the field to look legacy — it
+/// is `phr-mcp verify run` was never asked to change; the trust boundary is
+/// the allowlist plus the executor, not this field (see
+/// SPEC-verification-artifact-generation.md "Integrity limits").
+#[test]
+fn d9_missing_template_origin_still_binds_like_the_trusted_templates_origin() {
+    let head = "a".repeat(40);
+    let d = project(&[bound_record(json!({}))]);
+    let facts = hydrate_edit(d.path(), Some(&head));
+    assert!(
+        with(&facts, "verification_result")
+            .contains(&[PROP.to_string(), "kani".into(), "passed".into()].as_slice()),
+        "a record with no template_origin field must still bind, matching hydrate.rs's \
+         `None | Some(\"templates\") => {{}}` arm: {facts:?}"
+    );
+    assert!(with(&facts, "unbound_evidence").is_empty(), "{facts:?}");
+}
+
 /// With HEAD unknown, no result can be shown to be at HEAD: the obligation
 /// stays (conservative), and staleness is not claimed.
 #[test]
