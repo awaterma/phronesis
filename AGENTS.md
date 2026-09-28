@@ -164,6 +164,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `graph rebuild\|query\|status\|ownership` | Structural code-graph helpers: rebuild the derived `.phronesis/graph.jsonl` (rebuild after `git checkout`, `git mv`, or rebase), query by relation, check whether it matches disk, and explain indexed Rust ownership evidence |
 | `confidence` | Confidence band + grounded signals for the open work unit |
 | `verify render\|run <property-id>` | Render a property's verification artifact from `verification/templates/<verifier>-<kind>.rhai` through the Rhai render entry, S5-validate it, and write it to `verification/unreviewed/` (`render`; `--dry-run`); execute a previously rendered, allowlisted artifact confined and record the bound result (`run`). `--allow-drafts` (dev only) reads `verification/template-drafts/`; draft-derived results are recorded `template_origin: template_drafts` and never hydrate as `verification_result` |
+| `verify review\|approve <property-id>` | D10 agent-verified evidence: `review` records one self-declared reviewer verdict (`--reviewer-model`, `--reviewer-family`, `--verdict approve\|reject`, `--artifact-sha256` of the current render) in `.phronesis/verification-reviews.jsonl`; `approve --quorum --author-family F` admits an `agent_quorum` allowlist entry only after ≥2 approving reviewers from ≥2 families (none the author's, no reject) and confined host checks: structural production reach, a failing property-declared mutant, a passing baseline, and a failing `assert(false)` vacuity sentinel at every proof site. Such results hydrate as `agent_verification_result` and admit status `agent_verified`, never `verified` |
 | `toolchains` | List active toolchain definitions (built-in + project) with ID, source, match patterns, and active signal refinements |
 | `signal <name> <outcome>` | Record a `compile`/`tests` pass/fail signal explicitly for the open work unit — the escape hatch when a test runner has no toolchain definition or ran outside the hook; requires the `confidence` pack |
 | `journey` | `journey_*` facts asserted right now (`--json`/`--explain`/`--lifecycle`/`--corrections`) |
@@ -751,7 +752,7 @@ The `phr-mcp serve` command exposes these tools:
 | `get_drift` | Detect drift between written guidance and enforced rules across every corpus | `CallToolResult` |
 | `query_ownership_evidence` | Explain the indexed Rust ownership evidence for a function | `CallToolResult` |
 | `get_confidence` | Report the confidence band and grounded signals for the open work unit | `{ "subject", "band", "signals" }` |
-| `set_property_status` | Transition a property's status (the promotion act); requires `because` | `CallToolResult` |
+| `set_property_status` | Transition a property's status (the promotion act); requires `because`; `verified` needs human-approved bound passed evidence, `agent_verified` accepts agent-quorum or human evidence | `CallToolResult` |
 
 ---
 
