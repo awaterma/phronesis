@@ -25,7 +25,7 @@ use super::types::{FileAudit, Level, PerFileHits, RuleAudit};
 /// (`new_content_contains`) and AST predicates emitted by `SyntaxFacts::all_facts`
 /// are both considered "supported" here and skipped — they're evaluated in the
 /// scan loop.
-pub(crate) fn rule_applies_to_file(rule: &DiskRule, path: &Path, line_count: usize) -> bool {
+pub(super) fn rule_applies_to_file(rule: &DiskRule, path: &Path, line_count: usize) -> bool {
     for cond in &rule.conditions {
         match cond.predicate.as_str() {
             "new_content_contains" => {
@@ -85,14 +85,14 @@ pub(crate) fn rule_applies_to_file(rule: &DiskRule, path: &Path, line_count: usi
 /// The source of truth is `SyntaxFacts::PREDICATES`; a test in
 /// `syntax::facts::tests::predicates_const_matches_all_facts_emission_set`
 /// guards against drift between the const and the emission blocks.
-pub(crate) fn is_ast_predicate(predicate: &str) -> bool {
+pub(super) fn is_ast_predicate(predicate: &str) -> bool {
     crate::syntax::facts::SyntaxFacts::PREDICATES.contains(&predicate)
 }
 
 /// True if `rule` has at least one condition whose predicate is an AST
 /// predicate evaluated via `SyntaxFacts`. Used to decide whether the audit
 /// loop needs to lazily parse the file's syntax.
-pub(crate) fn rule_has_ast_predicate(rule: &DiskRule) -> bool {
+pub(super) fn rule_has_ast_predicate(rule: &DiskRule) -> bool {
     rule.conditions
         .iter()
         .any(|c| is_ast_predicate(&c.predicate))
@@ -103,7 +103,7 @@ pub(crate) fn rule_has_ast_predicate(rule: &DiskRule) -> bool {
 /// is the function/entity name; for count predicates `args[2]` is the
 /// threshold count. Returns `None` only for a shapeless fact (none of the
 /// current AST predicates are shapeless — guard anyway).
-pub(crate) fn ast_hit_detail(predicate: &str, args: &[String]) -> Option<String> {
+pub(super) fn ast_hit_detail(predicate: &str, args: &[String]) -> Option<String> {
     // Count predicates: render "name (N unit)". The unit label is
     // predicate-specific so the line reads naturally, e.g.
     // "ladder (8 let bindings)" rather than a bare number.
@@ -135,13 +135,13 @@ pub(crate) fn ast_hit_detail(predicate: &str, args: &[String]) -> Option<String>
 /// True if `rule` has no content-matching predicates — only gates. For
 /// such rules the audit emits a single "whole-file" hit at line 1 when
 /// the gates pass, rather than scanning lines.
-pub(crate) fn is_whole_file_rule(rule: &DiskRule) -> bool {
+pub(super) fn is_whole_file_rule(rule: &DiskRule) -> bool {
     rule.conditions
         .iter()
         .all(|c| c.predicate != "new_content_contains")
 }
 
-pub(crate) fn normalized_relative_path(project_root: &Path, path: &Path) -> String {
+pub(super) fn normalized_relative_path(project_root: &Path, path: &Path) -> String {
     let relative = path.strip_prefix(project_root).unwrap_or(path);
     relative
         .components()
@@ -150,7 +150,7 @@ pub(crate) fn normalized_relative_path(project_root: &Path, path: &Path) -> Stri
         .join("/")
 }
 
-pub(crate) fn audit_path_facts(project_root: &Path, path: &Path) -> Vec<Fact> {
+pub(super) fn audit_path_facts(project_root: &Path, path: &Path) -> Vec<Fact> {
     let relative = normalized_relative_path(project_root, path);
     let mut facts = vec![Fact {
         id: "audit_file_path".to_string(),
@@ -184,7 +184,7 @@ pub(crate) fn audit_path_facts(project_root: &Path, path: &Path) -> Vec<Fact> {
     facts
 }
 
-pub(crate) fn script_body(condition: &crate::rules_file::DiskCondition) -> Result<&str, String> {
+pub(super) fn script_body(condition: &crate::rules_file::DiskCondition) -> Result<&str, String> {
     condition
         .script
         .as_deref()
@@ -192,7 +192,7 @@ pub(crate) fn script_body(condition: &crate::rules_file::DiskCondition) -> Resul
         .ok_or_else(|| "missing script body".to_string())
 }
 
-pub(crate) fn validate_builtin_script(script: &str) -> Result<(), String> {
+pub(super) fn validate_builtin_script(script: &str) -> Result<(), String> {
     if script.contains('?') {
         return Err("binding-dependent scripts are not supported by audit".to_string());
     }
@@ -226,7 +226,7 @@ pub fn script_diagnostics(rules: &RulesFile, rule_filter: Option<&str>) -> Vec<S
         .collect()
 }
 
-pub(crate) fn script_guards_pass(rule: &DiskRule, facts: &[Fact]) -> bool {
+pub(super) fn script_guards_pass(rule: &DiskRule, facts: &[Fact]) -> bool {
     let evaluator = phr::BuiltinScriptEvaluator::new();
     let bindings = HashMap::new();
     rule.conditions
@@ -253,7 +253,7 @@ pub(crate) fn script_guards_pass(rule: &DiskRule, facts: &[Fact]) -> bool {
 /// `//! phronesis-allow: <rule-id>[ <free-form reason>]` anywhere in the
 /// leading run of `//!` doc-comment lines (allowing blank lines between).
 /// Stops scanning at the first non-blank, non-`//!` line.
-pub(crate) fn file_exempts_rule(lines: &[&str], rule_id: &str) -> bool {
+pub(super) fn file_exempts_rule(lines: &[&str], rule_id: &str) -> bool {
     for line in lines {
         let trimmed = line.trim_start();
         if trimmed.is_empty() {
@@ -289,7 +289,7 @@ pub(crate) fn file_exempts_rule(lines: &[&str], rule_id: &str) -> bool {
 /// lines. Lets a documented `#[allow(...)]` survive even when interleaved
 /// with siblings like `#[serde(default)]`. Used by rules that opt into
 /// `doc_excepted: true`.
-pub(crate) fn line_preceded_by_doc_comment(lines: &[&str], i: usize) -> bool {
+pub(super) fn line_preceded_by_doc_comment(lines: &[&str], i: usize) -> bool {
     for j in (0..i).rev() {
         let trimmed = lines[j].trim_start();
         if trimmed.is_empty() {
@@ -323,7 +323,7 @@ pub fn rule_matches_filter(id: &str, filter: &str) -> bool {
 }
 
 /// Filter `rules` to those opted into the audit, honoring `rule_filter`.
-pub(crate) fn filter_audit_rules<'a>(
+pub(super) fn filter_audit_rules<'a>(
     rules: &'a RulesFile,
     rule_filter: Option<&str>,
 ) -> Vec<&'a DiskRule> {
@@ -338,7 +338,7 @@ pub(crate) fn filter_audit_rules<'a>(
 /// Evaluate the AST-predicate branch for a single rule on a single file.
 /// Returns `Some(hits)` if any AST facts matched, `None` if no hits.
 /// Lazily populates `ast_facts` on first call per file.
-pub(crate) fn eval_ast_rule(
+pub(super) fn eval_ast_rule(
     rule: &DiskRule,
     path_str: &str,
     content: &str,
@@ -387,14 +387,14 @@ pub(crate) fn eval_ast_rule(
 
 /// Context for `eval_content_rule` so the function stays at two logical
 /// parameters instead of five.
-pub(crate) struct ContentEvalCtx<'a> {
-    pub(crate) lines: &'a [&'a str],
-    pub(crate) keep_mask: &'a Option<Vec<bool>>,
-    pub(crate) doc_excepted: bool,
-    pub(crate) times: Option<&'a mut AuditSectionTimes>,
+pub(super) struct ContentEvalCtx<'a> {
+    pub(super) lines: &'a [&'a str],
+    pub(super) keep_mask: &'a Option<Vec<bool>>,
+    pub(super) doc_excepted: bool,
+    pub(super) times: Option<&'a mut AuditSectionTimes>,
 }
 
-pub(crate) fn eval_content_rule(needle: &str, mut ctx: ContentEvalCtx<'_>) -> Vec<u32> {
+pub(super) fn eval_content_rule(needle: &str, mut ctx: ContentEvalCtx<'_>) -> Vec<u32> {
     let mut hit_lines: Vec<u32> = Vec::new();
     for (i, line) in ctx.lines.iter().enumerate() {
         if let Some(mask) = ctx.keep_mask
@@ -419,21 +419,21 @@ pub(crate) fn eval_content_rule(needle: &str, mut ctx: ContentEvalCtx<'_>) -> Ve
 /// Context bundling per-file data shared by `evaluate_rule_for_file`.
 /// Keeps the public audit surface small; evaluation needs just
 /// `EvalCtx` + `DiskRule` + accumulator.
-pub(crate) struct EvalCtx<'a> {
-    pub(crate) path: &'a Path,
-    pub(crate) path_str: &'a str,
-    pub(crate) content: &'a str,
-    pub(crate) lines: &'a [&'a str],
-    pub(crate) keep_mask: &'a Option<Vec<bool>>,
-    pub(crate) effective_line_count: usize,
-    pub(crate) ast_facts: &'a mut Option<Vec<Fact>>,
-    pub(crate) script_facts: &'a [Fact],
-    pub(crate) times: Option<&'a mut AuditSectionTimes>,
+pub(super) struct EvalCtx<'a> {
+    pub(super) path: &'a Path,
+    pub(super) path_str: &'a str,
+    pub(super) content: &'a str,
+    pub(super) lines: &'a [&'a str],
+    pub(super) keep_mask: &'a Option<Vec<bool>>,
+    pub(super) effective_line_count: usize,
+    pub(super) ast_facts: &'a mut Option<Vec<Fact>>,
+    pub(super) script_facts: &'a [Fact],
+    pub(super) times: Option<&'a mut AuditSectionTimes>,
 }
 
 /// Apply one rule's actions against one file's pre-parsed data, writing any
 /// hits into `accum`.
-pub(crate) fn evaluate_rule_for_file(
+pub(super) fn evaluate_rule_for_file(
     rule: &DiskRule,
     ctx: &mut EvalCtx<'_>,
     accum: &mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
@@ -507,16 +507,16 @@ pub(crate) fn evaluate_rule_for_file(
 
 /// Per-file scan body: runs all `rules` against `content`, accumulating hits
 /// into `accum`.
-pub(crate) struct ScanFileInput<'a> {
-    pub(crate) project_root: &'a Path,
-    pub(crate) path: &'a Path,
-    pub(crate) content: &'a str,
-    pub(crate) rules: &'a [&'a DiskRule],
-    pub(crate) accum: &'a mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
-    pub(crate) times: Option<&'a mut AuditSectionTimes>,
+pub(super) struct ScanFileInput<'a> {
+    pub(super) project_root: &'a Path,
+    pub(super) path: &'a Path,
+    pub(super) content: &'a str,
+    pub(super) rules: &'a [&'a DiskRule],
+    pub(super) accum: &'a mut BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
+    pub(super) times: Option<&'a mut AuditSectionTimes>,
 }
 
-pub(crate) fn scan_file_into_accum(input: ScanFileInput<'_>) {
+pub(super) fn scan_file_into_accum(input: ScanFileInput<'_>) {
     let ScanFileInput {
         project_root,
         path,
@@ -573,7 +573,7 @@ pub(crate) fn scan_file_into_accum(input: ScanFileInput<'_>) {
 }
 
 /// Collapse the per-file accumulator into a sorted `Vec<RuleAudit>`.
-pub(crate) fn build_per_rule(
+pub(super) fn build_per_rule(
     accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)>,
 ) -> Vec<RuleAudit> {
     let mut per_rule: Vec<RuleAudit> = accum
@@ -604,7 +604,7 @@ pub(crate) fn build_per_rule(
 ///
 /// Shared by the file-scan pass and the structural merge so a merged report
 /// cannot end up sorted two different ways.
-pub(crate) fn rule_report_order(a: &RuleAudit, b: &RuleAudit) -> std::cmp::Ordering {
+pub(super) fn rule_report_order(a: &RuleAudit, b: &RuleAudit) -> std::cmp::Ordering {
     let lvl = match (a.level, b.level) {
         (Level::Block, Level::Warn) => std::cmp::Ordering::Less,
         (Level::Warn, Level::Block) => std::cmp::Ordering::Greater,

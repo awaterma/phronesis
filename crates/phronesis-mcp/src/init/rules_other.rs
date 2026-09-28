@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 /// scripts. Messages are intentionally generic; project-specific guidance
 /// (which loader helper to call, which response-proxy to use, etc.) should
 /// be layered in via project-local rules in `.phronesis/rules.json`.
-pub(crate) fn rhai_rules() -> Value {
+pub(super) fn rhai_rules() -> Value {
     json!({
         "rules": [
             {
@@ -58,7 +58,7 @@ pub(crate) fn rhai_rules() -> Value {
 /// of the user. Graph relations describe the whole repository, so without
 /// that join a rule re-reports every violation in the project on every single
 /// edit — the fastest way to get a pack switched off.
-pub(crate) fn structural_rules() -> Value {
+pub(super) fn structural_rules() -> Value {
     json!({
         "rules": [
             {
@@ -134,7 +134,7 @@ pub(crate) fn structural_rules() -> Value {
     })
 }
 
-pub(crate) fn typescript_rules() -> Value {
+pub(super) fn typescript_rules() -> Value {
     json!({
         "rules": [
             {
@@ -191,7 +191,7 @@ pub(crate) fn typescript_rules() -> Value {
     })
 }
 
-pub(crate) fn swift_rules() -> Value {
+pub(super) fn swift_rules() -> Value {
     json!({
         "rules": [
             {
@@ -287,7 +287,7 @@ pub(crate) fn swift_rules() -> Value {
 /// Warning-first set of syntax rules (spec §Starter pack).
 /// Primary value is graph participation — mixed repos can query Lua
 /// definitions, tests, and imports alongside every other language.
-pub(crate) fn lua_rules() -> Value {
+pub(super) fn lua_rules() -> Value {
     json!({
         "rules": [
             {
@@ -313,7 +313,7 @@ pub(crate) fn lua_rules() -> Value {
 /// graph claims must use its semantics rather than force it into an imperative
 /// language shape. Import diagnostics are emitted only after repository-wide
 /// package indexing and never invent a dependency edge.
-pub(crate) fn cue_rules() -> Value {
+pub(super) fn cue_rules() -> Value {
     json!({
         "rules": [
             {
@@ -336,7 +336,7 @@ pub(crate) fn cue_rules() -> Value {
 /// Syntax-safe, low-noise starter rules. Arbitrary application JSON has no
 /// import or module system, so rules only fire when schema keywords identify
 /// a document as a JSON Schema resource (spec §Starter pack).
-pub(crate) fn json_rules() -> Value {
+pub(super) fn json_rules() -> Value {
     json!({
         "rules": [
             {
@@ -358,7 +358,7 @@ pub(crate) fn json_rules() -> Value {
 /// Conservative, syntax-safe starter rules. Generic YAML has no cross-file
 /// import system, so rules focus on anchors, aliases, and unsafe tags
 /// (spec §Starter pack).
-pub(crate) fn yaml_rules() -> Value {
+pub(super) fn yaml_rules() -> Value {
     json!({
         "rules": [
             {
@@ -398,7 +398,7 @@ pub(crate) fn yaml_rules() -> Value {
 ///
 /// High-value chart defect detection without invoking a cluster (spec §Starter pack).
 /// Rules target template source files under valid chart `templates/` directories.
-pub(crate) fn helm3_rules() -> Value {
+pub(super) fn helm3_rules() -> Value {
     json!({
         "rules": [
             {

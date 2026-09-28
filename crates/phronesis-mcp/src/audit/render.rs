@@ -277,7 +277,7 @@ pub fn short_iso_date(ts: u64) -> String {
 
 // Civil calendar conversion from Howard Hinnant's date algorithms.
 // http://howardhinnant.github.io/date_algorithms.html#civil_from_days
-pub(crate) fn days_to_ymd(z: i64) -> (i32, u32, u32) {
+pub(super) fn days_to_ymd(z: i64) -> (i32, u32, u32) {
     let z = z + 719_468;
     let (y, mp, d) = {
         let era = if z >= 0 { z } else { z - 146_096 } / 146_097;

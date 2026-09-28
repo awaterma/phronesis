@@ -87,7 +87,7 @@ pub fn empty_result_diagnostic(
 /// Cheap near-miss suggestions for an unmatched `--rule` filter: opted-in
 /// ids (with any `#orN` suffix stripped, deduplicated) where one of the
 /// two strings contains the other, case-insensitively. Capped at five.
-pub(crate) fn near_miss_rule_ids(opted_in: &[&str], filter: &str) -> Vec<String> {
+pub(super) fn near_miss_rule_ids(opted_in: &[&str], filter: &str) -> Vec<String> {
     let needle = filter.to_ascii_lowercase();
     let mut out: Vec<String> = Vec::new();
     for id in opted_in {

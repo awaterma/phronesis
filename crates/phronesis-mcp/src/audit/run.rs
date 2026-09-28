@@ -14,7 +14,7 @@ use super::types::{AuditOpts, AuditReport, Level, PerFileHits};
 /// When `times` is `Some`, timing points are recorded; when `None`
 /// the `Instant::now()` calls still execute (unconditionally) but
 /// stores are gated so there is no semantic difference for the caller.
-pub(crate) fn run_core(
+pub(super) fn run_core(
     rules: &RulesFile,
     opts: &AuditOpts,
     mut times: Option<&mut AuditSectionTimes>,

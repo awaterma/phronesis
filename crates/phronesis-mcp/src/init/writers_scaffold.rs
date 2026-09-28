@@ -58,7 +58,7 @@ const DEFAULT_CONTEXT_KERNEL: &str = r#"# Durable project kernel
 - Retrieve detailed rules, decisions, graph facts, and history over MCP when relevant.
 "#;
 
-pub(crate) fn write_durable_md(
+pub(super) fn write_durable_md(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -220,7 +220,7 @@ load and every demanded fact that could not be hydrated — which is how you
 tell "the facts were false" apart from "the selector has a typo."
 "#;
 
-pub(crate) fn write_context_scaffold(
+pub(super) fn write_context_scaffold(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -314,7 +314,7 @@ The rest of `.phronesis/` (rules.json, log.jsonl, etc.) stays \
 gitignored.
 ";
 
-pub(crate) fn write_wiki_scaffold(
+pub(super) fn write_wiki_scaffold(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -384,7 +384,7 @@ const TOOLCHAINS_JSON: &str = r#"[
 
 /// Write the confidence configuration, known-bug registry, and
 /// toolchains.json example when the `confidence` pack is selected. Idempotent (leaves existing files alone).
-pub(crate) fn write_confidence_scaffold(
+pub(super) fn write_confidence_scaffold(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -440,7 +440,7 @@ const JOURNEY_JSON: &str = r#"{
 /// Write `.phronesis/journey.json` when the `journey` pack is selected.
 /// Idempotent — leaves an existing file alone so a project's customized
 /// tagger vocabulary isn't clobbered by a re-run.
-pub(crate) fn write_journey_scaffold(
+pub(super) fn write_journey_scaffold(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -488,7 +488,7 @@ pub(crate) fn write_journey_scaffold(
 /// `phr-mcp graph rebuild`, whereas a failed `init` leaves a project with no
 /// enforcement at all. Failures are reported as warnings and named, so the
 /// user knows to run the rebuild by hand.
-pub(crate) fn build_structural_graph(root: &Path, opts: &InitOpts, report: &mut InitReport) {
+pub(super) fn build_structural_graph(root: &Path, opts: &InitOpts, report: &mut InitReport) {
     if opts.dry_run {
         report
             .steps
@@ -507,7 +507,7 @@ pub(crate) fn build_structural_graph(root: &Path, opts: &InitOpts, report: &mut 
     }
 }
 
-pub(crate) fn update_gitignore(
+pub(super) fn update_gitignore(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,

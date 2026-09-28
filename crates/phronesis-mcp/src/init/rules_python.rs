@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-pub(crate) fn python_rules() -> Value {
+pub(super) fn python_rules() -> Value {
     json!({
         "rules": [
             {
@@ -123,7 +123,7 @@ pub(crate) fn python_rules() -> Value {
 /// predicate from `syntax/python.rs`; none uses substring matching. These
 /// are opinionated, so most ship as `warn` or audit-only and every message
 /// names the guide page and the limit of the heuristic.
-pub(crate) fn python_patterns_rules() -> Value {
+pub(super) fn python_patterns_rules() -> Value {
     json!({
         "rules": [
             {
