@@ -4,32 +4,33 @@
 //!
 //! Split into cohesive modules; see individual files.
 
-mod types;
-mod engine;
-mod run;
 mod diagnostics;
-mod trend;
-mod render;
+mod engine;
 mod graph;
+mod render;
+mod run;
+mod trend;
+mod types;
 
-pub use types::{
-    AuditOpts, AuditReport, FileAudit, Level, RuleAudit, resolve_scan_root,
-    audit_snapshot_entry,
-};
-pub use engine::{rule_matches_filter, script_diagnostics};
-pub use run::{AuditSectionTimes, discover_files, run, run_profiled};
 pub use diagnostics::empty_result_diagnostic;
-pub use trend::{DebtTrend, RuleTrend, TrendOpts, TrendPoint, compute_trend};
-pub use render::{render_json, render_table, render_trend_json, render_trend_table, short_iso_date};
+pub use engine::{rule_matches_filter, script_diagnostics};
 pub use graph::{graph_scope_prefix, merge_graph_hits};
+pub use render::{
+    render_json, render_table, render_trend_json, render_trend_table, short_iso_date,
+};
+pub use run::{AuditSectionTimes, discover_files, run, run_profiled};
+pub use trend::{DebtTrend, RuleTrend, TrendOpts, TrendPoint, compute_trend};
+pub use types::{
+    AuditOpts, AuditReport, FileAudit, Level, RuleAudit, audit_snapshot_entry, resolve_scan_root,
+};
 
 #[cfg(test)]
 mod tests {
-    mod engine_tests;
-    mod doc_excepted_tests;
-    mod script_tests;
     mod ast_tests;
-    mod trend_tests;
-    mod render_tests;
+    mod doc_excepted_tests;
+    mod engine_tests;
     mod graph_tests;
+    mod render_tests;
+    mod script_tests;
+    mod trend_tests;
 }

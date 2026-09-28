@@ -8,7 +8,6 @@ use super::types::{AuditReport, Level};
 
 // ── Renderers ────────────────────────────────────────────────────────────────
 
-
 /// Render an `AuditReport` as a human-readable terminal table.
 /// `expand` switches from per-rule summary to per-file detail with line numbers.
 pub fn render_table(report: &AuditReport, expand: bool) -> String {

@@ -10,7 +10,6 @@ use super::types::Level;
 
 // ── Trend types and compute_trend ───────────────────────────────────────────
 
-
 #[derive(Debug, Clone, Default)]
 pub struct TrendOpts {
     /// Most-recent N snapshots. Default: all available.

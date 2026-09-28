@@ -4,9 +4,9 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 use super::rules_core::*;
-use super::rules_rust::*;
-use super::rules_python::*;
 use super::rules_other::*;
+use super::rules_python::*;
+use super::rules_rust::*;
 
 /// A starter rule pack. Packs are composable — caller picks a comma-separated
 /// list and `compose_packs` merges them, deduping by rule_id.

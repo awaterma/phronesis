@@ -323,7 +323,10 @@ pub fn rule_matches_filter(id: &str, filter: &str) -> bool {
 }
 
 /// Filter `rules` to those opted into the audit, honoring `rule_filter`.
-pub(crate) fn filter_audit_rules<'a>(rules: &'a RulesFile, rule_filter: Option<&str>) -> Vec<&'a DiskRule> {
+pub(crate) fn filter_audit_rules<'a>(
+    rules: &'a RulesFile,
+    rule_filter: Option<&str>,
+) -> Vec<&'a DiskRule> {
     rules
         .rules
         .iter()

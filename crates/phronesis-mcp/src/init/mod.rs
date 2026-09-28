@@ -20,22 +20,21 @@ mod rule_sync;
 use rule_sync::write_rules_file;
 
 mod types;
-pub use types::{Pack, BASE_PACKS, parse_packs, compose_packs, InitError, InitOpts, InitReport};
+pub use types::{BASE_PACKS, InitError, InitOpts, InitReport, Pack, compose_packs, parse_packs};
 
 mod global_install;
 pub use global_install::{
+    install_globally, install_globally_with_home, uninstall_globally, uninstall_globally_with_home,
     user_claude_config_path, user_gemini_config_path,
-    install_globally, install_globally_with_home,
-    uninstall_globally, uninstall_globally_with_home,
 };
 
-mod writers_hooks;
-mod writers_scaffold;
 mod json_helpers;
 mod rules_core;
-mod rules_rust;
-mod rules_python;
 mod rules_other;
+mod rules_python;
+mod rules_rust;
+mod writers_hooks;
+mod writers_scaffold;
 
 pub(crate) use writers_scaffold::DEFAULT_DURABLE_MD;
 
