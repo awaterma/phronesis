@@ -35,6 +35,7 @@ const BRANCH_REGION: &str = "branch:src/lib.rs::safe_divide:cd6054b02dde";
 fn fixture_properties() -> Vec<Property> {
     vec![
         Property {
+            mutations: vec![],
             id: "safe_divide.nonzero_returns_quotient".into(),
             subject: "safe_divide".into(),
             kind: "postcondition".into(),
@@ -47,6 +48,7 @@ fn fixture_properties() -> Vec<Property> {
             encodings: vec![],
         },
         Property {
+            mutations: vec![],
             id: "safe_divide.zero_returns_error".into(),
             subject: "safe_divide".into(),
             kind: "postcondition".into(),
@@ -110,6 +112,8 @@ fn bound_kani_pass(root: &std::path::Path) -> phronesis_mcp::properties::store::
     phronesis_mcp::properties::allowlist::record(
         root,
         phronesis_mcp::properties::allowlist::AllowlistEntry {
+            principal_kind: Default::default(),
+            quorum: None,
             artifact_sha256: sha.clone(),
             template_sha256: "template-hash".into(),
             property_id: "safe_divide.zero_returns_error".into(),
@@ -275,6 +279,7 @@ fn b2_observation_property_never_becomes_intent() {
     let d = TempDir::new().unwrap();
     let mut props = fixture_properties();
     props.push(Property {
+        mutations: vec![],
         id: "runtime.seen_zero_division".into(),
         subject: "safe_divide".into(),
         kind: "postcondition".into(),
@@ -395,6 +400,7 @@ fn c5_hostile_property_payload_renders_inert_or_refuses() {
 
     // Layer 1: the identifier charset rejects the hostile id at ingest.
     let props = vec![Property {
+        mutations: vec![],
         id: id_hostile.into(),
         subject: "safe_divide".into(),
         kind: "postcondition".into(),
@@ -653,6 +659,8 @@ fn main() {}
     allowlist::record(
         d.path(),
         allowlist::AllowlistEntry {
+            principal_kind: Default::default(),
+            quorum: None,
             artifact_sha256: sha.clone(),
             template_sha256: "template-hash".into(),
             property_id: "safe_divide.zero_returns_error".into(),
@@ -791,6 +799,8 @@ fn main() {}
     allowlist::record(
         d.path(),
         allowlist::AllowlistEntry {
+            principal_kind: Default::default(),
+            quorum: None,
             artifact_sha256: sha.clone(),
             template_sha256: "template-hash-mutated".into(),
             property_id: "safe_divide.zero_returns_error".into(),

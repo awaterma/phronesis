@@ -20,6 +20,123 @@ pub fn allowlist_path(root: &Path) -> PathBuf {
     root.join(".phronesis").join("verification-allowlist.json")
 }
 
+/// Who approved an artifact (D10). `Human` is the S3 review; an entry
+/// written before the field existed has none and loads as `Human` — the
+/// explicit back-compat default. `AgentQuorum` is written only by
+/// `phr-mcp verify approve --quorum` after the quorum rules and the host
+/// checks pass, and its evidence never hydrates as human `verified`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrincipalKind {
+    #[default]
+    Human,
+    AgentQuorum,
+}
+
+impl PrincipalKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::AgentQuorum => "agent_quorum",
+        }
+    }
+}
+
+/// One reviewer of an agent-quorum approval, copied from its review record.
+/// Model and family are self-declared by whoever wrote the record — they
+/// are not authenticated (SPEC C "Agent-verified evidence", honest limits).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuorumReviewer {
+    pub model: String,
+    pub family: String,
+    pub verdict: String,
+    /// SHA-256 of the review record's JSON line.
+    pub record_sha256: String,
+}
+
+/// Outcomes of the host-run mechanical checks that gated the approval.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuorumChecks {
+    /// Production functions the artifact structurally calls.
+    pub reach: Vec<String>,
+    /// Verifier status on the mutant (must be `failed`).
+    pub mutation: String,
+    /// Verifier status on the unmodified artifact (must be `passed`).
+    pub baseline: String,
+    /// Number of vacuity-sentinel sites; every one must have failed.
+    pub sentinel_sites: usize,
+    /// Confinement tier the checks ran under.
+    pub tier: String,
+}
+
+/// The quorum behind an `AgentQuorum` entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QuorumEvidence {
+    /// The declared model family of the template/property author.
+    pub author_family: String,
+    pub reviewers: Vec<QuorumReviewer>,
+    pub checks: QuorumChecks,
+}
+
+/// Normalized family/model comparison key: trimmed, lowercased.
+pub fn family_key(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+
+/// The quorum rules over approving reviewers (SPEC C "Quorum rules" 2–4):
+/// at least two, at least two distinct families, none sharing the author's
+/// family. `None` when they hold.
+pub fn quorum_rule_problem(author_family: &str, reviewers: &[(String, String)]) -> Option<String> {
+    let author = family_key(author_family);
+    if author.is_empty() {
+        return Some("author family is empty".to_string());
+    }
+    if let Some((model, _)) = reviewers.iter().find(|(_, f)| family_key(f) == author) {
+        return Some(format!(
+            "reviewer {model:?} shares the author's family {author:?}: an author's family never reviews its own work"
+        ));
+    }
+    if reviewers.len() < 2 {
+        return Some(format!(
+            "{} approving reviewer record(s); a quorum needs at least 2",
+            reviewers.len()
+        ));
+    }
+    let families: std::collections::BTreeSet<String> =
+        reviewers.iter().map(|(_, f)| family_key(f)).collect();
+    if families.len() < 2 {
+        return Some(format!(
+            "approving reviewers span {} model family ({}); a quorum needs at least 2 distinct families",
+            families.len(),
+            families.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    None
+}
+
+fn quorum_problem(q: &QuorumEvidence) -> Option<String> {
+    if q.reviewers.iter().any(|r| r.verdict != "approve") {
+        return Some("an agent_quorum entry lists a non-approve verdict".to_string());
+    }
+    let pairs: Vec<(String, String)> = q
+        .reviewers
+        .iter()
+        .map(|r| (r.model.clone(), r.family.clone()))
+        .collect();
+    if let Some(problem) = quorum_rule_problem(&q.author_family, &pairs) {
+        return Some(problem);
+    }
+    let c = &q.checks;
+    if c.reach.is_empty()
+        || c.mutation != "failed"
+        || c.baseline != "passed"
+        || c.sentinel_sites == 0
+    {
+        return Some("an agent_quorum entry's host checks did not all pass".to_string());
+    }
+    None
+}
+
 /// One approval: the full provenance tuple (spec §S3 condition ii).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AllowlistEntry {
@@ -33,6 +150,13 @@ pub struct AllowlistEntry {
     pub approver_principal: String,
     /// UTC date of the approval.
     pub date: String,
+    /// Who approved (D10). Absent in pre-D10 files: loads as `Human`.
+    #[serde(default)]
+    pub principal_kind: PrincipalKind,
+    /// The quorum and host-check outcomes; required for `AgentQuorum`,
+    /// absent for `Human`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quorum: Option<QuorumEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,6 +204,23 @@ fn entry_problem(e: &AllowlistEntry) -> Option<String> {
     }
     if e.date.is_empty() {
         return Some("date is empty".to_string());
+    }
+    match (e.principal_kind, &e.quorum) {
+        (PrincipalKind::AgentQuorum, None) => {
+            return Some("principal_kind agent_quorum without quorum evidence".to_string());
+        }
+        (PrincipalKind::AgentQuorum, Some(q)) => {
+            if let Some(problem) = quorum_problem(q) {
+                return Some(problem);
+            }
+        }
+        (PrincipalKind::Human, Some(_)) => {
+            return Some(
+                "a human entry carries quorum evidence: principal kinds are never mixed"
+                    .to_string(),
+            );
+        }
+        (PrincipalKind::Human, None) => {}
     }
     None
 }
@@ -135,6 +276,29 @@ pub fn contains(root: &Path, artifact_sha256: &str) -> Result<bool, AllowlistErr
         .entries
         .iter()
         .any(|e| e.artifact_sha256 == artifact_sha256))
+}
+
+/// The principal kind approving `artifact_sha256` for `property_id`, the
+/// strongest when several entries match (`Human` over `AgentQuorum`).
+/// `None` when nothing approves it.
+pub fn approval_kind(
+    file: &AllowlistFile,
+    artifact_sha256: &str,
+    property_id: &str,
+) -> Option<PrincipalKind> {
+    let kinds = file
+        .entries
+        .iter()
+        .filter(|e| e.artifact_sha256 == artifact_sha256 && e.property_id == property_id)
+        .map(|e| e.principal_kind);
+    let mut best = None;
+    for kind in kinds {
+        if kind == PrincipalKind::Human {
+            return Some(kind);
+        }
+        best = Some(kind);
+    }
+    best
 }
 
 /// Record an approval. `approver_principal` must name a human — an entry
@@ -193,6 +357,8 @@ mod tests {
             property_revision: "r1".into(),
             approver_principal: principal.into(),
             date: "2026-09-24".into(),
+            principal_kind: PrincipalKind::Human,
+            quorum: None,
         }
     }
 
@@ -247,6 +413,76 @@ mod tests {
         assert!(
             contains(root.path(), ABC).is_err(),
             "one bad entry fails closed"
+        );
+    }
+
+    /// D10 back-compat: an entry written before `principal_kind` existed
+    /// loads as `Human` — explicitly, not by accident.
+    #[test]
+    fn a_pre_d10_entry_loads_as_human() {
+        let root = tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".phronesis")).unwrap();
+        std::fs::write(
+            allowlist_path(root.path()),
+            format!(
+                r#"{{"version":1,"entries":[{{"artifact_sha256":"{ABC}","template_sha256":"t","property_id":"p","property_revision":"r","approver_principal":"a human","date":"2026-09-24"}}]}}"#
+            ),
+        )
+        .unwrap();
+        let file = load(root.path()).unwrap();
+        assert_eq!(file.entries[0].principal_kind, PrincipalKind::Human);
+        assert_eq!(approval_kind(&file, ABC, "p"), Some(PrincipalKind::Human));
+    }
+
+    /// An entry claiming `agent_quorum` without a valid quorum, or a human
+    /// entry carrying one, fails the whole file closed.
+    #[test]
+    fn principal_kind_and_quorum_evidence_must_agree() {
+        let root = tempdir().unwrap();
+        let mut claimed = entry(ABC, "agent_quorum:x+y");
+        claimed.principal_kind = PrincipalKind::AgentQuorum;
+        assert!(matches!(
+            record(root.path(), claimed.clone()),
+            Err(AllowlistError::InvalidEntry { .. })
+        ));
+        let quorum = QuorumEvidence {
+            author_family: "author".into(),
+            reviewers: vec![
+                QuorumReviewer {
+                    model: "m1".into(),
+                    family: "one".into(),
+                    verdict: "approve".into(),
+                    record_sha256: "1".repeat(64),
+                },
+                QuorumReviewer {
+                    model: "m2".into(),
+                    family: "one".into(),
+                    verdict: "approve".into(),
+                    record_sha256: "2".repeat(64),
+                },
+            ],
+            checks: QuorumChecks {
+                reach: vec!["f".into()],
+                mutation: "failed".into(),
+                baseline: "passed".into(),
+                sentinel_sites: 1,
+                tier: "raw".into(),
+            },
+        };
+        claimed.quorum = Some(quorum.clone());
+        assert!(
+            record(root.path(), claimed.clone()).is_err(),
+            "one family is not a quorum, even hand-written"
+        );
+        claimed.quorum.as_mut().unwrap().reviewers[1].family = "two".into();
+        record(root.path(), claimed.clone()).unwrap();
+        let mut human = entry(&"b".repeat(64), "a human");
+        human.quorum = Some(quorum);
+        assert!(record(root.path(), human).is_err());
+        let file = load(root.path()).unwrap();
+        assert_eq!(
+            approval_kind(&file, ABC, "safe_divide.zero_returns_error"),
+            Some(PrincipalKind::AgentQuorum)
         );
     }
 

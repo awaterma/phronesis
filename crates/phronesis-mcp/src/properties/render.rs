@@ -116,7 +116,7 @@ pub enum RenderPipelineError {
     #[error("no property with id {id:?} in .phronesis/properties.json")]
     NoSuchProperty { id: String },
     #[error(
-        "property {id} is {status:?}: generation requires accepted or verified, read from properties.json (S2)"
+        "property {id} is {status:?}: generation requires accepted, agent_verified, or verified, read from properties.json (S2)"
     )]
     NotAccepted { id: String, status: PropertyStatus },
     #[error("property {id} has no encoding{}", verifier.as_ref().map(|v| format!(" for verifier {v:?}")).unwrap_or_default())]
@@ -463,10 +463,7 @@ pub fn prepare(root: &Path, req: &RenderRequest) -> Result<RenderedArtifact, Ren
         .ok_or_else(|| RenderPipelineError::NoSuchProperty {
             id: req.property_id.clone(),
         })?;
-    if !matches!(
-        property.status,
-        PropertyStatus::Accepted | PropertyStatus::Verified
-    ) {
+    if !property.generation_eligible() {
         return Err(RenderPipelineError::NotAccepted {
             id: property.id,
             status: property.status,

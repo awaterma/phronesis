@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::properties::allowlist::{AllowlistFile, PrincipalKind, approval_kind};
 use crate::properties::store::{
     LEGACY_RESULTS_FORMAT, Property, PropertyStoreError, ResultRecord, load_properties,
     load_results,
@@ -21,6 +22,8 @@ pub const RELATIONS: &[&str] = &[
     "property_corroborated_by",
     "property_encoding",
     "verification_result",
+    "agent_verification_result",
+    "result_principal",
     "result_revision",
     "result_tier",
     "unbound_evidence",
@@ -126,11 +129,14 @@ fn is_hex_of_len(value: &str, len: usize) -> bool {
 /// - `no_encoding` — the property has no encoding for that verifier;
 /// - `allowlist_unreadable` / `artifact_not_approved` — the artifact hash is
 ///   not an approved artifact for that property (S3 allowlist).
+///
+/// A bound record carries the approving entry's principal kind (D10):
+/// `Human` wins when both kinds approve the same bytes.
 fn binding(
     r: &ResultRecord,
     properties: &[Property],
-    approved: &Result<Vec<(String, String)>, ()>,
-) -> Result<(), &'static str> {
+    approved: &Result<AllowlistFile, ()>,
+) -> Result<PrincipalKind, &'static str> {
     if r.v == LEGACY_RESULTS_FORMAT {
         return Err("legacy_record");
     }
@@ -166,13 +172,45 @@ fn binding(
     let Ok(approved) = approved else {
         return Err("allowlist_unreadable");
     };
-    if !approved
-        .iter()
-        .any(|(sha, id)| sha == artifact && id == &r.property)
-    {
-        return Err("artifact_not_approved");
+    approval_kind(approved, artifact, &r.property).ok_or("artifact_not_approved")
+}
+
+/// One bound result and the principal kind that approved its artifact.
+#[derive(Debug, Clone)]
+pub struct BoundResult {
+    pub record: ResultRecord,
+    pub principal: PrincipalKind,
+}
+
+/// Every bound result in the sidecar (D9 binding, D10 principal kind) —
+/// the evidence `set_property_status` checks before `verified` /
+/// `agent_verified`. Fails when either store is corrupt: a transition must
+/// not be justified by evidence that cannot be read.
+pub fn bound_results(root: &Path) -> Result<Vec<BoundResult>, PropertyStoreError> {
+    let properties = load_properties(root)?;
+    let results = load_results(root)?;
+    let approved = load_approvals(root, results.is_empty());
+    Ok(results
+        .into_iter()
+        .filter_map(|r| {
+            let principal = binding(&r, &properties, &approved).ok()?;
+            Some(BoundResult {
+                record: r,
+                principal,
+            })
+        })
+        .collect())
+}
+
+/// The allowlist, read only when there is a result to bind.
+fn load_approvals(root: &Path, no_results: bool) -> Result<AllowlistFile, ()> {
+    if no_results {
+        return Ok(AllowlistFile {
+            version: crate::properties::allowlist::ALLOWLIST_FORMAT,
+            entries: Vec::new(),
+        });
     }
-    Ok(())
+    crate::properties::allowlist::load(root).map_err(|_| ())
 }
 
 pub fn facts_for_event(input: &PropertyHydrationInput) -> anyhow::Result<Vec<PropertyFact>> {
@@ -213,22 +251,11 @@ pub fn hydrate(input: &PropertyHydrationInput) -> anyhow::Result<PropertyHydrati
 
     // D9: split results into bound evidence and unbound records. The
     // allowlist is read only when there is a result to bind.
-    let approved: Result<Vec<(String, String)>, ()> = if results.is_empty() {
-        Ok(Vec::new())
-    } else {
-        crate::properties::allowlist::load(input.root)
-            .map(|f| {
-                f.entries
-                    .into_iter()
-                    .map(|e| (e.artifact_sha256, e.property_id))
-                    .collect()
-            })
-            .map_err(|_| ())
-    };
-    let mut bound: Vec<&ResultRecord> = Vec::new();
+    let approved = load_approvals(input.root, results.is_empty());
+    let mut bound: Vec<(&ResultRecord, PrincipalKind)> = Vec::new();
     for r in &results {
         match binding(r, &properties, &approved) {
-            Ok(()) => bound.push(r),
+            Ok(principal) => bound.push((r, principal)),
             Err(reason) => {
                 if wants("unbound_evidence") {
                     facts.push(fact(
@@ -302,12 +329,28 @@ pub fn hydrate(input: &PropertyHydrationInput) -> anyhow::Result<PropertyHydrati
 
     // Bound results at their recorded revision (spec §2: verification_result,
     // result_revision, result_tier — provenance via Fact.source, not RETE
-    // args). Only bound records reach here.
-    for r in &results {
-        if wants("verification_result") {
+    // args). Only bound records reach here. D10: a human-approved result is
+    // `verification_result`; an agent-quorum-approved one is
+    // `agent_verification_result` and never `verification_result`.
+    for (r, principal) in &results {
+        let relation = match principal {
+            PrincipalKind::Human => "verification_result",
+            PrincipalKind::AgentQuorum => "agent_verification_result",
+        };
+        if wants(relation) {
             facts.push(fact(
-                "verification_result",
+                relation,
                 vec![r.property.clone(), r.verifier.clone(), r.status.clone()],
+            ));
+        }
+        if wants("result_principal") {
+            facts.push(fact(
+                "result_principal",
+                vec![
+                    r.property.clone(),
+                    r.verifier.clone(),
+                    principal.as_str().to_string(),
+                ],
             ));
         }
         if wants("result_revision") {
@@ -338,7 +381,7 @@ pub fn hydrate(input: &PropertyHydrationInput) -> anyhow::Result<PropertyHydrati
         let mut stale: Vec<PropertyFact> = Vec::new();
         // An unknown HEAD cannot prove staleness (the coverage rule); the
         // obligation below stays conservative instead.
-        for r in results.iter().filter(|_| input.head_sha.is_some()) {
+        for (r, _) in results.iter().filter(|_| input.head_sha.is_some()) {
             let depends_on_changed = properties
                 .iter()
                 .filter(|p| p.id == r.property)
@@ -363,20 +406,20 @@ pub fn hydrate(input: &PropertyHydrationInput) -> anyhow::Result<PropertyHydrati
         let mut changed: HashSet<String> = HashSet::new();
         changed.extend(changed_region_ids(input));
         for p in &properties {
-            if !matches!(
-                p.status,
-                crate::properties::store::PropertyStatus::Accepted
-                    | crate::properties::store::PropertyStatus::Verified
-            ) {
+            if !p.generation_eligible() {
                 continue;
             }
             let depends_on_changed = p
                 .depends_on
                 .iter()
                 .any(|region| depends_on_changed(region, &changed));
-            let has_result = results
-                .iter()
-                .any(|r| r.property == p.id && at_head(r, input.head_sha.as_deref()));
+            // Only a human-approved result discharges the obligation (D10):
+            // agent-quorum evidence never satisfies what human evidence does.
+            let has_result = results.iter().any(|(r, principal)| {
+                *principal == PrincipalKind::Human
+                    && r.property == p.id
+                    && at_head(r, input.head_sha.as_deref())
+            });
             if depends_on_changed && !has_result {
                 facts.push(fact(
                     "property_obligation",

@@ -5,10 +5,32 @@
 //! human review; `run` executes a previously rendered, allowlisted artifact
 //! and records the bound result. They are separate invocations by design: an
 //! artifact is never executed by the invocation that wrote it (S3).
+//!
+//! D10 agent-verified evidence: `review` records one reviewer's verdict on
+//! the rendered bytes (`.phronesis/verification-reviews.jsonl`, agent-
+//! writable); `approve --quorum` admits an `agent_quorum` allowlist entry
+//! only after the quorum rules and the host checks pass (`properties::quorum`).
 
 use std::path::Path;
 
+use crate::properties::quorum::{self, ReviewInput};
 use crate::properties::render::{self, RenderOutcome, RenderRequest, TemplateOrigin};
+
+/// A reviewer's verdict.
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+pub enum Verdict {
+    Approve,
+    Reject,
+}
+
+impl Verdict {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Reject => "reject",
+        }
+    }
+}
 
 #[derive(clap::Subcommand, Debug)]
 pub enum VerifyCmd {
@@ -61,6 +83,67 @@ pub enum VerifyCmd {
         #[arg(long, value_name = "CMD")]
         verifier_command: Option<String>,
         /// Emit the result record as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Record one reviewer's verdict on a rendered artifact (D10 agent
+    /// quorum) in `.phronesis/verification-reviews.jsonl`.
+    ///
+    /// Reviewer model and family are self-declared, not authenticated.
+    /// `--artifact-sha256` must equal the current render's hash, and those
+    /// bytes must already be on disk (from `verify render`).
+    Review {
+        /// The property id from `.phronesis/properties.json`.
+        property_id: String,
+        /// The encoding's verifier, when the property has several encodings.
+        #[arg(long)]
+        verifier: Option<String>,
+        /// SHA-256 of the artifact bytes the reviewer read.
+        #[arg(long, value_name = "SHA256")]
+        artifact_sha256: String,
+        /// The reviewing model (self-declared).
+        #[arg(long, value_name = "MODEL")]
+        reviewer_model: String,
+        /// The reviewing model's family (self-declared); compared trimmed
+        /// and lowercased.
+        #[arg(long, value_name = "FAMILY")]
+        reviewer_family: String,
+        #[arg(long, value_enum)]
+        verdict: Verdict,
+        #[arg(long, default_value = "")]
+        notes: String,
+        /// Emit the review record as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Admit an agent-quorum approval (D10) into the allowlist, recorded with
+    /// principal kind `agent_quorum`; its results hydrate as
+    /// `agent_verification_result`, never as human `verification_result`.
+    ///
+    /// Requires `--quorum`: human approvals are recorded by a human, never
+    /// by this command. Admitted only when the reviewer records for the
+    /// current bytes meet the quorum rules (≥2 approving, ≥2 families, none
+    /// sharing `--author-family`, no reject) and the host checks pass:
+    /// production reach, a failing mutant, a passing baseline, and a failing
+    /// vacuity sentinel at every proof site — all run confined.
+    Approve {
+        /// The property id from `.phronesis/properties.json`.
+        property_id: String,
+        /// The encoding's verifier, when the property has several encodings.
+        #[arg(long)]
+        verifier: Option<String>,
+        /// Approve through the agent review quorum (required).
+        #[arg(long)]
+        quorum: bool,
+        /// The model family that authored the template/property (self-
+        /// declared); no reviewer may share it.
+        #[arg(long, value_name = "FAMILY")]
+        author_family: Option<String>,
+        /// Verifier program (and fixed leading arguments) for the checks;
+        /// defaults to the encoding's verifier name.
+        #[arg(long, value_name = "CMD")]
+        verifier_command: Option<String>,
+        /// Emit the allowlist entry as JSON.
         #[arg(long)]
         json: bool,
     },
@@ -165,6 +248,87 @@ pub fn run(root: &Path, cmd: VerifyCmd) -> anyhow::Result<String> {
                 record.revision,
                 if draft {
                     "\n  draft template: recorded, never counted as verified evidence"
+                } else {
+                    ""
+                },
+            ))
+        }
+        VerifyCmd::Review {
+            property_id,
+            verifier,
+            artifact_sha256,
+            reviewer_model,
+            reviewer_family,
+            verdict,
+            notes,
+            json,
+        } => {
+            let req = RenderRequest {
+                property_id,
+                verifier,
+                allow_drafts: false,
+            };
+            let rec = quorum::record_review(
+                root,
+                &req,
+                &ReviewInput {
+                    artifact_sha256,
+                    reviewer_model,
+                    reviewer_family,
+                    verdict: verdict.as_str().to_string(),
+                    notes,
+                },
+            )?;
+            if json {
+                return Ok(serde_json::to_string_pretty(&rec)?);
+            }
+            Ok(format!(
+                "recorded review of {} ({}): {} by {} [{}] — identity is self-declared, not authenticated",
+                rec.property_id,
+                rec.artifact_sha256,
+                rec.verdict,
+                rec.reviewer_model,
+                rec.reviewer_family,
+            ))
+        }
+        VerifyCmd::Approve {
+            property_id,
+            verifier,
+            quorum: through_quorum,
+            author_family,
+            verifier_command,
+            json,
+        } => {
+            if !through_quorum {
+                anyhow::bail!(
+                    "verify approve records only agent-quorum approvals (pass --quorum); a human approval is recorded by the human in .phronesis/verification-allowlist.json"
+                );
+            }
+            let Some(author_family) = author_family else {
+                anyhow::bail!(
+                    "--author-family is required with --quorum: no reviewer may share the author's model family"
+                );
+            };
+            let req = RenderRequest {
+                property_id,
+                verifier,
+                allow_drafts: false,
+            };
+            let out =
+                quorum::approve_quorum(root, &req, &author_family, verifier_command.as_deref())?;
+            if json {
+                return Ok(serde_json::to_string_pretty(&out)?);
+            }
+            let e = &out.entry;
+            Ok(format!(
+                "{} {} ({}): principal {} [{}]{}",
+                e.property_id,
+                out.disposition,
+                e.artifact_sha256,
+                e.approver_principal,
+                e.principal_kind.as_str(),
+                if out.disposition == "recorded" {
+                    "\n  results for these bytes hydrate as agent_verification_result; the property may move to agent_verified, never verified"
                 } else {
                     ""
                 },

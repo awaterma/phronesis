@@ -32,6 +32,7 @@ const TEMPLATE_NAME: &str = "verus-postcondition.rhai";
 
 fn property(status: PropertyStatus, depends_on: &[&str]) -> Property {
     Property {
+        mutations: vec![],
         id: PROP.into(),
         subject: "safe_divide".into(),
         kind: "postcondition".into(),
@@ -51,6 +52,7 @@ fn property(status: PropertyStatus, depends_on: &[&str]) -> Property {
 
 fn other_property() -> Property {
     Property {
+        mutations: vec![],
         id: "safe_divide.nonzero_returns_quotient".into(),
         subject: "safe_divide".into(),
         kind: "postcondition".into(),
@@ -147,6 +149,8 @@ fn approve(root: &Path, artifact_sha256: &str, template_sha256: &str, revision: 
     allowlist::record(
         root,
         AllowlistEntry {
+            principal_kind: Default::default(),
+            quorum: None,
             artifact_sha256: artifact_sha256.into(),
             template_sha256: template_sha256.into(),
             property_id: PROP.into(),

@@ -65,7 +65,7 @@ verification_result + result_revision + result_tier facts + journey tag + proven
 
 *Enforcement (as shipped).* The anchors are `.phronesis/verification-allowlist.json` (allowlist and approval records), `.phronesis/verification.json` (the opt-in, including `raw_execution`), and `verification/templates/` (templates and the instantiation's `devcontainer.json`). The default platform (`llm` pack, installed by every `phr-mcp init` short of `--packs none`) blocks agent-seam writes to them: file tools (Edit/Write/MultiEdit, Gemini `replace`/`write_file`) by the path relative to the project root (the `project_path_is` / `project_path_under` facts: lexically normalized, symlinked directories resolved, only the root-level anchors — never a nested `…/verification/templates/` or a lookalike file name), which is **enforced** (Codex `apply_patch` included: a `*** Move to:` destination is a write). Shell commands only **warn**: `bash_command_code_matches` runs on the command with heredoc bodies removed (a commit message or a document being written is data; a heredoc fed to a shell is kept) and `sh -c` / `eval` scripts unwrapped, outside quoted strings, and matches root-level anchors case-insensitively — redirects, `tee`, `rm` (not `--cached`)/`unlink`/`truncate`/`touch`/`patch`/`shred`, `git checkout -- …`, `git restore` (not `--staged`), in-place `sed`/`perl`/`ruby`, `dd of=`, `curl -o`/`wget -O`, and `cp`/`mv`/`install`/`ln`/`rsync` only when an anchor is the **destination** (copying an anchor out, or reading it through `<`, is a read). The shell seam is **advisory**: matching is lexical, so a write through an interpreter, a variable, an absolute path to the checkout, or any construction that never spells the anchor path is not refused. A project that removes these rules (or initializes with `--packs none`) has an advisory review gate on both seams.
 
-**S2 — Generation precondition: accepted status read from the record.** Generation requires `property_status ∈ {accepted, verified}` **read host-side from `properties.json` at generation time** — facts trigger the obligation, they never authorize it (a fact stream claiming `accepted` while the record says `candidate` is refused and journaled). Any edit to a property record bumps its revision; artifact provenance binds (template hash, property id, property revision), which invalidates allowlisted artifacts after property edits. Never `candidate`, never `observed`.
+**S2 — Generation precondition: accepted status read from the record.** Generation requires `property_status ∈ {accepted, agent_verified, verified}` **read host-side from `properties.json` at generation time** — facts trigger the obligation, they never authorize it (a fact stream claiming `accepted` while the record says `candidate` is refused and journaled). Any edit to a property record bumps its revision; artifact provenance binds (template hash, property id, property revision), which invalidates allowlisted artifacts after property edits. Never `candidate`, never `observed`.
 
 **S3 — Trust anchors and the review gate.** Generated artifacts are untrusted until reviewed: they land in `verification/unreviewed/` and are **never executed in the same fire that created them** — the prohibition holds even when the bytes match an allowlisted hash, because that file was written *this* fire. The **content-hash allowlist** is sound for re-renders under three conditions: (i) allowlist mutations are **human-principal acts** — additions rejected if attributable to the hooked session; (ii) each entry records the provenance tuple (artifact hash → template hash, property id + revision, approver principal, date); (iii) execution re-hashes the on-disk file at execution time and refuses on mismatch — approval binds to bytes, not paths. The executor computes the SHA-256 itself (64 lowercase hex) and never trusts a caller-supplied hash: it refuses when the on-disk digest differs from the hash the caller meant to run, or when that digest is not allowlisted, and the verifier then runs against a copy of exactly the hashed bytes in a fresh per-run directory, so the file cannot change between the check and the run. The allowlist loads fail-closed: any entry `record` would refuse (empty or non-SHA-256 artifact hash, empty template hash, property id, principal, or date) makes the whole file an error naming that entry, never a silently skipped or matching row. The first render of any (template, property) pair always requires human review; only re-renders skip. Approval registry is **hash-keyed** (an approved artifact may move to `verification/reviewed/`; execution keys on hash, never directory location — "unreviewed/" must not become a lie).
 
@@ -137,3 +137,73 @@ The emitted-body cap is set by measurement against the proven 10-VC harness (209
    - **Tier 4 — fail-closed**: no confinement available and raw not configured → execution refused, journaled as refused-sandbox, and the S9 claim is downgraded in that host's audit trail rather than silently.
    - **Wall-clock limit (every tier).** The verifier runs in its own process group under a wall-clock limit: `timeout_secs` in `.phronesis/verification.json` (a positive integer; default 300 — absent, zero, or malformed keeps the default, never unbounded). On expiry the whole group is killed (solver children such as z3 included; for the devcontainer tier the named container is stopped with `<runtime> kill` first, since killing the CLI client leaves the container running) and the run records status `timeout` (S8). stdout and stderr are drained concurrently, so a verifier cannot deadlock on a full pipe.
    - **Runtime.** The devcontainer argv invokes the runtime the tier probe found — docker preferred, else podman — with the identical forced-flag set (both CLIs accept it verbatim); a podman-only host is a Tier-1 host.
+## Agent-verified evidence (D10, 2026-09-27)
+
+**Decision (human, D10).** Proofs may be approved by an **agent review quorum**. Such an approval is recorded under a distinct principal kind and yields a distinct property status, `agent_verified`, below the human `verified`. The two are never conflated: no fact, status, or check that human evidence satisfies is satisfied by agent-quorum evidence alone.
+
+### Principal kinds
+
+Every S3 allowlist entry carries `principal_kind`: `human` | `agent_quorum`.
+
+- **`human`** is the S3 review described above. An entry written before D10 has no `principal_kind` field and **loads as `human`**. This default is deliberate: those entries were recorded by the human-principal path, and the default keeps them working. `phr-mcp verify approve` never writes a `human` entry. Human approvals are still recorded by the human, outside the agent seam.
+- **`agent_quorum`** is written only by `phr-mcp verify approve <id> --quorum`, after the quorum rules and the host checks below pass. The entry records the whole quorum: each reviewer's model, family, verdict and review-record digest, the declared author family, and the outcomes of the host checks. Its `approver_principal` is `agent_quorum:<family>+<family>…`. On load, the allowlist validates an `agent_quorum` entry's quorum section with the same rules the approval applied. An entry that claims `agent_quorum` but carries no valid quorum fails the whole file closed, like any other invalid entry.
+
+The allowlist remains a human trust anchor that the `llm` pack refuses agent-seam writes to. The `phr-mcp` binary writing an `agent_quorum` entry through this gated path is the design D10 chose: the gate is the host checks, not the file protection. An agent cannot mint a `human` entry through `verify approve`.
+
+### Status ladder
+
+`observed → candidate → corroborated → accepted → agent_verified → verified` (plus `rejected`, `superseded`). `agent_verified` is a generation-eligible status (S2 accepts `accepted`, `agent_verified`, `verified`). `set_property_status` checks evidence for two targets only. No other transition is evidence-checked, before D10 or after it.
+
+| Target | Required evidence (read host-side at transition time) |
+|---|---|
+| `verified` | a **bound** result (SPEC B §2) with status `passed` whose artifact hash is approved by a **`human`** allowlist entry for that property |
+| `agent_verified` | a bound `passed` result approved by an `agent_quorum` **or** a `human` entry |
+
+"Bound" means the D9 binding in `properties::hydrate`: a v2 record naming a 40-hex revision, a tier that runs, an approved artifact hash, a non-draft template origin, and a curated property with a matching encoding. The check does not require the result's revision to equal HEAD. A transition refused for missing evidence changes nothing and is journaled as `set_property_status_refused` (reason `insufficient_evidence`). A corrupt properties or results store refuses both targets, since unreadable evidence justifies nothing.
+
+### Hydration: distinct in facts
+
+A bound result's principal is the `principal_kind` of the allowlist entry that approves its artifact hash for that property. If both kinds approve the same hash, `human` wins.
+
+| Principal | Facts asserted |
+|---|---|
+| `human` | `verification_result(p, v, status)` (unchanged), `result_revision`, `result_tier`, `result_principal(p, v, "human")` |
+| `agent_quorum` | `agent_verification_result(p, v, status)` — **never** `verification_result` — plus `result_revision`, `result_tier`, `result_principal(p, v, "agent_quorum")` |
+
+Agent-quorum results feed `stale_evidence`, because a warning is safe. They do **not** satisfy the first-proof `property_obligation`: only a human-bound result at HEAD discharges it, so an agent-verified property whose dependency changed stays obligated. A rule written against `verification_result` before D10 never sees agent evidence.
+
+### Reviewer records
+
+`phr-mcp verify review <id> --artifact-sha256 H --reviewer-model M --reviewer-family F --verdict approve|reject [--notes …]` appends one record to `.phronesis/verification-reviews.jsonl`. This file is **not** a trust anchor: agents are expected to write it. Each record carries `v`, `property_id`, `artifact_sha256`, `reviewer_model`, `reviewer_family`, `verdict`, `notes`, and `date`. The command re-renders the artifact in memory with the same S1, S2 and S5 checks as `verify run`. It refuses unless `H` equals the current render's SHA-256 and exactly those bytes are already on disk, so a record always names bytes that exist. Fields are bounded and free of control characters. Family and model names are compared trimmed and lowercased.
+
+### Quorum rules
+
+`phr-mcp verify approve <id> --quorum --author-family A` considers the reviewer records for (property, current artifact SHA-256). Records for other bytes are ignored: a re-render needs a fresh review. It refuses unless **all** of these hold:
+
+1. **No reject.** A single `reject` verdict for these bytes vetoes the quorum.
+2. **At least two approving records.**
+3. **At least two distinct model families** among the approving records.
+4. **No reviewer shares the author's family.** No record for these bytes, approving or not, names family `A`. The author family is supplied at approval (`--author-family`) because the render provenance does not record one yet. It names the model family that wrote the template or the property. Declaring it is the approver's claim, like the reviewers' identities.
+
+### Host-run mechanical checks (gate a quorum approval)
+
+After the quorum rules pass, the host itself checks the rendered artifact. Reviewer verdicts alone never admit a quorum. Every run goes through the confined executor's tier ladder (S9: devcontainer → sandbox-exec → raw only when configured → refused) under the S9 wall-clock limit. Every variant is S5-validated (deny-list, parse) before it runs. The checks, in order:
+
+- **(c) Production reach, structural.** The artifact's token stream (a real Rust lexer, so comments and string literals are not tokens) must contain a **call** to at least one function named by the property's `fn:` / `branch:` `depends_on` entries. A call is the function's leaf name followed by a parenthesized argument group, not preceded by `fn`, not a macro. The check needs no execution and runs first.
+- **(b) Mutation.** The property record carries `mutations: [{verifier, find, replace}]`. For this verifier there must be at least one mutation, and `find` must occur exactly once in the artifact. The host applies the replacement to a copy, and the verifier must report **`failed`** on the mutant. A mutant that passes refuses the quorum. So does a mutant that is `inconclusive` or times out: a mutant that does not compile is not a detected mutation. **No mutation provided means the quorum is refused.**
+- **Baseline.** The unmodified artifact must report `passed`. A vacuity or mutation "failure" says nothing about an artifact that fails anyway.
+- **(a) Vacuity sentinel.** For each proof site, the host writes a copy with an always-false assertion as the first statement of that site's body, and the verifier must report **`failed`** on every copy. A sentinel that passes means the site's precondition is unsatisfiable, or the site is otherwise unreachable, so its proof is vacuous. Proof sites per verifier:
+  - **verus:** every non-`spec` `fn` with a body inside a `verus! { … }` block, including `proof fn` and methods in `impl` blocks. The sentinel is `assert(false);`.
+  - **kani:** every `fn` carrying `#[kani::proof]`. The sentinel is `assert!(false);`. The executor parses only verus output today, so a kani run is `inconclusive` and a kani quorum is **always refused** until a kani result parser lands. This fails closed.
+  - An artifact with no proof sites is refused.
+
+Every approval, and every refusal naming its stage (`quorum_rules`, `reach`, `mutation`, `baseline`, `sentinel`), is journaled to `log.jsonl` (kind `verification`, events `verify_quorum_approve` / `verify_quorum_refused`) with hashes, never bodies (S7).
+
+**Relation to S3.** The checks execute bytes that are not yet allowlisted. D10 authorizes this narrowly. The bytes were reviewed by a quorum that already satisfies the rules above. The variants are host-derived from them by a fixed sentinel transformation or a property-declared mutation. The runs are confined like any S4 run, and none of them produces a result record. The same-invocation prohibition still holds for rendering: `verify approve` never renders to disk. It requires bytes an earlier `verify render` wrote.
+
+### Honest limits
+
+- **Reviewer identity is self-declared, not authenticated.** A reviewer record's model and family are whatever the writer typed. Nothing proves that two records came from two different models, or from models at all. One agent can write both records. The quorum rules constrain what is declared, not who declared it. Only the host checks are enforced independently of the reviewers. The author family is declared the same way.
+- **The checks are necessary, not sufficient.** The sentinel catches unsatisfiable preconditions and unreachable sites. It does not catch a trivially weak `ensures`. The mutation check catches one declared mutation, and a mutation the approver chose can be easy to kill. Reach is a name-level structural check: a standalone harness that defines its own copy of a function under the production name, and calls it, satisfies it. Reach does not show that the production bytes were verified.
+- **Shell-seam writes to the allowlist stay advisory (S1).** An agent that bypasses the shell rules could hand-write a `human` entry. D10 changes nothing here.
+- **Agent-verified is weaker evidence by construction.** Nothing lifts `agent_verified` to `verified` except the human path.

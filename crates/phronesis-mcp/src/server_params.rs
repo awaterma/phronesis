@@ -363,7 +363,8 @@ pub struct EmittedCapsuleIdParam {
 pub struct SetPropertyStatusParams {
     /// The property id to transition.
     pub property_id: String,
-    /// The new status: observed | candidate | corroborated | accepted | verified | rejected | superseded.
+    /// The new status: observed | candidate | corroborated | accepted | agent_verified | verified | rejected | superseded.
+    /// `verified` requires a bound passed result approved by a human principal; `agent_verified` accepts agent-quorum or human evidence.
     pub new_status: String,
     /// The human reason for the transition. Required: promotion is an explicit,
     /// recorded act (sketch §17: "observed ≠ intended").

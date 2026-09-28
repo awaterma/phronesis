@@ -1627,7 +1627,7 @@ impl EpistemeMcp {
         Self::ok_text(serde_json::to_string_pretty(&out).map_err(|e| Self::err(e.to_string()))?)
     }
     #[tool(
-        description = "Transition a property's status (SPEC-property-ontology.md §4): the promotion act. `because` is required — every transition must name its reason. The transition is journaled as kind:mcp in log.jsonl with the property, old status, new status, and the reason. Statuses: observed | candidate | corroborated | accepted | verified | rejected | superseded. This is the ONLY way to change a property's status — rules report eligibility, never promote."
+        description = "Transition a property's status (SPEC-property-ontology.md §4): the promotion act. `because` is required — every transition must name its reason. The transition is journaled as kind:mcp in log.jsonl with the property, old status, new status, and the reason. Statuses: observed | candidate | corroborated | accepted | agent_verified | verified | rejected | superseded. `verified` requires a bound passed result whose artifact a human principal approved; `agent_verified` (below verified) accepts agent-quorum or human evidence — agent-quorum evidence never makes a property verified. This is the ONLY way to change a property's status — rules report eligibility, never promote."
     )]
     async fn set_property_status(
         &self,

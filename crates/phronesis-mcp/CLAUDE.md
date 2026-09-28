@@ -48,6 +48,8 @@ cargo run -- coverage import <export.jsonl>  # Import a normalized per-test cove
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 cargo run -- verify render <property-id> [--verifier V] [--allow-drafts] [--dry-run] [--json]  # Render + S5-validate a property's verification artifact into verification/unreviewed/ (needs .phronesis/verification.json and an accepted/verified property)
 cargo run -- verify run <property-id> [--verifier V] [--allow-drafts] [--verifier-command CMD] [--json]  # Execute a previously rendered, allowlisted artifact confined; append the bound result to .phronesis/property-results.jsonl
+cargo run -- verify review <property-id> --artifact-sha256 H --reviewer-model M --reviewer-family F --verdict approve|reject [--notes TEXT] [--verifier V] [--json]  # Record one (self-declared) reviewer verdict on the current rendered bytes in .phronesis/verification-reviews.jsonl
+cargo run -- verify approve <property-id> --quorum --author-family A [--verifier V] [--verifier-command CMD] [--json]  # Admit an agent_quorum allowlist entry after the quorum rules and the confined host checks (reach, mutant, baseline, vacuity sentinel)
 ```
 
 ### Verification artifacts (`phr-mcp verify`)
@@ -55,7 +57,7 @@ cargo run -- verify run <property-id> [--verifier V] [--allow-drafts] [--verifie
 `verify render` is the production render step of
 `docs/specs/SPEC-verification-artifact-generation.md`. It reads the
 property record from `.phronesis/properties.json`, and the property must be
-`accepted` or `verified` (S2). It picks the encoding (`--verifier` when
+`accepted`, `agent_verified`, or `verified` (S2). It picks the encoding (`--verifier` when
 there are several) and loads `verification/templates/<verifier>-<kind>.rhai`.
 The template runs through the dedicated Rhai render entry: a read-only
 `property` map whose values the host has already escaped, a frozen and sorted
@@ -82,6 +84,46 @@ matching draft is a named refusal. A result from a draft is recorded with
 `verification_result`. Humans promote drafts into `verification/templates/`;
 see `verification/template-drafts/README.md`. Rendering is registered for
 `rust` encodings only.
+
+**Agent-verified evidence (D10).** An agent review quorum can approve an
+artifact. The approval is recorded under its own principal kind and gives the
+property its own status, `agent_verified`. That status sits below the human
+`verified`, and the two are never conflated.
+
+- `verify review` appends a reviewer record to
+  `.phronesis/verification-reviews.jsonl`. That file is not a trust anchor,
+  so agents write it. `--artifact-sha256` must equal the current render's
+  hash, and those bytes must already be on disk.
+- `verify approve --quorum --author-family A` looks at the records for the
+  current bytes. It needs at least two approving records from at least two
+  families, none of them family `A`, and no `reject`. Then the host runs its
+  own checks through the confined executor:
+  1. Production reach: the artifact's token stream must call a function
+     named by a `fn:` or `branch:` `depends_on` entry. A mention in a comment
+     or string does not count.
+  2. Mutation: the record's `mutations: [{verifier, find, replace}]` apply
+     to a copy. The verifier must report `failed` on the mutant, and a
+     property with no mutation is refused.
+  3. Baseline: the unmodified artifact must report `passed`.
+  4. Vacuity sentinel: `assert(false);` goes first in every non-`spec` fn
+     inside `verus!`, one site per copy (`assert!(false);` in each
+     `#[kani::proof]` fn). The verifier must report `failed` on every copy.
+- Only then does it write an allowlist entry with
+  `principal_kind: "agent_quorum"` and the full quorum evidence. Every
+  refusal is journaled as `verify_quorum_refused` with its stage.
+- Pre-D10 allowlist entries have no `principal_kind` and load as `human`.
+  `verify approve` never writes a human entry.
+- A result approved by a quorum hydrates as `agent_verification_result`,
+  never `verification_result`. Every bound result also gets
+  `result_principal(p, v, human|agent_quorum)`.
+- Agent-quorum results never discharge `property_obligation`.
+- `set_property_status` checks evidence for two targets only. `verified`
+  needs a bound `passed` result approved by a human. `agent_verified`
+  accepts a quorum approval or a human one.
+
+Two limits. Reviewer and author identities are self-declared and not
+authenticated, so one agent can write every record. Kani output has no
+parser yet, so a kani quorum always refuses.
 
 ### Payload-contract corpus
 
