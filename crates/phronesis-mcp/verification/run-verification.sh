@@ -1,44 +1,48 @@
 #!/usr/bin/env bash
 # verification/run-verification.sh
 #
-# Runs the verus verifier on harness.rs and exits nonzero on any
-# verification failure.
+# Runs the Verus verifier on harness.rs, which `include!`s the production
+# core `src/coverage/pure_core.rs` (the same file coverage/store.rs and
+# coverage/region_map.rs call), and exits nonzero unless Verus reports
+# "N verified, 0 errors".
+#
+# Verus is taken from $VERUS, else `verus` on PATH, else ~/.cargo/bin/verus.
 #
 # Usage:  bash run-verification.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HARNESS="$SCRIPT_DIR/harness.rs"
-VERUS="${VERUS:-$HOME/.cargo/bin/verus}"
+CORE="$SCRIPT_DIR/../src/coverage/pure_core.rs"
+VERUS="${VERUS:-$(command -v verus || echo "$HOME/.cargo/bin/verus")}"
+
+if [ ! -x "$VERUS" ]; then
+    echo "RESULT: verus not found (set VERUS=/path/to/verus)"
+    exit 1
+fi
+if [ ! -f "$CORE" ]; then
+    echo "RESULT: shared core missing: $CORE"
+    exit 1
+fi
 
 echo "=== Verus Verification Runner ==="
 echo ""
-
-# Print verus version
-VERUS_VERSION=$("$VERUS" --version 2>&1)
 echo "Verus version:"
-echo "$VERUS_VERSION"
+"$VERUS" --version 2>&1
 echo ""
-
-# Run verification
 echo "Running: $VERUS $HARNESS"
+echo "  (verifies the production core $CORE via include!)"
 echo ""
 
 OUTPUT=$("$VERUS" "$HARNESS" 2>&1) || true
 echo "$OUTPUT"
 echo ""
 
-# Check for verification failure
-if echo "$OUTPUT" | grep -qi "verification failure"; then
-    echo "RESULT: VERIFICATION FAILED"
-    exit 1
+# Pass only on the summary line with zero errors; anything else (a
+# verification failure, a compile error, no summary at all) fails.
+if echo "$OUTPUT" | grep -Eq "^verification results:: [0-9]+ verified, 0 errors$"; then
+    echo "RESULT: VERIFICATION PASSED"
+    exit 0
 fi
-
-# Check for errors that aren't verification failures (e.g. compilation errors)
-if echo "$OUTPUT" | grep -qi "^error"; then
-    echo "RESULT: ERRORS DETECTED (compilation or other)"
-    exit 1
-fi
-
-echo "RESULT: VERIFICATION PASSED"
-exit 0
+echo "RESULT: VERIFICATION FAILED"
+exit 1

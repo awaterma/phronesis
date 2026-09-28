@@ -6,6 +6,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
+use super::pure_core;
+
 pub const COVERAGE_FORMAT: u32 = 1;
 
 /// Region-id prefix a `hit_kind: "region"` record must carry.
@@ -122,13 +124,11 @@ pub fn is_stale(index: &CoverageIndex, head_sha: Option<&str>) -> bool {
 /// FNV-1a 64 over the exact records bytes. An integrity check against torn
 /// or mismatched writes, not an authenticity check: anyone who can rewrite
 /// the records file can rewrite the index too.
+///
+/// The hash itself is `pure_core::fnv1a_64`, the Verus-verified core; this
+/// wrapper only renders it as 16 lowercase hex chars.
 fn fnv1a_64_hex(bytes: &[u8]) -> String {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in bytes {
-        hash ^= u64::from(*b);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{hash:016x}")
+    format!("{:016x}", pure_core::fnv1a_64(bytes))
 }
 
 fn count_records(bytes: &[u8]) -> usize {
@@ -473,7 +473,7 @@ pub fn validate_record(rec: &HitRecord) -> Result<()> {
             rec.hit_kind
         ));
     }
-    if rec.start_line > rec.end_line {
+    if !pure_core::line_order_ok(rec.start_line, rec.end_line) {
         return Err(anyhow!("start_line must be <= end_line"));
     }
     Ok(())
@@ -486,15 +486,19 @@ fn validate_identifier_field(field: &str, name: &str) -> Result<()> {
     if field.len() > 256 {
         return Err(anyhow!("{name} must be <= 256 bytes"));
     }
-    for c in field.chars() {
-        if c.is_control() {
-            return Err(anyhow!("{name} contains control characters"));
-        }
-        if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | ':' | '.' | '/' | '-') {
-            return Err(anyhow!("{name} contains invalid character '{c}'"));
-        }
+    // The accept/reject decision is the Verus-verified core. The scan below
+    // only names the first offending char for the error message.
+    if pure_core::identifier_bytes_ok(field.as_bytes()) {
+        return Ok(());
     }
-    Ok(())
+    let bad = field
+        .chars()
+        .find(|c| u8::try_from(*c).map_or(true, |b| !pure_core::identifier_byte_ok(b)));
+    match bad {
+        Some(c) if c.is_control() => Err(anyhow!("{name} contains control characters")),
+        Some(c) => Err(anyhow!("{name} contains invalid character '{c}'")),
+        None => Err(anyhow!("{name} contains invalid characters")),
+    }
 }
 
 #[cfg(test)]

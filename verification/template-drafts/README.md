@@ -39,3 +39,10 @@ limited to lowercase ASCII letters, digits, and `_`.
 - `verus-postcondition.rhai` is a seam example. It renders a standalone
   Verus-native module that proves the `safe_divide` postconditions, and it
   refuses any other subject. It is not a general postcondition template.
+- `verus-invariant.rhai` and `verus-determinism.rhai` render harnesses for
+  the `coverage_store.*` properties (identifier charset and line ordering;
+  FNV-1a determinism). They embed the marked core block of
+  `crates/phronesis-mcp/src/coverage/pure_core.rs` verbatim, because a
+  rendered artifact cannot `include!` it. The test
+  `crates/phronesis-mcp/tests/verus_core_pin.rs` fails if that copy drifts
+  from the production file. They refuse any other property id.

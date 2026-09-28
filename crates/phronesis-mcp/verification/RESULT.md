@@ -4,7 +4,7 @@
 
 - **Verus version:** 0.2026.09.20.aef82ed (release profile, macos_aarch64)
 - **Rust toolchain:** 1.98.1-aarch64-apple-darwin
-- **Date:** 2026-09-24
+- **Date:** 2026-09-27
 
 ## Command
 
@@ -12,7 +12,7 @@
 verus crates/phronesis-mcp/verification/harness.rs
 ```
 
-Or via the runner:
+Or via the runner, which passes only on `N verified, 0 errors`:
 
 ```bash
 bash crates/phronesis-mcp/verification/run-verification.sh
@@ -21,76 +21,150 @@ bash crates/phronesis-mcp/verification/run-verification.sh
 ## Verifier Output
 
 ```
-verification results:: 10 verified, 0 errors
+verification results:: 9 verified, 0 errors
 ```
 
-All 10 verification conditions discharged by Z3 with zero errors.
+## What is verified: the production code
 
-## What Was Proven
+The executable code Verus checks is `src/coverage/pure_core.rs`, the same
+file the production crate compiles. There is no mirror copy.
 
-### 1. Identifier charset invariant (`valid_identifier_char`)
+- `coverage/store.rs` calls it: `validate_identifier_field` takes its
+  accept/reject decision from `pure_core::identifier_bytes_ok`,
+  `fnv1a_64_hex` renders `pure_core::fnv1a_64`, and `validate_record` checks
+  line order with `pure_core::line_order_ok`.
+- `coverage/region_map.rs` hashes region anchors with `pure_core::fnv1a_64`.
+- `harness.rs` pulls the file in with `include!("../src/coverage/pure_core.rs")`.
 
-- **Spec:** `is_valid_identifier_byte(b: u8) -> bool` — characterises the exact
-  byte set accepted by `validate_identifier_field` in `coverage/store.rs`:
-  `A-Z`, `a-z`, `0-9`, `_`, `:`, `.`, `/`, `-`.
-- **Exec:** `valid_identifier_char(b: u8) -> bool` — an if-chain mirroring the
-  spec.
-- **Proven:** `ensures result == is_valid_identifier_byte(b)` — the exec
-  function agrees with the spec on every input byte.
+### Sharing mechanism
 
-### 2. Identifier slice check (`valid_identifier_slice`)
+`pure_core.rs` is plain Rust. Its Verus specs use Verus's attribute form:
 
-- **Exec:** `valid_identifier_slice(data: &[u8]) -> bool` — iterates over
-  bytes, returns `true` iff every byte is a valid identifier byte.
-- **Proven:** `ensures result == forall|i: int| 0 <= i < data.len() ==> is_valid_identifier_byte(data[i])`
-  — the slice checker correctly implements the universal quantification.
+- `#[cfg_attr(verus_keep_ghost, verus_verify)]` and
+  `#[cfg_attr(verus_keep_ghost, verus_spec(r => ensures ...))]` on each
+  function;
+- `#[cfg_attr(verus_keep_ghost, verus_spec(invariant ..., decreases ...))]`
+  on each `while` loop;
+- `#[cfg(verus_keep_ghost)] proof! { assert(...); }` for the two sequence
+  facts the FNV loop needs.
 
-### 3. FNV-1a hash determinism (`fnv1a_64` + `fnv1a_64_determinism`)
+Verus sets `cfg(verus_keep_ghost)`, so it sees and verifies these. rustc never
+sets it, so it strips them before macro resolution and compiles ordinary Rust.
+`phronesis-mcp/Cargo.toml` declares the cfg under `[lints.rust]
+unexpected_cfgs` so rustc and clippy do not warn about it.
 
-- **Spec:** `spec_fnv1a_64(data: Seq<u8>) -> u64` — a pure mathematical
-  recursive definition of FNV-1a 64-bit, mirroring `fnv1a_64` in
-  `coverage/region_map.rs`.
-- **Exec:** `fnv1a_64(data: &[u8]) -> u64` — iterative implementation
-  matching the production code.
-- **Proven (correctness):** `ensures hash == spec_fnv1a_64(data@)` — the
-  exec function computes exactly the spec function for all inputs.
-- **Proven (determinism):** `fnv1a_64_determinism` proof function:
-  `requires data1@ == data2@` ensures `spec_fnv1a_64(data1@) == spec_fnv1a_64(data2@)`.
-  Same input bytes always produce the same hash — the anchor is deterministic.
+The harness supplies what the attributes refer to: the spec functions
+(`spec_identifier_byte`, `spec_fnv1a_64`, `spec_line_order`), the
+`fnv1a_64_determinism` lemma, and `#![feature(proc_macro_hygiene)]`, which
+Verus needs to expand the loop-level `verus_spec` attributes.
 
-### 4. Line ordering invariant (`valid_line_range`)
+## What was proven
 
-- **Spec:** `spec_valid_line_range(start, end) -> bool` — `start <= end`.
-- **Exec:** `valid_line_range(start_line: u64, end_line: u64) -> bool` —
-  mirrors the `start_line <= end_line` check in `validate_record`.
-- **Proven:** `ensures result == spec_valid_line_range(start_line, end_line)`.
-- **Proof:** `valid_line_range_correct` confirms the spec agrees with the
-  relational definition.
+| Property id | Production function | Proven |
+|---|---|---|
+| `coverage_store.valid_identifier_charset` | `pure_core::identifier_byte_ok` | `ok == spec_identifier_byte(b)` for every `u8` |
+| `coverage_store.valid_identifier_charset` | `pure_core::identifier_bytes_ok` | `ok == forall j. spec_identifier_byte(data[j])` |
+| `coverage_store.fnv1a_determinism` | `pure_core::fnv1a_64` | `hash == spec_fnv1a_64(data@)`, the recursive FNV-1a 64 definition with the published offset basis and prime |
+| `coverage_store.fnv1a_determinism` | lemma `fnv1a_64_determinism` | equal byte sequences have equal `spec_fnv1a_64` |
+| `coverage_store.line_ordering` | `pure_core::line_order_ok` | `ok == (start_line <= end_line)` |
 
-## What Was Not Proven
+`main` also checks sample calls through the functions' `ensures` clauses.
 
-- The production code in `coverage/store.rs`, `coverage/import.rs`, and
-  `coverage/region_map.rs` itself is not directly verified — the harness
-  contains verified *reimplementations* of the invariants, not verus
-  annotations on the production source. Bridging the two (e.g. via
-  `#[verifier(external_body)]` wrappers or extracting the functions) is
-  future work.
-- No data-structure invariants on `HitRecord` fields (e.g. revision hex
-  length, hit_kind membership) are proven yet — those are candidates for
-  the next harness extension.
-- The `compute_anchor` truncation (`format!("{hash:016x}")[..12]`) is not
-  formally verified; the determinism of the underlying `fnv1a_64` is
-  proven, but the hex-formatting and slicing step is not.
+## Failing-first: breaking the production core breaks the proof
 
-## Verification Count Breakdown
+Each mutation below was applied to `src/coverage/pure_core.rs`, the file the
+production crate compiles, and then reverted. The harness was not changed.
 
-| Function | Type | VC Count |
-|----------|------|----------|
-| `valid_identifier_char` | exec | 1 |
-| `valid_identifier_slice` | exec | 2 (loop invariant + postcondition) |
-| `fnv1a_64` | exec | 2 (loop invariant + postcondition) |
-| `fnv1a_64_determinism` | proof | 1 |
-| `valid_line_range` | exec | 1 |
-| `valid_line_range_correct` | proof | 1 |
-| `main` | exec | 2 (assertions) |
-| **Total** | | **10** |
+1. Charset accepts a space (`| b' '` added to `identifier_byte_ok`):
+
+   ```
+   error: postcondition not satisfied
+     --> crates/phronesis-mcp/verification/../src/coverage/pure_core.rs:27:13
+   27 |       ensures ok == spec_identifier_byte(b)
+      |               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ failed this postcondition
+   verification results:: 8 verified, 1 errors
+   ```
+
+2. FNV prime `0x100000001b3` changed to `0x100000001b5`:
+
+   ```
+   error: invariant not satisfied at end of loop body
+     --> crates/phronesis-mcp/verification/../src/coverage/pure_core.rs:71:13
+   71 |             hash == spec_fnv1a_64(data@.take(i as int)),
+   verification results:: 8 verified, 1 errors
+   ```
+
+3. FNV offset basis `0xcbf29ce484222325` changed to `...2324`:
+
+   ```
+   error: invariant not satisfied before loop
+     --> crates/phronesis-mcp/verification/../src/coverage/pure_core.rs:71:13
+   71 |             hash == spec_fnv1a_64(data@.take(i as int)),
+   verification results:: 8 verified, 1 errors
+   ```
+
+4. Line ordering flipped (`start_line >= end_line`):
+
+   ```
+   error: postcondition not satisfied
+     --> crates/phronesis-mcp/verification/../src/coverage/pure_core.rs:93:13
+   93 |     ensures ok == spec_line_order(start_line, end_line)
+      |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ failed this postcondition
+   verification results:: 8 verified, 1 errors
+   ```
+
+## Rendered artifacts (template drafts)
+
+`verification/template-drafts/verus-invariant.rhai` and
+`verus-determinism.rhai` render per-property harnesses for these three
+properties through `phr-mcp verify render --allow-drafts`. A rendered
+artifact must be self-contained: the S5 body validator refuses `include!`
+and `#[path]`. So the drafts embed the `// BEGIN VERUS-SHARED CORE` ...
+`// END VERUS-SHARED CORE` block of `pure_core.rs` verbatim, and
+`tests/verus_core_pin.rs` fails if the embedded copy differs from the
+production file by a single byte. That test is what ties a rendered proof to
+the production bodies. The checked-in `harness.rs` needs no pin because it
+`include!`s the file.
+
+Status as of this run, in a scratch fixture (never the repo's `.phronesis`):
+
+- `coverage_store.fnv1a_determinism` renders, and Verus verifies the
+  rendered artifact: `verification results:: 9 verified, 0 errors`.
+- `coverage_store.valid_identifier_charset` and
+  `coverage_store.line_ordering` are refused by S5: `interpolated value
+  "invariant" appears outside a string literal (S5)`. The property `kind` is
+  `invariant`, and the embedded core uses Verus's `invariant` loop keyword as
+  live code. With the kind renamed in the fixture only, both render and
+  verify (`9 verified, 0 errors` each), so this S5 check is the only blocker.
+
+## What was not proven
+
+- **The wrappers.** The proofs cover the core functions. They do not cover
+  the thin wrappers that call them: that `validate_identifier_field` returns
+  `Ok` exactly when `identifier_bytes_ok` holds (it also enforces non-empty
+  and at most 256 bytes, and builds the error message by scanning chars),
+  that `validate_record` rejects when `line_order_ok` is false, or the hex
+  rendering in `fnv1a_64_hex` and the 12-char truncation in `hash12`. Unit
+  tests in `coverage/store.rs` and `coverage/pure_core.rs` cover those.
+- **The spec is trusted.** `spec_identifier_byte`, `spec_fnv1a_64`, and
+  `spec_line_order` are hand-written in the harness. A test in
+  `pure_core.rs` checks `identifier_byte_ok` against the pre-extraction
+  production charset on all 256 bytes, and `fnv1a_64` against published
+  FNV-1a 64 test vectors.
+- **Other `HitRecord` fields.** Revision hex length, `hit_kind` membership,
+  and path rules are not verified.
+
+## Verification count breakdown
+
+`verus --time` reports the total only. The per-item split below is
+approximate.
+
+| Item | Kind | Notes |
+|---|---|---|
+| `identifier_byte_ok` | exec | postcondition |
+| `identifier_bytes_ok` | exec | loop invariant, early-return and final postconditions |
+| `fnv1a_64` | exec | loop invariant, postcondition |
+| `line_order_ok` | exec | postcondition |
+| `fnv1a_64_determinism` | proof | |
+| `main` | exec | smoke assertions |
+| **Total** | | **9 verified, 0 errors** |

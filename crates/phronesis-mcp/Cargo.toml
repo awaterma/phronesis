@@ -91,3 +91,8 @@ harness = false
 [[bench]]
 name = "graph_sync"
 harness = false
+
+[lints.rust]
+# `coverage/pure_core.rs` carries Verus specs behind `cfg(verus_keep_ghost)`,
+# the cfg Verus sets when it verifies `verification/harness.rs`.
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(verus_keep_ghost)"] }
