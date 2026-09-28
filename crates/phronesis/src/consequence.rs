@@ -23,7 +23,7 @@
 //! `docs/research/episteme-extraction.md`.
 
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use crate::ids::RuleId;
 
@@ -98,7 +98,7 @@ pub enum Provenance {
         /// this rule. Keys keep their leading `?` so they round-trip with
         /// the rule definition.
         #[serde(default)]
-        bindings: HashMap<String, String>,
+        bindings: crate::variable_binding::BindingMap,
         /// Source labels for attributed bound facts, keyed by fact ID.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         fact_sources: BTreeMap<String, String>,
@@ -132,7 +132,7 @@ pub enum Provenance {
         bound_facts: Vec<String>,
         /// See [`Provenance::RuleFiring`]'s `bindings` field for semantics.
         #[serde(default)]
-        bindings: HashMap<String, String>,
+        bindings: crate::variable_binding::BindingMap,
         /// Source labels for attributed bound facts, keyed by fact ID.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         fact_sources: BTreeMap<String, String>,

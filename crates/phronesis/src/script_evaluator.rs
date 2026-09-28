@@ -15,7 +15,6 @@
 
 use crate::engine_types::Fact;
 use crate::error::ReteError;
-use std::collections::HashMap;
 
 /// Evaluates a `__script__` condition against the current RETE working
 /// memory, returning whether the guard passes.
@@ -34,7 +33,7 @@ pub trait ScriptEval: Send + Sync + std::fmt::Debug {
         &self,
         script: &str,
         facts: &[Fact],
-        bindings: &HashMap<String, String>,
+        bindings: &crate::variable_binding::BindingMap,
     ) -> Result<bool, String>;
 }
 
@@ -55,7 +54,7 @@ impl ScriptEval for BuiltinScriptEvaluator {
         &self,
         script: &str,
         facts: &[Fact],
-        bindings: &HashMap<String, String>,
+        bindings: &crate::variable_binding::BindingMap,
     ) -> Result<bool, String> {
         // Delegate to the inherent method, mapping the typed engine error
         // into the trait's string contract.
@@ -78,7 +77,7 @@ impl BuiltinScriptEvaluator {
         &self,
         script: &str,
         facts: &[Fact],
-        bindings: &HashMap<String, String>,
+        bindings: &crate::variable_binding::BindingMap,
     ) -> Result<bool, ReteError> {
         let resolved = self.substitute_variables(script, bindings);
         let (negated, expression) = if let Some(rest) = resolved.strip_prefix('!') {
@@ -101,7 +100,11 @@ impl BuiltinScriptEvaluator {
         Ok(if negated { !result } else { result })
     }
 
-    fn substitute_variables(&self, script: &str, bindings: &HashMap<String, String>) -> String {
+    fn substitute_variables(
+        &self,
+        script: &str,
+        bindings: &crate::variable_binding::BindingMap,
+    ) -> String {
         let mut result = script.to_string();
         for (var, value) in bindings {
             result = result.replace(var, value);

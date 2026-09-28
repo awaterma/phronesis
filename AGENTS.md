@@ -324,10 +324,10 @@ See `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md`:
 | `crates/phronesis-mcp/src/hook/edit_images.rs` | Whole pre-/post-edit file images for changed-region mapping (capped lossy disk read; applies the edit at pre-check, reverses it at post-check; whole-file / coarse `file:` region fallback) |
 | `crates/phronesis-mcp/src/claude_hook.rs` | `phr-mcp claude-hook <Event>` — Claude Code / Gemini lifecycle adapter |
 | `crates/phronesis-mcp/src/lifecycle/` | Lifecycle events — `event` (the one place both on-disk shapes are decided), `state` (locked correlation files, `classify_prompt`), `record` (the only writer), `outcome` (`detect_commit`), `scrub` (`scrub_prompt`), `inflight`, `kalpa_cli`, `unit_cli`, `unit_report` |
-| `crates/phronesis-mcp/src/init.rs` | `phr-mcp init` project setup |
+| `crates/phronesis-mcp/src/init/` | `phr-mcp init` project setup (types, global install, hook/scaffold writers, rule packs, rule sync) |
 | `crates/phronesis-mcp/src/context.rs` | SessionStart/BeforeAgent payload formatters; `ensure_session_id` |
 | `crates/phronesis-mcp/src/stats.rs` | Aggregate log entries per rule |
-| `crates/phronesis-mcp/src/audit.rs` | Whole-tree audit + debt-over-time |
+| `crates/phronesis-mcp/src/audit/` | Whole-tree audit + debt-over-time (types, engine, run, diagnostics, trend, render, graph) |
 | `crates/phronesis-mcp/src/action_log.rs` | Append-only JSONL log |
 | `crates/phronesis-mcp/src/clock_facts.rs` | Wall-clock-derived facts asserted at every hook fire |
 | `crates/phronesis-mcp/src/rules_file.rs` | Disk format for `.phronesis/rules.json` |
@@ -461,15 +461,18 @@ Current known hot paths (from May 2026 audit):
 
 ### 6. God-File Exemptions
 
-Three files exceed 800 LOC with intentional exemptions (see `SPEC-god-file-decomposition.md`):
+`init.rs` and `audit.rs` were decomposed on 2026-09-27 into `src/init/` and
+`src/audit/` (every module under 800 LOC; see the `SPEC-god-file-decomposition.md`
+status notes). Two files still exceed 800 LOC with intentional exemptions:
 
 | File | Why Exempt | Decomposition Plan |
 |------|-----------|-------------------|
-| `server.rs` (~1110 LOC) | `rmcp` macro requires single `#[tool]` impl block | Delegation pattern: thin wrappers in server.rs, bodies in `server_handlers/` modules |
-| `network.rs` (~817 LOC) | `ReteNetwork` is single coherent engine surface | Split `impl` blocks across `network/rules.rs`, `network/facts.rs`, `network/firing.rs`, `network/script.rs` |
-| `audit.rs` (~817 LOC) | Single cohesive audit engine + types + render + trend | Split into `audit/types.rs`, `audit/engine.rs`, `audit/render.rs`, `audit/trend.rs` |
+| `server.rs` (~2450 LOC) | `rmcp` macro requires single `#[tool]` impl block | Delegation pattern: thin wrappers in server.rs, bodies in `server_handlers/` modules |
+| `network.rs` (~1340 LOC) | `ReteNetwork` is single coherent engine surface | Split `impl` blocks across `network/rules.rs`, `network/facts.rs`, `network/firing.rs`, `network/script.rs` |
 
-**Note:** `init.rs` at 2281 LOC has **no exemption** - highest priority for decomposition.
+**Note:** `phr-mcp audit --rule audit-file-loc-high` lists the remaining
+files over the threshold; none of them carries an exemption marker except
+the two above.
 
 ### 7. Rule Persistence Model
 
@@ -832,5 +835,5 @@ If a change breaks the wire format (JSON schema for MCP tools, disk format for r
 
 ---
 
-*Last updated: 2026-08-09*
+*Last updated: 2026-09-27*
 *Based on phronesis v0.35.0*
