@@ -36,6 +36,29 @@ pub const UNREVIEWED_DIR: &str = "verification/unreviewed";
 /// The S1 opt-in marker: nothing renders or runs without it.
 pub const OPT_IN_FILE: &str = ".phronesis/verification.json";
 
+/// The closed vocabulary of property `kind` values (SPEC-property-ontology.md
+/// §2 `property_kind`) — every value this repository's own
+/// `.phronesis/properties.json` and specs actually use. Checked at render
+/// time (store.rs's ingest-time field-class contract is a separate layer);
+/// an unrecognized `kind` is refused before it ever reaches template lookup
+/// or render scope. Because the value is drawn from a fixed, host-controlled
+/// set rather than free text, it can never carry an injection payload — a
+/// closed-vocabulary word cannot inject code — so `kind` is left out of both
+/// `validate_body` lists entirely (see `ScopeValues::inert_values`): the
+/// bug this guards against is a *false* refusal (a legitimate kind name that
+/// also happens to be a real language keyword, e.g. `invariant`, tripping
+/// the inert-only rule when it appears live in generated code), not an
+/// injection risk.
+const PROPERTY_KIND_VALUES: &[&str] = &[
+    "precondition",
+    "postcondition",
+    "invariant",
+    "equivalence",
+    "determinism",
+    "soundness",
+    "totality",
+];
+
 /// Which directory the template came from. Recorded on every result
 /// (`ResultRecord::template_origin`) so draft-derived evidence is visible and
 /// never binds as a verification.
@@ -127,6 +150,11 @@ pub enum RenderPipelineError {
     #[error("property {id} has several encodings ({verifiers}); pass --verifier to pick one")]
     AmbiguousEncoding { id: String, verifiers: String },
     #[error(
+        "property {id} has kind {kind:?}, outside the closed vocabulary ({}) — SPEC-property-ontology.md §2 property_kind",
+        PROPERTY_KIND_VALUES.join(", ")
+    )]
+    UnknownKind { id: String, kind: String },
+    #[error(
         "language {language:?} has no render instantiation (host escaping and comment syntax are registered for rust only)"
     )]
     UnsupportedLanguage { language: String },
@@ -178,6 +206,7 @@ impl RenderPipelineError {
             Self::NotAccepted { .. } => "not_accepted",
             Self::NoEncoding { .. } => "no_encoding",
             Self::AmbiguousEncoding { .. } => "ambiguous_encoding",
+            Self::UnknownKind { .. } => "unknown_kind",
             Self::UnsupportedLanguage { .. } => "unsupported_language",
             Self::InvalidTemplateKey { .. } => "invalid_template_key",
             Self::TemplateMissing { .. } => "template_missing",
@@ -391,15 +420,20 @@ impl ScopeValues {
     }
 
     /// Free-text scope values (non-empty ones are checked): every field
-    /// except `subject`, which is an identifier candidate instead (see
-    /// `identifier_values`), plus the raw `depends_on` region strings —
-    /// those remain inert-only even though fn names are also parsed out of
-    /// them, since a whole region id (`fn:src/lib.rs::divide`) is never
-    /// itself a valid Rust identifier or path.
+    /// except `subject` (an identifier candidate instead, see
+    /// `identifier_values`) and `kind` (a closed-vocabulary word —
+    /// `PROPERTY_KIND_VALUES`, checked and refused before this is ever built
+    /// — so it is not free text at all, and holding it to the inert-only
+    /// rule would only produce false refusals when a kind name is also a
+    /// real language keyword, e.g. `invariant`), plus the raw `depends_on`
+    /// region strings — those remain inert-only even though fn names are
+    /// also parsed out of them, since a whole region id
+    /// (`fn:src/lib.rs::divide`) is never itself a valid Rust identifier or
+    /// path.
     fn inert_values(&self) -> Vec<&str> {
         self.fields
             .iter()
-            .filter(|(key, _)| *key != "subject")
+            .filter(|(key, _)| *key != "subject" && *key != "kind")
             .map(|(_, v)| v.as_str())
             .chain(self.depends_on.iter().map(String::as_str))
             .filter(|v| !v.is_empty())
@@ -557,6 +591,12 @@ pub fn prepare(root: &Path, req: &RenderRequest) -> Result<RenderedArtifact, Ren
         return Err(RenderPipelineError::NotAccepted {
             id: property.id,
             status: property.status,
+        });
+    }
+    if !PROPERTY_KIND_VALUES.contains(&property.kind.as_str()) {
+        return Err(RenderPipelineError::UnknownKind {
+            id: property.id,
+            kind: property.kind,
         });
     }
     let encoding = pick_encoding(&property, req.verifier.as_deref())?;

@@ -77,7 +77,7 @@ Corroboration claims are part of the reviewed record — a corroboration is itse
 |---|---|---|
 | `property` | `[id]` | The property exists |
 | `property_subject` | `[property, function]` | What the property is about (graph element identity) |
-| `property_kind` | `[property, kind]` | `postcondition` \| `precondition` \| `invariant` \| … |
+| `property_kind` | `[property, kind]` | Closed vocabulary: `precondition` \| `postcondition` \| `invariant` \| `equivalence` \| `determinism` \| `soundness` \| `totality` |
 | `property_depends_on` | `[property, region]` | Region dependency (SPEC A §3.2 per-site region IDs; a legacy leaf-name id matches every same-leaf changed site) |
 | `property_source` | `[property, source]` | `explicit_spec` \| `existing_verifier_contract` \| `test_assertion` \| `documentation` \| `code_inference` \| `runtime_observation` \| `agent_inference` |
 | `property_status` | `[property, status]` | `observed` \| `candidate` \| `corroborated` \| `accepted` \| `verified` \| `rejected` \| `superseded` |

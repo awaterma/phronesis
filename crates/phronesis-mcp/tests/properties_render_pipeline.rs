@@ -699,3 +699,67 @@ fn c1_the_draft_template_renders_a_harness_verus_proves() {
     // A draft's real proof is still not verified evidence.
     assert!(with(&hydrate(d.path()), "verification_result").is_empty());
 }
+
+// ---- `kind` is a closed vocabulary, not free text (VT1) ----
+//
+// `property.kind` names come from a fixed set (SPEC-property-ontology.md §2
+// `property_kind`) that this repository's own properties.json exercises:
+// `precondition`, `postcondition`, `invariant`, `equivalence`,
+// `determinism`, `soundness`, `totality`. A closed-vocabulary word can never
+// carry an injection payload, so `kind` is not one of `validate_body`'s
+// inert values — before this fix it was, and a property of kind
+// `invariant` whose harness legitimately used Verus's `invariant`
+// loop-annotation keyword in live code was a false S5 refusal.
+
+#[test]
+fn property_of_kind_invariant_can_render_a_harness_using_the_verus_invariant_keyword() {
+    let d = project();
+    let mut p = property(PropertyStatus::Accepted, &["fn:safe_divide"]);
+    p.kind = "invariant".into();
+    write_properties(d.path(), vec![p]);
+
+    // `resolve_template` names the file `{verifier}-{kind}.rhai`.
+    std::fs::create_dir_all(d.path().join(render::TEMPLATES_DIR)).expect("mkdir templates");
+    std::fs::write(
+        d.path().join(render::TEMPLATES_DIR).join("verus-invariant.rhai"),
+        // Verus-specific `while ... invariant ...` syntax is not valid bare
+        // Rust grammar; like the shipped templates, it must sit inside a
+        // macro invocation (`verus! { ... }`), whose body `syn` treats as an
+        // opaque token tree rather than parsing as Rust items.
+        "`verus! {\nfn h() {\n    let mut i: u32 = 0;\n    while i < 10\n        invariant\n            i <= 10,\n    {\n        i = i + 1;\n    }\n}\n} // verus!\n`",
+    )
+    .expect("write template");
+
+    let out = render::render_to_disk(d.path(), &request(false), false).expect(
+        "a closed-vocabulary kind must never make its own text a live-code S5 hazard \
+         (the property's `kind` and the Verus `invariant` keyword are the same word)",
+    );
+    assert!(
+        out.artifact.body.contains("invariant"),
+        "the keyword must actually be live in the rendered body: {}",
+        out.artifact.body
+    );
+}
+
+#[test]
+fn an_unrecognized_kind_is_refused_at_render_time() {
+    let d = project();
+    let mut p = property(PropertyStatus::Accepted, &["fn:safe_divide"]);
+    p.kind = "not_a_real_kind".into();
+    write_properties(d.path(), vec![p]);
+
+    let err = render::render_to_disk(d.path(), &request(false), false)
+        .expect_err("an unrecognized kind must be refused before template lookup");
+    assert!(
+        matches!(err, RenderPipelineError::UnknownKind { .. }),
+        "{err:?}"
+    );
+    assert!(err.to_string().contains("not_a_real_kind"), "{err}");
+    assert!(unreviewed_files(d.path()).is_empty());
+    assert!(
+        journal_events(d.path())
+            .contains(&("verify_render_refused".into(), Some("unknown_kind".into()))),
+        "{:?}",
+        journal_events(d.path())
+    );
+}
