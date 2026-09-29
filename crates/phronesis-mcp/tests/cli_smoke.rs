@@ -473,3 +473,110 @@ fn graph_status_json_is_pure_and_human_mode_still_shows_hotspots() {
         "human hotspots must name the file with the unresolved call, got: {stdout}"
     );
 }
+
+fn ingest_project() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("tempdir");
+    std::fs::create_dir_all(dir.path().join(".phronesis")).expect("mkdir");
+    std::fs::write(dir.path().join(".phronesis/rules.json"), r#"{"rules": []}"#).expect("rules");
+    std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").expect("enable");
+    dir
+}
+fn ingest_phr(root: &std::path::Path, args: &[&str]) -> std::process::Output {
+    std::process::Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .env("PHRONESIS_PROJECT_ROOT", root)
+        .current_dir(root)
+        .args(args)
+        .output()
+        .expect("run phr-mcp")
+}
+
+#[test]
+fn signal_ingest_records_parsed_evidence_and_refuses_empty_or_unknown_output() {
+    let dir = ingest_project();
+    let root = dir.path();
+    std::fs::write(
+        root.join("gate.log"),
+        "test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\\n",
+    )
+    .expect("log");
+    let out = ingest_phr(
+        root,
+        &[
+            "signal",
+            "ingest",
+            "--command",
+            "cargo test --workspace",
+            "--output",
+            "gate.log",
+            "--exit",
+            "0",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("outcome:test_pass") && stdout.contains("outcome:ingested"),
+        "{stdout}"
+    );
+    let conf_out = ingest_phr(root, &["confidence", "--json"]);
+    let conf: serde_json::Value = serde_json::from_slice(&conf_out.stdout).expect("json");
+    assert!(conf["signals"].to_string().contains("tests"), "{conf}");
+    std::fs::write(
+        root.join("bad.log"),
+        "test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n",
+    )
+    .expect("log");
+    let out = ingest_phr(
+        root,
+        &[
+            "signal",
+            "ingest",
+            "--command",
+            "cargo test",
+            "--output",
+            "bad.log",
+            "--exit",
+            "101",
+        ],
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("outcome:test_fail"));
+    std::fs::write(root.join("empty.log"), "").expect("log");
+    let out = ingest_phr(
+        root,
+        &[
+            "signal",
+            "ingest",
+            "--command",
+            "cargo test",
+            "--output",
+            "empty.log",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no outcome"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let out = ingest_phr(
+        root,
+        &[
+            "signal",
+            "ingest",
+            "--command",
+            "make check",
+            "--output",
+            "gate.log",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("no toolchain definition handles"),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

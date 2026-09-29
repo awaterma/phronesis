@@ -6,6 +6,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Confidence signals survive redirected output and hand-run gates.** When a
+  handled command sends stdout to a fresh regular file inside the project and
+  the host captured nothing, post-check parses that file and journals
+  `outcome:output_from_file`. `phr-mcp signal ingest --command <cmd>
+  --output <file>` parses saved output from hand-run gates and journals
+  `outcome:ingested`; it refuses unknown toolchains and output with no result.
+
 ### Changed
 
 - **`init.rs` and `audit.rs` are now directory modules.** The two largest

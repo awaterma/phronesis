@@ -164,7 +164,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `graph rebuild\|query\|status\|ownership` | Structural code-graph helpers: rebuild the derived `.phronesis/graph.jsonl` (rebuild after `git checkout`, `git mv`, or rebase), query by relation, check whether it matches disk, and explain indexed Rust ownership evidence |
 | `confidence` | Confidence band + grounded signals for the open work unit |
 | `toolchains` | List active toolchain definitions (built-in + project) with ID, source, match patterns, and active signal refinements |
-| `signal <name> <outcome>` | Record a `compile`/`tests` pass/fail signal explicitly for the open work unit — the escape hatch when a test runner has no toolchain definition or ran outside the hook; requires the `confidence` pack |
+| `signal <name> <outcome>` / `signal ingest --command <cmd> --output <file> [--exit N]` | Record a bare verdict or parse saved output through the active toolchain definitions; ingest refuses when nothing parses |
 | `journey` | `journey_*` facts asserted right now (`--json`/`--explain`/`--lifecycle`/`--corrections`) |
 | `drift` | Consolidated guidance/rule drift across `claude_md`, `memory`, `wiki`, and `code` sources |
 | `claude-md-drift`, `memory-drift`, `wiki-drift` | Frozen compatibility commands for the original single-source reports |
