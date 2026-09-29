@@ -93,13 +93,12 @@ pub(super) fn post_pop_and_detect(
     tool_name: &str,
 ) -> Option<state::Inflight> {
     let command = super::extract_new_content(payload, tool_name).unwrap_or_default();
-    let popped = inflight::pop_and_detect(
+    inflight::pop_and_detect(
         root,
         &inflight_call(payload, tool_name, &command),
         super::journey_record::payload_command_exit(payload),
         |kind| LifecycleEvent::new(kind, host_for_tool(tool_name)),
-    );
-    popped
+    )
 }
 
 /// `Bash` is Claude's shell tool; `run_shell_command` is Gemini's.

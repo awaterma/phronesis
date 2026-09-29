@@ -104,7 +104,7 @@ pub(crate) fn pop_and_detect(
     if !outcome::is_shell_tool(call.tool) {
         return entry;
     }
-    let Some(entry) = entry else { return None };
+    let entry = entry?;
     if !outcome::command_may_move_head(call.command) {
         return Some(entry);
     }
