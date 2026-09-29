@@ -39,6 +39,7 @@ const STATIC_REACH: &str = "static_reach";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectedTest {
     pub test: String,
+    pub command: Option<String>,
     /// `coverage_observation` (dynamic hit), `coverage_observation_stale`
     /// (dynamic hit imported at a revision other than HEAD), or
     /// `static_reach` (graph edge).
@@ -290,7 +291,19 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
     }
 
     // BTreeMap order is (test, evidence kind): deterministic, no re-sort.
-    let tests: Vec<SelectedTest> = by_test.into_values().collect();
+    let mut tests: Vec<SelectedTest> = by_test.into_values().collect();
+    let test_files: BTreeMap<&str, &str> = edges
+        .iter()
+        .filter(|e| e.p == "defines_test" && e.a.len() == 2)
+        .map(|e| (e.a[1].as_str(), e.a[0].as_str()))
+        .collect();
+    for test in &mut tests {
+        if test.test.starts_with("python:")
+            && let Some(file) = test_files.get(test.test.as_str())
+        {
+            test.command = python_command(test.test.as_str(), file);
+        }
+    }
 
     Ok(Selection {
         change,
@@ -329,12 +342,20 @@ fn add_entry(
         .entry((test.to_string(), evidence))
         .or_insert_with(|| SelectedTest {
             test: test.to_string(),
+            command: None,
             evidence: evidence.to_string(),
             regions: Vec::new(),
         });
     if !entry.regions.contains(&region.to_string()) {
         entry.regions.push(region.to_string());
     }
+}
+
+fn python_command(test: &str, file: &str) -> Option<String> {
+    let module = file.strip_suffix(".py")?.replace('/', "::");
+    let marker = format!("::{module}::");
+    let suffix = test.rsplit_once(&marker)?.1;
+    Some(format!("python -m pytest {file}::{suffix}"))
 }
 
 fn graph_freshness_status(root: &Path, edges: &[Edge]) -> (bool, Option<String>) {
@@ -430,6 +451,9 @@ pub fn render_table(sel: &Selection) -> String {
                 entry.test,
                 entry.regions.join(", ")
             ));
+            if let Some(command) = &entry.command {
+                out.push_str(&format!("  COMMAND: {command}\n"));
+            }
         }
         out.push('\n');
     }
@@ -443,6 +467,9 @@ pub fn render_table(sel: &Selection) -> String {
                 entry.test,
                 entry.regions.join(", ")
             ));
+            if let Some(command) = &entry.command {
+                out.push_str(&format!("  COMMAND: {command}\n"));
+            }
         }
         out.push('\n');
     }
@@ -456,6 +483,9 @@ pub fn render_table(sel: &Selection) -> String {
                 entry.test,
                 entry.regions.join(", ")
             ));
+            if let Some(command) = &entry.command {
+                out.push_str(&format!("  COMMAND: {command}\n"));
+            }
         }
         out.push('\n');
     }
@@ -487,9 +517,26 @@ pub fn render_json(sel: &Selection) -> String {
         "coverage_note": sel.coverage_note,
         "tests": sel.tests.iter().map(|t| serde_json::json!({
             "test": t.test,
+            "command": t.command,
             "evidence": t.evidence,
             "regions": t.regions,
         })).collect::<Vec<_>>(),
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod python_command_tests {
+    use super::python_command;
+    #[test]
+    fn renders_graph_python_id_as_a_pytest_node_id() {
+        assert_eq!(
+            python_command(
+                "python:pkg::tests::test_store::test_load",
+                "tests/test_store.py"
+            )
+            .as_deref(),
+            Some("python -m pytest tests/test_store.py::test_load")
+        );
+    }
 }
