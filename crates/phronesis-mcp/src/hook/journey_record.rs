@@ -1,6 +1,7 @@
 use phr::Fact;
 
 use crate::journey;
+use crate::lifecycle::state;
 use crate::outcomes;
 use crate::security;
 
@@ -78,6 +79,11 @@ fn outcomes_for_journal(
         command: command.as_deref(),
         output: &output,
         command_exit,
+        not_before: payload
+            .tool_use_id
+            .as_deref()
+            .and_then(|key| state::peek_inflight(&root, key))
+            .map(|e| e.ts),
     });
     (tags, subject, command_exit)
 }

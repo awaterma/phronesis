@@ -1560,6 +1560,7 @@ fn extract_post_outcomes(
             command: Some(&command),
             output: &output,
             command_exit,
+            not_before: None,
         });
     (outcome_tags, subject, command_exit)
 }

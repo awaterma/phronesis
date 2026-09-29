@@ -198,6 +198,8 @@ pub struct ExtractFromInput<'a> {
     pub command: Option<&'a str>,
     pub output: &'a str,
     pub command_exit: Option<i32>,
+    /// Unix seconds the command started, from its in-flight record.
+    pub not_before: Option<u64>,
 }
 
 pub fn extract_from(input: ExtractFromInput<'_>) -> (Vec<String>, Option<String>) {
@@ -207,6 +209,7 @@ pub fn extract_from(input: ExtractFromInput<'_>) -> (Vec<String>, Option<String>
         command: command_opt,
         output,
         command_exit,
+        not_before,
     } = input;
     if !matches!(tool_name, "Bash" | "run_shell_command") {
         return (Vec::new(), None);
@@ -226,7 +229,53 @@ pub fn extract_from(input: ExtractFromInput<'_>) -> (Vec<String>, Option<String>
         return (Vec::new(), None);
     }
 
-    extract_handled(project_root, command, output, command_exit)
+    let (text, from_file) = if output.trim().is_empty() {
+        match redirect_output(project_root, command, not_before) {
+            Some(text) => (text, true),
+            None => (output.to_string(), false),
+        }
+    } else {
+        (output.to_string(), false)
+    };
+    let (mut tags, subject) = extract_handled(project_root, command, &text, command_exit);
+    if from_file && subject.is_some() && !tags.is_empty() {
+        tags.push("outcome:output_from_file".to_string());
+    }
+    (tags, subject)
+}
+
+fn redirect_target_for(project_root: &Path, command: &str) -> Option<String> {
+    let raw_segments: Vec<&str> = command.split(['|', ';', '\n']).collect();
+    let heads = crate::outcomes::segment::command_heads(command);
+    let handled_head = heads.iter().find(|head| handles(project_root, head))?;
+    let idx = raw_segments.iter().position(|segment| {
+        segment
+            .trim_start()
+            .starts_with(handled_head.split_whitespace().next().unwrap_or(""))
+    })?;
+    let handled = raw_segments[idx];
+    crate::outcomes::segment::stdout_redirect_target(handled).or_else(|| {
+        raw_segments
+            .get(idx + 1)
+            .and_then(|next| crate::outcomes::segment::tee_target(next))
+    })
+}
+
+fn redirect_output(project_root: &Path, command: &str, not_before: Option<u64>) -> Option<String> {
+    let not_before = not_before?;
+    let target = redirect_target_for(project_root, command)?;
+    let path = Path::new(&target);
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        project_root.join(path)
+    };
+    let root = std::fs::canonicalize(project_root).ok()?;
+    let candidate = path
+        .strip_prefix(&root)
+        .map(|rel| root.join(rel))
+        .unwrap_or(path);
+    crate::security::read_file_capped_in_root(&candidate, &root, not_before).ok()
 }
 
 fn extract_handled(
@@ -264,6 +313,131 @@ fn extract_handled(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn enabled_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".phronesis")).expect("mkdir");
+        std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").expect("enable");
+        dir
+    }
+    const PASS_LOG: &str = "running 3 tests\ntest a ... ok\ntest result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n";
+    fn now_secs() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+    fn extract_redirect(
+        root: &Path,
+        command: &str,
+        output: &str,
+        not_before: Option<u64>,
+    ) -> Vec<String> {
+        extract_from(ExtractFromInput {
+            project_root: root,
+            tool_name: "Bash",
+            command: Some(command),
+            output,
+            command_exit: Some(0),
+            not_before,
+        })
+        .0
+    }
+
+    #[test]
+    fn redirected_output_is_read_from_a_fresh_file_inside_the_project() {
+        let dir = enabled_project();
+        std::fs::write(dir.path().join("run.log"), PASS_LOG).expect("log");
+        let tags = extract_redirect(
+            dir.path(),
+            "cargo test --workspace > run.log 2>&1",
+            "",
+            Some(now_secs() - 60),
+        );
+        assert!(tags.iter().any(|t| t == "outcome:test_pass"), "{tags:?}");
+        assert!(
+            tags.iter().any(|t| t == "outcome:output_from_file"),
+            "{tags:?}"
+        );
+    }
+
+    #[test]
+    fn a_tee_in_the_next_segment_is_the_handled_commands_output() {
+        let dir = enabled_project();
+        std::fs::write(dir.path().join("run.log"), PASS_LOG).expect("log");
+        let tags = extract_redirect(
+            dir.path(),
+            "cargo test 2>&1 | tee run.log",
+            "",
+            Some(now_secs() - 60),
+        );
+        assert!(tags.iter().any(|t| t == "outcome:test_pass"), "{tags:?}");
+    }
+
+    #[test]
+    fn captured_output_wins_over_the_redirect_file() {
+        let dir = enabled_project();
+        std::fs::write(dir.path().join("run.log"), PASS_LOG).expect("log");
+        let captured =
+            "test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\\n";
+        let tags = extract_redirect(
+            dir.path(),
+            "cargo test > run.log",
+            captured,
+            Some(now_secs() - 60),
+        );
+        assert!(tags.iter().any(|t| t == "outcome:test_fail"), "{tags:?}");
+        assert!(
+            !tags.iter().any(|t| t == "outcome:output_from_file"),
+            "{tags:?}"
+        );
+    }
+
+    #[test]
+    fn stale_out_of_root_symlinked_fifo_and_unstamped_targets_are_never_evidence() {
+        let dir = enabled_project();
+        let root = dir.path();
+        std::fs::write(root.join("old.log"), PASS_LOG).expect("log");
+        assert!(
+            extract_redirect(root, "cargo test > old.log", "", Some(now_secs() + 3600))
+                .iter()
+                .all(|t| t != "outcome:test_pass")
+        );
+        assert!(
+            extract_redirect(root, "cargo test > old.log", "", None)
+                .iter()
+                .all(|t| t != "outcome:test_pass")
+        );
+        let outside = tempfile::tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR"))).expect("outside");
+        std::fs::write(outside.path().join("o.log"), PASS_LOG).expect("log");
+        let cmd = format!("cargo test > {}", outside.path().join("o.log").display());
+        assert!(
+            extract_redirect(root, &cmd, "", Some(0))
+                .iter()
+                .all(|t| t != "outcome:test_pass")
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path().join("o.log"), root.join("link.log"))
+                .expect("symlink");
+            assert!(
+                extract_redirect(root, "cargo test > link.log", "", Some(0))
+                    .iter()
+                    .all(|t| t != "outcome:test_pass")
+            );
+            let fifo = root.join("pipe.log");
+            let status = std::process::Command::new("mkfifo")
+                .arg(&fifo)
+                .status()
+                .expect("mkfifo");
+            assert!(status.success());
+            assert!(
+                extract_redirect(root, "cargo test > pipe.log", "", Some(0))
+                    .iter()
+                    .all(|t| t != "outcome:test_pass")
+            );
+        }
+    }
 
     #[test]
     fn config_adapter_parse_returns_build_evidence() {
@@ -402,6 +576,7 @@ mod tests {
             command: Some("cargo test --workspace"),
             output,
             command_exit: None,
+            not_before: None,
         });
         assert!(
             tags.iter().any(|t| t == "outcome:compile_unknown"),
@@ -428,6 +603,7 @@ mod tests {
             command: Some("cargo test --workspace"),
             output,
             command_exit: Some(0),
+            not_before: None,
         });
         let tags: Vec<String> = tags;
         // Build passed, so test facts exist — but without a known-bug
