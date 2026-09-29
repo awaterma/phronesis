@@ -473,3 +473,41 @@ fn graph_status_json_is_pure_and_human_mode_still_shows_hotspots() {
         "human hotspots must name the file with the unresolved call, got: {stdout}"
     );
 }
+
+/// The pack rule definitions in `src/init/rules_rust.rs` embed their own
+/// trigger strings. That self-reference is exempted per rule with
+/// `//! phronesis-allow:` markers, never by hiding the file from the audit
+/// (issue #114: a whole-file `.phronesisignore` entry hid nine real
+/// production unwraps for as long as it existed). This test runs the real
+/// audit: a marker that the engine does not honour fails here.
+#[test]
+fn pack_rule_self_reference_is_exempted_per_rule_and_the_audit_proves_it() {
+    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("repo root");
+    let ignore = std::fs::read_to_string(repo.join("crates/phronesis-mcp/.phronesisignore"))
+        .unwrap_or_default();
+    for line in ignore.lines().map(str::trim) {
+        assert!(
+            line.is_empty() || line.starts_with('#') || !line.contains("src/"),
+            ".phronesisignore must not hide source files from the audit: `{line}`"
+        );
+    }
+    for rule in [
+        "audit-newtype-id-string",
+        "audit-allow-dead-code-in-src",
+        "audit-string-concat-with-plus",
+    ] {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+            .current_dir(repo)
+            .args(["audit", "--rule", rule, "--json"])
+            .output()
+            .expect("run audit");
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !text.contains("src/init/rules_rust.rs"),
+            "{rule} still fires on its own definition text:\n{text}"
+        );
+    }
+}
