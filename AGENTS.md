@@ -509,6 +509,8 @@ phr-mcp coverage collect                     # run machinery tests in isolation
 phr-mcp coverage collect --from-dir /tmp/x   # normalize already-collected JSONs
 phr-mcp coverage collect --allow-dirty       # stamp HEAD despite a modified tree (warns)
 phr-mcp coverage import <export.jsonl>       # import a normalized export
+phr-mcp coverage collect --tool pytest-cov --emit-script --out /tmp/cov  # emit Python per-test lcov collection for a devcontainer
+phr-mcp coverage import --format lcov-dir --tool coverage.py /tmp/cov  # verify manifest revision/digests and import
 phr-mcp coverage select                      # relevant tests for changed regions
 ```
 

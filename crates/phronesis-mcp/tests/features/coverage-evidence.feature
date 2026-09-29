@@ -33,3 +33,8 @@ Feature: Coverage evidence
     When a pre-check runs with "git commit -m x"
     Then rule warn-commit-on-stale-coverage fires
     And the warning names the staleness without blocking the commit
+
+  Scenario: Python lcov evidence selects the body test with a runnable command
+    Given a Python project with per-test lcov evidence
+    When the lcov evidence is imported and its load body changes
+    Then coverage select lists the Python test and pytest command

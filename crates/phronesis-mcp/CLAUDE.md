@@ -45,6 +45,8 @@ cargo run -- catalogue        # Regenerate docs/catalogue.html from the shipped 
 cargo run -- scrub-payload <path> [--write] [--home DIR] [--project-root DIR]  # Anonymize captured payloads for committing as fixtures
 cargo run -- coverage collect [--from-dir DIR] [--bins a,b] [--allow-dirty]  # llvm-cov per-test collection, imported at HEAD; refuses when tracked files differ from HEAD (untracked and .phronesis/ ignored) unless --allow-dirty
 cargo run -- coverage import <export.jsonl>  # Import a normalized per-test coverage export into the evidence store
+cargo run -- coverage import --format lcov-dir --tool coverage.py <dir>  # Import per-test lcov after manifest verification
+cargo run -- coverage collect --tool pytest-cov --emit-script  # Emit container-friendly isolated pytest collection
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 

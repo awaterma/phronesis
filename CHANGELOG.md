@@ -6,6 +6,19 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Coverage evidence for Python.** The region map produces function regions
+  for `.py` files; `phr-mcp coverage import --format lcov-dir --tool
+  coverage.py <dir>` imports per-test lcov after checking the collection
+  manifest revision and file digests; `coverage collect --tool pytest-cov
+  --emit-script` emits isolated collection for a devcontainer; and `coverage
+  select` renders Python tests as runnable pytest commands. Function hits use
+  executed body lines because coverage.py marks `def` lines at import time.
+  Unresolved, ambiguous and filtered paths, files without regions, and
+  one-line functions without `FNDA` data are reported. Python branch regions
+  are deferred. CI runs no Python; parsing and import use committed fixtures.
+
 ### Changed
 
 - **`init.rs` and `audit.rs` are now directory modules.** The two largest

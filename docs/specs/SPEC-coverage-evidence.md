@@ -275,6 +275,18 @@ If a later rule needs to count relevant tests, the host re-asserts per-element `
 
 ## 11. Open questions
 
+## Languages
+
+The region map extracts Rust and Python function sites. Coverage interchange
+uses lcov: `DA` line counters attribute multi-line functions only when an
+executed line falls within the function body, because coverage.py marks `def`
+lines when a module is imported. One-line Python functions use `FNDA` when
+present and otherwise remain unattributable. Python branch regions are
+deferred. Per-test lcov imports require a manifest containing the collection
+revision and SHA-256 digests for covered source files; the importer verifies
+both against the host tree. Python test ids use the graph form
+`python:<namespace>::<path segments>::<test function>`.
+
 1. Branch-site anchor scheme (condition-text hash vs tree-sitter node identity) — Phase 1 spike, decided by A2.
 2. Should `changed_region` persist across the pre→post hook pair via in-flight state for commit correlation?
 3. Should import record a journey tag (`coverage:imported`) so confidence can count fresh coverage as a signal? (lean yes, Phase 3)
