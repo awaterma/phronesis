@@ -124,6 +124,18 @@ fn proof_tag(f: &OutcomeFact) -> Option<String> {
     })
 }
 
+/// `outcome:proof_unbound:<harness>:<passed|failed>` — a verifier result for
+/// a harness no property claims. Visible in the journal so a failing
+/// unregistered proof is never silent; evidence for no property.
+fn proof_unbound_tag(f: &OutcomeFact) -> Option<String> {
+    let harness = f.args.get(1)?;
+    let status = f.args.get(2)?;
+    Some(match status.as_str() {
+        "passed" | "failed" => format!("outcome:proof_unbound:{harness}:{status}"),
+        _ => return None,
+    })
+}
+
 /// `outcome:proof_run_fail` / `outcome:proof_run_inconclusive` — a proof run
 /// that was not a clean pass (SPEC-C S8).
 fn proof_run_tag(f: &OutcomeFact) -> Option<&'static str> {
@@ -141,6 +153,7 @@ pub(crate) fn outcome_tags(facts: &[OutcomeFact]) -> Vec<String> {
             "build_outcome" => build_tag(f).map(str::to_string),
             "test_outcome" => test_tag(f).map(str::to_string),
             "proof_outcome" => proof_tag(f),
+            "proof_unbound" => proof_unbound_tag(f),
             "proof_run_outcome" => proof_run_tag(f).map(str::to_string),
             _ => None,
         })
@@ -229,6 +242,28 @@ pub fn extract_from(input: ExtractFromInput<'_>) -> (Vec<String>, Option<String>
     extract_handled(project_root, command, output, command_exit)
 }
 
+/// The property a proof result speaks for: the name itself when it is a
+/// property id, else the property whose encoding for `verifier` names
+/// `harness:<name>`.
+fn property_for_harness(
+    properties: &[crate::properties::store::Property],
+    verifier: &str,
+    name: &str,
+) -> Option<String> {
+    if properties.iter().any(|p| p.id == name) {
+        return Some(name.to_string());
+    }
+    let wanted = format!("harness:{name}");
+    properties
+        .iter()
+        .find(|p| {
+            p.encodings
+                .iter()
+                .any(|e| e.verifier == verifier && e.artifact == wanted)
+        })
+        .map(|p| p.id.clone())
+}
+
 fn extract_handled(
     project_root: &Path,
     command: &str,
@@ -243,6 +278,42 @@ fn extract_handled(
         return (Vec::new(), None);
     };
     let outcome_facts = def.parse(&subject, command, output, command_exit);
+    // For a proof def, bind harness names to property ids through the
+    // properties store's `encodings`. An unbound harness (no encoding claims
+    // it) becomes `proof_unbound` so a failing unregistered proof is visible;
+    // it never counts for any property. A store that fails to load is
+    // reported on stderr once and treated as "no bindings" (every harness
+    // unbound), never silently.
+    let outcome_facts: Vec<OutcomeFact> = if def.is_proof {
+        let properties = match crate::properties::store::load_properties(project_root) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!(
+                    "phronesis: properties.json could not be loaded ({e}); {} results are journaled as unbound",
+                    def.def.id
+                );
+                Vec::new()
+            }
+        };
+        let verifier = def.def.id.as_str();
+        outcome_facts
+            .into_iter()
+            .map(|f| {
+                if f.predicate != "proof_outcome" {
+                    return f;
+                }
+                let (Some(name), Some(status)) = (f.args.get(1), f.args.get(2)) else {
+                    return f;
+                };
+                match property_for_harness(&properties, verifier, name) {
+                    Some(id) => OutcomeFact::proof(&subject, &id, status == "passed"),
+                    None => OutcomeFact::proof_unbound(&subject, name, status == "passed"),
+                }
+            })
+            .collect()
+    } else {
+        outcome_facts
+    };
     // Gate bug evidence on a grounded, passing build (Finding 2):
     // an unknown run produced no evidence, so `bug_caught` tags must not
     // fire — absent evidence is unknown, not pass.
@@ -441,6 +512,189 @@ mod tests {
         assert!(
             !tags.iter().any(|t| t == "outcome:compile_unknown"),
             "tags must NOT include compile_unknown: {tags:?}"
+        );
+    }
+
+    // ── E2: harness → property binding; unbound results stay visible ──────
+
+    fn enabled_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".phronesis")).expect("mkdir");
+        std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").expect("enable");
+        open_subject(dir.path(), "u");
+        dir
+    }
+
+    const KANI_DEF: &str = r#"[{"id":"kani","matches":"^cargo kani","compile_success":["Manual Harness Summary"],
+        "section_start":"(?m)^Checking harness ",
+        "per_test":"(?s)Checking harness (?P<name>\\S+?)\\.\\.\\..*?VERIFICATION:- (?P<status>SUCCESSFUL|FAILED)",
+        "pass_tokens":["SUCCESSFUL"],"outcome_kind":"proof"}]"#;
+    const BOUND_PROPERTY: &str = r#"{"version":1,"properties":[{"id":"variable_binding.substitution_totality","subject":"variable_binding",
+        "kind":"totality","depends_on":["fn:variable_binding::substitute"],"source":"code_inference","status":"observed","corroborated_by":[],
+        "encodings":[{"language":"rust","verifier":"kani","artifact":"harness:variable_binding::kani_harness::add_binding_totality"}]}]}"#;
+    const TWO_HARNESSES: &str = "Checking harness variable_binding::kani_harness::add_binding_totality...\nVERIFICATION:- FAILED\n\
+        Checking harness variable_binding::kani_harness::unbound...\nVERIFICATION:- FAILED\n\
+        Manual Harness Summary:\nVerification failed for - variable_binding::kani_harness::add_binding_totality\nVerification failed for - variable_binding::kani_harness::unbound\nComplete - 0 successfully verified harnesses, 2 failures, 2 total.\n";
+
+    #[test]
+    fn proof_names_map_through_harness_encodings_and_unbound_results_stay_visible() {
+        let dir = enabled_project();
+        let root = dir.path();
+        std::fs::write(root.join(".phronesis/toolchains.json"), KANI_DEF).expect("toolchains");
+        std::fs::write(root.join(".phronesis/properties.json"), BOUND_PROPERTY)
+            .expect("properties");
+        let (tags, subject) = extract_from(ExtractFromInput {
+            project_root: root,
+            tool_name: "Bash",
+            command: Some("cargo kani -p phronesis"),
+            output: TWO_HARNESSES,
+            command_exit: Some(1),
+        });
+        assert!(subject.is_some());
+        // The bound harness FAILED, so its failure is journaled under the
+        // property id; the unbound harness is journaled as proof_unbound.
+        assert!(
+            tags.iter()
+                .any(|t| t == "outcome:proof_fail:variable_binding.substitution_totality"),
+            "the bound harness journals under the property id: {tags:?}"
+        );
+        assert!(
+            tags.iter().any(
+                |t| t == "outcome:proof_unbound:variable_binding::kani_harness::unbound:failed"
+            ),
+            "{tags:?}"
+        );
+        assert!(
+            !tags
+                .iter()
+                .any(|t| t.starts_with("outcome:proof_pass:variable_binding::kani_harness")),
+            "raw harness paths never masquerade as property ids: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_properties_store_makes_every_harness_unbound_and_says_so() {
+        let dir = enabled_project();
+        let root = dir.path();
+        std::fs::write(root.join(".phronesis/toolchains.json"), KANI_DEF).expect("toolchains");
+        std::fs::write(root.join(".phronesis/properties.json"), "{ not json").expect("corrupt");
+        let (tags, _) = extract_from(ExtractFromInput {
+            project_root: root,
+            tool_name: "Bash",
+            command: Some("cargo kani -p phronesis"),
+            output: TWO_HARNESSES,
+            command_exit: Some(1),
+        });
+        assert!(
+            tags.iter().any(|t| t.starts_with(
+                "outcome:proof_unbound:variable_binding::kani_harness::add_binding_totality:"
+            )),
+            "{tags:?}"
+        );
+        assert!(
+            !tags.iter().any(|t| t.contains("substitution_totality")),
+            "{tags:?}"
+        );
+    }
+
+    /// S8 through the adapter: a later failing run for the bound harness
+    /// must not leave an earlier bound pass active. Mirrors
+    /// `derive::proof_tests::a_failing_proof_run_retracts_an_earlier_proof_signal`
+    /// but exercised through the adapter's rewrite, so the property id (not
+    /// the raw harness name) is what derivation sees.
+    #[test]
+    fn an_unbound_or_failed_later_run_does_not_leave_an_earlier_bound_pass_active() {
+        use crate::journey::journal::JournalRecord;
+        use crate::outcomes::derive::{entries_from, signals_from};
+
+        let dir = enabled_project();
+        let root = dir.path();
+        std::fs::write(root.join(".phronesis/toolchains.json"), KANI_DEF).expect("toolchains");
+        std::fs::write(root.join(".phronesis/properties.json"), BOUND_PROPERTY)
+            .expect("properties");
+
+        // First run: the bound harness passes, exit 0 → clean run.
+        let passing = "Checking harness variable_binding::kani_harness::add_binding_totality...\nVERIFICATION:- SUCCESSFUL\n\
+            Manual Harness Summary:\nComplete - 1 successfully verified harnesses, 0 failures, 1 total.\n";
+        let (first_tags, _) = extract_from(ExtractFromInput {
+            project_root: root,
+            tool_name: "Bash",
+            command: Some("cargo kani -p phronesis"),
+            output: passing,
+            command_exit: Some(0),
+        });
+        let first: Vec<JournalRecord> = first_tags
+            .iter()
+            .enumerate()
+            .map(|(i, t)| JournalRecord {
+                v: 1,
+                ts: i as u64,
+                sid: "s".to_string(),
+                seq: i as u64,
+                tool: "Bash".to_string(),
+                path: "<cmd>".to_string(),
+                ext: None,
+                module: None,
+                tags: vec![t.clone()],
+                subject: Some("u".to_string()),
+                command_exit: Some(0),
+                kind: None,
+                mode: None,
+                host: None,
+                turn: None,
+                agent: None,
+                agent_type: None,
+                kalpa: None,
+            })
+            .collect();
+        assert!(
+            signals_from("u", &entries_from("u", &first))
+                .iter()
+                .any(|f| f.predicate == "signal_pass" && f.args[1] == "proof"),
+            "first run grounds signal_pass(proof): {:?}",
+            first_tags
+        );
+
+        // Second run: the bound harness FAILED. S8 retracts the proof signal.
+        let (second_tags, _) = extract_from(ExtractFromInput {
+            project_root: root,
+            tool_name: "Bash",
+            command: Some("cargo kani -p phronesis"),
+            output: TWO_HARNESSES,
+            command_exit: Some(1),
+        });
+        let second: Vec<JournalRecord> = second_tags
+            .iter()
+            .enumerate()
+            .map(|(i, t)| JournalRecord {
+                v: 1,
+                ts: (i + 10) as u64,
+                sid: "s".to_string(),
+                seq: (i + 10) as u64,
+                tool: "Bash".to_string(),
+                path: "<cmd>".to_string(),
+                ext: None,
+                module: None,
+                tags: vec![t.clone()],
+                subject: Some("u".to_string()),
+                command_exit: Some(1),
+                kind: None,
+                mode: None,
+                host: None,
+                turn: None,
+                agent: None,
+                agent_type: None,
+                kalpa: None,
+            })
+            .collect();
+        let mut all = first.clone();
+        all.extend(second);
+        assert!(
+            !signals_from("u", &entries_from("u", &all))
+                .iter()
+                .any(|f| f.predicate == "signal_pass" && f.args[1] == "proof"),
+            "a failed later run must not leave a stale proof signal: {:?}",
+            second_tags
         );
     }
 }

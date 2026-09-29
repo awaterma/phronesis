@@ -58,6 +58,8 @@ pub enum PropertyStatus {
 pub struct Encoding {
     pub language: String,
     pub verifier: String,
+    /// A file path for a standalone artifact (Verus), or
+    /// `harness:<module::path::name>` for an in-crate Kani proof harness.
     pub artifact: String,
 }
 
