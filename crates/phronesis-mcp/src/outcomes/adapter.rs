@@ -245,15 +245,14 @@ pub fn extract_from(input: ExtractFromInput<'_>) -> (Vec<String>, Option<String>
 }
 
 fn redirect_target_for(project_root: &Path, command: &str) -> Option<String> {
-    let raw_segments: Vec<&str> = command.split(['|', ';', '\n']).collect();
-    let heads = crate::outcomes::segment::command_heads(command);
-    let handled_head = heads.iter().find(|head| handles(project_root, head))?;
-    let idx = raw_segments.iter().position(|segment| {
-        segment
-            .trim_start()
-            .starts_with(handled_head.split_whitespace().next().unwrap_or(""))
+    let raw_segments = crate::outcomes::segment::command_segments(command);
+    let idx = raw_segments.iter().enumerate().find_map(|(idx, segment)| {
+        crate::outcomes::segment::command_heads(segment)
+            .iter()
+            .find(|head| handles(project_root, head))
+            .map(|_| idx)
     })?;
-    let handled = raw_segments[idx];
+    let handled = &raw_segments[idx];
     crate::outcomes::segment::stdout_redirect_target(handled).or_else(|| {
         raw_segments
             .get(idx + 1)
@@ -372,6 +371,32 @@ mod tests {
             Some(now_secs() - 60),
         );
         assert!(tags.iter().any(|t| t == "outcome:test_pass"), "{tags:?}");
+    }
+
+    #[test]
+    fn tee_two_segments_away_is_not_the_handled_commands_output() {
+        let dir = enabled_project();
+        std::fs::write(dir.path().join("other.log"), PASS_LOG).expect("log");
+        let tags = extract_redirect(
+            dir.path(),
+            "cargo test 2>&1 && echo done | tee other.log",
+            "",
+            Some(now_secs() - 60),
+        );
+        assert!(!tags.iter().any(|t| t == "outcome:test_pass"), "{tags:?}");
+    }
+
+    #[test]
+    fn later_command_redirect_is_not_the_handled_commands_output() {
+        let dir = enabled_project();
+        std::fs::write(dir.path().join("other.log"), PASS_LOG).expect("log");
+        let tags = extract_redirect(
+            dir.path(),
+            "cargo test 2>&1 && cargo build > other.log",
+            "",
+            Some(now_secs() - 60),
+        );
+        assert!(!tags.iter().any(|t| t == "outcome:test_pass"), "{tags:?}");
     }
 
     #[test]

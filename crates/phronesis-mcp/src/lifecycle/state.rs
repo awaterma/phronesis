@@ -290,21 +290,6 @@ pub fn pop_inflight(root: &Path, key: &str) -> Option<Inflight> {
     .flatten()
 }
 
-/// Read-only lookup of the newest in-flight record for `key`.
-pub fn peek_inflight(root: &Path, key: &str) -> Option<Inflight> {
-    swallow(
-        with_locked(root, "inflight", |cur| {
-            let entries: Vec<Inflight> = parse_lines(&cur);
-            (
-                None,
-                entries.into_iter().rev().find(|entry| entry.key == key),
-            )
-        }),
-        "peek_inflight",
-    )
-    .flatten()
-}
-
 /// Drop every entry. Every path that records an `interrupt` calls this, so one
 /// Esc cannot yield two interrupts and a lingering entry cannot fake a third
 /// for the next 900 s (spec §Classification step 2, §"Host adapters / Codex").

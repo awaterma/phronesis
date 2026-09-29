@@ -28,6 +28,16 @@
 /// string starts where a command word would appear; empty and comment
 /// segments are dropped.
 pub fn command_heads(command: &str) -> Vec<String> {
+    command_segments(command)
+        .iter()
+        .filter_map(|s| strip_leading_env(s))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Split into raw shell command segments using the same separators as
+/// `command_heads`, retaining redirections and pipeline neighbors.
+pub fn command_segments(command: &str) -> Vec<String> {
     let mut split = CommandSplit::default();
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
@@ -47,12 +57,7 @@ pub fn command_heads(command: &str) -> Vec<String> {
         }
     }
     split.finish_segment();
-    split
-        .segments
-        .iter()
-        .filter_map(|s| strip_leading_env(s))
-        .map(str::to_string)
-        .collect()
+    split.segments
 }
 
 #[derive(Default)]
