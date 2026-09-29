@@ -5,7 +5,7 @@
 //! builder, and the ordering — HEAD probe before the tool runs, pop plus
 //! detection after — lives here once.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
@@ -52,9 +52,16 @@ pub(crate) fn push(root: &Path, call: &Call<'_>) -> String {
     // pre-filter, so a shell call that cannot be a commit spawns no git process
     // at all (spec §"Success signal: commit" step 1). This is the one git call
     // on the pre path.
+    let probe_root = if outcome::is_shell_tool(call.tool)
+        && outcome::command_may_move_head(call.command)
+    {
+        outcome::probe_root_for(root, call.command)
+    } else {
+        root.to_path_buf()
+    };
     let (head_before, detection) =
         if outcome::is_shell_tool(call.tool) && outcome::command_may_move_head(call.command) {
-            match outcome::git_head_probe(root) {
+            match outcome::git_head_probe(&probe_root) {
                 outcome::HeadProbe::Head(sha) => (Some(sha), None),
                 // A timeout is a miss worth auditing: detection is disabled for
                 // this call either way, but only a timeout means the commit may
@@ -76,6 +83,7 @@ pub(crate) fn push(root: &Path, call: &Call<'_>) -> String {
             agent_id: call.agent_id.filter(|s| !s.is_empty()).map(str::to_string),
             head_before,
             detection,
+            probe_root: (probe_root != root).then(|| probe_root.to_string_lossy().to_string()),
         },
     );
     key
@@ -109,6 +117,15 @@ pub(crate) fn pop_and_detect(
         return;
     }
 
+    // The probe root is decided once at push and stored on the entry, so pre
+    // and post probe the same place (spec §"Commits in another worktree").
+    let probe_root: PathBuf = entry
+        .probe_root
+        .as_deref()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.to_path_buf());
+    let repo_dir = entry.probe_root.clone();
+
     // Only a full object name is accepted: the host's abbreviation is not a
     // stable identifier, and this is recorded as one.
     let host_sha = call.host_sha.filter(|s| outcome::is_full_sha(s));
@@ -116,7 +133,7 @@ pub(crate) fn pop_and_detect(
     // HEAD movement is the ground truth. The exit code only vetoes: absent, it
     // costs the record a `detection` marker, not the record itself.
     let detected = outcome::detect_commit(
-        root,
+        &probe_root,
         entry.head_before.as_deref(),
         call.command,
         command_exit,
@@ -170,6 +187,9 @@ pub(crate) fn pop_and_detect(
         && let Some(agent) = entry.agent_id
     {
         ev = ev.with_agent(agent, None);
+    }
+    if let Some(dir) = repo_dir {
+        ev = ev.with_extra("repo_dir", dir);
     }
     record(root, ev);
 }

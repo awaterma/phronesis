@@ -247,6 +247,10 @@ pub struct Inflight {
     /// than silent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detection: Option<String>,
+    /// The directory HEAD was probed in when it was not the project root: a
+    /// linked worktree the command named. Post probes the same place.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_root: Option<String>,
 }
 
 fn visible(e: &Inflight, scope: Option<&str>) -> bool {

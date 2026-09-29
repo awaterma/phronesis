@@ -78,6 +78,46 @@ pub fn command_repo_dir(command: &str) -> Option<PathBuf> {
     path.is_absolute().then_some(path)
 }
 
+/// `git rev-parse --git-common-dir` for `dir`, canonicalized. `None` outside
+/// a repository or when git is unavailable.
+fn git_common_dir(dir: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let path = if Path::new(&raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        dir.join(raw)
+    };
+    std::fs::canonicalize(path).ok()
+}
+
+/// Where to probe HEAD for `command`: the absolute directory it names when
+/// that directory exists and is a worktree of the same repository as
+/// `project_root`; otherwise `project_root`. A sibling repository therefore
+/// still reads as "HEAD did not move here" (spec §Non-goals).
+pub fn probe_root_for(project_root: &Path, command: &str) -> PathBuf {
+    let Some(candidate) = command_repo_dir(command) else {
+        return project_root.to_path_buf();
+    };
+    if !candidate.is_dir() {
+        return project_root.to_path_buf();
+    }
+    match (
+        git_common_dir(project_root),
+        git_common_dir(&candidate),
+    ) {
+        (Some(a), Some(b)) if a == b => candidate,
+        _ => project_root.to_path_buf(),
+    }
+}
+
 /// How, or why not, a `commit` was detected for a call. `timeout` is stored on
 /// the `inflight` entry (the pre-side `git rev-parse` lost its race, so nothing
 /// can be compared); the other two are decided at post and recorded on the

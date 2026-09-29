@@ -260,3 +260,37 @@ fn command_repo_dir_reads_the_head_moving_invocation_conservatively() {
     );
     assert_eq!(command_repo_dir("cd && git commit -am x"), None);
 }
+
+#[test]
+fn a_commit_in_a_linked_worktree_is_detected_but_a_sibling_repo_still_is_not() {
+    let d = repo();
+    let wt = d.path().join("wt");
+    git(
+        d.path(),
+        &["worktree", "add", "-q", "-b", "feature", wt.to_str().unwrap()],
+    );
+    let cmd = format!("cd {} && git commit -q -am x", wt.display());
+    let root = probe_root_for(d.path(), &cmd);
+    assert_eq!(
+        std::fs::canonicalize(&root).unwrap(),
+        std::fs::canonicalize(&wt).unwrap(),
+        "a worktree sharing the common dir is probed directly"
+    );
+    let before = git_head(&root).unwrap();
+    std::fs::write(wt.join("a"), "2").unwrap();
+    git(&wt, &["commit", "-q", "-am", "in worktree"]);
+    assert!(detect_commit(&root, Some(&before), &cmd, Some(0)).is_some());
+
+    let other = repo();
+    let cmd2 = format!("git -C {} commit -am x", other.path().display());
+    assert_eq!(
+        std::fs::canonicalize(probe_root_for(d.path(), &cmd2)).unwrap(),
+        std::fs::canonicalize(d.path()).unwrap(),
+        "a sibling repository falls back to the project root"
+    );
+    let missing = probe_root_for(d.path(), "cd /definitely/not/here && git commit -am x");
+    assert_eq!(
+        std::fs::canonicalize(missing).unwrap(),
+        std::fs::canonicalize(d.path()).unwrap()
+    );
+}
