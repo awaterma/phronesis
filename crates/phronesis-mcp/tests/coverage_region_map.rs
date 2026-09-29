@@ -1,7 +1,7 @@
 use phronesis_mcp::coverage::region_map::{
     MAX_REGION_ID_BYTES, branch_region_id, changed_regions, extract_branch_sites,
-    extract_function_sites, file_segment, function_region_id, is_qualified_region_id,
-    reference_matches,
+    extract_function_sites, extract_function_sites_for, file_segment, function_region_id,
+    is_qualified_region_id, python_function_sites, reference_matches,
 };
 
 const OLD_SRC: &str = r#"pub fn safe_divide(numerator: i32, denominator: i32) -> Result<i32, &'static str> {
@@ -96,6 +96,80 @@ fn item_paths(src: &str) -> Vec<String> {
         .into_iter()
         .map(|s| s.item_path)
         .collect()
+}
+
+#[test]
+fn python_function_sites_track_body_and_inclusive_end_lines() {
+    let sites = python_function_sites("def outer():\n    def inner():\n        return 1\n    return inner()\n\nasync def later():\n    return 2\n\ndef one(): return 3\n").unwrap();
+    let rows: Vec<_> = sites
+        .iter()
+        .map(|s| {
+            (
+                s.item_path.as_str(),
+                s.start_line,
+                s.body_start_line,
+                s.end_line,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            ("outer", 1, 2, 4),
+            ("outer::inner", 2, 3, 3),
+            ("later", 6, 7, 7),
+            ("one", 9, 9, 9)
+        ]
+    );
+    assert_eq!(
+        extract_function_sites_for("pkg/a.py", "def f():\n    pass\n")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert!(
+        extract_function_sites_for("a.txt", "def f(): pass")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn rust_function_sites_include_the_body_start_line() {
+    let sites = extract_function_sites("fn a(\n    x: u8,\n) -> u8 {\n    x\n}\n").unwrap();
+    assert_eq!(
+        (
+            sites[0].start_line,
+            sites[0].body_start_line,
+            sites[0].end_line
+        ),
+        (1, 3, 5)
+    );
+}
+
+#[test]
+fn python_duplicate_functions_get_source_order_ordinals() {
+    let sites = python_function_sites("def load(): return 1\ndef load(): return 2\n").unwrap();
+    assert_eq!(
+        sites
+            .iter()
+            .map(|s| s.item_path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["load", "load.2"]
+    );
+}
+
+#[test]
+fn python_changed_regions_include_changed_function_body() {
+    let old = "def load():\n    return 1\n";
+    let new = "def load():\n    return 2\n";
+    let changed = changed_regions("pkg/store.py", old, new).unwrap();
+    assert!(
+        changed
+            .functions
+            .contains(&"fn:pkg/store.py::load".to_string())
+    );
+    assert!(changed.branches.is_empty());
 }
 
 #[test]

@@ -21,7 +21,7 @@ use super::extract::Extracted;
 /// anywhere, plus anything under a `tests/` directory. `conftest.py` is
 /// deliberately not a test file — it holds fixtures that production-shaped
 /// rules should still see.
-fn file_type(file_path: &str) -> &'static str {
+pub(crate) fn classify_python_file(file_path: &str) -> &'static str {
     let name = file_path.rsplit('/').next().unwrap_or(file_path);
     if name.starts_with("test_") || name.ends_with("_test.py") {
         return "test";
@@ -90,10 +90,7 @@ impl Sensor<'_> {
 
     /// Qualified name for `segments` under this unit.
     fn qualify(&self, segments: &[String]) -> String {
-        std::iter::once(self.id)
-            .chain(segments.iter().map(String::as_str))
-            .collect::<Vec<_>>()
-            .join("::")
+        qualify(self.id, segments)
     }
 
     /// The import package this file belongs to, e.g. `pyside`. Absolute
@@ -328,6 +325,34 @@ impl Sensor<'_> {
     }
 }
 
+fn qualify(id: &str, segments: &[String]) -> String {
+    std::iter::once(id)
+        .chain(segments.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
+/// Build the same canonical id emitted by the Python graph sensor for a test.
+pub(crate) fn qualified_test_id(
+    namespace: &str,
+    file_path: &str,
+    name_segments: &[&str],
+) -> String {
+    let module = file_path.strip_suffix(".py").unwrap_or(file_path);
+    let mut segments: Vec<String> = module
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    segments.extend(name_segments.iter().map(|s| (*s).to_string()));
+    let id = if namespace.starts_with("python:") {
+        namespace.to_string()
+    } else {
+        format!("python:{namespace}")
+    };
+    qualify(&id, &segments)
+}
+
 /// Extract every base relation from one Python file.
 pub fn extract_python(file_path: &str, content: &str, unit: &UnitContext) -> Extracted {
     if !file_path.ends_with(".py") {
@@ -371,7 +396,7 @@ pub fn extract_python(file_path: &str, content: &str, unit: &UnitContext) -> Ext
         package,
         out: BTreeSet::new(),
     };
-    sensor.emit("file_type", &[file_path, file_type(file_path)]);
+    sensor.emit("file_type", &[file_path, classify_python_file(file_path)]);
     sensor.emit("declares_module", &[file_path, &self_module]);
     sensor.walk(tree.root_node(), &[]);
 
@@ -452,24 +477,24 @@ mod tests {
 
     #[test]
     fn a_plain_module_is_production() {
-        assert_eq!(file_type("src/pyside/utils.py"), "production");
+        assert_eq!(classify_python_file("src/pyside/utils.py"), "production");
     }
 
     #[test]
     fn a_pytest_named_file_is_a_test() {
-        assert_eq!(file_type("src/pyside/test_utils.py"), "test");
-        assert_eq!(file_type("src/pyside/utils_test.py"), "test");
+        assert_eq!(classify_python_file("src/pyside/test_utils.py"), "test");
+        assert_eq!(classify_python_file("src/pyside/utils_test.py"), "test");
     }
 
     #[test]
     fn a_file_under_a_tests_directory_is_a_test() {
-        assert_eq!(file_type("tests/check_things.py"), "test");
+        assert_eq!(classify_python_file("tests/check_things.py"), "test");
     }
 
     #[test]
     fn conftest_is_not_a_test_file() {
         // It holds fixtures, not tests; production-shaped rules should see it.
-        assert_eq!(file_type("src/pyside/conftest.py"), "production");
+        assert_eq!(classify_python_file("src/pyside/conftest.py"), "production");
     }
 
     // ─── defines_fn ─────────────────────────────────────────────────

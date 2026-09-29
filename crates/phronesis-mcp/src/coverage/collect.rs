@@ -21,7 +21,7 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use crate::coverage::region_map::{
-    BranchSite, FunctionSite, extract_branch_sites, extract_function_sites,
+    BranchSite, FunctionSite, extract_branch_sites, extract_function_sites_for,
 };
 use crate::coverage::store::HitRecord;
 
@@ -90,11 +90,15 @@ pub fn repo_rel(path: &str) -> Option<String> {
 
 /// Which source files a record may target. Coverage of test binaries,
 /// benches, and build scripts is not production evidence.
-fn is_wanted_source(rel: &str) -> bool {
-    rel.ends_with(".rs")
-        && rel.contains("/src/")
-        && !rel.contains("/src/bin/")
-        && !rel.ends_with("build.rs")
+pub(super) fn is_wanted_source(rel: &str) -> bool {
+    if rel.ends_with(".rs") {
+        return rel.contains("/src/") && !rel.contains("/src/bin/") && !rel.ends_with("build.rs");
+    }
+    if rel.ends_with(".py") {
+        let name = rel.rsplit('/').next().unwrap_or(rel);
+        return name != "conftest.py" && crate::graph::python::classify_python_file(rel) != "test";
+    }
+    false
 }
 
 /// Convert already-collected llvm-cov JSON exports into per-test hit
@@ -212,7 +216,7 @@ fn fn_map<'m>(
     if !cache.contains_key(rel) {
         let src = std::fs::read_to_string(root.join(rel))
             .with_context(|| format!("reading covered source: {rel}"))?;
-        cache.insert(rel.to_string(), extract_function_sites(&src)?);
+        cache.insert(rel.to_string(), extract_function_sites_for(rel, &src)?);
     }
     Ok(cache.get(rel).expect("just inserted"))
 }
@@ -368,4 +372,22 @@ pub fn check_clean_tree(root: &Path, revision: &str, allow_dirty: bool) -> Resul
          Commit or stash the changes, or pass --allow-dirty to stamp HEAD anyway.",
         dirty.len()
     )
+}
+
+#[cfg(test)]
+mod python_source_tests {
+    use super::is_wanted_source;
+    #[test]
+    fn source_filter_handles_python_and_existing_rust_rules() {
+        assert!(is_wanted_source("crates/x/src/lib.rs"));
+        assert!(!is_wanted_source("crates/x/src/bin/main.rs"));
+        assert!(is_wanted_source("pkg/store.py"));
+        assert!(is_wanted_source("setup.py"));
+        assert!(!is_wanted_source("tests/test_store.py"));
+        assert!(!is_wanted_source("pkg/tests/helpers.py"));
+        assert!(!is_wanted_source("pkg/store_test.py"));
+        assert!(!is_wanted_source("test_root.py"));
+        assert!(!is_wanted_source("pkg/conftest.py"));
+        assert!(!is_wanted_source("README.md"));
+    }
 }
