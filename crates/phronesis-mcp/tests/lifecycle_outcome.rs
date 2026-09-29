@@ -212,3 +212,51 @@ fn exit_code_vetoes_only_when_it_is_nonzero() {
     assert!(exit_allows_detection(Some(0)));
     assert!(!exit_allows_detection(Some(1)));
 }
+
+#[test]
+fn command_repo_dir_reads_the_head_moving_invocation_conservatively() {
+    use std::path::PathBuf;
+    let p = |s: &str| Some(PathBuf::from(s));
+    assert_eq!(command_repo_dir("git commit -m x"), None);
+    assert_eq!(command_repo_dir("cargo test && git commit -am done"), None);
+    assert_eq!(command_repo_dir("cd /wt/a && git commit -q -m x"), p("/wt/a"));
+    assert_eq!(command_repo_dir("cd /wt/a; git commit -q -m x"), p("/wt/a"));
+    assert_eq!(command_repo_dir("git -C /wt/b commit -am x"), p("/wt/b"));
+    assert_eq!(
+        command_repo_dir("cd '/wt/my a' && cargo fmt && git commit -am x"),
+        p("/wt/my a")
+    );
+    assert_eq!(
+        command_repo_dir("cd \"/wt/other a\"; git commit -am x"),
+        p("/wt/other a")
+    );
+    // The commit's own -C wins over an earlier cd.
+    assert_eq!(
+        command_repo_dir("cd /a && git -C /b commit -am x"),
+        p("/b")
+    );
+    // A -C on a NON head-moving invocation is not the commit's directory.
+    assert_eq!(command_repo_dir("git -C /x diff && git commit -am x"), None);
+    // Relative paths are ambiguous (the shell's cwd is unknown): fall back.
+    assert_eq!(command_repo_dir("cd wt && git commit -am x"), None);
+    assert_eq!(
+        command_repo_dir("cd /wt && cargo test && git -C . commit -am x"),
+        None
+    );
+    // Forms the parser does not understand return None rather than a guess.
+    assert_eq!(command_repo_dir("cd $WT && git commit -am x"), None);
+    assert_eq!(
+        command_repo_dir("cd /wt/a\\ b && git commit -am x"),
+        None
+    );
+    assert_eq!(
+        command_repo_dir("sh -c 'cd /wt && git commit -am x'"),
+        None
+    );
+    assert_eq!(command_repo_dir("(cd /wt && git commit -am x)"), None);
+    assert_eq!(
+        command_repo_dir("echo 'git -C /wt commit' # not a commit"),
+        None
+    );
+    assert_eq!(command_repo_dir("cd && git commit -am x"), None);
+}

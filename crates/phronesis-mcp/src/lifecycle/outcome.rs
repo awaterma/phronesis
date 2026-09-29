@@ -1,6 +1,6 @@
 //! Commit detection from ground truth: HEAD before the shell call vs after.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -20,6 +20,62 @@ fn prefilter() -> &'static Regex {
 }
 pub fn command_may_move_head(command: &str) -> bool {
     prefilter().is_match(command)
+}
+
+/// One shell word from the start of `rest`: a `'…'` or `"…"` quoted run, or
+/// a bare run up to whitespace / `;` / `&` / `|`. `None` when the word is
+/// empty or contains shell syntax this parser does not model (`$`, backtick,
+/// backslash, `(`, `)`, `#`), because a guessed directory is worse than none.
+fn shell_word(rest: &str) -> Option<String> {
+    let rest = rest.trim_start();
+    let first = rest.chars().next()?;
+    let word = if first == '\'' || first == '"' {
+        let end = rest[1..].find(first)?;
+        &rest[1..end + 1]
+    } else {
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|'))
+            .unwrap_or(rest.len());
+        &rest[..end]
+    };
+    if word.is_empty() || word.contains(['$', '`', '\\', '(', ')', '#']) {
+        return None;
+    }
+    Some(word.to_string())
+}
+
+/// The absolute directory the head-moving invocation in `command` acts in,
+/// or `None`. Decided from the segment that matches the head-moving
+/// prefilter: its own `-C <dir>` first; else a leading `cd <dir>` segment
+/// that hands off to the rest of the command. Relative paths and unmodelled
+/// shell syntax return `None`: the caller then probes the project root, so
+/// commits are undercounted, never mis-attributed.
+pub fn command_repo_dir(command: &str) -> Option<PathBuf> {
+    if command.contains(['$', '`', '(', ')']) || command.contains("sh -c") {
+        return None;
+    }
+    let segments = crate::outcomes::segment::command_heads(command);
+    let mover = segments.iter().find(|s| prefilter().is_match(s))?;
+
+    let dir = if let Some(idx) = mover.find(" -C ") {
+        // Only the git command's own `-C` counts: a match inside an
+        // `echo 'git -C /wt commit'` string is incidental, and the mover
+        // starts with `git` only for a real invocation (`command_heads`
+        // already stripped leading env assignments).
+        if !mover.starts_with("git") {
+            return None;
+        }
+        shell_word(&mover[idx + 4..])?
+    } else {
+        let first = segments.first()?;
+        let rest = first.strip_prefix("cd ")?;
+        if segments.len() < 2 {
+            return None;
+        }
+        shell_word(rest)?
+    };
+    let path = PathBuf::from(dir);
+    path.is_absolute().then_some(path)
 }
 
 /// How, or why not, a `commit` was detected for a call. `timeout` is stored on
