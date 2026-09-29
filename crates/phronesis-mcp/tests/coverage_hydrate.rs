@@ -194,6 +194,33 @@ fn test_hydrate_emits_changed_regions() {
 }
 
 #[test]
+fn python_edit_hydrates_changed_region_and_function() {
+    let root = tempfile::tempdir().unwrap();
+    let input = HydrationInput {
+        root: root.path(),
+        rule_relations: relations(&["changed_region", "changed_function"]),
+        edited: vec![EditedFile {
+            path: "pkg/store.py".into(),
+            old: Some("def load():\n    return 1\n"),
+            new: "def load():\n    return 2\n",
+            whole_file: false,
+        }],
+        head_sha: None,
+    };
+    let facts = facts_for_event(&input).unwrap();
+    assert!(
+        facts.iter().any(|f| f.predicate == "changed_function"
+            && f.args.get(1).is_some_and(|a| a == "fn:pkg/store.py::load")),
+        "{facts:?}"
+    );
+    assert!(
+        facts.iter().any(|f| f.predicate == "changed_region"
+            && f.args.get(1).is_some_and(|a| a == "fn:pkg/store.py::load")),
+        "{facts:?}"
+    );
+}
+
+#[test]
 fn test_head_revision_uses_probe_value() {
     let root = tempfile::tempdir().unwrap();
     let input = HydrationInput {
