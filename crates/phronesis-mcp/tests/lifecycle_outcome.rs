@@ -253,6 +253,16 @@ fn command_repo_dir_reads_the_head_moving_invocation_conservatively() {
         None
     );
     assert_eq!(command_repo_dir("cd && git commit -am x"), None);
+    // A trailing `#` comment (outside quotes) must not supply a directory.
+    assert_eq!(command_repo_dir("git commit -m x # -C /x"), None);
+    // A `-C` inside a quoted `-m` message is not the commit's directory.
+    assert_eq!(command_repo_dir("git commit -m \"see -C /x\""), None);
+    // The first prefilter-matching segment is an `echo`, not a git
+    // invocation; the real `git commit` has no -C, so fall back to None.
+    assert_eq!(
+        command_repo_dir("echo 'git -C /x commit' && git commit"),
+        None
+    );
 }
 
 #[test]
