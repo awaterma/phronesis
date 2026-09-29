@@ -825,9 +825,11 @@ fn a_phronesisignored_file_is_scanned_by_structural_rules_only() {
         table.contains("1 file(s) excluded from lexical rules by .phronesisignore"),
         "table footer names the exclusion: {table}"
     );
-    let json: serde_json::Value =
-        serde_json::from_str(&render_json(&report)).expect("json");
-    assert_eq!(json["lexical_excluded"], serde_json::json!(["src/hidden.rs"]));
+    let json: serde_json::Value = serde_json::from_str(&render_json(&report)).expect("json");
+    assert_eq!(
+        json["lexical_excluded"],
+        serde_json::json!(["src/hidden.rs"])
+    );
 }
 
 #[test]
@@ -848,8 +850,7 @@ fn an_excluded_file_over_the_size_cap_is_reported_but_not_structurally_scanned()
         .env("PHRONESIS_TEST_SIZE_CAP_CHILD", "1");
     let output = command.output().expect("run child");
     assert!(
-        output.status.success()
-            && String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
         "child failed:\n{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr),
