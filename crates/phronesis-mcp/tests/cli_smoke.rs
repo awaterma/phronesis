@@ -474,40 +474,256 @@ fn graph_status_json_is_pure_and_human_mode_still_shows_hotspots() {
     );
 }
 
-/// The pack rule definitions in `src/init/rules_rust.rs` embed their own
-/// trigger strings. That self-reference is exempted per rule with
-/// `//! phronesis-allow:` markers, never by hiding the file from the audit
-/// (issue #114: a whole-file `.phronesisignore` entry hid nine real
-/// production unwraps for as long as it existed). This test runs the real
-/// audit: a marker that the engine does not honour fails here.
+/// A `.phronesisignore` entry exempts lexical rules only; it must never
+/// hide a production file from structural audit rules (issue #114). The
+/// ignore file below carries a `src/*` pattern that used to hide
+/// `src/init.rs` from every audit rule. The unwrap rule
+/// (`enforce-no-unwrap-in-src`) uses the `rust_governed_invocation` AST
+/// predicate, so it is structural and must still scan the ignored file.
 #[test]
-fn pack_rule_self_reference_is_exempted_per_rule_and_the_audit_proves_it() {
-    let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("repo root");
-    let ignore = std::fs::read_to_string(repo.join("crates/phronesis-mcp/.phronesisignore"))
-        .unwrap_or_default();
-    for line in ignore.lines().map(str::trim) {
-        assert!(
-            line.is_empty() || line.starts_with('#') || !line.contains("src/"),
-            ".phronesisignore must not hide source files from the audit: `{line}`"
+fn rust_pack_audit_scans_ignored_production_file_and_counts_unwrap() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let init = Command::new(bin())
+        .args(["init", "--packs", "rust", root.to_str().unwrap()])
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    let fixture = src.join("init.rs");
+    let write_fixture = |with_unwrap: bool| {
+        let mut lines = vec!["pub fn fixture() {".to_owned()];
+        if with_unwrap {
+            lines.push("    let _ = Some(1).unwrap();".to_owned());
+        }
+        lines.extend((0..1000).map(|i| format!("    let _padding_{i} = {i};")));
+        lines.push("}".to_owned());
+        std::fs::write(&fixture, lines.join("\n")).unwrap();
+    };
+    write_fixture(true);
+    // `src/*` is the directory pattern that used to hide src/init.rs from
+    // every audit rule; the other two lines are lexical exemptions.
+    std::fs::write(
+        root.join(".phronesisignore"),
+        "src/init/rules_rust.rs\nsrc/init.rs\nsrc/*\n",
+    )
+    .unwrap();
+
+    // Positive case: the structural unwrap rule still scans the ignored
+    // fixture and reports exactly one hit on src/init.rs.
+    let with_hit = run_bin(&["audit", "--json"], root);
+    assert!(
+        with_hit.status.success(),
+        "audit exited {:?}: {}",
+        with_hit.status.code(),
+        String::from_utf8_lossy(&with_hit.stderr)
+    );
+    let report: serde_json::Value = {
+        let stdout = String::from_utf8_lossy(&with_hit.stdout);
+        serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("audit stdout is not JSON ({e}): {stdout}"))
+    };
+    assert!(
+        report["files_scanned"].as_u64().unwrap_or(0) > 0,
+        "files_scanned must be > 0: {report}"
+    );
+    let unwrap_rule = report["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["rule_id"] == "enforce-no-unwrap-in-src")
+        .unwrap_or_else(|| panic!("enforce-no-unwrap-in-src missing: {report}"));
+    assert_eq!(
+        unwrap_rule["hits"].as_u64(),
+        Some(1),
+        "expected 1 unwrap hit: {report}"
+    );
+    assert!(
+        unwrap_rule["files"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["path"]
+                .as_str()
+                .is_some_and(|p| p.ends_with("src/init.rs"))),
+        "fixture hit missing from report: {report}"
+    );
+
+    // Negative case: after removing the unwrap, the rule is either absent
+    // (audit lists only rules with ≥1 hit) or present with hits == 0. The
+    // fixture path must still appear under lexical_excluded, proving the
+    // ignore pattern matched but did not hide the file from the walk.
+    write_fixture(false);
+    let without_hit = run_bin(&["audit", "--json"], root);
+    assert!(
+        without_hit.status.success(),
+        "audit exited {:?}: {}",
+        without_hit.status.code(),
+        String::from_utf8_lossy(&without_hit.stderr)
+    );
+    let report: serde_json::Value = {
+        let stdout = String::from_utf8_lossy(&without_hit.stdout);
+        serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("audit stdout is not JSON ({e}): {stdout}"))
+    };
+    assert!(
+        report["files_scanned"].as_u64().unwrap_or(0) > 0,
+        "files_scanned must be > 0 even with no hits: {report}"
+    );
+    if let Some(rule) = report["rules"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["rule_id"] == "enforce-no-unwrap-in-src")
+    {
+        assert_eq!(
+            rule["hits"].as_u64(),
+            Some(0),
+            "unwrap rule present but hits != 0: {report}"
         );
     }
-    for rule in [
+    let excluded: Vec<String> = report["lexical_excluded"]
+        .as_array()
+        .map_or(Vec::new().as_slice(), |v| v.as_slice())
+        .iter()
+        .filter_map(|v| v.as_str().map(String::from))
+        .collect();
+    assert!(
+        excluded.iter().any(|p| p.ends_with("src/init.rs")),
+        "src/init.rs must appear under lexical_excluded: {report}"
+    );
+}
+
+/// The Rust pack's `src/init/rules_rust.rs` embeds its own trigger strings.
+/// Three lexical rules (`audit-newtype-id-string`,
+/// `audit-allow-dead-code-in-src`, `audit-string-concat-with-plus`) would
+/// fire on that self-reference. They are exempted by `//! phronesis-allow:`
+/// markers at the top of the file — never by a `.phronesisignore` entry.
+/// This test copies the file into a fresh temp project (no ignore file),
+/// runs each rule's audit, and proves the marker is what exempts it by
+/// stripping the markers and confirming the rules then fire.
+#[test]
+fn pack_rule_self_reference_is_exempted_by_marker_not_ignore() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    let init = Command::new(bin())
+        .args(["init", "--packs", "rust", root.to_str().unwrap()])
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    // Copy the worktree's rules_rust.rs into <tmp>/src/init/rules_rust.rs.
+    let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/init/rules_rust.rs");
+    let content =
+        std::fs::read_to_string(&source).unwrap_or_else(|e| panic!("read rules_rust.rs: {e}"));
+    let dest_dir = root.join("src/init");
+    std::fs::create_dir_all(&dest_dir).unwrap();
+    let dest = dest_dir.join("rules_rust.rs");
+    std::fs::write(&dest, &content).unwrap();
+
+    let rules = [
         "audit-newtype-id-string",
         "audit-allow-dead-code-in-src",
         "audit-string-concat-with-plus",
-    ] {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
-            .current_dir(repo)
-            .args(["audit", "--rule", rule, "--json"])
-            .output()
-            .expect("run audit");
-        let text = String::from_utf8_lossy(&out.stdout);
+    ];
+
+    // Positive case: with markers present, each rule scans the file but
+    // does not report rules_rust.rs among its hits.
+    for rule in rules {
+        let out = run_bin(&["audit", "--rule", rule, "--json"], root);
         assert!(
-            !text.contains("src/init/rules_rust.rs"),
-            "{rule} still fires on its own definition text:\n{text}"
+            out.status.success(),
+            "audit --rule {rule} exited {:?}: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let report: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("audit {rule} stdout is not JSON ({e}): {stdout}"));
+        assert!(
+            report["files_scanned"].as_u64().unwrap_or(0) > 0,
+            "{rule}: files_scanned must be > 0: {report}"
+        );
+        let rule_entry = report["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["rule_id"] == rule);
+        if let Some(entry) = rule_entry {
+            let mentions = entry["files"]
+                .as_array()
+                .map_or(Vec::new().as_slice(), |v| v.as_slice())
+                .iter()
+                .any(|f| {
+                    f["path"]
+                        .as_str()
+                        .is_some_and(|p| p.ends_with("src/init/rules_rust.rs"))
+                });
+            assert!(
+                !mentions,
+                "{rule} still fires on rules_rust.rs with markers present: {report}"
+            );
+        }
+    }
+
+    // Negative case: strip the three `//! phronesis-allow:` lines and
+    // re-run. Every rule now fires on rules_rust.rs (its own rule args
+    // still contain the trigger strings), proving the marker, not an
+    // ignore file, is what exempts the file.
+    let stripped: String = content
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//! phronesis-allow:"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(&dest, &stripped).unwrap();
+
+    for rule in rules {
+        let out = run_bin(&["audit", "--rule", rule, "--json"], root);
+        assert!(
+            out.status.success(),
+            "audit --rule {rule} exited {:?}: {}",
+            out.status.code(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let report: serde_json::Value = serde_json::from_str(&stdout)
+            .unwrap_or_else(|e| panic!("audit {rule} stdout is not JSON ({e}): {stdout}"));
+        assert!(
+            report["files_scanned"].as_u64().unwrap_or(0) > 0,
+            "{rule}: files_scanned must be > 0 after strip: {report}"
+        );
+        let entry = report["rules"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["rule_id"] == rule)
+            .unwrap_or_else(|| {
+                panic!("{rule} absent from audit after stripping markers: {report}")
+            });
+        let mentions = entry["files"]
+            .as_array()
+            .map_or(Vec::new().as_slice(), |v| v.as_slice())
+            .iter()
+            .any(|f| {
+                f["path"]
+                    .as_str()
+                    .is_some_and(|p| p.ends_with("src/init/rules_rust.rs"))
+            });
+        assert!(
+            mentions,
+            "{rule} does not fire on rules_rust.rs after stripping markers: {report}"
         );
     }
 }
