@@ -6,6 +6,18 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Kani results ground the `proof` signal.** A project toolchain definition
+  recognises `cargo kani` and pairs each `Checking harness …` header with its
+  own `VERIFICATION:-` verdict (new `section_start` field); a harness is bound
+  to its property by an `encodings` entry
+  `{"verifier":"kani","artifact":"harness:<path>"}`, so a passing run journals
+  `outcome:proof_pass:<property>` and lifts the confidence band. Results for
+  unregistered harnesses are journaled as `proof_unbound` rather than
+  dropped. Bound `verification_result` records (SPEC-property-ontology §2)
+  are still produced only by the artifact pipeline.
+
 ### Changed
 
 - **`init.rs` and `audit.rs` are now directory modules.** The two largest
