@@ -109,10 +109,7 @@ pub fn probe_root_for(project_root: &Path, command: &str) -> PathBuf {
     if !candidate.is_dir() {
         return project_root.to_path_buf();
     }
-    match (
-        git_common_dir(project_root),
-        git_common_dir(&candidate),
-    ) {
+    match (git_common_dir(project_root), git_common_dir(&candidate)) {
         (Some(a), Some(b)) if a == b => candidate,
         _ => project_root.to_path_buf(),
     }

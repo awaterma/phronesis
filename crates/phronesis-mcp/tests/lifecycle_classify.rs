@@ -55,6 +55,7 @@ fn live_inflight_in_scope_is_interrupt_and_drops_every_entry() {
             agent_id: None,
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     push_inflight(
@@ -66,6 +67,7 @@ fn live_inflight_in_scope_is_interrupt_and_drops_every_entry() {
             agent_id: Some("sub".into()),
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     let c = classify_prompt(d.path(), &ctx(Host::Claude, 100));
@@ -91,6 +93,7 @@ fn stale_inflight_and_foreign_agent_inflight_are_ignored() {
             agent_id: None,
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     push_inflight(
@@ -102,6 +105,7 @@ fn stale_inflight_and_foreign_agent_inflight_are_ignored() {
             agent_id: Some("sub".into()),
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     let c = classify_prompt(d.path(), &ctx(Host::Claude, 1000));
@@ -182,6 +186,7 @@ fn a_sub_agent_prompt_is_fresh_and_reads_no_state() {
             agent_id: None,
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     let mut c = ctx(Host::Claude, 100);
@@ -274,6 +279,7 @@ fn the_transcript_marker_outranks_a_live_inflight_entry() {
             agent_id: None,
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     let t = d.path().join("t.jsonl");
@@ -344,6 +350,7 @@ fn an_unreadable_transcript_falls_through_to_inflight() {
             agent_id: None,
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     let missing = d.path().join("does-not-exist.jsonl");
@@ -373,6 +380,7 @@ fn detect_interrupt_is_reusable_by_session_end() {
             agent_id: None,
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     assert_eq!(

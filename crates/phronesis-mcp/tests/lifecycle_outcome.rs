@@ -219,7 +219,10 @@ fn command_repo_dir_reads_the_head_moving_invocation_conservatively() {
     let p = |s: &str| Some(PathBuf::from(s));
     assert_eq!(command_repo_dir("git commit -m x"), None);
     assert_eq!(command_repo_dir("cargo test && git commit -am done"), None);
-    assert_eq!(command_repo_dir("cd /wt/a && git commit -q -m x"), p("/wt/a"));
+    assert_eq!(
+        command_repo_dir("cd /wt/a && git commit -q -m x"),
+        p("/wt/a")
+    );
     assert_eq!(command_repo_dir("cd /wt/a; git commit -q -m x"), p("/wt/a"));
     assert_eq!(command_repo_dir("git -C /wt/b commit -am x"), p("/wt/b"));
     assert_eq!(
@@ -231,10 +234,7 @@ fn command_repo_dir_reads_the_head_moving_invocation_conservatively() {
         p("/wt/other a")
     );
     // The commit's own -C wins over an earlier cd.
-    assert_eq!(
-        command_repo_dir("cd /a && git -C /b commit -am x"),
-        p("/b")
-    );
+    assert_eq!(command_repo_dir("cd /a && git -C /b commit -am x"), p("/b"));
     // A -C on a NON head-moving invocation is not the commit's directory.
     assert_eq!(command_repo_dir("git -C /x diff && git commit -am x"), None);
     // Relative paths are ambiguous (the shell's cwd is unknown): fall back.
@@ -245,14 +245,8 @@ fn command_repo_dir_reads_the_head_moving_invocation_conservatively() {
     );
     // Forms the parser does not understand return None rather than a guess.
     assert_eq!(command_repo_dir("cd $WT && git commit -am x"), None);
-    assert_eq!(
-        command_repo_dir("cd /wt/a\\ b && git commit -am x"),
-        None
-    );
-    assert_eq!(
-        command_repo_dir("sh -c 'cd /wt && git commit -am x'"),
-        None
-    );
+    assert_eq!(command_repo_dir("cd /wt/a\\ b && git commit -am x"), None);
+    assert_eq!(command_repo_dir("sh -c 'cd /wt && git commit -am x'"), None);
     assert_eq!(command_repo_dir("(cd /wt && git commit -am x)"), None);
     assert_eq!(
         command_repo_dir("echo 'git -C /wt commit' # not a commit"),
@@ -267,7 +261,14 @@ fn a_commit_in_a_linked_worktree_is_detected_but_a_sibling_repo_still_is_not() {
     let wt = d.path().join("wt");
     git(
         d.path(),
-        &["worktree", "add", "-q", "-b", "feature", wt.to_str().unwrap()],
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            wt.to_str().unwrap(),
+        ],
     );
     let cmd = format!("cd {} && git commit -q -am x", wt.display());
     let root = probe_root_for(d.path(), &cmd);

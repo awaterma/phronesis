@@ -52,13 +52,12 @@ pub(crate) fn push(root: &Path, call: &Call<'_>) -> String {
     // pre-filter, so a shell call that cannot be a commit spawns no git process
     // at all (spec §"Success signal: commit" step 1). This is the one git call
     // on the pre path.
-    let probe_root = if outcome::is_shell_tool(call.tool)
-        && outcome::command_may_move_head(call.command)
-    {
-        outcome::probe_root_for(root, call.command)
-    } else {
-        root.to_path_buf()
-    };
+    let probe_root =
+        if outcome::is_shell_tool(call.tool) && outcome::command_may_move_head(call.command) {
+            outcome::probe_root_for(root, call.command)
+        } else {
+            root.to_path_buf()
+        };
     let (head_before, detection) =
         if outcome::is_shell_tool(call.tool) && outcome::command_may_move_head(call.command) {
             match outcome::git_head_probe(&probe_root) {

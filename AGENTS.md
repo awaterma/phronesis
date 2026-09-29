@@ -432,6 +432,9 @@ Optional file. Contents are re-injected at every `SessionStart` AND `BeforeAgent
   Code's `Explore` is tagged `lifecycle:agent:explore`. Commits are
   detected by `HEAD` movement with the exit code as a veto only, so a host
   that sends no exit code still records them (`detection: "no_exit_code"`).
+  A commit in a linked worktree is recorded with `repo_dir`: the hook probes
+  the absolute directory the head-moving invocation names when it shares
+  this repository's common git dir.
 
 ### 4. Pattern-Guide Rules (`extract_rules`)
 
