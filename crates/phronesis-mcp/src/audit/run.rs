@@ -5,9 +5,11 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use crate::rules_file::RulesFile;
+use crate::rules_file::{DiskRule, RulesFile};
 
-use super::engine::{ScanFileInput, build_per_rule, filter_audit_rules, scan_file_into_accum};
+use super::engine::{
+    ScanFileInput, build_per_rule, filter_audit_rules, rule_has_ast_predicate, scan_file_into_accum,
+};
 use super::types::{AuditOpts, AuditReport, Level, PerFileHits};
 
 /// Shared scan core used by both [`run`] and [`run_profiled`].
@@ -28,26 +30,36 @@ pub(super) fn run_core(
 
     // For v1, audit every file the walker accepts. Most rules don't carry
     // an explicit file_pattern condition; default to scanning everything
-    // and let the predicates self-filter.
-    let (files, files_scanned) = {
+    // and let the predicates self-filter. `Discovery` also reports files
+    // a `.phronesisignore` entry excluded; structural rules still scan
+    // those (below the size cap), only lexical rules skip them.
+    let (discovery, files_scanned) = {
         let t = Instant::now();
-        let f = if audit_rules.is_empty() {
-            Vec::new()
+        let d = if audit_rules.is_empty() {
+            Discovery::default()
         } else {
-            discover_files(&opts.scan_root, &["*"])
+            discover_files_with_excluded(&opts.scan_root, &["*"])
         };
-        let n = f.len() as u32;
+        // Every file offered to any scan, excluded ones included.
+        let n = (d.scanned.len() + d.excluded.len()) as u32;
         if let Some(ref mut t2) = times {
             t2.discover = t.elapsed();
             t2.files_scanned = n;
         }
-        (f, n)
+        (d, n)
     };
+
+    let structural_rules: Vec<&DiskRule> = audit_rules
+        .iter()
+        .copied()
+        .filter(|r| rule_has_ast_predicate(r))
+        .collect();
+    let size_cap = crate::security::max_file_bytes();
 
     // per_rule[rule_id] -> (level, BTreeMap<path -> PerFileHits>)
     let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
 
-    for path in &files {
+    for path in &discovery.scanned {
         let t = Instant::now();
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
@@ -71,6 +83,51 @@ pub(super) fn run_core(
         });
     }
 
+    // Excluded files: structural rules only, and only under the size cap —
+    // an ignored vendored tree must not cost more than scanning it would.
+    if !structural_rules.is_empty() {
+        for path in &discovery.excluded {
+            let over_cap = std::fs::metadata(path)
+                .map(|m| m.len() > size_cap)
+                .unwrap_or(true);
+            if over_cap {
+                continue;
+            }
+            let t = Instant::now();
+            let content = match std::fs::read_to_string(path) {
+                Ok(c) => c,
+                Err(_) => {
+                    if let Some(ref mut t2) = times {
+                        t2.read_files += t.elapsed();
+                    }
+                    continue;
+                }
+            };
+            if let Some(ref mut t2) = times {
+                t2.read_files += t.elapsed();
+            }
+            scan_file_into_accum(ScanFileInput {
+                project_root: &opts.project_root,
+                path,
+                content: &content,
+                rules: &structural_rules,
+                accum: &mut accum,
+                times: times.as_deref_mut(),
+            });
+        }
+    }
+
+    let mut lexical_excluded: Vec<PathBuf> = discovery
+        .excluded
+        .iter()
+        .map(|p| {
+            p.strip_prefix(&opts.scan_root)
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|_| p.clone())
+        })
+        .collect();
+    lexical_excluded.sort();
+
     let (per_rule, total) = {
         let t = Instant::now();
         let r = build_per_rule(accum);
@@ -90,6 +147,7 @@ pub(super) fn run_core(
         scan_duration_ms: total.as_millis() as u64,
         files_scanned,
         per_rule,
+        lexical_excluded,
     }
 }
 

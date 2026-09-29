@@ -38,6 +38,7 @@ fn make_report() -> AuditReport {
                 }],
             },
         ],
+        lexical_excluded: Vec::new(),
     }
 }
 
@@ -88,6 +89,7 @@ fn render_table_expand_shows_named_ast_details() {
                 ],
             }],
         }],
+        lexical_excluded: Vec::new(),
     };
     let out = render_table(&report, true);
     assert!(
@@ -111,6 +113,7 @@ fn render_table_handles_empty_report() {
         scan_duration_ms: 5,
         files_scanned: 100,
         per_rule: vec![],
+        lexical_excluded: Vec::new(),
     };
     let out = render_table(&empty, false);
     assert!(out.contains("no audit violations found"));
@@ -285,6 +288,7 @@ fn render_json_includes_per_hit_details() {
                 details: vec!["ladder (9 let bindings)".to_string()],
             }],
         }],
+        lexical_excluded: Vec::new(),
     };
     let out = render_json(&report);
     let v: serde_json::Value = serde_json::from_str(&out).unwrap();
