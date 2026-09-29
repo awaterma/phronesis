@@ -1,0 +1,12 @@
+TN:python:pkg::tests::test_store::test_load
+# node: tests/test_store.py::test_load
+SF:/workspace/pkg/store.py
+FN:1,load
+FNDA:1,load
+FN:5,save
+FNDA:0,save
+DA:1,1
+DA:2,1
+DA:5,1
+DA:6,0
+end_of_record

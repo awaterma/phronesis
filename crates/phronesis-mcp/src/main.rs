@@ -483,6 +483,15 @@ enum CoverageCmd {
     /// evidence would carry a revision that did not produce it. Applies to
     /// `--from-dir` too: it stamps HEAD and reads region maps from the tree.
     Collect {
+        /// Select a collector tool (`pytest-cov` enables Python collection).
+        #[arg(long)]
+        tool: Option<String>,
+        /// Print the Python collection script for a devcontainer.
+        #[arg(long)]
+        emit_script: bool,
+        /// Output directory for pytest lcov files.
+        #[arg(long)]
+        out: Option<PathBuf>,
         /// Import llvm-cov JSON exports already collected under this dir
         /// (files named cov-<bin>-<test>.json) instead of running cargo.
         #[arg(long)]
@@ -501,8 +510,20 @@ enum CoverageCmd {
     },
     /// Import a normalized per-test coverage export into the evidence store.
     Import {
-        /// Path to the export JSONL file.
+        /// Path to the export JSONL file or lcov directory.
         export: PathBuf,
+        /// Input format.
+        #[arg(long, default_value = "jsonl", value_parser = ["jsonl", "lcov-dir"])]
+        format: String,
+        /// Evidence tool name (required for lcov-dir).
+        #[arg(long)]
+        tool: Option<String>,
+        /// Permit a dirty host tree (manifest hashes still must match).
+        #[arg(long)]
+        allow_dirty: bool,
+        /// Import without a manifest, marking evidence unverified.
+        #[arg(long)]
+        no_manifest: bool,
         /// Project root (defaults to current directory).
         #[arg(long, default_value = ".")]
         path: PathBuf,
@@ -532,6 +553,9 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
     use phronesis_mcp::coverage::collect;
     match cmd {
         CoverageCmd::Collect {
+            tool,
+            emit_script,
+            out,
             from_dir,
             bins,
             allow_dirty,
@@ -539,6 +563,62 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
         } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
+            if tool.as_deref() == Some("pytest-cov") {
+                let output = std::process::Command::new("python3")
+                    .args(["-m", "pytest", "--collect-only", "-q"])
+                    .current_dir(&root)
+                    .output()
+                    .context("running python3 -m pytest --collect-only -q")?;
+                if !output.status.success() {
+                    anyhow::bail!(
+                        "pytest collection failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                let nodes = phronesis_mcp::coverage::pytest::parse_collect_only(
+                    &String::from_utf8_lossy(&output.stdout),
+                );
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for node in nodes {
+                    let file = node.split("::").next().unwrap_or("");
+                    let module = file.strip_suffix(".py").unwrap_or(file).replace('/', "::");
+                    let marker = format!("::{module}::");
+                    let namespace = graph
+                        .iter()
+                        .find(|e| e.p == "defines_test" && e.a.first().is_some_and(|f| f == file))
+                        .and_then(|e| e.a.get(1))
+                        .and_then(|id| id.rsplit_once(&marker).map(|x| x.0))
+                        .unwrap_or("python:project");
+                    if let Some(id) =
+                        phronesis_mcp::coverage::pytest::graph_test_id(namespace, &node)
+                    {
+                        entries.push((node, id));
+                    }
+                }
+                if entries.is_empty() {
+                    anyhow::bail!("pytest collected no graph-indexed test_* functions");
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/python-coverage"));
+                let script = phronesis_mcp::coverage::pytest::collection_script(&entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running pytest coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("pytest coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
             let revision = match phronesis_mcp::lifecycle::outcome::git_head(&root) {
                 // Checked before any test runs or store write: a dirty tree
                 // would put HEAD on evidence HEAD did not produce.
@@ -629,14 +709,117 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
             );
             Ok(())
         }
-        CoverageCmd::Import { export, path } => {
+        CoverageCmd::Import {
+            export,
+            path,
+            format,
+            tool,
+            allow_dirty,
+            no_manifest,
+        } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let summary = phronesis_mcp::coverage::import::import_export(&root, &export, now)?;
+            let summary = if format == "jsonl" {
+                if tool.is_some() || no_manifest {
+                    anyhow::bail!("--tool and --no-manifest are only valid with --format lcov-dir");
+                }
+                phronesis_mcp::coverage::import::import_export(&root, &export, now)?
+            } else {
+                let tool = tool.context("--tool is required with --format lcov-dir")?;
+                let dir = root.join(&export);
+                let revision = phronesis_mcp::lifecycle::outcome::git_head(&root)
+                    .unwrap_or_else(|| "unknown".into());
+                if let Some(warning) = phronesis_mcp::coverage::collect::check_clean_tree(
+                    &root,
+                    &revision,
+                    allow_dirty,
+                )? {
+                    eprintln!("{warning}");
+                }
+                let mut tool = tool;
+                if no_manifest {
+                    eprintln!("warning: importing lcov without manifest; evidence is unverified");
+                    tool.push_str("+unverified");
+                } else {
+                    let manifest = phronesis_mcp::coverage::lcov::Manifest::read(&dir)?;
+                    if manifest.revision != revision {
+                        anyhow::bail!(
+                            "manifest revision {} differs from host HEAD {}",
+                            manifest.revision,
+                            revision
+                        );
+                    }
+                    for (file, expected) in &manifest.files {
+                        let bytes = std::fs::read(root.join(file))
+                            .with_context(|| format!("manifest file missing on host: {file}"))?;
+                        let actual = phronesis_mcp::properties::execute::artifact_sha256(&bytes);
+                        if &actual != expected {
+                            anyhow::bail!("manifest digest mismatch for {file}");
+                        }
+                    }
+                    for entry in std::fs::read_dir(&dir)?
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            matches!(
+                                p.extension().and_then(|e| e.to_str()),
+                                Some("lcov" | "info")
+                            )
+                        })
+                    {
+                        let lcov = phronesis_mcp::coverage::lcov::parse_lcov(
+                            &std::fs::read_to_string(entry)?,
+                        )?;
+                        for source in lcov.files {
+                            if let phronesis_mcp::coverage::lcov::Relativized::Path(file) =
+                                phronesis_mcp::coverage::lcov::relativize(&root, &source.path)
+                                && !manifest.files.contains_key(&file)
+                            {
+                                anyhow::bail!("manifest has no digest for covered source {file}");
+                            }
+                        }
+                    }
+                }
+                let (records, details) = phronesis_mcp::coverage::lcov::records_from_lcov_dir(
+                    &root, &dir, &tool, &revision,
+                )?;
+                let summary = phronesis_mcp::coverage::import::import_records(&root, records, now)?;
+                println!(
+                    "lcov: {} files, {} tests, {} unresolved SF, {} ambiguous SF, {} filtered SF, {} without regions, {} unattributable",
+                    details.files,
+                    details.tests,
+                    details.unresolved_sf.len(),
+                    details.ambiguous_sf.len(),
+                    details.filtered_sf.len(),
+                    details.no_regions.len(),
+                    details.unattributable.len()
+                );
+                for (label, items) in [
+                    ("unresolved SF", &details.unresolved_sf),
+                    ("ambiguous SF", &details.ambiguous_sf),
+                    ("filtered SF", &details.filtered_sf),
+                    ("files without regions", &details.no_regions),
+                    ("unattributable functions", &details.unattributable),
+                ] {
+                    if !items.is_empty() {
+                        eprintln!(
+                            "{label}: {} ({})",
+                            items.len(),
+                            items
+                                .iter()
+                                .take(5)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        );
+                    }
+                }
+                summary
+            };
             println!(
                 "imported {} hits across {} tests at revision {}",
                 summary.records, summary.tests, summary.revision
