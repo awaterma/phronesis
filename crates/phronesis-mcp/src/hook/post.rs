@@ -41,7 +41,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         super::exit_ok();
     }
     let raw_tool = payload.tool_name.clone().unwrap_or_default();
-    super::lifecycle_wiring::post_pop_and_detect(&root, &payload, &raw_tool);
+    let popped_inflight = super::lifecycle_wiring::post_pop_and_detect(&root, &payload, &raw_tool);
     if raw_tool == "invoke_agent" {
         super::lifecycle_wiring::gemini_subagent_stop(&root);
     }
@@ -90,14 +90,26 @@ pub async fn run_post_check() -> anyhow::Result<()> {
                 // No post rules — still journal the executed call so future
                 // pre-checks see this in journey aggregators. Journey is
                 // fail-open and best-effort.
-                super::journey_record::journey_record_post(&payload, &tool_name, &file_path).await;
+                super::journey_record::journey_record_post(
+                    &payload,
+                    &tool_name,
+                    &file_path,
+                    popped_inflight.as_ref().map(|entry| entry.ts),
+                )
+                .await;
                 super::exit_ok();
             }
             Err(e) => {
                 eprintln!("phronesis: WARNING — {}", e);
                 // The call already executed; journal it before exiting with a
                 // warning code.
-                super::journey_record::journey_record_post(&payload, &tool_name, &file_path).await;
+                super::journey_record::journey_record_post(
+                    &payload,
+                    &tool_name,
+                    &file_path,
+                    popped_inflight.as_ref().map(|entry| entry.ts),
+                )
+                .await;
                 process::exit(1);
             }
         };
@@ -227,7 +239,13 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         // Journal the executed call at the tail — see SPEC §"Where it
         // plugs into the hook" — after the decision is logged, before the
         // exit.
-        super::journey_record::journey_record_post(&payload, &tool_name, &file_path).await;
+        super::journey_record::journey_record_post(
+            &payload,
+            &tool_name,
+            &file_path,
+            popped_inflight.as_ref().map(|entry| entry.ts),
+        )
+        .await;
         super::exit_ok();
     }
 
@@ -246,7 +264,13 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         consequences: &evaluation.logged,
         subject: subject.as_deref(),
     });
-    super::journey_record::journey_record_post(&payload, &tool_name, &file_path).await;
+    super::journey_record::journey_record_post(
+        &payload,
+        &tool_name,
+        &file_path,
+        popped_inflight.as_ref().map(|entry| entry.ts),
+    )
+    .await;
     process::exit(1);
 }
 

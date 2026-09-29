@@ -87,14 +87,19 @@ pub(super) fn undo_blocked_pre(root: &Path, key: &str, tool_name: &str) {
 
 /// Pop the entry this call pushed and, for a shell call that may have moved
 /// HEAD, record a `commit`.
-pub(super) fn post_pop_and_detect(root: &Path, payload: &HookPayload, tool_name: &str) {
+pub(super) fn post_pop_and_detect(
+    root: &Path,
+    payload: &HookPayload,
+    tool_name: &str,
+) -> Option<state::Inflight> {
     let command = super::extract_new_content(payload, tool_name).unwrap_or_default();
-    inflight::pop_and_detect(
+    let popped = inflight::pop_and_detect(
         root,
         &inflight_call(payload, tool_name, &command),
         super::journey_record::payload_command_exit(payload),
         |kind| LifecycleEvent::new(kind, host_for_tool(tool_name)),
     );
+    popped
 }
 
 /// `Bash` is Claude's shell tool; `run_shell_command` is Gemini's.
