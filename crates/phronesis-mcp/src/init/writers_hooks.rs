@@ -5,7 +5,7 @@ use serde_json::json;
 use super::json_helpers::*;
 use super::types::*;
 
-pub(crate) fn write_settings(
+pub(super) fn write_settings(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -59,7 +59,7 @@ pub(crate) fn write_settings(
     Ok(())
 }
 
-pub(crate) fn write_mcp_json(
+pub(super) fn write_mcp_json(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -93,7 +93,7 @@ pub(crate) fn write_mcp_json(
     Ok(())
 }
 
-pub(crate) fn write_gemini_settings(
+pub(super) fn write_gemini_settings(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -164,7 +164,7 @@ pub(crate) fn write_gemini_settings(
     Ok(())
 }
 
-pub(crate) fn write_codex_hooks(
+pub(super) fn write_codex_hooks(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,
@@ -214,7 +214,7 @@ pub(crate) fn write_codex_hooks(
     Ok(())
 }
 
-pub(crate) fn write_codex_config(
+pub(super) fn write_codex_config(
     root: &Path,
     opts: &InitOpts,
     report: &mut InitReport,

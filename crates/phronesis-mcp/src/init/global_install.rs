@@ -25,15 +25,15 @@ pub fn user_gemini_config_path() -> Option<PathBuf> {
 /// Represents one user-level MCP config target (e.g. `~/.claude.json` or
 /// `~/.gemini/settings.json`). Used by `install_one_target` and
 /// `uninstall_one_target` to eliminate duplicated install/uninstall logic.
-pub(crate) struct McpTarget<'a> {
-    pub(crate) path: PathBuf,
+pub(super) struct McpTarget<'a> {
+    pub(super) path: PathBuf,
     /// Human-readable label for report messages, e.g. `"~/.claude.json"`.
-    pub(crate) label: &'a str,
+    pub(super) label: &'a str,
 }
 
 /// Load `target.path`, upsert `mcpServers.phronesis`, back up and write.
 /// Emits step messages on `report` using `target.label`.
-pub(crate) fn install_one_target(
+pub(super) fn install_one_target(
     target: &McpTarget<'_>,
     dry_run: bool,
     report: &mut InitReport,
@@ -95,7 +95,7 @@ pub(crate) fn install_one_target(
 
 /// Load `target.path`, remove `mcpServers.phronesis`, back up and write.
 /// Emits step messages on `report` using `target.label`.
-pub(crate) fn uninstall_one_target(
+pub(super) fn uninstall_one_target(
     target: &McpTarget<'_>,
     dry_run: bool,
     report: &mut InitReport,

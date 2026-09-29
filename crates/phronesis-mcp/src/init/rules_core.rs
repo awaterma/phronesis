@@ -22,7 +22,7 @@ use serde_json::{Value, json};
 /// command line or immediately follow a shell separator (`;`, `&&`, `||`,
 /// `|`) — never trail an unrelated word or an open quote — which is what
 /// keeps this from matching `git` mentioned inside `echo "git commit"`.
-pub(crate) fn git_invocation_prefix() -> &'static str {
+pub(super) fn git_invocation_prefix() -> &'static str {
     r"(?:^|[;&|]\s*)(?:(?:command|exec)\s+)?(?:env\s+(?:\S+=\S+\s+)*)?\\?(?:\S*/)?git\b(?:\s+(?:-c\s+\S+|-C\s+\S+|--git-dir=\S+|--work-tree=\S+|--namespace=\S+|--exec-path(?:=\S+)?|--no-pager|--paginate|--bare|--literal-pathspecs|--no-optional-locks|--no-lazy-fetch|-p|-P))*"
 }
 
@@ -38,7 +38,7 @@ pub(crate) fn git_invocation_prefix() -> &'static str {
 /// index), so gating them would be a false positive, not a closed bypass.
 /// (The `regex` crate has no look-around, hence `(?:\s|$)` rather than a
 /// negative lookahead.)
-pub(crate) fn git_subcommand_gate(subcommands: &str) -> String {
+pub(super) fn git_subcommand_gate(subcommands: &str) -> String {
     format!(r"{}\s+(?:{subcommands})(?:\s|$)", git_invocation_prefix())
 }
 
@@ -56,7 +56,7 @@ pub(crate) fn git_subcommand_gate(subcommands: &str) -> String {
 /// and failed" (both are absent facts), so neither message names a specific
 /// missing or failing signal — that would claim more than the asserted facts
 /// prove. Run `phr-mcp confidence` for the itemized per-signal report.
-pub(crate) fn confidence_rules() -> Value {
+pub(super) fn confidence_rules() -> Value {
     let commit_gate = git_subcommand_gate("commit|merge|rebase|cherry-pick|revert|pull");
     json!({
         "rules": [
@@ -112,7 +112,7 @@ pub(crate) fn confidence_rules() -> Value {
 ///   matches until the next `cd`.
 /// - Commands may be prefixed with `VAR=value`, `sudo`, `env`, `command`,
 ///   `exec`, `nohup`, `time`, `xargs`, or `git`.
-pub(crate) fn trust_anchor_shell_pattern() -> String {
+pub(super) fn trust_anchor_shell_pattern() -> String {
     // Outside-quotes prefix: whole quoted strings or single unquoted chars.
     const Q: &str = r#"(?s)\A(?:[^"'\\]|\\.|"(?:[^"\\]|\\.)*"|'[^']*')*?"#;
     // Command position: segment start, then env assignments and wrappers.
@@ -183,7 +183,7 @@ pub(crate) fn trust_anchor_shell_pattern() -> String {
     format!("{Q}(?:{})", alternatives.join("|"))
 }
 
-pub(crate) fn deflection_rules() -> Value {
+pub(super) fn deflection_rules() -> Value {
     let commit_gate = git_subcommand_gate("commit");
     let add_all_gate = format!(r"{}\s+add\s+(?:-A\b|\.(?:$|\s))", git_invocation_prefix());
     let shell_anchor_pattern = trust_anchor_shell_pattern();

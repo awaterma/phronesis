@@ -40,7 +40,7 @@ pub fn graph_scope_prefix(project_root: &Path, scan_root: &Path) -> Option<Strin
 ///
 /// Compares whole path segments: `src/journey` must not swallow
 /// `src/journeyman.rs`.
-pub(crate) fn within_scope(file: &str, scope: &str) -> bool {
+pub(super) fn within_scope(file: &str, scope: &str) -> bool {
     file == scope
         || file
             .strip_prefix(scope)

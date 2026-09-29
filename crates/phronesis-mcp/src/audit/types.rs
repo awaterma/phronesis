@@ -16,7 +16,7 @@ pub enum Level {
 }
 
 impl Level {
-    pub(crate) fn from_action_type(s: &str) -> Option<Self> {
+    pub(super) fn from_action_type(s: &str) -> Option<Self> {
         match s {
             "constraint_violation" => Some(Level::Block),
             "constraint_warning" => Some(Level::Warn),
@@ -130,24 +130,24 @@ pub struct FileAudit {
 /// `details` stay parallel: one entry per hit. Collapsed into a
 /// `FileAudit` at the end of the scan.
 #[derive(Debug, Clone, Default)]
-pub(crate) struct PerFileHits {
-    pub(crate) lines: Vec<u32>,
-    pub(crate) details: Vec<String>,
+pub(super) struct PerFileHits {
+    pub(super) lines: Vec<u32>,
+    pub(super) details: Vec<String>,
 }
 
 impl PerFileHits {
-    pub(crate) fn push_line(&mut self, line: u32) {
+    pub(super) fn push_line(&mut self, line: u32) {
         self.lines.push(line);
         self.details.push(String::new());
     }
-    pub(crate) fn push_detail(&mut self, detail: String) {
+    pub(super) fn push_detail(&mut self, detail: String) {
         // AST hits don't know a real line span yet; line 1 is the
         // documented placeholder. Keep the two vecs the same length so
         // `hits` (derived from `lines.len()`) stays accurate.
         self.lines.push(1);
         self.details.push(detail);
     }
-    pub(crate) fn extend_lines(&mut self, lines: Vec<u32>) {
+    pub(super) fn extend_lines(&mut self, lines: Vec<u32>) {
         self.lines.extend(lines.iter().copied());
         self.details
             .extend(std::iter::repeat_with(String::new).take(lines.len()));

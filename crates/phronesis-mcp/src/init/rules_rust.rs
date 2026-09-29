@@ -1,6 +1,6 @@
 use serde_json::{Value, json};
 
-pub(crate) fn rust_rules() -> Value {
+pub(super) fn rust_rules() -> Value {
     json!({
         "rules": [
             {

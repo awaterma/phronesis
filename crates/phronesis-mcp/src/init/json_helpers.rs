@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use super::types::{InitError, InitOpts, InitReport};
 
-pub(crate) fn read_json(path: &Path) -> Result<Option<Value>, InitError> {
+pub(super) fn read_json(path: &Path) -> Result<Option<Value>, InitError> {
     if !path.exists() {
         return Ok(None);
     }
@@ -18,7 +18,7 @@ pub(crate) fn read_json(path: &Path) -> Result<Option<Value>, InitError> {
     Ok(Some(serde_json::from_str(&content)?))
 }
 
-pub(crate) fn write_json(
+pub(super) fn write_json(
     path: &Path,
     value: &Value,
     opts: &InitOpts,
@@ -52,14 +52,14 @@ pub(crate) fn write_json(
     Ok(())
 }
 
-pub(crate) fn with_extension(path: &Path, ext: &str) -> PathBuf {
+pub(super) fn with_extension(path: &Path, ext: &str) -> PathBuf {
     let mut s = path.as_os_str().to_owned();
     s.push(".");
     s.push(ext);
     PathBuf::from(s)
 }
 
-pub(crate) fn ensure_parent(path: &Path) -> Result<(), InitError> {
+pub(super) fn ensure_parent(path: &Path) -> Result<(), InitError> {
     if let Some(p) = path.parent() {
         std::fs::create_dir_all(p).map_err(|e| InitError::Io {
             path: p.display().to_string(),
@@ -70,7 +70,7 @@ pub(crate) fn ensure_parent(path: &Path) -> Result<(), InitError> {
 }
 
 /// Insert (or replace) an entry for our matcher inside a hook array.
-pub(crate) fn upsert_hook(settings: &mut Value, event: &str, new_entry: Value) {
+pub(super) fn upsert_hook(settings: &mut Value, event: &str, new_entry: Value) {
     let hooks = settings.as_object_mut().and_then(|o| {
         o.entry("hooks".to_string())
             .or_insert_with(|| json!({}))
@@ -91,7 +91,7 @@ pub(crate) fn upsert_hook(settings: &mut Value, event: &str, new_entry: Value) {
 
 /// Subcommands Phronesis registers as hooks. An entry that names one of these
 /// after a `phr-mcp` token is ours; anything else is the user's.
-pub(crate) const PHRONESIS_HOOK_SUBCOMMANDS: [&str; 5] = [
+pub(super) const PHRONESIS_HOOK_SUBCOMMANDS: [&str; 5] = [
     "session-context",
     "interaction-context",
     "claude-hook",
@@ -109,7 +109,7 @@ pub(crate) const PHRONESIS_HOOK_SUBCOMMANDS: [&str; 5] = [
 ///
 /// Token-based, not prefix-based: `phr-mcp-notify --all` is a different binary
 /// whose name merely starts the same way, and it must survive `init`.
-pub(crate) fn is_phronesis_hook_command(command: &str) -> bool {
+pub(super) fn is_phronesis_hook_command(command: &str) -> bool {
     let tokens: Vec<&str> = command.split_whitespace().collect();
     let Some(bin_at) = tokens
         .iter()
@@ -130,7 +130,7 @@ pub(crate) fn is_phronesis_hook_command(command: &str) -> bool {
 /// Phronesis registers at most one entry per event, so dropping every entry of
 /// ours and pushing one back is exact. Migrating the four pre-existing
 /// matcher-keyed registrations to this is a follow-up.
-pub(crate) fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entry: Value) {
+pub(super) fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entry: Value) {
     let hooks = settings.as_object_mut().and_then(|o| {
         o.entry("hooks".to_string())
             .or_insert_with(|| json!({}))
@@ -159,7 +159,7 @@ pub(crate) fn upsert_hook_by_command(settings: &mut Value, event: &str, new_entr
 /// Replace only Phronesis's entry for a Codex event, regardless of its former
 /// matcher. This migrates generated matcher changes without deleting unrelated
 /// user hooks that happen to use the same matcher.
-pub(crate) fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Value) {
+pub(super) fn upsert_codex_hook(settings: &mut Value, event: &str, new_entry: Value) {
     let hooks = settings.as_object_mut().and_then(|o| {
         o.entry("hooks".to_string())
             .or_insert_with(|| json!({}))

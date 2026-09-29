@@ -52,7 +52,7 @@ pub struct TrendPoint {
 
 /// Accumulate per-rule trend data from a windowed set of audit snapshots.
 /// Respects `rule_filter`; returns sorted `Vec<RuleTrend>` (improvements first).
-pub(crate) fn rule_trends(snapshots: &[&LogEntry], rule_filter: Option<&str>) -> Vec<RuleTrend> {
+pub(super) fn rule_trends(snapshots: &[&LogEntry], rule_filter: Option<&str>) -> Vec<RuleTrend> {
     let mut rule_ids: BTreeMap<String, Level> = BTreeMap::new();
     for snap in snapshots {
         let Some(per_rule) = snap.data.get("per_rule").and_then(|v| v.as_object()) else {

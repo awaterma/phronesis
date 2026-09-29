@@ -76,7 +76,7 @@ impl Pack {
         Self::None,
     ];
 
-    pub(crate) fn parse(s: &str) -> Result<Self, InitError> {
+    pub(super) fn parse(s: &str) -> Result<Self, InitError> {
         match s.trim().to_lowercase().as_str() {
             // `llm` and the deprecated alias `minimal` (pre-pack-split naming)
             "llm" | "minimal" => Ok(Self::Llm),
