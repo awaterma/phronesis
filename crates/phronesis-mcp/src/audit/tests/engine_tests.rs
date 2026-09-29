@@ -703,3 +703,42 @@ fn run_profiled_matches_run_and_populates_section_times() {
         times.match_loop
     );
 }
+
+#[test]
+fn discovery_reports_only_phronesisignore_exclusions_at_any_level() {
+    use crate::audit::run::discover_files_with_excluded;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src/deep")).expect("mkdir");
+    std::fs::write(root.join("src/kept.rs"), "fn a() {}\n").expect("write");
+    std::fs::write(root.join("src/dropped.rs"), "fn b() {}\n").expect("write");
+    std::fs::write(root.join("src/deep/nested.rs"), "fn c() {}\n").expect("write");
+    // Excluded by .gitignore AND .phronesisignore: not a policy exclusion.
+    std::fs::write(root.join("src/generated.rs"), "fn g() {}\n").expect("write");
+    // Hidden file: the walker skips it by default; never reported either.
+    std::fs::write(root.join("src/.hidden.rs"), "fn h() {}\n").expect("write");
+    std::fs::write(root.join(".gitignore"), "src/generated.rs\n").expect("write");
+    std::fs::write(
+        root.join(".phronesisignore"),
+        "src/dropped.rs\nsrc/generated.rs\n",
+    )
+    .expect("write");
+    std::fs::write(root.join("src/deep/.phronesisignore"), "nested.rs\n").expect("write");
+
+    let d = discover_files_with_excluded(root, &["rs"]);
+    let names = |v: &[std::path::PathBuf]| -> Vec<String> {
+        v.iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .expect("under root")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect()
+    };
+    assert_eq!(names(&d.scanned), vec!["src/kept.rs"]);
+    assert_eq!(
+        names(&d.excluded),
+        vec!["src/deep/nested.rs", "src/dropped.rs"]
+    );
+}

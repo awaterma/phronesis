@@ -141,32 +141,63 @@ pub fn run_profiled(rules: &RulesFile, opts: &AuditOpts) -> (AuditReport, AuditS
 /// `extensions` should be passed without the leading dot (e.g. `["rs", "swift"]`).
 /// A wildcard (`["*"]`) returns every file the walker accepts.
 pub fn discover_files(root: &Path, extensions: &[&str]) -> Vec<PathBuf> {
+    discover_files_with_excluded(root, extensions).scanned
+}
+
+/// Files the walker accepted, split by whether a `.phronesisignore` entry
+/// excluded them. Both walks honour `.gitignore`, hidden-file defaults and
+/// walker errors identically, so a file that only `.gitignore` drops is in
+/// neither set: `excluded` is `.phronesisignore` policy and nothing else.
+#[derive(Debug, Default)]
+pub struct Discovery {
+    /// Sorted.
+    pub scanned: Vec<PathBuf>,
+    /// Excluded by `.phronesisignore` (at any directory level). Sorted.
+    /// Structural rules still scan these; only lexical rules skip them.
+    pub excluded: Vec<PathBuf>,
+}
+
+/// Like [`discover_files`], but also returns the files a `.phronesisignore`
+/// excluded: one walk honours the custom ignore file, one does not, and the
+/// difference is the policy exclusions. `.phronesisignore` files themselves
+/// are never reported.
+pub fn discover_files_with_excluded(root: &Path, extensions: &[&str]) -> Discovery {
     use ignore::WalkBuilder;
-    let mut out = Vec::new();
-    let wildcard = extensions.contains(&"*");
-    let mut builder = WalkBuilder::new(root);
-    builder.follow_links(false);
-    // `.phronesisignore` (gitignore-values) lets projects exclude paths from
-    // audit without affecting git tracking. Honored at root and at any
-    // descendant directory level.
-    builder.add_custom_ignore_filename(".phronesisignore");
-    for result in builder.build() {
-        let entry = match result {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
-            continue;
+    use std::collections::BTreeSet;
+
+    fn walk(root: &Path, extensions: &[&str], honour_phronesisignore: bool) -> BTreeSet<PathBuf> {
+        let wildcard = extensions.contains(&"*");
+        let mut builder = WalkBuilder::new(root);
+        builder.follow_links(false);
+        // Honour .gitignore even outside a git worktree (e.g. tempdirs in
+        // tests) so both walks drop the same gitignored files and the set
+        // difference is .phronesisignore policy only.
+        builder.require_git(false);
+        if honour_phronesisignore {
+            builder.add_custom_ignore_filename(".phronesisignore");
         }
-        let path = entry.into_path();
-        if wildcard {
-            out.push(path);
-            continue;
+        let mut out = BTreeSet::new();
+        for entry in builder.build().flatten() {
+            if !entry.file_type().is_some_and(|t| t.is_file()) {
+                continue;
+            }
+            let path = entry.into_path();
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            if wildcard || extensions.contains(&ext) {
+                out.insert(path);
+            }
         }
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        if extensions.contains(&ext) {
-            out.push(path);
-        }
+        out
     }
-    out
+
+    let with_ignore = walk(root, extensions, true);
+    let without_ignore = walk(root, extensions, false);
+    Discovery {
+        excluded: without_ignore
+            .difference(&with_ignore)
+            .filter(|p| p.file_name().is_none_or(|n| n != ".phronesisignore"))
+            .cloned()
+            .collect(),
+        scanned: with_ignore.into_iter().collect(),
+    }
 }
