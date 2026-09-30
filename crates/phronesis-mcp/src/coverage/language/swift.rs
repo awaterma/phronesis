@@ -262,6 +262,31 @@ mod tests {
     }
 
     #[test]
+    fn swift_protocol_requirements_closures_and_properties_are_not_sites() {
+        let src = "protocol P {\n\
+                   \x20   func required()\n\
+                   }\n\
+                   struct S {\n\
+                   \x20   var count: Int {\n\
+                   \x20       get { 1 }\n\
+                   \x20   }\n\
+                   \x20   func f() {\n\
+                   \x20       let c = { 2 }\n\
+                   \x20       _ = c\n\
+                   \x20   }\n\
+                   }\n";
+        let sites = swift_function_sites(src).expect("parses");
+        assert_eq!(
+            sites
+                .iter()
+                .map(|s| s.item_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["S::f"],
+            "{sites:?}"
+        );
+    }
+
+    #[test]
     fn swift_row_rejects_test_and_manifest_sources_and_uses_the_brace_one_liner_rule() {
         let row = language_for_path("Sources/Store/Store.swift").expect("swift row");
         assert_eq!(row.id, "swift");
