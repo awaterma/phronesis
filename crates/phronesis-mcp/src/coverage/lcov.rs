@@ -214,6 +214,83 @@ pub struct LcovDirSummary {
     pub no_regions: Vec<String>,
     pub unattributable: Vec<String>,
 }
+
+pub fn records_from_sources(
+    root: &Path,
+    sources: Vec<(String, Vec<LcovSource>)>,
+    tool: &str,
+    revision: &str,
+) -> Result<(Vec<HitRecord>, LcovDirSummary)> {
+    let mut summary = LcovDirSummary {
+        files: sources.iter().map(|(_, files)| files.len()).sum(),
+        tests: sources.len(),
+        ..Default::default()
+    };
+    let mut cache: BTreeMap<String, Vec<FunctionSite>> = BTreeMap::new();
+    let mut records = Vec::new();
+    for (test, files) in sources {
+        for source in files {
+            let rel = match relativize(root, &source.path) {
+                Relativized::Path(p) => p,
+                Relativized::Missing => {
+                    summary.unresolved_sf.push(source.path);
+                    continue;
+                }
+                Relativized::Ambiguous(c) => {
+                    summary
+                        .ambiguous_sf
+                        .push(format!("{} -> {}", source.path, c.join(" | ")));
+                    continue;
+                }
+            };
+            if !is_wanted_source(&rel) {
+                summary.filtered_sf.push(rel);
+                continue;
+            }
+            if !cache.contains_key(&rel) {
+                cache.insert(
+                    rel.clone(),
+                    extract_function_sites_for(&rel, &std::fs::read_to_string(root.join(&rel))?)?,
+                );
+            }
+            let sites = &cache[&rel];
+            if sites.is_empty() {
+                summary.no_regions.push(rel);
+                continue;
+            }
+            let Some(lang) = crate::coverage::language::language_for_path(&rel) else {
+                continue;
+            };
+            let (hit, unattr) = hit_sites(sites, &source, lang);
+            summary.unattributable.extend(unattr.iter().map(|s| {
+                format!(
+                    "{}::{}: one-line function, no FNDA ({})",
+                    rel, s.item_path, lang.id
+                )
+            }));
+            for site in hit {
+                records.push(HitRecord {
+                    v: COVERAGE_FORMAT,
+                    kind: "hit".into(),
+                    test: test.clone(),
+                    region: site.region_id(&rel),
+                    file: rel.clone(),
+                    start_line: site.start_line,
+                    end_line: site.end_line,
+                    hit_kind: "region".into(),
+                    revision: revision.into(),
+                    tool: tool.into(),
+                });
+            }
+        }
+    }
+    summary.records = records.len();
+    if records.is_empty() {
+        bail!("no coverage records from JaCoCo sources");
+    }
+    Ok((records, summary))
+}
+
 pub fn records_from_lcov_dir(
     root: &Path,
     dir: &Path,

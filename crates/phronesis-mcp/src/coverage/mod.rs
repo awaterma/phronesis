@@ -1,6 +1,7 @@
 pub mod collect;
 pub mod hydrate;
 pub mod import;
+pub mod jacoco;
 pub mod language;
 pub mod lcov;
 pub mod pytest;

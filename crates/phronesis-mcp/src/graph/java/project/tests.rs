@@ -18,7 +18,10 @@ fn has(out: &crate::graph::extract::Extracted, predicate: &str, args: &[&str]) -
 #[test]
 fn junit_test_methods_define_tests_only_in_test_context() {
     let project = project(&[
-        ("pom.xml", "<project><artifactId>core</artifactId></project>"),
+        (
+            "pom.xml",
+            "<project><artifactId>core</artifactId></project>",
+        ),
         (
             "src/test/java/com/x/StoreSpec.java",
             "package com.x; class StoreTest { @Test void testLoad() {} }",
@@ -37,10 +40,7 @@ fn junit_test_methods_define_tests_only_in_test_context() {
     ));
 
     let production = project.extract("src/main/java/com/x/Store.java");
-    assert!(!production
-        .edges
-        .iter()
-        .any(|edge| edge.p == "defines_test"));
+    assert!(!production.edges.iter().any(|edge| edge.p == "defines_test"));
 }
 
 #[test]

@@ -513,7 +513,7 @@ enum CoverageCmd {
         /// Path to the export JSONL file or lcov directory.
         export: PathBuf,
         /// Input format.
-        #[arg(long, default_value = "jsonl", value_parser = ["jsonl", "lcov-dir"])]
+        #[arg(long, default_value = "jsonl", value_parser = ["jsonl", "lcov-dir", "jacoco-dir"])]
         format: String,
         /// Evidence tool name (required for lcov-dir).
         #[arg(long)]
@@ -728,6 +728,55 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                     anyhow::bail!("--tool and --no-manifest are only valid with --format lcov-dir");
                 }
                 phronesis_mcp::coverage::import::import_export(&root, &export, now)?
+            } else if format == "jacoco-dir" {
+                let mut tool = tool.context("--tool is required with --format jacoco-dir")?;
+                let dir = root.join(&export);
+                let revision = phronesis_mcp::lifecycle::outcome::git_head(&root)
+                    .unwrap_or_else(|| "unknown".into());
+                if let Some(warning) = phronesis_mcp::coverage::collect::check_clean_tree(
+                    &root,
+                    &revision,
+                    allow_dirty,
+                )? {
+                    eprintln!("{warning}");
+                }
+                if no_manifest {
+                    tool.push_str("+unverified");
+                } else {
+                    let manifest = phronesis_mcp::coverage::lcov::Manifest::read(&dir)?;
+                    if manifest.revision != revision {
+                        anyhow::bail!(
+                            "manifest revision {} differs from host HEAD {}",
+                            manifest.revision,
+                            revision
+                        );
+                    }
+                    for (file, expected) in &manifest.files {
+                        let bytes = std::fs::read(root.join(file))
+                            .with_context(|| format!("manifest file missing on host: {file}"))?;
+                        let actual = phronesis_mcp::properties::execute::artifact_sha256(&bytes);
+                        if &actual != expected {
+                            anyhow::bail!("manifest digest mismatch for {file}");
+                        }
+                    }
+                }
+                let (sources, details) =
+                    phronesis_mcp::coverage::jacoco::read_jacoco_dir(&root, &dir)?;
+                let (records, record_details) =
+                    phronesis_mcp::coverage::lcov::records_from_sources(
+                        &root, sources, &tool, &revision,
+                    )?;
+                eprintln!(
+                    "JaCoCo: {} ambiguous paths, {} skipped Kotlin sources",
+                    details.ambiguous.len(),
+                    details.kotlin_skipped.len()
+                );
+                let summary = phronesis_mcp::coverage::import::import_records(&root, records, now)?;
+                println!(
+                    "jacoco: {} files, {} tests",
+                    record_details.files, record_details.tests
+                );
+                summary
             } else {
                 let tool = tool.context("--tool is required with --format lcov-dir")?;
                 let dir = root.join(&export);
