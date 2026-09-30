@@ -175,23 +175,23 @@ impl Manifest {
 pub fn hit_sites<'a>(
     sites: &'a [FunctionSite],
     src: &LcovSource,
+    lang: &crate::coverage::language::CoverageLanguage,
 ) -> (Vec<&'a FunctionSite>, Vec<&'a FunctionSite>) {
     let mut hit = Vec::new();
     let mut unattributable = Vec::new();
-    let lang = crate::coverage::language::language_for_path(&src.path);
     for site in sites {
-        let one_liner = lang.is_some_and(|l| (l.is_one_liner)(site));
-        if one_liner && lang.is_some_and(|l| l.one_liner_needs_fnda) {
-            match src.function_hits.iter().find(|(n, _)| n == site.name()) {
-                Some((_, n)) if *n > 0 => hit.push(site),
-                Some(_) => {}
-                None => unattributable.push(site),
+        if (lang.is_one_liner)(site) {
+            if !lang.one_liner_needs_fnda {
+                // Producer has no reliable FNDA names (mangled or absent):
+                // never attribute from the DA of the declaration line alone.
+                unattributable.push(site);
+            } else {
+                match src.function_hits.iter().find(|(n, _)| n == site.name()) {
+                    Some((_, n)) if *n > 0 => hit.push(site),
+                    Some(_) => {}
+                    None => unattributable.push(site),
+                }
             }
-        } else if one_liner {
-            // One-liner under a row whose producer has no reliable FNDA
-            // names (mangled or absent): never attribute from the DA of the
-            // declaration line alone.
-            unattributable.push(site);
         } else if src
             .line_hits
             .iter()
@@ -271,10 +271,17 @@ pub fn records_from_lcov_dir(
                 summary.no_regions.push(rel);
                 continue;
             }
-            let (hit, unattr) = hit_sites(sites, &src);
-            summary
-                .unattributable
-                .extend(unattr.iter().map(|s| s.region_id(&rel)));
+            let Some(lang) = crate::coverage::language::language_for_path(&rel) else {
+                summary.no_regions.push(rel);
+                continue;
+            };
+            let (hit, unattr) = hit_sites(sites, &src, lang);
+            summary.unattributable.extend(unattr.iter().map(|s| {
+                format!(
+                    "{}::{}: one-line function, no FNDA ({})",
+                    rel, s.item_path, lang.id
+                )
+            }));
             for s in hit {
                 records.push(HitRecord {
                     v: COVERAGE_FORMAT,
@@ -357,7 +364,11 @@ mod tests {
             function_hits: vec![("one".into(), 1)],
             line_hits: vec![(1, 1), (2, 1), (4, 1), (5, 1)],
         };
-        let (hit, unattr) = hit_sites(&sites, &src);
+        let (hit, unattr) = hit_sites(
+            &sites,
+            &src,
+            crate::coverage::language::language_for_path("pkg/store.py").expect("python row"),
+        );
         assert_eq!(
             hit.iter().map(|s| s.item_path.as_str()).collect::<Vec<_>>(),
             vec!["load", "one"]
@@ -368,6 +379,83 @@ mod tests {
                 .map(|s| s.item_path.as_str())
                 .collect::<Vec<_>>(),
             vec!["two"]
+        );
+    }
+    #[test]
+    fn one_liner_rule_follows_the_language_row() {
+        use crate::coverage::language::{CoverageLanguage, language_for_path};
+        // Rows under test: the Python registry row via language_for_path, plus a
+        // hand-built brace row (G2 lands before H1 adds a real one) with the
+        // brace-rule is_one_liner (end==start) and needs_fnda=true, and one with
+        // needs_fnda=false.
+        let py = language_for_path("a/x.py").expect("python row");
+        let brace = CoverageLanguage {
+            is_one_liner: |s: &FunctionSite| s.end_line == s.start_line,
+            ..*py
+        };
+        let brace_no_fnda = CoverageLanguage {
+            one_liner_needs_fnda: false,
+            ..brace
+        };
+        let one_liner = [FunctionSite {
+            item_path: "f".into(),
+            start_line: 1,
+            body_start_line: 1,
+            end_line: 1,
+        }];
+        let multi_line_brace = [FunctionSite {
+            item_path: "g".into(),
+            start_line: 1,
+            body_start_line: 1,
+            end_line: 3,
+        }];
+        let split_py_one_liner = [FunctionSite {
+            item_path: "h".into(),
+            start_line: 4,
+            body_start_line: 4,
+            end_line: 5,
+        }];
+        let with_fnda = LcovSource {
+            path: "a/x.ts".into(),
+            function_hits: vec![("f".into(), 2), ("g".into(), 2), ("h".into(), 2)],
+            line_hits: vec![(1, 1), (2, 1), (4, 1)],
+        };
+        let without_fnda = LcovSource {
+            path: "a/x.ts".into(),
+            function_hits: vec![],
+            line_hits: vec![(1, 1), (2, 1)],
+        };
+        assert_eq!(
+            hit_sites(&one_liner, &with_fnda, &brace).0.len(),
+            1,
+            "FNDA attributes a brace-row one-liner"
+        );
+        let (hit, unattr) = hit_sites(&one_liner, &without_fnda, &brace);
+        assert!(
+            hit.is_empty() && unattr.len() == 1,
+            "no FNDA, flag on: unattributable, never from DA"
+        );
+        let (hit, unattr) = hit_sites(&one_liner, &with_fnda, &brace_no_fnda);
+        assert!(
+            hit.is_empty() && unattr.len() == 1,
+            "flag off (mangled FN names): FNDA is ignored, one-liner unattributable"
+        );
+        // Revision 2 pin: a multi-line brace function is NOT a one-liner (end 3 != start 1);
+        // it is attributed by the DA body rule (line 2 ran) and FNDA plays no part.
+        let (hit, unattr) = hit_sites(&multi_line_brace, &with_fnda, &brace);
+        assert_eq!(hit.len(), 1, "multi-line brace site hits from DA on line 2");
+        assert!(unattr.is_empty());
+        // Revision 2 pin: Python keeps body_start==start — a split one-liner is
+        // never attributed from its own import-marked DA line.
+        let py_only_da = LcovSource {
+            path: "a/x.py".into(),
+            function_hits: vec![],
+            line_hits: vec![(4, 1)],
+        };
+        let (hit, unattr) = hit_sites(&split_py_one_liner, &py_only_da, py);
+        assert!(
+            hit.is_empty() && unattr.len() == 1,
+            "Python one-liner never hits from its own DA"
         );
     }
     #[test]
