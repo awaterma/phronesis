@@ -67,6 +67,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
         write_context_scaffold(&root, &opts, &mut report)?;
         write_wiki_scaffold(&root, &opts, &mut report)?;
         write_confidence_scaffold(&root, &opts, &mut report)?;
+        write_java_toolchains(&root, &opts, &mut report)?;
         write_journey_scaffold(&root, &opts, &mut report)?;
         build_structural_graph(&root, &opts, &mut report);
     }

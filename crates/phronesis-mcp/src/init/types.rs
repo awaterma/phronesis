@@ -46,6 +46,7 @@ pub enum Pack {
     Json,
     Yaml,
     Helm3,
+    Java,
     None,
 }
 
@@ -73,6 +74,7 @@ impl Pack {
         Self::Json,
         Self::Yaml,
         Self::Helm3,
+        Self::Java,
         Self::None,
     ];
 
@@ -91,6 +93,7 @@ impl Pack {
             "json" => Ok(Self::Json),
             "yaml" | "yml" => Ok(Self::Yaml),
             "helm3" | "helm" => Ok(Self::Helm3),
+            "java" => Ok(Self::Java),
             "confidence" => Ok(Self::Confidence),
             "journey" => Ok(Self::Journey),
             "context" => Ok(Self::Context),
@@ -123,6 +126,7 @@ impl Pack {
             Self::Json => json_rules(),
             Self::Yaml => yaml_rules(),
             Self::Helm3 => helm3_rules(),
+            Self::Java => java_rules(),
         }
     }
 
@@ -140,6 +144,7 @@ impl Pack {
             Self::Json => "json",
             Self::Yaml => "yaml",
             Self::Helm3 => "helm3",
+            Self::Java => "java",
             Self::Confidence => "confidence",
             Self::Journey => "journey",
             Self::Context => "context",

@@ -1,5 +1,10 @@
 use serde_json::{Value, json};
 
+/// Java has no lexical starter rules; selecting the pack installs runner metadata.
+pub(super) fn java_rules() -> Value {
+    json!({"rules": []})
+}
+
 /// Rhai-specific rules. Apply to projects that embed the Rhai scripting
 /// language, whether via the `rhai` crate from Rust or as standalone `.rhai`
 /// scripts. Messages are intentionally generic; project-specific guidance

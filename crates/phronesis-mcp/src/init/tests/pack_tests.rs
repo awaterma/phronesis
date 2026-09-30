@@ -90,6 +90,54 @@ fn parses_new_language_packs() {
     assert_eq!(Pack::parse("yml").unwrap(), Pack::Yaml);
     assert_eq!(Pack::parse("helm3").unwrap(), Pack::Helm3);
     assert_eq!(Pack::parse("helm").unwrap(), Pack::Helm3);
+    assert_eq!(Pack::parse("java").unwrap(), Pack::Java);
+}
+
+#[test]
+fn java_pack_has_no_rules_and_merges_toolchains_without_replacing_user_entries() {
+    use crate::init::writers_scaffold::write_java_toolchains;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let opts = InitOpts {
+        project_root: dir.path().into(),
+        packs: vec![Pack::Java],
+        force: false,
+        dry_run: false,
+        rules_only: false,
+        hooks_only: false,
+    };
+    let mut report = InitReport::default();
+    write_java_toolchains(dir.path(), &opts, &mut report).expect("write defs");
+    let path = dir.path().join(".phronesis/toolchains.json");
+    let first: Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("read defs")).expect("json");
+    assert!(
+        first
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == "mvn")
+    );
+    assert!(
+        first
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == "gradle")
+    );
+    assert_eq!(Pack::Java.rules()["rules"].as_array().unwrap().len(), 0);
+
+    std::fs::write(&path, r#"[{"id":"mvn","matches":"custom-maven"}]"#).expect("user edit");
+    write_java_toolchains(dir.path(), &opts, &mut report).expect("merge defs");
+    let merged: Value =
+        serde_json::from_slice(&std::fs::read(path).expect("read merged")).expect("json");
+    assert_eq!(merged[0]["matches"], "custom-maven");
+    assert!(
+        merged
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["id"] == "gradle")
+    );
 }
 
 #[test]

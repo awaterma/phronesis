@@ -424,6 +424,61 @@ pub(super) fn write_confidence_scaffold(
     Ok(())
 }
 
+pub(super) fn write_java_toolchains(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    if !opts.packs.contains(&Pack::Java) {
+        return Ok(());
+    }
+    let path = root.join(".phronesis/toolchains.json");
+    let mut defs: serde_json::Value = if path.exists() {
+        serde_json::from_slice(&std::fs::read(&path).map_err(|source| InitError::Io {
+            path: path.display().to_string(),
+            source,
+        })?)?
+    } else {
+        serde_json::json!([])
+    };
+    let array = defs
+        .as_array_mut()
+        .ok_or_else(|| InitError::InvalidRules("toolchains.json must be an array".into()))?;
+    for def in [
+        serde_json::json!({"id":"mvn","matches":"^(\\./)?mvnw?(\\s|$)","compile_fail":"COMPILATION ERROR|\\[ERROR\\] .*\\.java","test_summary":"Tests run: (?P<total>\\d+), Failures: (?P<failed>\\d+), Errors: (?P<errors>\\d+)"}),
+        serde_json::json!({"id":"gradle","matches":"^(\\./)?gradlew?(\\s|$)","compile_fail":"error: |Compilation failed","test_summary":"(?P<total>\\d+) tests completed, (?P<failed>\\d+) failed","compile_success":"BUILD SUCCESSFUL"}),
+    ] {
+        let id = def["id"].as_str().unwrap_or_default();
+        if !array
+            .iter()
+            .any(|existing| existing["id"].as_str() == Some(id))
+        {
+            array.push(def);
+        }
+    }
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would merge mvn and gradle toolchains".into());
+        return Ok(());
+    }
+    std::fs::create_dir_all(path.parent().expect("toolchain parent")).map_err(|source| {
+        InitError::Io {
+            path: path.display().to_string(),
+            source,
+        }
+    })?;
+    let bytes = serde_json::to_vec_pretty(&defs)?;
+    std::fs::write(&path, bytes).map_err(|source| InitError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    report
+        .steps
+        .push("+ merged mvn and gradle toolchains".into());
+    Ok(())
+}
+
 /// Starter `.phronesis/journey.json` — schema version, one example tagger
 /// (`build` matches `cargo (build|check|test)`), empty `modules`. Authors
 /// extend it with their project's risk surface (auth, sql, payments, …)

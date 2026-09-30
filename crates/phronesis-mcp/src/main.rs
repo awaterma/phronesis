@@ -486,6 +486,9 @@ enum CoverageCmd {
         /// Select a collector tool (`pytest-cov` enables Python collection).
         #[arg(long)]
         tool: Option<String>,
+        /// Java build runner (`mvn` or `gradle`) for `--tool java-cov`.
+        #[arg(long)]
+        runner: Option<String>,
         /// Print the Python collection script for a devcontainer.
         #[arg(long)]
         emit_script: bool,
@@ -554,6 +557,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
     match cmd {
         CoverageCmd::Collect {
             tool,
+            runner,
             emit_script,
             out,
             from_dir,
@@ -563,6 +567,67 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
         } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
+            if tool.as_deref() == Some("java-cov") {
+                let selected = runner
+                    .as_deref()
+                    .map(phronesis_mcp::coverage::collect_java::read_runner_arg)
+                    .transpose()?;
+                let selected =
+                    phronesis_mcp::coverage::collect_java::detect_runner(&root, selected)?;
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for edge in graph.iter().filter(|edge| {
+                    edge.p == "defines_test"
+                        && edge.a.first().is_some_and(|id| id.starts_with("java:"))
+                }) {
+                    let id = edge.a.first().expect("filtered test id");
+                    let Some((unit, tail)) =
+                        id.strip_prefix("java:").and_then(|id| id.split_once("::"))
+                    else {
+                        continue;
+                    };
+                    let mut parts: Vec<&str> = tail.split("::").collect();
+                    if parts.len() < 2 {
+                        continue;
+                    }
+                    let method = parts.pop().expect("method segment");
+                    let class = parts.pop().expect("class segment");
+                    let qualified = format!("{}.{}", parts.join("."), class);
+                    let native =
+                        if selected == phronesis_mcp::coverage::collect_java::JavaRunner::Mvn {
+                            format!("{qualified}#{method}")
+                        } else {
+                            format!("{qualified}.{method}")
+                        };
+                    entries.push((unit.to_string(), native, id.to_string()));
+                }
+                if entries.is_empty() {
+                    anyhow::bail!("Java graph has no defines_test ids; rebuild the graph after J0");
+                }
+                let out = out.unwrap_or_else(|| {
+                    phronesis_mcp::coverage::collect_java::default_output(&root)
+                });
+                let script = phronesis_mcp::coverage::collect_java::collection_script(
+                    selected, &entries, &out,
+                );
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running Java coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("Java coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
             if tool.as_deref() == Some("pytest-cov") {
                 let output = std::process::Command::new("python3")
                     .args(["-m", "pytest", "--collect-only", "-q"])

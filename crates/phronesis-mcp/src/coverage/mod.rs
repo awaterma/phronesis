@@ -1,4 +1,5 @@
 pub mod collect;
+pub mod collect_java;
 pub mod hydrate;
 pub mod import;
 pub mod jacoco;
