@@ -503,13 +503,9 @@ pub fn extract_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
 }
 
 pub fn extract_function_sites_for(rel_path: &str, source: &str) -> Result<Vec<FunctionSite>> {
-    match std::path::Path::new(rel_path)
-        .extension()
-        .and_then(|e| e.to_str())
-    {
-        Some("rs") => extract_function_sites(source),
-        Some("py") => python_function_sites(source),
-        _ => Ok(Vec::new()),
+    match crate::coverage::language::language_for_path(rel_path) {
+        Some(l) => (l.function_sites)(source),
+        None => Ok(Vec::new()),
     }
 }
 

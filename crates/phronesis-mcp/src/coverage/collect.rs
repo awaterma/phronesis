@@ -91,14 +91,7 @@ pub fn repo_rel(path: &str) -> Option<String> {
 /// Which source files a record may target. Coverage of test binaries,
 /// benches, and build scripts is not production evidence.
 pub(super) fn is_wanted_source(rel: &str) -> bool {
-    if rel.ends_with(".rs") {
-        return rel.contains("/src/") && !rel.contains("/src/bin/") && !rel.ends_with("build.rs");
-    }
-    if rel.ends_with(".py") {
-        let name = rel.rsplit('/').next().unwrap_or(rel);
-        return name != "conftest.py" && crate::graph::python::classify_python_file(rel) != "test";
-    }
-    false
+    crate::coverage::language::language_for_path(rel).is_some_and(|l| (l.is_wanted_source)(rel))
 }
 
 /// Convert already-collected llvm-cov JSON exports into per-test hit

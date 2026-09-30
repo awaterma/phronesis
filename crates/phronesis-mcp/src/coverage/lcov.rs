@@ -178,13 +178,20 @@ pub fn hit_sites<'a>(
 ) -> (Vec<&'a FunctionSite>, Vec<&'a FunctionSite>) {
     let mut hit = Vec::new();
     let mut unattributable = Vec::new();
+    let lang = crate::coverage::language::language_for_path(&src.path);
     for site in sites {
-        if src.path.ends_with(".py") && site.body_start_line == site.start_line {
+        let one_liner = lang.is_some_and(|l| (l.is_one_liner)(site));
+        if one_liner && lang.is_some_and(|l| l.one_liner_needs_fnda) {
             match src.function_hits.iter().find(|(n, _)| n == site.name()) {
                 Some((_, n)) if *n > 0 => hit.push(site),
                 Some(_) => {}
                 None => unattributable.push(site),
             }
+        } else if one_liner {
+            // One-liner under a row whose producer has no reliable FNDA
+            // names (mangled or absent): never attribute from the DA of the
+            // declaration line alone.
+            unattributable.push(site);
         } else if src
             .line_hits
             .iter()

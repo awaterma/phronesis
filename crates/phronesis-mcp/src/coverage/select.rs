@@ -298,10 +298,9 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         .map(|e| (e.a[1].as_str(), e.a[0].as_str()))
         .collect();
     for test in &mut tests {
-        if test.test.starts_with("python:")
-            && let Some(file) = test_files.get(test.test.as_str())
-        {
-            test.command = python_command(test.test.as_str(), file);
+        if let Some(file) = test_files.get(test.test.as_str()) {
+            test.command = crate::coverage::language::language_for_test_id(&test.test)
+                .and_then(|l| (l.render_command)(&test.test, file));
         }
     }
 
@@ -349,13 +348,6 @@ fn add_entry(
     if !entry.regions.contains(&region.to_string()) {
         entry.regions.push(region.to_string());
     }
-}
-
-fn python_command(test: &str, file: &str) -> Option<String> {
-    let module = file.strip_suffix(".py")?.replace('/', "::");
-    let marker = format!("::{module}::");
-    let suffix = test.rsplit_once(&marker)?.1;
-    Some(format!("python -m pytest {file}::{suffix}"))
 }
 
 fn graph_freshness_status(root: &Path, edges: &[Edge]) -> (bool, Option<String>) {
@@ -523,20 +515,4 @@ pub fn render_json(sel: &Selection) -> String {
         })).collect::<Vec<_>>(),
     })
     .to_string()
-}
-
-#[cfg(test)]
-mod python_command_tests {
-    use super::python_command;
-    #[test]
-    fn renders_graph_python_id_as_a_pytest_node_id() {
-        assert_eq!(
-            python_command(
-                "python:pkg::tests::test_store::test_load",
-                "tests/test_store.py"
-            )
-            .as_deref(),
-            Some("python -m pytest tests/test_store.py::test_load")
-        );
-    }
 }
