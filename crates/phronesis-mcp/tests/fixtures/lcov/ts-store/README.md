@@ -5,13 +5,15 @@ environment. The lcov and manifest are hand-crafted from a real
 vitest 2.1.9 + @vitest/coverage-v8 run performed while this fixture was
 written (observed shape: flat V8 `FN`/`FNDA` names such as `load`,
 relative `SF:` paths, an empty `TN:` line, and `FNDA:0` for a one-liner
-whose declaration line is marked by module evaluation). The integration
+whose declaration line is marked by module evaluation, and one-liners
+with an `FN` entry but no `FNDA` record at all). The integration
 test replaces the manifest revision and digest after copying the fixture
 into a temporary git repository. The fixture pins Review Focus 1:
-`Store::load` is attributed from its executed body lines, while
-`oneLiner` — a single-line arrow whose declaration line has a positive
-`DA` but whose `FNDA` is zero — is reported unattributable, never guessed
-from the declaration line.
+`Store::load` is attributed from its executed body lines, while two
+single-line arrows are never guessed from their declaration lines:
+`oneLiner` has a present zero-count `FNDA` (a legitimate negative, not a
+hit and not unattributable), and `missingFnda` has no `FNDA` record at
+all, so the importer reports it unattributable.
 
 To regenerate with vitest installed, run:
 

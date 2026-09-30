@@ -165,12 +165,21 @@ fn lcov_directory_imports_typescript_body_hits_and_reports_the_one_liner_without
         store.contains("typescript:ts-store#test:store.test.ts::tests::store.test::Store loads"),
         "{store}"
     );
-    // Review Focus 1: the one-line arrow's declaration line has a positive
-    // `DA` (module evaluation marks it), but its `FNDA` is zero, so it is
-    // never attributed — not a hit, and not "unattributable" either: a
-    // present zero-count FNDA is a legitimate negative (the function was
-    // instrumented and simply not executed), unlike a missing FNDA.
+    // Review Focus 1 pins both one-liner shapes. `oneLiner`: its
+    // declaration line has a positive `DA` (module evaluation marks it),
+    // but its `FNDA` is zero, a legitimate negative: not a hit, and not
+    // "unattributable" either (the function was instrumented and simply
+    // not executed).
     assert!(!store.contains("oneLiner"), "{store}");
+    // `missingFnda`: a one-liner `FN` entry with no `FNDA` record at all,
+    // only a positive declaration-line `DA`. The plan's acceptance: it is
+    // never attributed from that `DA` (imported as not-hit, reported
+    // under `unattributable`), never guessed.
+    assert!(!store.contains("missingFnda"), "{store}");
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(stdout.contains("0 unattributable"), "{stdout}{stderr}");
+    assert!(stdout.contains("1 unattributable"), "{stdout}{stderr}");
+    assert!(
+        stderr.contains("src/store.ts::missingFnda: one-line function, no FNDA (typescript)"),
+        "{stdout}{stderr}"
+    );
 }
