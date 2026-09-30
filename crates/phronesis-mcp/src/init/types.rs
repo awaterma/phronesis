@@ -256,6 +256,12 @@ pub enum InitError {
     },
     #[error("invalid rules file: {0}")]
     InvalidRules(String),
+    #[error("invalid .phronesis/toolchains.json at {path}: {source}")]
+    Toolchains {
+        path: String,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
 }

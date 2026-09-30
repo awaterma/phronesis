@@ -1,4 +1,5 @@
 pub mod collect;
+pub mod collect_js;
 pub mod hydrate;
 pub mod import;
 pub mod language;

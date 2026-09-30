@@ -193,6 +193,22 @@ pub fn render_command(_test_id: &str, _file: &str) -> Option<String> {
     None
 }
 
+/// The runner-native test name: the `it()` title that ends the graph's
+/// `defines_test` id, extracted the way `python::render_command` extracts
+/// its pytest node id — the suffix after the test file's module marker,
+/// never a naive last-segment split (titles contain spaces, and may even
+/// contain `::`; plan decision 5).
+pub fn runner_name(test_id: &str, file: &str) -> Option<String> {
+    // Mirrors the graph's module identity (`resolve::strip_known_extension`):
+    // only a literal trailing `.ts` leaves the module segment, every other
+    // extension stays in it, so `.mts`/`.cts` reduce to `.m`/`.c` exactly
+    // as the graph's ids already do.
+    let module = file.strip_suffix(".ts").unwrap_or(file).replace('/', "::");
+    let marker = format!("::{module}::");
+    let (_, title) = test_id.rsplit_once(&marker)?;
+    Some(title.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,5 +274,46 @@ mod tests {
         assert!(!(is_wanted_source)("vitest.config.ts"));
         assert!((is_wanted_source)("src/store.ts"));
         assert!((is_wanted_source)("lib/util.mjs"));
+    }
+
+    #[test]
+    fn runner_name_extracts_the_title_after_the_test_files_module_marker() {
+        // The graph's `defines_test` ids end with the `it()` title, which
+        // may contain spaces and even `::`, so the extraction mirrors
+        // `python::render_command`'s module-marker suffix rather than a
+        // last-segment split (plan decision 5).
+        assert_eq!(
+            runner_name(
+                "typescript:myapp::tests::store.test::Store loads",
+                "tests/store.test.ts"
+            )
+            .as_deref(),
+            Some("Store loads")
+        );
+        assert_eq!(
+            runner_name(
+                "typescript:myapp::tests::store.test.js::loads (slow)::again",
+                "tests/store.test.js"
+            )
+            .as_deref(),
+            Some("loads (slow)::again")
+        );
+        // Only a literal trailing `.ts` leaves the module segment, exactly
+        // as the graph's `strip_known_extension` behaves.
+        assert_eq!(
+            runner_name(
+                "typescript:myapp::src::app.tsx::Store renders",
+                "src/app.tsx"
+            )
+            .as_deref(),
+            Some("Store renders")
+        );
+        assert_eq!(
+            runner_name(
+                "typescript:myapp::other::Store loads",
+                "tests/store.test.ts"
+            ),
+            None
+        );
     }
 }

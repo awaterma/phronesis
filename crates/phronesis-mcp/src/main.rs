@@ -482,14 +482,25 @@ enum CoverageCmd {
     /// untracked files and `.phronesis/` state are ignored), since the
     /// evidence would carry a revision that did not produce it. Applies to
     /// `--from-dir` too: it stamps HEAD and reads region maps from the tree.
+    ///
+    /// `--tool pytest-cov` emits Python per-test lcov collection, `--tool
+    /// js-cov` emits JavaScript/TypeScript per-test lcov collection under
+    /// vitest, jest, or `node --test` (runner detected from `package.json`,
+    /// `--runner` overrides); neither runs cargo.
     Collect {
-        /// Select a collector tool (`pytest-cov` enables Python collection).
+        /// Select a collector tool (`pytest-cov` enables Python collection;
+        /// `js-cov` enables JavaScript/TypeScript collection).
         #[arg(long)]
         tool: Option<String>,
-        /// Print the Python collection script for a devcontainer.
+        /// Override the JS runner detected from package.json
+        /// (with --tool js-cov).
+        #[arg(long, value_parser = ["vitest", "jest", "node"])]
+        runner: Option<String>,
+        /// Print the collection script for a devcontainer
+        /// (pytest-cov/js-cov).
         #[arg(long)]
         emit_script: bool,
-        /// Output directory for pytest lcov files.
+        /// Output directory for per-test lcov files.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Import llvm-cov JSON exports already collected under this dir
@@ -554,6 +565,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
     match cmd {
         CoverageCmd::Collect {
             tool,
+            runner,
             emit_script,
             out,
             from_dir,
@@ -563,6 +575,62 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
         } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
+            if runner.is_some() && tool.as_deref() != Some("js-cov") {
+                anyhow::bail!("--runner is only valid with --tool js-cov");
+            }
+            if tool.as_deref() == Some("js-cov") {
+                use phronesis_mcp::coverage::collect_js::{self, JsRunner};
+                use phronesis_mcp::coverage::language::typescript;
+                let runner = match runner.as_deref() {
+                    Some("vitest") => JsRunner::Vitest,
+                    Some("jest") => JsRunner::Jest,
+                    Some("node") => JsRunner::NodeTest,
+                    _ => collect_js::detect_runner(&root)?,
+                };
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for edge in graph
+                    .iter()
+                    .filter(|e| e.p == "defines_test" && e.a.len() == 2)
+                {
+                    let (file, id) = (&edge.a[0], &edge.a[1]);
+                    if phronesis_mcp::coverage::language::language_for_path(file)
+                        .is_none_or(|l| l.id != "typescript")
+                    {
+                        continue;
+                    }
+                    let name = typescript::runner_name(id, file).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "graph test id {id} does not carry the module marker of {file}"
+                        )
+                    })?;
+                    entries.push((id.clone(), file.clone(), name));
+                }
+                if entries.is_empty() {
+                    anyhow::bail!(
+                        "the graph indexes no vitest/jest tests; run `phr-mcp graph rebuild` first"
+                    );
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/js-coverage"));
+                let script = collect_js::collection_script(runner, &entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running js coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("js coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
             if tool.as_deref() == Some("pytest-cov") {
                 let output = std::process::Command::new("python3")
                     .args(["-m", "pytest", "--collect-only", "-q"])

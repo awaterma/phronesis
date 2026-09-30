@@ -114,3 +114,63 @@ fn lcov_directory_imports_python_body_hits_and_refuses_revision_mismatch() {
         before
     );
 }
+
+#[test]
+fn lcov_directory_imports_typescript_body_hits_and_reports_the_one_liner_without_fnda() {
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/ts-store");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    copy_dir(&fixture, root);
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "fixture"]);
+    let rev = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let digest = artifact_sha256(&std::fs::read(root.join("src/store.ts")).unwrap());
+    std::fs::write(
+        root.join("cov/manifest.json"),
+        serde_json::json!({"revision":rev,"files":{"src/store.ts":digest}}).to_string(),
+    )
+    .unwrap();
+    let out = phr(
+        root,
+        &[
+            "--format",
+            "lcov-dir",
+            "--tool",
+            "c8+vitest",
+            "--allow-dirty",
+            "cov",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(out.status.success(), "{stderr}");
+    let store = std::fs::read_to_string(root.join(".phronesis/coverage.jsonl")).unwrap();
+    // The body function is attributed from its executed body lines, and the
+    // record carries the graph's defines_test id (real shape: only a
+    // literal trailing `.ts` leaves the module segment).
+    assert!(store.contains("fn:src/store.ts::Store::load"), "{store}");
+    assert!(
+        store.contains("typescript:ts-store#test:store.test.ts::tests::store.test::Store loads"),
+        "{store}"
+    );
+    // Review Focus 1: the one-line arrow's declaration line has a positive
+    // `DA` (module evaluation marks it), but its `FNDA` is zero, so it is
+    // never attributed — not a hit, and not "unattributable" either: a
+    // present zero-count FNDA is a legitimate negative (the function was
+    // instrumented and simply not executed), unlike a missing FNDA.
+    assert!(!store.contains("oneLiner"), "{store}");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(stdout.contains("0 unattributable"), "{stdout}{stderr}");
+}

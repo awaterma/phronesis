@@ -437,6 +437,13 @@ fn is_canonical_revision(rev: &str) -> bool {
 /// and on every read. Revisions may be any-case hex here; the importer
 /// canonicalizes them to lowercase and the reader requires them to equal
 /// the (lowercase) index revision.
+///
+/// Per-field alphabets: a `test` id is whatever the graph's `defines_test`
+/// emitted (target infixes like `#test:`, and `it()` titles with spaces),
+/// so only emptiness, size, control characters, and surrounding whitespace
+/// are rejected; a `region` id keeps the strict identifier alphabet
+/// (the `fn:<file>::<item-path>` contract); a `tool` is an identifier that
+/// may compose producer and runner (`c8+vitest`).
 pub fn validate_record(rec: &HitRecord) -> Result<()> {
     if rec.v != COVERAGE_FORMAT {
         return Err(anyhow!(
@@ -447,9 +454,9 @@ pub fn validate_record(rec: &HitRecord) -> Result<()> {
     if rec.kind != "hit" {
         return Err(anyhow!("invalid kind: expected 'hit'"));
     }
-    validate_identifier_field(&rec.test, "test")?;
+    validate_test_field(&rec.test)?;
     validate_identifier_field(&rec.region, "region")?;
-    validate_identifier_field(&rec.tool, "tool")?;
+    validate_tool_field(&rec.tool)?;
     if rec.file.starts_with('/') {
         return Err(anyhow!("file path must be repo-relative (no leading '/')"));
     }
@@ -479,7 +486,38 @@ pub fn validate_record(rec: &HitRecord) -> Result<()> {
     Ok(())
 }
 
+/// Test ids are the graph's `defines_test` ids, and a JavaScript `it()`
+/// title may contain spaces, punctuation, even `::` (the id ends with the
+/// raw title), so this field rejects only what no id can be: empty,
+/// oversized, control characters, or surrounding whitespace.
+fn validate_test_field(test: &str) -> Result<()> {
+    if test.is_empty() {
+        return Err(anyhow!("test must be non-empty"));
+    }
+    if test.len() > 256 {
+        return Err(anyhow!("test must be <= 256 bytes"));
+    }
+    if test.chars().any(char::is_control) {
+        return Err(anyhow!("test contains control characters"));
+    }
+    if test.trim() != test {
+        return Err(anyhow!("test must not carry surrounding whitespace"));
+    }
+    Ok(())
+}
+
+/// A tool string names the coverage producer and may compose it with the
+/// runner (`c8+vitest`, `istanbul+jest`); otherwise the identifier rules
+/// apply.
+fn validate_tool_field(tool: &str) -> Result<()> {
+    validate_identifier_field_with(tool, "tool", &['+'])
+}
+
 fn validate_identifier_field(field: &str, name: &str) -> Result<()> {
+    validate_identifier_field_with(field, name, &[])
+}
+
+fn validate_identifier_field_with(field: &str, name: &str, extra: &[char]) -> Result<()> {
     if field.is_empty() {
         return Err(anyhow!("{name} must be non-empty"));
     }
@@ -490,7 +528,9 @@ fn validate_identifier_field(field: &str, name: &str) -> Result<()> {
         if c.is_control() {
             return Err(anyhow!("{name} contains control characters"));
         }
-        if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | ':' | '.' | '/' | '-') {
+        if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | ':' | '.' | '/' | '-')
+            && !extra.contains(&c)
+        {
             return Err(anyhow!("{name} contains invalid character '{c}'"));
         }
     }
@@ -669,6 +709,39 @@ mod tests {
         assert!(
             matches!(&state, StoreState::Corrupt(c) if c.reason == "digest_mismatch"),
             "{state:?}"
+        );
+    }
+
+    /// Test ids are the graph's `defines_test` ids: a TypeScript `it()`
+    /// title may contain spaces and `::`, and both Rust and TypeScript ids
+    /// carry the graph's target infix (`#test:<target>`). Tool strings
+    /// compose producer and runner (`c8+vitest`). The region contract keeps
+    /// its strict alphabet.
+    #[test]
+    fn test_ids_carry_target_infixes_and_titles_and_tools_compose() {
+        let rev = "a".repeat(40);
+        let mut rec = hit(&rev, 1).into_iter().next().unwrap();
+        rec.test = "typescript:ts-store#test:store.test.ts::tests::store.test::Store loads".into();
+        rec.tool = "c8+vitest".into();
+        validate_record(&rec).expect("a real graph id and composed tool validate");
+        rec.tool = "istanbul+jest".into();
+        validate_record(&rec).expect("the jest tool string validates");
+        rec.test = " Store loads".into();
+        assert!(
+            validate_record(&rec).is_err(),
+            "surrounding whitespace is not an id"
+        );
+        rec.test = "typescript:ok".into();
+        rec.tool = "coverage;rm".into();
+        assert!(
+            validate_record(&rec).is_err(),
+            "shell punctuation is not a tool name"
+        );
+        rec.tool = "c8+vitest".into();
+        rec.region = "fn:src/x.ts::bad#id".into();
+        assert!(
+            validate_record(&rec).is_err(),
+            "region ids keep the strict alphabet"
         );
     }
 }

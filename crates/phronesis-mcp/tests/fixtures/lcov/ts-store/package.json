@@ -1,0 +1,7 @@
+{
+  "name": "ts-store",
+  "private": true,
+  "devDependencies": {
+    "vitest": "^2.1.9"
+  }
+}
