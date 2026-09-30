@@ -501,10 +501,10 @@ the two above.
 #### 1. Coverage collection (cargo-llvm-cov, NOT tarpaulin)
 
 Function regions exist for the languages registered in
-`crates/phronesis-mcp/src/coverage/language.rs` (Rust and Python today):
-each row owns function-site extraction, the production-source filter, the
-test-id namespace, the one-liner attribution rule, and the command
-`coverage select` renders; a language without a row has no coverage
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, and Swift
+today): each row owns function-site extraction, the production-source
+filter, the test-id namespace, the one-liner attribution rule, and the
+command `coverage select` renders; a language without a row has no coverage
 semantics and `coverage select` says so.
 
 ```bash
@@ -518,6 +518,8 @@ phr-mcp coverage collect --allow-dirty       # stamp HEAD despite a modified tre
 phr-mcp coverage import <export.jsonl>       # import a normalized export
 phr-mcp coverage collect --tool pytest-cov --emit-script --out /tmp/cov  # emit Python per-test lcov collection for a devcontainer
 phr-mcp coverage import --format lcov-dir --tool coverage.py /tmp/cov  # verify manifest revision/digests and import
+phr-mcp coverage collect --tool swift-cov --emit-script --out /tmp/cov  # emit SwiftPM per-test lcov collection (swift test --filter per graph test + llvm-cov export) for a container
+phr-mcp coverage import --format lcov-dir --tool swift-cov /tmp/cov  # verify manifest revision/digests and import Swift evidence
 phr-mcp coverage select                      # relevant tests for changed regions
 ```
 

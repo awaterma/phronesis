@@ -290,6 +290,17 @@ one-liner rule, and the runnable command `coverage select` renders.
 |----------|------------|----------------|----------|----------------|
 | Rust | `.rs` | none (bare libtest names) | cargo-llvm-cov | no one-liner path: the llvm-cov collector never consults `hit_sites` |
 | Python | `.py` | `python:` | coverage.py via pytest, lcov | `body_start_line == start_line` (a split one-liner still counts); attributed by `FNDA` when present, otherwise unattributable |
+| Swift | `.swift` | `swift:` | SwiftPM per-test `swift test --enable-code-coverage --filter`, `llvm-cov export -format=lcov` | `end_line == start_line` (brace rows); one-liners are unattributable because llvm-cov's lcov `FN` names are mangled and never matched |
+
+Swift production sources mirror the graph's `file_type` classifier
+(test-named files, `Tests/` directories, `Package.swift`, and `.build/`
+carry no regions). Swift test ids are the graph's `defines_test` ids,
+`swift:<unit>::<file segments>::<scope>::<name>`; the runnable command is
+`swift test --filter '^<module>.<scope>/<name>$'` (module name = SwiftPM
+target with `-` mapped to `_`), the anchored form that matched both an
+XCTest class and a Swift Testing suite live. Xcode projects
+(`xcodebuild … -enableCodeCoverage YES` → `.xcresult` → `xcrun xccov`) are
+deferred to a later row.
 
 Coverage interchange uses lcov: `DA` line counters attribute multi-line
 functions of every language only when an executed line falls within

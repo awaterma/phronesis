@@ -27,6 +27,23 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   one-line functions without `FNDA` data are reported. Python branch regions
   are deferred. CI runs no Python; parsing and import use committed fixtures.
 
+- **Coverage evidence for Swift.** The region map produces function regions
+  for `.swift` files (free functions, methods, inits and deinits, nested
+  functions; extension methods qualify under the extended type; overloads
+  get source-order ordinals) with production sources mirroring the graph's
+  `file_type` classifier. `phr-mcp coverage collect --tool swift-cov
+  [--emit-script]` renders a container script that runs one isolated
+  `swift test --enable-code-coverage --filter` per graph test, snapshots the
+  merged profdata per run, and exports `TN:`-tagged lcov via llvm-cov, with
+  a zero-match guard accepting both the XCTest and Swift Testing one-test
+  summaries; `coverage import --format lcov-dir --tool swift-cov <dir>`
+  imports it after manifest verification. `coverage select` renders Swift
+  tests as runnable `swift test --filter '^<module>.<scope>/<name>$'`
+  commands. One-line Swift functions are never attributed (llvm-cov's lcov
+  `FN` names are mangled). The built-in `swift` toolchain def now grounds
+  per-test outcomes from XCTest and Swift Testing output lines. Xcode
+  projects are deferred.
+
 ### Changed
 
 - **`init.rs` and `audit.rs` are now directory modules.** The two largest

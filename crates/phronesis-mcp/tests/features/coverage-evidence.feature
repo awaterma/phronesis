@@ -38,3 +38,8 @@ Feature: Coverage evidence
     Given a Python project with per-test lcov evidence
     When the lcov evidence is imported and its load body changes
     Then coverage select lists the Python test and pytest command
+
+  Scenario: Swift lcov evidence selects the body test with a runnable swift test command
+    Given a Swift project with per-test lcov evidence
+    When the Swift lcov evidence is imported and its load body changes
+    Then coverage select lists the Swift test and swift test command

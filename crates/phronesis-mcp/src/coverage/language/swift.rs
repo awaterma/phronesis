@@ -149,8 +149,12 @@ pub fn is_one_liner(site: &FunctionSite) -> bool {
     site.end_line == site.start_line
 }
 
-pub fn render_command(_test_id: &str, _file: &str) -> Option<String> {
-    None
+/// `select` renders a runnable command from the graph test id; the fixture
+/// file itself is not needed (the filter selects by test name). The selector
+/// shape is probe-pinned: `^<module>.<scope>/<name>$` matched both an XCTest
+/// class and a Swift Testing suite live on Swift 6.4.
+pub fn render_command(test_id: &str, _file: &str) -> Option<String> {
+    selector_from_test_id(test_id).map(|sel| format!("swift test --filter '{sel}'"))
 }
 
 /// Parse a graph Swift test id into (module, scope, name). Real shape
@@ -292,5 +296,18 @@ mod tests {
                 .as_deref(),
             Some("store_kitTests.StoreTests/testLoad")
         );
+    }
+
+    #[test]
+    fn swift_render_command_derives_the_probed_filter_from_the_id() {
+        assert_eq!(
+            render_command(
+                "swift:StoreTests::StoreTests::StoreTests::testLoad",
+                "Tests/StoreTests/StoreTests.swift"
+            )
+            .as_deref(),
+            Some("swift test --filter '^StoreTests\\.StoreTests/testLoad$'")
+        );
+        assert_eq!(render_command("outcomes::tests::x", "crates/x/src/lib.rs"), None);
     }
 }
