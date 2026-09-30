@@ -162,10 +162,12 @@ pub fn is_one_liner(site: &FunctionSite) -> bool {
     site.end_line == site.start_line
 }
 
-/// A runnable command needs the spec's module marker mapping, which Task K3
-/// implements; until then no command is rendered.
-pub fn render_command(_test_id: &str, _file: &str) -> Option<String> {
-    None
+/// The runnable command `coverage select` renders: the busted filter form,
+/// with the runner-native full name derived from the graph id (`busted
+/// --filter '<full name>' <spec>`; PLAN.md Task K3).
+pub fn render_command(test_id: &str, file: &str) -> Option<String> {
+    let name = runner_name(test_id, file)?;
+    Some(format!("busted --filter '{name}' {file}"))
 }
 
 /// The runner-native name for a busted test: the suffix after the spec
@@ -300,6 +302,46 @@ arr.map(function(x) return x end)
             runner_name("lua:myapp::spec::store_spec::store::loads", "src/store.lua"),
             None,
             "an id whose marker does not match the spec file names nothing"
+        );
+    }
+
+    /// A pinning regression (the honesty contract of plan K decision 2):
+    /// luacov's lcov reporter emits no FN/FNDA, so through the real lua
+    /// registry row a one-line function is unattributable even when its own
+    /// declaration line carries a positive DA — never guessed.
+    #[test]
+    fn one_line_lua_sites_are_unattributable_without_fnda() {
+        use crate::coverage::lcov::{LcovSource, hit_sites};
+        let lua = crate::coverage::language::language_for_path("src/store.lua").expect("lua row");
+        let sites =
+            lua_function_sites("function M.f() return 1 end\n\nfunction M.g()\n  return 2\nend\n")
+                .expect("sites");
+        // luacov -r lcov shape: DA lines only, no FN/FNDA.
+        let src = LcovSource {
+            path: "src/store.lua".into(),
+            function_hits: vec![],
+            line_hits: vec![(1, 1), (4, 1)],
+        };
+        let (hit, unattr) = hit_sites(&sites, &src, lua);
+        assert_eq!(hit.len(), 1, "multi-line M::g hits from its body line");
+        assert_eq!(unattr.len(), 1, "the one-liner is reported unattributable");
+        assert_eq!(unattr[0].item_path, "M::f");
+    }
+
+    #[test]
+    fn render_command_pins_the_busted_filter_form() {
+        assert_eq!(
+            render_command(
+                "lua:myapp::spec::store_spec::store::loads the stored value",
+                "spec/store_spec.lua"
+            )
+            .as_deref(),
+            Some("busted --filter 'store loads the stored value' spec/store_spec.lua")
+        );
+        assert_eq!(
+            render_command("lua:myapp::spec::store_spec::store::loads", "src/store.lua"),
+            None,
+            "an id whose marker does not match the spec file renders nothing"
         );
     }
 

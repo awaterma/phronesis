@@ -290,6 +290,7 @@ one-liner rule, and the runnable command `coverage select` renders.
 |----------|------------|----------------|----------|----------------|
 | Rust | `.rs` | none (bare libtest names) | cargo-llvm-cov | no one-liner path: the llvm-cov collector never consults `hit_sites` |
 | Python | `.py` | `python:` | coverage.py via pytest, lcov | `body_start_line == start_line` (a split one-liner still counts); attributed by `FNDA` when present, otherwise unattributable |
+| Lua | `.lua` | `lua:` | luacov via busted (`luacov -r lcov`), lcov; `--filter` names the space-joined describe/it full name | `end_line == start_line`; luacov's lcov has no `FN`/`FNDA`, so a one-line function is always reported unattributable, never guessed |
 
 Coverage interchange uses lcov: `DA` line counters attribute multi-line
 functions of every language only when an executed line falls within
@@ -298,6 +299,8 @@ from the declaration line alone. Python branch regions are deferred.
 Per-test lcov imports require a manifest containing the collection revision
 and SHA-256 digests for covered source files; the importer verifies both
 against the host tree. Test ids are the graph's `defines_test` ids; Python's
-use the form `python:<namespace>::<path segments>::<test function>`.
-Parts H–L of the all-languages plan add rows; a language without a row has
-no coverage semantics and `coverage select` says so.
+use the form `python:<namespace>::<path segments>::<test function>`, and
+Lua's busted specs emit `lua:<unit>::<spec path segments>::<describe titles>::
+<it title>` (detected through the tree-sitter-lua parse). Parts H–L of the
+all-languages plan add rows; a language without a row has no coverage
+semantics and `coverage select` says so.

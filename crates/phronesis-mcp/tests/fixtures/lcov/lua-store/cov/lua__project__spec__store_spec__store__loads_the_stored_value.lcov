@@ -1,0 +1,14 @@
+TN:lua:project::spec::store_spec::store::loads the stored value
+# node: busted --filter store loads the stored value spec/store_spec.lua
+SF:src/store.lua
+DA:1,1
+DA:3,1
+DA:4,1
+DA:7,1
+DA:8,1,5bd1e8f1f0e11c40e19e0f7f6cd68b33
+DA:11,0
+DA:12,0
+DA:15,0
+LH:5
+LF:8
+end_of_record

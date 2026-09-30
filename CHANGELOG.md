@@ -8,6 +8,27 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Coverage evidence for Lua.** The registry grows a `lua` row — function
+  regions for `.lua` files via the tree-sitter-lua grammar (declared
+  functions with dotted and method-style names, named anonymous functions;
+  callbacks are not sites), the production-source filter (spec trees,
+  `*_spec.lua`, `.luarocks/`, `lua_modules/` excluded), and the brace-row
+  one-liner rule, so a one-line Lua function imports as `unattributable`
+  because luacov's lcov reporter emits no `FN`/`FNDA`. The Lua graph sensor
+  now emits `defines_test` for busted specs (`describe`/`it` call nodes,
+  ids shaped like `lua:<unit>::<spec segments>::<describe titles>::<it
+  title>`); `coverage collect --tool lua-cov --emit-script` emits isolated
+  per-test collection under busted `--coverage --filter` with a zero-match
+  guard on busted's summary line and a lua-written manifest recording the
+  runner; `coverage import --format lcov-dir --tool luacov+busted` imports
+  the evidence after manifest verification; and `coverage select` renders
+  `busted --filter '<full name>' <spec>` commands. The `lua` pack ships the
+  `busted` toolchain def through a merge-if-absent language-pack writer
+  (missing ids appended, user-edited entries never touched). CI runs no
+  Lua; parsing, the script, and import use committed fixtures and tests
+  (busted and luacov are not installed on the build machine; their flags
+  and summary shapes are pinned from busted's and luacov's own sources).
+
 - **Coverage language registry.** One row per language in
   `coverage/language.rs` owns function-site extraction, the
   production-source filter, the test-id namespace, the per-language

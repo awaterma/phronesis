@@ -38,3 +38,8 @@ Feature: Coverage evidence
     Given a Python project with per-test lcov evidence
     When the lcov evidence is imported and its load body changes
     Then coverage select lists the Python test and pytest command
+
+  Scenario: Lua lcov evidence selects the body test with a runnable busted command
+    Given a Lua project with per-test luacov evidence
+    When the luacov evidence is imported and its load body changes
+    Then coverage select lists the Lua test and busted command

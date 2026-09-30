@@ -501,11 +501,11 @@ the two above.
 #### 1. Coverage collection (cargo-llvm-cov, NOT tarpaulin)
 
 Function regions exist for the languages registered in
-`crates/phronesis-mcp/src/coverage/language.rs` (Rust and Python today):
-each row owns function-site extraction, the production-source filter, the
-test-id namespace, the one-liner attribution rule, and the command
-`coverage select` renders; a language without a row has no coverage
-semantics and `coverage select` says so.
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, and Lua
+today): each row owns function-site extraction, the production-source
+filter, the test-id namespace, the one-liner attribution rule, and the
+command `coverage select` renders; a language without a row has no
+coverage semantics and `coverage select` says so.
 
 ```bash
 # Per-test isolated collection over the machinery test set, then import at HEAD.
@@ -518,6 +518,8 @@ phr-mcp coverage collect --allow-dirty       # stamp HEAD despite a modified tre
 phr-mcp coverage import <export.jsonl>       # import a normalized export
 phr-mcp coverage collect --tool pytest-cov --emit-script --out /tmp/cov  # emit Python per-test lcov collection for a devcontainer
 phr-mcp coverage import --format lcov-dir --tool coverage.py /tmp/cov  # verify manifest revision/digests and import
+phr-mcp coverage collect --tool lua-cov --emit-script --out /tmp/cov   # emit Lua per-test lcov collection under busted/luacov for a devcontainer
+phr-mcp coverage import --format lcov-dir --tool luacov+busted /tmp/cov  # verify the Lua manifest and import; the `lua` pack ships the busted toolchain def
 phr-mcp coverage select                      # relevant tests for changed regions
 ```
 

@@ -47,15 +47,19 @@ cargo run -- coverage collect [--from-dir DIR] [--bins a,b] [--allow-dirty]  # l
 cargo run -- coverage import <export.jsonl>  # Import a normalized per-test coverage export into the evidence store
 cargo run -- coverage import --format lcov-dir --tool coverage.py <dir>  # Import per-test lcov after manifest verification
 cargo run -- coverage collect --tool pytest-cov --emit-script  # Emit container-friendly isolated pytest collection
+cargo run -- coverage collect --tool lua-cov --emit-script  # Emit container-friendly isolated busted/luacov collection (Lua)
+cargo run -- coverage import --format lcov-dir --tool luacov+busted <dir>  # Import per-test Lua lcov after manifest verification
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 
 Function regions exist for the languages registered in
-`crates/phronesis-mcp/src/coverage/language.rs` (Rust and Python today):
-each row owns function-site extraction, the production-source filter, the
-test-id namespace, the one-liner attribution rule, and the command
-`coverage select` renders; a language without a row has no coverage
-semantics and `coverage select` says so.
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, and Lua
+today): each row owns function-site extraction, the production-source
+filter, the test-id namespace, the one-liner attribution rule, and the
+command `coverage select` renders; a language without a row has no
+coverage semantics and `coverage select` says so. Lua's row pairs with
+the `lua` pack's busted toolchain def, written merge-if-absent into
+`.phronesis/toolchains.json`.
 
 ### Payload-contract corpus
 
