@@ -50,6 +50,13 @@ cargo run -- coverage collect --tool pytest-cov --emit-script  # Emit container-
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 
+Function regions exist for the languages registered in
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust and Python today):
+each row owns function-site extraction, the production-source filter, the
+test-id namespace, the one-liner attribution rule, and the command
+`coverage select` renders; a language without a row has no coverage
+semantics and `coverage select` says so.
+
 ### Payload-contract corpus
 
 Committed fixtures of CLI hook payloads under

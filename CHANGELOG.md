@@ -8,6 +8,14 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Coverage language registry.** One row per language in
+  `coverage/language.rs` owns function-site extraction, the
+  production-source filter, the test-id namespace, the per-language
+  one-liner attribution rule, and the command `coverage select` renders.
+  Rust and Python behaviour is unchanged; the spec's Languages section is
+  now a table (`docs/specs/SPEC-coverage-evidence.md` §12) that future
+  languages extend by adding a row.
+
 - **Coverage evidence for Python.** The region map produces function regions
   for `.py` files; `phr-mcp coverage import --format lcov-dir --tool
   coverage.py <dir>` imports per-test lcov after checking the collection

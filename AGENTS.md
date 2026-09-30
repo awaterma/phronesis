@@ -500,6 +500,13 @@ the two above.
 
 #### 1. Coverage collection (cargo-llvm-cov, NOT tarpaulin)
 
+Function regions exist for the languages registered in
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust and Python today):
+each row owns function-site extraction, the production-source filter, the
+test-id namespace, the one-liner attribution rule, and the command
+`coverage select` renders; a language without a row has no coverage
+semantics and `coverage select` says so.
+
 ```bash
 # Per-test isolated collection over the machinery test set, then import at HEAD.
 # tarpaulin cannot instrument on macOS — it produces reports with zero covered

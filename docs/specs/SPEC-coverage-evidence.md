@@ -275,18 +275,29 @@ If a later rule needs to count relevant tests, the host re-asserts per-element `
 
 ## 11. Open questions
 
-## Languages
-
-The region map extracts Rust and Python function sites. Coverage interchange
-uses lcov: `DA` line counters attribute multi-line functions only when an
-executed line falls within the function body, because coverage.py marks `def`
-lines when a module is imported. One-line Python functions use `FNDA` when
-present and otherwise remain unattributable. Python branch regions are
-deferred. Per-test lcov imports require a manifest containing the collection
-revision and SHA-256 digests for covered source files; the importer verifies
-both against the host tree. Python test ids use the graph form
-`python:<namespace>::<path segments>::<test function>`.
-
 1. Branch-site anchor scheme (condition-text hash vs tree-sitter node identity) — Phase 1 spike, decided by A2.
 2. Should `changed_region` persist across the pre→post hook pair via in-flight state for commit correlation?
 3. Should import record a journey tag (`coverage:imported`) so confidence can count fresh coverage as a signal? (lean yes, Phase 3)
+
+## 12. Languages
+
+One row per language in the coverage language registry
+(`crates/phronesis-mcp/src/coverage/language.rs`) decides function-site
+extraction, the production-source filter, the test-id namespace, the
+one-liner rule, and the runnable command `coverage select` renders.
+
+| Language | Extensions | Test-id prefix | Producer | One-liner rule |
+|----------|------------|----------------|----------|----------------|
+| Rust | `.rs` | none (bare libtest names) | cargo-llvm-cov | no one-liner path: the llvm-cov collector never consults `hit_sites` |
+| Python | `.py` | `python:` | coverage.py via pytest, lcov | `body_start_line == start_line` (a split one-liner still counts); attributed by `FNDA` when present, otherwise unattributable |
+
+Coverage interchange uses lcov: `DA` line counters attribute multi-line
+functions of every language only when an executed line falls within
+`[body_start_line, end_line]`, and one-line functions are never attributed
+from the declaration line alone. Python branch regions are deferred.
+Per-test lcov imports require a manifest containing the collection revision
+and SHA-256 digests for covered source files; the importer verifies both
+against the host tree. Test ids are the graph's `defines_test` ids; Python's
+use the form `python:<namespace>::<path segments>::<test function>`.
+Parts H–L of the all-languages plan add rows; a language without a row has
+no coverage semantics and `coverage select` says so.
