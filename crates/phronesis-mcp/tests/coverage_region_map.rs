@@ -504,3 +504,24 @@ fn a_whole_file_region_matches_every_reference_into_that_file() {
         "legacy refs name no file"
     );
 }
+
+// Task H1: the registry dispatches `.ts`/`.tsx` (and the other TypeScript
+// row extensions) through the per-path extractor, so TSX files parse with
+// the TSX grammar rather than the plain TypeScript one.
+#[test]
+fn extract_function_sites_for_handles_typescript_and_tsx() {
+    use phronesis_mcp::coverage::region_map::extract_function_sites_for;
+    let sites = extract_function_sites_for(
+        "src/x.ts",
+        "export function helper(x: number) {\n    return x + 1;\n}\n",
+    )
+    .expect("ts sites");
+    assert_eq!(sites.len(), 1);
+    assert_eq!(sites[0].item_path, "helper");
+    assert_eq!((sites[0].start_line, sites[0].end_line), (1, 3));
+    // TSX content only parses under the TSX grammar; the extension decides.
+    let tsx = extract_function_sites_for("src/x.tsx", "export const C = () => <div/>;\n")
+        .expect("tsx sites");
+    assert_eq!(tsx.len(), 1);
+    assert_eq!(tsx[0].item_path, "C");
+}

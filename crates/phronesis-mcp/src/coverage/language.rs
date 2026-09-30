@@ -5,11 +5,16 @@
 
 use crate::coverage::region_map::{FunctionSite, extract_function_sites, python_function_sites};
 
+pub mod typescript;
+
 pub struct CoverageLanguage {
     pub id: &'static str,
     pub extensions: &'static [&'static str],
     pub test_id_prefix: &'static str,
     pub function_sites: fn(&str) -> anyhow::Result<Vec<FunctionSite>>,
+    /// Per-path extraction when the grammar choice depends on the file
+    /// (TSX vs TypeScript); `extract_function_sites_for` prefers it.
+    pub function_sites_for_path: Option<fn(&str, &str) -> anyhow::Result<Vec<FunctionSite>>>,
     pub is_wanted_source: fn(&str) -> bool,
     pub is_one_liner: fn(&FunctionSite) -> bool,
     pub one_liner_needs_fnda: bool,
@@ -63,6 +68,7 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         extensions: &["rs"],
         test_id_prefix: "",
         function_sites: extract_function_sites,
+        function_sites_for_path: None,
         is_wanted_source: rust::is_wanted_source,
         is_one_liner: rust::is_one_liner,
         one_liner_needs_fnda: false,
@@ -73,10 +79,22 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         extensions: &["py"],
         test_id_prefix: "python:",
         function_sites: python_function_sites,
+        function_sites_for_path: None,
         is_wanted_source: python::is_wanted_source,
         is_one_liner: python::is_one_liner,
         one_liner_needs_fnda: true,
         render_command: python::render_command,
+    },
+    CoverageLanguage {
+        id: "typescript",
+        extensions: &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
+        test_id_prefix: "typescript:",
+        function_sites: typescript::function_sites,
+        function_sites_for_path: Some(typescript::function_sites_for_path),
+        is_wanted_source: typescript::is_wanted_source,
+        is_one_liner: typescript::is_one_liner,
+        one_liner_needs_fnda: true,
+        render_command: typescript::render_command,
     },
 ];
 
@@ -116,7 +134,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_dispatches_rust_and_python_and_nothing_else_yet() {
+    fn registry_dispatches_rust_python_and_typescript_and_rejects_the_rest() {
         assert_eq!(
             language_for_path("crates/x/src/lib.rs").map(|l| l.id),
             Some("rust")
@@ -127,8 +145,20 @@ mod tests {
         );
         assert_eq!(language_for_path("a/b.txt").map(|l| l.id), None);
         assert_eq!(
+            language_for_path("src/x.ts").map(|l| l.id),
+            Some("typescript")
+        );
+        assert_eq!(
+            language_for_path("src/x.js").map(|l| l.id),
+            Some("typescript")
+        );
+        assert_eq!(
             language_for_test_id("python:pkg::tests::test_store::test_load").map(|l| l.id),
             Some("python")
+        );
+        assert_eq!(
+            language_for_test_id("typescript:myapp::tests::store::Store loads").map(|l| l.id),
+            Some("typescript")
         );
         assert_eq!(
             language_for_test_id("outcomes::tests::a_bare_libtest_name").map(|l| l.id),

@@ -1,4 +1,6 @@
-//! The TypeScript sensor: structural edges from one `.ts` / `.tsx` file.
+//! The TypeScript sensor: structural edges from one `.ts` / `.tsx` file
+//! (and, since the graph has no separate JavaScript identity, the plain
+//! `.js`/`.jsx`/`.mjs`/`.cjs` dialect files of the same units).
 //!
 //! Separate from `super::extract` and `super::python` because almost nothing
 //! is shared. TypeScript has no declared module tree — the directory layout
@@ -16,8 +18,11 @@ use tree_sitter::Node;
 /// Classification of a TypeScript file, as the `file_type` relation.
 ///
 /// Follows the conventions jest, vitest and mocha share: `*.test.*`,
-/// `*.spec.*`, or anything beneath a `__tests__` directory.
-fn file_type(file_path: &str) -> &'static str {
+/// `*.spec.*`, or anything beneath a `__tests__` directory. The coverage
+/// production-source filter (`coverage::language::typescript::is_wanted_source`)
+/// agrees with this classifier wherever both speak, so it is the source of
+/// truth for those three rules.
+pub(crate) fn file_type(file_path: &str) -> &'static str {
     let name = file_path.rsplit('/').next().unwrap_or(file_path);
     let stem = name.rsplit_once('.').map_or(name, |(s, _)| s);
     if stem.ends_with(".test") || stem.ends_with(".spec") {
@@ -509,7 +514,10 @@ pub fn extract_typescript(file_path: &str, content: &str, unit: &UnitContext) ->
         return Extracted::default();
     }
 
-    let tsx = file_path.ends_with(".tsx");
+    // `.tsx` and `.jsx` carry JSX syntax, which only the TSX grammar parses;
+    // every other claimed extension (`.ts`, `.mts`, `.cts`, `.js`, `.mjs`,
+    // `.cjs`) parses under the plain TypeScript grammar.
+    let tsx = file_path.ends_with(".tsx") || file_path.ends_with(".jsx");
     let Some(parsed) = ParsedFile::parse_typescript(content, tsx) else {
         return Extracted::unparseable();
     };
