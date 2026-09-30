@@ -459,8 +459,7 @@ const SWIFT_COMPILE_ERROR: &str = r"\.swift:\d+:\d+: error:";
 /// The lazy name stops at the bracket/paren run before the status token, so
 /// `Test run with N tests` summaries (no bracket run before the status)
 /// never count as a test.
-const SWIFT_PER_TEST: &str =
-    r"(?m)^(?:Test Case '-\[|[\x{2714}\x{2718}] Test )(?P<name>.+?)[()\]']+\s+(?P<status>passed|failed)";
+const SWIFT_PER_TEST: &str = r"(?m)^(?:Test Case '-\[|[\x{2714}\x{2718}] Test )(?P<name>.+?)[()\]']+\s+(?P<status>passed|failed)";
 
 /// The bundled defs: cargo, xcodebuild, and `swift build|test`. pytest/tsc
 /// examples ship via `phr-mcp init` as project defs so the built-in surface

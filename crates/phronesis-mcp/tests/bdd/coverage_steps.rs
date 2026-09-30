@@ -651,8 +651,7 @@ async fn then_python_selection_command(world: &mut World) {
 async fn given_swift_lcov_project(world: &mut World) {
     let dir = TempDir::new().expect("tempdir");
     let root = dir.path();
-    let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/swift-store");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/swift-store");
     fn copy(src: &Path, dst: &Path) {
         for e in std::fs::read_dir(src).unwrap() {
             let e = e.unwrap();

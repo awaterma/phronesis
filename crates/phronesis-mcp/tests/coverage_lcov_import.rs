@@ -117,8 +117,7 @@ fn lcov_directory_imports_python_body_hits_and_refuses_revision_mismatch() {
 
 #[test]
 fn lcov_directory_imports_swift_body_hits_and_reports_one_liners_unattributable() {
-    let fixture =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/swift-store");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/swift-store");
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path();
     copy_dir(&fixture, root);
@@ -141,7 +140,8 @@ fn lcov_directory_imports_swift_body_hits_and_reports_one_liners_unattributable(
     let digest = artifact_sha256(&std::fs::read(root.join("Sources/Store/Store.swift")).unwrap());
     std::fs::write(
         root.join("cov/manifest.json"),
-        serde_json::json!({"revision":rev,"files":{"Sources/Store/Store.swift":digest}}).to_string(),
+        serde_json::json!({"revision":rev,"files":{"Sources/Store/Store.swift":digest}})
+            .to_string(),
     )
     .unwrap();
     let out = phr(

@@ -570,8 +570,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                     &phronesis_mcp::graph::store::graph_path(&root),
                 )
                 .unwrap_or_default();
-                let entries =
-                    phronesis_mcp::coverage::collect_swift::collection_entries(&graph);
+                let entries = phronesis_mcp::coverage::collect_swift::collection_entries(&graph);
                 if entries.is_empty() {
                     anyhow::bail!(
                         "graph lists no swift defines_test ids; run `phr-mcp graph rebuild`"

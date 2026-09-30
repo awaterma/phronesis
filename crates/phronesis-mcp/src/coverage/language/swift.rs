@@ -5,7 +5,9 @@
 //! registry row says `one_liner_needs_fnda: false` and one-line Swift
 //! functions are reported `unattributable` rather than guessed.
 
-use crate::coverage::region_map::{FunctionSite, RawSite, assign_function_ordinals, inclusive_end_line};
+use crate::coverage::region_map::{
+    FunctionSite, RawSite, assign_function_ordinals, inclusive_end_line,
+};
 use crate::syntax::parsed::ParsedFile;
 use tree_sitter::Node;
 
@@ -79,13 +81,20 @@ fn walk(node: Node<'_>, src: &[u8], scope: &mut Vec<String>, out: &mut Vec<RawSi
             return;
         }
         "function_declaration" | "init_declaration" | "deinit_declaration" => {
-            let body = node.child_by_field_name("body").filter(|b| b.kind() == "function_body");
+            let body = node
+                .child_by_field_name("body")
+                .filter(|b| b.kind() == "function_body");
             // Protocol requirements (and other bodyless declarations) are
             // declarations, not definitions: no site.
             if let Some(body) = body {
                 let start_line = node.start_position().row as u64 + 1;
                 let name = function_name(node, src).unwrap_or_else(|| {
-                    if node.kind() == "init_declaration" { "init" } else { "deinit" }.to_string()
+                    if node.kind() == "init_declaration" {
+                        "init"
+                    } else {
+                        "deinit"
+                    }
+                    .to_string()
                 });
                 let mut path = scope.clone();
                 path.push(name.clone());
@@ -197,7 +206,6 @@ pub fn runner_native_name(test_id: &str) -> Option<String> {
     Some(format!("{module}.{scope}/{name}"))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,7 +237,14 @@ mod tests {
         let sites = swift_function_sites(FIXTURE).expect("parses");
         let rows: Vec<(&str, u64, u64, u64)> = sites
             .iter()
-            .map(|s| (s.item_path.as_str(), s.start_line, s.body_start_line, s.end_line))
+            .map(|s| {
+                (
+                    s.item_path.as_str(),
+                    s.start_line,
+                    s.body_start_line,
+                    s.end_line,
+                )
+            })
             .collect();
         assert_eq!(
             rows,
@@ -253,12 +268,20 @@ mod tests {
         assert_eq!(row.test_id_prefix, "swift:");
         assert!(!row.one_liner_needs_fnda, "llvm-cov FN names are mangled");
         assert!((row.is_wanted_source)("Sources/Store/Store.swift"));
-        assert!((row.is_wanted_source)("App/NPCOverlay.swift"), "target context, not only Sources/");
+        assert!(
+            (row.is_wanted_source)("App/NPCOverlay.swift"),
+            "target context, not only Sources/"
+        );
         assert!(!(row.is_wanted_source)("AppTests/FooTests.swift"));
         assert!(!(row.is_wanted_source)("Tests/Unit/Helpers.swift"));
-        assert!((row.is_wanted_source)("App/Tester.swift"), "*Test.swift naming, not *Tester.swift");
+        assert!(
+            (row.is_wanted_source)("App/Tester.swift"),
+            "*Test.swift naming, not *Tester.swift"
+        );
         assert!(!(row.is_wanted_source)("Package.swift"));
-        assert!(!(row.is_wanted_source)(".build/out/Products/Debug/Store.swift"));
+        assert!(!(row.is_wanted_source)(
+            ".build/out/Products/Debug/Store.swift"
+        ));
         let one_line = FunctionSite {
             item_path: "f".into(),
             start_line: 4,
@@ -272,7 +295,10 @@ mod tests {
             end_line: 5,
         };
         assert!((row.is_one_liner)(&one_line), "brace rows: end==start");
-        assert!(!(row.is_one_liner)(&multi_line), "multi-line brace fn is not a one-liner");
+        assert!(
+            !(row.is_one_liner)(&multi_line),
+            "multi-line brace fn is not a one-liner"
+        );
     }
 
     #[test]
@@ -292,8 +318,7 @@ mod tests {
         assert_eq!(selector_from_test_id("rust:phronesis#test:x"), None);
         assert_eq!(selector_from_test_id("swift:only-two"), None);
         assert_eq!(
-            runner_native_name("swift:store-kitTests::StoreTests::StoreTests::testLoad")
-                .as_deref(),
+            runner_native_name("swift:store-kitTests::StoreTests::StoreTests::testLoad").as_deref(),
             Some("store_kitTests.StoreTests/testLoad")
         );
     }
@@ -308,6 +333,9 @@ mod tests {
             .as_deref(),
             Some("swift test --filter '^StoreTests\\.StoreTests/testLoad$'")
         );
-        assert_eq!(render_command("outcomes::tests::x", "crates/x/src/lib.rs"), None);
+        assert_eq!(
+            render_command("outcomes::tests::x", "crates/x/src/lib.rs"),
+            None
+        );
     }
 }

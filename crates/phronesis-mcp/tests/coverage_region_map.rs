@@ -160,7 +160,11 @@ fn swift_sites_dispatch_through_the_registry_and_qualify_inits_and_ext_methods()
         .iter()
         .map(|s| (s.item_path.as_str(), s.start_line, s.end_line))
         .collect();
-    assert_eq!(rows, vec![("Outer::deinit", 2, 2), ("Outer::twice", 5, 5)], "{sites:?}");
+    assert_eq!(
+        rows,
+        vec![("Outer::deinit", 2, 2), ("Outer::twice", 5, 5)],
+        "{sites:?}"
+    );
     assert_eq!(
         sites[0].region_id("Sources/Store/Store.swift"),
         function_region_id("Sources/Store/Store.swift", "Outer::deinit")

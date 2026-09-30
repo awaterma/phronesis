@@ -147,7 +147,9 @@ mod tests {
 
     #[test]
     fn script_runs_one_isolated_swift_test_per_entry_and_exports_lcov() {
-        let entries = vec![entry("swift:store-kitTests::StoreTests::StoreTests::testLoad")];
+        let entries = vec![entry(
+            "swift:store-kitTests::StoreTests::StoreTests::testLoad",
+        )];
         let s = collection_script(&entries, Path::new("/tmp/cov"));
         assert!(
             s.contains(
@@ -170,8 +172,14 @@ mod tests {
             s.contains("TN:swift:store-kitTests::StoreTests::StoreTests::testLoad"),
             "{s}"
         );
-        assert!(s.contains("# node: store_kitTests.StoreTests/testLoad"), "{s}");
-        assert!(s.contains("manifest.json") && s.contains("rev-parse"), "{s}");
+        assert!(
+            s.contains("# node: store_kitTests.StoreTests/testLoad"),
+            "{s}"
+        );
+        assert!(
+            s.contains("manifest.json") && s.contains("rev-parse"),
+            "{s}"
+        );
         assert!(
             s.contains("phr-mcp coverage import --format lcov-dir --tool swift-cov"),
             "{s}"
@@ -181,11 +189,15 @@ mod tests {
     #[test]
     fn script_resolves_profdata_llvm_cov_and_exactly_one_xctest_bundle() {
         let s = collection_script(
-            &[entry("swift:store-kitTests::StoreTests::StoreTests::testLoad")],
+            &[entry(
+                "swift:store-kitTests::StoreTests::StoreTests::testLoad",
+            )],
             Path::new("/tmp/cov"),
         );
         assert!(
-            s.contains("PROFDATA=$(swift test --show-codecov-path | xargs dirname)/default.profdata"),
+            s.contains(
+                "PROFDATA=$(swift test --show-codecov-path | xargs dirname)/default.profdata"
+            ),
             "{s}"
         );
         assert!(
