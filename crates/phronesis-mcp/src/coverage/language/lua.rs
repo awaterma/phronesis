@@ -168,6 +168,21 @@ pub fn render_command(_test_id: &str, _file: &str) -> Option<String> {
     None
 }
 
+/// The runner-native name for a busted test: the suffix after the spec
+/// file's module marker — describe titles and the it title, converted to
+/// the space-joined form busted builds its filter names from
+/// (`busted/modules/filter_loader.lua`). Extracted the way
+/// `python::render_command` extracts its pytest node id, never a naive
+/// last-segment split: titles may contain spaces, and a title may even
+/// contain `::` (such a title renders the wrong filter, and the
+/// collection guard catches that loudly rather than silently).
+pub fn runner_name(test_id: &str, file: &str) -> Option<String> {
+    let module = file.strip_suffix(".lua")?.replace('/', "::");
+    let marker = format!("::{module}::");
+    let (_, title) = test_id.rsplit_once(&marker)?;
+    Some(title.replace("::", " "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -262,6 +277,30 @@ arr.map(function(x) return x end)
         };
         assert!(is_one_liner(&one_line));
         assert!(!is_one_liner(&multi_line));
+    }
+
+    #[test]
+    fn runner_name_is_the_busted_full_name_after_the_module_marker() {
+        // busted composes full names by joining describe titles and the it
+        // title with spaces (busted/modules/filter_loader.lua), so the
+        // `::`-joined id suffix converts to the runner-native name.
+        assert_eq!(
+            runner_name(
+                "lua:myapp::spec::store_spec::store::loads the store",
+                "spec/store_spec.lua"
+            )
+            .as_deref(),
+            Some("store loads the store")
+        );
+        assert_eq!(
+            runner_name("lua:myapp::spec::store_spec::plain", "spec/store_spec.lua").as_deref(),
+            Some("plain")
+        );
+        assert_eq!(
+            runner_name("lua:myapp::spec::store_spec::store::loads", "src/store.lua"),
+            None,
+            "an id whose marker does not match the spec file names nothing"
+        );
     }
 
     #[test]

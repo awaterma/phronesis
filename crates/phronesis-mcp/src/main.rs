@@ -482,14 +482,21 @@ enum CoverageCmd {
     /// untracked files and `.phronesis/` state are ignored), since the
     /// evidence would carry a revision that did not produce it. Applies to
     /// `--from-dir` too: it stamps HEAD and reads region maps from the tree.
+    ///
+    /// `--tool pytest-cov` emits Python per-test lcov collection and
+    /// `--tool lua-cov` emits Lua per-test lcov collection under busted
+    /// and luacov (entries from the graph's defines_test ids); neither
+    /// runs cargo.
     Collect {
-        /// Select a collector tool (`pytest-cov` enables Python collection).
+        /// Select a collector tool (`pytest-cov` enables Python collection;
+        /// `lua-cov` enables Lua collection under busted/luacov).
         #[arg(long)]
         tool: Option<String>,
-        /// Print the Python collection script for a devcontainer.
+        /// Print the collection script for a devcontainer
+        /// (pytest-cov/lua-cov).
         #[arg(long)]
         emit_script: bool,
-        /// Output directory for pytest lcov files.
+        /// Output directory for per-test lcov files.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Import llvm-cov JSON exports already collected under this dir
@@ -563,6 +570,51 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
         } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
+            if tool.as_deref() == Some("lua-cov") {
+                use phronesis_mcp::coverage::collect_lua;
+                use phronesis_mcp::coverage::language::{language_for_path, lua};
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for edge in graph
+                    .iter()
+                    .filter(|e| e.p == "defines_test" && e.a.len() == 2)
+                {
+                    let (file, id) = (&edge.a[0], &edge.a[1]);
+                    if language_for_path(file).is_none_or(|l| l.id != "lua") {
+                        continue;
+                    }
+                    let name = lua::runner_name(id, file).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "graph test id {id} does not carry the module marker of {file}"
+                        )
+                    })?;
+                    entries.push((id.clone(), file.clone(), name));
+                }
+                if entries.is_empty() {
+                    anyhow::bail!(
+                        "the graph indexes no busted tests; run `phr-mcp graph rebuild` first"
+                    );
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/lua-coverage"));
+                let script = collect_lua::collection_script(&entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running lua coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("lua coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
             if tool.as_deref() == Some("pytest-cov") {
                 let output = std::process::Command::new("python3")
                     .args(["-m", "pytest", "--collect-only", "-q"])

@@ -33,6 +33,7 @@ mod rules_core;
 mod rules_other;
 mod rules_python;
 mod rules_rust;
+mod writer_toolchains;
 mod writers_hooks;
 mod writers_scaffold;
 
@@ -67,6 +68,7 @@ pub fn run(opts: InitOpts) -> Result<InitReport, InitError> {
         write_context_scaffold(&root, &opts, &mut report)?;
         write_wiki_scaffold(&root, &opts, &mut report)?;
         write_confidence_scaffold(&root, &opts, &mut report)?;
+        writer_toolchains::write_language_pack_toolchains(&root, &opts, &mut report)?;
         write_journey_scaffold(&root, &opts, &mut report)?;
         build_structural_graph(&root, &opts, &mut report);
     }
