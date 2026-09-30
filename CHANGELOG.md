@@ -8,6 +8,13 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Java coverage evidence.** Java method and constructor regions use
+  JaCoCo XML per-test reports, imported with `coverage import --format
+  jacoco-dir`; `coverage collect --tool java-cov` emits Maven or Gradle
+  collection scripts. JUnit `@Test` methods in test source roots now have
+  graph `defines_test` ids. The opt-in `java` pack adds Maven and Gradle
+  toolchain definitions without starter rules.
+
 - **Coverage language registry.** One row per language in
   `coverage/language.rs` owns function-site extraction, the
   production-source filter, the test-id namespace, the per-language

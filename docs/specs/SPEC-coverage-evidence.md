@@ -290,6 +290,12 @@ one-liner rule, and the runnable command `coverage select` renders.
 |----------|------------|----------------|----------|----------------|
 | Rust | `.rs` | none (bare libtest names) | cargo-llvm-cov | no one-liner path: the llvm-cov collector never consults `hit_sites` |
 | Python | `.py` | `python:` | coverage.py via pytest, lcov | `body_start_line == start_line` (a split one-liner still counts); attributed by `FNDA` when present, otherwise unattributable |
+| Java | `.java` | `java:` | JaCoCo XML converted to the shared in-memory source shape | `end_line == start_line`; attributed by method counters when present |
+
+Java JaCoCo XML is imported directly, not as lcov text. Kotlin source files in
+a mixed module are skipped because this language row describes Java sites;
+anonymous-class methods are not independent sites. Abstract methods have no
+body region.
 
 Coverage interchange uses lcov: `DA` line counters attribute multi-line
 functions of every language only when an executed line falls within

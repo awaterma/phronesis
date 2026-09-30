@@ -299,8 +299,12 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         .collect();
     for test in &mut tests {
         if let Some(file) = test_files.get(test.test.as_str()) {
+            let tool = hits
+                .iter()
+                .find(|hit| hit.test == test.test)
+                .map(|hit| hit.tool.as_str());
             test.command = crate::coverage::language::language_for_test_id(&test.test)
-                .and_then(|l| (l.render_command)(&test.test, file));
+                .and_then(|l| (l.render_command_with_tool)(&test.test, file, tool));
         }
     }
 

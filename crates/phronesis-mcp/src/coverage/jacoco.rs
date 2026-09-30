@@ -8,6 +8,7 @@ pub struct JacocoSummary {
     pub ambiguous: Vec<String>,
     pub kotlin_skipped: Vec<String>,
 }
+pub type TestSources = Vec<(String, Vec<LcovSource>)>;
 
 pub fn jacoco_to_sources(
     xml: &str,
@@ -75,10 +76,7 @@ pub fn jacoco_to_sources(
     Ok((files, skipped))
 }
 
-pub fn read_jacoco_dir(
-    root: &Path,
-    dir: &Path,
-) -> Result<(Vec<(String, Vec<LcovSource>)>, JacocoSummary)> {
+pub fn read_jacoco_dir(root: &Path, dir: &Path) -> Result<(TestSources, JacocoSummary)> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok().map(|e| e.path()))
         .filter(|p| {
@@ -203,5 +201,30 @@ mod tests {
             vec!["Store::load"]
         );
         assert!(unattr.is_empty());
+    }
+
+    #[test]
+    fn committed_java_store_fixture_maps_and_attributes_its_body_hits() {
+        const XML: &str = include_str!("../../tests/fixtures/jacoco/java-store/cov/1/jacoco.xml");
+        const SOURCE: &str = include_str!(
+            "../../tests/fixtures/jacoco/java-store/core/src/main/java/com/x/Store.java"
+        );
+        let sites =
+            crate::coverage::language::java::java_function_sites(SOURCE).expect("Java sites");
+        let (sources, skipped) = jacoco_to_sources(XML, &|pkg, file| {
+            Relativized::Path(format!("core/src/main/java/{pkg}/{file}"))
+        })
+        .expect("JaCoCo XML");
+        assert!(skipped.is_empty());
+        let language =
+            crate::coverage::language::language_for_path(&sources[0].path).expect("Java row");
+        let (hit, unattributable) = crate::coverage::lcov::hit_sites(&sites, &sources[0], language);
+        assert_eq!(
+            hit.iter()
+                .map(|site| site.item_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Store::<init>", "Store::load"]
+        );
+        assert!(unattributable.is_empty());
     }
 }

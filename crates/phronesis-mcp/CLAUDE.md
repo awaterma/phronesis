@@ -47,6 +47,8 @@ cargo run -- coverage collect [--from-dir DIR] [--bins a,b] [--allow-dirty]  # l
 cargo run -- coverage import <export.jsonl>  # Import a normalized per-test coverage export into the evidence store
 cargo run -- coverage import --format lcov-dir --tool coverage.py <dir>  # Import per-test lcov after manifest verification
 cargo run -- coverage collect --tool pytest-cov --emit-script  # Emit container-friendly isolated pytest collection
+cargo run -- coverage collect --tool java-cov --runner mvn --emit-script  # Emit per-test JaCoCo collection (or --runner gradle)
+cargo run -- coverage import --format jacoco-dir --tool jacoco+mvn <dir>  # Import JaCoCo XML after manifest verification
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 

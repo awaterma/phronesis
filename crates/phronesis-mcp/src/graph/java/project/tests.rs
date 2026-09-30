@@ -36,7 +36,10 @@ fn junit_test_methods_define_tests_only_in_test_context() {
     assert!(has(
         &test,
         "defines_test",
-        &["java:core::com::x::StoreTest::testLoad"]
+        &[
+            "src/test/java/com/x/StoreSpec.java",
+            "java:core::com::x::StoreTest::testLoad",
+        ]
     ));
 
     let production = project.extract("src/main/java/com/x/Store.java");

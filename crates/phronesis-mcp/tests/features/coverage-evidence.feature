@@ -38,3 +38,8 @@ Feature: Coverage evidence
     Given a Python project with per-test lcov evidence
     When the lcov evidence is imported and its load body changes
     Then coverage select lists the Python test and pytest command
+
+  Scenario: Java JaCoCo evidence selects the body test with a runnable mvn command
+    Given a Java Maven project with an annotated test and production method
+    When the Java production method body changes
+    Then coverage select lists the Java test and Maven command

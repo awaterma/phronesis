@@ -14,6 +14,7 @@ pub struct CoverageLanguage {
     pub is_one_liner: fn(&FunctionSite) -> bool,
     pub one_liner_needs_fnda: bool,
     pub render_command: fn(&str, &str) -> Option<String>,
+    pub render_command_with_tool: fn(&str, &str, Option<&str>) -> Option<String>,
 }
 
 pub mod rust {
@@ -69,6 +70,7 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         is_one_liner: rust::is_one_liner,
         one_liner_needs_fnda: false,
         render_command: rust::render_command,
+        render_command_with_tool: |test, file, _tool| rust::render_command(test, file),
     },
     CoverageLanguage {
         id: "python",
@@ -79,6 +81,7 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         is_one_liner: python::is_one_liner,
         one_liner_needs_fnda: true,
         render_command: python::render_command,
+        render_command_with_tool: |test, file, _tool| python::render_command(test, file),
     },
     CoverageLanguage {
         id: "java",
@@ -89,6 +92,7 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         is_one_liner: java::is_one_liner,
         one_liner_needs_fnda: true,
         render_command: java::render_command,
+        render_command_with_tool: java::render_command_with_tool,
     },
 ];
 

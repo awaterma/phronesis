@@ -518,6 +518,8 @@ phr-mcp coverage collect --allow-dirty       # stamp HEAD despite a modified tre
 phr-mcp coverage import <export.jsonl>       # import a normalized export
 phr-mcp coverage collect --tool pytest-cov --emit-script --out /tmp/cov  # emit Python per-test lcov collection for a devcontainer
 phr-mcp coverage import --format lcov-dir --tool coverage.py /tmp/cov  # verify manifest revision/digests and import
+phr-mcp coverage collect --tool java-cov --runner mvn --emit-script # per-test JaCoCo via Maven (or --runner gradle)
+phr-mcp coverage import --format jacoco-dir --tool jacoco+mvn /tmp/java-cov # verify manifest and import JaCoCo XML
 phr-mcp coverage select                      # relevant tests for changed regions
 ```
 

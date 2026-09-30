@@ -39,7 +39,7 @@ pub fn collection_script(
         script.push_str(&format!("mkdir -p \"$OUT/{n}\"\nprintf '%s\\n' {} > \"$OUT/{n}/module.txt\"\nprintf '%s\\n' {} > \"$OUT/{n}/TN\"\n", quote(module), quote(graph_id)));
         match runner {
             JavaRunner::Mvn => script.push_str(&format!("mvn -pl {} -am -Dtest={} -Dsurefire.failIfNoSpecifiedTests=true -Djacoco.destFile=\"$OUT/{n}/coverage.exec\" org.jacoco:jacoco-maven-plugin:prepare-agent test org.jacoco:jacoco-maven-plugin:report -Djacoco.dataFile=\"$OUT/{n}/coverage.exec\" -Djacoco.outputDirectory=\"$OUT/{n}\" > \"$OUT/{n}/runner.log\" 2>&1\ngrep -Eq 'Tests run: [1-9][0-9]*, Failures: [0-9]+, Errors: [0-9]+' \"$OUT/{n}/runner.log\"\ntest -s \"$OUT/{n}/jacoco.xml\"\n", quote(module), quote(native)) ),
-            JavaRunner::Gradle => script.push_str(&format!("gradle -p {} test --tests {} jacocoTestReport > \"$OUT/{n}/runner.log\" 2>&1\ngrep -Eq '[1-9][0-9]* tests completed, [0-9]+ failed' \"$OUT/{n}/runner.log\"\ngrep -q 'BUILD SUCCESSFUL' \"$OUT/{n}/runner.log\"\ntest -s \"$OUT/{n}/jacoco/test/jacocoTestReport.xml\"\nmv \"$OUT/{n}/jacoco/test/jacocoTestReport.xml\" \"$OUT/{n}/jacoco.xml\"\n", quote(module), quote(native)) ),
+            JavaRunner::Gradle => script.push_str(&format!("gradle -p {} test --tests {} jacocoTestReport -Pjacoco.xml.destination=\"$OUT/{n}/jacoco.xml\" > \"$OUT/{n}/runner.log\" 2>&1\ngrep -Eq '[1-9][0-9]* tests completed, [0-9]+ failed' \"$OUT/{n}/runner.log\"\ngrep -q 'BUILD SUCCESSFUL' \"$OUT/{n}/runner.log\"\ntest -s \"$OUT/{n}/jacoco.xml\"\n", quote(module), quote(native)) ),
         }
     }
     script.push_str(&format!("python3 - \"$OUT\" {} <<'PY'\nimport hashlib,json,os,subprocess,sys,xml.etree.ElementTree as ET\nout=sys.argv[1];runner=sys.argv[2];root=subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True).strip();files={{}}\nfor base,dirs,names in os.walk(out):\n if 'jacoco.xml' not in names: continue\n module=open(os.path.join(base,'module.txt')).read().strip()\n tree=ET.parse(os.path.join(base,'jacoco.xml'))\n for package in tree.findall('.//package'):\n  pkg=package.attrib.get('name','')\n  for source in package.findall('sourcefile'):\n   rel=os.path.join(module,'src','main','java',pkg.replace('/',os.sep),source.attrib['name'])\n   full=os.path.realpath(os.path.join(root,rel))\n   if not full.startswith(root+os.sep): raise SystemExit('source outside repository: '+full)\n   if os.path.isfile(full): files[os.path.relpath(full,root).replace(os.sep,'/')]=hashlib.sha256(open(full,'rb').read()).hexdigest()\nrev=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\njson.dump({{'revision':rev,'files':files,'runner':runner}},open(os.path.join(out,'manifest.json'),'w'),sort_keys=True)\nPY\n", if runner == JavaRunner::Mvn { "mvn" } else { "gradle" }));
@@ -101,6 +101,7 @@ mod tests {
         assert!(
             gradle.contains("--tests")
                 && gradle.contains("BUILD SUCCESSFUL")
+                && gradle.contains("-Pjacoco.xml.destination")
                 && gradle.contains("gradle")
         );
     }

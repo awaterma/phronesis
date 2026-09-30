@@ -490,7 +490,7 @@ fn validate_identifier_field(field: &str, name: &str) -> Result<()> {
         if c.is_control() {
             return Err(anyhow!("{name} contains control characters"));
         }
-        if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | ':' | '.' | '/' | '-') {
+        if !matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | ':' | '.' | '/' | '-' | '+') {
             return Err(anyhow!("{name} contains invalid character '{c}'"));
         }
     }

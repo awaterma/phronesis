@@ -646,3 +646,125 @@ async fn then_python_selection_command(world: &mut World) {
         world.last_json
     );
 }
+
+#[given("a Java Maven project with an annotated test and production method")]
+async fn given_java_jacoco_project(world: &mut World) {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    let source = root.join("core/src/main/java/com/x/Store.java");
+    let test = root.join("core/src/test/java/com/x/StoreTest.java");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(test.parent().unwrap()).unwrap();
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><artifactId>root</artifactId></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("core/pom.xml"),
+        "<project><artifactId>core</artifactId></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        &source,
+        "package com.x; public class Store { public int load() { return 1; } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &test,
+        "package com.x; class StoreTest { @Test void testLoad() { new Store().load(); } }\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("cov/1")).unwrap();
+    std::fs::write(root.join("cov/1/module.txt"), "core\n").unwrap();
+    std::fs::write(
+        root.join("cov/1/TN"),
+        "java:core::com::x::StoreTest::testLoad\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("cov/1/jacoco.xml"), r#"<report><package name="com/x"><class name="com/x/Store" sourcefilename="Store.java"><method name="load"><counter type="METHOD" missed="0" covered="1"/></method></class><sourcefile name="Store.java"><line nr="1" mi="0" ci="1"/></sourcefile></package></report>"#).unwrap();
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "fixture"]);
+    let revision = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let digest =
+        phronesis_mcp::properties::execute::artifact_sha256(&std::fs::read(&source).unwrap());
+    std::fs::write(root.join("cov/manifest.json"), serde_json::json!({"revision":revision,"files":{"core/src/main/java/com/x/Store.java":digest},"runner":"mvn"}).to_string()).unwrap();
+    world.checked_file_path = Some(root.to_string_lossy().to_string());
+    world.temp_dir = Some(dir);
+}
+
+#[when("the Java production method body changes")]
+async fn when_java_jacoco_import_and_edit(world: &mut World) {
+    let root = Path::new(world.checked_file_path.as_deref().expect("Java project"));
+    let import = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args([
+            "coverage",
+            "import",
+            "--format",
+            "jacoco-dir",
+            "--tool",
+            "jacoco+mvn",
+            "cov",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    let source = root.join("core/src/main/java/com/x/Store.java");
+    let old = std::fs::read_to_string(&source).unwrap();
+    std::fs::write(&source, old.replace("return 1", "return 2")).unwrap();
+    let rebuild = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["graph", "rebuild"])
+        .output()
+        .unwrap();
+    assert!(
+        rebuild.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+    let select = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["coverage", "select", "--json"])
+        .output()
+        .unwrap();
+    world.last_exit_code = select.status.code();
+    world.last_json = String::from_utf8_lossy(&select.stdout).to_string();
+    world.last_stderr = String::from_utf8_lossy(&select.stderr).to_string();
+    assert!(select.status.success(), "{}", world.last_stderr);
+}
+
+#[then("coverage select lists the Java test and Maven command")]
+async fn then_java_selection_command(world: &mut World) {
+    assert!(
+        world
+            .last_json
+            .contains("java:core::com::x::StoreTest::testLoad"),
+        "{}",
+        world.last_json
+    );
+    assert!(
+        world
+            .last_json
+            .contains("mvn -pl core -Dtest='com.x.StoreTest#testLoad' test"),
+        "{}",
+        world.last_json
+    );
+}

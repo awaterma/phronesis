@@ -17,7 +17,22 @@ pub fn java_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
     let crate::syntax::parsed::ParsedFile::Java { tree, source } = &parsed else {
         anyhow::bail!("parse_java returned a non-Java tree");
     };
-    fn walk(node: Node<'_>, bytes: &[u8], scope: &mut Vec<String>, raw: &mut Vec<RawSite>) {
+    fn walk(
+        node: Node<'_>,
+        bytes: &[u8],
+        scope: &mut Vec<String>,
+        raw: &mut Vec<RawSite>,
+        ignored_body: bool,
+    ) {
+        let anonymous_body =
+            if matches!(node.kind(), "object_creation_expression" | "enum_constant") {
+                let mut cursor = node.walk();
+                node.children(&mut cursor)
+                    .any(|child| matches!(child.kind(), "class_body" | "enum_constant_class_body"))
+            } else {
+                false
+            };
+        let ignored_body = ignored_body || anonymous_body;
         let pushed = if matches!(
             node.kind(),
             "class_declaration"
@@ -42,7 +57,7 @@ pub fn java_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
             }
             _ => None,
         };
-        if let Some(name) = name.and_then(|n| n.utf8_text(bytes).ok()) {
+        if !ignored_body && let Some(name) = name.and_then(|n| n.utf8_text(bytes).ok()) {
             let method = if matches!(
                 node.kind(),
                 "constructor_declaration" | "compact_constructor_declaration"
@@ -59,17 +74,22 @@ pub fn java_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
                     .find(|c| matches!(c.kind(), "block" | "constructor_body"))
             });
             if let Some(body) = body {
+                let end = node.end_position();
                 raw.push(RawSite {
                     path: parts.join("::"),
                     start: node.start_position().row as u64 + 1,
                     body: body.start_position().row as u64 + 1,
-                    end: node.end_position().row as u64 + 1,
+                    end: if end.column == 0 {
+                        (end.row as u64).max(node.start_position().row as u64 + 1)
+                    } else {
+                        end.row as u64 + 1
+                    },
                 });
             }
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
-            walk(child, bytes, scope, raw);
+            walk(child, bytes, scope, raw, ignored_body);
         }
         if pushed.is_some() {
             scope.pop();
@@ -81,6 +101,7 @@ pub fn java_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
         source.as_bytes(),
         &mut Vec::new(),
         &mut raw,
+        false,
     );
     let mut seen = BTreeMap::<String, u32>::new();
     Ok(raw
@@ -106,7 +127,7 @@ pub fn java_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
 
 pub fn is_wanted_source(rel: &str) -> bool {
     rel.ends_with(".java")
-        && rel.contains("/src/main/java/")
+        && (rel.starts_with("src/main/java/") || rel.contains("/src/main/java/"))
         && !rel.contains("/target/")
         && !rel.contains("/build/")
         && ![
@@ -124,8 +145,34 @@ pub fn is_one_liner(site: &FunctionSite) -> bool {
     site.end_line == site.start_line
 }
 
-pub fn render_command(_test_id: &str, _file: &str) -> Option<String> {
-    None
+pub fn render_command(test_id: &str, _file: &str) -> Option<String> {
+    render_command_with_tool(test_id, _file, None)
+}
+
+pub fn render_command_with_tool(test_id: &str, _file: &str, tool: Option<&str>) -> Option<String> {
+    let rest = test_id.strip_prefix("java:")?;
+    let (module, qualified) = rest.split_once("::")?;
+    let mut parts = qualified.split("::").collect::<Vec<_>>();
+    let method = parts.pop()?;
+    let class = parts.pop()?;
+    if module.is_empty() || class.is_empty() || method.is_empty() {
+        return None;
+    }
+    let package = parts.join(".");
+    let class_name = if package.is_empty() {
+        class.to_string()
+    } else {
+        format!("{package}.{class}")
+    };
+    if tool.is_some_and(|tool| tool.ends_with("gradle")) {
+        Some(format!(
+            "gradle -p {module} test --tests '{class_name}.{method}'"
+        ))
+    } else {
+        Some(format!(
+            "mvn -pl {module} -Dtest='{class_name}#{method}' test"
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -156,5 +203,46 @@ mod tests {
                 ("Store::Inner::deep", 13, 13, 15)
             ]
         );
+    }
+
+    #[test]
+    fn renders_graph_java_test_id_as_a_maven_test_filter() {
+        assert_eq!(
+            render_command(
+                "java:core::com::x::StoreTest::testLoad",
+                "core/src/test/java/com/x/StoreTest.java"
+            )
+            .as_deref(),
+            Some("mvn -pl core -Dtest='com.x.StoreTest#testLoad' test")
+        );
+    }
+
+    #[test]
+    fn renders_graph_java_test_id_as_a_gradle_test_filter_when_tool_is_gradle() {
+        assert_eq!(
+            render_command_with_tool(
+                "java:core::com::x::StoreTest::testLoad",
+                "core/src/test/java/com/x/StoreTest.java",
+                Some("jacoco+gradle")
+            )
+            .as_deref(),
+            Some("gradle -p core test --tests 'com.x.StoreTest.testLoad'")
+        );
+    }
+
+    #[test]
+    fn java_source_filter_accepts_root_modules_and_rejects_nonproduction_paths() {
+        assert!(is_wanted_source("src/main/java/com/x/Store.java"));
+        assert!(is_wanted_source("core/src/main/java/com/x/Store.java"));
+        assert!(!is_wanted_source("src/test/java/com/x/Store.java"));
+        assert!(!is_wanted_source("src/main/java/com/x/StoreTest.java"));
+        assert!(!is_wanted_source("src/main/java/module-info.java"));
+    }
+
+    #[test]
+    fn method_end_at_column_zero_does_not_extend_into_the_next_line() {
+        let sites = java_function_sites("class A {\n void f() {\n }\n void g() { }\n}")
+            .expect("Java source");
+        assert_eq!(sites[0].end_line, 3);
     }
 }

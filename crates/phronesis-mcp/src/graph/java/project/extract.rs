@@ -67,7 +67,7 @@ impl Project {
             let function = function_id(&file.owner, method);
             emit("defines_fn", &[path, &function]);
             if file.owner.context == Context::Test && method.test_annotation {
-                emit("defines_test", &[&function]);
+                emit("defines_test", &[path, &function]);
             }
             for call in &method.calls {
                 if call.receiver.is_some()
