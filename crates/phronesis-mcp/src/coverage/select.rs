@@ -70,6 +70,13 @@ pub struct Selection {
     /// matching no changed region), or is corrupt. `None` for a fresh or
     /// absent store.
     pub coverage_note: Option<String>,
+    /// Edited files whose graph language is evaluated rather than executed
+    /// (cue, json, yaml/yml, tpl→helm3, rhai — plan Part L decision 2): they
+    /// carry no function regions, so no test is ever selected for them and
+    /// no `region_without_dynamic_evidence` fact exists for them; their
+    /// confidence signal is the validating tool run instead. Unknown
+    /// extensions stay unclassified.
+    pub no_coverage_semantics: Vec<String>,
 }
 
 /// A file diff entry: repo-relative path, old content, new content.
@@ -170,6 +177,7 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
 
     let diffs = working_tree_diffs(root).unwrap_or_default();
     let regions = changed_regions_from_diffs(&diffs)?;
+    let no_coverage_semantics = evaluated_no_coverage_files(&diffs);
 
     // --- Dynamic half: coverage store ---
     let (hits, observation, coverage_note) = match load_store(root) {
@@ -312,7 +320,44 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         static_reach_available: static_available,
         static_note,
         coverage_note,
+        no_coverage_semantics,
     })
+}
+
+/// Edited files whose graph language is evaluated rather than executed
+/// (plan Part L decision 2, Revision 2 scope): classification goes through
+/// `graph::unit::lang_of_path`, so an unknown extension stays unclassified
+/// and is never named here. Sorted for a deterministic key.
+fn evaluated_no_coverage_files(diffs: &[FileDiff]) -> Vec<String> {
+    use crate::graph::unit::{LANG_CUE, LANG_HELM3, LANG_JSON, LANG_RHAI, LANG_YAML, lang_of_path};
+    diffs
+        .iter()
+        .filter(|d| {
+            lang_of_path(&d.path).is_some_and(|lang| {
+                matches!(
+                    lang,
+                    LANG_CUE | LANG_JSON | LANG_YAML | LANG_HELM3 | LANG_RHAI
+                )
+            })
+        })
+        .map(|d| d.path.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// The table footer for evaluated files: one line per file, naming the
+/// validating tools instead of pretending at coverage.
+fn no_coverage_footer(files: &[String]) -> String {
+    files
+        .iter()
+        .map(|file| {
+            format!(
+                "{file}: evaluated, not executed; the compile signal comes from \
+                 `cue vet` / `helm lint` / the hook's Rhai evaluation.\n"
+            )
+        })
+        .collect()
 }
 
 /// Whether the changed function region `region` is the function named
@@ -399,6 +444,7 @@ pub fn render_table(sel: &Selection) -> String {
         if let Some(note) = &sel.static_note {
             out.push_str(&format!("  static reach: {note}\n"));
         }
+        out.push_str(&no_coverage_footer(&sel.no_coverage_semantics));
         return out;
     }
 
@@ -493,6 +539,7 @@ pub fn render_table(sel: &Selection) -> String {
     let distinct: std::collections::BTreeSet<&str> =
         sel.tests.iter().map(|t| t.test.as_str()).collect();
     out.push_str(&format!("\n{} test(s) selected.\n", distinct.len()));
+    out.push_str(&no_coverage_footer(&sel.no_coverage_semantics));
 
     out
 }
@@ -504,6 +551,7 @@ pub fn render_json(sel: &Selection) -> String {
         "change": sel.change,
         "changed_functions": sel.changed_functions,
         "changed_branches": sel.changed_branches,
+        "no_coverage_semantics": sel.no_coverage_semantics,
         "static_reach_available": sel.static_reach_available,
         "static_note": sel.static_note,
         "coverage_note": sel.coverage_note,
@@ -515,4 +563,53 @@ pub fn render_json(sel: &Selection) -> String {
         })).collect::<Vec<_>>(),
     })
     .to_string()
+}
+
+#[cfg(test)]
+mod evaluated_tests {
+    use super::*;
+
+    fn diff(path: &str) -> FileDiff {
+        FileDiff {
+            path: path.to_string(),
+            old: None,
+            new: String::new(),
+        }
+    }
+
+    #[test]
+    fn evaluated_languages_cover_cue_json_yaml_tpl_rhai_but_not_rs_or_md() {
+        let diffs = vec![
+            diff("config/model.cue"),
+            diff("settings/a.json"),
+            diff("settings/b.yml"),
+            diff("settings/c.yaml"),
+            diff("templates/t.tpl"),
+            diff("hooks/h.rhai"),
+            diff("src/lib.rs"),
+            diff("docs/notes.md"),
+        ];
+        assert_eq!(
+            evaluated_no_coverage_files(&diffs),
+            [
+                "config/model.cue",
+                "hooks/h.rhai",
+                "settings/a.json",
+                "settings/b.yml",
+                "settings/c.yaml",
+                "templates/t.tpl",
+            ],
+            "sorted evaluated set; .rs and .md stay unclassified"
+        );
+    }
+
+    #[test]
+    fn footer_names_the_file_and_the_validating_tools() {
+        assert_eq!(
+            no_coverage_footer(&["config/model.cue".to_string()]),
+            "config/model.cue: evaluated, not executed; the compile signal comes from \
+             `cue vet` / `helm lint` / the hook's Rhai evaluation.\n"
+        );
+        assert_eq!(no_coverage_footer(&[]), "");
+    }
 }

@@ -673,3 +673,146 @@ fn test_select_lists_a_binary_running_test_for_a_function_main_reaches() {
         stat[0].regions
     );
 }
+
+// ── Part L task 2: evaluated, not executed ──────────────────────────
+
+const CUE_OLD: &str = "package config\na: int\n";
+const CUE_NEW: &str = "package config\na: string\n";
+
+fn commit_file(root: &std::path::Path, path: &str, content: &str) {
+    if let Some(parent) = std::path::Path::new(path).parent() {
+        std::fs::create_dir_all(root.join(parent)).unwrap();
+    }
+    std::fs::write(root.join(path), content).unwrap();
+    for args in [vec!["add", path], vec!["commit", "-m", path]] {
+        Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git");
+    }
+}
+
+/// Red-first (plan Part L task 2): edits to evaluated languages (cue, json,
+/// yaml/yml, tpl→helm3, rhai per `graph::unit::lang_of_path`) are named
+/// under `no_coverage_semantics`; unknown extensions (`.md`) and executed
+/// languages (`.rs`) stay unclassified; no test is ever selected for the
+/// evaluated files and no `region_without_dynamic_evidence` appears.
+#[test]
+fn test_select_names_evaluated_files_under_no_coverage_semantics() {
+    let root = tempfile::tempdir().unwrap();
+    init_git_repo(root.path());
+    commit_file(root.path(), "config/model.cue", CUE_OLD);
+    commit_file(root.path(), "templates/deploy.tpl", "{{ .Values.x }}");
+    commit_file(root.path(), "hooks/check.rhai", "true\n");
+    commit_file(root.path(), "settings/cluster.yml", "a: 1\n");
+    commit_file(root.path(), "settings/cluster.json", "{\"a\": 1}\n");
+    commit_file(root.path(), "docs/notes.md", "notes\n");
+
+    std::fs::write(root.path().join("config/model.cue"), CUE_NEW).unwrap();
+    std::fs::write(
+        root.path().join("templates/deploy.tpl"),
+        "{{ .Values.y }}\n",
+    )
+    .unwrap();
+    std::fs::write(root.path().join("hooks/check.rhai"), "false\n").unwrap();
+    std::fs::write(root.path().join("settings/cluster.yml"), "a: 2\n").unwrap();
+    std::fs::write(root.path().join("settings/cluster.json"), "{\"a\": 2}\n").unwrap();
+    std::fs::write(root.path().join("docs/notes.md"), "more notes\n").unwrap();
+    apply_edit(root.path());
+
+    let sel = select(root.path(), None).unwrap();
+    assert_eq!(
+        sel.no_coverage_semantics
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec![
+            "config/model.cue",
+            "hooks/check.rhai",
+            "settings/cluster.json",
+            "settings/cluster.yml",
+            "templates/deploy.tpl",
+        ],
+        "evaluated edits named, .md and .rs stay unclassified"
+    );
+    assert!(
+        sel.changed_functions
+            .iter()
+            .chain(sel.changed_branches.iter())
+            .all(|r| !r.contains("model.cue")
+                && !r.contains("deploy.tpl")
+                && !r.contains("check.rhai")),
+        "no region for an evaluated file: {:?}",
+        sel.changed_functions
+    );
+    assert!(
+        sel.tests
+            .iter()
+            .all(|t| !t.regions.iter().any(|r| r.contains("model.cue"))),
+        "no test is ever selected for an evaluated file: {:?}",
+        sel.tests
+    );
+
+    let json = render_json(&sel);
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(
+        parsed["no_coverage_semantics"],
+        serde_json::json!([
+            "config/model.cue",
+            "hooks/check.rhai",
+            "settings/cluster.json",
+            "settings/cluster.yml",
+            "templates/deploy.tpl",
+        ]),
+        "json key names the evaluated files"
+    );
+    assert!(
+        !json.contains("region_without_dynamic_evidence"),
+        "select never reports an evidence-gap fact for evaluated files: {json}"
+    );
+
+    let table = render_table(&sel);
+    assert!(
+        table.contains(
+            "config/model.cue: evaluated, not executed; the compile signal comes from `cue vet` / `helm lint` / the hook's Rhai evaluation."
+        ),
+        "table footer names the file and the validating tools: {table}"
+    );
+}
+
+/// Red-first: the footer also prints on the no-tests early return — exactly
+/// the case an evaluated-only edit produces.
+#[test]
+fn test_select_table_footer_prints_when_no_tests_selected() {
+    let root = tempfile::tempdir().unwrap();
+    init_git_repo(root.path());
+    commit_file(root.path(), "config/model.cue", CUE_OLD);
+    std::fs::write(root.path().join("config/model.cue"), CUE_NEW).unwrap();
+
+    let sel = select(root.path(), None).unwrap();
+    assert!(sel.tests.is_empty(), "a .cue edit selects no tests");
+    let table = render_table(&sel);
+    assert!(
+        table.contains("config/model.cue: evaluated, not executed;"),
+        "footer must print on the no-tests branch: {table}"
+    );
+}
+
+/// PINNING REGRESSION (plan Part L task 2, labelled a pin — already green at
+/// 5deb7b7 and required to stay green): `extract_function_sites_for` has no
+/// registry row for `.cue`, so `changed_regions` returns no functions and no
+/// branches for it. A future registry row for an evaluated language must go
+/// through plan Revision 2's scope rule, not silently add regions here.
+#[test]
+fn pin_changed_regions_for_a_cue_file_are_empty() {
+    let regions =
+        phronesis_mcp::coverage::region_map::changed_regions("config/model.cue", CUE_OLD, CUE_NEW)
+            .unwrap();
+    assert!(
+        regions.functions.is_empty() && regions.branches.is_empty(),
+        "a .cue edit must produce no regions: functions={:?} branches={:?}",
+        regions.functions,
+        regions.branches
+    );
+}

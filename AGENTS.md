@@ -505,7 +505,12 @@ Function regions exist for the languages registered in
 each row owns function-site extraction, the production-source filter, the
 test-id namespace, the one-liner attribution rule, and the command
 `coverage select` renders; a language without a row has no coverage
-semantics and `coverage select` says so.
+semantics and `coverage select` says so. Evaluated languages (`.cue`,
+`.json`, `.yaml`/`.yml`, `.tpl`, `.rhai`) have no regions at all:
+`coverage select` names their edits under `no_coverage_semantics` —
+"`<file>`: evaluated, not executed; the compile signal comes from `cue vet`
+/ `helm lint` / the hook's Rhai evaluation" — and the `cue` / `helm3` packs
+ship matching toolchain defs (merge-if-absent) through `phr-mcp init`.
 
 ```bash
 # Per-test isolated collection over the machinery test set, then import at HEAD.
