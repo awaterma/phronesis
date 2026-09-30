@@ -153,6 +153,47 @@ pub fn render_command(_test_id: &str, _file: &str) -> Option<String> {
     None
 }
 
+/// Parse a graph Swift test id into (module, scope, name). Real shape
+/// (`graph/swift.rs:238-257`, asserted at `:493-501`):
+/// `swift:<unit>::<file segments>::[<type scopes>::]<name>` — the unit is
+/// the SwiftPM target name, the second-to-last segment is the declaring
+/// scope (an XCTestCase class or a Swift Testing suite).
+pub(crate) fn test_id_parts(test_id: &str) -> Option<(String, String, String)> {
+    let rest = test_id.strip_prefix("swift:")?;
+    let segments: Vec<&str> = rest.split("::").collect();
+    if segments.len() < 3 {
+        return None;
+    }
+    let name = segments[segments.len() - 1].to_string();
+    let scope = segments[segments.len() - 2].to_string();
+    let module = segments[0].replace('-', "_");
+    Some((module, scope, name))
+}
+
+/// The `swift test --filter` selector for a graph test id, anchored so a
+/// regex prefix cannot drag in sibling tests (probe: the unanchored form
+/// `StoreTests/testLoad` also matched `testLoadAgain`). Shape
+/// `^<module>.<scope>/<name>$` — the same form matched both an XCTest class
+/// and a Swift Testing suite live (Swift 6.4); the module name is the
+/// SwiftPM target with `-` mapped to `_` (probe: `store-kitTests` →
+/// `store_kitTests`).
+pub fn selector_from_test_id(test_id: &str) -> Option<String> {
+    let (module, scope, name) = test_id_parts(test_id)?;
+    Some(format!(
+        "^{}\\.{}/{}$",
+        regex::escape(&module),
+        regex::escape(&scope),
+        regex::escape(&name)
+    ))
+}
+
+/// The runner-native name for `# node:` records: the unanchored selector.
+pub fn runner_native_name(test_id: &str) -> Option<String> {
+    let (module, scope, name) = test_id_parts(test_id)?;
+    Some(format!("{module}.{scope}/{name}"))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +269,28 @@ mod tests {
         };
         assert!((row.is_one_liner)(&one_line), "brace rows: end==start");
         assert!(!(row.is_one_liner)(&multi_line), "multi-line brace fn is not a one-liner");
+    }
+
+    #[test]
+    fn swift_selector_from_the_graph_id_is_anchored_and_runner_native() {
+        // Real graph shape: unit :: file stem :: class :: method (probe:
+        // `swift:store-kitTests::StoreTests::StoreTests::testLoad`).
+        assert_eq!(
+            selector_from_test_id("swift:store-kitTests::StoreTests::StoreTests::testLoad")
+                .as_deref(),
+            Some("^store_kitTests\\.StoreTests/testLoad$")
+        );
+        // The plan's shorter shape derives the same way.
+        assert_eq!(
+            selector_from_test_id("swift:store-kit::StoreTests::testLoad").as_deref(),
+            Some("^store_kit\\.StoreTests/testLoad$")
+        );
+        assert_eq!(selector_from_test_id("rust:phronesis#test:x"), None);
+        assert_eq!(selector_from_test_id("swift:only-two"), None);
+        assert_eq!(
+            runner_native_name("swift:store-kitTests::StoreTests::StoreTests::testLoad")
+                .as_deref(),
+            Some("store_kitTests.StoreTests/testLoad")
+        );
     }
 }

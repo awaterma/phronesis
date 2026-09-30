@@ -1,4 +1,5 @@
 pub mod collect;
+pub mod collect_swift;
 pub mod hydrate;
 pub mod import;
 pub mod language;

@@ -114,3 +114,68 @@ fn lcov_directory_imports_python_body_hits_and_refuses_revision_mismatch() {
         before
     );
 }
+
+#[test]
+fn lcov_directory_imports_swift_body_hits_and_reports_one_liners_unattributable() {
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/swift-store");
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+    copy_dir(&fixture, root);
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "fixture"]);
+    let rev = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let digest = artifact_sha256(&std::fs::read(root.join("Sources/Store/Store.swift")).unwrap());
+    std::fs::write(
+        root.join("cov/manifest.json"),
+        serde_json::json!({"revision":rev,"files":{"Sources/Store/Store.swift":digest}}).to_string(),
+    )
+    .unwrap();
+    let out = phr(
+        root,
+        &[
+            "--format",
+            "lcov-dir",
+            "--tool",
+            "swift-cov",
+            "--allow-dirty",
+            "cov",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let store = std::fs::read_to_string(root.join(".phronesis/coverage.jsonl")).unwrap();
+    assert!(
+        store.contains("fn:Sources/Store/Store.swift::Store::load"),
+        "{store}"
+    );
+    assert!(
+        store.contains("swift:StoreTests::StoreTests::StoreTests::testLoad"),
+        "{store}"
+    );
+    assert!(
+        !store.contains("Store::oneLiner"),
+        "a one-line Swift function is never attributed: {store}"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert!(
+        stderr.contains("unattributable") && stderr.contains("Store::oneLiner"),
+        "{stderr}"
+    );
+}
