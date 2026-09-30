@@ -77,8 +77,11 @@ pub fn jacoco_to_sources(
 }
 
 pub fn read_jacoco_dir(root: &Path, dir: &Path) -> Result<(TestSources, JacocoSummary)> {
-    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)?
-        .filter_map(|e| e.ok().map(|e| e.path()))
+    let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+        .with_context(|| format!("reading JaCoCo directory {}", dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<std::io::Result<Vec<_>>>()?
+        .into_iter()
         .filter(|p| {
             p.is_dir()
                 && p.file_name()
@@ -147,6 +150,17 @@ pub fn read_jacoco_dir(root: &Path, dir: &Path) -> Result<(TestSources, JacocoSu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_jacoco_directory_is_an_error_naming_the_path() {
+        let dir = std::env::temp_dir().join(format!(
+            "phronesis-missing-jacoco-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let error = read_jacoco_dir(Path::new("."), &dir).expect_err("missing dir must fail");
+        assert!(error.to_string().contains(&dir.display().to_string()));
+    }
 
     #[test]
     fn jacoco_lines_and_methods_become_lcov_source() {
