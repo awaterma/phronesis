@@ -501,7 +501,8 @@ the two above.
 #### 1. Coverage collection (cargo-llvm-cov, NOT tarpaulin)
 
 Function regions exist for the languages registered in
-`crates/phronesis-mcp/src/coverage/language.rs` (Rust and Python today):
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, and
+TypeScript/JavaScript today):
 each row owns function-site extraction, the production-source filter, the
 test-id namespace, the one-liner attribution rule, and the command
 `coverage select` renders; a language without a row has no coverage
@@ -518,6 +519,8 @@ phr-mcp coverage collect --allow-dirty       # stamp HEAD despite a modified tre
 phr-mcp coverage import <export.jsonl>       # import a normalized export
 phr-mcp coverage collect --tool pytest-cov --emit-script --out /tmp/cov  # emit Python per-test lcov collection for a devcontainer
 phr-mcp coverage import --format lcov-dir --tool coverage.py /tmp/cov  # verify manifest revision/digests and import
+phr-mcp coverage collect --tool js-cov --emit-script  # emit JS/TS per-test lcov collection (runner from package.json; --runner vitest|jest|node overrides)
+phr-mcp coverage import --format lcov-dir --tool c8+vitest /tmp/cov  # import JS/TS lcov (also istanbul+jest, c8+node)
 phr-mcp coverage select                      # relevant tests for changed regions
 ```
 

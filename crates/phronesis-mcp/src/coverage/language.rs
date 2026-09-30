@@ -7,6 +7,13 @@ use crate::coverage::region_map::{FunctionSite, extract_function_sites, python_f
 
 pub mod typescript;
 
+/// Per-path extraction (`(repo-relative path, source)`), for languages
+/// whose grammar choice depends on the file (TSX vs TypeScript).
+pub type FunctionSitesForPath = fn(&str, &str) -> anyhow::Result<Vec<FunctionSite>>;
+/// Command rendering that also sees the imported record's tool string
+/// (`(graph test id, repo-relative test file, tool)`).
+pub type RenderCommandWithTool = fn(&str, &str, &str) -> Option<String>;
+
 pub struct CoverageLanguage {
     pub id: &'static str,
     pub extensions: &'static [&'static str],
@@ -14,11 +21,16 @@ pub struct CoverageLanguage {
     pub function_sites: fn(&str) -> anyhow::Result<Vec<FunctionSite>>,
     /// Per-path extraction when the grammar choice depends on the file
     /// (TSX vs TypeScript); `extract_function_sites_for` prefers it.
-    pub function_sites_for_path: Option<fn(&str, &str) -> anyhow::Result<Vec<FunctionSite>>>,
+    pub function_sites_for_path: Option<FunctionSitesForPath>,
     pub is_wanted_source: fn(&str) -> bool,
     pub is_one_liner: fn(&FunctionSite) -> bool,
     pub one_liner_needs_fnda: bool,
     pub render_command: fn(&str, &str) -> Option<String>,
+    /// Command rendering that also sees the imported record's tool string
+    /// (`c8+vitest`), used when present — the runner is recorded per
+    /// record, so `select` never re-detects it. Python is untouched: its
+    /// command depends on nothing but the id and file.
+    pub render_command_with_tool: Option<RenderCommandWithTool>,
 }
 
 pub mod rust {
@@ -73,6 +85,7 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         is_one_liner: rust::is_one_liner,
         one_liner_needs_fnda: false,
         render_command: rust::render_command,
+        render_command_with_tool: None,
     },
     CoverageLanguage {
         id: "python",
@@ -84,6 +97,7 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         is_one_liner: python::is_one_liner,
         one_liner_needs_fnda: true,
         render_command: python::render_command,
+        render_command_with_tool: None,
     },
     CoverageLanguage {
         id: "typescript",
@@ -95,6 +109,7 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         is_one_liner: typescript::is_one_liner,
         one_liner_needs_fnda: true,
         render_command: typescript::render_command,
+        render_command_with_tool: Some(typescript::render_command_with_tool),
     },
 ];
 

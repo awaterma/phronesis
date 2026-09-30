@@ -59,7 +59,7 @@ fn walk(node: tree_sitter::Node<'_>, src: &[u8], scope: &mut Vec<String>, out: &
             // overload signatures and interface members are
             // `method_signature`, a different kind, so they never land here.
             if let Some(name) = name_of(node, src) {
-                record(node, src, scope, &name, out);
+                record(node, src, scope, name, out);
                 scope.push(name.to_string());
                 pushed = true;
             }
@@ -193,6 +193,22 @@ pub fn render_command(_test_id: &str, _file: &str) -> Option<String> {
     None
 }
 
+/// The runner-native command for `select`, chosen by the imported record's
+/// tool string (producer + runner) so `select` never re-detects the runner:
+/// `c8+vitest` → vitest, `istanbul+jest` → jest, `c8+node` → `node --test`.
+/// Anything else names no runner and renders nothing.
+pub fn render_command_with_tool(test_id: &str, file: &str, tool: &str) -> Option<String> {
+    let title = runner_name(test_id, file)?;
+    match tool {
+        "c8+vitest" => Some(format!("npx vitest run {file} -t \"{title}\"")),
+        "istanbul+jest" => Some(format!("npx jest {file} -t \"{title}\"")),
+        "c8+node" => Some(format!(
+            "node --test --test-name-pattern=\"^{title}$\" {file}"
+        )),
+        _ => None,
+    }
+}
+
 /// The runner-native test name: the `it()` title that ends the graph's
 /// `defines_test` id, extracted the way `python::render_command` extracts
 /// its pytest node id — the suffix after the test file's module marker,
@@ -315,5 +331,36 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn render_command_with_tool_chooses_the_runner_from_the_tool_string() {
+        let id = "typescript:myapp#test:store.test.ts::tests::store.test::Store loads";
+        let file = "tests/store.test.ts";
+        assert_eq!(
+            render_command_with_tool(id, file, "c8+vitest").as_deref(),
+            Some("npx vitest run tests/store.test.ts -t \"Store loads\"")
+        );
+        assert_eq!(
+            render_command_with_tool(id, file, "istanbul+jest").as_deref(),
+            Some("npx jest tests/store.test.ts -t \"Store loads\"")
+        );
+        assert_eq!(
+            render_command_with_tool(id, file, "c8+node").as_deref(),
+            Some("node --test --test-name-pattern=\"^Store loads$\" tests/store.test.ts")
+        );
+        assert_eq!(
+            render_command_with_tool(id, file, "cargo-llvm-cov"),
+            None,
+            "a tool that names no JS runner renders no command"
+        );
+        assert_eq!(
+            render_command_with_tool(id, "tests/other.test.ts", "c8+vitest"),
+            None,
+            "an id that does not belong to the file renders no command"
+        );
+        // The path-blind entry point stays empty for the typescript row:
+        // the runner is known only from the imported record's tool string.
+        assert_eq!(render_command(id, file), None);
     }
 }

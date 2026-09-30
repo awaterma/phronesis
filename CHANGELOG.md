@@ -8,6 +8,25 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Coverage evidence for TypeScript and JavaScript.** The region map
+  produces function regions for the eight TypeScript/JavaScript
+  extensions (`.tsx`/`.jsx` parse with the TSX grammar; anonymous
+  callbacks are not sites), and the graph now claims `.js`/`.jsx`/
+  `.mjs`/`.cjs` as TypeScript so JavaScript files get structural ids and
+  extraction. `phr-mcp coverage collect --tool js-cov --emit-script
+  [--runner vitest|jest|node]` emits isolated per-test lcov collection
+  (runner detected from `package.json`), guarded against a test filter
+  that matches zero tests — the guard shapes are pinned from real
+  vitest 2.1.9, jest 29, and node 26 runs, all of which exit 0 on a
+  zero-match. `coverage select` renders the runnable vitest/jest/
+  `node --test` command from the imported record's tool string
+  (`c8+vitest`, `istanbul+jest`, `c8+node`). One-liner functions are
+  attributed by `FNDA` (c8 emits reliable V8 names) and never from the
+  declaration line's `DA`. The typescript pack ships vitest and jest
+  toolchain defs through a merge-if-absent `toolchains.json` writer.
+  CI runs no Node; parsing and import use the committed `ts-store`
+  fixture.
+
 - **Coverage language registry.** One row per language in
   `coverage/language.rs` owns function-site extraction, the
   production-source filter, the test-id namespace, the per-language

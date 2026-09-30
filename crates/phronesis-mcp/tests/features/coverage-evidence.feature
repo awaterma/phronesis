@@ -38,3 +38,8 @@ Feature: Coverage evidence
     Given a Python project with per-test lcov evidence
     When the lcov evidence is imported and its load body changes
     Then coverage select lists the Python test and pytest command
+
+  Scenario: TypeScript lcov evidence selects the body test with a runnable vitest command
+    Given a TypeScript project with per-test lcov evidence
+    When the TypeScript lcov evidence is imported and its load body changes
+    Then coverage select lists the TypeScript test and vitest command

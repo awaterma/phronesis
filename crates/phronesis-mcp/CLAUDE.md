@@ -47,11 +47,14 @@ cargo run -- coverage collect [--from-dir DIR] [--bins a,b] [--allow-dirty]  # l
 cargo run -- coverage import <export.jsonl>  # Import a normalized per-test coverage export into the evidence store
 cargo run -- coverage import --format lcov-dir --tool coverage.py <dir>  # Import per-test lcov after manifest verification
 cargo run -- coverage collect --tool pytest-cov --emit-script  # Emit container-friendly isolated pytest collection
+cargo run -- coverage collect --tool js-cov --emit-script [--runner vitest|jest|node] [--out DIR]  # Emit isolated JS/TS per-test lcov collection (runner detected from package.json)
+cargo run -- coverage import --format lcov-dir --tool c8+vitest <dir>  # Import per-test JS/TS lcov after manifest verification (also istanbul+jest, c8+node)
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 
 Function regions exist for the languages registered in
-`crates/phronesis-mcp/src/coverage/language.rs` (Rust and Python today):
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, and
+TypeScript/JavaScript today):
 each row owns function-site extraction, the production-source filter, the
 test-id namespace, the one-liner attribution rule, and the command
 `coverage select` renders; a language without a row has no coverage
