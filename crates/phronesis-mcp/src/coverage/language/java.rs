@@ -62,7 +62,10 @@ pub fn java_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
                 node.kind(),
                 "constructor_declaration" | "compact_constructor_declaration"
             ) {
-                "<init>"
+                // Java reserves no method named `new`, so constructor sites get
+                // a validator-safe item path: region ids allow [A-Za-z0-9_:./+-]
+                // only, and `<init>` would fail every end-to-end import.
+                "new"
             } else {
                 name
             };
@@ -196,7 +199,7 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("Store::<init>", 3, 3, 4),
+                ("Store::new", 3, 3, 4),
                 ("Store::load", 5, 5, 7),
                 ("Store::load.2", 8, 8, 10),
                 ("Store::oneLiner", 11, 11, 11),

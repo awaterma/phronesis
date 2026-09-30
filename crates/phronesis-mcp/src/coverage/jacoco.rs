@@ -58,7 +58,13 @@ pub fn jacoco_to_sources(
                     let method_name = method
                         .attribute("name")
                         .context("JaCoCo method missing name")?;
-                    let method_name = method_name.replace("&lt;init&gt;", "<init>");
+                    let method_name = match method_name {
+                        // JaCoCo names constructors `<init>` (entities usually
+                        // already decoded by roxmltree); region sites call
+                        // them `new`, so FNDA matching joins constructor hits.
+                        "<init>" | "&lt;init&gt;" => "new".to_string(),
+                        other => other.to_string(),
+                    };
                     let covered = method
                         .children()
                         .find(|n| {
@@ -174,7 +180,7 @@ mod tests {
         assert_eq!(sources[0].line_hits, vec![(3, 3)]);
         assert_eq!(
             sources[0].function_hits,
-            vec![("<init>".into(), 1), ("load".into(), 0)]
+            vec![("new".into(), 1), ("load".into(), 0)]
         );
     }
 
@@ -237,7 +243,7 @@ mod tests {
             hit.iter()
                 .map(|site| site.item_path.as_str())
                 .collect::<Vec<_>>(),
-            vec!["Store::<init>", "Store::load"]
+            vec!["Store::new", "Store::load"]
         );
         assert!(unattributable.is_empty());
     }

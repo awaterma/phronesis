@@ -295,7 +295,11 @@ one-liner rule, and the runnable command `coverage select` renders.
 Java JaCoCo XML is imported directly, not as lcov text. Kotlin source files in
 a mixed module are skipped because this language row describes Java sites;
 anonymous-class methods are not independent sites. Abstract methods have no
-body region.
+body region. Constructor sites carry the validator-safe item path `Class::new`
+(overload ordinals apply) — superseding Part J decision 3's `Class::<init>`,
+which the region-id validator's `[A-Za-z0-9_:./+-]` charset rejects — and the
+JaCoCo reader translates `<init>` method names to `new` so FNDA matching still
+joins constructor hits.
 
 Coverage interchange uses lcov: `DA` line counters attribute multi-line
 functions of every language only when an executed line falls within
