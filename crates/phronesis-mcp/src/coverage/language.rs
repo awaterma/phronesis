@@ -34,6 +34,8 @@ pub mod rust {
     }
 }
 
+pub mod java;
+
 pub mod python {
     use crate::coverage::region_map::FunctionSite;
 
@@ -77,6 +79,16 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         is_one_liner: python::is_one_liner,
         one_liner_needs_fnda: true,
         render_command: python::render_command,
+    },
+    CoverageLanguage {
+        id: "java",
+        extensions: &["java"],
+        test_id_prefix: "java:",
+        function_sites: java::java_function_sites,
+        is_wanted_source: java::is_wanted_source,
+        is_one_liner: java::is_one_liner,
+        one_liner_needs_fnda: true,
+        render_command: java::render_command,
     },
 ];
 

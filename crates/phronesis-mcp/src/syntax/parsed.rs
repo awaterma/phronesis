@@ -20,11 +20,15 @@ static TYPESCRIPT_LANG: LazyLock<tree_sitter::Language> =
 static TSX_LANG: LazyLock<tree_sitter::Language> =
     LazyLock::new(|| tree_sitter_typescript::LANGUAGE_TSX.into());
 
+static JAVA_LANG: LazyLock<tree_sitter::Language> =
+    LazyLock::new(crate::graph::java::grammar::language);
+
 pub enum ParsedFile {
     Rust { tree: Tree, source: String },
     Swift { tree: Tree, source: String },
     Python { tree: Tree, source: String },
     TypeScript { tree: Tree, source: String },
+    Java { tree: Tree, source: String },
 }
 
 impl ParsedFile {
@@ -66,6 +70,16 @@ impl ParsedFile {
         parser.set_language(lang).ok()?;
         let tree = parser.parse(source, None)?;
         Some(ParsedFile::TypeScript {
+            tree,
+            source: source.to_string(),
+        })
+    }
+
+    pub fn parse_java(source: &str) -> Option<Self> {
+        let mut parser = Parser::new();
+        parser.set_language(&JAVA_LANG).ok()?;
+        let tree = parser.parse(source, None)?;
+        Some(ParsedFile::Java {
             tree,
             source: source.to_string(),
         })
