@@ -74,9 +74,9 @@ GRADLE
         script.push_str(&format!("rm -rf \"$OUT/{n}\"\nmkdir -p \"$OUT/{n}\"\nprintf '%s\\n' {} > \"$OUT/{n}/module.txt\"\nprintf '%s\\n' {} > \"$OUT/{n}/TN\"\n", quote(module), quote(graph_id)));
         match runner {
             JavaRunner::Mvn => {
-                // Reactor dependencies must not run similarly named tests and
-                // overwrite evidence attributed to the selected module.
-                script.push_str(&format!("rm -rf {}/target/surefire-reports {}/target/site/jacoco\nmvn -pl {} -Dtest={} -Dsurefire.failIfNoSpecifiedTests=true -Djacoco.append=false -Djacoco.destFile=\"$OUT/{n}/coverage.exec\" org.jacoco:jacoco-maven-plugin:prepare-agent test org.jacoco:jacoco-maven-plugin:report -Djacoco.dataFile=\"$OUT/{n}/coverage.exec\" > \"$OUT/{n}/runner.log\" 2>&1\ncp {}/target/site/jacoco/jacoco.xml \"$OUT/{n}/jacoco.xml\"\nREPORTS={}/target/surefire-reports\n", quote(module), quote(module), quote(module), quote(native), quote(module), quote(module)));
+                // Install reactor dependencies without tests before the isolated run.
+                // Clear any build-phase evidence before attributing coverage.
+                script.push_str(&format!("mvn -pl {} -am -Dmaven.test.skip=true install > \"$OUT/{n}/build.log\" 2>&1\nrm -f \"$OUT/{n}/coverage.exec\" \"$OUT/{n}/jacoco.xml\"\nrm -rf {}/target/surefire-reports {}/target/site/jacoco\nmvn -pl {} -Dtest={} -Dsurefire.failIfNoSpecifiedTests=true -Djacoco.append=false -Djacoco.destFile=\"$OUT/{n}/coverage.exec\" org.jacoco:jacoco-maven-plugin:prepare-agent test org.jacoco:jacoco-maven-plugin:report -Djacoco.dataFile=\"$OUT/{n}/coverage.exec\" > \"$OUT/{n}/runner.log\" 2>&1\ncp {}/target/site/jacoco/jacoco.xml \"$OUT/{n}/jacoco.xml\"\nREPORTS={}/target/surefire-reports\n", quote(module), quote(module), quote(module), quote(module), quote(native), quote(module), quote(module)));
             }
             JavaRunner::Gradle => script.push_str(&format!("PHR_JAVA_MODULE=$(cd {} && pwd) PHR_JAVA_RUN=\"$OUT/{n}\" gradle -p {} --init-script \"$OUT/coverage.init.gradle\" --rerun-tasks --no-build-cache test --tests {} jacocoTestReport > \"$OUT/{n}/runner.log\" 2>&1\nREPORTS=\"$OUT/{n}/junit\"\n", quote(module), quote(module), quote(&native.replace('#', ".")))),
         }
@@ -180,6 +180,18 @@ mod tests {
             std::fs::write(&fake, r#"#!/usr/bin/env python3
 import os,pathlib,sys
 args=sys.argv[1:]
+if 'install' in args:
+ assert '-am' in args and '-Dmaven.test.skip=true' in args
+ reports=pathlib.Path('core/target/surefire-reports')
+ reports.mkdir(parents=True,exist_ok=True)
+ (reports/'TEST-build.xml').write_text('<testsuite><testcase classname="dependency.Test" name="unrelated"/></testsuite>')
+ xml=pathlib.Path('core/target/site/jacoco/jacoco.xml')
+ xml.parent.mkdir(parents=True,exist_ok=True)
+ xml.write_text('<report name="stale"/>')
+ pathlib.Path('coverage/1/coverage.exec').write_bytes(b'stale-build')
+ pathlib.Path('coverage/1/jacoco.xml').write_text('<report name="stale"/>')
+ pathlib.Path('build-phase.marker').touch()
+ sys.exit(0)
 if 'PHR_JAVA_RUN' in os.environ:
  out=pathlib.Path(os.environ['PHR_JAVA_RUN'])
  reports=out/'junit'
@@ -188,7 +200,11 @@ if 'PHR_JAVA_RUN' in os.environ:
  assert '--rerun-tasks' in args and '--no-build-cache' in args
 else:
  assert '-am' not in args
+ assert pathlib.Path('build-phase.marker').exists()
+ assert not pathlib.Path('core/target/surefire-reports').exists()
+ assert not pathlib.Path('core/target/site/jacoco').exists()
  out=pathlib.Path(next(a.split('=',1)[1] for a in args if a.startswith('-Djacoco.destFile='))).parent
+ assert not (out/'coverage.exec').exists() and not (out/'jacoco.xml').exists()
  reports=pathlib.Path('core/target/surefire-reports')
 reports.mkdir(parents=True,exist_ok=True)
 wrong=os.environ['FAKE_COUNT']=='wrong'
