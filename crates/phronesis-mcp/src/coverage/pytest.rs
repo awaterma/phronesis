@@ -14,7 +14,7 @@ pub fn parse_collect_only(output: &str) -> Vec<String> {
 
 pub fn graph_test_id(namespace: &str, node_id: &str) -> Option<String> {
     let (file, rest) = node_id.split_once("::")?;
-    let parts: Vec<&str> = rest.split("::").collect();
+    let parts: Vec<&str> = rest.split('[').next()?.split("::").collect();
     let last = parts.last()?.split('[').next()?;
     if !last.starts_with("test_") {
         return None;
@@ -74,10 +74,12 @@ pub fn collection_script(entries: &[(String, String)], out_dir: &Path) -> String
 cases=list(ET.parse(sys.argv[1]).getroot().iter('testcase'))
 if len(cases)!=1 or any(c.find(tag) is not None for c in cases for tag in ('failure','error','skipped')):
  raise SystemExit('expected exactly one successful pytest test')
-parts=sys.argv[2].split('::')
+selector,sep,parameter=sys.argv[2].partition('[')
+parts=selector.split('::')
+name=parts[-1]+(sep+parameter if sep else '')
 classname=parts[0][:-3].replace('/','.')
 if len(parts)>2: classname+='.'+'.'.join(parts[1:-1])
-if cases[0].get('classname')!=classname or cases[0].get('name')!=parts[-1]:
+if cases[0].get('classname')!=classname or cases[0].get('name')!=name:
  raise SystemExit('pytest executed a different test than requested')
 CHECK
 "#);
@@ -140,7 +142,7 @@ mod tests {
         std::fs::create_dir(root.join("tests")).expect("tests");
         std::fs::write(root.join("store.py"), "def load():\n    return 7\nload()\n")
             .expect("source");
-        std::fs::write(root.join("tests/test_store.py"), "import pytest\nfrom store import load\n@pytest.mark.skip(reason='skip fixture')\ndef test_skipped():\n    assert load() == 7\n@pytest.mark.parametrize('value',[7,8],ids=['first case', \"quote'case\"])\ndef test_load(value):\n    assert load() == 7\n").expect("tests");
+        std::fs::write(root.join("tests/test_store.py"), "import pytest\nfrom store import load\n@pytest.mark.skip(reason='skip fixture')\ndef test_skipped():\n    assert load() == 7\n@pytest.mark.parametrize('value',[7,8,9],ids=['a::b','first case', \"quote'case\"])\ndef test_load(value):\n    assert load() == 7\n").expect("tests");
         for args in [
             vec!["init", "-q"],
             vec!["add", "."],
@@ -167,6 +169,7 @@ mod tests {
         let script = root.join("collect.sh");
         for (node, success) in [
             ("tests/test_store.py::test_skipped", false),
+            ("tests/test_store.py::test_load[a::b]", true),
             ("tests/test_store.py::test_load[first case]", true),
             ("tests/test_store.py::test_load[quote'case]", true),
             ("tests/test_store.py::test_skipped", false),
