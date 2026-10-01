@@ -186,18 +186,23 @@ pub fn hit_sites<'a>(
     let mut hit = Vec::new();
     let mut unattributable = Vec::new();
     for site in sites {
+        let counts: Vec<u64> = src
+            .function_hits
+            .iter()
+            .filter(|(name, _)| name == site.name())
+            .map(|(_, count)| *count)
+            .collect();
+        // An explicit, unambiguous zero invocation count overrides line
+        // counters that producers may mark during module loading.
+        if counts.as_slice() == [0] {
+            continue;
+        }
         if (lang.is_one_liner)(site) {
             if !lang.one_liner_needs_fnda {
                 // Producer has no reliable FNDA names (mangled or absent):
                 // never attribute from the DA of the declaration line alone.
                 unattributable.push(site);
             } else {
-                let counts: Vec<u64> = src
-                    .function_hits
-                    .iter()
-                    .filter(|(n, _)| n == site.name())
-                    .map(|(_, c)| *c)
-                    .collect();
                 match counts.as_slice() {
                     [n] if *n > 0 => hit.push(site),
                     // No FNDA entry for this name: nothing to attribute from.
@@ -213,12 +218,29 @@ pub fn hit_sites<'a>(
                     [_, _, ..] => unattributable.push(site),
                 }
             }
-        } else if src
-            .line_hits
-            .iter()
-            .any(|(l, n)| *n > 0 && *l >= site.body_start_line && *l <= site.end_line)
-        {
-            hit.push(site);
+        } else {
+            // JS and Lua producers can credit closing delimiters when a
+            // module loads. Keep the full span for change identity, but
+            // never infer invocation from that ending row alone.
+            let exclude_end = matches!(lang.id, "typescript" | "lua");
+            if src.line_hits.iter().any(|(line, count)| {
+                *count > 0
+                    && *line >= site.body_start_line
+                    && if exclude_end {
+                        *line < site.end_line
+                    } else {
+                        *line <= site.end_line
+                    }
+            }) {
+                hit.push(site);
+            } else if exclude_end
+                && src
+                    .line_hits
+                    .iter()
+                    .any(|(line, count)| *count > 0 && *line == site.end_line)
+            {
+                unattributable.push(site);
+            }
         }
     }
     (hit, unattributable)

@@ -208,7 +208,9 @@ pub fn is_wanted_source(rel: &str) -> bool {
 /// the declaration line, even if later statements span additional lines.
 /// Loading a module can hit that line without invoking the function.
 pub fn is_one_liner(site: &FunctionSite) -> bool {
-    site.end_line == site.start_line || site.body_start_line == site.start_line
+    site.end_line == site.start_line
+        || site.body_start_line == site.start_line
+        || site.body_start_line >= site.end_line
 }
 
 /// A runnable command needs the imported record's tool string, which the
@@ -334,13 +336,22 @@ mod tests {
         assert!(is_one_liner(&sites[1]), "header/body overlap requires FNDA");
         let language = crate::coverage::language::language_for_path("store.js").expect("language");
         let parsed = crate::coverage::lcov::parse_lcov(
-            "SF:store.js\nDA:1,1\nDA:3,0\nDA:5,1\nDA:6,1\nend_of_record\n",
+            "SF:store.js\nDA:1,1\nDA:3,0\nDA:4,1\nDA:5,1\nDA:6,1\nend_of_record\n",
         )
         .expect("lcov");
         let (hits, _) = crate::coverage::lcov::hit_sites(&sites, &parsed.files[0], language);
         assert!(
             hits.is_empty(),
             "declaration and inline header cannot imply invocation"
+        );
+        let parsed = crate::coverage::lcov::parse_lcov(
+            "SF:store.js\nFNDA:0,load\nDA:1,1\nDA:3,1\nDA:4,1\nend_of_record\n",
+        )
+        .expect("lcov");
+        let (hits, _) = crate::coverage::lcov::hit_sites(&sites, &parsed.files[0], language);
+        assert!(
+            hits.is_empty(),
+            "explicit zero invocation vetoes misleading line hits"
         );
         let parsed =
             crate::coverage::lcov::parse_lcov("SF:store.js\nDA:1,1\nDA:3,1\nend_of_record\n")
