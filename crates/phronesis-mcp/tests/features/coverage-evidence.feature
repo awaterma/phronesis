@@ -43,3 +43,7 @@ Feature: Coverage evidence
     Given a Java Maven project with an annotated test and production method
     When the Java production method body changes
     Then coverage select lists the Java test and Maven command
+  Scenario: Swift lcov evidence selects the body test with a runnable swift test command
+    Given a Swift project with per-test lcov evidence
+    When the Swift lcov evidence is imported and its load body changes
+    Then coverage select lists the Swift test and swift test command

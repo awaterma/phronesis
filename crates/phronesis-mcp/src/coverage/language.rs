@@ -60,6 +60,8 @@ pub mod python {
     }
 }
 
+pub mod swift;
+
 pub static LANGUAGES: &[CoverageLanguage] = &[
     CoverageLanguage {
         id: "rust",
@@ -93,6 +95,16 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         one_liner_needs_fnda: true,
         render_command: java::render_command,
         render_command_with_tool: java::render_command_with_tool,
+    },
+    CoverageLanguage {
+        id: "swift",
+        extensions: &["swift"],
+        test_id_prefix: "swift:",
+        function_sites: swift::swift_function_sites,
+        is_wanted_source: swift::is_wanted_source,
+        is_one_liner: swift::is_one_liner,
+        one_liner_needs_fnda: false,
+        render_command: swift::render_command,
     },
 ];
 

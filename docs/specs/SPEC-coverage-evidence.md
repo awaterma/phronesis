@@ -291,6 +291,7 @@ one-liner rule, and the runnable command `coverage select` renders.
 | Rust | `.rs` | none (bare libtest names) | cargo-llvm-cov | no one-liner path: the llvm-cov collector never consults `hit_sites` |
 | Python | `.py` | `python:` | coverage.py via pytest, lcov | `body_start_line == start_line` (a split one-liner still counts); attributed by `FNDA` when present, otherwise unattributable |
 | Java | `.java` | `java:` | JaCoCo XML converted to the shared in-memory source shape | `end_line == start_line`; attributed by method counters when present |
+| Swift | `.swift` | `swift:` | SwiftPM per-test `swift test --enable-code-coverage --filter`, `llvm-cov export -format=lcov` | `end_line == start_line` (brace rows); one-liners are unattributable because llvm-cov's lcov `FN` names are mangled and never matched |
 
 Java JaCoCo XML is imported directly, not as lcov text. Kotlin source files in
 a mixed module are skipped because this language row describes Java sites;
@@ -300,6 +301,16 @@ body region. Constructor sites carry the validator-safe item path `Class::new`
 which the region-id validator's `[A-Za-z0-9_:./+-]` charset rejects — and the
 JaCoCo reader translates `<init>` method names to `new` so FNDA matching still
 joins constructor hits.
+
+Swift production sources mirror the graph's `file_type` classifier
+(test-named files, `Tests/` directories, `Package.swift`, and `.build/`
+carry no regions). Swift test ids are the graph's `defines_test` ids,
+`swift:<unit>::<file segments>::<scope>::<name>`; the runnable command is
+`swift test --filter '^<module>.<scope>/<name>$'` (module name = SwiftPM
+target with `-` mapped to `_`), the anchored form that matched both an
+XCTest class and a Swift Testing suite live. Xcode projects
+(`xcodebuild … -enableCodeCoverage YES` → `.xcresult` → `xcrun xccov`) are
+deferred to a later row.
 
 Coverage interchange uses lcov: `DA` line counters attribute multi-line
 functions of every language only when an executed line falls within

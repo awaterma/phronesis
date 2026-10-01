@@ -274,6 +274,7 @@ fn qualified_parts(id: &str) -> Option<(bool, &str, Option<&str>)> {
     Some((true, leaf_of(item_path)?, anchor.split('.').next()))
 }
 
+#[derive(Debug)]
 pub struct FunctionSite {
     /// Qualified item path (grammar above), ordinal included.
     pub item_path: String,
@@ -462,14 +463,14 @@ fn function_sites_by_node(visits: &[Visit]) -> Vec<(usize, FunctionSite)> {
 }
 
 #[derive(Clone)]
-struct RawSite {
-    path: String,
-    start_line: u64,
-    body_start_line: u64,
-    end_line: u64,
+pub(crate) struct RawSite {
+    pub(crate) path: String,
+    pub(crate) start_line: u64,
+    pub(crate) body_start_line: u64,
+    pub(crate) end_line: u64,
 }
 
-fn assign_function_ordinals(raw: Vec<RawSite>) -> Vec<FunctionSite> {
+pub(crate) fn assign_function_ordinals(raw: Vec<RawSite>) -> Vec<FunctionSite> {
     let mut seen: HashMap<String, u32> = HashMap::new();
     raw.into_iter()
         .map(|r| {
@@ -509,7 +510,7 @@ pub fn extract_function_sites_for(rel_path: &str, source: &str) -> Result<Vec<Fu
     }
 }
 
-fn inclusive_end_line(node: tree_sitter::Node<'_>) -> u64 {
+pub(crate) fn inclusive_end_line(node: tree_sitter::Node<'_>) -> u64 {
     let end = node.end_position();
     let row = end.row as u64 + 1;
     if end.column == 0 {

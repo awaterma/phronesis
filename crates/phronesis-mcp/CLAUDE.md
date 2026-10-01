@@ -49,15 +49,21 @@ cargo run -- coverage import --format lcov-dir --tool coverage.py <dir>  # Impor
 cargo run -- coverage collect --tool pytest-cov --emit-script  # Emit container-friendly isolated pytest collection
 cargo run -- coverage collect --tool java-cov --runner mvn --emit-script  # Emit per-test JaCoCo collection (or --runner gradle)
 cargo run -- coverage import --format jacoco-dir --tool jacoco+mvn <dir>  # Import JaCoCo XML after manifest verification
+cargo run -- coverage collect --tool swift-cov [--emit-script]  # Emit/run container-friendly isolated SwiftPM collection (swift test --filter per graph test, llvm-cov lcov export)
+cargo run -- coverage import --format lcov-dir --tool swift-cov <dir>  # Import per-test Swift lcov after manifest verification
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 
 Function regions exist for the languages registered in
-`crates/phronesis-mcp/src/coverage/language.rs` (Rust and Python today):
-each row owns function-site extraction, the production-source filter, the
-test-id namespace, the one-liner attribution rule, and the command
-`coverage select` renders; a language without a row has no coverage
-semantics and `coverage select` says so.
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, and Swift
+today): each row owns function-site extraction, the production-source
+filter, the test-id namespace, the one-liner attribution rule, and the
+command `coverage select` renders; a language without a row has no coverage
+semantics and `coverage select` says so. Swift one-liners are never
+attributed (llvm-cov's lcov `FN` names are mangled); a Swift test id
+(`swift:<unit>::<file segments>::<scope>::<name>`) renders as
+`swift test --filter '^<module>.<scope>/<name>$'`, the form that matched
+both an XCTest class and a Swift Testing suite live.
 
 ### Payload-contract corpus
 

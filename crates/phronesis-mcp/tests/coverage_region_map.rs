@@ -148,6 +148,30 @@ fn rust_function_sites_include_the_body_start_line() {
 }
 
 #[test]
+fn swift_sites_dispatch_through_the_registry_and_qualify_inits_and_ext_methods() {
+    let src = "class Outer {\n\
+               \x20   deinit { print(\"bye\") }\n\
+               }\n\
+               extension Outer {\n\
+               \x20   func twice() -> Int { 2 }\n\
+               }\n";
+    let sites = extract_function_sites_for("Sources/Store/Store.swift", src).unwrap();
+    let rows: Vec<_> = sites
+        .iter()
+        .map(|s| (s.item_path.as_str(), s.start_line, s.end_line))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![("Outer::deinit", 2, 2), ("Outer::twice", 5, 5)],
+        "{sites:?}"
+    );
+    assert_eq!(
+        sites[0].region_id("Sources/Store/Store.swift"),
+        function_region_id("Sources/Store/Store.swift", "Outer::deinit")
+    );
+}
+
+#[test]
 fn python_duplicate_functions_get_source_order_ordinals() {
     let sites = python_function_sites("def load(): return 1\ndef load(): return 2\n").unwrap();
     assert_eq!(

@@ -483,16 +483,18 @@ enum CoverageCmd {
     /// evidence would carry a revision that did not produce it. Applies to
     /// `--from-dir` too: it stamps HEAD and reads region maps from the tree.
     Collect {
-        /// Select a collector tool (`pytest-cov` enables Python collection).
+        /// Select a collector tool (`pytest-cov` enables Python collection,
+        /// `swift-cov` SwiftPM collection).
         #[arg(long)]
         tool: Option<String>,
         /// Java build runner (`mvn` or `gradle`) for `--tool java-cov`.
         #[arg(long)]
         runner: Option<String>,
-        /// Print the Python collection script for a devcontainer.
+        /// Print the collection script (pytest-cov / swift-cov / java-cov)
+        /// for a devcontainer.
         #[arg(long)]
         emit_script: bool,
-        /// Output directory for pytest lcov files.
+        /// Output directory for pytest/swift lcov files.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Import llvm-cov JSON exports already collected under this dir
@@ -625,6 +627,35 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                     .context("running Java coverage collection script")?;
                 if !status.success() {
                     anyhow::bail!("Java coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
+            if tool.as_deref() == Some("swift-cov") {
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let entries = phronesis_mcp::coverage::collect_swift::collection_entries(&graph);
+                if entries.is_empty() {
+                    anyhow::bail!(
+                        "graph lists no swift defines_test ids; run `phr-mcp graph rebuild`"
+                    );
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/swift-coverage"));
+                let script =
+                    phronesis_mcp::coverage::collect_swift::collection_script(&entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running swift coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("swift coverage collection script failed ({status})");
                 }
                 return Ok(());
             }
