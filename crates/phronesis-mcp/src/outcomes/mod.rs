@@ -68,6 +68,10 @@ pub enum SignalError {
     NotEnabled,
     #[error("unknown signal `{0}`; expected `compile` or `tests`")]
     UnknownSignal(String),
+    #[error("no toolchain definition handles `{0}`; see `phr-mcp toolchains`")]
+    NoToolchain(String),
+    #[error("no outcome could be parsed from that output; nothing was journaled")]
+    NoOutcome,
     #[error(transparent)]
     Subject(#[from] subject::SubjectError),
     #[error(transparent)]
@@ -118,6 +122,64 @@ pub fn record_signal(root: &Path, name: &str, passed: bool) -> Result<String, Si
     };
     crate::journey::journal::append(root, &record)?;
     Ok(subject_id)
+}
+
+/// Parse a saved command output and journal its grounded evidence.
+pub fn record_from_output(
+    root: &Path,
+    command: &str,
+    output: &str,
+    command_exit: Option<i32>,
+) -> Result<(String, Vec<String>), SignalError> {
+    if !enabled(root) {
+        return Err(SignalError::NotEnabled);
+    }
+    if !adapter::handles(root, command) {
+        return Err(SignalError::NoToolchain(command.to_string()));
+    }
+    let (mut tags, subject) = adapter::extract_from(adapter::ExtractFromInput {
+        project_root: root,
+        tool_name: "Bash",
+        command: Some(command),
+        output,
+        command_exit,
+        not_before: None,
+    });
+    let subject_id = subject.ok_or_else(|| SignalError::NoToolchain(command.to_string()))?;
+    if tags.iter().all(|tag| {
+        matches!(
+            tag.as_str(),
+            "outcome:compile_ok" | "outcome:compile_error" | "outcome:compile_unknown"
+        )
+    }) {
+        return Err(SignalError::NoOutcome);
+    }
+    tags.push("outcome:ingested".to_string());
+    let record = crate::journey::journal::JournalRecord {
+        v: 1,
+        ts: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        sid: crate::journey::current_sid(root),
+        seq: crate::hook::seq::next_seq(root),
+        tool: "phr-mcp".to_string(),
+        path: "<signal>".to_string(),
+        ext: None,
+        module: None,
+        tags: tags.clone(),
+        subject: Some(subject_id.clone()),
+        command_exit,
+        kind: None,
+        mode: None,
+        host: None,
+        turn: None,
+        agent: None,
+        agent_type: None,
+        kalpa: None,
+    };
+    crate::journey::journal::append(root, &record)?;
+    Ok((subject_id, tags))
 }
 
 #[cfg(test)]

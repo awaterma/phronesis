@@ -106,14 +106,14 @@ pub(crate) fn pop_and_detect(
     call: &Call<'_>,
     command_exit: Option<i32>,
     base: impl FnOnce(Kind) -> LifecycleEvent,
-) {
+) -> Option<state::Inflight> {
     let entry = state::pop_inflight(root, &call.key());
     if !outcome::is_shell_tool(call.tool) {
-        return;
+        return entry;
     }
-    let Some(entry) = entry else { return };
+    let entry = entry?;
     if !outcome::command_may_move_head(call.command) {
-        return;
+        return Some(entry);
     }
 
     // The probe root is decided once at push and stored on the entry, so pre
@@ -154,10 +154,16 @@ pub(crate) fn pop_and_detect(
                     None,
                     Some(outcome::DETECTION_HOST_REPORTED),
                 ),
-                None => return skipped(call.tool, entry.detection.as_deref()),
+                None => {
+                    skipped(call.tool, entry.detection.as_deref());
+                    return Some(entry);
+                }
             }
         }
-        None => return skipped(call.tool, entry.detection.as_deref()),
+        None => {
+            skipped(call.tool, entry.detection.as_deref());
+            return Some(entry);
+        }
     };
 
     let mut ev = base(Kind::Commit).with_extra("sha", sha);
@@ -183,14 +189,15 @@ pub(crate) fn pop_and_detect(
     // when the post payload omits `agent_id`; a payload that named one has
     // already put it on the base event, and that one wins.
     if ev.agent_id.is_none()
-        && let Some(agent) = entry.agent_id
+        && let Some(agent) = entry.agent_id.as_deref()
     {
-        ev = ev.with_agent(agent, None);
+        ev = ev.with_agent(agent.to_string(), None);
     }
     if let Some(dir) = repo_dir {
         ev = ev.with_extra("repo_dir", dir);
     }
     record(root, ev);
+    Some(entry)
 }
 
 /// Name a miss on stderr rather than letting it be silent: the pre-side marker

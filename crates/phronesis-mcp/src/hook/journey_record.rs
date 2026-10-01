@@ -65,6 +65,7 @@ pub(super) fn payload_command_exit(payload: &HookPayload) -> Option<i32> {
 fn outcomes_for_journal(
     payload: &HookPayload,
     tool_name: &str,
+    inflight_ts: Option<u64>,
 ) -> (Vec<String>, Option<String>, Option<i32>) {
     let root = security::project_root();
     let command = super::extract_new_content(payload, tool_name);
@@ -78,6 +79,7 @@ fn outcomes_for_journal(
         command: command.as_deref(),
         output: &output,
         command_exit,
+        not_before: inflight_ts,
     });
     (tags, subject, command_exit)
 }
@@ -149,7 +151,12 @@ fn build_journal_record(input: JournalRecordInput<'_>) -> journey::journal::Jour
 /// Journey wiring at the **tail of `run_post_check`**: tag the call, resolve
 /// its module, fold in outcome tags + subject, append one journal record.
 /// Fail-open: any failure (config parse, tagger error, IO) is swallowed.
-pub(super) async fn journey_record_post(payload: &HookPayload, tool_name: &str, file_path: &str) {
+pub(super) async fn journey_record_post(
+    payload: &HookPayload,
+    tool_name: &str,
+    file_path: &str,
+    inflight_ts: Option<u64>,
+) {
     if std::env::var("PHRONESIS_NO_JOURNEY").is_ok() {
         return;
     }
@@ -160,7 +167,8 @@ pub(super) async fn journey_record_post(payload: &HookPayload, tool_name: &str, 
         .await
         .unwrap_or_default();
     let module = journey::tagger::resolve_module(&cfg, file_path);
-    let (outcome_tags, subject, command_exit) = outcomes_for_journal(payload, tool_name);
+    let (outcome_tags, subject, command_exit) =
+        outcomes_for_journal(payload, tool_name, inflight_ts);
     let record = build_journal_record(JournalRecordInput {
         tool_name,
         file_path,
