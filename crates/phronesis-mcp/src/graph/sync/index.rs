@@ -104,28 +104,7 @@ fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
             manifests.push(rel);
             continue;
         }
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.trim_start_matches('.'))
-            .unwrap_or("");
-        if !matches!(
-            ext,
-            "rs" | "py"
-                | "ts"
-                | "tsx"
-                | "mts"
-                | "cts"
-                | "swift"
-                | "java"
-                | "lua"
-                | "rhai"
-                | "cue"
-                | "json"
-                | "yaml"
-                | "yml"
-                | "tpl"
-        ) {
+        if !is_tracked(&rel) {
             continue;
         }
         tracked.push(rel);
@@ -224,8 +203,8 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
 /// Covers Rust, Python, TypeScript (and siblings), Swift, Lua, CUE, JSON, YAML,
 /// and Helm3 template files.
 pub const TRACKED_EXTENSIONS: &[&str] = &[
-    ".rs", ".py", ".ts", ".tsx", ".mts", ".cts", ".swift", ".lua", ".rhai", ".cue", ".json",
-    ".yaml", ".yml", ".tpl", ".java",
+    ".rs", ".py", ".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs", ".swift", ".lua",
+    ".rhai", ".cue", ".json", ".yaml", ".yml", ".tpl", ".java",
 ];
 
 /// Whether `on_save`/`record_from_disk` should index this file.
