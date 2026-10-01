@@ -83,6 +83,7 @@ struct Sensor<'a> {
     self_module: String,
     out: BTreeSet<(String, Vec<String>)>,
     skipped: usize,
+    test_scope: Vec<String>,
 }
 
 impl Sensor<'_> {
@@ -277,8 +278,32 @@ impl Sensor<'_> {
                 }
             }
             "call_expression" => {
+                if let Some(function) = node.child_by_field_name("function")
+                    && self.is_describe_invocation(function)
+                {
+                    let supported = matches!(
+                        text(function, self.source),
+                        "describe"
+                            | "describe.only"
+                            | "describe.concurrent"
+                            | "describe.sequential"
+                    );
+                    if supported
+                        && let Some(title) = self.literal_call_title(node)
+                        && let Some(callback) = self.test_callback(node)
+                    {
+                        self.test_scope.push(title);
+                        self.walk(callback, scope);
+                        self.test_scope.pop();
+                    } else {
+                        self.skipped += 1;
+                    }
+                    return;
+                }
                 if let Some(title) = self.test_title(node) {
-                    let qualified = format!("{}::{title}", self.self_module);
+                    let mut names = self.test_scope.clone();
+                    names.push(title);
+                    let qualified = format!("{}::{}", self.self_module, names.join(" "));
                     let file = self.file_path.to_string();
                     self.emit("defines_test", &[&file, &qualified]);
                     if let Some(callback) = self.test_callback(node) {
@@ -411,11 +436,38 @@ impl Sensor<'_> {
         if !self.is_test_invocation(function) {
             return None;
         }
+        self.literal_call_title(node)
+    }
+
+    fn is_describe_invocation(&self, function: Node) -> bool {
+        match function.kind() {
+            "identifier" => text(function, self.source) == "describe",
+            "member_expression" => function
+                .child_by_field_name("object")
+                .is_some_and(|object| self.is_describe_invocation(object)),
+            "call_expression" => function
+                .child_by_field_name("function")
+                .is_some_and(|callee| self.is_describe_invocation(callee)),
+            _ => false,
+        }
+    }
+
+    fn literal_call_title(&self, node: Node) -> Option<String> {
         let args = node.child_by_field_name("arguments")?;
         let mut cursor = args.walk();
-        let first = args
-            .children(&mut cursor)
-            .find(|c| matches!(c.kind(), "string" | "template_string"))?;
+        let first = args.named_children(&mut cursor).next()?;
+        if !matches!(first.kind(), "string" | "template_string") {
+            return None;
+        }
+        if first.kind() == "template_string" {
+            let mut cursor = first.walk();
+            if first
+                .children(&mut cursor)
+                .any(|child| child.kind() == "template_substitution")
+            {
+                return None;
+            }
+        }
         // Trim only the specific delimiter this literal actually opened
         // with — `trim_matches` against the whole quote set would eat a
         // trailing `"` that's part of the title itself (`'has "quotes"'`
@@ -536,6 +588,7 @@ pub fn extract_typescript(file_path: &str, content: &str, unit: &UnitContext) ->
         self_module: self_module.clone(),
         out: BTreeSet::new(),
         skipped: 0,
+        test_scope: Vec::new(),
     };
     sensor.emit("file_type", &[file_path, file_type(file_path)]);
     sensor.emit("declares_module", &[file_path, &self_module]);

@@ -411,7 +411,7 @@ fn a_test_wrapped_in_describe_still_counts() {
         edges_of(&out, "tested_by"),
         vec![vec![
             "charge".to_string(),
-            "typescript:myapp::billing.test::inner".to_string()
+            "typescript:myapp::billing.test::group inner".to_string()
         ]]
     );
 }
@@ -704,4 +704,39 @@ fn a_class_defined_inside_a_test_callback_still_gets_defines_fn_edges() {
         edges_of(&out, "defines_fn")[0][1],
         "typescript:myapp::billing.test::C::m"
     );
+}
+
+#[test]
+fn describe_scopes_distinguish_duplicate_titles_and_skip_dynamic_scopes() {
+    let file = "tests/store.test.ts";
+    let out = extract_typescript(
+        file,
+        r#"
+        describe('first::scope', () => { describe('nested', () => { it('loads', () => load()); }); });
+        describe('second', () => { it('loads', () => load()); });
+        it('outside', () => load());
+        describe(dynamicName, () => { it('unknown', () => load()); });
+        describe(`dynamic ${name}`, () => { it('unknownTemplate', () => load()); });
+    "#,
+        &ctx(&[file]),
+    );
+    let titles: Vec<_> = edges_of(&out, "defines_test")
+        .into_iter()
+        .map(|args| args[1].clone())
+        .collect();
+    assert_eq!(titles.len(), 3, "{titles:?}");
+    for (suffix, title) in [
+        ("first::scope nested loads", "first::scope nested loads"),
+        ("second loads", "second loads"),
+        ("outside", "outside"),
+    ] {
+        let id = titles
+            .iter()
+            .find(|id| id.ends_with(suffix))
+            .expect("full title");
+        let command =
+            crate::coverage::language::typescript::render_command_with_tool(id, file, "c8+vitest")
+                .expect("command");
+        assert!(command.ends_with(&format!("-t '^{title}$'")), "{command}");
+    }
 }
