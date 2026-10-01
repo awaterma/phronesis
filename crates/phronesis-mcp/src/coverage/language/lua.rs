@@ -128,7 +128,11 @@ fn record(node: tree_sitter::Node<'_>, path: &str, out: &mut Vec<RawSite>) {
     let start_line = node.start_position().row as u64 + 1;
     let body_start_line = node
         .child_by_field_name("body")
-        .map(|b| b.start_position().row as u64 + 1)
+        .and_then(|body| {
+            body.named_children(&mut body.walk())
+                .find(|child| !child.is_extra() && child.kind() != "comment")
+                .map(|statement| statement.start_position().row as u64 + 1)
+        })
         .unwrap_or(start_line);
     out.push(RawSite {
         path: path.to_string(),
@@ -158,8 +162,10 @@ pub fn is_wanted_source(rel: &str) -> bool {
 /// on a later line, and luacov's lcov has no `FN`/`FNDA`, so with
 /// `one_liner_needs_fnda: true` a one-line Lua function is always
 /// reported `unattributable` and never guessed from the declaration line.
+/// The same ambiguity applies when the first body statement shares its
+/// header line, even if the function ends on a later line.
 pub fn is_one_liner(site: &FunctionSite) -> bool {
-    site.end_line == site.start_line
+    site.end_line == site.start_line || site.body_start_line <= site.start_line
 }
 
 /// The runnable command `coverage select` renders: the busted filter form,
@@ -278,7 +284,10 @@ arr.map(function(x) return x end)
             end_line: 6,
         };
         assert!(is_one_liner(&one_line));
-        assert!(!is_one_liner(&multi_line));
+        assert!(
+            is_one_liner(&multi_line),
+            "header-sharing bodies are ambiguous"
+        );
     }
 
     #[test]
@@ -326,6 +335,46 @@ arr.map(function(x) return x end)
         assert_eq!(hit.len(), 1, "multi-line M::g hits from its body line");
         assert_eq!(unattr.len(), 1, "the one-liner is reported unattributable");
         assert_eq!(unattr[0].item_path, "M::f");
+    }
+
+    #[test]
+    fn lua_body_hits_ignore_declaration_and_comment_lines() {
+        use crate::coverage::lcov::{LcovSource, hit_sites};
+        let lua = crate::coverage::language::language_for_path("src/store.lua").expect("lua");
+        let sites = lua_function_sites("function M.load()\n  -- explanation\n  return 1\nend\n")
+            .expect("sites");
+        assert_eq!(sites[0].body_start_line, 3);
+        let mut src = LcovSource {
+            path: "src/store.lua".into(),
+            function_hits: vec![],
+            line_hits: vec![(1, 1), (2, 1), (3, 0)],
+        };
+        let (hit, unattr) = hit_sites(&sites, &src, lua);
+        assert!(hit.is_empty(), "loading the declaration is not a call");
+        assert!(unattr.is_empty(), "separate body line can be attributed");
+        src.line_hits[2].1 = 1;
+        assert_eq!(hit_sites(&sites, &src, lua).0.len(), 1);
+    }
+
+    #[test]
+    fn lua_header_sharing_and_empty_bodies_require_function_evidence() {
+        use crate::coverage::lcov::{LcovSource, hit_sites};
+        let lua = crate::coverage::language::language_for_path("src/store.lua").expect("lua");
+        let sites = lua_function_sites(
+            "function M.load() local value = 1\n  return value\nend\nfunction M.empty()\nend\n",
+        )
+        .expect("sites");
+        assert_eq!(sites.len(), 2);
+        let mut src = LcovSource {
+            path: "src/store.lua".into(),
+            function_hits: vec![],
+            line_hits: vec![(1, 1), (2, 0), (4, 1), (5, 1)],
+        };
+        let (hit, unattr) = hit_sites(&sites, &src, lua);
+        assert!(hit.is_empty());
+        assert_eq!(unattr.len(), 2);
+        src.function_hits.push(("load".into(), 1));
+        assert_eq!(hit_sites(&sites, &src, lua).0.len(), 1);
     }
 
     #[test]
