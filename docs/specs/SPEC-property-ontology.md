@@ -121,7 +121,7 @@ All facts carry `Fact.source` (`SPEC-fact-provenance.md`) so "why did this rule 
 
 ## 3. Results enter through the existing outcomes seam
 
-Kani / Verus register as **declarative ToolchainDefs** (`.phronesis/toolchains.json`, zero code): `"matches": "^cargo (kani|verus)"` with `per_test` named groups mapping proof output lines to `(property, status)`. This is exactly what the adapter machinery already parses for cargo test output.
+Kani / Verus register as **declarative ToolchainDefs** (`.phronesis/toolchains.json`, zero code): `"matches": "^cargo (kani|verus)"` with `per_test` named groups mapping proof output lines to `(property, status)`. This is exactly what the adapter machinery already parses for cargo test output. Kani is registered as a project def (`id: kani`) with `section_start` scoping each harness's `Checking harness …` header to its own `VERIFICATION:-` verdict; a harness is bound to its property by an encoding `{"verifier": "kani", "artifact": "harness:<module::path::name>"}`. An unbound harness result is journaled as `proof_unbound(subject, harness, status)` and counts for no property.
 
 Results journal as `outcome:proof_pass:<property>` / `outcome:proof_fail:<property>` tags. New code — small, well-marked seam:
 

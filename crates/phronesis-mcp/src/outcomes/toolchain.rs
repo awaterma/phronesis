@@ -64,6 +64,14 @@ pub struct ToolchainDef {
     /// known-bug registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_test: Option<String>,
+    /// Optional regex marking the start of each per-test section. When set,
+    /// `per_test` is applied inside each section (from one match to the
+    /// next) rather than across the whole output, so a multi-line `per_test`
+    /// can never pair one item's header with a later item's verdict (Kani
+    /// prints `Checking harness X...` and, hundreds of lines later,
+    /// `VERIFICATION:- …`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub section_start: Option<String>,
     /// Which `status` tokens mean "pass".
     #[serde(default = "default_pass_tokens")]
     pub pass_tokens: Vec<String>,
@@ -155,6 +163,10 @@ pub struct CompiledDef {
     /// declares none.
     test_summary: Vec<Regex>,
     per_test: Option<Regex>,
+    /// Section boundaries for per-test parsing: when set, `per_test` runs
+    /// inside each section (one match to the next), so a multi-line `per_test`
+    /// can never span two harnesses.
+    section_start: Option<Regex>,
 }
 
 fn compile_field(id: &str, field: &'static str, pattern: &str) -> Result<Regex, ToolchainError> {
@@ -231,6 +243,11 @@ impl CompiledDef {
                 Ok::<_, ToolchainError>(re)
             })
             .transpose()?;
+        let section_start = def
+            .section_start
+            .as_deref()
+            .map(|p| compile_field(&def.id, "section_start", p))
+            .transpose()?;
         Ok(Self {
             def,
             source,
@@ -239,6 +256,7 @@ impl CompiledDef {
             compile_success,
             test_summary,
             per_test,
+            section_start,
             is_proof,
         })
     }
@@ -318,17 +336,32 @@ impl CompiledDef {
     }
 
     /// Per-test results `(name, passed)` for the known-bug registry. Empty
-    /// when the def has no `per_test` regex.
+    /// when the def has no `per_test` regex. When `section_start` is set,
+    /// `per_test` is applied inside each section (from one section-start
+    /// match to the next) rather than across the whole output, so a
+    /// multi-line `per_test` can never pair one item's header with a later
+    /// item's verdict (Kani's `Checking harness X...` … `VERIFICATION:-`).
     pub fn per_test_results(&self, output: &str) -> Vec<(String, bool)> {
         let Some(re) = &self.per_test else {
             return Vec::new();
         };
-        re.captures_iter(output)
-            .filter_map(|c| {
-                let name = c.name("name")?.as_str().to_string();
-                let status = c.name("status")?.as_str();
-                let passed = self.def.pass_tokens.iter().any(|t| t == status);
-                Some((name, passed))
+        let sections: Vec<&str> = match &self.section_start {
+            None => vec![output],
+            Some(start) => {
+                let mut bounds: Vec<usize> = start.find_iter(output).map(|m| m.start()).collect();
+                bounds.push(output.len());
+                bounds.windows(2).map(|w| &output[w[0]..w[1]]).collect()
+            }
+        };
+        sections
+            .iter()
+            .flat_map(|section| {
+                re.captures_iter(section).filter_map(|c| {
+                    let name = c.name("name")?.as_str().to_string();
+                    let status = c.name("status")?.as_str();
+                    let passed = self.def.pass_tokens.iter().any(|t| t == status);
+                    Some((name, passed))
+                })
             })
             .collect()
     }
@@ -475,6 +508,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             ],
             test_summary: swift_summaries(),
             per_test: None,
+            section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
         },
@@ -485,6 +519,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             compile_success: vec![r"(?m)^Build complete!".to_string()],
             test_summary: swift_summaries(),
             per_test: None,
+            section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
         },
@@ -513,6 +548,7 @@ fn cargo_builtin() -> ToolchainDef {
                 .to_string(),
         ])),
         per_test: Some(r"(?m)^test (?P<name>\S+) \.\.\. (?P<status>ok|FAILED)".to_string()),
+        section_start: None,
         pass_tokens: default_pass_tokens(),
         outcome_kind: None,
     }
@@ -1345,5 +1381,94 @@ mod tests {
             proof_facts(&clean),
             vec![("proof_outcome", vec!["u", "p.a", "passed"])]
         );
+    }
+
+    // ── E1: section_start for per-test parsing, and a Kani def ────────────
+
+    fn kani_project_def() -> ToolchainDef {
+        serde_json::from_str(
+            r#"{
+              "id": "kani",
+              "matches": "^cargo kani",
+              "compile_fail": ["error\\[E\\d+\\]", "internal compiler error"],
+              "compile_success": ["Manual Harness Summary"],
+              "section_start": "(?m)^Checking harness ",
+              "per_test": "(?s)Checking harness (?P<name>\\S+?)\\.\\.\\..*?VERIFICATION:- (?P<status>SUCCESSFUL|FAILED)",
+              "pass_tokens": ["SUCCESSFUL"],
+              "outcome_kind": "proof"
+            }"#,
+        )
+        .expect("def parses")
+    }
+
+    #[test]
+    fn kani_sections_pair_each_header_with_its_own_verdict_and_leave_unfinished_ones_out() {
+        let compiled =
+            CompiledDef::compile(kani_project_def(), DefSource::Project).expect("compiles");
+        assert!(
+            compiled.handles("cd /wt && cargo kani -p phronesis --harness add_binding_totality")
+        );
+        let output = "Checking harness variable_binding::kani_harness::add_binding_totality...\n\
+                      CBMC 6.11\nCheck 385: core::ub_checks::is_valid_allocation_size.division-by-zero.1\n\
+                      SUMMARY:\n ** 0 of 653 failed (10 unreachable)\nVERIFICATION:- SUCCESSFUL\n\n\
+                      Checking harness variable_binding::kani_harness::merge_totality...\n\
+                      Running propositional reduction\n\
+                      Checking harness variable_binding::kani_harness::can_bind_totality...\n\
+                      SUMMARY:\n ** 1 of 900 failed\nVERIFICATION:- FAILED\n\n\
+                      Manual Harness Summary:\nVerification failed for - variable_binding::kani_harness::can_bind_totality\n\
+                      Complete - 1 successfully verified harnesses, 1 failures, 2 total.\n";
+        assert_eq!(
+            compiled.per_test_results(output),
+            vec![
+                (
+                    "variable_binding::kani_harness::add_binding_totality".to_string(),
+                    true
+                ),
+                (
+                    "variable_binding::kani_harness::can_bind_totality".to_string(),
+                    false
+                ),
+            ],
+            "merge_totality had no verdict and must not borrow can_bind's"
+        );
+        let facts = compiled.parse("u", "cargo kani -p phronesis", output, Some(1));
+        // S8: a non-zero exit makes the run "failed", so passing proof_outcome
+        // lines are filtered (a pass inside a failed run never upgrades); only
+        // the failed harness and the run-level fact are emitted.
+        let proofs: Vec<&Vec<String>> = facts
+            .iter()
+            .filter(|f| f.predicate == "proof_outcome")
+            .map(|f| &f.args)
+            .collect();
+        assert_eq!(proofs.len(), 1, "{facts:?}");
+        assert_eq!(proofs[0][2], "failed");
+    }
+
+    #[test]
+    fn a_def_without_section_start_parses_as_before() {
+        let mut def = kani_project_def();
+        def.section_start = None;
+        let compiled = CompiledDef::compile(def, DefSource::Project).expect("compiles");
+        let output = "Checking harness a::b...\nVERIFICATION:- SUCCESSFUL\n";
+        assert_eq!(
+            compiled.per_test_results(output),
+            vec![("a::b".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn the_project_registry_carries_a_compiling_kani_def() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(|p| p.parent())
+            .expect("repo root");
+        let defs = registry(repo);
+        let kani = defs
+            .iter()
+            .find(|d| d.def.id == "kani")
+            .expect("a kani def is registered in .phronesis/toolchains.json");
+        assert_eq!(kani.source, DefSource::Project);
+        assert!(kani.is_proof);
+        assert!(kani.handles("cargo kani -p phronesis --harness x"));
     }
 }

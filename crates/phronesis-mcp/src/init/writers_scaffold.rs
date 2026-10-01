@@ -378,6 +378,16 @@ const TOOLCHAINS_JSON: &str = r#"[
     "id": "tsc",
     "matches": "^(npx )?tsc(\\s|$)",
     "compile_fail": ["error TS\\d+"]
+  },
+  {
+    "id": "kani",
+    "matches": "^cargo kani",
+    "compile_fail": ["error\\[E\\d+\\]", "internal compiler error"],
+    "compile_success": ["Manual Harness Summary"],
+    "section_start": "(?m)^Checking harness ",
+    "per_test": "(?s)Checking harness (?P<name>\\S+?)\\.\\.\\..*?VERIFICATION:- (?P<status>SUCCESSFUL|FAILED)",
+    "pass_tokens": ["SUCCESSFUL"],
+    "outcome_kind": "proof"
   }
 ]
 "#;
