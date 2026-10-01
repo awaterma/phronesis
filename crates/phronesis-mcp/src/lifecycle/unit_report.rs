@@ -29,6 +29,7 @@ pub struct Intervention {
 pub struct CommitRow {
     pub sha: String,
     pub band: Option<String>,
+    pub repo_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -142,6 +143,7 @@ pub fn build(root: &Path, unit_id: &str) -> UnitReport {
             ("lifecycle", "commit") => r.commits.push(CommitRow {
                 sha: str_field(e, "sha").unwrap_or_default().to_string(),
                 band: str_field(e, "confidence_band").map(str::to_string),
+                repo_dir: str_field(e, "repo_dir").map(str::to_string),
             }),
             _ => {}
         }
@@ -274,9 +276,15 @@ pub fn render(r: &UnitReport) -> String {
         let cells: Vec<String> = r
             .commits
             .iter()
-            .map(|c| match &c.band {
-                Some(b) => format!("{}  band {b}", c.sha),
-                None => c.sha.clone(),
+            .map(|c| {
+                let base = match &c.band {
+                    Some(b) => format!("{}  band {b}", c.sha),
+                    None => c.sha.clone(),
+                };
+                match &c.repo_dir {
+                    Some(dir) => format!("{base}  (in {dir})"),
+                    None => base,
+                }
             })
             .collect();
         out.push_str(&format!(
@@ -311,7 +319,7 @@ pub fn render_json(r: &UnitReport) -> String {
             "ts": i.ts, "mode": i.mode, "text": i.text
         })).collect::<Vec<_>>(),
         "commits": r.commits.iter().map(|c| json!({
-            "sha": c.sha, "band": c.band
+            "sha": c.sha, "band": c.band, "repo_dir": c.repo_dir
         })).collect::<Vec<_>>(),
     })
     .to_string()

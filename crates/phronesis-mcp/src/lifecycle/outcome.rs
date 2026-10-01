@@ -1,6 +1,6 @@
 //! Commit detection from ground truth: HEAD before the shell call vs after.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -20,6 +20,189 @@ fn prefilter() -> &'static Regex {
 }
 pub fn command_may_move_head(command: &str) -> bool {
     prefilter().is_match(command)
+}
+
+/// One shell word from the start of `rest`: a `'…'` or `"…"` quoted run, or
+/// a bare run up to whitespace / `;` / `&` / `|`. `None` when the word is
+/// empty or contains shell syntax this parser does not model (`$`, backtick,
+/// backslash, `(`, `)`, `#`), because a guessed directory is worse than none.
+fn shell_word(rest: &str) -> Option<String> {
+    let rest = rest.trim_start();
+    let first = rest.chars().next()?;
+    let word = if first == '\'' || first == '"' {
+        let end = rest[1..].find(first)?;
+        &rest[1..end + 1]
+    } else {
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|'))
+            .unwrap_or(rest.len());
+        &rest[..end]
+    };
+    if word.is_empty() || word.contains(['$', '`', '\\', '(', ')', '#']) {
+        return None;
+    }
+    Some(word.to_string())
+}
+
+/// A shell word and whether it came from a quoted span. Bare `-C` flags are
+/// only recognized when `quoted` is false, so a `-C` inside a `-m` message
+/// cannot supply the commit's directory.
+struct ShellToken {
+    word: String,
+    quoted: bool,
+}
+
+/// Tokenize `segment` into shell words, respecting single- and double-quoted
+/// spans and stopping at a `#` comment that begins outside a quote (at a word
+/// boundary or segment start). A trailing comment or quoted text therefore
+/// cannot supply a `-C <dir>` pair. Unterminated quotes yield no further
+/// tokens, since a guessed directory is worse than none.
+fn tokenize(segment: &str) -> Vec<ShellToken> {
+    let mut tokens = Vec::new();
+    let mut chars = segment.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
+        }
+        if c == '#' {
+            break;
+        }
+        if c == '\'' || c == '"' {
+            let quote = c;
+            chars.next();
+            let mut word = String::new();
+            let mut closed = false;
+            for c2 in chars.by_ref() {
+                if c2 == quote {
+                    closed = true;
+                    break;
+                }
+                word.push(c2);
+            }
+            if !closed {
+                break;
+            }
+            tokens.push(ShellToken { word, quoted: true });
+        } else {
+            let mut word = String::new();
+            for c2 in chars.by_ref() {
+                if c2.is_whitespace() {
+                    break;
+                }
+                word.push(c2);
+            }
+            tokens.push(ShellToken {
+                word,
+                quoted: false,
+            });
+        }
+    }
+    tokens
+}
+
+/// The directory of a `-C <dir>` flag in a `git` invocation.
+/// `Some(Ok(dir))` when a bare `-C` has a parseable directory word;
+/// `Some(Err(()))` when a bare `-C` is present but its directory word is
+/// unparseable (the commit is known to be there, not in any `cd` dir, so
+/// the caller returns `None` rather than guessing); `None` when no bare
+/// `-C` flag is present at all (the caller may then try the `cd` fallback).
+/// Quoted spans and a trailing `#` comment (outside quotes) are skipped, so
+/// only the git command's own bare `-C` counts.
+fn git_c_dir(segment: &str) -> Option<Result<String, ()>> {
+    let tokens = tokenize(segment);
+    let mut iter = tokens.iter();
+    while let Some(tok) = iter.next() {
+        if !tok.quoted && tok.word == "-C" {
+            let dir = iter.next()?;
+            if dir.word.is_empty() || dir.word.contains(['$', '`', '\\', '(', ')', '#']) {
+                return Some(Err(()));
+            }
+            return Some(Ok(dir.word.clone()));
+        }
+    }
+    None
+}
+
+/// The absolute directory the head-moving invocation in `command` acts in,
+/// or `None`. Decided from the segment that matches the head-moving
+/// prefilter: its own `-C <dir>` first; else a leading `cd <dir>` segment
+/// that hands off to the rest of the command. When the first prefilter-
+/// matching segment is not a `git` invocation (e.g. `echo 'git -C /x
+/// commit'`), later segments are examined rather than returning early.
+/// Relative paths and unmodelled shell syntax return `None`: the caller then
+/// probes the project root, so commits are undercounted, never mis-attributed.
+pub fn command_repo_dir(command: &str) -> Option<PathBuf> {
+    if command.contains(['$', '`', '(', ')']) || command.contains("sh -c") {
+        return None;
+    }
+    let segments = crate::outcomes::segment::command_heads(command);
+    for mover in &segments {
+        if !prefilter().is_match(mover) {
+            continue;
+        }
+        if !mover.starts_with("git") {
+            // The first prefilter-matching segment is not a git invocation
+            // (e.g. `echo 'git -C /x commit'`); keep looking at later
+            // segments rather than returning early.
+            continue;
+        }
+        // This git mover is the commit invocation. A bare `-C` present but
+        // unparseable returns None (the commit is known to be under -C, not
+        // under any `cd` dir); no `-C` at all falls through to the cd path.
+        if let Some(result) = git_c_dir(mover) {
+            let dir = result.ok()?;
+            let path = PathBuf::from(dir);
+            return path.is_absolute().then_some(path);
+        }
+        break;
+    }
+    // cd <dir> fallback: a leading `cd` segment hands off to the rest.
+    let first = segments.first()?;
+    let rest = first.strip_prefix("cd ")?;
+    if segments.len() < 2 {
+        return None;
+    }
+    let dir = shell_word(rest)?;
+    let path = PathBuf::from(dir);
+    path.is_absolute().then_some(path)
+}
+
+/// `git rev-parse --git-common-dir` for `dir`, canonicalized. `None` outside
+/// a repository or when git is unavailable.
+fn git_common_dir(dir: &Path) -> Option<PathBuf> {
+    let out = Command::new("git")
+        .args(["rev-parse", "--git-common-dir"])
+        .current_dir(dir)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let path = if Path::new(&raw).is_absolute() {
+        PathBuf::from(raw)
+    } else {
+        dir.join(raw)
+    };
+    std::fs::canonicalize(path).ok()
+}
+
+/// Where to probe HEAD for `command`: the absolute directory it names when
+/// that directory exists and is a worktree of the same repository as
+/// `project_root`; otherwise `project_root`. A sibling repository therefore
+/// still reads as "HEAD did not move here" (spec §Non-goals).
+pub fn probe_root_for(project_root: &Path, command: &str) -> PathBuf {
+    let Some(candidate) = command_repo_dir(command) else {
+        return project_root.to_path_buf();
+    };
+    if !candidate.is_dir() {
+        return project_root.to_path_buf();
+    }
+    match (git_common_dir(project_root), git_common_dir(&candidate)) {
+        (Some(a), Some(b)) if a == b => candidate,
+        _ => project_root.to_path_buf(),
+    }
 }
 
 /// How, or why not, a `commit` was detected for a call. `timeout` is stored on

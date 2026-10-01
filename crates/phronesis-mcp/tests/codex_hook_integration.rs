@@ -890,6 +890,7 @@ fn interrupt_drops_the_sessions_inflight_entries() {
             agent_id: None,
             head_before: None,
             detection: None,
+            probe_root: None,
         },
     );
     let interrupt = json!({

@@ -604,7 +604,13 @@ code at all — Claude Code's `Bash` is one — still gets its commits, marked
 `host_sha` and stands in as `detection: "host_reported"` when the probe
 found no baseline. Commits are undercounted, never overcounted: an alias, a
 wrapper script, `git pull`, or a commit made outside a tool call is missed,
-and the reports say so.
+and the reports say so. A commit made in a linked worktree
+(`cd <worktree> && git commit` or `git -C <worktree> commit` from a session
+rooted in the main checkout) is recorded with `repo_dir`: the hook probes
+the absolute directory the head-moving invocation names when it shares this
+repository's `git rev-parse --git-common-dir`, decided once at pre-check.
+Relative paths, unrelated repositories, and shell forms the parser does not
+model fall back to the project root.
 
 **Kalpas and work items.** A *kalpa* is a named theme spanning sessions
 (`[a-z0-9][a-z0-9-]{0,63}`); a *work item* is the existing work unit

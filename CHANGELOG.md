@@ -38,6 +38,16 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   as it existed (#114). The Rust pack's self-referential rule text is now
   exempted per rule with `//! phronesis-allow:` markers.
 
+- **Commits made from another worktree of the same repository are recorded.**
+  A `cd <worktree> && git commit …` or `git -C <worktree> commit …` issued from
+  a session rooted in the main checkout used to be missed, because the hook
+  probed `HEAD` only at the project root; every worker commit in a swarm
+  vanished from `kalpa show` and `unit show`. The hook now probes the absolute
+  directory the head-moving invocation names when it shares this repository's
+  common git dir, decides that once at pre-check, and stamps the record with
+  `repo_dir`. Relative paths, unrelated repositories, and shell forms the
+  parser does not model still fall back to the project root.
+
 - **A benign Python property body could be refused for "interpolating
   outside a string" when the value only ever sat inside a `'...'` string or
   a `#` comment.** The rendered-body validator's non-Rust fallback only knew
