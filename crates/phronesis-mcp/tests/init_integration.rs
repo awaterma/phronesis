@@ -1488,10 +1488,10 @@ fn lua_pack_writes_busted_toolchain_def() {
         .filter_map(|d| d["id"].as_str())
         .collect();
     // The base includes the confidence pack, whose example defs
-    // (pytest, tsc) are written first; the language-pack writer appends
+    // (pytest, tsc, kani) are written first; the language-pack writer appends
     // the busted def after them.
-    assert_eq!(ids, vec!["pytest", "tsc", "busted"]);
-    let busted = &defs[2];
+    assert_eq!(ids, vec!["pytest", "tsc", "kani", "busted"]);
+    let busted = &defs[3];
     assert_eq!(busted["matches"], "^busted(\\s|$)");
     assert_eq!(
         busted["test_summary"],

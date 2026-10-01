@@ -4,7 +4,7 @@
 //! the F2 manifest, and a zero-match guard — PLAN.md Task H2).
 //!
 //! Machine-readable results must identify exactly one passing test before
-//! coverage is tagged. Ambiguous or scoped titles fail closed.
+//! coverage is tagged. Ambiguous result identities fail closed.
 
 use std::path::Path;
 
@@ -273,6 +273,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn emitted_scripts_validate_actual_runner_results_and_refuse_stale_output() {
         use std::os::unix::fs::PermissionsExt;
         use std::process::Command;

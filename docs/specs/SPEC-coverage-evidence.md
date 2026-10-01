@@ -295,6 +295,38 @@ one-liner rule, and the runnable command `coverage select` renders.
 | TypeScript/JavaScript | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` | `typescript:` | c8 / vitest / jest, lcov | `end_line == start_line` (brace-row rule); attributed by `FNDA` when present, otherwise unattributable |
 | Lua | `.lua` | `lua:` | luacov via busted (`luacov -r lcov`), lcov; `--filter` names the space-joined describe/it full name | `end_line == start_line`; luacov's lcov has no `FN`/`FNDA`, so a one-line function is always reported unattributable, never guessed |
 
+Collectors validate exactly one successful test before assigning its graph id
+to a report. Java checks the JUnit XML identity; Vitest/Jest check JSON
+assertion results; Node checks TAP; Swift checks XCTest and Swift Testing
+totals together; Busted checks its complete success/failure/error/pending
+summary. JavaScript selectors escape regex metacharacters and literal
+`describe` scopes are included in the runner title, so duplicate leaf names
+in different suites stay distinct. Dynamic suite names and nested Node TAP
+suites are conservatively unsupported. JS output directories must be empty;
+use a fresh `--out` directory for a new collection. Other collectors clear
+their prior generated evidence before collecting again.
+
+For JavaScript and Lua, multi-line body ranges begin at the first executable
+statement, not the declaration or opening brace. A positive declaration-line
+count from defining a function cannot establish that its body ran. Bodies
+whose first statement shares the declaration line, and empty bodies, require
+function-counter evidence even if they span several lines; absent reliable
+counters they remain unattributable.
+
+Python collection limits coverage to repository sources (`--source=.`), so
+imported runner/dependency packages outside the repository do not enter its
+manifest. Maven installs reactor dependencies with tests skipped before
+running the isolated selected module. Gradle receives an explicit init script
+configuring XML, JUnit and execution-data destinations, and reruns tasks.
+Java modules use their test-source directory rather than the graph namespace;
+custom Java test source roots are currently unsupported.
+
+Real-runner smoke tests in `scripts/coverage-runner-smoke.py` collect fresh
+reports twice, import them, assert exact per-test body attribution, and verify
+changed-body selection. CI runs Python, Vitest, Jest, Node, Maven, Gradle and
+Busted, plus Swift on Linux and macOS. These checks establish the exercised
+behavior; they do not establish a coverage percentage for the implementation.
+
 Java JaCoCo XML is imported directly, not as lcov text. Kotlin source files in
 a mixed module are skipped because this language row describes Java sites;
 anonymous-class methods are not independent sites. Abstract methods have no
@@ -322,7 +354,8 @@ Per-test lcov imports require a manifest containing the collection revision
 and SHA-256 digests for covered source files; the importer verifies both
 against the host tree. Test ids are the graph's `defines_test` ids; Python's
 use the form `python:<namespace>::<path segments>::<test function>`, and
-TypeScript/JavaScript's end with the raw `it()` title (which may contain
+TypeScript/JavaScript's end with the full runner title (literal `describe`
+scopes joined with spaces plus the raw `it()` title, which may contain
 spaces and `::`) after the test file's module segments, with the graph's
 target infix (`typescript:<unit>#test:<file>`) for files under `tests/`,
 and Lua's busted specs emit

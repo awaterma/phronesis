@@ -48,20 +48,20 @@ PYTHON
     if runner == JavaRunner::Gradle {
         script.push_str(
             r#"cat > "$OUT/coverage.init.gradle" <<'GRADLE'
-allprojects {
-    if (projectDir.canonicalPath != System.getenv('PHR_JAVA_MODULE')) return
-    plugins.withId('java') {
-        apply plugin: 'jacoco'
-        tasks.named('test', Test).configure {
+allprojects { p ->
+    if (p.projectDir.canonicalPath != System.getenv('PHR_JAVA_MODULE')) return
+    p.plugins.withId('java') {
+        p.pluginManager.apply('jacoco')
+        p.tasks.named('test', org.gradle.api.tasks.testing.Test).configure {
             outputs.upToDateWhen { false }
             reports.junitXml.required = true
-            reports.junitXml.outputLocation = file(System.getenv('PHR_JAVA_RUN') + '/junit')
-            jacoco.destinationFile = file(System.getenv('PHR_JAVA_RUN') + '/coverage.exec')
+            reports.junitXml.outputLocation = p.file(System.getenv('PHR_JAVA_RUN') + '/junit')
+            jacoco.destinationFile = p.file(System.getenv('PHR_JAVA_RUN') + '/coverage.exec')
         }
-        tasks.named('jacocoTestReport', JacocoReport).configure {
-            executionData.setFrom(file(System.getenv('PHR_JAVA_RUN') + '/coverage.exec'))
+        p.tasks.named('jacocoTestReport', org.gradle.testing.jacoco.tasks.JacocoReport).configure {
+            executionData.setFrom(p.file(System.getenv('PHR_JAVA_RUN') + '/coverage.exec'))
             reports.xml.required = true
-            reports.xml.outputLocation = file(System.getenv('PHR_JAVA_RUN') + '/jacoco.xml')
+            reports.xml.outputLocation = p.file(System.getenv('PHR_JAVA_RUN') + '/jacoco.xml')
         }
     }
 }

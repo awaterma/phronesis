@@ -148,6 +148,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- Coverage collection now validates exact per-test execution and clears or
+  refuses reused output. Swift builds instrumented tests before discovery and
+  supports executable and bundle layouts; JVM collectors configure real XML
+  reports; JaCoCo accepts its standard inert DOCTYPE. JavaScript graph rebuild
+  includes all JS extensions, literal suite scopes identify duplicate test
+  titles, and CommonJS assignments have body regions. JS/Lua declaration hits
+  no longer count as executed bodies. Real-runner CI exercises collection,
+  import, and changed-body selection across the language collectors.
+
 - **`.phronesisignore` no longer hides files from structural rules.** An ignore
   entry now exempts a file from lexical rules only (rules with no AST
   predicate); structural rules keep running on it below the file-size cap, and

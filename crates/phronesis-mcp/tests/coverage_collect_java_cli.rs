@@ -3,12 +3,17 @@ use std::process::Command;
 
 #[test]
 fn java_collection_uses_test_source_module_not_graph_namespace() {
-    for module in ["", "core/"] {
+    for (module, package) in [("", "com.x"), ("core/", "com.x"), ("", "")] {
         let dir = tempfile::tempdir().expect("fixture");
         let root = dir.path();
         let source = format!("{module}src/test/java/com/x/StoreTest.java");
         std::fs::create_dir_all(root.join(&source).parent().expect("parent")).expect("mkdir");
-        std::fs::write(root.join(&source), "package com.x; import org.junit.Test; public class StoreTest { @Test public void testLoad() {} }").expect("source");
+        let package_decl = if package.is_empty() {
+            String::new()
+        } else {
+            format!("package {package};")
+        };
+        std::fs::write(root.join(&source), format!("{package_decl} import org.junit.Test; public class StoreTest {{ @Test public void testLoad() {{}} }}")).expect("source");
         std::fs::write(root.join(format!("{module}pom.xml")), "<project><modelVersion>4.0.0</modelVersion><groupId>com.x</groupId><artifactId>identity</artifactId><version>1</version></project>").expect("pom");
         if !module.is_empty() {
             std::fs::write(root.join("pom.xml"), "<project><modelVersion>4.0.0</modelVersion><groupId>com.x</groupId><artifactId>parent</artifactId><version>1</version><packaging>pom</packaging><modules><module>core</module></modules></project>").expect("parent pom");
