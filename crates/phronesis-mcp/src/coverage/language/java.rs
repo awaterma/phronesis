@@ -148,20 +148,27 @@ pub fn is_one_liner(site: &FunctionSite) -> bool {
     site.end_line == site.start_line
 }
 
-pub fn render_command(test_id: &str, _file: &str) -> Option<String> {
-    render_command_with_tool(test_id, _file, "")
+pub fn render_command(test_id: &str, file: &str) -> Option<String> {
+    render_command_with_tool(test_id, file, "")
 }
 
 /// `tool` is the imported record's tool string (`jacoco+mvn`,
 /// `jacoco+gradle`); an empty tool renders the Maven default — the same
 /// command `select` rendered before the tool seam existed.
-pub fn render_command_with_tool(test_id: &str, _file: &str, tool: &str) -> Option<String> {
+pub fn render_command_with_tool(test_id: &str, file: &str, tool: &str) -> Option<String> {
     let rest = test_id.strip_prefix("java:")?;
-    let (module, qualified) = rest.split_once("::")?;
+    let (namespace, qualified) = rest.split_once("::")?;
+    // The graph namespace is a project/artifact identifier, not a directory.
+    // Only standard Java test roots provide grounded module locations.
+    let module = if file.starts_with("src/test/java/") {
+        "."
+    } else {
+        file.split_once("/src/test/java/")?.0
+    };
     let mut parts = qualified.split("::").collect::<Vec<_>>();
     let method = parts.pop()?;
     let class = parts.pop()?;
-    if module.is_empty() || class.is_empty() || method.is_empty() {
+    if namespace.is_empty() || module.is_empty() || class.is_empty() || method.is_empty() {
         return None;
     }
     let package = parts.join(".");
@@ -170,13 +177,17 @@ pub fn render_command_with_tool(test_id: &str, _file: &str, tool: &str) -> Optio
     } else {
         format!("{package}.{class}")
     };
+    let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
+    let module = quote(module);
     if tool.ends_with("gradle") {
         Some(format!(
-            "gradle -p {module} test --tests '{class_name}.{method}'"
+            "gradle -p {module} test --tests {}",
+            quote(&format!("{class_name}.{method}"))
         ))
     } else {
         Some(format!(
-            "mvn -pl {module} -Dtest='{class_name}#{method}' test"
+            "mvn -pl {module} -Dtest={} test",
+            quote(&format!("{class_name}#{method}"))
         ))
     }
 }
@@ -219,7 +230,7 @@ mod tests {
                 "core/src/test/java/com/x/StoreTest.java"
             )
             .as_deref(),
-            Some("mvn -pl core -Dtest='com.x.StoreTest#testLoad' test")
+            Some("mvn -pl 'core' -Dtest='com.x.StoreTest#testLoad' test")
         );
     }
 
@@ -232,7 +243,7 @@ mod tests {
                 "jacoco+gradle"
             )
             .as_deref(),
-            Some("gradle -p core test --tests 'com.x.StoreTest.testLoad'")
+            Some("gradle -p 'core' test --tests 'com.x.StoreTest.testLoad'")
         );
     }
 
@@ -250,5 +261,47 @@ mod tests {
         let sites = java_function_sites("class A {\n void f() {\n }\n void g() { }\n}")
             .expect("Java source");
         assert_eq!(sites[0].end_line, 3);
+    }
+
+    #[test]
+    fn selection_uses_test_source_module_instead_of_project_namespace() {
+        let id = "java:com.x:artifact::com::x::StoreTest::testLoad";
+        for (file, module) in [
+            ("core/src/test/java/com/x/StoreTest.java", "core"),
+            ("src/test/java/com/x/StoreTest.java", "."),
+        ] {
+            assert_eq!(
+                render_command_with_tool(id, file, "jacoco+gradle"),
+                Some(format!(
+                    "gradle -p '{module}' test --tests 'com.x.StoreTest.testLoad'"
+                ))
+            );
+            assert_eq!(
+                render_command_with_tool(id, file, "jacoco+mvn"),
+                Some(format!(
+                    "mvn -pl '{module}' -Dtest='com.x.StoreTest#testLoad' test"
+                ))
+            );
+        }
+        assert_eq!(
+            render_command(
+                "java:artifact::StoreTest::testLoad",
+                "src/test/java/StoreTest.java"
+            ),
+            Some("mvn -pl '.' -Dtest='StoreTest#testLoad' test".into())
+        );
+        assert_eq!(render_command(id, "tests/StoreTest.java"), None);
+        assert_eq!(render_command(id, ""), None);
+    }
+
+    #[test]
+    fn selected_module_and_filter_are_shell_quoted() {
+        assert_eq!(
+            render_command(
+                "java:project::StoreTest::test'Load",
+                "core's module/src/test/java/StoreTest.java"
+            ),
+            Some("mvn -pl 'core'\\''s module' -Dtest='StoreTest#test'\\''Load' test".into())
+        );
     }
 }

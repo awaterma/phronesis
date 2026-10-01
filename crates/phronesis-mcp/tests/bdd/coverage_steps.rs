@@ -763,7 +763,7 @@ async fn then_java_selection_command(world: &mut World) {
     assert!(
         world
             .last_json
-            .contains("mvn -pl core -Dtest='com.x.StoreTest#testLoad' test"),
+            .contains("mvn -pl 'core' -Dtest='com.x.StoreTest#testLoad' test"),
         "{}",
         world.last_json
     );
