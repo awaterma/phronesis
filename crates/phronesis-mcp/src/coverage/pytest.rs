@@ -65,7 +65,23 @@ pub fn collection_script(entries: &[(String, String)], out_dir: &Path) -> String
         } else {
             base
         };
-        s.push_str(&format!("n=$((n+1))\npython3 -m coverage run --source=. --data-file=\"$OUT/{n}.cov\" -m pytest -q -- {}\npython3 -m coverage lcov --data-file=\"$OUT/{n}.cov\" -o \"$OUT/{stem}.lcov\"\nprintf '%s\\n' {} {} | cat - \"$OUT/{stem}.lcov\" > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\nrm -f \"$OUT/{n}.cov\"\n",quote(node),quote(&format!("TN:{id}")),quote(&format!("# node: {node}"))));
+        s.push_str(&format!("n=$((n+1))\nrm -f \"$OUT/{n}.junit.xml\"\npython3 -m coverage run --source=. --data-file=\"$OUT/{n}.cov\" -m pytest -q --junitxml=\"$OUT/{n}.junit.xml\" -o junit_family=xunit2 -- {}\n", quote(node)));
+        s.push_str(&format!(
+            "python3 - \"$OUT/{n}.junit.xml\" {} <<'CHECK'\n",
+            quote(node)
+        ));
+        s.push_str(r#"import sys,xml.etree.ElementTree as ET
+cases=list(ET.parse(sys.argv[1]).getroot().iter('testcase'))
+if len(cases)!=1 or any(c.find(tag) is not None for c in cases for tag in ('failure','error','skipped')):
+ raise SystemExit('expected exactly one successful pytest test')
+parts=sys.argv[2].split('::')
+classname=parts[0][:-3].replace('/','.')
+if len(parts)>2: classname+='.'+'.'.join(parts[1:-1])
+if cases[0].get('classname')!=classname or cases[0].get('name')!=parts[-1]:
+ raise SystemExit('pytest executed a different test than requested')
+CHECK
+"#);
+        s.push_str(&format!("python3 -m coverage lcov --data-file=\"$OUT/{n}.cov\" -o \"$OUT/{stem}.lcov\"\nprintf '%s\\n' {} {} | cat - \"$OUT/{stem}.lcov\" > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\nrm -f \"$OUT/{n}.cov\"\n", quote(&format!("TN:{id}")), quote(&format!("# node: {node}"))));
     }
     s.push_str("python3 - \"$OUT\" <<'PY'\nimport hashlib,json,os,subprocess,sys\nout=sys.argv[1]; root=subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True).strip(); files={}\nfor name in sorted(os.listdir(out)):\n if name.endswith(('.lcov','.info')):\n  for line in open(os.path.join(out,name)):\n   if line.startswith('SF:'):\n    p=os.path.realpath(line[3:].strip()); rel=os.path.relpath(p,root)\n    if rel.startswith('..'+os.sep): raise SystemExit('source outside git root: '+p)\n    files[rel]=hashlib.sha256(open(p,'rb').read()).hexdigest()\nrev=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\njson.dump({'revision':rev,'files':files},open(os.path.join(out,'manifest.json'),'w'),sort_keys=True)\nPY\n");
     s.push_str(&format!(
@@ -114,6 +130,77 @@ mod tests {
         );
         assert!(s.contains("'tests/test_store.py::test_it['\\''x y'\\'']'"));
         assert!(s.contains("manifest.json") && s.contains("rev-parse"));
+    }
+
+    #[test]
+    #[ignore = "requires pytest and coverage.py; run explicitly in Python collector CI"]
+    fn real_pytest_collector_rejects_skips_and_accepts_exact_parameter_nodes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        std::fs::create_dir(root.join("tests")).expect("tests");
+        std::fs::write(root.join("store.py"), "def load():\n    return 7\nload()\n")
+            .expect("source");
+        std::fs::write(root.join("tests/test_store.py"), "import pytest\nfrom store import load\n@pytest.mark.skip(reason='skip fixture')\ndef test_skipped():\n    assert load() == 7\n@pytest.mark.parametrize('value',[7,8],ids=['first case', \"quote'case\"])\ndef test_load(value):\n    assert load() == 7\n").expect("tests");
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .expect("git")
+                    .success()
+            );
+        }
+        let out = root.join("coverage");
+        let script = root.join("collect.sh");
+        for (node, success) in [
+            ("tests/test_store.py::test_skipped", false),
+            ("tests/test_store.py::test_load[first case]", true),
+            ("tests/test_store.py::test_load[quote'case]", true),
+            ("tests/test_store.py::test_skipped", false),
+        ] {
+            let id = graph_test_id("example", node).expect("id");
+            std::fs::write(&script, collection_script(&[(node.into(), id)], &out)).expect("script");
+            let result = std::process::Command::new("sh")
+                .arg(&script)
+                .current_dir(root)
+                .env("PYTHONPATH", root)
+                .output()
+                .expect("collect");
+            assert_eq!(
+                result.status.success(),
+                success,
+                "{node}: stdout={} stderr={}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            assert_eq!(out.join("manifest.json").exists(), success);
+            if !success {
+                assert!(
+                    String::from_utf8_lossy(&result.stderr)
+                        .contains("expected exactly one successful pytest test")
+                );
+                assert!(!std::fs::read_dir(&out).expect("out").any(|entry| {
+                    entry
+                        .expect("entry")
+                        .path()
+                        .extension()
+                        .is_some_and(|ext| ext == "lcov")
+                }));
+            }
+        }
     }
 
     #[test]
