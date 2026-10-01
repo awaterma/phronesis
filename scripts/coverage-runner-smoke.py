@@ -22,11 +22,17 @@ def write(root, name, content):
 
 
 def smoke(binary, runner, root):
+    label = runner
+    typescript = runner == 'vitest-ts'
+    if typescript:
+        runner = 'vitest'
     fixtures = Path(__file__).resolve().parents[1] / 'crates/phronesis-mcp/tests/fixtures'
     names = {'python': 'lcov/python-store', 'swift': 'lcov/swift-store', 'vitest': 'lcov/ts-store', 'jest': 'lcov/ts-store', 'node': 'lcov/ts-store', 'mvn': 'jacoco/java-store', 'gradle': 'jacoco/java-store', 'lua': 'lcov/lua-store'}
     shutil.copytree(fixtures / names[runner], root, dirs_exist_ok=True)
     shutil.rmtree(root / 'cov')
     sources = {'python': 'pkg/store.py', 'swift': 'Sources/Store/Store.swift', 'vitest': 'src/store.js', 'jest': 'src/store.js', 'node': 'src/store.js', 'mvn': 'core/src/main/java/com/x/Store.java', 'gradle': 'core/src/main/java/com/x/Store.java', 'lua': 'src/store.lua'}
+    if typescript:
+        sources[runner] = 'src/store.ts'
     if runner in ('vitest', 'jest', 'node'):
         (root / 'src/store.ts').unlink()
         shutil.rmtree(root / 'tests')
@@ -34,11 +40,16 @@ def smoke(binary, runner, root):
         write(root, 'package.json', json.dumps({'name': 'example-app', 'version': '1.0.0', 'devDependencies': dependencies}))
         write(root, 'src/store.js', 'exports.load = function load() {\n  return 7;\n};\nexports.other = function other() {\n  return 9;\n};\n')
         setup = {'vitest': "import {test, describe, expect} from 'vitest';\nimport store from '../src/store.js';\n", 'jest': "const store = require('../src/store.js');\n", 'node': "const {test} = require('node:test');\nconst assert = require('node:assert/strict');\nconst store = require('../src/store.js');\n"}[runner]
+        test_file = 'tests/store.test.ts' if typescript else 'tests/store.test.js'
+        if typescript:
+            (root / 'src/store.js').unlink()
+            write(root, 'src/store.ts', 'export function load(): number {\n  return 7;\n}\nexport function other(): number {\n  return 9;\n}\n')
+            setup = "import {test, describe, expect} from 'vitest';\nimport * as store from '../src/store.ts';\n"
         assertion = 'assert.equal(store.load(), 7)' if runner == 'node' else 'expect(store.load()).toBe(7)'
         other = 'assert.equal(store.other(), 9)' if runner == 'node' else 'expect(store.other()).toBe(9)'
-        write(root, 'tests/store.test.js', setup + f"test('testLoad', () => {{ {assertion}; }});\ntest('testOther', () => {{ {other}; }});\n")
+        write(root, test_file, setup + f"test('testLoad', () => {{ {assertion}; }});\ntest('testOther', () => {{ {other}; }});\n")
         if runner != 'node':
-            write(root, 'tests/store.test.js', setup + f"describe('scope (a+b)::one', () => {{ test('testLoad', () => {{ {assertion}; }}); }});\ndescribe('scope other', () => {{ test('testLoad', () => {{ {assertion}; }}); }});\ntest('testOther', () => {{ {other}; }});\n")
+            write(root, test_file, setup + f"describe('scope (a+b)::one', () => {{ test('testLoad', () => {{ {assertion}; }}); }});\ndescribe('scope other', () => {{ test('testLoad', () => {{ {assertion}; }}); }});\ntest('testOther', () => {{ {other}; }});\n")
         run(root, 'npm', 'install', '--no-audit', '--no-fund')
     elif runner == 'lua':
         write(root, 'src/store.lua', 'local M = {}\nfunction M.load()\n  return 7\nend\nfunction M.other()\n  return 9\nend\nreturn M\n')
@@ -105,19 +116,21 @@ def smoke(binary, runner, root):
     path.write_text(text)
     for test in tests:
         run(root, 'sh', '-c', test['command'])
-    print(f'PASS {runner}: real isolated collection, import, changed-body selection')
+    print(f'PASS {label}: real isolated collection, import, changed-body selection')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True)
-    parser.add_argument('--runner', choices=['python', 'vitest', 'jest', 'node', 'swift', 'mvn', 'gradle', 'lua'], required=True)
+    parser.add_argument('--runner', choices=['python', 'vitest', 'vitest-ts', 'jest', 'node', 'swift', 'mvn', 'gradle', 'lua'], required=True)
     parser.add_argument('--keep', action='store_true')
     options = parser.parse_args()
-    root = Path(tempfile.mkdtemp(prefix='phr-coverage-smoke-'))
+    root = Path(tempfile.mkdtemp(prefix='phr coverage smoke '))
     print(f'Smoke repository: {root}', flush=True)
+    succeeded = False
     try:
         smoke(str(Path(options.binary).resolve()), options.runner, root)
+        succeeded = True
     finally:
-        if not options.keep:
+        if succeeded and not options.keep:
             shutil.rmtree(root)

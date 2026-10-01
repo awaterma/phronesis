@@ -58,6 +58,7 @@ jobs:
           - { runner: python, os: ubuntu-latest }
           - { runner: lua, os: ubuntu-latest }
           - { runner: vitest, os: ubuntu-latest }
+          - { runner: vitest-ts, os: ubuntu-latest }
           - { runner: jest, os: ubuntu-latest }
           - { runner: node, os: ubuntu-latest }
           - { runner: mvn, os: ubuntu-latest }
@@ -74,7 +75,7 @@ jobs:
         with:
           python-version: "3.12"
       - uses: actions/setup-node@v4
-        if: contains(fromJSON('["vitest", "jest", "node"]'), matrix.runner)
+        if: contains(fromJSON('["vitest", "vitest-ts", "jest", "node"]'), matrix.runner)
         with:
           node-version: "22"
       - uses: actions/setup-java@v4
@@ -105,5 +106,21 @@ jobs:
           cd /tmp/luacov-reporter
           sudo luarocks --lua-version=5.4 make luacov-reporter-lcov-scm-0.rockspec
           sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
+      - name: Verify real pytest isolation edge cases
+        if: matrix.runner == 'python'
+        run: cargo test -p phronesis-mcp --lib real_pytest_ -- --ignored
+      - name: Verify real Swift isolation edge cases
+        if: matrix.runner == 'swift'
+        run: cargo test -p phronesis-mcp --lib real_swift -- --ignored
       - run: cargo build -p phronesis-mcp
       - run: python3 scripts/coverage-runner-smoke.py --binary target/debug/phr-mcp --runner ${{ matrix.runner }}
+        env:
+          TMPDIR: ${{ runner.temp }}
+      - name: Upload failed collector evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-failure-${{ matrix.runner }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/phr coverage smoke *
+          include-hidden-files: true
+          if-no-files-found: ignore
