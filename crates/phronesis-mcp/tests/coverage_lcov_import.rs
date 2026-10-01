@@ -247,3 +247,73 @@ fn lcov_directory_imports_typescript_body_hits_and_reports_the_one_liner_without
         "{stdout}{stderr}"
     );
 }
+
+#[test]
+fn distinct_test_sections_are_rejected_without_replacing_existing_evidence() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    std::fs::create_dir_all(root.join("pkg")).expect("sources");
+    std::fs::write(root.join("pkg/store.py"), "def load():\n    return 7\n").expect("source");
+    std::fs::write(root.join(".gitignore"), ".phronesis/\n").expect("ignore");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "fixture"]);
+    let revision = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("HEAD")
+            .stdout,
+    )
+    .expect("utf8");
+    let dir = root.join(".phronesis/reports");
+    std::fs::create_dir_all(&dir).expect("reports");
+    let digest = artifact_sha256(&std::fs::read(root.join("pkg/store.py")).expect("source"));
+    std::fs::write(
+        dir.join("manifest.json"),
+        serde_json::json!({"revision":revision.trim(),"files":{"pkg/store.py":digest}}).to_string(),
+    )
+    .expect("manifest");
+    let good =
+        "TN:python:project::tests::test_store::test_load\nSF:pkg/store.py\nDA:2,1\nend_of_record\n";
+    std::fs::write(dir.join("coverage.lcov"), good).expect("report");
+    let args = [
+        "--format",
+        "lcov-dir",
+        "--tool",
+        "coverage.py",
+        ".phronesis/reports",
+    ];
+    let first = phr(root, &args);
+    assert!(first.status.success(), "{first:?}");
+    let paths = [
+        root.join(".phronesis/coverage.jsonl"),
+        root.join(".phronesis/coverage.index"),
+    ];
+    let before: Vec<_> = paths
+        .iter()
+        .map(|path| std::fs::read(path).expect("evidence"))
+        .collect();
+    std::fs::write(dir.join("coverage.lcov"),format!("{good}TN:python:project::tests::test_store::test_other\nSF:pkg/store.py\nDA:2,1\nend_of_record\n")).expect("mixed report");
+    let mixed = phr(root, &args);
+    assert!(
+        !mixed.status.success(),
+        "mixed TN sections were attributed to the last test: {mixed:?}"
+    );
+    let error = String::from_utf8_lossy(&mixed.stderr);
+    assert!(
+        error.contains("distinct TN")
+            && error.contains("test_load")
+            && error.contains("test_other"),
+        "{error}"
+    );
+    for (path, expected) in paths.iter().zip(before) {
+        assert_eq!(
+            std::fs::read(path).expect("evidence"),
+            expected,
+            "failed import changed {}",
+            path.display()
+        );
+    }
+}

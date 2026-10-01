@@ -29,6 +29,13 @@ pub fn parse_lcov(text: &str) -> Result<LcovFile> {
     for line in text.lines() {
         if let Some(t) = line.strip_prefix("TN:") {
             if !t.is_empty() {
+                if let Some(existing) = &out.test_name
+                    && existing != t
+                {
+                    bail!(
+                        "distinct TN identities in one LCOV file: {existing:?} and {t:?}; split reports by test"
+                    );
+                }
                 out.test_name = Some(t.to_string());
             }
         } else if let Some(sf) = line.strip_prefix("SF:") {
@@ -457,6 +464,21 @@ mod tests {
         assert_eq!(f.files[0].function_hits, vec![("load".into(), 1)]);
         assert_eq!(f.files[0].line_hits, vec![(1, 1), (2, 0)]);
     }
+    #[test]
+    fn repeated_same_test_sections_remain_valid_but_distinct_tests_fail() {
+        let same = parse_lcov("TN:test-one\nSF:one.py\nDA:2,1\nend_of_record\nTN:test-one\nSF:two.py\nDA:3,1\nend_of_record\n").expect("same test");
+        assert_eq!(same.test_name.as_deref(), Some("test-one"));
+        assert_eq!(same.files.len(), 2);
+        let error = parse_lcov("TN:test-one\nSF:one.py\nDA:2,1\nend_of_record\nTN:test-two\nSF:two.py\nDA:3,1\nend_of_record\n").expect_err("different tests");
+        let message = error.to_string();
+        assert!(
+            message.contains("distinct TN")
+                && message.contains("test-one")
+                && message.contains("test-two"),
+            "{message}"
+        );
+    }
+
     #[test]
     fn body_hits_ignore_imported_def_and_require_fnda_for_one_liners() {
         let sites = vec![
