@@ -81,6 +81,25 @@ impl OutcomeFact {
         }
     }
 
+    /// `proof_unbound(subject, harness, "passed" | "failed")` — a verifier
+    /// result for a harness no property claims (no encoding
+    /// `{verifier, artifact: "harness:<name>"}`). Visible in the journal so a
+    /// failing unregistered proof is never silent; evidence for no property.
+    pub fn proof_unbound(subject: &str, harness: &str, passed: bool) -> Self {
+        Self {
+            predicate: "proof_unbound",
+            args: vec![
+                subject.to_string(),
+                harness.to_string(),
+                if passed {
+                    "passed".to_string()
+                } else {
+                    "failed".to_string()
+                },
+            ],
+        }
+    }
+
     /// `proof_run_outcome(subject, "failed" | "inconclusive")` — a proof run
     /// that was not a clean pass: a non-zero exit or a failed build
     /// (`failed`), or one whose output matched no property (`inconclusive`,

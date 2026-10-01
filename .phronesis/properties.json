@@ -28,6 +28,24 @@
         "docs/specs/SPEC-property-ontology.md"
       ],
       "encodings": []
+    },
+    {
+      "id": "variable_binding.substitution_totality",
+      "subject": "variable_binding",
+      "kind": "totality",
+      "depends_on": [
+        "fn:variable_binding::Bindings::add_binding"
+      ],
+      "source": "code_inference",
+      "status": "observed",
+      "corroborated_by": [],
+      "encodings": [
+        {
+          "language": "rust",
+          "verifier": "kani",
+          "artifact": "harness:variable_binding::kani_harness::add_binding_totality"
+        }
+      ]
     }
   ]
 }

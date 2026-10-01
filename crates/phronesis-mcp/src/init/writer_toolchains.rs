@@ -21,6 +21,7 @@ fn typescript_pack_defs() -> Vec<ToolchainDef> {
             compile_success: vec![],
             test_summary: Some(r"Tests\s+(?P<passed>\d+) passed".into()),
             per_test: Some(r"(?m)^\s*(?P<status>[✓×✗])\s+\S+\s+>\s+(?P<name>.+)$".into()),
+            section_start: None,
             pass_tokens: vec!["✓".into()],
             outcome_kind: None,
         },
@@ -33,6 +34,7 @@ fn typescript_pack_defs() -> Vec<ToolchainDef> {
                 r"Tests:\s+(?:(?P<failed>\d+) failed, )?(?P<passed>\d+) passed".into(),
             ),
             per_test: None,
+            section_start: None,
             pass_tokens: vec!["PASSED".into()],
             outcome_kind: None,
         },
@@ -74,6 +76,7 @@ fn lua_pack_defs() -> Vec<ToolchainDef> {
         compile_success: vec![],
         test_summary: Some(r"(?P<passed>\d+) successes? / (?P<failed>\d+) failures?".into()),
         per_test: None,
+        section_start: None,
         pass_tokens: vec![],
         outcome_kind: None,
     }]

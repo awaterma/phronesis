@@ -105,6 +105,10 @@ pub struct AuditReport {
     pub files_scanned: u32,
     /// Sorted by `(level desc, hits desc, rule_id asc)`.
     pub per_rule: Vec<RuleAudit>,
+    /// Files a `.phronesisignore` entry excluded from lexical rules. They
+    /// were still offered to structural rules (unless over the size cap).
+    /// Relative to the scan root, sorted. Empty when nothing was excluded.
+    pub lexical_excluded: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]

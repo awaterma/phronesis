@@ -9,7 +9,7 @@
 //! phronesis-allow: audit-file-loc-high (coherent CLI surface — all
 //! subcommand declarations + dispatch live together by design)
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -113,11 +113,13 @@ enum Command {
     /// outcome the post-check hook would have, so `confidence` and the
     /// commit gate see it identically. Requires the `confidence` pack.
     Signal {
-        /// Which signal: `compile` or `tests`.
-        name: String,
-        /// The outcome: `pass` or `fail`.
+        #[command(subcommand)]
+        action: Option<SignalAction>,
+        /// Which signal: `compile` or `tests` (bare form).
+        name: Option<String>,
+        /// The outcome: `pass` or `fail` (bare form).
         #[arg(value_parser = ["pass", "fail"])]
-        outcome: String,
+        outcome: Option<String>,
     },
     /// List active toolchain definitions (built-in + project).
     /// Shows ID, source, match patterns, and active signal refinements.
@@ -653,7 +655,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                         && edge.a.get(1).is_some_and(|id| id.starts_with("java:"))
                 }) {
                     let id = edge.a.get(1).expect("filtered test id");
-                    let Some((unit, tail)) =
+                    let Some((_unit, tail)) =
                         id.strip_prefix("java:").and_then(|id| id.split_once("::"))
                     else {
                         continue;
@@ -664,14 +666,29 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                     }
                     let method = parts.pop().expect("method segment");
                     let class = parts.pop().expect("class segment");
-                    let qualified = format!("{}.{}", parts.join("."), class);
+                    let qualified = if parts.is_empty() {
+                        class.to_string()
+                    } else {
+                        format!("{}.{}", parts.join("."), class)
+                    };
                     let native =
                         if selected == phronesis_mcp::coverage::collect_java::JavaRunner::Mvn {
                             format!("{qualified}#{method}")
                         } else {
                             format!("{qualified}.{method}")
                         };
-                    entries.push((unit.to_string(), native, id.to_string()));
+                    let file = edge
+                        .a
+                        .first()
+                        .context("Java test edge missing source path")?;
+                    let module = if let Some((module, _)) = file.split_once("/src/test/java/") {
+                        module
+                    } else if file.starts_with("src/test/java/") {
+                        "."
+                    } else {
+                        anyhow::bail!("Java test {file} is outside a supported src/test/java root");
+                    };
+                    entries.push((module.to_string(), native, id.to_string()));
                 }
                 if entries.is_empty() {
                     anyhow::bail!("Java graph has no defines_test ids; rebuild the graph after J0");
@@ -1229,6 +1246,19 @@ enum DecisionCmd {
     },
 }
 
+#[derive(clap::Subcommand)]
+enum SignalAction {
+    /// Parse and journal output saved from a handled command.
+    Ingest {
+        #[arg(long)]
+        command: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        exit: Option<i32>,
+    },
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -1252,7 +1282,23 @@ async fn main() -> anyhow::Result<()> {
             kalpa,
         } => handle_stats(since, rule, json, kalpa),
         Command::Confidence { subject, json } => handle_confidence(subject, json),
-        Command::Signal { name, outcome } => handle_signal(&name, outcome == "pass"),
+        Command::Signal {
+            action:
+                Some(SignalAction::Ingest {
+                    command,
+                    output,
+                    exit,
+                }),
+            ..
+        } => handle_signal_ingest(&command, &output, exit),
+        Command::Signal {
+            action: None,
+            name: Some(name),
+            outcome: Some(outcome),
+        } => handle_signal(&name, outcome == "pass"),
+        Command::Signal { .. } => anyhow::bail!(
+            "usage: phr-mcp signal <compile|tests> <pass|fail> or signal ingest --command <cmd> --output <file> [--exit N]"
+        ),
         Command::Toolchains { json } => handle_toolchains(json),
         Command::Coverage { cmd } => handle_coverage(cmd),
         Command::Journey {
@@ -1590,6 +1636,14 @@ fn handle_signal(name: &str, passed: bool) -> anyhow::Result<()> {
     let subject = phronesis_mcp::outcomes::record_signal(&root, name, passed)?;
     let outcome = if passed { "pass" } else { "fail" };
     println!("recorded {name}: {outcome} for subject {subject}");
+    Ok(())
+}
+
+fn handle_signal_ingest(command: &str, output: &Path, exit: Option<i32>) -> anyhow::Result<()> {
+    let root = phronesis_mcp::security::project_root();
+    let text = phronesis_mcp::security::read_file_capped(output)?;
+    let (subject, tags) = phronesis_mcp::outcomes::record_from_output(&root, command, &text, exit)?;
+    println!("recorded for subject {subject}: {}", tags.join(" "));
     Ok(())
 }
 

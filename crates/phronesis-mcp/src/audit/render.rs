@@ -8,13 +8,39 @@ use super::types::{AuditReport, Level};
 
 // ── Renderers ────────────────────────────────────────────────────────────────
 
+const EXCLUDED_NAMES_SHOWN: usize = 5;
+
+/// One footer line naming the files `.phronesisignore` excluded from
+/// lexical rules. Empty string when nothing was excluded.
+fn excluded_line(report: &AuditReport) -> String {
+    if report.lexical_excluded.is_empty() {
+        return String::new();
+    }
+    let total = report.lexical_excluded.len();
+    let mut names: Vec<String> = report
+        .lexical_excluded
+        .iter()
+        .take(EXCLUDED_NAMES_SHOWN)
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
+    if total > EXCLUDED_NAMES_SHOWN {
+        names.push(format!("+{} more", total - EXCLUDED_NAMES_SHOWN));
+    }
+    format!(
+        "{total} file(s) excluded from lexical rules by .phronesisignore (structural rules still ran): {}\n",
+        names.join(", ")
+    )
+}
+
 /// Render an `AuditReport` as a human-readable terminal table.
 /// `expand` switches from per-rule summary to per-file detail with line numbers.
 pub fn render_table(report: &AuditReport, expand: bool) -> String {
     if report.per_rule.is_empty() {
         return format!(
-            "no audit violations found ({} files scanned in {}ms)\n",
-            report.files_scanned, report.scan_duration_ms
+            "no audit violations found ({} files scanned in {}ms)\n{}",
+            report.files_scanned,
+            report.scan_duration_ms,
+            excluded_line(report)
         );
     }
 
@@ -100,6 +126,7 @@ pub fn render_table(report: &AuditReport, expand: bool) -> String {
         report.files_scanned,
         report.scan_duration_ms,
     ));
+    out.push_str(&excluded_line(report));
     out
 }
 
@@ -146,10 +173,16 @@ pub fn render_json(report: &AuditReport) -> String {
             })
         })
         .collect();
+    let lexical_excluded: Vec<String> = report
+        .lexical_excluded
+        .iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
     let payload = json!({
         "generated_at": report.generated_at,
         "scan_duration_ms": report.scan_duration_ms,
         "files_scanned": report.files_scanned,
+        "lexical_excluded": lexical_excluded,
         "totals": {
             "blocked": total_blocked,
             "warned": total_warned,

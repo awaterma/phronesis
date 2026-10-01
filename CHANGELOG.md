@@ -108,6 +108,22 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `FN` names are mangled). The built-in `swift` toolchain def now grounds
   per-test outcomes from XCTest and Swift Testing output lines. Xcode
   projects are deferred.
+- **Confidence signals survive redirected output and hand-run gates.** When a
+  handled command sends stdout to a fresh regular file inside the project and
+  the host captured nothing, post-check parses that file and journals
+  `outcome:output_from_file`. `phr-mcp signal ingest --command <cmd>
+  --output <file>` parses saved output from hand-run gates and journals
+  `outcome:ingested`; it refuses unknown toolchains and output with no result.
+
+- **Kani results ground the `proof` signal.** A project toolchain definition
+  recognises `cargo kani` and pairs each `Checking harness …` header with its
+  own `VERIFICATION:-` verdict (new `section_start` field); a harness is bound
+  to its property by an `encodings` entry
+  `{"verifier":"kani","artifact":"harness:<path>"}`, so a passing run journals
+  `outcome:proof_pass:<property>` and lifts the confidence band. Results for
+  unregistered harnesses are journaled as `proof_unbound` rather than
+  dropped. Bound `verification_result` records (SPEC-property-ontology §2)
+  are still produced only by the artifact pipeline.
 
 ### Changed
 
@@ -131,6 +147,25 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   still available with `--no-default-features --features rhai`.
 
 ### Fixed
+
+- **`.phronesisignore` no longer hides files from structural rules.** An ignore
+  entry now exempts a file from lexical rules only (rules with no AST
+  predicate); structural rules keep running on it below the file-size cap, and
+  `phr-mcp audit` names every excluded file in its footer and in `--json`
+  (`lexical_excluded`). The whole-file entry for `src/init.rs` had silenced
+  `enforce-no-unwrap-in-src` on nine production `.unwrap()` calls for as long
+  as it existed (#114). The Rust pack's self-referential rule text is now
+  exempted per rule with `//! phronesis-allow:` markers.
+
+- **Commits made from another worktree of the same repository are recorded.**
+  A `cd <worktree> && git commit …` or `git -C <worktree> commit …` issued from
+  a session rooted in the main checkout used to be missed, because the hook
+  probed `HEAD` only at the project root; every worker commit in a swarm
+  vanished from `kalpa show` and `unit show`. The hook now probes the absolute
+  directory the head-moving invocation names when it shares this repository's
+  common git dir, decides that once at pre-check, and stamps the record with
+  `repo_dir`. Relative paths, unrelated repositories, and shell forms the
+  parser does not model still fall back to the project root.
 
 - **A benign Python property body could be refused for "interpolating
   outside a string" when the value only ever sat inside a `'...'` string or

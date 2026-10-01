@@ -452,7 +452,7 @@ fn confidence_pack_writes_toolchains_example() {
         .iter()
         .filter_map(|d| d["id"].as_str())
         .collect();
-    assert_eq!(ids, vec!["pytest", "tsc"]);
+    assert_eq!(ids, vec!["pytest", "tsc", "kani"]);
 }
 
 #[test]

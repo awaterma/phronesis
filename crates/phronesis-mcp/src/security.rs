@@ -273,6 +273,82 @@ pub fn read_file_capped(path: &Path) -> Result<String, SecurityError> {
     Ok(content)
 }
 
+/// Read an evidence file only when its opened handle is a fresh regular file
+/// under `root`, using the same runtime cap as other protected file reads.
+#[cfg(unix)]
+pub fn read_file_capped_in_root(
+    path: &Path,
+    root: &Path,
+    not_before: u64,
+) -> Result<String, SecurityError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+    let root = std::fs::canonicalize(root).map_err(|source| SecurityError::Io {
+        path: root.display().to_string(),
+        source,
+    })?;
+    let candidate = std::fs::canonicalize(path).map_err(|source| SecurityError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    if !candidate.starts_with(&root) {
+        return Err(SecurityError::PathOutsideRoot(
+            candidate.display().to_string(),
+        ));
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|source| SecurityError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+    let metadata = file.metadata().map_err(|source| SecurityError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(SecurityError::PathOutsideRoot(path.display().to_string()));
+    }
+    let opened_path = std::fs::canonicalize(path).map_err(|source| SecurityError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    if !opened_path.starts_with(&root) || candidate != opened_path {
+        return Err(SecurityError::PathOutsideRoot(
+            opened_path.display().to_string(),
+        ));
+    }
+    let _opened_identity = (metadata.dev(), metadata.ino());
+    let modified = metadata
+        .modified()
+        .map_err(|source| SecurityError::Io {
+            path: path.display().to_string(),
+            source,
+        })?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|source| SecurityError::Io {
+            path: path.display().to_string(),
+            source: std::io::Error::other(source),
+        })?
+        .as_secs();
+    if modified < not_before {
+        return Err(SecurityError::PathNotFound(format!(
+            "stale evidence file {}",
+            path.display()
+        )));
+    }
+    let mut content = String::new();
+    file.take(max_file_bytes())
+        .read_to_string(&mut content)
+        .map_err(|source| SecurityError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+    Ok(content)
+}
+
 /// Read stdin, capping the read at `MAX_PAYLOAD_BYTES`.
 pub fn read_stdin_capped() -> Result<String, SecurityError> {
     let mut input = String::new();

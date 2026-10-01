@@ -28,6 +28,16 @@
 /// string starts where a command word would appear; empty and comment
 /// segments are dropped.
 pub fn command_heads(command: &str) -> Vec<String> {
+    command_segments(command)
+        .iter()
+        .filter_map(|s| strip_leading_env(s))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Split into raw shell command segments using the same separators as
+/// `command_heads`, retaining redirections and pipeline neighbors.
+pub fn command_segments(command: &str) -> Vec<String> {
     let mut split = CommandSplit::default();
     let mut chars = command.chars().peekable();
     while let Some(c) = chars.next() {
@@ -47,12 +57,7 @@ pub fn command_heads(command: &str) -> Vec<String> {
         }
     }
     split.finish_segment();
-    split
-        .segments
-        .iter()
-        .filter_map(|s| strip_leading_env(s))
-        .map(str::to_string)
-        .collect()
+    split.segments
 }
 
 #[derive(Default)]
@@ -101,6 +106,109 @@ fn is_env_assignment(token: &str) -> bool {
     };
     (first.is_ascii_alphabetic() || first == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Read one shell word, refusing expansion and escaping syntax we do not model.
+pub(crate) fn shell_word(rest: &str) -> Option<String> {
+    shell_word_span(rest).map(|(word, _)| word)
+}
+
+fn shell_word_span(rest: &str) -> Option<(String, usize)> {
+    let trimmed = rest.trim_start();
+    let leading = rest.len() - trimmed.len();
+    let quote = trimmed
+        .as_bytes()
+        .first()
+        .copied()
+        .filter(|b| *b == b'\'' || *b == b'"');
+    let (word, used) = if let Some(q) = quote {
+        let end = trimmed.as_bytes()[1..].iter().position(|b| *b == q)? + 1;
+        (&trimmed[1..end], end + 1)
+    } else {
+        let end = trimmed
+            .find(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>'))
+            .unwrap_or(trimmed.len());
+        (&trimmed[..end], end)
+    };
+    if word.is_empty() || word.contains(['$', '`', '\\', '(', ')', '#']) {
+        return None;
+    }
+    Some((word.to_string(), leading + used))
+}
+
+/// Return the last plain stdout redirect target in this command segment.
+pub fn stdout_redirect_target(segment: &str) -> Option<String> {
+    let bytes = segment.as_bytes();
+    let mut i = 0;
+    let mut quote = None;
+    let mut target = None;
+    while i < bytes.len() {
+        if let Some(q) = quote {
+            if bytes[i] == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if bytes[i] == b'\'' || bytes[i] == b'"' {
+            quote = Some(bytes[i]);
+            i += 1;
+            continue;
+        }
+        if bytes[i] != b'>' {
+            i += 1;
+            continue;
+        }
+        let operator = i;
+        let fd_stdout = if operator > 0 && bytes[operator - 1].is_ascii_digit() {
+            bytes[operator - 1] == b'1'
+        } else {
+            true
+        };
+        let mut j = i + 1;
+        if j < bytes.len() && bytes[j] == b'>' {
+            j += 1;
+        }
+        // Descriptor duplication, including >&2, 2>&1, and &>&1.
+        if j < bytes.len() && bytes[j] == b'&' {
+            i = j + 1;
+            continue;
+        }
+        if fd_stdout {
+            match shell_word_span(&segment[j..]) {
+                Some((word, _)) => target = Some(word),
+                None => return None,
+            }
+        }
+        i = j;
+    }
+    target
+}
+
+/// Return the first file argument to a tee segment.
+pub fn tee_target(segment: &str) -> Option<String> {
+    let trimmed = segment.trim_start();
+    let rest = trimmed.strip_prefix("tee")?;
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let mut rest = rest;
+    let mut end_options = false;
+    while let Some(word) = shell_word(rest) {
+        let Some((_, consumed)) = shell_word_span(rest) else {
+            break;
+        };
+        rest = &rest[consumed..];
+        if word == "--" {
+            end_options = true;
+            continue;
+        }
+        if !end_options && word.starts_with('-') {
+            continue;
+        }
+        return Some(word);
+    }
+    None
 }
 
 #[cfg(test)]
@@ -172,5 +280,51 @@ mod tests {
         assert!(command_heads("").is_empty());
         assert!(command_heads("   ").is_empty());
         assert_eq!(command_heads("cargo test &&"), vec!["cargo test"]);
+    }
+
+    #[test]
+    fn stdout_redirect_target_is_quote_aware_and_skips_fd_dups() {
+        let t = stdout_redirect_target;
+        assert_eq!(t("cargo test --workspace"), None);
+        assert_eq!(
+            t("cargo test --workspace > /tmp/t.log 2>&1"),
+            Some("/tmp/t.log".into())
+        );
+        assert_eq!(t("cargo test >> logs/run.txt"), Some("logs/run.txt".into()));
+        assert_eq!(
+            t("cargo test &> 'out dir/all.log'"),
+            Some("out dir/all.log".into())
+        );
+        assert_eq!(
+            t("cargo test >\"out dir/all.log\""),
+            Some("out dir/all.log".into())
+        );
+        assert_eq!(t("cargo test >run.log 2>&1"), Some("run.log".into()));
+        assert_eq!(t("cargo test 1>run.log"), Some("run.log".into()));
+        assert_eq!(
+            t("cargo test > a.log > b.log"),
+            Some("b.log".into()),
+            "the last wins"
+        );
+        assert_eq!(t("cargo test 2>&1"), None);
+        assert_eq!(t("echo x >&2"), None);
+        assert_eq!(t("echo x 1>&2"), None);
+        assert_eq!(t("echo x &>&1"), None);
+        assert_eq!(
+            t("echo x > $OUT"),
+            None,
+            "unmodelled shell syntax is not a target"
+        );
+        assert_eq!(t("echo x > out\\ dir/log"), None);
+    }
+
+    #[test]
+    fn tee_target_reads_the_first_file_argument() {
+        assert_eq!(tee_target("tee run.log"), Some("run.log".into()));
+        assert_eq!(tee_target("tee -a run.log"), Some("run.log".into()));
+        assert_eq!(tee_target("tee -- -dashed.log"), Some("-dashed.log".into()));
+        assert_eq!(tee_target("tee 'my run.log'"), Some("my run.log".into()));
+        assert_eq!(tee_target("cargo test"), None);
+        assert_eq!(tee_target("tee"), None);
     }
 }

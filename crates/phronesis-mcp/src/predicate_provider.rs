@@ -112,6 +112,7 @@ const RESERVED_EXACT: &[&str] = &[
     "build_outcome",
     "test_outcome",
     "proof_outcome",
+    "proof_unbound",
     "proof_run_outcome",
     "bug_check_outcome",
     // Store-integrity diagnostics.
