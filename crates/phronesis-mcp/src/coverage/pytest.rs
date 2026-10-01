@@ -65,7 +65,7 @@ pub fn collection_script(entries: &[(String, String)], out_dir: &Path) -> String
         } else {
             base
         };
-        s.push_str(&format!("n=$((n+1))\npython3 -m coverage run --data-file=\"$OUT/{n}.cov\" -m pytest -q -- {}\npython3 -m coverage lcov --data-file=\"$OUT/{n}.cov\" -o \"$OUT/{stem}.lcov\"\nprintf '%s\\n' {} {} | cat - \"$OUT/{stem}.lcov\" > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\nrm -f \"$OUT/{n}.cov\"\n",quote(node),quote(&format!("TN:{id}")),quote(&format!("# node: {node}"))));
+        s.push_str(&format!("n=$((n+1))\npython3 -m coverage run --source=. --data-file=\"$OUT/{n}.cov\" -m pytest -q -- {}\npython3 -m coverage lcov --data-file=\"$OUT/{n}.cov\" -o \"$OUT/{stem}.lcov\"\nprintf '%s\\n' {} {} | cat - \"$OUT/{stem}.lcov\" > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\nrm -f \"$OUT/{n}.cov\"\n",quote(node),quote(&format!("TN:{id}")),quote(&format!("# node: {node}"))));
     }
     s.push_str("python3 - \"$OUT\" <<'PY'\nimport hashlib,json,os,subprocess,sys\nout=sys.argv[1]; root=subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True).strip(); files={}\nfor name in sorted(os.listdir(out)):\n if name.endswith(('.lcov','.info')):\n  for line in open(os.path.join(out,name)):\n   if line.startswith('SF:'):\n    p=os.path.realpath(line[3:].strip()); rel=os.path.relpath(p,root)\n    if rel.startswith('..'+os.sep): raise SystemExit('source outside git root: '+p)\n    files[rel]=hashlib.sha256(open(p,'rb').read()).hexdigest()\nrev=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\njson.dump({'revision':rev,'files':files},open(os.path.join(out,'manifest.json'),'w'),sort_keys=True)\nPY\n");
     s.push_str(&format!(
@@ -114,5 +114,90 @@ mod tests {
         );
         assert!(s.contains("'tests/test_store.py::test_it['\\''x y'\\'']'"));
         assert!(s.contains("manifest.json") && s.contains("rev-parse"));
+    }
+
+    #[test]
+    #[ignore = "requires pytest and coverage.py; run explicitly in Python collector CI"]
+    fn real_pytest_collection_excludes_external_imports_and_keeps_production_hits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("repo");
+        let external = dir.path().join("external");
+        std::fs::create_dir_all(root.join("pkg")).expect("package");
+        std::fs::create_dir_all(root.join("tests")).expect("tests");
+        std::fs::create_dir(&external).expect("external");
+        std::fs::write(
+            external.join("outside.py"),
+            "def external_value():\n    return 7\n",
+        )
+        .expect("external source");
+        std::fs::write(root.join("pkg/__init__.py"), "").expect("init");
+        std::fs::write(root.join("pkg/store.py"), "def load():\n    return 7\n")
+            .expect("production");
+        std::fs::write(root.join("tests/test_store.py"), "from pkg.store import load\nfrom outside import external_value\ndef test_load():\n    assert load() == external_value()\n").expect("test");
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+        ] {
+            assert!(
+                std::process::Command::new("git")
+                    .args(args)
+                    .current_dir(&root)
+                    .status()
+                    .expect("git")
+                    .success()
+            );
+        }
+        let out = root.join("coverage");
+        let script = root.join("collect.sh");
+        std::fs::write(
+            &script,
+            collection_script(
+                &[(
+                    "tests/test_store.py::test_load".into(),
+                    "python:pkg::tests::test_store::test_load".into(),
+                )],
+                &out,
+            ),
+        )
+        .expect("script");
+        let result = std::process::Command::new("sh")
+            .arg(&script)
+            .current_dir(&root)
+            .env("PYTHONPATH", &external)
+            .output()
+            .expect("collector");
+        assert!(
+            result.status.success(),
+            "stdout={} stderr={}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let report =
+            std::fs::read_to_string(out.join("python_pkg__tests__test_store__test_load.lcov"))
+                .expect("lcov");
+        assert!(report.contains("SF:pkg/store.py"), "{report}");
+        assert!(report.contains("DA:2,1"), "{report}");
+        assert!(!report.contains("outside.py"));
+        assert!(!report.contains("_pytest"));
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join("manifest.json")).expect("manifest"))
+                .expect("JSON");
+        assert!(manifest["files"].get("pkg/store.py").is_some());
+        assert!(
+            manifest["files"]
+                .as_object()
+                .expect("files")
+                .keys()
+                .all(|name| !name.contains("outside") && !name.contains("_pytest"))
+        );
     }
 }
