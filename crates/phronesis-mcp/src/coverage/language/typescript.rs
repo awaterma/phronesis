@@ -105,12 +105,35 @@ fn name_of<'a>(node: tree_sitter::Node<'_>, src: &'a [u8]) -> Option<&'a str> {
 /// anonymous and not a site.
 fn assigned_name(node: tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
     let parent = node.parent()?;
+    if parent.kind() == "assignment_expression" {
+        if parent.child_by_field_name("right") != Some(node) {
+            return None;
+        }
+        return static_assignment_name(parent.child_by_field_name("left")?, src);
+    }
     let named = match parent.kind() {
         "variable_declarator" | "public_field_definition" => parent.child_by_field_name("name")?,
         "pair" => parent.child_by_field_name("key")?,
         _ => return None,
     };
     named.utf8_text(src).ok().map(str::to_string)
+}
+
+/// A statically named assignment target; computed properties cannot supply
+/// a stable region identity without evaluating JavaScript.
+fn static_assignment_name(node: tree_sitter::Node<'_>, src: &[u8]) -> Option<String> {
+    match node.kind() {
+        "identifier" => node.utf8_text(src).ok().map(str::to_string),
+        "member_expression" => {
+            let object = static_assignment_name(node.child_by_field_name("object")?, src)?;
+            let property = node.child_by_field_name("property")?;
+            if property.kind() != "property_identifier" {
+                return None;
+            }
+            Some(format!("{object}::{}", property.utf8_text(src).ok()?))
+        }
+        _ => None,
+    }
 }
 
 fn record(
@@ -275,6 +298,29 @@ mod tests {
         );
         // The anonymous `.map(x => x + 1)` callback is not a site.
         assert!(!sites.iter().any(|s| s.item_path.contains("anonymous")));
+    }
+
+    #[test]
+    fn commonjs_and_identifier_assignments_have_stable_coverage_regions() {
+        let source = "exports.load = function load() { return 7; };\n\
+            module.exports.save = () => {\n\
+              return 8;\n\
+            };\n\
+            read = function named() { return 9; };\n\
+            exports[key] = () => 10;\n\
+            module[key].hidden = function () { return 11; };\n\
+            exports['computed'] = () => 12;\n";
+        let sites = typescript_function_sites(source, false).expect("parse CJS");
+        assert_eq!(
+            sites
+                .iter()
+                .map(|site| site.item_path.as_str())
+                .collect::<Vec<_>>(),
+            ["exports::load", "module::exports::save", "read"]
+        );
+        assert_eq!((sites[1].start_line, sites[1].end_line), (2, 4));
+        assert!(is_one_liner(&sites[0]));
+        assert!(!is_one_liner(&sites[1]));
     }
 
     #[test]
