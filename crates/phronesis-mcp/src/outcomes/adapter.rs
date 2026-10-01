@@ -718,7 +718,7 @@ mod tests {
 
     // ── E2: harness → property binding; unbound results stay visible ──────
 
-    fn enabled_project() -> tempfile::TempDir {
+    fn enabled_project_with_subject() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join(".phronesis")).expect("mkdir");
         std::fs::write(dir.path().join(".phronesis/confidence.json"), "{}").expect("enable");
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn proof_names_map_through_harness_encodings_and_unbound_results_stay_visible() {
-        let dir = enabled_project();
+        let dir = enabled_project_with_subject();
         let root = dir.path();
         std::fs::write(root.join(".phronesis/toolchains.json"), KANI_DEF).expect("toolchains");
         std::fs::write(root.join(".phronesis/properties.json"), BOUND_PROPERTY)
@@ -750,6 +750,7 @@ mod tests {
             command: Some("cargo kani -p phronesis"),
             output: TWO_HARNESSES,
             command_exit: Some(1),
+            not_before: None,
         });
         assert!(subject.is_some());
         // The bound harness FAILED, so its failure is journaled under the
@@ -775,7 +776,7 @@ mod tests {
 
     #[test]
     fn a_corrupt_properties_store_makes_every_harness_unbound_and_says_so() {
-        let dir = enabled_project();
+        let dir = enabled_project_with_subject();
         let root = dir.path();
         std::fs::write(root.join(".phronesis/toolchains.json"), KANI_DEF).expect("toolchains");
         std::fs::write(root.join(".phronesis/properties.json"), "{ not json").expect("corrupt");
@@ -785,6 +786,7 @@ mod tests {
             command: Some("cargo kani -p phronesis"),
             output: TWO_HARNESSES,
             command_exit: Some(1),
+            not_before: None,
         });
         assert!(
             tags.iter().any(|t| t.starts_with(
@@ -808,7 +810,7 @@ mod tests {
         use crate::journey::journal::JournalRecord;
         use crate::outcomes::derive::{entries_from, signals_from};
 
-        let dir = enabled_project();
+        let dir = enabled_project_with_subject();
         let root = dir.path();
         std::fs::write(root.join(".phronesis/toolchains.json"), KANI_DEF).expect("toolchains");
         std::fs::write(root.join(".phronesis/properties.json"), BOUND_PROPERTY)
@@ -823,6 +825,7 @@ mod tests {
             command: Some("cargo kani -p phronesis"),
             output: passing,
             command_exit: Some(0),
+            not_before: None,
         });
         let first: Vec<JournalRecord> = first_tags
             .iter()
@@ -863,6 +866,7 @@ mod tests {
             command: Some("cargo kani -p phronesis"),
             output: TWO_HARNESSES,
             command_exit: Some(1),
+            not_before: None,
         });
         let second: Vec<JournalRecord> = second_tags
             .iter()
