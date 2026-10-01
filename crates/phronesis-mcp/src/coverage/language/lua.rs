@@ -173,7 +173,12 @@ pub fn is_one_liner(site: &FunctionSite) -> bool {
 /// --filter '<full name>' <spec>`; PLAN.md Task K3).
 pub fn render_command(test_id: &str, file: &str) -> Option<String> {
     let name = runner_name(test_id, file)?;
-    Some(format!("busted --filter '{name}' {file}"))
+    let pattern = crate::coverage::collect_lua::literal_pattern(&name);
+    Some(format!(
+        "busted --filter={} {}",
+        crate::coverage::collect_lua::quote(&pattern),
+        crate::coverage::collect_lua::quote(file)
+    ))
 }
 
 /// The runner-native name for a busted test: the suffix after the spec
@@ -385,13 +390,30 @@ arr.map(function(x) return x end)
                 "spec/store_spec.lua"
             )
             .as_deref(),
-            Some("busted --filter 'store loads the stored value' spec/store_spec.lua")
+            Some("busted --filter='^store loads the stored value$' 'spec/store_spec.lua'")
         );
         assert_eq!(
             render_command("lua:myapp::spec::store_spec::store::loads", "src/store.lua"),
             None,
             "an id whose marker does not match the spec file renders nothing"
         );
+    }
+
+    #[test]
+    fn rendered_lua_command_matches_literal_titles_and_quotes_paths() {
+        let name = "store handles .[]()+-*?%$^ it's";
+        let file = "spec/it's_spec.lua";
+        let command = render_command(&format!("lua:project::spec::it's_spec::{name}"), file)
+            .expect("command");
+        assert_eq!(
+            command,
+            "busted --filter='^store handles %.%[%]%(%)%+%-%*%?%%%$%^ it'\\''s$' 'spec/it'\\''s_spec.lua'"
+        );
+        let collected = crate::coverage::collect_lua::collection_script(
+            &[("lua:fixture".into(), file.into(), name.into())],
+            std::path::Path::new("coverage"),
+        );
+        assert!(collected.contains(command.strip_prefix("busted ").expect("command prefix")));
     }
 
     #[test]

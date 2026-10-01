@@ -20,12 +20,12 @@ use std::path::Path;
 /// never has to re-detect the runner.
 pub const TOOL_LUACOV_BUSTED: &str = "luacov+busted";
 
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
 /// Busted filters are Lua patterns, not literal titles.
-fn literal_pattern(name: &str) -> String {
+pub(crate) fn literal_pattern(name: &str) -> String {
     let mut pattern = String::from("^");
     for character in name.chars() {
         if "^$()%.[]*+-?".contains(character) {

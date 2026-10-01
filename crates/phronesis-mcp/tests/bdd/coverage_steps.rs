@@ -1115,7 +1115,7 @@ async fn then_lua_selection_command(world: &mut World) {
     assert!(
         world
             .last_json
-            .contains("busted --filter 'store loads the stored value' spec/store_spec.lua"),
+            .contains("busted --filter='^store loads the stored value$' 'spec/store_spec.lua'"),
         "{}",
         world.last_json
     );
