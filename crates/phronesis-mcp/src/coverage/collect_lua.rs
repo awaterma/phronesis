@@ -6,10 +6,11 @@
 //! The busted flags and summary shape are pinned from busted's own source
 //! and docs (busted is not installed on this machine — probe-first debt):
 //! `--coverage` requires luacov, `--filter=PATTERN` is a Lua pattern
-//! matched unanchored against the space-joined full name of the test, and
+//! matched against the space-joined full name; names here are escaped and
+//! anchored to select a literal full name. The
 //! the plain summary line is `<N> success(es) / <N> failure(s) / <N>
 //! error(s) / <N> pending(s) : <time> seconds`. Redirecting stdout turns
-//! busted's colors off, so the guard can grep the literal summary text.
+//! busted's colors off; the guard requires one complete successful summary.
 //! luacov merges `luacov.stats.out` across runs, so the script deletes it
 //! before each entry — that deletion is what isolates one test's hits.
 
@@ -23,19 +24,31 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// Busted filters are Lua patterns, not literal titles.
+fn literal_pattern(name: &str) -> String {
+    let mut pattern = String::from("^");
+    for character in name.chars() {
+        if "^$()%.[]*+-?".contains(character) {
+            pattern.push('%');
+        }
+        pattern.push(character);
+    }
+    pattern.push('$');
+    pattern
+}
+
 /// The isolated collection script: one busted invocation with coverage per
 /// entry (`(graph test id, spec file, runner-native test name)`), each run
 /// writing `luacov.stats.out` (deleted first so hits do not accumulate
 /// across entries), reporting through `luacov -r lcov` into
 /// `luacov.report.out`, then prepending the `TN:`/`# node:` lines and
 /// renaming to `<stem>.lcov`. The guard fails the entry loudly when the
-/// filter matched zero tests; ends with the F2 manifest (written under
+/// filter matched anything other than one successful test; ends with the F2 manifest (written under
 /// lua, which the runner guarantees) and the import command.
 pub fn collection_script(entries: &[(String, String, String)], out_dir: &Path) -> String {
-    let mut s =
-        String::from("#!/bin/sh\nset -eu\nbusted --version\ncommand -v luacov >/dev/null\nOUT=");
+    let mut s = String::from("#!/bin/sh\nset -eu\nOUT=");
     s.push_str(&quote(&out_dir.to_string_lossy()));
-    s.push_str("\nmkdir -p \"$OUT\"\nn=0\n");
+    s.push_str("\nmkdir -p \"$OUT\"\nrm -f \"$OUT/manifest.json\" \"$OUT\"/*.lcov \"$OUT\"/*.info\nbusted --version\ncommand -v luacov >/dev/null\nn=0\n");
     let mut stems = std::collections::BTreeMap::<String, usize>::new();
     for (index, (id, file, name)) in entries.iter().enumerate() {
         let n = index + 1;
@@ -53,17 +66,17 @@ pub fn collection_script(entries: &[(String, String, String)], out_dir: &Path) -
         s.push_str("n=$((n+1))\n");
         // luacov merges stats across runs; deleting the stats file is what
         // makes this entry's hits and only this entry's.
-        s.push_str("rm -f luacov.stats.out\n");
+        s.push_str("rm -f luacov.stats.out luacov.report.out\n");
         s.push_str(&format!(
-            "busted --coverage --filter={} {} > \"$OUT/{n}.log\" 2>&1\n",
-            quote(name),
+            "busted --coverage --output=plainTerminal --lang=en --filter={} {} > \"$OUT/{n}.log\" 2>&1\n",
+            quote(&literal_pattern(name)),
             quote(file)
         ));
         s.push_str(&format!(
-            "grep -q '1 success / ' \"$OUT/{n}.log\" || {{ echo {} >&2; exit 1; }}\n",
-            quote(&format!("entry {n} matched zero tests: {name}"))
+            "test \"$(grep -Ec '^[0-9]+ success(es)? / ' \"$OUT/{n}.log\")\" = 1 && grep -Eq '^1 success / 0 failures / 0 errors / 0 pending : [0-9]+([.][0-9]+)? seconds$' \"$OUT/{n}.log\" || {{ echo {} >&2; exit 1; }}\n",
+            quote(&format!("entry {n} must execute exactly one successful test: {name}"))
         ));
-        s.push_str("luacov -r lcov\n");
+        s.push_str("test -s luacov.stats.out\nluacov -r lcov\ntest -s luacov.report.out\n");
         s.push_str(&format!(
             "printf '%s\\n' {} {} | cat - luacov.report.out > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\n",
             quote(&format!("TN:{id}")),
@@ -180,30 +193,33 @@ mod tests {
             "store loads the store".to_string(),
         )];
         let s = collection_script(&entries, Path::new("/out"));
-        assert!(
-            s.starts_with("#!/bin/sh\nset -eu\nbusted --version\n"),
-            "{s}"
-        );
+        assert!(s.starts_with("#!/bin/sh\nset -eu\nOUT="), "{s}");
         assert!(s.contains("command -v luacov >/dev/null"), "{s}");
         assert!(
             s.contains(
-                "busted --coverage --filter='store loads the store' 'spec/store_spec.lua' > \"$OUT/1.log\" 2>&1"
+                "busted --coverage --output=plainTerminal --lang=en --filter='^store loads the store$' 'spec/store_spec.lua' > \"$OUT/1.log\" 2>&1"
             ),
             "{s}"
         );
         // Pinned from busted's plainTerminal summary format
         // (`1 success / 0 failures / 0 errors / 0 pending : … seconds`);
-        // the anchored ` / ` keeps a `21 successes` line from matching.
+        // require the entire one-test summary, with no skipped/pending cases.
         // busted is not installed on this machine, so a real run must
-        // confirm the grep (probe-first debt, PLAN.md K decision 2).
-        assert!(s.contains("grep -q '1 success / ' \"$OUT/1.log\""), "{s}");
+        // confirm the real runner (probe-first debt, PLAN.md K decision 2).
         assert!(
-            s.contains("entry 1 matched zero tests: store loads the store"),
+            s.contains("^1 success / 0 failures / 0 errors / 0 pending"),
+            "{s}"
+        );
+        assert!(
+            s.contains("entry 1 must execute exactly one successful test: store loads the store"),
             "{s}"
         );
         // luacov merges luacov.stats.out across runs: the per-entry
         // deletion is the isolation.
-        assert!(s.contains("rm -f luacov.stats.out\n"), "{s}");
+        assert!(
+            s.contains("rm -f luacov.stats.out luacov.report.out\n"),
+            "{s}"
+        );
         assert!(s.contains("luacov -r lcov"), "{s}");
         assert!(
             s.contains("printf '%s\\n' 'TN:lua:myapp::spec::store_spec::store::loads the store' '# node: busted --filter store loads the store spec/store_spec.lua'"),
@@ -240,9 +256,7 @@ mod tests {
             "{s}"
         );
         // The out dir is shell-quoted; a filter name with a quote survives
-        // quoting (busted treats --filter as a Lua pattern — a title with
-        // pattern specials is probe-first debt the zero-match guard
-        // catches loudly).
+        // quoting; Lua pattern specials are escaped before shell quoting.
         assert!(s.contains("OUT='/tmp/cov dir'"), "{s}");
         let quoted = collection_script(
             &[(
@@ -252,6 +266,88 @@ mod tests {
             )],
             Path::new("/out"),
         );
-        assert!(quoted.contains("--filter='it'\\''s'"), "{quoted}");
+        assert!(quoted.contains("--filter='^it'\\''s$'"), "{quoted}");
+    }
+    #[test]
+    #[cfg(unix)]
+    fn emitted_lua_script_rejects_mixed_counts_and_stale_reports() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::Command;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let bin = root.join("bin");
+        let out = root.join("coverage");
+        std::fs::create_dir(&bin).expect("bin");
+        std::fs::create_dir(&out).expect("out");
+        let fake = r#"#!/usr/bin/env python3
+import os,pathlib,sys
+tool=pathlib.Path(sys.argv[0]).name
+mode=os.environ['FAKE_MODE']
+if tool=='busted':
+ if '--version' in sys.argv:
+  print('fixture');sys.exit(0)
+ assert '--filter=^store handles %.%[%]%(%)%+%-%*%?%%%$%^$' in sys.argv,sys.argv
+ if mode!='missingstats': pathlib.Path('luacov.stats.out').write_text('fresh')
+ count={'zero':0,'multiple':2,'eleven':11,'twentyone':21}.get(mode,1)
+ pending=1 if mode=='pending' else 0
+ if mode=='duplicate': print('1 success / 0 failures / 0 errors / 0 pending : 0.001 seconds')
+ print(str(count)+' '+('success' if count==1 else 'successes')+' / 0 failures / 0 errors / '+str(pending)+' pending : 0.001 seconds')
+elif tool=='luacov':
+ if mode!='missingreport': pathlib.Path('luacov.report.out').write_text('SF:src/store.lua\nDA:1,1\nend_of_record\n')
+else:
+ sys.stdin.read()
+ pathlib.Path(sys.argv[2],'manifest.json').write_text('{"runner":"busted"}')
+"#;
+        for tool in ["busted", "luacov", "lua"] {
+            let file = bin.join(tool);
+            std::fs::write(&file, fake).expect("fake tool");
+            std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        let script = root.join("collect.sh");
+        std::fs::write(
+            &script,
+            collection_script(
+                &[(
+                    "lua:fixture::selected".into(),
+                    "spec/store_spec.lua".into(),
+                    "store handles .[]()+-*?%$^".into(),
+                )],
+                &out,
+            ),
+        )
+        .expect("script");
+        for mode in [
+            "success",
+            "zero",
+            "multiple",
+            "eleven",
+            "twentyone",
+            "pending",
+            "duplicate",
+            "missingstats",
+            "missingreport",
+        ] {
+            std::fs::write(root.join("luacov.stats.out"), "stale").expect("stats");
+            std::fs::write(root.join("luacov.report.out"), "stale").expect("report");
+            std::fs::write(out.join("old.lcov"), "stale").expect("lcov");
+            std::fs::write(out.join("manifest.json"), "stale").expect("manifest");
+            let result = Command::new("sh")
+                .arg(&script)
+                .current_dir(root)
+                .env(
+                    "PATH",
+                    format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH")),
+                )
+                .env("FAKE_MODE", mode)
+                .output()
+                .expect("script");
+            assert_eq!(
+                result.status.success(),
+                mode == "success",
+                "{mode}: {result:?}"
+            );
+            assert!(!out.join("old.lcov").exists());
+            assert_eq!(out.join("manifest.json").exists(), mode == "success");
+        }
     }
 }
