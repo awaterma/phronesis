@@ -18,7 +18,9 @@ pub use graph::{graph_scope_prefix, merge_graph_hits};
 pub use render::{
     render_json, render_table, render_trend_json, render_trend_table, short_iso_date,
 };
-pub use run::{AuditSectionTimes, discover_files, run, run_profiled};
+pub use run::{
+    AuditSectionTimes, Discovery, discover_files, discover_files_with_excluded, run, run_profiled,
+};
 pub use trend::{DebtTrend, RuleTrend, TrendOpts, TrendPoint, compute_trend};
 pub use types::{
     AuditOpts, AuditReport, FileAudit, Level, RuleAudit, audit_snapshot_entry, resolve_scan_root,

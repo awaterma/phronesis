@@ -1,3 +1,13 @@
+//! Rust starter-pack rule definitions.
+//!
+//! The rule bodies below embed the very strings the rules match, so three
+//! lexical rules would fire on this file's own text. Each is exempted by
+//! name here (all three set `doc_excepted`); structural rules still run.
+//!
+//! phronesis-allow: audit-newtype-id-string (rule text embeds `_id: String`)
+//! phronesis-allow: audit-allow-dead-code-in-src (rule text embeds the allow attribute)
+//! phronesis-allow: audit-string-concat-with-plus (rule text embeds the pattern)
+
 use serde_json::{Value, json};
 
 pub(super) fn rust_rules() -> Value {
@@ -281,6 +291,7 @@ pub(super) fn rust_rules() -> Value {
                 "phase": "audit",
                 "priority": 3,
                 "audit": true,
+                "doc_excepted": true,
                 "when": [
                     {"new_content_contains": "\" + &"},
                     {"file_extension_is": "rs"}

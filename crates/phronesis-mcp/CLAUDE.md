@@ -780,6 +780,8 @@ phr-mcp trend --since 30d    # all snapshots in the last month
 phr-mcp trend --rule no-unwrap-in-src
 ```
 
+`.phronesisignore` (gitignore syntax, honoured at any directory level) exempts matching files from **lexical** rules only: rules with no AST predicate. Rules with an AST predicate are structural and keep running on excluded files (below the `PHRONESIS_MAX_FILE_BYTES` cap), and `phr-mcp audit` lists every excluded file in its footer and under `lexical_excluded` in `--json`. `files_scanned` counts excluded files too. Excluding a large tree therefore still costs a structural pass over its source files. To silence one rule for one file, use a `//! phronesis-allow: <rule-id> <reason>` line in the file's leading doc comment; this works only for rules that set `doc_excepted`.
+
 ## Rule file format (v2)
 
 Rules are stored in `.phronesis/rules.json`. The current (v2) shape uses readable

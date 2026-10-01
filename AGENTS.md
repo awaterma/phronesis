@@ -493,7 +493,7 @@ the two above.
 - Path canonicalization prevents directory traversal
 - Size caps on files read (configurable via `PHRONESIS_LOG_MAX_BYTES`)
 - Input validation in `security.rs`
-- `.phronesisignore` support in `phronesis-mcp/.phronesisignore`
+- `.phronesisignore` exempts files from lexical rules only; excluded files are reported in audit output
 
 ---
 
