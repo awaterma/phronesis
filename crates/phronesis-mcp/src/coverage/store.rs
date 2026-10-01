@@ -439,11 +439,12 @@ fn is_canonical_revision(rev: &str) -> bool {
 /// the (lowercase) index revision.
 ///
 /// Per-field alphabets: a `test` id is whatever the graph's `defines_test`
-/// emitted (target infixes like `#test:`, and `it()` titles with spaces),
-/// so only emptiness, size, control characters, and surrounding whitespace
+/// emitted (target infixes like `#test:`, and `it()` titles with spaces —
+/// from TypeScript or busted), so only emptiness, size, control characters,
+/// and surrounding whitespace
 /// are rejected; a `region` id keeps the strict identifier alphabet
 /// (the `fn:<file>::<item-path>` contract); a `tool` is an identifier that
-/// may compose producer and runner (`c8+vitest`).
+/// may compose producer and runner (`c8+vitest`, `luacov+busted`).
 pub fn validate_record(rec: &HitRecord) -> Result<()> {
     if rec.v != COVERAGE_FORMAT {
         return Err(anyhow!(
@@ -486,9 +487,10 @@ pub fn validate_record(rec: &HitRecord) -> Result<()> {
     Ok(())
 }
 
-/// Test ids are the graph's `defines_test` ids, and a JavaScript `it()`
-/// title may contain spaces, punctuation, even `::` (the id ends with the
-/// raw title), so this field rejects only what no id can be: empty,
+/// Test ids are the graph's `defines_test` ids, and an `it()` title —
+/// JavaScript's or busted's — may contain spaces, punctuation, even `::`
+/// (the id ends with the raw title), so this field rejects only what no
+/// id can be: empty,
 /// oversized, control characters, or surrounding whitespace.
 fn validate_test_field(test: &str) -> Result<()> {
     if test.is_empty() {
@@ -507,7 +509,8 @@ fn validate_test_field(test: &str) -> Result<()> {
 }
 
 /// A tool string names the coverage producer and may compose it with the
-/// runner (`c8+vitest`, `istanbul+jest`); otherwise the identifier rules
+/// runner (`c8+vitest`, `istanbul+jest`, `luacov+busted`); otherwise the
+/// identifier rules
 /// apply.
 fn validate_tool_field(tool: &str) -> Result<()> {
     validate_identifier_field_with(tool, "tool", &['+'])
@@ -739,6 +742,37 @@ mod tests {
         );
         rec.tool = "c8+vitest".into();
         rec.region = "fn:src/x.ts::bad#id".into();
+        assert!(
+            validate_record(&rec).is_err(),
+            "region ids keep the strict alphabet"
+        );
+    }
+
+    /// Test ids are the graph's `defines_test` ids: a busted `it()` title
+    /// may contain spaces, punctuation, even `::` (the id ends with the
+    /// raw title), so this field rejects only what no id can be. Tool
+    /// strings compose producer and runner (`luacov+busted`). The region
+    /// contract keeps its strict alphabet.
+    #[test]
+    fn test_ids_carry_busted_titles_and_tools_compose() {
+        let rev = "a".repeat(40);
+        let mut rec = hit(&rev, 1).into_iter().next().unwrap();
+        rec.test = "lua:myapp::spec::store_spec::store::loads the store".into();
+        rec.tool = "luacov+busted".into();
+        validate_record(&rec).expect("a real graph id and composed tool validate");
+        rec.test = " loads the store".into();
+        assert!(
+            validate_record(&rec).is_err(),
+            "surrounding whitespace is not an id"
+        );
+        rec.test = "lua:myapp::spec::store_spec::store::loads the store".into();
+        rec.tool = "luacov;rm".into();
+        assert!(
+            validate_record(&rec).is_err(),
+            "shell punctuation is not a tool name"
+        );
+        rec.tool = "luacov+busted".into();
+        rec.region = "fn:src/store.lua::bad id".into();
         assert!(
             validate_record(&rec).is_err(),
             "region ids keep the strict alphabet"

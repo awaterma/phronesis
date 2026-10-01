@@ -1,0 +1,6 @@
+describe('store', function()
+  it('loads the stored value', function()
+    local store = Store.new(tmp)
+    assert.truthy(store:load())
+  end)
+end)

@@ -135,6 +135,30 @@ fn python_function_sites_track_body_and_inclusive_end_lines() {
 }
 
 #[test]
+fn lua_function_sites_dispatch_through_the_registry() {
+    let src = "function M.f()\n  return 1\nend\n\nlocal one = function() return 1 end\n";
+    let sites = extract_function_sites_for("src/store.lua", src).unwrap();
+    let rows: Vec<_> = sites
+        .iter()
+        .map(|s| {
+            (
+                s.item_path.as_str(),
+                s.start_line,
+                s.body_start_line,
+                s.end_line,
+            )
+        })
+        .collect();
+    assert_eq!(rows, vec![("M::f", 1, 2, 3), ("one", 5, 5, 5)]);
+    // A `.rockspec` is not a `.lua` source: no registry row, no regions.
+    assert!(
+        extract_function_sites_for("store.rockspec", src)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn rust_function_sites_include_the_body_start_line() {
     let sites = extract_function_sites("fn a(\n    x: u8,\n) -> u8 {\n    x\n}\n").unwrap();
     assert_eq!(

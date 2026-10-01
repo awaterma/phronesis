@@ -293,6 +293,7 @@ one-liner rule, and the runnable command `coverage select` renders.
 | Java | `.java` | `java:` | JaCoCo XML converted to the shared in-memory source shape | `end_line == start_line`; attributed by method counters when present |
 | Swift | `.swift` | `swift:` | SwiftPM per-test `swift test --enable-code-coverage --filter`, `llvm-cov export -format=lcov` | `end_line == start_line` (brace rows); one-liners are unattributable because llvm-cov's lcov `FN` names are mangled and never matched |
 | TypeScript/JavaScript | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` | `typescript:` | c8 / vitest / jest, lcov | `end_line == start_line` (brace-row rule); attributed by `FNDA` when present, otherwise unattributable |
+| Lua | `.lua` | `lua:` | luacov via busted (`luacov -r lcov`), lcov; `--filter` names the space-joined describe/it full name | `end_line == start_line`; luacov's lcov has no `FN`/`FNDA`, so a one-line function is always reported unattributable, never guessed |
 
 Java JaCoCo XML is imported directly, not as lcov text. Kotlin source files in
 a mixed module are skipped because this language row describes Java sites;
@@ -323,7 +324,10 @@ against the host tree. Test ids are the graph's `defines_test` ids; Python's
 use the form `python:<namespace>::<path segments>::<test function>`, and
 TypeScript/JavaScript's end with the raw `it()` title (which may contain
 spaces and `::`) after the test file's module segments, with the graph's
-target infix (`typescript:<unit>#test:<file>`) for files under `tests/`.
+target infix (`typescript:<unit>#test:<file>`) for files under `tests/`,
+and Lua's busted specs emit
+`lua:<unit>::<spec path segments>::<describe titles>::<it title>` (detected
+through the tree-sitter-lua parse).
 `coverage select` renders TypeScript/JavaScript tests as runnable
 vitest/jest/`node --test` commands chosen by the imported record's tool
 string (`c8+vitest`, `istanbul+jest`, `c8+node`).

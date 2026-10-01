@@ -1464,3 +1464,64 @@ fn init_prints_gemini_escaping_and_trust_note() {
         "install output must warn that project hooks are skipped until trust: {stdout}"
     );
 }
+
+/// The lua pack ships the busted toolchain def through the merge-if-absent
+/// language-pack writer: created when absent, merged into an existing file
+/// without touching user-edited entries (PLAN.md Task K2).
+#[test]
+fn lua_pack_writes_busted_toolchain_def() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = run_init(&["--packs", "lua"], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = dir.path().join(".phronesis/toolchains.json");
+    let raw = std::fs::read_to_string(&path).expect("toolchains.json written");
+    let defs: serde_json::Value =
+        serde_json::from_str(&raw).expect("toolchains.json is valid JSON array");
+    let ids: Vec<&str> = defs
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["id"].as_str())
+        .collect();
+    // The base includes the confidence pack, whose example defs
+    // (pytest, tsc) are written first; the language-pack writer appends
+    // the busted def after them.
+    assert_eq!(ids, vec!["pytest", "tsc", "busted"]);
+    let busted = &defs[2];
+    assert_eq!(busted["matches"], "^busted(\\s|$)");
+    assert_eq!(
+        busted["test_summary"],
+        "(?P<passed>\\d+) successes? / (?P<failed>\\d+) failures?"
+    );
+
+    // Merge-if-absent: a user-edited def for the same id survives, other
+    // entries survive, and re-running init does not duplicate anything.
+    std::fs::write(
+        &path,
+        r#"[{"id":"busted","matches":"user-edited"},{"id":"mine","matches":"mine"}]"#,
+    )
+    .unwrap();
+    let out = run_init(&["--packs", "lua"], dir.path());
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let defs: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let ids: Vec<&str> = defs
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|d| d["id"].as_str())
+        .collect();
+    assert_eq!(ids, vec!["busted", "mine"], "no duplicate ids appended");
+    assert_eq!(
+        defs[0]["matches"], "user-edited",
+        "an existing entry is left untouched"
+    );
+}

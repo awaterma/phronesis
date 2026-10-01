@@ -502,10 +502,10 @@ the two above.
 
 Function regions exist for the languages registered in
 `crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, Java, Swift,
-and TypeScript/JavaScript today): each row owns function-site extraction,
-the production-source filter, the test-id namespace, the one-liner
-attribution rule, and the command `coverage select` renders; a language
-without a row has no coverage
+TypeScript/JavaScript, and Lua today): each row owns function-site
+extraction, the production-source filter, the test-id namespace, the
+one-liner attribution rule, and the command `coverage select` renders; a
+language without a row has no coverage
 semantics and `coverage select` says so. Evaluated languages (`.cue`,
 `.json`, `.yaml`/`.yml`, `.tpl`, `.rhai`) have no regions at all:
 `coverage select` names their edits under `no_coverage_semantics` —
@@ -530,6 +530,8 @@ phr-mcp coverage collect --tool swift-cov --emit-script --out /tmp/cov  # emit S
 phr-mcp coverage import --format lcov-dir --tool swift-cov /tmp/cov  # verify manifest revision/digests and import Swift evidence
 phr-mcp coverage collect --tool js-cov --emit-script  # emit JS/TS per-test lcov collection (runner from package.json; --runner vitest|jest|node overrides)
 phr-mcp coverage import --format lcov-dir --tool c8+vitest /tmp/cov  # import JS/TS lcov (also istanbul+jest, c8+node)
+phr-mcp coverage collect --tool lua-cov --emit-script --out /tmp/cov   # emit Lua per-test lcov collection under busted/luacov for a devcontainer
+phr-mcp coverage import --format lcov-dir --tool luacov+busted /tmp/cov  # verify the Lua manifest and import; the `lua` pack ships the busted toolchain def
 phr-mcp coverage select                      # relevant tests for changed regions
 ```
 

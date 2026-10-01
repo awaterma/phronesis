@@ -486,11 +486,14 @@ enum CoverageCmd {
     /// `--tool pytest-cov` emits Python per-test lcov collection, `--tool
     /// js-cov` emits JavaScript/TypeScript per-test lcov collection under
     /// vitest, jest, or `node --test` (runner detected from `package.json`,
-    /// `--runner` overrides); neither runs cargo.
+    /// `--runner` overrides), and `--tool lua-cov` emits Lua per-test lcov
+    /// collection under busted and luacov (entries from the graph's
+    /// defines_test ids); none of them run cargo.
     Collect {
         /// Select a collector tool (`pytest-cov` enables Python collection,
         /// `swift-cov` SwiftPM collection, `java-cov` Maven/Gradle
-        /// collection, `js-cov` JavaScript/TypeScript collection).
+        /// collection, `js-cov` JavaScript/TypeScript collection,
+        /// `lua-cov` Lua collection under busted/luacov).
         #[arg(long)]
         tool: Option<String>,
         /// Build runner override: `mvn` or `gradle` for `--tool java-cov`
@@ -499,7 +502,7 @@ enum CoverageCmd {
         #[arg(long, value_parser = ["mvn", "gradle", "vitest", "jest", "node"])]
         runner: Option<String>,
         /// Print the collection script (pytest-cov / swift-cov / java-cov /
-        /// js-cov) for a devcontainer.
+        /// js-cov / lua-cov) for a devcontainer.
         #[arg(long)]
         emit_script: bool,
         /// Output directory for per-test lcov / JaCoCo files.
@@ -577,9 +580,7 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
         } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
-            if runner.is_some()
-                && !matches!(tool.as_deref(), Some("java-cov") | Some("js-cov"))
-            {
+            if runner.is_some() && !matches!(tool.as_deref(), Some("java-cov") | Some("js-cov")) {
                 anyhow::bail!("--runner is only valid with --tool java-cov or --tool js-cov");
             }
             if tool.as_deref() == Some("js-cov") {
@@ -722,6 +723,51 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                     .context("running swift coverage collection script")?;
                 if !status.success() {
                     anyhow::bail!("swift coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
+            if tool.as_deref() == Some("lua-cov") {
+                use phronesis_mcp::coverage::collect_lua;
+                use phronesis_mcp::coverage::language::{language_for_path, lua};
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for edge in graph
+                    .iter()
+                    .filter(|e| e.p == "defines_test" && e.a.len() == 2)
+                {
+                    let (file, id) = (&edge.a[0], &edge.a[1]);
+                    if language_for_path(file).is_none_or(|l| l.id != "lua") {
+                        continue;
+                    }
+                    let name = lua::runner_name(id, file).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "graph test id {id} does not carry the module marker of {file}"
+                        )
+                    })?;
+                    entries.push((id.clone(), file.clone(), name));
+                }
+                if entries.is_empty() {
+                    anyhow::bail!(
+                        "the graph indexes no busted tests; run `phr-mcp graph rebuild` first"
+                    );
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/lua-coverage"));
+                let script = collect_lua::collection_script(&entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running lua coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("lua coverage collection script failed ({status})");
                 }
                 return Ok(());
             }

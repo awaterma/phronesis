@@ -53,12 +53,14 @@ cargo run -- coverage collect --tool swift-cov [--emit-script]  # Emit/run conta
 cargo run -- coverage import --format lcov-dir --tool swift-cov <dir>  # Import per-test Swift lcov after manifest verification
 cargo run -- coverage collect --tool js-cov --emit-script [--runner vitest|jest|node] [--out DIR]  # Emit isolated JS/TS per-test lcov collection (runner detected from package.json)
 cargo run -- coverage import --format lcov-dir --tool c8+vitest <dir>  # Import per-test JS/TS lcov after manifest verification (also istanbul+jest, c8+node)
+cargo run -- coverage collect --tool lua-cov --emit-script  # Emit container-friendly isolated busted/luacov collection (Lua)
+cargo run -- coverage import --format lcov-dir --tool luacov+busted <dir>  # Import per-test Lua lcov after manifest verification
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 
 Function regions exist for the languages registered in
 `crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, Java, Swift,
-and TypeScript/JavaScript today):
+TypeScript/JavaScript, and Lua today):
 each row owns function-site extraction, the production-source filter, the
 test-id namespace, the one-liner attribution rule, and the command
 `coverage select` renders; a language without a row has no coverage
@@ -66,7 +68,9 @@ semantics and `coverage select` says so. Swift one-liners are never
 attributed (llvm-cov's lcov `FN` names are mangled); a Swift test id
 (`swift:<unit>::<file segments>::<scope>::<name>`) renders as
 `swift test --filter '^<module>.<scope>/<name>$'`, the form that matched
-both an XCTest class and a Swift Testing suite live. Evaluated languages
+both an XCTest class and a Swift Testing suite live. Lua's row pairs with
+the `lua` pack's busted toolchain def, written merge-if-absent into
+`.phronesis/toolchains.json`. Evaluated languages
 (`.cue`, `.json`, `.yaml`/`.yml`, `.tpl`, `.rhai`) have no regions at all:
 `coverage select` names their edits under `no_coverage_semantics` —
 "`<file>`: evaluated, not executed; the compile signal comes from `cue vet`

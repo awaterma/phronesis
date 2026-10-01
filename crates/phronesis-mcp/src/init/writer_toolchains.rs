@@ -8,12 +8,6 @@
 //! a file the user has since edited — missing ids are appended, and every
 //! existing entry is left untouched.
 
-use std::collections::BTreeSet;
-use std::path::Path;
-
-use crate::init::types::{InitError, InitOpts, InitReport, Pack};
-use crate::outcomes::toolchain::ToolchainDef;
-
 /// The TypeScript pack's toolchain defs. Summary and per-test lines were
 /// pinned from real runs before shipping (vitest 2.1.9: `      Tests  1
 /// passed (1)` and verbose per-test ` ✓ file > title`; jest 29:
@@ -45,7 +39,47 @@ fn typescript_pack_defs() -> Vec<ToolchainDef> {
     ]
 }
 
-/// Merge the TypeScript pack's toolchain defs into
+use std::collections::BTreeSet;
+use std::path::Path;
+
+use crate::init::types::{InitError, InitOpts, InitReport, Pack};
+use crate::outcomes::toolchain::ToolchainDef;
+
+/// The toolchain defs each selected language pack ships, in pack-list
+/// order. Adding a language pack is one arm here; the writer below never
+/// changes.
+fn language_pack_defs(packs: &[Pack]) -> Vec<ToolchainDef> {
+    let mut defs = Vec::new();
+    for pack in packs {
+        if *pack == Pack::TypeScript {
+            defs.extend(typescript_pack_defs());
+        }
+        if *pack == Pack::Lua {
+            defs.extend(lua_pack_defs());
+        }
+    }
+    defs
+}
+
+/// The lua pack's toolchain def. The summary regex is pinned from busted's
+/// own `plainTerminal` format (`N successes / N failures / N errors / N
+/// pending : … seconds`, singular at a count of one) — busted is not
+/// installed on this machine, so a real run must confirm it (probe-first
+/// debt, PLAN.md K decision 5).
+fn lua_pack_defs() -> Vec<ToolchainDef> {
+    vec![ToolchainDef {
+        id: "busted".into(),
+        matches: r"^busted(\s|$)".into(),
+        compile_fail: vec![],
+        compile_success: vec![],
+        test_summary: Some(r"(?P<passed>\d+) successes? / (?P<failed>\d+) failures?".into()),
+        per_test: None,
+        pass_tokens: vec![],
+        outcome_kind: None,
+    }]
+}
+
+/// Merge the selected language packs' toolchain defs into
 /// `.phronesis/toolchains.json`: create the file when absent, append only
 /// missing ids when present, and rewrite nothing when every id already
 /// exists. A malformed existing file is an error naming the file — never a
@@ -55,10 +89,10 @@ pub(super) fn write_language_pack_toolchains(
     opts: &InitOpts,
     report: &mut InitReport,
 ) -> Result<(), InitError> {
-    if !opts.packs.contains(&Pack::TypeScript) {
+    let defs = language_pack_defs(&opts.packs);
+    if defs.is_empty() {
         return Ok(());
     }
-    let defs = typescript_pack_defs();
     let path = root.join(".phronesis/toolchains.json");
     let mut merged: Vec<serde_json::Value> = Vec::new();
     let mut added: Vec<String> = Vec::new();
@@ -90,10 +124,10 @@ pub(super) fn write_language_pack_toolchains(
         }
     }
     if added.is_empty() {
-        report.steps.push(
-            "= .phronesis/toolchains.json already carries the vitest/jest defs — leaving unchanged"
-                .to_string(),
-        );
+        report.steps.push(format!(
+            "= .phronesis/toolchains.json already carries the language-pack defs ({}) — leaving unchanged",
+            defs.iter().map(|d| d.id.as_str()).collect::<Vec<_>>().join(", ")
+        ));
         return Ok(());
     }
     if opts.dry_run {
@@ -151,6 +185,72 @@ mod tests {
     fn creates_toolchains_json_when_absent() {
         let dir = tempfile::tempdir().unwrap();
         let mut report = InitReport::default();
+        write_language_pack_toolchains(dir.path(), &opts(&[Pack::Lua]), &mut report)
+            .expect("write");
+        let got = ids(dir.path());
+        assert!(got.contains(&"busted".to_string()), "{got:?}");
+        // The shipped def must compile like any project def: valid regexes
+        // and the required named groups (summary `passed`). The summary
+        // shape is pinned from busted's own plainTerminal format
+        // (`N successes / N failures / N errors / N pending`); busted is
+        // not installed on this machine, so a real run must confirm it
+        // (probe-first debt, PLAN.md K decision 5).
+        for def in language_pack_defs(&[Pack::Lua]) {
+            CompiledDef::compile(def, DefSource::Project).expect("shipped def compiles");
+        }
+    }
+
+    #[test]
+    fn adds_missing_ids_and_leaves_user_entries_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+        std::fs::write(
+            dir.path().join(".phronesis/toolchains.json"),
+            r#"[
+  {"id": "busted", "matches": "user-edited"},
+  {"id": "mine", "matches": "^mine(\\s|$)"}
+]"#,
+        )
+        .unwrap();
+        let mut report = InitReport::default();
+        write_language_pack_toolchains(dir.path(), &opts(&[Pack::Lua]), &mut report)
+            .expect("merge");
+        let raw = std::fs::read_to_string(dir.path().join(".phronesis/toolchains.json")).unwrap();
+        let defs: Vec<serde_json::Value> = serde_json::from_str(&raw).unwrap();
+        let ids: Vec<&str> = defs.iter().filter_map(|d| d["id"].as_str()).collect();
+        assert_eq!(ids, vec!["busted", "mine"], "no duplicate appended");
+        assert_eq!(defs[0]["matches"], "user-edited");
+        assert_eq!(
+            defs[1]["matches"], "^mine(\\s|$)",
+            "a non-language entry is untouched"
+        );
+    }
+
+    #[test]
+    fn no_language_packs_write_nothing_and_dry_run_never_touches_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
+        let mut report = InitReport::default();
+        write_language_pack_toolchains(dir.path(), &opts(&[Pack::Rust]), &mut report)
+            .expect("noop");
+        assert!(!dir.path().join(".phronesis/toolchains.json").exists());
+        let mut report = InitReport::default();
+        let dry = InitOpts {
+            dry_run: true,
+            ..opts(&[Pack::Lua])
+        };
+        write_language_pack_toolchains(dir.path(), &dry, &mut report).expect("dry run");
+        assert!(
+            !dir.path().join(".phronesis/toolchains.json").exists(),
+            "dry run writes nothing"
+        );
+        assert!(report.steps.iter().any(|s| s.contains("would add busted")));
+    }
+
+    #[test]
+    fn creates_toolchains_json_when_absent_typescript() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut report = InitReport::default();
         write_language_pack_toolchains(dir.path(), &opts(&[Pack::TypeScript]), &mut report)
             .expect("write");
         let got = ids(dir.path());
@@ -168,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn adds_missing_ids_and_leaves_user_entries_alone() {
+    fn adds_missing_ids_and_leaves_user_entries_alone_typescript() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".phronesis")).unwrap();
         std::fs::write(

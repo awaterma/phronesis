@@ -5,6 +5,7 @@
 
 use crate::coverage::region_map::{FunctionSite, extract_function_sites, python_function_sites};
 
+pub mod lua;
 pub mod typescript;
 
 /// Per-path extraction (`(repo-relative path, source)`), for languages
@@ -139,6 +140,21 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         one_liner_needs_fnda: true,
         render_command: typescript::render_command,
         render_command_with_tool: Some(typescript::render_command_with_tool),
+    },
+    CoverageLanguage {
+        id: "lua",
+        extensions: &["lua"],
+        test_id_prefix: "lua:",
+        function_sites: lua::lua_function_sites,
+        function_sites_for_path: None,
+        is_wanted_source: lua::is_wanted_source,
+        is_one_liner: lua::is_one_liner,
+        // luacov's lcov reporter emits no FN/FNDA, so a one-line Lua
+        // function is reported `unattributable`, never guessed (Part K,
+        // decision 2).
+        one_liner_needs_fnda: true,
+        render_command: lua::render_command,
+        render_command_with_tool: None,
     },
 ];
 
