@@ -14,7 +14,14 @@ pub fn jacoco_to_sources(
     xml: &str,
     map_path: &dyn Fn(&str, &str) -> Relativized,
 ) -> Result<(Vec<LcovSource>, Vec<String>)> {
-    let doc = roxmltree::Document::parse(xml).context("parsing JaCoCo XML")?;
+    // JaCoCo emits this public declaration even though its report is fully
+    // self-contained. Remove only that inert declaration; retain the parser's
+    // default DTD prohibition for internal subsets and arbitrary external DTDs.
+    // No DTD is loaded or resolved.
+    const JACOCO_DOCTYPE: &str =
+        r#"<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd">"#;
+    let xml = xml.replacen(JACOCO_DOCTYPE, "", 1);
+    let doc = roxmltree::Document::parse(&xml).context("parsing JaCoCo XML")?;
     let mut files = Vec::new();
     let mut skipped = Vec::new();
     for package in doc.descendants().filter(|n| n.has_tag_name("package")) {
@@ -246,5 +253,35 @@ mod tests {
             vec!["Store::new", "Store::load"]
         );
         assert!(unattributable.is_empty());
+    }
+
+    #[test]
+    fn canonical_jacoco_public_doctype_is_inert_and_preserves_hits() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd"><report name="core"><package name="com/x"><sourcefile name="Store.java"><line nr="3" mi="0" ci="2"/></sourcefile></package></report>"#;
+        let (sources, skipped) = jacoco_to_sources(xml, &|pkg, file| {
+            Relativized::Path(format!("core/src/main/java/{pkg}/{file}"))
+        })
+        .expect("canonical JaCoCo report");
+        assert!(skipped.is_empty());
+        assert_eq!(sources.len(), 1);
+        assert_eq!(sources[0].path, "core/src/main/java/com/x/Store.java");
+        assert_eq!(sources[0].line_hits, vec![(3, 2)]);
+    }
+
+    #[test]
+    fn noncanonical_dtds_and_entity_declarations_remain_rejected() {
+        for xml in [
+            r#"<!DOCTYPE report SYSTEM "file:///etc/passwd"><report/>"#,
+            r#"<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "https://example.invalid/report.dtd"><report/>"#,
+            r#"<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd" [<!ENTITY leak SYSTEM "file:///etc/passwd">]><report>&leak;</report>"#,
+            r#"<!DOCTYPE report [<!ENTITY leak "secret">]><report>&leak;</report>"#,
+            r#"<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd"><!DOCTYPE report [<!ENTITY leak "secret">]><report>&leak;</report>"#,
+            r#"<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd"><report>&leak;</report>"#,
+        ] {
+            assert!(
+                jacoco_to_sources(xml, &|_, _| Relativized::Missing).is_err(),
+                "accepted unsafe XML: {xml}"
+            );
+        }
     }
 }
