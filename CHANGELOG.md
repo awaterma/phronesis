@@ -38,6 +38,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **`.phronesisignore` no longer hides files from structural rules.** An ignore
+  entry now exempts a file from lexical rules only (rules with no AST
+  predicate); structural rules keep running on it below the file-size cap, and
+  `phr-mcp audit` names every excluded file in its footer and in `--json`
+  (`lexical_excluded`). The whole-file entry for `src/init.rs` had silenced
+  `enforce-no-unwrap-in-src` on nine production `.unwrap()` calls for as long
+  as it existed (#114). The Rust pack's self-referential rule text is now
+  exempted per rule with `//! phronesis-allow:` markers.
+
 - **A benign Python property body could be refused for "interpolating
   outside a string" when the value only ever sat inside a `'...'` string or
   a `#` comment.** The rendered-body validator's non-Rust fallback only knew

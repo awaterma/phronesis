@@ -167,6 +167,7 @@ fn empty_diagnostic_names_unmatched_rule_filter() {
         scan_duration_ms: 0,
         files_scanned: 0,
         per_rule: vec![],
+        lexical_excluded: Vec::new(),
     };
     let diag = empty_result_diagnostic(
         &report,
@@ -585,6 +586,7 @@ fn empty_report() -> AuditReport {
         scan_duration_ms: 0,
         files_scanned: 0,
         per_rule: Vec::new(),
+        lexical_excluded: Vec::new(),
     }
 }
 
@@ -603,6 +605,7 @@ fn report_with_hits() -> AuditReport {
                 details: vec![],
             }],
         }],
+        lexical_excluded: Vec::new(),
     }
 }
 
@@ -701,5 +704,199 @@ fn run_profiled_matches_run_and_populates_section_times() {
         "total {:?} must be >= match_loop {:?}",
         times.total,
         times.match_loop
+    );
+}
+
+#[test]
+fn discovery_reports_only_phronesisignore_exclusions_at_any_level() {
+    use crate::audit::run::discover_files_with_excluded;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src/deep")).expect("mkdir");
+    std::fs::write(root.join("src/kept.rs"), "fn a() {}\n").expect("write");
+    std::fs::write(root.join("src/dropped.rs"), "fn b() {}\n").expect("write");
+    std::fs::write(root.join("src/deep/nested.rs"), "fn c() {}\n").expect("write");
+    // Excluded by .gitignore AND .phronesisignore: not a policy exclusion.
+    std::fs::write(root.join("src/generated.rs"), "fn g() {}\n").expect("write");
+    // Hidden file: the walker skips it by default; never reported either.
+    std::fs::write(root.join("src/.hidden.rs"), "fn h() {}\n").expect("write");
+    std::fs::write(root.join(".gitignore"), "src/generated.rs\n").expect("write");
+    std::fs::write(
+        root.join(".phronesisignore"),
+        "src/dropped.rs\nsrc/generated.rs\n",
+    )
+    .expect("write");
+    std::fs::write(root.join("src/deep/.phronesisignore"), "nested.rs\n").expect("write");
+
+    let d = discover_files_with_excluded(root, &["rs"]);
+    let names = |v: &[std::path::PathBuf]| -> Vec<String> {
+        v.iter()
+            .map(|p| {
+                p.strip_prefix(root)
+                    .expect("under root")
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect()
+    };
+    assert_eq!(names(&d.scanned), vec!["src/kept.rs"]);
+    assert_eq!(
+        names(&d.excluded),
+        vec!["src/deep/nested.rs", "src/dropped.rs"]
+    );
+}
+
+/// Write `json` to a temp rules file and load it via `rules_file::read`,
+/// the same path production uses. (`RulesFile` has no `Deserialize` impl —
+/// it is built from `SourceRule`s via `unfold_or`.)
+fn load_rules(json: &str) -> RulesFile {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("rules.json");
+    std::fs::write(&path, json).expect("write rules");
+    crate::rules_file::read(&path).expect("rules parse")
+}
+
+/// Policy pinned here: classification is per rule. A rule with any AST
+/// predicate is structural and runs its whole `when` list on an excluded
+/// file (its lexical predicates only narrow the hit); a rule with no AST
+/// predicate is lexical and skips excluded files.
+#[test]
+fn a_phronesisignored_file_is_scanned_by_structural_rules_only() {
+    use crate::audit::render_json;
+    use crate::audit::render_table;
+    use crate::audit::run::run_core;
+    use crate::audit::types::AuditOpts;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    std::fs::write(
+        root.join("src/hidden.rs"),
+        "pub fn f(x: Option<u8>) -> u8 {\n    // TODO tidy\n    x.unwrap()\n}\n",
+    )
+    .expect("write");
+    std::fs::write(root.join(".phronesisignore"), "src/hidden.rs\n").expect("write");
+    let rules = load_rules(
+        r#"{"rules": [
+            {"id": "no-unwrap", "phase": "pre", "priority": 1, "audit": true,
+             "when": [{"rust_governed_invocation": ["?file", "?fn", "unwrap"]},
+                      {"file_path_matches": "src"}],
+             "then": {"block": "no unwrap"}},
+            {"id": "mixed-unwrap-near-todo", "phase": "post", "priority": 1, "audit": true,
+             "when": [{"rust_governed_invocation": ["?file", "?fn", "unwrap"]},
+                      {"new_content_contains": "TODO"}],
+             "then": {"warn": "structural rule with a lexical narrowing predicate"}},
+            {"id": "no-todo", "phase": "post", "priority": 1, "audit": true,
+             "when": [{"new_content_contains": "TODO"}, {"file_path_matches": "src"}],
+             "then": {"warn": "no todo"}}
+        ]}"#,
+    );
+    let opts = AuditOpts {
+        project_root: root.to_path_buf(),
+        scan_root: root.to_path_buf(),
+        rule_filter: None,
+    };
+
+    let report = run_core(&rules, &opts, None);
+
+    let ids: Vec<&str> = report.per_rule.iter().map(|r| r.rule_id.as_str()).collect();
+    assert!(
+        ids.contains(&"no-unwrap"),
+        "structural rule fires on an ignored file: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"mixed-unwrap-near-todo"),
+        "a rule with an AST predicate is structural even with a lexical narrowing predicate: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"no-todo"),
+        "a purely lexical rule skips an ignored file: {ids:?}"
+    );
+    assert_eq!(
+        report.lexical_excluded,
+        vec![std::path::PathBuf::from("src/hidden.rs")]
+    );
+    assert_eq!(
+        report.files_scanned, 1,
+        "files offered to any scan, excluded included"
+    );
+    let table = render_table(&report, false);
+    assert!(
+        table.contains("1 file(s) excluded from lexical rules by .phronesisignore"),
+        "table footer names the exclusion: {table}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&render_json(&report)).expect("json");
+    assert_eq!(
+        json["lexical_excluded"],
+        serde_json::json!(["src/hidden.rs"])
+    );
+}
+
+#[test]
+fn an_excluded_file_over_the_size_cap_is_reported_but_not_structurally_scanned() {
+    // Cap below the file size via the documented runtime override. The env
+    // var is process-global; this test re-invokes the test binary in a child
+    // process with the var set, mirroring the pattern in
+    // `security::tests::max_file_bytes_env_override_behavior`.
+    let executable = std::env::current_exe().expect("current_exe");
+    let mut command = std::process::Command::new(&executable);
+    command
+        .args([
+            "--exact",
+            "audit::tests::engine_tests::excluded_file_over_size_cap_child",
+            "--nocapture",
+        ])
+        .env("PHRONESIS_MAX_FILE_BYTES", "1024")
+        .env("PHRONESIS_TEST_SIZE_CAP_CHILD", "1");
+    let output = command.output().expect("run child");
+    assert!(
+        output.status.success() && String::from_utf8_lossy(&output.stdout).contains("1 passed;"),
+        "child failed:\n{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+}
+
+#[test]
+fn excluded_file_over_size_cap_child() {
+    // Sentinel: only run the real assertions when invoked by the parent test
+    // with the size-cap env var set. Without the sentinel the test is a
+    // no-op so the parallel runner never sees a process-global env mutation.
+    if std::env::var("PHRONESIS_TEST_SIZE_CAP_CHILD").is_err() {
+        return;
+    }
+
+    use crate::audit::run::run_core;
+    use crate::audit::types::AuditOpts;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path();
+    std::fs::create_dir_all(root.join("src")).expect("mkdir");
+    let body = format!(
+        "pub fn f(x: Option<u8>) -> u8 {{ x.unwrap() }}\n// {}\n",
+        "x".repeat(2048)
+    );
+    std::fs::write(root.join("src/big.rs"), &body).expect("write");
+    std::fs::write(root.join(".phronesisignore"), "src/big.rs\n").expect("write");
+    let rules = load_rules(
+        r#"{"rules": [{"id": "no-unwrap", "phase": "pre", "priority": 1, "audit": true,
+             "when": [{"rust_governed_invocation": ["?file", "?fn", "unwrap"]}],
+             "then": {"block": "no unwrap"}}]}"#,
+    );
+    let opts = AuditOpts {
+        project_root: root.to_path_buf(),
+        scan_root: root.to_path_buf(),
+        rule_filter: None,
+    };
+
+    let report = run_core(&rules, &opts, None);
+    assert!(
+        report.per_rule.is_empty(),
+        "no structural scan over the cap: {:?}",
+        report.per_rule
+    );
+    assert_eq!(
+        report.lexical_excluded,
+        vec![std::path::PathBuf::from("src/big.rs")]
     );
 }
