@@ -74,7 +74,9 @@ pub mod python {
         let module = file.strip_suffix(".py")?.replace('/', "::");
         let marker = format!("::{module}::");
         let suffix = test.rsplit_once(&marker)?.1;
-        Some(format!("python -m pytest {file}::{suffix}"))
+        let node = format!("{file}::{suffix}");
+        let quoted = format!("'{}'", node.replace('\'', "'\\''"));
+        Some(format!("python -m pytest -- {quoted}"))
     }
 }
 
@@ -184,8 +186,44 @@ mod python_command_tests {
                 "tests/test_store.py"
             )
             .as_deref(),
-            Some("python -m pytest tests/test_store.py::test_load")
+            Some("python -m pytest -- 'tests/test_store.py::test_load'")
         );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn rendered_python_command_preserves_paths_and_never_executes_title_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let fake = dir.path().join("python");
+        std::fs::write(&fake, "#!/bin/sh\nprintf '%s\\n' \"$@\"\n").expect("fake python");
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        let file = "tests/test ' $(touch marker); store.py";
+        let id = format!(
+            "python:example::{}::TestStore::test_load",
+            file.strip_suffix(".py")
+                .expect("extension")
+                .replace('/', "::")
+        );
+        let command = python_command(&id, file).expect("command");
+        let output = std::process::Command::new("sh")
+            .args(["-c", &command])
+            .current_dir(dir.path())
+            .env(
+                "PATH",
+                format!(
+                    "{}:{}",
+                    dir.path().display(),
+                    std::env::var("PATH").expect("path")
+                ),
+            )
+            .output()
+            .expect("execute selected command");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            String::from_utf8(output.stdout).expect("utf8"),
+            format!("-m\npytest\n--\n{file}::TestStore::test_load\n")
+        );
+        assert!(!dir.path().join("marker").exists());
     }
 }
 
@@ -238,7 +276,7 @@ mod tests {
                 "python:pkg::tests::test_store::test_load",
                 "tests/test_store.py"
             ),
-            Some("python -m pytest tests/test_store.py::test_load".to_string())
+            Some("python -m pytest -- 'tests/test_store.py::test_load'".to_string())
         );
         let rs = language_for_path("crates/x/src/lib.rs").expect("rust row");
         assert!(!rs.one_liner_needs_fnda);

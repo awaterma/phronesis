@@ -42,8 +42,8 @@ pub fn collection_script(entries: &[CollectEntry], out_dir: &Path) -> String {
         PROFDATA=$(dirname \"$(swift test --show-codecov-path)\")/default.profdata\n\
         LLVM_COV=$(xcrun -f llvm-cov 2>/dev/null || command -v llvm-cov)\n\
         BIN_PATH=$(swift build --show-bin-path)\n\
-        set -- $(find \"$BIN_PATH\" -maxdepth 1 -name '*.xctest')\n\
-        if [ $# -eq 0 ]; then\n\
+        set -- \"$BIN_PATH\"/*.xctest\n\
+        if [ ! -e \"$1\" ]; then\n\
         \x20   echo \"no *.xctest bundle under $BIN_PATH\" >&2\n\
         \x20   exit 1\n\
         fi\n\
@@ -214,10 +214,7 @@ mod tests {
             s.contains("LLVM_COV=$(xcrun -f llvm-cov 2>/dev/null || command -v llvm-cov)"),
             "{s}"
         );
-        assert!(
-            s.contains("find \"$BIN_PATH\" -maxdepth 1 -name '*.xctest'"),
-            "{s}"
-        );
+        assert!(s.contains("set -- \"$BIN_PATH\"/*.xctest"), "{s}");
         assert!(s.contains("no *.xctest bundle under"), "{s}");
         assert!(s.contains("several *.xctest bundles under"), "{s}");
         assert!(s.contains("Contents/MacOS"), "the bundle's executable: {s}");
@@ -230,7 +227,9 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         for layout in ["bundle", "file"] {
             let dir = tempfile::tempdir().expect("tempdir");
-            let root = dir.path();
+            let root_path = dir.path().join("project with spaces");
+            std::fs::create_dir(&root_path).expect("project");
+            let root = root_path.as_path();
             let bin = root.join("tools");
             std::fs::create_dir(&bin).expect("tools");
             let write_tool = |name: &str, text: &str| {

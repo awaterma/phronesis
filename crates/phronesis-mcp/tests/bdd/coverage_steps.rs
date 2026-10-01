@@ -641,7 +641,7 @@ async fn then_python_selection_command(world: &mut World) {
     assert!(
         world
             .last_json
-            .contains("python -m pytest tests/test_store.py::test_load"),
+            .contains("python -m pytest -- 'tests/test_store.py::test_load'"),
         "{}",
         world.last_json
     );
