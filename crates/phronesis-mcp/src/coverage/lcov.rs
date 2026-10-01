@@ -192,10 +192,25 @@ pub fn hit_sites<'a>(
                 // never attribute from the DA of the declaration line alone.
                 unattributable.push(site);
             } else {
-                match src.function_hits.iter().find(|(n, _)| n == site.name()) {
-                    Some((_, n)) if *n > 0 => hit.push(site),
-                    Some(_) => {}
-                    None => unattributable.push(site),
+                let counts: Vec<u64> = src
+                    .function_hits
+                    .iter()
+                    .filter(|(n, _)| n == site.name())
+                    .map(|(_, c)| *c)
+                    .collect();
+                match counts.as_slice() {
+                    [n] if *n > 0 => hit.push(site),
+                    // No FNDA entry for this name: nothing to attribute from.
+                    [] => unattributable.push(site),
+                    // Exactly one zero-count entry: never attribute, and do
+                    // not flag a gap either (the site exists and did not run).
+                    [_] => {}
+                    // Several FNDA entries share this bare name — overloads
+                    // (e.g. JaCoCo `load()` vs `load(int)`) or same-named
+                    // functions in different classes. A first-match could
+                    // credit an unexecuted site with another's count: fail
+                    // safe and leave it unattributed.
+                    [_, _, ..] => unattributable.push(site),
                 }
             }
         } else if src
@@ -528,6 +543,19 @@ mod tests {
         let (hit, unattr) = hit_sites(&multi_line_brace, &with_fnda, &brace);
         assert_eq!(hit.len(), 1, "multi-line brace site hits from DA on line 2");
         assert!(unattr.is_empty());
+        // Ambiguous FNDA names never attribute: two entries share the bare
+        // name "h" (overloads — e.g. JaCoCo `load()` vs `load(int)`), so a
+        // first-match could credit an unexecuted site with another's count.
+        let ambiguous = LcovSource {
+            path: "a/x.ts".into(),
+            function_hits: vec![("h".into(), 2), ("h".into(), 0)],
+            line_hits: vec![],
+        };
+        let (hit, unattr) = hit_sites(&one_liner, &ambiguous, &brace);
+        assert!(
+            hit.is_empty() && unattr.len() == 1,
+            "duplicate FNDA names: unattributable, never first-match"
+        );
         // Revision 2 pin: Python keeps body_start==start — a split one-liner is
         // never attributed from its own import-marked DA line.
         let py_only_da = LcovSource {

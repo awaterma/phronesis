@@ -650,9 +650,9 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                 let mut entries = Vec::new();
                 for edge in graph.iter().filter(|edge| {
                     edge.p == "defines_test"
-                        && edge.a.first().is_some_and(|id| id.starts_with("java:"))
+                        && edge.a.get(1).is_some_and(|id| id.starts_with("java:"))
                 }) {
-                    let id = edge.a.first().expect("filtered test id");
+                    let id = edge.a.get(1).expect("filtered test id");
                     let Some((unit, tail)) =
                         id.strip_prefix("java:").and_then(|id| id.split_once("::"))
                     else {

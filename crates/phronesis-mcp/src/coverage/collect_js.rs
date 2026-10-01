@@ -177,7 +177,6 @@ fn manifest_heredoc(runner: JsRunner) -> String {
     const TEMPLATE: &str = r#"node - "$OUT" <<'JS'
 const crypto = require('crypto');
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const cp = require('child_process');
 const out = process.argv[2];
@@ -187,7 +186,7 @@ for (const name of fs.readdirSync(out).sort()) {
   if (!name.endsWith('.lcov') && !name.endsWith('.info')) continue;
   for (const line of fs.readFileSync(path.join(out, name), 'utf8').split('\n')) {
     if (!line.startsWith('SF:')) continue;
-    const p = os.path.realpathSync(line.slice(3).trim());
+    const p = path.realpathSync(line.slice(3).trim());
     const rel = path.relative(root, p);
     if (rel.startsWith('..' + path.sep)) throw new Error('source outside git root: ' + p);
     files[rel.split(path.sep).join('/')] = crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');

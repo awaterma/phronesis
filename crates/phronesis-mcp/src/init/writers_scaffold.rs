@@ -589,8 +589,8 @@ pub(super) fn write_java_toolchains(
         .as_array_mut()
         .ok_or_else(|| InitError::InvalidRules("toolchains.json must be an array".into()))?;
     for def in [
-        serde_json::json!({"id":"mvn","matches":"^(\\./)?mvnw?(\\s|$)","compile_fail":"COMPILATION ERROR|\\[ERROR\\] .*\\.java","test_summary":"Tests run: (?P<total>\\d+), Failures: (?P<failed>\\d+), Errors: (?P<errors>\\d+)"}),
-        serde_json::json!({"id":"gradle","matches":"^(\\./)?gradlew?(\\s|$)","compile_fail":"error: |Compilation failed","test_summary":"(?P<total>\\d+) tests completed, (?P<failed>\\d+) failed","compile_success":"BUILD SUCCESSFUL"}),
+        serde_json::json!({"id":"mvn","matches":"^(\\./)?mvnw?(\\s|$)","compile_fail":["COMPILATION ERROR|\\[ERROR\\] .*\\.java"],"test_summary":"Tests run: (?P<passed>\\d+), Failures: (?P<failed>\\d+), Errors: \\d+"}),
+        serde_json::json!({"id":"gradle","matches":"^(\\./)?gradlew?(\\s|$)","compile_fail":["error: |Compilation failed"],"test_summary":"(?P<passed>\\d+) tests completed, (?P<failed>\\d+) failed","compile_success":["BUILD SUCCESSFUL"]}),
     ] {
         let id = def["id"].as_str().unwrap_or_default();
         if !array

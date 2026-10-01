@@ -81,6 +81,11 @@ fn js_cov_emit_script_lists_graph_tests_with_runner_native_names() {
         "runner detection from package.json: {script}"
     );
     assert!(script.contains("\"runner\": \"vitest\""), "{script}");
+    // The manifest section must resolve real paths with the `path` module —
+    // `os` is no longer even required (regression: `os.path.realpathSync`
+    // threw TypeError in Node at manifest-writing time).
+    assert!(script.contains("path.realpathSync"), "{script}");
+    assert!(!script.contains("os.path."), "{script}");
     assert!(
         script.contains("phr-mcp coverage import --format lcov-dir --tool c8+vitest"),
         "{script}"

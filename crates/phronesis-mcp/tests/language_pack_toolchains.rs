@@ -259,3 +259,66 @@ fn language_pack_toolchains_do_not_overwrite_existing_def_with_same_id() {
         "existing cue def must not be overwritten"
     );
 }
+
+/// The java pack ships Maven and Gradle toolchain defs through the same
+/// merge-if-absent writer. Both must deserialize (`compile_fail` /
+/// `compile_success` are array-shaped, matching `ToolchainDef`'s
+/// `Vec<String>` fields) and compile (each summary pattern carries the
+/// required `(?P<passed>)` group) — a malformed def fails open at load and
+/// would silently drop Maven/Gradle outcome recognition (PLAN.md Task J).
+#[test]
+fn java_pack_writes_loadable_maven_and_gradle_toolchain_defs() {
+    let dir = tempfile::tempdir().unwrap();
+    run_init(dir.path(), "java");
+
+    let mvn = compile(dir.path(), "mvn");
+    let gradle = compile(dir.path(), "gradle");
+
+    assert!(mvn.handles("mvn -pl core test"), "mvn recognized");
+    assert!(gradle.handles("./gradlew test"), "gradle recognized");
+
+    // Maven's summary counts runs, not passes: `(?P<passed>)` captures the
+    // "Tests run:" total. A clean run is therefore passed=5/failed=0; a
+    // dirty run carries failed>0, which is what drives `test_fail` — the
+    // passed argument then double-counts the failures (a regex cannot
+    // subtract), but the outcome tag is what grounds confidence signals.
+    let clean = mvn.parse(
+        "s",
+        "mvn test",
+        "Tests run: 5, Failures: 0, Errors: 0, Skipped: 0\n",
+        Some(0),
+    );
+    assert_eq!(test_counts(&clean), (5, 0), "clean mvn run: {clean:?}");
+
+    let dirty = mvn.parse(
+        "s",
+        "mvn test",
+        "Tests run: 5, Failures: 2, Errors: 0, Skipped: 0\n",
+        Some(1),
+    );
+    assert_eq!(test_counts(&dirty).1, 2, "failed mvn run: {dirty:?}");
+
+    let gradle_dirty = gradle.parse("s", "gradle test", "3 tests completed, 1 failed\n", Some(1));
+    assert_eq!(
+        test_counts(&gradle_dirty).1,
+        1,
+        "failed gradle run: {gradle_dirty:?}"
+    );
+
+    // Gradle may print no test summary on a clean run; `BUILD SUCCESSFUL`
+    // provides compile-success evidence when no exit code was captured.
+    let gradle_clean = gradle.parse("s", "gradle test", "BUILD SUCCESSFUL\n", None);
+    assert_eq!(
+        build_outcome(&gradle_clean),
+        "pass",
+        "gradle BUILD SUCCESSFUL: {gradle_clean:?}"
+    );
+}
+
+fn test_counts(facts: &[OutcomeFact]) -> (usize, usize) {
+    facts
+        .iter()
+        .find(|f| f.predicate == "test_outcome")
+        .map(|f| (f.args[1].parse().unwrap(), f.args[2].parse().unwrap()))
+        .expect("test_outcome fact")
+}
