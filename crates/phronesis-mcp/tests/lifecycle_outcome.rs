@@ -212,3 +212,96 @@ fn exit_code_vetoes_only_when_it_is_nonzero() {
     assert!(exit_allows_detection(Some(0)));
     assert!(!exit_allows_detection(Some(1)));
 }
+
+#[test]
+fn command_repo_dir_reads_the_head_moving_invocation_conservatively() {
+    use std::path::PathBuf;
+    let p = |s: &str| Some(PathBuf::from(s));
+    assert_eq!(command_repo_dir("git commit -m x"), None);
+    assert_eq!(command_repo_dir("cargo test && git commit -am done"), None);
+    assert_eq!(
+        command_repo_dir("cd /wt/a && git commit -q -m x"),
+        p("/wt/a")
+    );
+    assert_eq!(command_repo_dir("cd /wt/a; git commit -q -m x"), p("/wt/a"));
+    assert_eq!(command_repo_dir("git -C /wt/b commit -am x"), p("/wt/b"));
+    assert_eq!(
+        command_repo_dir("cd '/wt/my a' && cargo fmt && git commit -am x"),
+        p("/wt/my a")
+    );
+    assert_eq!(
+        command_repo_dir("cd \"/wt/other a\"; git commit -am x"),
+        p("/wt/other a")
+    );
+    // The commit's own -C wins over an earlier cd.
+    assert_eq!(command_repo_dir("cd /a && git -C /b commit -am x"), p("/b"));
+    // A -C on a NON head-moving invocation is not the commit's directory.
+    assert_eq!(command_repo_dir("git -C /x diff && git commit -am x"), None);
+    // Relative paths are ambiguous (the shell's cwd is unknown): fall back.
+    assert_eq!(command_repo_dir("cd wt && git commit -am x"), None);
+    assert_eq!(
+        command_repo_dir("cd /wt && cargo test && git -C . commit -am x"),
+        None
+    );
+    // Forms the parser does not understand return None rather than a guess.
+    assert_eq!(command_repo_dir("cd $WT && git commit -am x"), None);
+    assert_eq!(command_repo_dir("cd /wt/a\\ b && git commit -am x"), None);
+    assert_eq!(command_repo_dir("sh -c 'cd /wt && git commit -am x'"), None);
+    assert_eq!(command_repo_dir("(cd /wt && git commit -am x)"), None);
+    assert_eq!(
+        command_repo_dir("echo 'git -C /wt commit' # not a commit"),
+        None
+    );
+    assert_eq!(command_repo_dir("cd && git commit -am x"), None);
+    // A trailing `#` comment (outside quotes) must not supply a directory.
+    assert_eq!(command_repo_dir("git commit -m x # -C /x"), None);
+    // A `-C` inside a quoted `-m` message is not the commit's directory.
+    assert_eq!(command_repo_dir("git commit -m \"see -C /x\""), None);
+    // The first prefilter-matching segment is an `echo`, not a git
+    // invocation; the real `git commit` has no -C, so fall back to None.
+    assert_eq!(
+        command_repo_dir("echo 'git -C /x commit' && git commit"),
+        None
+    );
+}
+
+#[test]
+fn a_commit_in_a_linked_worktree_is_detected_but_a_sibling_repo_still_is_not() {
+    let d = repo();
+    let wt = d.path().join("wt");
+    git(
+        d.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "feature",
+            wt.to_str().unwrap(),
+        ],
+    );
+    let cmd = format!("cd {} && git commit -q -am x", wt.display());
+    let root = probe_root_for(d.path(), &cmd);
+    assert_eq!(
+        std::fs::canonicalize(&root).unwrap(),
+        std::fs::canonicalize(&wt).unwrap(),
+        "a worktree sharing the common dir is probed directly"
+    );
+    let before = git_head(&root).unwrap();
+    std::fs::write(wt.join("a"), "2").unwrap();
+    git(&wt, &["commit", "-q", "-am", "in worktree"]);
+    assert!(detect_commit(&root, Some(&before), &cmd, Some(0)).is_some());
+
+    let other = repo();
+    let cmd2 = format!("git -C {} commit -am x", other.path().display());
+    assert_eq!(
+        std::fs::canonicalize(probe_root_for(d.path(), &cmd2)).unwrap(),
+        std::fs::canonicalize(d.path()).unwrap(),
+        "a sibling repository falls back to the project root"
+    );
+    let missing = probe_root_for(d.path(), "cd /definitely/not/here && git commit -am x");
+    assert_eq!(
+        std::fs::canonicalize(missing).unwrap(),
+        std::fs::canonicalize(d.path()).unwrap()
+    );
+}

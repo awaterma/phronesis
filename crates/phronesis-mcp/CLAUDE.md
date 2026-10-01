@@ -25,6 +25,7 @@ cargo run -- audit            # Whole-tree audit of rule violations (CI-friendly
 cargo run -- trend            # Debt-over-time view comparing audit snapshots
 cargo run -- coverage import <export.jsonl>  # ingest a per-test coverage export into the evidence store
 cargo run -- confidence       # Confidence band + grounded signals for the open work unit
+cargo run -- signal ingest --command "cargo test --workspace" --output gate.log [--exit N]  # parse saved output and journal outcome:ingested
 cargo run -- toolchains        # List active toolchain defs (built-in + project); --json for machine output
 cargo run -- journey   # what journey_* facts assert right now
 cargo run -- journey --lifecycle    # only the lifecycle records (sub-agent start/stop, prompts, interrupts, stops, commits)
@@ -605,7 +606,13 @@ code at all — Claude Code's `Bash` is one — still gets its commits, marked
 `host_sha` and stands in as `detection: "host_reported"` when the probe
 found no baseline. Commits are undercounted, never overcounted: an alias, a
 wrapper script, `git pull`, or a commit made outside a tool call is missed,
-and the reports say so.
+and the reports say so. A commit made in a linked worktree
+(`cd <worktree> && git commit` or `git -C <worktree> commit` from a session
+rooted in the main checkout) is recorded with `repo_dir`: the hook probes
+the absolute directory the head-moving invocation names when it shares this
+repository's `git rev-parse --git-common-dir`, decided once at pre-check.
+Relative paths, unrelated repositories, and shell forms the parser does not
+model fall back to the project root.
 
 **Kalpas and work items.** A *kalpa* is a named theme spanning sessions
 (`[a-z0-9][a-z0-9-]{0,63}`); a *work item* is the existing work unit
@@ -774,6 +781,8 @@ phr-mcp trend                # last 5 snapshots, table
 phr-mcp trend --since 30d    # all snapshots in the last month
 phr-mcp trend --rule no-unwrap-in-src
 ```
+
+`.phronesisignore` (gitignore syntax, honoured at any directory level) exempts matching files from **lexical** rules only: rules with no AST predicate. Rules with an AST predicate are structural and keep running on excluded files (below the `PHRONESIS_MAX_FILE_BYTES` cap), and `phr-mcp audit` lists every excluded file in its footer and under `lexical_excluded` in `--json`. `files_scanned` counts excluded files too. Excluding a large tree therefore still costs a structural pass over its source files. To silence one rule for one file, use a `//! phronesis-allow: <rule-id> <reason>` line in the file's leading doc comment; this works only for rules that set `doc_excepted`.
 
 ## Rule file format (v2)
 

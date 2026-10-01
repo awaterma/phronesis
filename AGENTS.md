@@ -164,7 +164,7 @@ See `crates/phronesis/src/{alpha,beta,production,network}.rs`.
 | `graph rebuild\|query\|status\|ownership` | Structural code-graph helpers: rebuild the derived `.phronesis/graph.jsonl` (rebuild after `git checkout`, `git mv`, or rebase), query by relation, check whether it matches disk, and explain indexed Rust ownership evidence |
 | `confidence` | Confidence band + grounded signals for the open work unit |
 | `toolchains` | List active toolchain definitions (built-in + project) with ID, source, match patterns, and active signal refinements |
-| `signal <name> <outcome>` | Record a `compile`/`tests` pass/fail signal explicitly for the open work unit — the escape hatch when a test runner has no toolchain definition or ran outside the hook; requires the `confidence` pack |
+| `signal <name> <outcome>` / `signal ingest --command <cmd> --output <file> [--exit N]` | Record a bare verdict or parse saved output through the active toolchain definitions; ingest refuses when nothing parses |
 | `journey` | `journey_*` facts asserted right now (`--json`/`--explain`/`--lifecycle`/`--corrections`) |
 | `drift` | Consolidated guidance/rule drift across `claude_md`, `memory`, `wiki`, and `code` sources |
 | `claude-md-drift`, `memory-drift`, `wiki-drift` | Frozen compatibility commands for the original single-source reports |
@@ -432,6 +432,9 @@ Optional file. Contents are re-injected at every `SessionStart` AND `BeforeAgent
   Code's `Explore` is tagged `lifecycle:agent:explore`. Commits are
   detected by `HEAD` movement with the exit code as a veto only, so a host
   that sends no exit code still records them (`detection: "no_exit_code"`).
+  A commit in a linked worktree is recorded with `repo_dir`: the hook probes
+  the absolute directory the head-moving invocation names when it shares
+  this repository's common git dir.
 
 ### 4. Pattern-Guide Rules (`extract_rules`)
 
@@ -490,7 +493,7 @@ the two above.
 - Path canonicalization prevents directory traversal
 - Size caps on files read (configurable via `PHRONESIS_LOG_MAX_BYTES`)
 - Input validation in `security.rs`
-- `.phronesisignore` support in `phronesis-mcp/.phronesisignore`
+- `.phronesisignore` exempts files from lexical rules only; excluded files are reported in audit output
 
 ---
 

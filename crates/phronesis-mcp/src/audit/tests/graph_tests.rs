@@ -20,6 +20,7 @@ fn empty_report() -> AuditReport {
         scan_duration_ms: 0,
         files_scanned: 0,
         per_rule: Vec::new(),
+        lexical_excluded: Vec::new(),
     }
 }
 

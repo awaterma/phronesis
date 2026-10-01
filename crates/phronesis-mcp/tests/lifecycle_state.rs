@@ -49,6 +49,7 @@ fn inflight(key: &str, ts: u64, agent: Option<&str>) -> Inflight {
         agent_id: agent.map(str::to_string),
         head_before: None,
         detection: None,
+        probe_root: None,
     }
 }
 

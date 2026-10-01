@@ -759,3 +759,36 @@ fn unit_show_hides_intervention_text_under_prompt_text_none() {
     assert!(!text.contains("keep the journal free of text"), "{text}");
     assert!(text.contains("correction  (text withheld)"), "{text}");
 }
+
+#[test]
+fn unit_show_reports_the_worktree_a_commit_landed_in() {
+    let d = governed_tempdir();
+    assert!(
+        run_phr(d.path(), &["unit", "start", "issue-9"])
+            .status
+            .success()
+    );
+    // One commit record with repo_dir, in the shape record.rs writes: the
+    // `data` map is flattened into the top-level JSON object, so `repo_dir`
+    // sits alongside `sha` and `head_before`.
+    let line = serde_json::json!({
+        "ts": 1_790_000_000u64, "kind": "lifecycle", "event": "commit", "host": "cli",
+        "seq": 7, "sid": "s-test", "subject": "issue-9",
+        "sha": "0123456789abcdef0123456789abcdef01234567",
+        "head_before": "89abcdef0123456789abcdef0123456789abcdef",
+        "repo_dir": "/wt/feature"
+    });
+    let log = d.path().join(".phronesis/log.jsonl");
+    let mut existing = std::fs::read_to_string(&log).unwrap_or_default();
+    existing.push_str(&line.to_string());
+    existing.push('\n');
+    std::fs::write(&log, existing).expect("append log");
+
+    let json: serde_json::Value =
+        serde_json::from_slice(&run_phr(d.path(), &["unit", "show", "issue-9", "--json"]).stdout)
+            .expect("json");
+    assert_eq!(json["commits"][0]["repo_dir"], "/wt/feature", "{json}");
+    let table = String::from_utf8_lossy(&run_phr(d.path(), &["unit", "show", "issue-9"]).stdout)
+        .to_string();
+    assert!(table.contains("/wt/feature"), "{table}");
+}
