@@ -15,6 +15,24 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   graph `defines_test` ids. The opt-in `java` pack adds Maven and Gradle
   toolchain definitions without starter rules.
 
+- **Compile signals for evaluated languages.** The `cue` and `helm3` packs
+  ship `cue` and `helm` toolchain defs through `phr-mcp init` (one
+  language-pack toolchains writer, merge-if-absent: missing ids are added,
+  existing ids are never touched, a non-array `toolchains.json` fails init).
+  cue's `compile_fail` patterns are pinned from live `cue vet` runs; helm's
+  follow the plan's documented shapes and are unverified (helm is not
+  installed on the development machine).
+
+- **`coverage select` names evaluated files.** Edits to cue, JSON, YAML,
+  Helm templates, and Rhai (the graph's evaluated languages) are listed
+  under a new `no_coverage_semantics` key (`--json`) and a table footer —
+  "`<file>`: evaluated, not executed; the compile signal comes from `cue
+  vet` / `helm lint` / the hook's Rhai evaluation." They produce no
+  function regions, so no test is ever selected for them and no
+  `region_without_dynamic_evidence` fact exists for them; unknown
+  extensions stay unclassified. Spec §12 gains an "Evaluated languages"
+  table.
+
 - **Coverage evidence for TypeScript and JavaScript.** The region map
   produces function regions for the eight TypeScript/JavaScript
   extensions (`.tsx`/`.jsx` parse with the TSX grammar; anonymous

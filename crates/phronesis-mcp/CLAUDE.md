@@ -66,7 +66,12 @@ semantics and `coverage select` says so. Swift one-liners are never
 attributed (llvm-cov's lcov `FN` names are mangled); a Swift test id
 (`swift:<unit>::<file segments>::<scope>::<name>`) renders as
 `swift test --filter '^<module>.<scope>/<name>$'`, the form that matched
-both an XCTest class and a Swift Testing suite live.
+both an XCTest class and a Swift Testing suite live. Evaluated languages
+(`.cue`, `.json`, `.yaml`/`.yml`, `.tpl`, `.rhai`) have no regions at all:
+`coverage select` names their edits under `no_coverage_semantics` —
+"`<file>`: evaluated, not executed; the compile signal comes from `cue vet`
+/ `helm lint` / the hook's Rhai evaluation" — and the `cue` / `helm3` packs
+ship matching toolchain defs (merge-if-absent) through `phr-mcp init`.
 
 ### Payload-contract corpus
 

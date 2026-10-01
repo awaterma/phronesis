@@ -329,3 +329,23 @@ vitest/jest/`node --test` commands chosen by the imported record's tool
 string (`c8+vitest`, `istanbul+jest`, `c8+node`).
 Parts H–L of the all-languages plan add rows; a language without a row has
 no coverage semantics and `coverage select` says so.
+
+Evaluated languages are not executed, so they have no coverage semantics
+at all: no function regions, no per-test hits, and no
+`region_without_dynamic_evidence` facts — hydration of an edit to one of
+them emits nothing. `coverage select` names their edits under the
+`no_coverage_semantics` key (`--json`) and in the table footer instead;
+their confidence signal is the validating tool's run:
+
+| Language | Extensions | Validating tool |
+|----------|------------|-----------------|
+| CUE | `.cue` | `cue vet` (toolchain def shipped by `phr-mcp init --packs cue`) |
+| JSON | `.json` | none (data, read by the tools that consume it) |
+| YAML | `.yaml`, `.yml` | none (data, read by the tools that consume it) |
+| Helm | `.tpl` (helm3) | `helm lint` (toolchain def shipped by `phr-mcp init --packs helm3`) |
+| Rhai | `.rhai` | the hook's own Rhai evaluation |
+
+Each listed edit prints: "`<file>`: evaluated, not executed; the compile
+signal comes from `cue vet` / `helm lint` / the hook's Rhai evaluation."
+Classification goes through `graph::unit::lang_of_path`, so unknown
+extensions stay unclassified and are not listed.
