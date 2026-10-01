@@ -123,7 +123,9 @@ pub fn read_jacoco_dir(root: &Path, dir: &Path) -> Result<(TestSources, JacocoSu
         let module_missing = std::cell::Cell::new(false);
         let kotlin = std::cell::RefCell::new(Vec::new());
         let sources = jacoco_to_sources(&xml, &|pkg, file| {
-            let suffix = format!("{}/{}", pkg, file);
+            // Joining an empty package must remain relative: "/Store.java"
+            // would discard the selected module's source root.
+            let suffix = Path::new(pkg).join(file);
             let java = Path::new(module).join("src/main/java").join(&suffix);
             let kt = Path::new(module).join("src/main/kotlin").join(&suffix);
             let java_exists = root.join(&java).is_file();
@@ -140,7 +142,7 @@ pub fn read_jacoco_dir(root: &Path, dir: &Path) -> Result<(TestSources, JacocoSu
                 }
                 (false, false) => {
                     module_missing.set(true);
-                    relativize(root, &format!("/{suffix}"))
+                    relativize(root, &format!("/{}", suffix.to_string_lossy()))
                 }
             }
         })?;

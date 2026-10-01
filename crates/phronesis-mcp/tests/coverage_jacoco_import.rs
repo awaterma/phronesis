@@ -80,3 +80,52 @@ fn jacoco_directory_imports_constructor_hits_through_the_region_validator() {
         "{store}"
     );
 }
+
+#[test]
+fn default_package_reports_resolve_within_the_selected_module_and_refuse_ambiguity() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let root = temp.path();
+    for module in ["core", "other"] {
+        let directory = root.join(module).join("src/main/java");
+        std::fs::create_dir_all(&directory).expect("sources");
+        std::fs::write(
+            directory.join("Store.java"),
+            "public class Store {\n public int load() {\n  return 7;\n }\n}\n",
+        )
+        .expect("source");
+    }
+    std::fs::write(root.join(".gitignore"), ".phronesis/\n").expect("ignore");
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-qm", "fixture"]);
+    let dir = root.join(".phronesis/reports/1");
+    std::fs::create_dir_all(&dir).expect("report");
+    std::fs::write(dir.join("jacoco.xml"),r#"<report><package name=""><sourcefile name="Store.java"><line nr="3" mi="0" ci="1"/></sourcefile></package></report>"#).expect("xml");
+    std::fs::write(dir.join("module.txt"), "core").expect("module");
+    std::fs::write(dir.join("TN"), "java:core::StoreTest::testLoad").expect("test");
+    let args = [
+        "--format",
+        "jacoco-dir",
+        "--tool",
+        "jacoco+mvn",
+        "--no-manifest",
+        ".phronesis/reports",
+    ];
+    let output = phr(root, &args);
+    assert!(output.status.success(), "{output:?}");
+    let records = root.join(".phronesis/coverage.jsonl");
+    let before = std::fs::read(&records).expect("records");
+    let text = String::from_utf8_lossy(&before);
+    assert!(
+        text.contains("fn:core/src/main/java/Store.java::Store::load"),
+        "{text}"
+    );
+    assert!(!text.contains("other/src/main/java"), "{text}");
+    std::fs::write(dir.join("module.txt"), "missing").expect("unqualified");
+    let output = phr(root, &args);
+    assert!(
+        !output.status.success(),
+        "ambiguous fallback must fail: {output:?}"
+    );
+    assert_eq!(std::fs::read(records).expect("records"), before);
+}
