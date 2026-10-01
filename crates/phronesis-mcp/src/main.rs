@@ -965,8 +965,9 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                 )? {
                     eprintln!("{warning}");
                 }
-                if no_manifest {
+                let manifest = if no_manifest {
                     tool.push_str("+unverified");
+                    None
                 } else {
                     let manifest = phronesis_mcp::coverage::lcov::Manifest::read(&dir)?;
                     if manifest.revision != revision {
@@ -984,9 +985,22 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
                             anyhow::bail!("manifest digest mismatch for {file}");
                         }
                     }
-                }
+                    Some(manifest)
+                };
                 let (sources, details) =
                     phronesis_mcp::coverage::jacoco::read_jacoco_dir(&root, &dir)?;
+                if let Some(manifest) = manifest {
+                    for (_, files) in &sources {
+                        for source in files {
+                            if let phronesis_mcp::coverage::lcov::Relativized::Path(file) =
+                                phronesis_mcp::coverage::lcov::relativize(&root, &source.path)
+                                && !manifest.files.contains_key(&file)
+                            {
+                                anyhow::bail!("manifest has no digest for covered source {file}");
+                            }
+                        }
+                    }
+                }
                 let (records, record_details) =
                     phronesis_mcp::coverage::lcov::records_from_sources(
                         &root, sources, &tool, &revision,
