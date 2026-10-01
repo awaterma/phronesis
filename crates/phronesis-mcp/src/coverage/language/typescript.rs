@@ -199,12 +199,13 @@ pub fn render_command(_test_id: &str, _file: &str) -> Option<String> {
 /// Anything else names no runner and renders nothing.
 pub fn render_command_with_tool(test_id: &str, file: &str, tool: &str) -> Option<String> {
     let title = runner_name(test_id, file)?;
+    let pattern =
+        crate::coverage::collect_js::quote(&crate::coverage::collect_js::exact_pattern(&title));
+    let file = crate::coverage::collect_js::quote(file);
     match tool {
-        "c8+vitest" => Some(format!("npx vitest run {file} -t \"{title}\"")),
-        "istanbul+jest" => Some(format!("npx jest {file} -t \"{title}\"")),
-        "c8+node" => Some(format!(
-            "node --test --test-name-pattern=\"^{title}$\" {file}"
-        )),
+        "c8+vitest" => Some(format!("npx vitest run {file} -t {pattern}")),
+        "istanbul+jest" => Some(format!("npx jest --runTestsByPath {file} -t {pattern}")),
+        "c8+node" => Some(format!("node --test --test-name-pattern={pattern} {file}")),
         _ => None,
     }
 }
@@ -339,15 +340,15 @@ mod tests {
         let file = "tests/store.test.ts";
         assert_eq!(
             render_command_with_tool(id, file, "c8+vitest").as_deref(),
-            Some("npx vitest run tests/store.test.ts -t \"Store loads\"")
+            Some("npx vitest run 'tests/store.test.ts' -t '^Store loads$'")
         );
         assert_eq!(
             render_command_with_tool(id, file, "istanbul+jest").as_deref(),
-            Some("npx jest tests/store.test.ts -t \"Store loads\"")
+            Some("npx jest --runTestsByPath 'tests/store.test.ts' -t '^Store loads$'")
         );
         assert_eq!(
             render_command_with_tool(id, file, "c8+node").as_deref(),
-            Some("node --test --test-name-pattern=\"^Store loads$\" tests/store.test.ts")
+            Some("node --test --test-name-pattern='^Store loads$' 'tests/store.test.ts'")
         );
         assert_eq!(
             render_command_with_tool(id, file, "cargo-llvm-cov"),

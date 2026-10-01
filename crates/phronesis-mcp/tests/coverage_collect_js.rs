@@ -74,17 +74,17 @@ fn js_cov_emit_script_lists_graph_tests_with_runner_native_names() {
             .contains("TN:typescript:ts-store#test:store.test.ts::tests::store.test::Store loads"),
         "{script}"
     );
-    assert!(script.contains("-t 'Store loads'"), "{script}");
+    assert!(script.contains("-t '^Store loads$'"), "{script}");
     // The runner was detected from package.json (vitest in devDependencies).
     assert!(
         script.contains("npx vitest --version"),
         "runner detection from package.json: {script}"
     );
     assert!(script.contains("\"runner\": \"vitest\""), "{script}");
-    // The manifest section must resolve real paths with the `path` module —
+    // The manifest section must resolve real paths with the `fs` module —
     // `os` is no longer even required (regression: `os.path.realpathSync`
     // threw TypeError in Node at manifest-writing time).
-    assert!(script.contains("path.realpathSync"), "{script}");
+    assert!(script.contains("fs.realpathSync"), "{script}");
     assert!(!script.contains("os.path."), "{script}");
     assert!(
         script.contains("phr-mcp coverage import --format lcov-dir --tool c8+vitest"),

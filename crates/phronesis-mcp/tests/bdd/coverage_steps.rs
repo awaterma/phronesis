@@ -994,11 +994,11 @@ async fn then_typescript_selection_command(world: &mut World) {
     );
     // The command is chosen by the imported record's tool string
     // (`c8+vitest`), with the title extracted after the file's module
-    // marker; JSON-escaped, the inner quotes read `\"`.
+    // marker; the literal anchored pattern is shell-quoted.
     assert!(
         world
             .last_json
-            .contains(r#"npx vitest run tests/store.test.ts -t \"Store loads\""#),
+            .contains(r#"npx vitest run 'tests/store.test.ts' -t '^Store loads$'"#),
         "{}",
         world.last_json
     );
