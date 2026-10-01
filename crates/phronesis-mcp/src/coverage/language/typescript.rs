@@ -146,12 +146,16 @@ fn record(
     let _ = src;
     let start_line = node.start_position().row as u64 + 1;
     let body_start_line = match node.child_by_field_name("body") {
-        // A block body starts on the line of its `{`, which for a normal
-        // multi-line declaration is the declaration line itself.
-        Some(body) if body.kind() == "statement_block" => body.start_position().row as u64 + 1,
-        // An expression-bodied arrow (`const f = (x) => x + 1;`) has no
-        // block: the body starts (and the site usually ends) on the
-        // declaration line, a one-liner under the brace-row rule.
+        Some(body) if body.kind() == "statement_block" => {
+            let mut cursor = body.walk();
+            body.named_children(&mut cursor)
+                .find(|child| child.kind() != "comment")
+                .map_or(start_line, |statement| {
+                    statement.start_position().row as u64 + 1
+                })
+        }
+        // Expression bodies and empty functions have no separate statement
+        // line with which to distinguish declaration from invocation.
         _ => start_line,
     };
     let mut path = scope.join("::");
@@ -200,12 +204,11 @@ pub fn is_wanted_source(rel: &str) -> bool {
     })
 }
 
-/// Revision 2 brace-row rule: a one-liner is a true single-line site. The
-/// `{` shares the declaration line, so `body_start_line == start_line`
-/// holds for nearly every multi-line brace function and cannot be the test;
-/// `end_line == start_line` is.
+/// Require function-count evidence when the body's first statement shares
+/// the declaration line, even if later statements span additional lines.
+/// Loading a module can hit that line without invoking the function.
 pub fn is_one_liner(site: &FunctionSite) -> bool {
-    site.end_line == site.start_line
+    site.end_line == site.start_line || site.body_start_line == site.start_line
 }
 
 /// A runnable command needs the imported record's tool string, which the
@@ -287,10 +290,10 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                ("helper", 1, 1, 3),
-                ("Store::load", 5, 5, 10),
-                ("Store::load::inner", 6, 6, 8),
-                ("Store::load.2", 11, 11, 13),
+                ("helper", 1, 2, 3),
+                ("Store::load", 5, 6, 10),
+                ("Store::load::inner", 6, 7, 8),
+                ("Store::load.2", 11, 12, 13),
                 ("oneLiner", 15, 15, 15),
                 ("cfg::run", 16, 16, 16),
             ],
@@ -321,6 +324,30 @@ mod tests {
         assert_eq!((sites[1].start_line, sites[1].end_line), (2, 4));
         assert!(is_one_liner(&sites[0]));
         assert!(!is_one_liner(&sites[1]));
+    }
+
+    #[test]
+    fn javascript_declaration_hits_do_not_credit_unexecuted_function_bodies() {
+        let source = "exports.load = function load() {\n  // body comment\n  return 7;\n};\nexports.inline = () => { return 8;\n  return 9;\n};\n";
+        let sites = typescript_function_sites(source, false).expect("sites");
+        assert_eq!(sites[0].body_start_line, 3);
+        assert!(is_one_liner(&sites[1]), "header/body overlap requires FNDA");
+        let language = crate::coverage::language::language_for_path("store.js").expect("language");
+        let parsed = crate::coverage::lcov::parse_lcov(
+            "SF:store.js\nDA:1,1\nDA:3,0\nDA:5,1\nDA:6,1\nend_of_record\n",
+        )
+        .expect("lcov");
+        let (hits, _) = crate::coverage::lcov::hit_sites(&sites, &parsed.files[0], language);
+        assert!(
+            hits.is_empty(),
+            "declaration and inline header cannot imply invocation"
+        );
+        let parsed =
+            crate::coverage::lcov::parse_lcov("SF:store.js\nDA:1,1\nDA:3,1\nend_of_record\n")
+                .expect("lcov");
+        let (hits, _) = crate::coverage::lcov::hit_sites(&sites, &parsed.files[0], language);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].item_path, "exports::load");
     }
 
     #[test]
