@@ -193,10 +193,19 @@ pub fn hit_sites<'a>(
     let mut hit = Vec::new();
     let mut unattributable = Vec::new();
     for site in sites {
+        // A single producer counter is still ambiguous when several AST sites
+        // share its bare name: `exports.f` may be named differently by V8 while
+        // a free `f` supplies the sole bare FNDA entry. Never transfer that
+        // counter (including a zero) to a different qualified function.
+        let unique_site_name = sites
+            .iter()
+            .filter(|other| other.name() == site.name())
+            .count()
+            == 1;
         let counts: Vec<u64> = src
             .function_hits
             .iter()
-            .filter(|(name, _)| name == site.name())
+            .filter(|(name, _)| unique_site_name && name == site.name())
             .map(|(_, count)| *count)
             .collect();
         // An explicit, unambiguous zero invocation count overrides line
@@ -613,6 +622,54 @@ mod tests {
             "Python one-liner never hits from its own DA"
         );
     }
+
+    #[test]
+    fn bare_fnda_cannot_credit_an_uncalled_qualified_assignment_with_the_same_leaf() {
+        let source = "exports.f = () => 3;\nfunction f() { return 2; }\nf();\nfunction unique() { return 4; }\nunique();\n";
+        let sites = extract_function_sites_for("src/store.js", source).expect("JS sites");
+        let coverage = parse_lcov("SF:src/store.js\nFNDA:0,exports.f\nFNDA:1,f\nFNDA:1,unique\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nend_of_record\n").expect("lcov");
+        let language =
+            crate::coverage::language::language_for_path("src/store.js").expect("JS language");
+        let (hit, unattr) = hit_sites(&sites, &coverage.files[0], language);
+        assert_eq!(
+            hit.iter()
+                .map(|site| site.item_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["unique"]
+        );
+        assert_eq!(
+            unattr
+                .iter()
+                .map(|site| site.item_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["exports::f", "f"]
+        );
+    }
+
+    #[test]
+    fn ambiguous_bare_zero_cannot_suppress_a_qualified_functions_body_hits() {
+        let source =
+            "exports.f = () => {\n  return 3;\n};\nfunction f() { return 2; }\nexports.f();\n";
+        let sites = extract_function_sites_for("src/store.js", source).expect("JS sites");
+        let coverage = parse_lcov("SF:src/store.js\nFNDA:1,exports.f\nFNDA:0,f\nDA:1,1\nDA:2,1\nDA:3,1\nDA:4,1\nend_of_record\n").expect("lcov");
+        let language =
+            crate::coverage::language::language_for_path("src/store.js").expect("JS language");
+        let (hit, unattr) = hit_sites(&sites, &coverage.files[0], language);
+        assert_eq!(
+            hit.iter()
+                .map(|site| site.item_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["exports::f"]
+        );
+        assert_eq!(
+            unattr
+                .iter()
+                .map(|site| site.item_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f"]
+        );
+    }
+
     #[test]
     fn suffix_mapping_uses_longest_match_and_reports_collisions() {
         let d = tempfile::tempdir().expect("tempdir");
