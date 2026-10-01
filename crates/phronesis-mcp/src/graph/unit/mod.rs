@@ -64,12 +64,16 @@ pub const LANG_HELM3: &str = "helm3";
 
 /// The language that owns a source file, by extension. A file in no known
 /// language belongs to no unit — better to name nothing than to name it under
-/// whichever manifest happens to sit nearest.
+/// whichever manifest happens to sit nearest. The graph has no JavaScript
+/// identity of its own: `.js`/`.jsx`/`.mjs`/`.cjs` files are TypeScript's
+/// plain dialect, so the TypeScript language claims them.
 pub fn lang_of_path(file_rel: &str) -> Option<&'static str> {
     match file_rel.rsplit_once('.') {
         Some((_, "rs")) => Some(LANG_RUST),
         Some((_, "py")) => Some(LANG_PYTHON),
-        Some((_, "ts" | "tsx" | "mts" | "cts")) => Some(LANG_TYPESCRIPT),
+        Some((_, "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs")) => {
+            Some(LANG_TYPESCRIPT)
+        }
         Some((_, "swift")) => Some(LANG_SWIFT),
         Some((_, "java")) => Some(LANG_JAVA),
         Some((_, "lua")) => Some(LANG_LUA),

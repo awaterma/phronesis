@@ -463,14 +463,14 @@ fn function_sites_by_node(visits: &[Visit]) -> Vec<(usize, FunctionSite)> {
 }
 
 #[derive(Clone)]
-pub(crate) struct RawSite {
-    pub(crate) path: String,
-    pub(crate) start_line: u64,
-    pub(crate) body_start_line: u64,
-    pub(crate) end_line: u64,
+pub(super) struct RawSite {
+    pub(super) path: String,
+    pub(super) start_line: u64,
+    pub(super) body_start_line: u64,
+    pub(super) end_line: u64,
 }
 
-pub(crate) fn assign_function_ordinals(raw: Vec<RawSite>) -> Vec<FunctionSite> {
+pub(super) fn assign_function_ordinals(raw: Vec<RawSite>) -> Vec<FunctionSite> {
     let mut seen: HashMap<String, u32> = HashMap::new();
     raw.into_iter()
         .map(|r| {
@@ -505,12 +505,18 @@ pub fn extract_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
 
 pub fn extract_function_sites_for(rel_path: &str, source: &str) -> Result<Vec<FunctionSite>> {
     match crate::coverage::language::language_for_path(rel_path) {
-        Some(l) => (l.function_sites)(source),
+        Some(l) => match l.function_sites_for_path {
+            // A language whose grammar choice depends on the path (TSX vs
+            // TypeScript) extracts per path; the plain `function_sites`
+            // entry point stays for the path-blind registry field.
+            Some(for_path) => for_path(rel_path, source),
+            None => (l.function_sites)(source),
+        },
         None => Ok(Vec::new()),
     }
 }
 
-pub(crate) fn inclusive_end_line(node: tree_sitter::Node<'_>) -> u64 {
+pub(super) fn inclusive_end_line(node: tree_sitter::Node<'_>) -> u64 {
     let end = node.end_position();
     let row = end.row as u64 + 1;
     if end.column == 0 {

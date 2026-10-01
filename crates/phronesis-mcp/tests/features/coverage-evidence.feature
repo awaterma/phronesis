@@ -47,3 +47,7 @@ Feature: Coverage evidence
     Given a Swift project with per-test lcov evidence
     When the Swift lcov evidence is imported and its load body changes
     Then coverage select lists the Swift test and swift test command
+  Scenario: TypeScript lcov evidence selects the body test with a runnable vitest command
+    Given a TypeScript project with per-test lcov evidence
+    When the TypeScript lcov evidence is imported and its load body changes
+    Then coverage select lists the TypeScript test and vitest command

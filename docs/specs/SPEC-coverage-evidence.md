@@ -292,6 +292,7 @@ one-liner rule, and the runnable command `coverage select` renders.
 | Python | `.py` | `python:` | coverage.py via pytest, lcov | `body_start_line == start_line` (a split one-liner still counts); attributed by `FNDA` when present, otherwise unattributable |
 | Java | `.java` | `java:` | JaCoCo XML converted to the shared in-memory source shape | `end_line == start_line`; attributed by method counters when present |
 | Swift | `.swift` | `swift:` | SwiftPM per-test `swift test --enable-code-coverage --filter`, `llvm-cov export -format=lcov` | `end_line == start_line` (brace rows); one-liners are unattributable because llvm-cov's lcov `FN` names are mangled and never matched |
+| TypeScript/JavaScript | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` | `typescript:` | c8 / vitest / jest, lcov | `end_line == start_line` (brace-row rule); attributed by `FNDA` when present, otherwise unattributable |
 
 Java JaCoCo XML is imported directly, not as lcov text. Kotlin source files in
 a mixed module are skipped because this language row describes Java sites;
@@ -319,6 +320,12 @@ from the declaration line alone. Python branch regions are deferred.
 Per-test lcov imports require a manifest containing the collection revision
 and SHA-256 digests for covered source files; the importer verifies both
 against the host tree. Test ids are the graph's `defines_test` ids; Python's
-use the form `python:<namespace>::<path segments>::<test function>`.
+use the form `python:<namespace>::<path segments>::<test function>`, and
+TypeScript/JavaScript's end with the raw `it()` title (which may contain
+spaces and `::`) after the test file's module segments, with the graph's
+target infix (`typescript:<unit>#test:<file>`) for files under `tests/`.
+`coverage select` renders TypeScript/JavaScript tests as runnable
+vitest/jest/`node --test` commands chosen by the imported record's tool
+string (`c8+vitest`, `istanbul+jest`, `c8+node`).
 Parts H–L of the all-languages plan add rows; a language without a row has
 no coverage semantics and `coverage select` says so.

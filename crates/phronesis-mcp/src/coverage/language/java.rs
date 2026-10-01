@@ -149,10 +149,13 @@ pub fn is_one_liner(site: &FunctionSite) -> bool {
 }
 
 pub fn render_command(test_id: &str, _file: &str) -> Option<String> {
-    render_command_with_tool(test_id, _file, None)
+    render_command_with_tool(test_id, _file, "")
 }
 
-pub fn render_command_with_tool(test_id: &str, _file: &str, tool: Option<&str>) -> Option<String> {
+/// `tool` is the imported record's tool string (`jacoco+mvn`,
+/// `jacoco+gradle`); an empty tool renders the Maven default — the same
+/// command `select` rendered before the tool seam existed.
+pub fn render_command_with_tool(test_id: &str, _file: &str, tool: &str) -> Option<String> {
     let rest = test_id.strip_prefix("java:")?;
     let (module, qualified) = rest.split_once("::")?;
     let mut parts = qualified.split("::").collect::<Vec<_>>();
@@ -167,7 +170,7 @@ pub fn render_command_with_tool(test_id: &str, _file: &str, tool: Option<&str>) 
     } else {
         format!("{package}.{class}")
     };
-    if tool.is_some_and(|tool| tool.ends_with("gradle")) {
+    if tool.ends_with("gradle") {
         Some(format!(
             "gradle -p {module} test --tests '{class_name}.{method}'"
         ))
@@ -226,7 +229,7 @@ mod tests {
             render_command_with_tool(
                 "java:core::com::x::StoreTest::testLoad",
                 "core/src/test/java/com/x/StoreTest.java",
-                Some("jacoco+gradle")
+                "jacoco+gradle"
             )
             .as_deref(),
             Some("gradle -p core test --tests 'com.x.StoreTest.testLoad'")

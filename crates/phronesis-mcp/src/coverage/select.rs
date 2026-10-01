@@ -297,14 +297,26 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         .filter(|e| e.p == "defines_test" && e.a.len() == 2)
         .map(|e| (e.a[1].as_str(), e.a[0].as_str()))
         .collect();
+    // The imported record's tool string (`c8+vitest`) names the runner a
+    // language's command rendering needs; without a record there is no
+    // evidence to name one.
+    let tools: BTreeMap<&str, &str> = hits
+        .iter()
+        .map(|h| (h.test.as_str(), h.tool.as_str()))
+        .collect();
     for test in &mut tests {
         if let Some(file) = test_files.get(test.test.as_str()) {
-            let tool = hits
-                .iter()
-                .find(|hit| hit.test == test.test)
-                .map(|hit| hit.tool.as_str());
-            test.command = crate::coverage::language::language_for_test_id(&test.test)
-                .and_then(|l| (l.render_command_with_tool)(&test.test, file, tool));
+            test.command =
+                crate::coverage::language::language_for_test_id(&test.test).and_then(|l| {
+                    match l.render_command_with_tool {
+                        Some(with_tool) => with_tool(
+                            &test.test,
+                            file,
+                            tools.get(test.test.as_str()).copied().unwrap_or(""),
+                        ),
+                        None => (l.render_command)(&test.test, file),
+                    }
+                });
         }
     }
 

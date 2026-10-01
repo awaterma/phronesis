@@ -5,16 +5,33 @@
 
 use crate::coverage::region_map::{FunctionSite, extract_function_sites, python_function_sites};
 
+pub mod typescript;
+
+/// Per-path extraction (`(repo-relative path, source)`), for languages
+/// whose grammar choice depends on the file (TSX vs TypeScript).
+pub type FunctionSitesForPath = fn(&str, &str) -> anyhow::Result<Vec<FunctionSite>>;
+/// Command rendering that also sees the imported record's tool string
+/// (`(graph test id, repo-relative test file, tool)`).
+pub type RenderCommandWithTool = fn(&str, &str, &str) -> Option<String>;
+
 pub struct CoverageLanguage {
     pub id: &'static str,
     pub extensions: &'static [&'static str],
     pub test_id_prefix: &'static str,
     pub function_sites: fn(&str) -> anyhow::Result<Vec<FunctionSite>>,
+    /// Per-path extraction when the grammar choice depends on the file
+    /// (TSX vs TypeScript); `extract_function_sites_for` prefers it.
+    pub function_sites_for_path: Option<FunctionSitesForPath>,
     pub is_wanted_source: fn(&str) -> bool,
     pub is_one_liner: fn(&FunctionSite) -> bool,
     pub one_liner_needs_fnda: bool,
     pub render_command: fn(&str, &str) -> Option<String>,
-    pub render_command_with_tool: fn(&str, &str, Option<&str>) -> Option<String>,
+    /// Command rendering that also sees the imported record's tool string
+    /// (`c8+vitest`, `jacoco+mvn`), used when present — the runner is
+    /// recorded per record, so `select` never re-detects it. Rows whose
+    /// command depends on nothing but the id and file use `None` and fall
+    /// back to `render_command`.
+    pub render_command_with_tool: Option<RenderCommandWithTool>,
 }
 
 pub mod rust {
@@ -68,43 +85,60 @@ pub static LANGUAGES: &[CoverageLanguage] = &[
         extensions: &["rs"],
         test_id_prefix: "",
         function_sites: extract_function_sites,
+        function_sites_for_path: None,
         is_wanted_source: rust::is_wanted_source,
         is_one_liner: rust::is_one_liner,
         one_liner_needs_fnda: false,
         render_command: rust::render_command,
-        render_command_with_tool: |test, file, _tool| rust::render_command(test, file),
+        render_command_with_tool: None,
     },
     CoverageLanguage {
         id: "python",
         extensions: &["py"],
         test_id_prefix: "python:",
         function_sites: python_function_sites,
+        function_sites_for_path: None,
         is_wanted_source: python::is_wanted_source,
         is_one_liner: python::is_one_liner,
         one_liner_needs_fnda: true,
         render_command: python::render_command,
-        render_command_with_tool: |test, file, _tool| python::render_command(test, file),
+        render_command_with_tool: None,
     },
     CoverageLanguage {
         id: "java",
         extensions: &["java"],
         test_id_prefix: "java:",
         function_sites: java::java_function_sites,
+        function_sites_for_path: None,
         is_wanted_source: java::is_wanted_source,
         is_one_liner: java::is_one_liner,
         one_liner_needs_fnda: true,
         render_command: java::render_command,
-        render_command_with_tool: java::render_command_with_tool,
+        render_command_with_tool: Some(java::render_command_with_tool),
     },
     CoverageLanguage {
         id: "swift",
         extensions: &["swift"],
         test_id_prefix: "swift:",
         function_sites: swift::swift_function_sites,
+        function_sites_for_path: None,
         is_wanted_source: swift::is_wanted_source,
         is_one_liner: swift::is_one_liner,
         one_liner_needs_fnda: false,
         render_command: swift::render_command,
+        render_command_with_tool: None,
+    },
+    CoverageLanguage {
+        id: "typescript",
+        extensions: &["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"],
+        test_id_prefix: "typescript:",
+        function_sites: typescript::function_sites,
+        function_sites_for_path: Some(typescript::function_sites_for_path),
+        is_wanted_source: typescript::is_wanted_source,
+        is_one_liner: typescript::is_one_liner,
+        one_liner_needs_fnda: true,
+        render_command: typescript::render_command,
+        render_command_with_tool: Some(typescript::render_command_with_tool),
     },
 ];
 
@@ -144,7 +178,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_dispatches_rust_and_python_and_nothing_else_yet() {
+    fn registry_dispatches_rust_python_and_typescript_and_rejects_the_rest() {
         assert_eq!(
             language_for_path("crates/x/src/lib.rs").map(|l| l.id),
             Some("rust")
@@ -155,8 +189,20 @@ mod tests {
         );
         assert_eq!(language_for_path("a/b.txt").map(|l| l.id), None);
         assert_eq!(
+            language_for_path("src/x.ts").map(|l| l.id),
+            Some("typescript")
+        );
+        assert_eq!(
+            language_for_path("src/x.js").map(|l| l.id),
+            Some("typescript")
+        );
+        assert_eq!(
             language_for_test_id("python:pkg::tests::test_store::test_load").map(|l| l.id),
             Some("python")
+        );
+        assert_eq!(
+            language_for_test_id("typescript:myapp::tests::store::Store loads").map(|l| l.id),
+            Some("typescript")
         );
         assert_eq!(
             language_for_test_id("outcomes::tests::a_bare_libtest_name").map(|l| l.id),

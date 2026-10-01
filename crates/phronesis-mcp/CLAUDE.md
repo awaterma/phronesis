@@ -51,14 +51,17 @@ cargo run -- coverage collect --tool java-cov --runner mvn --emit-script  # Emit
 cargo run -- coverage import --format jacoco-dir --tool jacoco+mvn <dir>  # Import JaCoCo XML after manifest verification
 cargo run -- coverage collect --tool swift-cov [--emit-script]  # Emit/run container-friendly isolated SwiftPM collection (swift test --filter per graph test, llvm-cov lcov export)
 cargo run -- coverage import --format lcov-dir --tool swift-cov <dir>  # Import per-test Swift lcov after manifest verification
+cargo run -- coverage collect --tool js-cov --emit-script [--runner vitest|jest|node] [--out DIR]  # Emit isolated JS/TS per-test lcov collection (runner detected from package.json)
+cargo run -- coverage import --format lcov-dir --tool c8+vitest <dir>  # Import per-test JS/TS lcov after manifest verification (also istanbul+jest, c8+node)
 cargo run -- coverage select [--change <id>] [--json]  # Select tests relevant to the current change (dynamic coverage + static graph reach)
 ```
 
 Function regions exist for the languages registered in
-`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, and Swift
-today): each row owns function-site extraction, the production-source
-filter, the test-id namespace, the one-liner attribution rule, and the
-command `coverage select` renders; a language without a row has no coverage
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, Java, Swift,
+and TypeScript/JavaScript today):
+each row owns function-site extraction, the production-source filter, the
+test-id namespace, the one-liner attribution rule, and the command
+`coverage select` renders; a language without a row has no coverage
 semantics and `coverage select` says so. Swift one-liners are never
 attributed (llvm-cov's lcov `FN` names are mangled); a Swift test id
 (`swift:<unit>::<file segments>::<scope>::<name>`) renders as

@@ -1,5 +1,6 @@
 pub mod collect;
 pub mod collect_java;
+pub mod collect_js;
 pub mod collect_swift;
 pub mod hydrate;
 pub mod import;

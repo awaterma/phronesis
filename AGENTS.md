@@ -501,10 +501,11 @@ the two above.
 #### 1. Coverage collection (cargo-llvm-cov, NOT tarpaulin)
 
 Function regions exist for the languages registered in
-`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, and Swift
-today): each row owns function-site extraction, the production-source
-filter, the test-id namespace, the one-liner attribution rule, and the
-command `coverage select` renders; a language without a row has no coverage
+`crates/phronesis-mcp/src/coverage/language.rs` (Rust, Python, Java, Swift,
+and TypeScript/JavaScript today): each row owns function-site extraction,
+the production-source filter, the test-id namespace, the one-liner
+attribution rule, and the command `coverage select` renders; a language
+without a row has no coverage
 semantics and `coverage select` says so.
 
 ```bash
@@ -522,6 +523,8 @@ phr-mcp coverage collect --tool java-cov --runner mvn --emit-script # per-test J
 phr-mcp coverage import --format jacoco-dir --tool jacoco+mvn /tmp/java-cov # verify manifest and import JaCoCo XML
 phr-mcp coverage collect --tool swift-cov --emit-script --out /tmp/cov  # emit SwiftPM per-test lcov collection (swift test --filter per graph test + llvm-cov export) for a container
 phr-mcp coverage import --format lcov-dir --tool swift-cov /tmp/cov  # verify manifest revision/digests and import Swift evidence
+phr-mcp coverage collect --tool js-cov --emit-script  # emit JS/TS per-test lcov collection (runner from package.json; --runner vitest|jest|node overrides)
+phr-mcp coverage import --format lcov-dir --tool c8+vitest /tmp/cov  # import JS/TS lcov (also istanbul+jest, c8+node)
 phr-mcp coverage select                      # relevant tests for changed regions
 ```
 

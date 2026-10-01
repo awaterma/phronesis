@@ -163,6 +163,12 @@ pub fn relativize(root: &Path, sf: &str) -> Relativized {
 pub struct Manifest {
     pub revision: String,
     pub files: BTreeMap<String, String>,
+    /// The JS collection runner that wrote this manifest (`vitest`, `jest`,
+    /// `node`); recorded for humans and re-collection, ignored by import
+    /// verification — the evidence tool string (`c8+vitest`, …) carries the
+    /// runner into `select`.
+    #[serde(default)]
+    pub runner: Option<String>,
 }
 impl Manifest {
     pub fn read(dir: &Path) -> Result<Self> {
