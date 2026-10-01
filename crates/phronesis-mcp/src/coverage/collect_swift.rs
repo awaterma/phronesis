@@ -85,7 +85,8 @@ pub fn collection_script(entries: &[CollectEntry], out_dir: &Path) -> String {
             text=open(sys.argv[1]).read()\n\
             x=max([int(n) for n in re.findall(r'Executed ([0-9]+) tests?\\b',text)]+[0])\n\
             t=max([int(n) for n in re.findall(r'Test run with ([0-9]+) tests?\\b',text)]+[0])\n\
-            if x+t != 1: raise SystemExit('filter must execute exactly one test: '+sys.argv[1])\n\
+            skipped=max([int(n) for n in re.findall(r'([0-9]+) tests? skipped',text)]+[0])\n\
+            if x+t != 1 or skipped: raise SystemExit('filter must execute exactly one test: '+sys.argv[1])\n\
             COUNT\n\
             cp \"$PROFDATA\" \"$OUT/{n}.profdata\"\n\
             \"$LLVM_COV\" export -format=lcov -instr-profile \"$OUT/{n}.profdata\" \"$XCTEST_BIN\" > \"$OUT/{n}.raw.lcov\"\n\
@@ -170,7 +171,7 @@ mod tests {
             ),
             "{s}"
         );
-        assert!(s.contains("if x+t != 1"));
+        assert!(s.contains("if x+t != 1 or skipped"));
         assert!(s.contains("cp \"$PROFDATA\" \"$OUT/1.profdata\""), "{s}");
         assert!(
             s.contains(
@@ -307,6 +308,7 @@ esac
             assert!(!out.join("stale.lcov").exists());
             for summary in [
                 "Executed 0 tests",
+                "Executed 1 test, with 1 test skipped and 0 failures",
                 "Executed 11 tests",
                 "Executed 21 tests",
                 "Executed 1 test\nExecuted 2 tests",
@@ -332,7 +334,7 @@ esac
             "public func value() -> Int { 7 }\n",
         )
         .expect("source");
-        std::fs::write(root.join("Tests/ExampleTests/ValueTests.swift"), "import XCTest\n@testable import Example\nfinal class ValueTests: XCTestCase {\nfunc testValue() { XCTAssertEqual(Example.value(), 7) }\nfunc testValueAgain() { XCTAssertEqual(Example.value(), 7) }\n}\n").expect("tests");
+        std::fs::write(root.join("Tests/ExampleTests/ValueTests.swift"), "import XCTest\n@testable import Example\nfinal class ValueTests: XCTestCase {\nfunc testValue() { XCTAssertEqual(Example.value(), 7) }\nfunc testValueAgain() { XCTAssertEqual(Example.value(), 7) }\nfunc testSkipped() throws { throw XCTSkip(\"fixture\") }\n}\n").expect("tests");
         for args in [
             vec!["init", "-q"],
             vec!["add", "Package.swift", "Sources", "Tests"],
@@ -392,5 +394,29 @@ esac
             assert!(out.join("manifest.json").exists());
             std::fs::write(out.join("stale.lcov"), "stale").expect("stale");
         }
+        std::fs::write(
+            &script,
+            collection_script(
+                &[entry(
+                    "swift:ExampleTests::ValueTests::ValueTests::testSkipped",
+                )],
+                &out,
+            ),
+        )
+        .expect("skip script");
+        let result = std::process::Command::new("sh")
+            .arg(&script)
+            .current_dir(root)
+            .output()
+            .expect("collect skipped test");
+        assert!(
+            !result.status.success(),
+            "skipped test must not acquire coverage"
+        );
+        assert!(
+            String::from_utf8_lossy(&result.stderr)
+                .contains("filter must execute exactly one test")
+        );
+        assert!(!out.join("manifest.json").exists());
     }
 }
