@@ -51,7 +51,7 @@ pub fn collection_script(entries: &[(String, String)], out_dir: &Path) -> String
         "#!/bin/sh\nset -eu\npython3 -m coverage --version\npython3 -m pytest --version\nOUT=",
     );
     s.push_str(&quote(&out_dir.to_string_lossy()));
-    s.push_str("\nmkdir -p \"$OUT\"\nn=0\n");
+    s.push_str("\nmkdir -p \"$OUT\"\nfind \"$OUT\" -maxdepth 1 -type f \\( -name '*.lcov' -o -name '*.info' -o -name '*.cov' -o -name 'manifest.json' \\) -delete\nn=0\n");
     let mut stems = std::collections::BTreeMap::<String, usize>::new();
     for (index, (node, id)) in entries.iter().enumerate() {
         let n = index + 1;
@@ -157,6 +157,10 @@ mod tests {
             );
         }
         let out = root.join("coverage");
+        std::fs::create_dir(&out).expect("output");
+        std::fs::write(out.join("stale.lcov"), "SF:deleted.py\nDA:1,1\n").expect("stale report");
+        std::fs::write(out.join("manifest.json"), "stale").expect("stale manifest");
+        std::fs::write(out.join("stale.cov"), "stale").expect("stale data");
         let script = root.join("collect.sh");
         std::fs::write(
             &script,
@@ -186,6 +190,8 @@ mod tests {
                 .expect("lcov");
         assert!(report.contains("SF:pkg/store.py"), "{report}");
         assert!(report.contains("DA:2,1"), "{report}");
+        assert!(!out.join("stale.lcov").exists());
+        assert!(!out.join("stale.cov").exists());
         assert!(!report.contains("outside.py"));
         assert!(!report.contains("_pytest"));
         let manifest: serde_json::Value =
@@ -198,6 +204,23 @@ mod tests {
                 .expect("files")
                 .keys()
                 .all(|name| !name.contains("outside") && !name.contains("_pytest"))
+        );
+        std::fs::write(
+            root.join("tests/test_store.py"),
+            "def test_load():\n    assert False\n",
+        )
+        .expect("failing test");
+        let failed = std::process::Command::new("sh")
+            .arg(&script)
+            .current_dir(&root)
+            .env("PYTHONPATH", &external)
+            .output()
+            .expect("failed rerun");
+        assert!(!failed.status.success());
+        assert!(!out.join("manifest.json").exists());
+        assert!(
+            !out.join("python_pkg__tests__test_store__test_load.lcov")
+                .exists()
         );
     }
 }
