@@ -238,7 +238,13 @@ fn jacoco_all_missing_or_ambiguous_sources_never_replace_prior_evidence() {
 #[test]
 fn lcov_mixed_resolved_missing_and_ambiguous_sources_import_only_grounded_hits() {
     let fixture = Fixture::new("lcov-dir");
-    fixture.report("TN:python:project::tests::test_store::test_load\nSF:pkg/store.py\nDA:2,1\nend_of_record\nSF:missing.py\nDA:2,1\nend_of_record\nSF:/producer/pkg/store.py\nDA:2,1\nend_of_record\n");
+    let before = fixture.records();
+    let before_evidence = fixture.evidence();
+    assert_eq!(
+        before[0]["test"],
+        "python:project::tests::test_store::test_load"
+    );
+    fixture.report("TN:python:project::tests::test_store::test_replacement\nSF:pkg/store.py\nDA:2,1\nend_of_record\nSF:missing.py\nDA:2,1\nend_of_record\nSF:/producer/pkg/store.py\nDA:2,1\nend_of_record\n");
     let result = fixture.import();
     assert!(result.status.success(), "{result:?}");
     assert!(
@@ -247,12 +253,39 @@ fn lcov_mixed_resolved_missing_and_ambiguous_sources_import_only_grounded_hits()
     );
     let records = fixture.records();
     assert_eq!(records.len(), 1);
+    assert_ne!(records, before, "mixed import must replace the baseline");
+    assert_ne!(
+        fixture.evidence(),
+        before_evidence,
+        "mixed import must write new evidence"
+    );
+    assert_eq!(
+        records[0]["test"],
+        "python:project::tests::test_store::test_replacement"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record["test"] != before[0]["test"]),
+        "old baseline test must be removed"
+    );
     assert_eq!(records[0]["file"], "pkg/store.py");
     assert_eq!(records[0]["region"], "fn:pkg/store.py::load");
 }
 #[test]
 fn jacoco_mixed_resolved_missing_and_ambiguous_sources_import_only_grounded_hits() {
     let fixture = Fixture::new("jacoco-dir");
+    let before = fixture.records();
+    let before_evidence = fixture.evidence();
+    assert_eq!(
+        before[0]["test"],
+        "java:project::com::x::StoreTest::testLoad"
+    );
+    write(
+        fixture.root(),
+        ".phronesis/reports/1/TN",
+        "java:project::com::x::StoreTest::testReplacement",
+    );
     fixture.report(r#"<report><package name="com/x"><sourcefile name="Store.java"><line nr="4" ci="1"/></sourcefile><sourcefile name="Missing.java"><line nr="4" ci="1"/></sourcefile></package></report>"#);
     write(fixture.root(), ".phronesis/reports/2/module.txt", "absent");
     write(
@@ -273,9 +306,25 @@ fn jacoco_mixed_resolved_missing_and_ambiguous_sources_import_only_grounded_hits
     );
     let records = fixture.records();
     assert_eq!(records.len(), 1);
+    assert_ne!(records, before, "mixed import must replace the baseline");
+    assert_ne!(
+        fixture.evidence(),
+        before_evidence,
+        "mixed import must write new evidence"
+    );
+    assert!(
+        records
+            .iter()
+            .all(|record| record["test"] != before[0]["test"]),
+        "old baseline test must be removed"
+    );
     assert_eq!(records[0]["file"], "core/src/main/java/com/x/Store.java");
     assert_eq!(
+        records[0]["region"],
+        "fn:core/src/main/java/com/x/Store.java::Store::load"
+    );
+    assert_eq!(
         records[0]["test"],
-        "java:project::com::x::StoreTest::testLoad"
+        "java:project::com::x::StoreTest::testReplacement"
     );
 }
