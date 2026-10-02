@@ -62,3 +62,7 @@ crates/phronesis-mcp/tests/fixtures/coverage-sample/target/
 bench/run-env.sh
 bench/tasks/
 bench/results/
+bench/.venv/
+
+# SWE-bench harness evaluation output (written to ./logs by run_evaluation)
+logs/

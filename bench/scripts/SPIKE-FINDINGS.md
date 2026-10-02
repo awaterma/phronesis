@@ -71,7 +71,76 @@ Top-level event `type`s observed: `system` (`subtype`: `init`,
    `.gemini/settings.json`), not `.claude/settings.json`; the assertion accepts
    either.
 
-## Task 2 — SWE-bench instance end-to-end
+## Task 2 — SWE-bench instance end-to-end: PASS
 
-(Filled in by `spike-eval.sh` — pinned dataset id/revision, real column names,
-exact `run_evaluation` flags, Docker x86-on-Apple-Silicon timings.)
+**Everything below is the contract for Tasks 9 and 13.**
+
+### Pinned dataset and instance
+
+- Dataset: `SWE-bench/SWE-bench_Multilingual` @ **846e647b9f33c0b51b739d005d13d85493c9af09**
+  (HF dataset card: 300 test instances, 41 repos, 9 languages).
+- **Real column names** (differs from the plan sketch): `base_commit, created_at,
+  eval_type, image, instance_id, log_parser, repo, version, patch, test_patch,
+  eval_script, problem_statement, hints_text, FAIL_TO_PASS, PASS_TO_PASS`.
+  - **No `language` column** — language is encoded in the repo/instance_id and
+    the parser name (rust ⇒ `log_parser: "parse_log_cargo"`).
+  - The issue column is **`problem_statement`** (not `issue_text`).
+  - `repo` is `owner/name` — clone `https://github.com/<repo>.git`.
+  - `FAIL_TO_PASS`/`PASS_TO_PASS` are **real lists** here (not JSON-encoded strings).
+  - Each instance ships a **prebuilt docker image** (`image`,
+    `sweb.eval.x86_64.<id>`), an `eval_script`, and a `log_parser`.
+- Rust instances: 43 (ruff 7, ripgrep 2, tokio 9, axum 7, bat 8, nushell 5,
+  uutils/coreutils 5) — all `parse_log_cargo`.
+- Spike instance: **`burntsushi__ripgrep-2209`** (smallest rust repo, one
+  regression test), base_commit `4dc6c73c5a9203c5a8a89ce2161feca542329812`.
+
+### Pinned harness
+
+- The PyPI `swebench` package (5.0.2) **lacks** multilingual log parsers.
+  The official harness is the **main SWE-bench repo** @
+  **02e7a74ffd0b707aab73d203fe87bdc7c76afc8e** (`swebench/harness/log_parsers/rust.py`
+  has `parse_log_cargo`).
+- Working invocation (exact flags; venv: `bench/.venv`, Python 3.12 via uv —
+  py3.14 lacks pyarrow wheels for `datasets`):
+
+```bash
+PYTHONPATH=<swe-bench checkout @ 02e7a74f> bench/.venv/bin/python \
+  -m swebench.harness.run_evaluation \
+  -d SWE-bench/SWE-bench_Multilingual -s test \
+  -p <predictions.jsonl> -id <run-id> --max_workers 1
+```
+
+- `preds.jsonl` line format: `{"instance_id": ..., "model_name_or_path": ...,
+  "model_patch": "<patch.diff contents>"}`. `--predictions_path gold` evaluates
+  reference solutions.
+- Harness writes reports to `./logs/evaluation/<run-id>/results.json`
+  (gitignored).
+
+### Docker x86 on Apple Silicon
+
+- Images are x86_64-only: `docker pull` on arm64 fails with "no matching
+  manifest" — **`docker pull --platform linux/amd64`** works and runs under
+  emulation. The harness pulls images itself; if it hits the same manifest
+  failure, pre-pull with `--platform linux/amd64` (Task 9 must do this).
+- **Emulation is fast enough**: full eval of one ripgrep instance ≈ **19-21 s**
+  (warm prebuilt image, incremental cargo). Verification will not be the
+  bottleneck; the agent runs will be.
+
+### End-to-end results
+
+- **Gold validation**: reference `patch` through the harness —
+  **resolved 1/1, 19.0 s, zero infra failures** (`logs/evaluation/spike-gold/`).
+- **Control arm**: claude -p (glm-5.3:cloud via local ollama) on the real
+  ripgrep-2209 issue — **71 turns, 598 s (~10 min), 5,782-byte patch,
+  resolved 1/1 in 20.4 s** (`logs/evaluation/spike-control/`).
+- Per-run telemetry from the `result` event: `tokens in 111,614 / out 33,067 /
+  cache-read 5,333,184`, `num_turns: 71`, `duration_ms: 598484`.
+- A ~10-minute, 71-turn run on a rust task sits well inside the 45-min cap and
+  the pilot gate's ≤30-min mean expectation.
+
+### Corrections to the plan sketch (spike-eval.sh committed for provenance)
+
+1. `repo` needs the `https://github.com/<repo>.git` prefix.
+2. The patch is extracted as `git add -A && git diff --cached <pre-run HEAD>` —
+   the agent may commit, and may leave untracked files; both must be captured.
+3. `problem_statement`, not `issue_text`; no `language` column (see above).
