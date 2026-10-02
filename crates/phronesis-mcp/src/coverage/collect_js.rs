@@ -102,20 +102,11 @@ pub fn collection_script(
     s.push_str(&quote(&out_dir.to_string_lossy()));
     s.push_str("\nmkdir -p \"$OUT\"\nn=0\n");
     s.push_str("if [ -n \"$(find \"$OUT\" -type f -print -quit)\" ]; then echo 'coverage output must be empty; use a fresh directory' >&2; exit 1; fi\n");
-    let mut stems = std::collections::BTreeMap::<String, usize>::new();
+    let mut stems = crate::coverage::pytest::ReportStemAllocator::default();
     for (index, (id, file, name)) in entries.iter().enumerate() {
         let n = index + 1;
         // Same safe-stem rule as the pytest collector.
-        let base = crate::coverage::pytest::file_stem_for(id);
-        let count = stems
-            .entry(base.clone())
-            .and_modify(|c| *c += 1)
-            .or_insert(1);
-        let stem = if *count > 1 {
-            format!("{base}_{}", *count)
-        } else {
-            base
-        };
+        let stem = stems.allocate(id);
         s.push_str("n=$((n+1))\n");
         match runner {
             JsRunner::Vitest => {
@@ -150,7 +141,7 @@ pub fn collection_script(
             JsRunner::NodeTest => format!("# node: {file} --test-name-pattern ^{name}$"),
         };
         s.push_str(&format!(
-            "printf '%s\\n' {} {} | cat - \"$OUT/{n}/lcov.info\" > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\n",
+            "test -s \"$OUT/{n}/lcov.info\"\nprintf '%s\\n' {} {} | cat - \"$OUT/{n}/lcov.info\" > \"$OUT/{n}.tmp\"\nmv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\n",
             quote(&format!("TN:{id}")),
             quote(&node_line)
         ));

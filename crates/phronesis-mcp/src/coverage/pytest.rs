@@ -42,6 +42,32 @@ pub fn file_stem_for(graph_id: &str) -> String {
         .collect()
 }
 
+/// Deterministic report names must be unique across the whole collection,
+/// including a native name that equals another entry's generated suffix.
+#[derive(Default)]
+pub(crate) struct ReportStemAllocator {
+    used: std::collections::BTreeSet<String>,
+}
+
+impl ReportStemAllocator {
+    pub(crate) fn allocate(&mut self, graph_id: &str) -> String {
+        // Reserve space for an ordinal and `.lcov` on filesystems with a
+        // 255-byte component limit. Sanitized stems contain only ASCII.
+        let mut base = file_stem_for(graph_id);
+        base.truncate(200);
+        if base.is_empty() {
+            base.push('_');
+        }
+        let mut candidate = base.clone();
+        let mut ordinal = 1usize;
+        while !self.used.insert(candidate.clone()) {
+            ordinal += 1;
+            candidate = format!("{base}_{ordinal}");
+        }
+        candidate
+    }
+}
+
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
@@ -52,19 +78,10 @@ pub fn collection_script(entries: &[(String, String)], out_dir: &Path) -> String
     );
     s.push_str(&quote(&out_dir.to_string_lossy()));
     s.push_str("\nmkdir -p \"$OUT\"\nfind \"$OUT\" -maxdepth 1 -type f \\( -name '*.lcov' -o -name '*.info' -o -name '*.cov' -o -name 'manifest.json' \\) -delete\nn=0\n");
-    let mut stems = std::collections::BTreeMap::<String, usize>::new();
+    let mut stems = ReportStemAllocator::default();
     for (index, (node, id)) in entries.iter().enumerate() {
         let n = index + 1;
-        let base = file_stem_for(id);
-        let count = stems
-            .entry(base.clone())
-            .and_modify(|c| *c += 1)
-            .or_insert(1);
-        let stem = if *count > 1 {
-            format!("{base}_{}", *count)
-        } else {
-            base
-        };
+        let stem = stems.allocate(id);
         s.push_str(&format!("n=$((n+1))\nrm -f \"$OUT/{n}.junit.xml\"\npython3 -m coverage run --source=. --data-file=\"$OUT/{n}.cov\" -m pytest -q --junitxml=\"$OUT/{n}.junit.xml\" -o junit_family=xunit2 -- {}\n", quote(node)));
         s.push_str(&format!(
             "python3 - \"$OUT/{n}.junit.xml\" {} <<'CHECK'\n",
@@ -83,7 +100,7 @@ if cases[0].get('classname')!=classname or cases[0].get('name')!=name:
  raise SystemExit('pytest executed a different test than requested')
 CHECK
 "#);
-        s.push_str(&format!("python3 -m coverage lcov --data-file=\"$OUT/{n}.cov\" -o \"$OUT/{stem}.lcov\"\nprintf '%s\\n' {} {} | cat - \"$OUT/{stem}.lcov\" > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\nrm -f \"$OUT/{n}.cov\"\n", quote(&format!("TN:{id}")), quote(&format!("# node: {node}"))));
+        s.push_str(&format!("python3 -m coverage lcov --data-file=\"$OUT/{n}.cov\" -o \"$OUT/{stem}.lcov\"\ntest -s \"$OUT/{stem}.lcov\"\nprintf '%s\\n' {} {} | cat - \"$OUT/{stem}.lcov\" > \"$OUT/{n}.tmp\"\nmv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\nrm -f \"$OUT/{n}.cov\"\n", quote(&format!("TN:{id}")), quote(&format!("# node: {node}"))));
     }
     s.push_str("python3 - \"$OUT\" <<'PY'\nimport hashlib,json,os,subprocess,sys\nout=sys.argv[1]; root=subprocess.check_output(['git','rev-parse','--show-toplevel'],text=True).strip(); files={}\nfor name in sorted(os.listdir(out)):\n if name.endswith(('.lcov','.info')):\n  for line in open(os.path.join(out,name)):\n   if line.startswith('SF:'):\n    p=os.path.realpath(line[3:].strip()); rel=os.path.relpath(p,root)\n    if rel.startswith('..'+os.sep): raise SystemExit('source outside git root: '+p)\n    files[rel]=hashlib.sha256(open(p,'rb').read()).hexdigest()\nrev=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()\njson.dump({'revision':rev,'files':files},open(os.path.join(out,'manifest.json'),'w'),sort_keys=True)\nPY\n");
     s.push_str(&format!(
@@ -121,6 +138,36 @@ mod tests {
             "python_pkg__tests__test_store__test_load"
         );
     }
+    #[test]
+    fn report_stems_remain_unique_through_native_suffixes_and_truncation() {
+        let mut allocator = ReportStemAllocator::default();
+        let ids = ["a+b", "a?b", "a_b_2", "a_b", "a_b_2_2", "a_b"];
+        let names: Vec<_> = ids.iter().map(|id| allocator.allocate(id)).collect();
+        assert_eq!(
+            names,
+            ["a_b", "a_b_2", "a_b_2_2", "a_b_3", "a_b_2_2_2", "a_b_4"]
+        );
+        let mut replay = ReportStemAllocator::default();
+        assert_eq!(
+            names,
+            ids.iter().map(|id| replay.allocate(id)).collect::<Vec<_>>()
+        );
+        let long = "a".repeat(400);
+        let long_names = [
+            allocator.allocate(&long),
+            allocator.allocate(&(long.clone() + "b")),
+            allocator.allocate(&("a".repeat(200) + "_2")),
+        ];
+        assert_eq!(
+            long_names
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            3
+        );
+        assert!(long_names.iter().all(|name| name.len() + 5 < 255));
+    }
+
     #[test]
     fn script_quotes_and_manifests() {
         let s = collection_script(

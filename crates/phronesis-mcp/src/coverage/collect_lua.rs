@@ -49,20 +49,11 @@ pub fn collection_script(entries: &[(String, String, String)], out_dir: &Path) -
     let mut s = String::from("#!/bin/sh\nset -eu\nOUT=");
     s.push_str(&quote(&out_dir.to_string_lossy()));
     s.push_str("\nmkdir -p \"$OUT\"\nrm -f \"$OUT/manifest.json\" \"$OUT\"/*.lcov \"$OUT\"/*.info\nbusted --version\ncommand -v luacov >/dev/null\nn=0\n");
-    let mut stems = std::collections::BTreeMap::<String, usize>::new();
+    let mut stems = crate::coverage::pytest::ReportStemAllocator::default();
     for (index, (id, file, name)) in entries.iter().enumerate() {
         let n = index + 1;
         // Same safe-stem rule as the pytest collector.
-        let base = crate::coverage::pytest::file_stem_for(id);
-        let count = stems
-            .entry(base.clone())
-            .and_modify(|c| *c += 1)
-            .or_insert(1);
-        let stem = if *count > 1 {
-            format!("{base}_{}", *count)
-        } else {
-            base
-        };
+        let stem = stems.allocate(id);
         s.push_str("n=$((n+1))\n");
         // luacov merges stats across runs; deleting the stats file is what
         // makes this entry's hits and only this entry's.
@@ -78,7 +69,7 @@ pub fn collection_script(entries: &[(String, String, String)], out_dir: &Path) -
         ));
         s.push_str("test -s luacov.stats.out\nluacov -r lcov\ntest -s luacov.report.out\n");
         s.push_str(&format!(
-            "printf '%s\\n' {} {} | cat - luacov.report.out > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\n",
+            "printf '%s\\n' {} {} | cat - luacov.report.out > \"$OUT/{n}.tmp\"\nmv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\n",
             quote(&format!("TN:{id}")),
             quote(&format!("# node: busted --filter {name} {file}"))
         ));

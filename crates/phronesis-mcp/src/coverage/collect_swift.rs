@@ -7,7 +7,7 @@
 use std::path::Path;
 
 use crate::coverage::language::swift::{runner_native_name, selector_from_test_id};
-use crate::coverage::pytest::file_stem_for;
+use crate::coverage::pytest::ReportStemAllocator;
 use crate::graph::model::Edge;
 
 /// (graph test id, `swift test --filter` selector) per graph Swift test.
@@ -62,19 +62,10 @@ pub fn collection_script(entries: &[CollectEntry], out_dir: &Path) -> String {
         fi\n\
         n=0\n",
     );
-    let mut stems = std::collections::BTreeMap::<String, usize>::new();
+    let mut stems = ReportStemAllocator::default();
     for (index, (id, selector)) in entries.iter().enumerate() {
         let n = index + 1;
-        let base = file_stem_for(id);
-        let count = stems
-            .entry(base.clone())
-            .and_modify(|c| *c += 1)
-            .or_insert(1);
-        let stem = if *count > 1 {
-            format!("{base}_{}", *count)
-        } else {
-            base
-        };
+        let stem = stems.allocate(id);
         let native = runner_native_name(id).unwrap_or_default();
         s.push_str(&format!(
             "n=$((n+1))\n\
@@ -90,7 +81,8 @@ pub fn collection_script(entries: &[CollectEntry], out_dir: &Path) -> String {
             COUNT\n\
             cp \"$PROFDATA\" \"$OUT/{n}.profdata\"\n\
             \"$LLVM_COV\" export -format=lcov -instr-profile \"$OUT/{n}.profdata\" \"$XCTEST_BIN\" > \"$OUT/{n}.raw.lcov\"\n\
-            printf '%s\\n' {tn} {node} | cat - \"$OUT/{n}.raw.lcov\" > \"$OUT/{n}.tmp\" && mv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\n\
+            test -s \"$OUT/{n}.raw.lcov\"\n\
+            printf '%s\\n' {tn} {node} | cat - \"$OUT/{n}.raw.lcov\" > \"$OUT/{n}.tmp\"\nmv \"$OUT/{n}.tmp\" \"$OUT/{stem}.lcov\"\n\
             rm -f \"$OUT/{n}.raw.lcov\"\n",
             sel = quote(selector),
             tn = quote(&format!("TN:{id}")),

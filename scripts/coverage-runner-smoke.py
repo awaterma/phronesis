@@ -119,6 +119,59 @@ def smoke(binary, runner, root):
     print(f'PASS {label}: real isolated collection, import, changed-body selection')
 
 
+def node_collision_smoke(binary, root):
+    """Three lossy stems, plus late failures, must preserve isolated identities."""
+    titles = ['a+b', 'a?b', 'a_b_2']
+    functions = ['load', 'other', 'third']
+    write(root, 'src/store.js', ''.join(f'exports.{name} = function {name}() {{\n  return {number};\n}};\n' for name, number in zip(functions, [7, 9, 11])))
+    write(root, 'tests/store.test.js', "const {test} = require('node:test');\nconst assert = require('node:assert/strict');\nconst store = require('../src/store.js');\n" + ''.join(f"test({title!r}, () => {{ assert.equal(store.{name}(), {number}); }});\n" for title, name, number in zip(titles, functions, [7, 9, 11])))
+    run(root, 'git', 'add', 'src/store.js', 'tests/store.test.js')
+    run(root, 'git', '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', 'commit', '-qm', 'collision fixture')
+    run(root, binary, 'graph', 'rebuild')
+    edges = [json.loads(line) for line in (root / '.phronesis/graph.jsonl').read_text().splitlines()]
+    expected = {title: next(e['a'][1] for e in edges if e['p'] == 'defines_test' and e['a'][1].endswith('::' + title)) for title in titles}
+    out = root / '.phronesis/collision-success'
+    base = [binary, 'coverage', 'collect', '--tool', 'js-cov', '--runner', 'node']
+    run(root, *base, '--out', str(out))
+    reports = list(out.glob('*.lcov'))
+    assert len(reports) == 3, reports
+    assert {line[3:] for report in reports for line in report.read_text().splitlines() if line.startswith('TN:') and line[3:]} == set(expected.values())
+    run(root, binary, 'coverage', 'import', '--format', 'lcov-dir', '--tool', 'c8+node', str(out))
+    store = root / '.phronesis/coverage.jsonl'
+    index = root / '.phronesis/coverage.index'
+    previous = (store.read_bytes(), index.read_bytes())
+    hits = [json.loads(line) for line in store.read_text().splitlines()]
+    for title, name in zip(titles, functions):
+        assert {hit['test'] for hit in hits if hit.get('region', '').endswith('::' + name)} == {expected[title]}, hits
+    for mode in ['zero-match', 'missing-report', 'failed-test']:
+        output = root / '.phronesis' / ('collision-' + mode)
+        script = run(root, *base, '--out', str(output), '--emit-script')
+        if mode == 'zero-match':
+            # First entry remains genuine; the second runner must fail.
+            script = script.replace("--test-name-pattern='^a\\?b$'", "--test-name-pattern='^absent$'")
+        elif mode == 'missing-report':
+            # The second runner passes, but its newly produced report is missing.
+            needle = 'node - "$OUT/2.log"'
+            assert needle in script, script
+            script = script.replace(needle, 'rm -f "$OUT/2/lcov.info"\n' + needle, 1)
+        else:
+            original = (root / 'tests/store.test.js').read_text()
+            changed = original.replace('assert.equal(store.other(), 9);', "throw new Error('late fixture failure');")
+            assert changed != original
+            (root / 'tests/store.test.js').write_text(changed)
+        result = subprocess.run(['sh'], input=script, cwd=root, text=True, capture_output=True)
+        if mode == 'failed-test':
+            (root / 'tests/store.test.js').write_text(original)
+        assert result.returncode, (mode, result.stdout, result.stderr)
+        partial = list(output.glob('*.lcov'))
+        assert len(partial) == 1, (mode, partial, script)
+        assert not (output / 'manifest.json').exists(), mode
+        rejected = subprocess.run([binary, 'coverage', 'import', '--format', 'lcov-dir', '--tool', 'c8+node', str(output)], cwd=root, text=True, capture_output=True)
+        assert rejected.returncode, rejected
+        assert previous == (store.read_bytes(), index.read_bytes()), 'partial collection changed prior evidence'
+    print('PASS node collision: three distinct reports/identities; late zero-match, failed test and missing report preserve prior store')
+
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', required=True)
@@ -130,6 +183,8 @@ if __name__ == '__main__':
     succeeded = False
     try:
         smoke(str(Path(options.binary).resolve()), options.runner, root)
+        if options.runner == 'node':
+            node_collision_smoke(str(Path(options.binary).resolve()), root)
         succeeded = True
     finally:
         if succeeded and not options.keep:
