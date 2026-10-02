@@ -1,0 +1,12 @@
+# Copy to bench/run-env.sh (gitignored) and fill in real values.
+# These are the exact env vars Task 8's runner will inject into `claude -p`.
+#
+# Router: the local ollama daemon (>= 0.34) speaks the Anthropic Messages API
+# natively at /v1/messages — including structured tool_use blocks — so no
+# translation proxy is needed; glm-5.3:cloud is served through it by ollama
+# cloud. ANTHROPIC_API_KEY is a dummy that satisfies the CLI's auth check.
+export ANTHROPIC_BASE_URL="http://127.0.0.1:11434"  # local ollama, Anthropic Messages API
+export ANTHROPIC_API_KEY="ollama-local-dummy"
+export ANTHROPIC_MODEL="glm-5.3:cloud"
+export ANTHROPIC_SMALL_FAST_MODEL="glm-5.3:cloud"  # aux/background calls map to the same model
+# Router-specific options observed during the spike go here.

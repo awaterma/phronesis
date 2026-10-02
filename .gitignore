@@ -57,3 +57,8 @@ docs/phronesis-evaluation-*.html
 .phronesis/coverage.lock
 *.profraw
 crates/phronesis-mcp/tests/fixtures/coverage-sample/target/
+
+# phr-bench local state: real env values, task clones, run artifacts
+bench/run-env.sh
+bench/tasks/
+bench/results/
