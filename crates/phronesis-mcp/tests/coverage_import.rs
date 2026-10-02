@@ -220,3 +220,90 @@ fn test_import_checks_file_qualification_at_the_length_limit() {
     );
     assert!(import_export(root.path(), &export, 1).is_err());
 }
+
+fn assert_rejected_import_preserves_existing_store(contents: &[u8], expected_error: &str) {
+    use phronesis_mcp::coverage::store::store_paths;
+    let root = tempfile::tempdir().expect("project");
+    let exports = tempfile::tempdir().expect("exports");
+    let revision = "a".repeat(40);
+    let existing = rec(
+        "existing_test",
+        "fn:src/lib.rs::foo",
+        "src/lib.rs",
+        &revision,
+    );
+    let export = write_export(exports.path(), &jsonl(std::slice::from_ref(&existing)));
+    import_export(root.path(), &export, 100).expect("existing valid evidence");
+    let (records, index) = store_paths(root.path());
+    let before_records = std::fs::read(&records).expect("records");
+    let before_index = std::fs::read(&index).expect("index");
+    assert_eq!(
+        load_hits(root.path()).expect("trusted hits"),
+        vec![existing.clone()]
+    );
+    let baseline_index = load_index(root.path()).expect("trusted revision");
+    std::fs::write(&export, contents).expect("replacement export");
+    let error = import_export(root.path(), &export, 200)
+        .expect_err("replacement must fail")
+        .to_string();
+    assert_eq!(error, expected_error, "must reach the intended rejection");
+    assert_eq!(std::fs::read(records).expect("records"), before_records);
+    assert_eq!(std::fs::read(index).expect("index"), before_index);
+    assert_eq!(load_index(root.path()), Some(baseline_index));
+    assert_eq!(
+        load_hits(root.path()).expect("preserved hits"),
+        vec![existing]
+    );
+}
+
+#[test]
+fn oversized_valid_jsonl_import_preserves_existing_records_and_index() {
+    let mut bytes = serde_json::to_vec(&rec(
+        "replacement",
+        "fn:src/lib.rs::bar",
+        "src/lib.rs",
+        &"b".repeat(40),
+    ))
+    .expect("valid record");
+    bytes.push(b'\n');
+    // Whitespace is legal JSONL padding. The only intended failure is the
+    // metadata size limit, before parsing or replacing the prior store.
+    bytes.resize(5 * 1024 * 1024 + 1, b' ');
+    assert_rejected_import_preserves_existing_store(
+        &bytes,
+        "export file exceeds 5242880 byte limit",
+    );
+}
+
+#[test]
+fn malformed_json_after_a_valid_record_preserves_existing_records_and_index() {
+    let valid = serde_json::to_string(&rec(
+        "replacement",
+        "fn:src/lib.rs::bar",
+        "src/lib.rs",
+        &"b".repeat(40),
+    ))
+    .expect("valid record");
+    assert_rejected_import_preserves_existing_store(
+        format!("{valid}\nnot json\n").as_bytes(),
+        "malformed JSON at export line 2",
+    );
+}
+
+#[test]
+fn malformed_record_after_a_valid_record_preserves_existing_records_and_index() {
+    let revision = "b".repeat(40);
+    let valid = rec("replacement", "fn:src/lib.rs::bar", "src/lib.rs", &revision);
+    let mut malformed = rec(
+        "invalid_range",
+        "fn:src/lib.rs::baz",
+        "src/lib.rs",
+        &revision,
+    );
+    malformed.start_line = malformed.end_line + 1;
+    let lines = jsonl(&[valid, malformed]).join("\n") + "\n";
+    assert_rejected_import_preserves_existing_store(
+        lines.as_bytes(),
+        "export line 2: start_line must be <= end_line",
+    );
+}
