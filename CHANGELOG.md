@@ -803,6 +803,61 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   MCP rule-writing tools refuse rather than overwrite it. A broken layer file
   outside `.phronesis/` must be fixed by a human.
 
+## [0.37.0] - 2026-10-02
+
+### Added
+
+- **Coverage evidence beyond Rust.** The coverage collector now speaks
+  Python, Java, Swift, TypeScript/JavaScript, and Lua alongside Rust:
+  per-language function regions, isolated per-test collection via
+  `phr-mcp coverage collect --tool pytest-cov|java-cov|swift-cov|js-cov|
+  lua-cov --emit-script`, import after manifest verification (JaCoCo XML
+  for Java, lcov for the rest), and `coverage select` rendering runnable
+  pytest, Maven/Gradle, `swift test`, vitest/jest/`node --test`, and
+  busted commands. One language registry (`coverage/language.rs`) owns
+  extraction, production-source filters, and test-id namespaces per
+  language. Evaluated files (cue, JSON, YAML, Helm, Rhai) are reported
+  under a new `no_coverage_semantics` key — compiled or linted, never
+  executed, so no test is ever selected for them; the `cue` and `helm3`
+  packs ship compile-signal toolchain defs, and the new `java` and `lua`
+  packs ship theirs merge-if-absent.
+
+- **Confidence signals from redirected output.** When a handled command
+  writes stdout to a fresh file inside the project, post-check parses it
+  and journals `outcome:output_from_file`; `phr-mcp signal ingest
+  --command <cmd> --output <file> [--exit N]` brings hand-run gate
+  output into the confidence band, refusing unknown toolchains and
+  output with no result.
+
+- **Kani grounds the `proof` signal.** A project toolchain definition
+  recognises `cargo kani`, pairing each `Checking harness …` header with
+  its own `VERIFICATION:-` verdict; a harness bound by an `encodings`
+  entry (`{"verifier":"kani","artifact":"harness:<path>"}`) journals
+  `outcome:proof_pass:<property>` and lifts the band. Results for
+  unregistered harnesses are journaled as `proof_unbound`, not dropped.
+
+- **Linked-worktree commits are recorded.** A commit made in a linked
+  worktree of the governed repository is journaled with `repo_dir` —
+  the hook probes the absolute directory the head-moving invocation
+  names when it shares this repository's common git dir.
+
+### Fixed
+
+- **`.phronesisignore` exempts lexical rules only**, and excluded files
+  are reported in audit output instead of disappearing silently.
+
+- **CI-stable limited-read guard.** The action-log latency regression
+  test asserts a machine-relative ratio against a full parse of the
+  same fixture instead of an absolute 25ms wall-clock budget, which
+  flaked red on loaded shared CI runners.
+
+### Changed
+
+- **Visibility tightened across `src/init/` and `src/audit/`**
+  (`pub(crate)` to `pub(super)`), and nine production `.unwrap()` calls
+  in the init writers — hidden from `enforce-no-unwrap-in-src` while the
+  module was one file — are replaced with `?` or a named `expect()`.
+
 ## [0.35.0] - 2026-09-21
 
 ### Added
