@@ -1,6 +1,7 @@
 # SPEC: Phronesis A/B benchmark (model ± governance on SWE-bench Multilingual)
 
-**Status:** design, approved 2026-10-01
+**Status:** design, approved 2026-10-01; revised same day (HTML report
+deliverable, CLI surface, data contracts, failure modes)
 **Type:** experiment infrastructure (standalone, not a shipped crate)
 **Lives in:** `bench/` (new top-level directory, excluded from the workspace)
 **Reads from:** SWE-bench Multilingual (HuggingFace), `phr-mcp` CLI, Claude Code headless
@@ -14,10 +15,14 @@ clone (**control**), once in a clone with `phr-mcp init` governance active
 (**treatment**) — and compare outcomes.
 
 Primary question: **does governance change task success, code quality, and
-agent efficiency — and in which direction?** The deliverable is a
-publishable comparison (README/blog-grade evidence, not a paper): resolved
-rate, residual rule debt, turns/tokens/wall-clock, and per-rule friction,
-reported per task as paired deltas.
+agent efficiency — and in which direction?**
+
+The deliverable — the definition of done for the whole effort — is a
+**self-contained HTML report** (see *Definition of done*) showing, task by
+task, what the model did with and without phronesis enabled, the paired
+measurements (resolved rate, residual rule debt, turns/tokens/wall-clock,
+per-rule friction), and an interpretation section that makes sense of the
+effect. README/blog-grade evidence, not a paper.
 
 ## Purpose and non-goals
 
@@ -129,10 +134,66 @@ Crate modules:
 | `verify` | Extract the final diff, invoke the official SWE-bench Docker harness, parse resolved/unresolved |
 | `quality` | Post-run: stage a rules-only `.phronesis/rules.json` in **both** arms' clones and run `phr-mcp audit --json` — residual violation counts per rule (the symmetric quality metric) |
 | `telemetry` | Parse transcripts (turns, tool calls, token usage if reported, wall-clock) and treatment-arm `log.jsonl`/`phr-mcp stats` (blocks, warns, rule ids, fail-closed events) |
-| `aggregate` | Paired per-task report: resolved-rate delta, sign test over discordant pairs, audit-debt delta, turns/tokens/time deltas, per-rule friction table, per-language breakdown; markdown + JSON output |
+| `aggregate` | Paired per-task rollup from run records: resolved-rate delta, sign test over discordant pairs, audit-debt delta, turns/tokens/time deltas, per-rule friction table, per-language breakdown → `aggregate.json` |
+| `report` | Render `aggregate.json` (+ run records) into the self-contained HTML report at `bench/report/index.html` |
 
 `verify` shells out to the official Python harness; `quality` shells out to
 the installed `phr-mcp`. The crate never reimplements either.
+
+**Ordering constraint (correctness-critical):** the final diff is extracted
+from the clone (`git diff` of tracked files) **before** `quality` stages
+`.phronesis/rules.json` into the tree, so the audited files can never
+pollute the verified patch.
+
+### CLI surface (the interface between modules)
+
+```
+phr-bench corpus  --slice pilot|full --seed N --out <manifest.json>
+phr-bench arms    --manifest <manifest.json> --run-id <id>       # prepares both arms' clones
+phr-bench run     --manifest <manifest.json> --run-id <id> --arm control|treatment
+phr-bench verify  --run-id <id>        # official SWE-bench Docker eval over all diffs
+phr-bench quality --run-id <id>        # audit both arms' final trees
+phr-bench report  --run-id <id> --out bench/report/index.html
+```
+
+### Data contracts
+
+Task manifest (`bench/tasks/manifest-<slice>.json`):
+
+```json
+{
+  "dataset": { "id": "<hf-dataset-id>", "revision": "<commit>" },
+  "seed": 20261001,
+  "tasks": [
+    { "instance_id": "...", "language": "rust", "repo": "...",
+      "base_commit": "...", "issue_text": "...",
+      "fail_to_pass": ["..."], "pass_to_pass": ["..."],
+      "packs": ["llm", "rust"] }
+  ]
+}
+```
+
+Run record (`bench/results/<run-id>/runs/<instance_id>/<arm>.json`) — one
+per task per arm:
+
+```json
+{
+  "instance_id": "...", "arm": "control|treatment",
+  "exit": "completed|cap_turns|cap_time|error",
+  "resolved": true,
+  "turns": 34, "tokens_in": null, "tokens_out": null,
+  "wall_clock_secs": 1234, "diff_bytes": 4567,
+  "audit": { "total_violations": 3, "per_rule": { "<rule_id>": 2 } },
+  "governance": { "blocks": [{"rule": "...", "count": 1}],
+                  "warns": [{"rule": "...", "count": 2}], "fail_closed": 0 }
+}
+```
+
+`resolved` is absent until `verify` fills it. `tokens_in`/`tokens_out` are
+`null` when the router does not report usage — never omitted, so downstream
+code can rely on the field existing. `governance` is present only for the
+treatment arm; a treatment record missing it is an error the aggregate step
+reports loudly.
 
 ## Metrics
 
@@ -164,6 +225,46 @@ and improve the audit result?).
 if not, turns + wall-clock are the fallback and the report says so),
 wall-clock including hook latency.
 
+## Definition of done
+
+The effort is complete when `bench/report/index.html` exists, is
+self-contained (inline CSS, no external scripts, styles, or network
+fetches; opens offline in a browser), and is generated deterministically
+from the run's committed JSON artifacts by `phr-bench report`. It must
+contain, in order:
+
+1. **Headline** — resolved rate control vs treatment (overall and per
+   language), paired delta, sign test over discordant pairs, and run
+   counts (n tasks, n runs, cap hits per arm).
+2. **Per-task paired breakdown** — one row per task: instance id, language,
+   and per arm (control | treatment): exit status, resolved, turns, tokens
+   (or "n/r" when the router reports none), wall-clock, audit violations,
+   blocks/warns. Discordant pairs (one arm resolved, the other not) are
+   visually flagged and each gets a short narrative note (final assistant
+   message from the transcript, trimmed; plus the pilot's manual review
+   where one exists).
+3. **Friction** — per-rule block/warn counts across the treatment arm,
+   fail-closed events, and the false-positive review table (pilot: every
+   blocked edit; full run: the sampled subset).
+4. **Efficiency** — mean/median turns, tokens (where reported), and
+   wall-clock per arm; hook-added wall-clock (treatment run time minus
+   control run time on the same task is the per-task unit).
+5. **Governance behavior** — deflection-rule hits and block→recovery rate
+   (share of blocked edits followed by a passing re-edit).
+6. **Interpretation** — a verdict section written for a reader who wants to
+   *make sense of the effect*: does phronesis help, hurt, or trade (e.g.
+   fewer violations at the cost of more turns), where the effect
+   concentrates (language, rule), and what the block-recovery trajectories
+   show. Plain language, grounded in the tables above, no unmeasured
+   claims.
+7. **Caveats & reproducibility** — k=1 design, benchmark contamination,
+   token-reporting fallback, and the manifest summary (dataset id +
+   revision, seed, phr-mcp version, Claude Code version, router/model
+   string, prompt template hash).
+
+A companion `bench/report/data/` directory holds the committed JSON the
+HTML was rendered from, so the numbers are checkable without rerunning.
+
 ## Confounds and mitigations
 
 | Confound | Handling |
@@ -176,6 +277,33 @@ wall-clock including hook latency.
 | Agent stochasticity | k=1 accepted for the paired delta; k=3 subset is the follow-up knob |
 | Cap hits biased toward one arm | Identical caps; cap hits reported as outcomes, counted in both directions |
 | Treatment-arm context injection consuming tokens | That is a real cost of governance; it appears in the friction metrics rather than being normalized away |
+
+## Failure modes the spec implies (seed list for the plan's Review Focus)
+
+The plan must exercise these with tests; they are the inputs a reasonable
+person would expect the system to survive:
+
+1. **Router returns malformed or absent tool-call events** — the run must
+   exit with status `error` and a reason, never be counted as resolved.
+2. **Hooks silently absent in headless mode** — a treatment run whose
+   `.phronesis/log.jsonl` is missing or empty afterwards is invalid
+   (`governance_not_wired`), not a silent control-equivalent.
+3. **Issue text containing instructions** (injection) — issue text is
+   data: fenced in the prompt template, never concatenated raw.
+4. **Agent produces no diff or gives up** — outcome is `completed` with
+   resolved=false after eval; distinct from harness `error`.
+5. **Agent edits test files to pass** — the official harness's test-file
+   protocol is the authority; the runner never second-guesses it.
+6. **Audit staging polluting the patch** — prevented by the ordering
+   constraint in *Components*; a test pins the order.
+7. **Treatment record missing `governance`** — aggregate step fails loudly
+   (see *Data contracts*), not with a zero-filled report.
+8. **Docker eval flakiness (network, image pull)** — one retry, recorded
+   in the run record; a second failure is `error`.
+9. **Context-window overflow mid-task** — run exits `error` with the
+   router's message preserved in the transcript artifact.
+10. **Concurrent runs contending on one machine** — default is sequential
+    execution; the pilot measures whether capped parallelism is safe.
 
 ## Phasing
 
@@ -202,17 +330,23 @@ pilot data (recorded in the manifest), or the design is revised if friction
 or cost is out of range.
 
 **Phase 2 — full run + report.** ≈100-task slice (all Rust + seeded
-stratified sample), both arms. Deliverable: `bench/report/` markdown report
-(per-task paired table, deltas, sign test, per-rule friction, per-language
-breakdown, confound caveats) + JSON, suitable for README/blog citation.
+stratified sample), both arms. Deliverable: the **definition of done** —
+`bench/report/index.html` (self-contained, per *Definition of done*) plus
+the committed JSON it was rendered from, suitable for README/blog citation.
 
 ## Testing approach
 
 - **Unit:** manifest parsing (fixture instance JSON), prompt rendering
-  (deterministic, hash recorded), arm prep (temp git clones — assert
-  treatment has `.claude/settings.json` + `.phronesis/rules.json`, control
-  has neither), transcript parsing (fixture stream-json), aggregation
-  (synthetic paired results → expected sign-test output).
+  (deterministic, hash recorded; issue text fenced), arm prep (temp git
+  clones — assert treatment has `.claude/settings.json` + `.phronesis/rules.json`, control
+  has neither), transcript parsing (fixture stream-json, including a
+  tool-call-free transcript and a malformed-events transcript), aggregation
+  (synthetic paired results → expected sign-test output; a treatment record
+  missing `governance` → loud error), diff-before-audit ordering.
+- **Report rendering:** render from a fixture `aggregate.json` + run records;
+  assert all seven required sections present, zero external resource
+  references (no `http://`, `https://`, `src=` pointing outside the file),
+  and deterministic byte-identical output across two renders.
 - **Integration:** Phase 0 spike scenarios as scripts; the Phase 1 pilot is
   the end-to-end test of the crate itself.
 - **No benchmark artifacts committed:** results are gitignored; reports
