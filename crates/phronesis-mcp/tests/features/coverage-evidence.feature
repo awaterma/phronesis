@@ -33,3 +33,25 @@ Feature: Coverage evidence
     When a pre-check runs with "git commit -m x"
     Then rule warn-commit-on-stale-coverage fires
     And the warning names the staleness without blocking the commit
+
+  Scenario: Python lcov evidence selects the body test with a runnable command
+    Given a Python project with per-test lcov evidence
+    When the lcov evidence is imported and its load body changes
+    Then coverage select lists the Python test and pytest command
+
+  Scenario: Java JaCoCo evidence selects the body test with a runnable mvn command
+    Given a Java Maven project with an annotated test and production method
+    When the Java production method body changes
+    Then coverage select lists the Java test and Maven command
+  Scenario: Swift lcov evidence selects the body test with a runnable swift test command
+    Given a Swift project with per-test lcov evidence
+    When the Swift lcov evidence is imported and its load body changes
+    Then coverage select lists the Swift test and swift test command
+  Scenario: TypeScript lcov evidence selects the body test with a runnable vitest command
+    Given a TypeScript project with per-test lcov evidence
+    When the TypeScript lcov evidence is imported and its load body changes
+    Then coverage select lists the TypeScript test and vitest command
+  Scenario: Lua lcov evidence selects the body test with a runnable busted command
+    Given a Lua project with per-test luacov evidence
+    When the luacov evidence is imported and its load body changes
+    Then coverage select lists the Lua test and busted command

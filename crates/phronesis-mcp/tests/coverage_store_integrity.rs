@@ -746,3 +746,121 @@ fn crash_leftover_without_a_lock_holder_is_corrupt() {
         "{facts:?}"
     );
 }
+
+// Exact rejection-path coverage: each case begins with a valid digest-bound
+// store so the requested corruption cannot be masked by an earlier failure.
+fn assert_corruption_is_not_evidence(root: &Path, revision: &str, reason: &str, detail: &str) {
+    use phronesis_mcp::coverage::store::{StoreState, load_store};
+    match load_store(root) {
+        StoreState::Corrupt(corruption) => {
+            assert_eq!(corruption.reason, reason);
+            assert_eq!(corruption.detail, detail);
+        }
+        other => panic!("expected {reason}, got {other:?}"),
+    }
+    assert!(
+        load_index(root).is_none(),
+        "corruption is not a trusted revision"
+    );
+    let error = load_hits(root)
+        .expect_err("corruption is not trusted hits")
+        .to_string();
+    assert!(error.contains(reason) && error.contains(detail), "{error}");
+    let facts = hydrate(root, ALL, revision);
+    assert_eq!(corrupt_reason(&facts).as_deref(), Some(reason));
+    for predicate in ["coverage_revision", "test_hits_region"] {
+        assert!(
+            !facts.iter().any(|fact| fact.predicate == predicate),
+            "{facts:?}"
+        );
+    }
+    let expected: HashSet<_> = ["fn:src/lib.rs::safe_divide".to_string(), BRANCH.to_string()]
+        .into_iter()
+        .collect();
+    assert_eq!(gaps(&facts).into_iter().collect::<HashSet<_>>(), expected);
+}
+
+fn valid_integrity_fixture() -> (tempfile::TempDir, String) {
+    use phronesis_mcp::coverage::store::{StoreState, load_store, validate_record};
+    let root = tempfile::tempdir().expect("project");
+    let revision = "a".repeat(40);
+    let records = covering_hits(&revision);
+    for record in &records {
+        validate_record(record).expect("preceding record validation must pass");
+    }
+    write_store(root.path(), &records, &index(&revision)).expect("valid store");
+    assert!(
+        matches!(load_store(root.path()), StoreState::Loaded { index, hits }
+        if index.revision == revision && hits == records)
+    );
+    assert!(
+        gaps(&hydrate(root.path(), ALL, &revision)).is_empty(),
+        "baseline covers both regions"
+    );
+    (root, revision)
+}
+
+fn mutate_index_field(root: &Path, field: &str, value: serde_json::Value) {
+    let path = store_paths(root).1;
+    let mut file: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).expect("index")).expect("valid index");
+    assert!(file["records_fnv1a64"].is_string(), "keep the valid digest");
+    assert_eq!(file["record_count"], 2, "keep the valid baseline count");
+    file[field] = value;
+    std::fs::write(path, serde_json::to_vec(&file).expect("index JSON")).expect("index mutation");
+}
+
+#[test]
+fn missing_records_with_an_existing_index_are_corrupt_and_leave_both_gaps() {
+    let (root, revision) = valid_integrity_fixture();
+    std::fs::remove_file(store_paths(root.path()).0).expect("remove records only");
+    assert_corruption_is_not_evidence(
+        root.path(),
+        &revision,
+        "missing_records",
+        "coverage index exists without its records file",
+    );
+}
+
+#[test]
+fn unsupported_index_format_is_corrupt_with_valid_records_and_digest() {
+    let (root, revision) = valid_integrity_fixture();
+    mutate_index_field(
+        root.path(),
+        "format",
+        serde_json::json!(COVERAGE_FORMAT + 1),
+    );
+    assert_corruption_is_not_evidence(
+        root.path(),
+        &revision,
+        "unsupported_format",
+        &format!(
+            "index format {} (expected {COVERAGE_FORMAT})",
+            COVERAGE_FORMAT + 1
+        ),
+    );
+}
+
+#[test]
+fn matching_digest_with_wrong_record_count_is_corrupt_and_not_evidence() {
+    let (root, revision) = valid_integrity_fixture();
+    mutate_index_field(root.path(), "record_count", serde_json::json!(3));
+    assert_corruption_is_not_evidence(
+        root.path(),
+        &revision,
+        "count_mismatch",
+        "index expects 3 records",
+    );
+}
+
+#[test]
+fn valid_records_with_a_different_index_tool_are_corrupt_and_not_evidence() {
+    let (root, revision) = valid_integrity_fixture();
+    mutate_index_field(root.path(), "tool", serde_json::json!("coverage.py"));
+    assert_corruption_is_not_evidence(
+        root.path(),
+        &revision,
+        "tool_mismatch",
+        "line 1: record tool differs from the index tool",
+    );
+}

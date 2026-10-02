@@ -531,3 +531,592 @@ async fn then_stale_warns_without_blocking(world: &mut World) {
         world.last_stderr
     );
 }
+
+#[given("a Python project with per-test lcov evidence")]
+async fn given_python_lcov_project(world: &mut World) {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    let fixture =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/python-store");
+    fn copy(src: &Path, dst: &Path) {
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let to = dst.join(e.file_name());
+            if e.path().is_dir() {
+                std::fs::create_dir_all(&to).unwrap();
+                copy(&e.path(), &to);
+            } else {
+                std::fs::copy(e.path(), to).unwrap();
+            }
+        }
+    }
+    copy(&fixture, root);
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "fixture"]);
+    let revision = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let digest = phronesis_mcp::properties::execute::artifact_sha256(
+        &std::fs::read(root.join("pkg/store.py")).unwrap(),
+    );
+    std::fs::write(
+        root.join("cov/manifest.json"),
+        serde_json::json!({"revision":revision,"files":{"pkg/store.py":digest}}).to_string(),
+    )
+    .unwrap();
+    world.checked_file_path = Some(root.to_string_lossy().to_string());
+    world.temp_dir = Some(dir);
+}
+
+#[when("the lcov evidence is imported and its load body changes")]
+async fn when_import_python_lcov_and_edit(world: &mut World) {
+    let root = Path::new(world.checked_file_path.as_deref().expect("Python project"));
+    let import = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args([
+            "coverage",
+            "import",
+            "--format",
+            "lcov-dir",
+            "--tool",
+            "coverage.py",
+            "--allow-dirty",
+            "cov",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    let rebuild = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["graph", "rebuild"])
+        .output()
+        .unwrap();
+    assert!(
+        rebuild.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+    let source = root.join("pkg/store.py");
+    let old = std::fs::read_to_string(&source).unwrap();
+    std::fs::write(
+        &source,
+        old.replace("return path.read_text()", "return str(path.read_text())"),
+    )
+    .unwrap();
+    let select = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["coverage", "select", "--json"])
+        .output()
+        .unwrap();
+    world.last_exit_code = select.status.code();
+    world.last_json = String::from_utf8_lossy(&select.stdout).to_string();
+    world.last_stderr = String::from_utf8_lossy(&select.stderr).to_string();
+    assert!(select.status.success(), "{}", world.last_stderr);
+}
+
+#[then("coverage select lists the Python test and pytest command")]
+async fn then_python_selection_command(world: &mut World) {
+    assert!(
+        world
+            .last_json
+            .contains("python:pkg::tests::test_store::test_load"),
+        "{}",
+        world.last_json
+    );
+    assert!(
+        world
+            .last_json
+            .contains("python -m pytest -- 'tests/test_store.py::test_load'"),
+        "{}",
+        world.last_json
+    );
+}
+
+#[given("a Java Maven project with an annotated test and production method")]
+async fn given_java_jacoco_project(world: &mut World) {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    let source = root.join("core/src/main/java/com/x/Store.java");
+    let test = root.join("core/src/test/java/com/x/StoreTest.java");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(test.parent().unwrap()).unwrap();
+    std::fs::write(
+        root.join("pom.xml"),
+        "<project><artifactId>root</artifactId></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("core/pom.xml"),
+        "<project><artifactId>core</artifactId></project>",
+    )
+    .unwrap();
+    std::fs::write(
+        &source,
+        "package com.x; public class Store { public int load() { return 1; } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        &test,
+        "package com.x; class StoreTest { @Test void testLoad() { new Store().load(); } }\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("cov/1")).unwrap();
+    std::fs::write(root.join("cov/1/module.txt"), "core\n").unwrap();
+    std::fs::write(
+        root.join("cov/1/TN"),
+        "java:core::com::x::StoreTest::testLoad\n",
+    )
+    .unwrap();
+    std::fs::write(root.join("cov/1/jacoco.xml"), r#"<report><package name="com/x"><class name="com/x/Store" sourcefilename="Store.java"><method name="load"><counter type="METHOD" missed="0" covered="1"/></method></class><sourcefile name="Store.java"><line nr="1" mi="0" ci="1"/></sourcefile></package></report>"#).unwrap();
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "fixture"]);
+    let revision = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let digest =
+        phronesis_mcp::properties::execute::artifact_sha256(&std::fs::read(&source).unwrap());
+    std::fs::write(root.join("cov/manifest.json"), serde_json::json!({"revision":revision,"files":{"core/src/main/java/com/x/Store.java":digest},"runner":"mvn"}).to_string()).unwrap();
+    world.checked_file_path = Some(root.to_string_lossy().to_string());
+    world.temp_dir = Some(dir);
+}
+
+#[when("the Java production method body changes")]
+async fn when_java_jacoco_import_and_edit(world: &mut World) {
+    let root = Path::new(world.checked_file_path.as_deref().expect("Java project"));
+    let import = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args([
+            "coverage",
+            "import",
+            "--format",
+            "jacoco-dir",
+            "--tool",
+            "jacoco+mvn",
+            "cov",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    let source = root.join("core/src/main/java/com/x/Store.java");
+    let old = std::fs::read_to_string(&source).unwrap();
+    std::fs::write(&source, old.replace("return 1", "return 2")).unwrap();
+    let rebuild = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["graph", "rebuild"])
+        .output()
+        .unwrap();
+    assert!(
+        rebuild.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+    let select = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["coverage", "select", "--json"])
+        .output()
+        .unwrap();
+    world.last_exit_code = select.status.code();
+    world.last_json = String::from_utf8_lossy(&select.stdout).to_string();
+    world.last_stderr = String::from_utf8_lossy(&select.stderr).to_string();
+    assert!(select.status.success(), "{}", world.last_stderr);
+}
+
+#[then("coverage select lists the Java test and Maven command")]
+async fn then_java_selection_command(world: &mut World) {
+    assert!(
+        world
+            .last_json
+            .contains("java:core::com::x::StoreTest::testLoad"),
+        "{}",
+        world.last_json
+    );
+    assert!(
+        world
+            .last_json
+            .contains("mvn -pl 'core' -Dtest='com.x.StoreTest#testLoad' test"),
+        "{}",
+        world.last_json
+    );
+}
+
+#[given("a Swift project with per-test lcov evidence")]
+async fn given_swift_lcov_project(world: &mut World) {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/swift-store");
+    fn copy(src: &Path, dst: &Path) {
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let to = dst.join(e.file_name());
+            if e.path().is_dir() {
+                std::fs::create_dir_all(&to).unwrap();
+                copy(&e.path(), &to);
+            } else {
+                std::fs::copy(e.path(), to).unwrap();
+            }
+        }
+    }
+    copy(&fixture, root);
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "fixture"]);
+    let revision = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let digest = phronesis_mcp::properties::execute::artifact_sha256(
+        &std::fs::read(root.join("Sources/Store/Store.swift")).unwrap(),
+    );
+    std::fs::write(
+        root.join("cov/manifest.json"),
+        serde_json::json!({"revision":revision,"files":{"Sources/Store/Store.swift":digest}})
+            .to_string(),
+    )
+    .unwrap();
+    world.checked_file_path = Some(root.to_string_lossy().to_string());
+    world.temp_dir = Some(dir);
+}
+
+#[when("the Swift lcov evidence is imported and its load body changes")]
+async fn when_import_swift_lcov_and_edit(world: &mut World) {
+    let root = Path::new(world.checked_file_path.as_deref().expect("Swift project"));
+    let import = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args([
+            "coverage",
+            "import",
+            "--format",
+            "lcov-dir",
+            "--tool",
+            "swift-cov",
+            "--allow-dirty",
+            "cov",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    let rebuild = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["graph", "rebuild"])
+        .output()
+        .unwrap();
+    assert!(
+        rebuild.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+    let source = root.join("Sources/Store/Store.swift");
+    let old = std::fs::read_to_string(&source).unwrap();
+    std::fs::write(
+        &source,
+        old.replace("return text", "return text.lowercased()"),
+    )
+    .unwrap();
+    let select = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["coverage", "select", "--json"])
+        .output()
+        .unwrap();
+    world.last_exit_code = select.status.code();
+    world.last_json = String::from_utf8_lossy(&select.stdout).to_string();
+    world.last_stderr = String::from_utf8_lossy(&select.stderr).to_string();
+    assert!(select.status.success(), "{}", world.last_stderr);
+}
+
+#[then("coverage select lists the Swift test and swift test command")]
+async fn then_swift_selection_command(world: &mut World) {
+    assert!(
+        world
+            .last_json
+            .contains("swift:StoreTests::StoreTests::StoreTests::testLoad"),
+        "{}",
+        world.last_json
+    );
+    assert!(
+        world
+            .last_json
+            .contains("swift test --filter '^StoreTests\\\\.StoreTests/testLoad$'"),
+        "{}",
+        world.last_json
+    );
+}
+
+#[given("a TypeScript project with per-test lcov evidence")]
+async fn given_typescript_lcov_project(world: &mut World) {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/ts-store");
+    fn copy(src: &Path, dst: &Path) {
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let to = dst.join(e.file_name());
+            if e.path().is_dir() {
+                std::fs::create_dir_all(&to).unwrap();
+                copy(&e.path(), &to);
+            } else {
+                std::fs::copy(e.path(), to).unwrap();
+            }
+        }
+    }
+    copy(&fixture, root);
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "fixture"]);
+    let revision = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let digest = phronesis_mcp::properties::execute::artifact_sha256(
+        &std::fs::read(root.join("src/store.ts")).unwrap(),
+    );
+    std::fs::write(
+        root.join("cov/manifest.json"),
+        serde_json::json!({"revision":revision,"files":{"src/store.ts":digest}}).to_string(),
+    )
+    .unwrap();
+    world.checked_file_path = Some(root.to_string_lossy().to_string());
+    world.temp_dir = Some(dir);
+}
+
+#[when("the TypeScript lcov evidence is imported and its load body changes")]
+async fn when_import_typescript_lcov_and_edit(world: &mut World) {
+    let root = Path::new(world.checked_file_path.as_deref().expect("TS project"));
+    let import = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args([
+            "coverage",
+            "import",
+            "--format",
+            "lcov-dir",
+            "--tool",
+            "c8+vitest",
+            "--allow-dirty",
+            "cov",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    let rebuild = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["graph", "rebuild"])
+        .output()
+        .unwrap();
+    assert!(
+        rebuild.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+    let source = root.join("src/store.ts");
+    let old = std::fs::read_to_string(&source).unwrap();
+    std::fs::write(
+        &source,
+        old.replace("return \"value\";", "return \"value!\";"),
+    )
+    .unwrap();
+    let select = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["coverage", "select", "--json"])
+        .output()
+        .unwrap();
+    world.last_exit_code = select.status.code();
+    world.last_json = String::from_utf8_lossy(&select.stdout).to_string();
+    world.last_stderr = String::from_utf8_lossy(&select.stderr).to_string();
+    assert!(select.status.success(), "{}", world.last_stderr);
+}
+
+#[then("coverage select lists the TypeScript test and vitest command")]
+async fn then_typescript_selection_command(world: &mut World) {
+    // The graph's real `defines_test` id: the `#test:` target infix for a
+    // file under `tests/`, the module segment keeping `.test`, and the raw
+    // `it()` title at the end.
+    assert!(
+        world
+            .last_json
+            .contains("typescript:ts-store#test:store.test.ts::tests::store.test::Store loads"),
+        "{}",
+        world.last_json
+    );
+    // The command is chosen by the imported record's tool string
+    // (`c8+vitest`), with the title extracted after the file's module
+    // marker; the literal anchored pattern is shell-quoted.
+    assert!(
+        world
+            .last_json
+            .contains(r#"npx vitest run 'tests/store.test.ts' -t '^Store loads$'"#),
+        "{}",
+        world.last_json
+    );
+}
+
+#[given("a Lua project with per-test luacov evidence")]
+async fn given_lua_lcov_project(world: &mut World) {
+    let dir = TempDir::new().expect("tempdir");
+    let root = dir.path();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/lcov/lua-store");
+    fn copy(src: &Path, dst: &Path) {
+        for e in std::fs::read_dir(src).unwrap() {
+            let e = e.unwrap();
+            let to = dst.join(e.file_name());
+            if e.path().is_dir() {
+                std::fs::create_dir_all(&to).unwrap();
+                copy(&e.path(), &to);
+            } else {
+                std::fs::copy(e.path(), to).unwrap();
+            }
+        }
+    }
+    copy(&fixture, root);
+    std::fs::create_dir_all(root.join(".phronesis")).unwrap();
+    std::fs::write(root.join(".phronesis/rules.json"), r#"{"rules":[]}"#).unwrap();
+    git(root, &["init", "-q"]);
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "fixture"]);
+    let revision = String::from_utf8(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap()
+    .trim()
+    .to_string();
+    let digest = phronesis_mcp::properties::execute::artifact_sha256(
+        &std::fs::read(root.join("src/store.lua")).unwrap(),
+    );
+    std::fs::write(
+        root.join("cov/manifest.json"),
+        serde_json::json!({"revision":revision,"files":{"src/store.lua":digest}}).to_string(),
+    )
+    .unwrap();
+    world.checked_file_path = Some(root.to_string_lossy().to_string());
+    world.temp_dir = Some(dir);
+}
+
+#[when("the luacov evidence is imported and its load body changes")]
+async fn when_import_lua_lcov_and_edit(world: &mut World) {
+    let root = Path::new(world.checked_file_path.as_deref().expect("Lua project"));
+    let import = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args([
+            "coverage",
+            "import",
+            "--format",
+            "lcov-dir",
+            "--tool",
+            "luacov+busted",
+            "--allow-dirty",
+            "cov",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        import.status.success(),
+        "{}",
+        String::from_utf8_lossy(&import.stderr)
+    );
+    let rebuild = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["graph", "rebuild"])
+        .output()
+        .unwrap();
+    assert!(
+        rebuild.status.success(),
+        "{}",
+        String::from_utf8_lossy(&rebuild.stderr)
+    );
+    let source = root.join("src/store.lua");
+    let old = std::fs::read_to_string(&source).unwrap();
+    std::fs::write(
+        &source,
+        old.replace(
+            "return read_file(self.path)",
+            "return tostring(read_file(self.path))",
+        ),
+    )
+    .unwrap();
+    let select = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .current_dir(root)
+        .args(["coverage", "select", "--json"])
+        .output()
+        .unwrap();
+    world.last_exit_code = select.status.code();
+    world.last_json = String::from_utf8_lossy(&select.stdout).to_string();
+    world.last_stderr = String::from_utf8_lossy(&select.stderr).to_string();
+    assert!(select.status.success(), "{}", world.last_stderr);
+}
+
+#[then("coverage select lists the Lua test and busted command")]
+async fn then_lua_selection_command(world: &mut World) {
+    assert!(
+        world
+            .last_json
+            .contains("lua:project::spec::store_spec::store::loads the stored value"),
+        "{}",
+        world.last_json
+    );
+    assert!(
+        world
+            .last_json
+            .contains("busted --filter='^store loads the stored value$' 'spec/store_spec.lua'"),
+        "{}",
+        world.last_json
+    );
+}

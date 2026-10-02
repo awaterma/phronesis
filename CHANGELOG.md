@@ -8,6 +8,106 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
+- **Java coverage evidence.** Java method and constructor regions use
+  JaCoCo XML per-test reports, imported with `coverage import --format
+  jacoco-dir`; `coverage collect --tool java-cov` emits Maven or Gradle
+  collection scripts. JUnit `@Test` methods in test source roots now have
+  graph `defines_test` ids. The opt-in `java` pack adds Maven and Gradle
+  toolchain definitions without starter rules.
+
+- **Compile signals for evaluated languages.** The `cue` and `helm3` packs
+  ship `cue` and `helm` toolchain defs through `phr-mcp init` (one
+  language-pack toolchains writer, merge-if-absent: missing ids are added,
+  existing ids are never touched, a non-array `toolchains.json` fails init).
+  cue's `compile_fail` patterns are pinned from live `cue vet` runs; helm's
+  follow the plan's documented shapes and are unverified (helm is not
+  installed on the development machine).
+
+- **`coverage select` names evaluated files.** Edits to cue, JSON, YAML,
+  Helm templates, and Rhai (the graph's evaluated languages) are listed
+  under a new `no_coverage_semantics` key (`--json`) and a table footer —
+  "`<file>`: evaluated, not executed; the compile signal comes from `cue
+  vet` / `helm lint` / the hook's Rhai evaluation." They produce no
+  function regions, so no test is ever selected for them and no
+  `region_without_dynamic_evidence` fact exists for them; unknown
+  extensions stay unclassified. Spec §12 gains an "Evaluated languages"
+  table.
+
+- **Coverage evidence for TypeScript and JavaScript.** The region map
+  produces function regions for the eight TypeScript/JavaScript
+  extensions (`.tsx`/`.jsx` parse with the TSX grammar; anonymous
+  callbacks are not sites), and the graph now claims `.js`/`.jsx`/
+  `.mjs`/`.cjs` as TypeScript so JavaScript files get structural ids and
+  extraction. `phr-mcp coverage collect --tool js-cov --emit-script
+  [--runner vitest|jest|node]` emits isolated per-test lcov collection
+  (runner detected from `package.json`), guarded against a test filter
+  that matches zero tests — the guard shapes are pinned from real
+  vitest 2.1.9, jest 29, and node 26 runs, all of which exit 0 on a
+  zero-match. `coverage select` renders the runnable vitest/jest/
+  `node --test` command from the imported record's tool string
+  (`c8+vitest`, `istanbul+jest`, `c8+node`). One-liner functions are
+  attributed by `FNDA` (c8 emits reliable V8 names) and never from the
+  declaration line's `DA`. The typescript pack ships vitest and jest
+  toolchain defs through a merge-if-absent `toolchains.json` writer.
+  CI runs no Node; parsing and import use the committed `ts-store`
+  fixture.
+
+- **Coverage evidence for Lua.** The registry grows a `lua` row — function
+  regions for `.lua` files via the tree-sitter-lua grammar (declared
+  functions with dotted and method-style names, named anonymous functions;
+  callbacks are not sites), the production-source filter (spec trees,
+  `*_spec.lua`, `.luarocks/`, `lua_modules/` excluded), and the brace-row
+  one-liner rule, so a one-line Lua function imports as `unattributable`
+  because luacov's lcov reporter emits no `FN`/`FNDA`. The Lua graph sensor
+  now emits `defines_test` for busted specs (`describe`/`it` call nodes,
+  ids shaped like `lua:<unit>::<spec segments>::<describe titles>::<it
+  title>`); `coverage collect --tool lua-cov --emit-script` emits isolated
+  per-test collection under busted `--coverage --filter` with a zero-match
+  guard on busted's summary line and a lua-written manifest recording the
+  runner; `coverage import --format lcov-dir --tool luacov+busted` imports
+  the evidence after manifest verification; and `coverage select` renders
+  `busted --filter '<full name>' <spec>` commands. The `lua` pack ships the
+  `busted` toolchain def through a merge-if-absent language-pack writer
+  (missing ids appended, user-edited entries never touched). CI runs no
+  Lua; parsing, the script, and import use committed fixtures and tests
+  (busted and luacov are not installed on the build machine; their flags
+  and summary shapes are pinned from busted's and luacov's own sources).
+
+- **Coverage language registry.** One row per language in
+  `coverage/language.rs` owns function-site extraction, the
+  production-source filter, the test-id namespace, the per-language
+  one-liner attribution rule, and the command `coverage select` renders.
+  Rust and Python behaviour is unchanged; the spec's Languages section is
+  now a table (`docs/specs/SPEC-coverage-evidence.md` §12) that future
+  languages extend by adding a row.
+
+- **Coverage evidence for Python.** The region map produces function regions
+  for `.py` files; `phr-mcp coverage import --format lcov-dir --tool
+  coverage.py <dir>` imports per-test lcov after checking the collection
+  manifest revision and file digests; `coverage collect --tool pytest-cov
+  --emit-script` emits isolated collection for a devcontainer; and `coverage
+  select` renders Python tests as runnable pytest commands. Function hits use
+  executed body lines because coverage.py marks `def` lines at import time.
+  Unresolved, ambiguous and filtered paths, files without regions, and
+  one-line functions without `FNDA` data are reported. Python branch regions
+  are deferred. CI runs no Python; parsing and import use committed fixtures.
+
+- **Coverage evidence for Swift.** The region map produces function regions
+  for `.swift` files (free functions, methods, inits and deinits, nested
+  functions; extension methods qualify under the extended type; overloads
+  get source-order ordinals) with production sources mirroring the graph's
+  `file_type` classifier. `phr-mcp coverage collect --tool swift-cov
+  [--emit-script]` renders a container script that runs one isolated
+  `swift test --enable-code-coverage --filter` per graph test, snapshots the
+  merged profdata per run, and exports `TN:`-tagged lcov via llvm-cov, with
+  a zero-match guard accepting both the XCTest and Swift Testing one-test
+  summaries; `coverage import --format lcov-dir --tool swift-cov <dir>`
+  imports it after manifest verification. `coverage select` renders Swift
+  tests as runnable `swift test --filter '^<module>.<scope>/<name>$'`
+  commands. One-line Swift functions are never attributed (llvm-cov's lcov
+  `FN` names are mangled). The built-in `swift` toolchain def now grounds
+  per-test outcomes from XCTest and Swift Testing output lines. Xcode
+  projects are deferred.
 - **Confidence signals survive redirected output and hand-run gates.** When a
   handled command sends stdout to a fresh regular file inside the project and
   the host captured nothing, post-check parses that file and journals
@@ -47,6 +147,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   still available with `--no-default-features --features rhai`.
 
 ### Fixed
+
+- Coverage collection now validates exact per-test execution and clears or
+  refuses reused output. Swift builds instrumented tests before discovery and
+  supports executable and bundle layouts; JVM collectors configure real XML
+  reports; JaCoCo accepts its standard inert DOCTYPE. JavaScript graph rebuild
+  includes all JS extensions, literal suite scopes identify duplicate test
+  titles, and CommonJS assignments have body regions. JS/Lua declaration hits
+  no longer count as executed bodies. Real-runner CI exercises collection,
+  import, and changed-body selection across the language collectors.
 
 - **`.phronesisignore` no longer hides files from structural rules.** An ignore
   entry now exempts a file from lexical rules only (rules with no AST

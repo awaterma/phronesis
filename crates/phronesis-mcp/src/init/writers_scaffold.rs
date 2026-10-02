@@ -434,6 +434,205 @@ pub(super) fn write_confidence_scaffold(
     Ok(())
 }
 
+/// Toolchain def for `cue vet` / `cue eval` / `cue export` / `cue fmt --check`.
+///
+/// `compile_fail` patterns pinned from live `cue vet` output on this machine
+/// (cue v0.16.1: `a: int` + `a: "hello"` → `a: conflicting values int and
+/// "hello" (mismatched types int and string):`; `value: missingRef` →
+/// `value: reference "missingRef" not found:`; `cue vet -c` over
+/// `instance: {age: int}` → `instance.age: incomplete value int:`;
+/// `strings.HasPrefix(42, "x")` → `result: cannot use 42 (type int) as
+/// string in argument 1 to strings.HasPrefix:`; every diagnostic is followed
+/// by location lines like `    ./conflict.cue:1:4`). The `(?m)^` line anchor
+/// follows the codebase convention: `compile_fail` regexes run against the
+/// whole output, so a bare `^` would anchor only at output start. A passing
+/// `cue vet` (exit 0, no diagnostic) grounds a `compile` pass; `cue fmt
+/// --check` failure prints only the file name, so its failure is grounded by
+/// the exit code, not text.
+const CUE_TOOLCHAIN_JSON: &str = r#"{
+  "id": "cue",
+  "matches": "^cue\\s+(vet|eval|export|fmt\\s+--check)(\\s|$)",
+  "compile_fail": [
+    "(?m)^.*: (conflicting values|incomplete value|reference .* not found|cannot use)",
+    "\\.cue:\\d+:\\d+"
+  ]
+}"#;
+
+/// Toolchain def for `helm lint` / `helm template`.
+///
+/// UNVERIFIED: `helm` is not installed on the development machine, so the
+/// `compile_fail` and `test_summary` patterns are pinned from the plan's
+/// documented shapes, not from a live `helm lint` run. A reviewer with
+/// helm installed should confirm them.
+///
+/// `compile_fail`:
+/// - `[ERROR]` — helm lint error prefix
+/// - `Error:` — helm general error prefix
+///
+/// `test_summary`:
+/// - `(?P<passed>\d+) chart\(s\) linted, (?P<failed>\d+) chart\(s\) failed`
+const HELM_TOOLCHAIN_JSON: &str = r#"{
+  "id": "helm",
+  "matches": "^helm\\s+(lint|template)(\\s|$)",
+  "compile_fail": ["\\[ERROR\\]", "Error:"],
+  "test_summary": "(?P<passed>\\d+) chart\\(s\\) linted, (?P<failed>\\d+) chart\\(s\\) failed"
+}"#;
+
+/// Write language-pack toolchain definitions for the selected packs, using
+/// merge-if-absent semantics: missing toolchain ids are added to
+/// `.phronesis/toolchains.json`, existing ids are never touched.
+///
+/// This is the language-pack toolchains writer (plan Part L decision 1 /
+/// H decision 7): one mechanism, shared by every language pack that ships
+/// a toolchain def. The confidence pack's `write_confidence_scaffold` writes
+/// the example `toolchains.json` from scratch (skip-if-exists); this writer
+/// merges into whatever is already there (add missing ids only).
+pub(super) fn write_language_pack_toolchains(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    let mut defs_to_add: Vec<(&str, &str)> = Vec::new();
+    if opts.packs.contains(&Pack::Cue) {
+        defs_to_add.push(("cue", CUE_TOOLCHAIN_JSON));
+    }
+    if opts.packs.contains(&Pack::Helm3) {
+        defs_to_add.push(("helm", HELM_TOOLCHAIN_JSON));
+    }
+    if defs_to_add.is_empty() {
+        return Ok(());
+    }
+
+    let phr = root.join(".phronesis");
+    let path = crate::outcomes::toolchain::config_path(root);
+
+    // Read existing file (if any) as a JSON array; a non-array file is a
+    // data error that fails init — the human is present at init time and a
+    // broken file must not be silently extended.
+    let existing: Vec<serde_json::Value> = match std::fs::read_to_string(&path) {
+        Ok(content) => match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => {
+                return Err(InitError::InvalidRules(
+                    ".phronesis/toolchains.json must be a JSON array".into(),
+                ));
+            }
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(e) => {
+            return Err(InitError::Io {
+                path: path.display().to_string(),
+                source: e,
+            });
+        }
+    };
+
+    let existing_ids: std::collections::BTreeSet<String> = existing
+        .iter()
+        .filter_map(|v| v.get("id").and_then(|i| i.as_str()).map(String::from))
+        .collect();
+
+    let mut merged = existing;
+    let mut added = Vec::new();
+    for (id, json) in &defs_to_add {
+        if existing_ids.contains(*id) {
+            continue;
+        }
+        let val: serde_json::Value = serde_json::from_str(json).map_err(InitError::Json)?;
+        merged.push(val);
+        added.push(*id);
+    }
+
+    if added.is_empty() {
+        report.steps.push(
+            "= .phronesis/toolchains.json already has all language-pack defs — leaving unchanged"
+                .to_string(),
+        );
+        return Ok(());
+    }
+
+    if opts.dry_run {
+        for id in &added {
+            report.steps.push(format!(
+                "+ would add `{id}` toolchain to .phronesis/toolchains.json"
+            ));
+        }
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(&phr).map_err(|e| InitError::Io {
+        path: phr.display().to_string(),
+        source: e,
+    })?;
+    let body = serde_json::to_string_pretty(&merged).map_err(InitError::Json)?;
+    std::fs::write(&path, format!("{body}\n")).map_err(|e| InitError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+
+    for id in &added {
+        report.steps.push(format!(
+            "+ added `{id}` toolchain to .phronesis/toolchains.json"
+        ));
+    }
+    Ok(())
+}
+
+pub(super) fn write_java_toolchains(
+    root: &Path,
+    opts: &InitOpts,
+    report: &mut InitReport,
+) -> Result<(), InitError> {
+    if !opts.packs.contains(&Pack::Java) {
+        return Ok(());
+    }
+    let path = root.join(".phronesis/toolchains.json");
+    let mut defs: serde_json::Value = if path.exists() {
+        serde_json::from_slice(&std::fs::read(&path).map_err(|source| InitError::Io {
+            path: path.display().to_string(),
+            source,
+        })?)?
+    } else {
+        serde_json::json!([])
+    };
+    let array = defs
+        .as_array_mut()
+        .ok_or_else(|| InitError::InvalidRules("toolchains.json must be an array".into()))?;
+    for def in [
+        serde_json::json!({"id":"mvn","matches":"^(\\./)?mvnw?(\\s|$)","compile_fail":["COMPILATION ERROR|\\[ERROR\\] .*\\.java"],"test_summary":"Tests run: (?P<passed>\\d+), Failures: (?P<failed>\\d+), Errors: \\d+"}),
+        serde_json::json!({"id":"gradle","matches":"^(\\./)?gradlew?(\\s|$)","compile_fail":["error: |Compilation failed"],"test_summary":"(?P<passed>\\d+) tests completed, (?P<failed>\\d+) failed","compile_success":["BUILD SUCCESSFUL"]}),
+    ] {
+        let id = def["id"].as_str().unwrap_or_default();
+        if !array
+            .iter()
+            .any(|existing| existing["id"].as_str() == Some(id))
+        {
+            array.push(def);
+        }
+    }
+    if opts.dry_run {
+        report
+            .steps
+            .push("+ would merge mvn and gradle toolchains".into());
+        return Ok(());
+    }
+    std::fs::create_dir_all(path.parent().expect("toolchain parent")).map_err(|source| {
+        InitError::Io {
+            path: path.display().to_string(),
+            source,
+        }
+    })?;
+    let bytes = serde_json::to_vec_pretty(&defs)?;
+    std::fs::write(&path, bytes).map_err(|source| InitError::Io {
+        path: path.display().to_string(),
+        source,
+    })?;
+    report
+        .steps
+        .push("+ merged mvn and gradle toolchains".into());
+    Ok(())
+}
+
 /// Starter `.phronesis/journey.json` — schema version, one example tagger
 /// (`build` matches `cargo (build|check|test)`), empty `modules`. Authors
 /// extend it with their project's risk surface (auth, sql, payments, …)

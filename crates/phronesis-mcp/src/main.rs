@@ -484,7 +484,32 @@ enum CoverageCmd {
     /// untracked files and `.phronesis/` state are ignored), since the
     /// evidence would carry a revision that did not produce it. Applies to
     /// `--from-dir` too: it stamps HEAD and reads region maps from the tree.
+    ///
+    /// `--tool pytest-cov` emits Python per-test lcov collection, `--tool
+    /// js-cov` emits JavaScript/TypeScript per-test lcov collection under
+    /// vitest, jest, or `node --test` (runner detected from `package.json`,
+    /// `--runner` overrides), and `--tool lua-cov` emits Lua per-test lcov
+    /// collection under busted and luacov (entries from the graph's
+    /// defines_test ids); none of them run cargo.
     Collect {
+        /// Select a collector tool (`pytest-cov` enables Python collection,
+        /// `swift-cov` SwiftPM collection, `java-cov` Maven/Gradle
+        /// collection, `js-cov` JavaScript/TypeScript collection,
+        /// `lua-cov` Lua collection under busted/luacov).
+        #[arg(long)]
+        tool: Option<String>,
+        /// Build runner override: `mvn` or `gradle` for `--tool java-cov`
+        /// (detected from the build files when absent); `vitest`, `jest`,
+        /// or `node` for `--tool js-cov` (detected from `package.json`).
+        #[arg(long, value_parser = ["mvn", "gradle", "vitest", "jest", "node"])]
+        runner: Option<String>,
+        /// Print the collection script (pytest-cov / swift-cov / java-cov /
+        /// js-cov / lua-cov) for a devcontainer.
+        #[arg(long)]
+        emit_script: bool,
+        /// Output directory for per-test lcov / JaCoCo files.
+        #[arg(long)]
+        out: Option<PathBuf>,
         /// Import llvm-cov JSON exports already collected under this dir
         /// (files named cov-<bin>-<test>.json) instead of running cargo.
         #[arg(long)]
@@ -503,8 +528,20 @@ enum CoverageCmd {
     },
     /// Import a normalized per-test coverage export into the evidence store.
     Import {
-        /// Path to the export JSONL file.
+        /// Path to the export JSONL file or lcov directory.
         export: PathBuf,
+        /// Input format.
+        #[arg(long, default_value = "jsonl", value_parser = ["jsonl", "lcov-dir", "jacoco-dir"])]
+        format: String,
+        /// Evidence tool name (required for lcov-dir).
+        #[arg(long)]
+        tool: Option<String>,
+        /// Permit a dirty host tree (manifest hashes still must match).
+        #[arg(long)]
+        allow_dirty: bool,
+        /// Import without a manifest, marking evidence unverified.
+        #[arg(long)]
+        no_manifest: bool,
         /// Project root (defaults to current directory).
         #[arg(long, default_value = ".")]
         path: PathBuf,
@@ -534,6 +571,10 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
     use phronesis_mcp::coverage::collect;
     match cmd {
         CoverageCmd::Collect {
+            tool,
+            runner,
+            emit_script,
+            out,
             from_dir,
             bins,
             allow_dirty,
@@ -541,6 +582,268 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
         } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
+            if runner.is_some() && !matches!(tool.as_deref(), Some("java-cov") | Some("js-cov")) {
+                anyhow::bail!("--runner is only valid with --tool java-cov or --tool js-cov");
+            }
+            if tool.as_deref() == Some("js-cov") {
+                use phronesis_mcp::coverage::collect_js::{self, JsRunner};
+                use phronesis_mcp::coverage::language::typescript;
+                let runner = match runner.as_deref() {
+                    Some("vitest") => JsRunner::Vitest,
+                    Some("jest") => JsRunner::Jest,
+                    Some("node") => JsRunner::NodeTest,
+                    _ => collect_js::detect_runner(&root)?,
+                };
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for edge in graph
+                    .iter()
+                    .filter(|e| e.p == "defines_test" && e.a.len() == 2)
+                {
+                    let (file, id) = (&edge.a[0], &edge.a[1]);
+                    if phronesis_mcp::coverage::language::language_for_path(file)
+                        .is_none_or(|l| l.id != "typescript")
+                    {
+                        continue;
+                    }
+                    let name = typescript::runner_name(id, file).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "graph test id {id} does not carry the module marker of {file}"
+                        )
+                    })?;
+                    entries.push((id.clone(), file.clone(), name));
+                }
+                if entries.is_empty() {
+                    anyhow::bail!(
+                        "the graph indexes no vitest/jest tests; run `phr-mcp graph rebuild` first"
+                    );
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/js-coverage"));
+                let script = collect_js::collection_script(runner, &entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running js coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("js coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
+            if tool.as_deref() == Some("java-cov") {
+                let selected = runner
+                    .as_deref()
+                    .map(phronesis_mcp::coverage::collect_java::read_runner_arg)
+                    .transpose()?;
+                let selected =
+                    phronesis_mcp::coverage::collect_java::detect_runner(&root, selected)?;
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for edge in graph.iter().filter(|edge| {
+                    edge.p == "defines_test"
+                        && edge.a.get(1).is_some_and(|id| id.starts_with("java:"))
+                }) {
+                    let id = edge.a.get(1).expect("filtered test id");
+                    let Some((_unit, tail)) =
+                        id.strip_prefix("java:").and_then(|id| id.split_once("::"))
+                    else {
+                        continue;
+                    };
+                    let mut parts: Vec<&str> = tail.split("::").collect();
+                    if parts.len() < 2 {
+                        continue;
+                    }
+                    let method = parts.pop().expect("method segment");
+                    let class = parts.pop().expect("class segment");
+                    let qualified = if parts.is_empty() {
+                        class.to_string()
+                    } else {
+                        format!("{}.{}", parts.join("."), class)
+                    };
+                    let native =
+                        if selected == phronesis_mcp::coverage::collect_java::JavaRunner::Mvn {
+                            format!("{qualified}#{method}")
+                        } else {
+                            format!("{qualified}.{method}")
+                        };
+                    let file = edge
+                        .a
+                        .first()
+                        .context("Java test edge missing source path")?;
+                    let module = if let Some((module, _)) = file.split_once("/src/test/java/") {
+                        module
+                    } else if file.starts_with("src/test/java/") {
+                        "."
+                    } else {
+                        anyhow::bail!("Java test {file} is outside a supported src/test/java root");
+                    };
+                    entries.push((module.to_string(), native, id.to_string()));
+                }
+                if entries.is_empty() {
+                    anyhow::bail!("Java graph has no defines_test ids; rebuild the graph after J0");
+                }
+                let out = out.unwrap_or_else(|| {
+                    phronesis_mcp::coverage::collect_java::default_output(&root)
+                });
+                let script = phronesis_mcp::coverage::collect_java::collection_script(
+                    selected, &entries, &out,
+                );
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running Java coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("Java coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
+            if tool.as_deref() == Some("swift-cov") {
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let entries = phronesis_mcp::coverage::collect_swift::collection_entries(&graph);
+                if entries.is_empty() {
+                    anyhow::bail!(
+                        "graph lists no swift defines_test ids; run `phr-mcp graph rebuild`"
+                    );
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/swift-coverage"));
+                let script =
+                    phronesis_mcp::coverage::collect_swift::collection_script(&entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running swift coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("swift coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
+            if tool.as_deref() == Some("lua-cov") {
+                use phronesis_mcp::coverage::collect_lua;
+                use phronesis_mcp::coverage::language::{language_for_path, lua};
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for edge in graph
+                    .iter()
+                    .filter(|e| e.p == "defines_test" && e.a.len() == 2)
+                {
+                    let (file, id) = (&edge.a[0], &edge.a[1]);
+                    if language_for_path(file).is_none_or(|l| l.id != "lua") {
+                        continue;
+                    }
+                    let name = lua::runner_name(id, file).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "graph test id {id} does not carry the module marker of {file}"
+                        )
+                    })?;
+                    entries.push((id.clone(), file.clone(), name));
+                }
+                if entries.is_empty() {
+                    anyhow::bail!(
+                        "the graph indexes no busted tests; run `phr-mcp graph rebuild` first"
+                    );
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/lua-coverage"));
+                let script = collect_lua::collection_script(&entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running lua coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("lua coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
+            if tool.as_deref() == Some("pytest-cov") {
+                let output = std::process::Command::new("python3")
+                    .args(["-m", "pytest", "--collect-only", "-q"])
+                    .current_dir(&root)
+                    .output()
+                    .context("running python3 -m pytest --collect-only -q")?;
+                if !output.status.success() {
+                    anyhow::bail!(
+                        "pytest collection failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+                let nodes = phronesis_mcp::coverage::pytest::parse_collect_only(
+                    &String::from_utf8_lossy(&output.stdout),
+                );
+                let graph = phronesis_mcp::graph::store::load(
+                    &phronesis_mcp::graph::store::graph_path(&root),
+                )
+                .unwrap_or_default();
+                let mut entries = Vec::new();
+                for node in nodes {
+                    let file = node.split("::").next().unwrap_or("");
+                    let module = file.strip_suffix(".py").unwrap_or(file).replace('/', "::");
+                    let marker = format!("::{module}::");
+                    let namespace = graph
+                        .iter()
+                        .find(|e| e.p == "defines_test" && e.a.first().is_some_and(|f| f == file))
+                        .and_then(|e| e.a.get(1))
+                        .and_then(|id| id.rsplit_once(&marker).map(|x| x.0))
+                        .unwrap_or("python:project");
+                    if let Some(id) =
+                        phronesis_mcp::coverage::pytest::graph_test_id(namespace, &node)
+                    {
+                        entries.push((node, id));
+                    }
+                }
+                if entries.is_empty() {
+                    anyhow::bail!("pytest collected no graph-indexed test_* functions");
+                }
+                let out = out.unwrap_or_else(|| root.join(".phronesis/python-coverage"));
+                let script = phronesis_mcp::coverage::pytest::collection_script(&entries, &out);
+                if emit_script {
+                    print!("{script}");
+                    return Ok(());
+                }
+                let status = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(script)
+                    .current_dir(&root)
+                    .status()
+                    .context("running pytest coverage collection script")?;
+                if !status.success() {
+                    anyhow::bail!("pytest coverage collection script failed ({status})");
+                }
+                return Ok(());
+            }
             let revision = match phronesis_mcp::lifecycle::outcome::git_head(&root) {
                 // Checked before any test runs or store write: a dirty tree
                 // would put HEAD on evidence HEAD did not produce.
@@ -631,14 +934,180 @@ fn handle_coverage(cmd: CoverageCmd) -> anyhow::Result<()> {
             );
             Ok(())
         }
-        CoverageCmd::Import { export, path } => {
+        CoverageCmd::Import {
+            export,
+            path,
+            format,
+            tool,
+            allow_dirty,
+            no_manifest,
+        } => {
             let root = std::env::current_dir()?.join(&path);
             let root = root.canonicalize().unwrap_or(root);
             let now = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
-            let summary = phronesis_mcp::coverage::import::import_export(&root, &export, now)?;
+            let summary = if format == "jsonl" {
+                if tool.is_some() || no_manifest {
+                    anyhow::bail!("--tool and --no-manifest are only valid with --format lcov-dir");
+                }
+                phronesis_mcp::coverage::import::import_export(&root, &export, now)?
+            } else if format == "jacoco-dir" {
+                let mut tool = tool.context("--tool is required with --format jacoco-dir")?;
+                let dir = root.join(&export);
+                let revision = phronesis_mcp::lifecycle::outcome::git_head(&root)
+                    .unwrap_or_else(|| "unknown".into());
+                if let Some(warning) = phronesis_mcp::coverage::collect::check_clean_tree(
+                    &root,
+                    &revision,
+                    allow_dirty,
+                )? {
+                    eprintln!("{warning}");
+                }
+                let manifest = if no_manifest {
+                    tool.push_str("+unverified");
+                    None
+                } else {
+                    let manifest = phronesis_mcp::coverage::lcov::Manifest::read(&dir)?;
+                    if manifest.revision != revision {
+                        anyhow::bail!(
+                            "manifest revision {} differs from host HEAD {}",
+                            manifest.revision,
+                            revision
+                        );
+                    }
+                    for (file, expected) in &manifest.files {
+                        let bytes = std::fs::read(root.join(file))
+                            .with_context(|| format!("manifest file missing on host: {file}"))?;
+                        let actual = phronesis_mcp::properties::execute::artifact_sha256(&bytes);
+                        if &actual != expected {
+                            anyhow::bail!("manifest digest mismatch for {file}");
+                        }
+                    }
+                    Some(manifest)
+                };
+                let (sources, details) =
+                    phronesis_mcp::coverage::jacoco::read_jacoco_dir(&root, &dir)?;
+                if let Some(manifest) = manifest {
+                    for (_, files) in &sources {
+                        for source in files {
+                            if let phronesis_mcp::coverage::lcov::Relativized::Path(file) =
+                                phronesis_mcp::coverage::lcov::relativize(&root, &source.path)
+                                && !manifest.files.contains_key(&file)
+                            {
+                                anyhow::bail!("manifest has no digest for covered source {file}");
+                            }
+                        }
+                    }
+                }
+                let (records, record_details) =
+                    phronesis_mcp::coverage::lcov::records_from_sources(
+                        &root, sources, &tool, &revision,
+                    )?;
+                eprintln!(
+                    "JaCoCo: {} ambiguous paths, {} skipped Kotlin sources",
+                    details.ambiguous.len(),
+                    details.kotlin_skipped.len()
+                );
+                let summary = phronesis_mcp::coverage::import::import_records(&root, records, now)?;
+                println!(
+                    "jacoco: {} files, {} tests",
+                    record_details.files, record_details.tests
+                );
+                summary
+            } else {
+                let tool = tool.context("--tool is required with --format lcov-dir")?;
+                let dir = root.join(&export);
+                let revision = phronesis_mcp::lifecycle::outcome::git_head(&root)
+                    .unwrap_or_else(|| "unknown".into());
+                if let Some(warning) = phronesis_mcp::coverage::collect::check_clean_tree(
+                    &root,
+                    &revision,
+                    allow_dirty,
+                )? {
+                    eprintln!("{warning}");
+                }
+                let mut tool = tool;
+                if no_manifest {
+                    eprintln!("warning: importing lcov without manifest; evidence is unverified");
+                    tool.push_str("+unverified");
+                } else {
+                    let manifest = phronesis_mcp::coverage::lcov::Manifest::read(&dir)?;
+                    if manifest.revision != revision {
+                        anyhow::bail!(
+                            "manifest revision {} differs from host HEAD {}",
+                            manifest.revision,
+                            revision
+                        );
+                    }
+                    for (file, expected) in &manifest.files {
+                        let bytes = std::fs::read(root.join(file))
+                            .with_context(|| format!("manifest file missing on host: {file}"))?;
+                        let actual = phronesis_mcp::properties::execute::artifact_sha256(&bytes);
+                        if &actual != expected {
+                            anyhow::bail!("manifest digest mismatch for {file}");
+                        }
+                    }
+                    for entry in std::fs::read_dir(&dir)?
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| {
+                            matches!(
+                                p.extension().and_then(|e| e.to_str()),
+                                Some("lcov" | "info")
+                            )
+                        })
+                    {
+                        let lcov = phronesis_mcp::coverage::lcov::parse_lcov(
+                            &std::fs::read_to_string(entry)?,
+                        )?;
+                        for source in lcov.files {
+                            if let phronesis_mcp::coverage::lcov::Relativized::Path(file) =
+                                phronesis_mcp::coverage::lcov::relativize(&root, &source.path)
+                                && !manifest.files.contains_key(&file)
+                            {
+                                anyhow::bail!("manifest has no digest for covered source {file}");
+                            }
+                        }
+                    }
+                }
+                let (records, details) = phronesis_mcp::coverage::lcov::records_from_lcov_dir(
+                    &root, &dir, &tool, &revision,
+                )?;
+                let summary = phronesis_mcp::coverage::import::import_records(&root, records, now)?;
+                println!(
+                    "lcov: {} files, {} tests, {} unresolved SF, {} ambiguous SF, {} filtered SF, {} without regions, {} unattributable",
+                    details.files,
+                    details.tests,
+                    details.unresolved_sf.len(),
+                    details.ambiguous_sf.len(),
+                    details.filtered_sf.len(),
+                    details.no_regions.len(),
+                    details.unattributable.len()
+                );
+                for (label, items) in [
+                    ("unresolved SF", &details.unresolved_sf),
+                    ("ambiguous SF", &details.ambiguous_sf),
+                    ("filtered SF", &details.filtered_sf),
+                    ("files without regions", &details.no_regions),
+                    ("unattributable functions", &details.unattributable),
+                ] {
+                    if !items.is_empty() {
+                        eprintln!(
+                            "{label}: {} ({})",
+                            items.len(),
+                            items
+                                .iter()
+                                .take(5)
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(" | ")
+                        );
+                    }
+                }
+                summary
+            };
             println!(
                 "imported {} hits across {} tests at revision {}",
                 summary.records, summary.tests, summary.revision

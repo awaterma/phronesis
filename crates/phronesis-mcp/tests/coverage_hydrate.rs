@@ -194,6 +194,33 @@ fn test_hydrate_emits_changed_regions() {
 }
 
 #[test]
+fn python_edit_hydrates_changed_region_and_function() {
+    let root = tempfile::tempdir().unwrap();
+    let input = HydrationInput {
+        root: root.path(),
+        rule_relations: relations(&["changed_region", "changed_function"]),
+        edited: vec![EditedFile {
+            path: "pkg/store.py".into(),
+            old: Some("def load():\n    return 1\n"),
+            new: "def load():\n    return 2\n",
+            whole_file: false,
+        }],
+        head_sha: None,
+    };
+    let facts = facts_for_event(&input).unwrap();
+    assert!(
+        facts.iter().any(|f| f.predicate == "changed_function"
+            && f.args.get(1).is_some_and(|a| a == "fn:pkg/store.py::load")),
+        "{facts:?}"
+    );
+    assert!(
+        facts.iter().any(|f| f.predicate == "changed_region"
+            && f.args.get(1).is_some_and(|a| a == "fn:pkg/store.py::load")),
+        "{facts:?}"
+    );
+}
+
+#[test]
 fn test_head_revision_uses_probe_value() {
     let root = tempfile::tempdir().unwrap();
     let input = HydrationInput {
@@ -440,5 +467,48 @@ fn test_edit_outside_root_changes_no_region() {
     assert!(
         facts.is_empty(),
         "outside-root edit must not hydrate: {facts:?}"
+    );
+}
+
+// PINNING REGRESSION (plan Part L task 2, labelled a pin — already green
+// when written): a `.cue` edit has no function regions (no coverage-registry
+// row), so hydration emits no `fn:` region and no evidence-gap fact for it.
+// The compile signal for evaluated languages comes from toolchain defs
+// (`cue vet`), never from hydration.
+#[test]
+fn pin_cue_edit_yields_no_fn_region_and_no_gap_fact() {
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        &[hit("test_a", "fn:src/a.rs::foo", "src/a.rs", "region")],
+        &"a".repeat(40),
+    );
+    let input = HydrationInput {
+        root: root.path(),
+        rule_relations: relations(&[
+            "changed_region",
+            "region_without_dynamic_evidence",
+            "region_without_formal_evidence",
+        ]),
+        edited: vec![EditedFile {
+            path: "config/model.cue".into(),
+            old: Some("package config\na: int\n"),
+            new: "package config\na: string\n",
+            whole_file: false,
+        }],
+        head_sha: Some("a".repeat(40)),
+    };
+    let facts = facts_for_event(&input).unwrap();
+    assert!(
+        facts
+            .iter()
+            .all(|f| !f.args.iter().any(|a| a.starts_with("fn:"))),
+        "no fn: region may hydrate for a .cue edit: {facts:?}"
+    );
+    assert!(
+        facts
+            .iter()
+            .all(|f| f.predicate != "region_without_dynamic_evidence"),
+        "no evidence-gap fact may exist for a .cue edit: {facts:?}"
     );
 }

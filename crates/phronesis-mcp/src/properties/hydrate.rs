@@ -86,6 +86,27 @@ fn changed_region_ids(input: &PropertyHydrationInput) -> HashSet<String> {
     changed
 }
 
+#[cfg(test)]
+mod changed_region_python_tests {
+    use super::*;
+    #[test]
+    fn changed_python_function_produces_the_region_used_by_property_dependencies() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let input = PropertyHydrationInput {
+            root: root.path(),
+            rule_relations: HashSet::new(),
+            edited: vec![EditedFile {
+                path: "pkg/store.py".into(),
+                old: Some("def load():\n    return 1\n"),
+                new: "def load():\n    return 2\n",
+                whole_file: false,
+            }],
+            head_sha: None,
+        };
+        assert!(changed_region_ids(&input).contains("fn:pkg/store.py::load"));
+    }
+}
+
 /// Whether a `depends_on` entry names a region changed in this event.
 /// Entries are region ids (SPEC-coverage-evidence §3.2); an entry written
 /// before ids were qualified per site matches every changed site with its

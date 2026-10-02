@@ -1,0 +1,7 @@
+tests/test_store.py::test_load
+tests/test_store.py::TestSave::test_it[a-b]
+tests/test_store.py::TestSave::test_it[c-d]
+=============================== warnings summary ===============================
+  /tmp/plugin.py:1: PytestWarning: example warning
+    pass
+=========================== 3 tests collected in 0.01s ==========================

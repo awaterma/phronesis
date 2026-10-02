@@ -69,6 +69,29 @@ fn validate_region_id(rec: &HitRecord) -> Result<()> {
 /// attributed to whichever tool came first.
 pub fn import_export(root: &Path, export_path: &Path, now_unix: u64) -> Result<ImportSummary> {
     let records = dedupe(read_records(export_path)?);
+    import_records(root, records, now_unix)
+}
+
+pub fn import_records(
+    root: &Path,
+    records: Vec<HitRecord>,
+    now_unix: u64,
+) -> Result<ImportSummary> {
+    let records = dedupe(
+        records
+            .into_iter()
+            .enumerate()
+            .map(|(i, rec)| {
+                validate_record(&rec)
+                    .and_then(|()| validate_region_id(&rec))
+                    .map(|()| HitRecord {
+                        revision: rec.revision.to_ascii_lowercase(),
+                        ..rec
+                    })
+                    .map_err(|e| anyhow!("record {}: {e}", i + 1))
+            })
+            .collect::<Result<Vec<_>>>()?,
+    );
     let revision = single_revision(&records)?;
     let tool = single_tool(&records)?;
     write_store(

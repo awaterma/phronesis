@@ -482,6 +482,18 @@ const SWIFT_TESTING_SUMMARY: &str = r"Test run with (?P<passed>\d+) tests?(?: in
 /// column keeps a red test from being misread as a broken build.
 const SWIFT_COMPILE_ERROR: &str = r"\.swift:\d+:\d+: error:";
 
+/// SwiftPM per-test lines, one regex for both dialects (the `regex` crate
+/// forbids duplicate `(?P<name>)` groups, so the two line shapes share one
+/// group):
+/// - XCTest: `Test Case '-[<module>.<Case> <test>]' passed (0.000 seconds).`
+///   — the captured name is the space form, kept as captured.
+/// - Swift Testing: `✔ Test <name>() passed after 0.001 seconds.`
+///
+/// The lazy name stops at the bracket/paren run before the status token, so
+/// `Test run with N tests` summaries (no bracket run before the status)
+/// never count as a test.
+const SWIFT_PER_TEST: &str = r"(?m)^(?:Test Case '-\[|[\x{2714}\x{2718}] Test )(?P<name>.+?)[()\]']+\s+(?P<status>passed|failed)";
+
 /// The bundled defs: cargo, xcodebuild, and `swift build|test`. pytest/tsc
 /// examples ship via `phr-mcp init` as project defs so the built-in surface
 /// stays small. The cargo def must keep the retired `CargoAdapter`'s exact
@@ -518,7 +530,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             compile_fail: vec![SWIFT_COMPILE_ERROR.to_string()],
             compile_success: vec![r"(?m)^Build complete!".to_string()],
             test_summary: swift_summaries(),
-            per_test: None,
+            per_test: Some(SWIFT_PER_TEST.to_string()),
             section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
@@ -1312,6 +1324,40 @@ mod tests {
         let facts = d.parse("u", "swift test", fail, Some(1));
         let t = test_fact(&facts).expect("failing run still grounds a (failing) test_outcome");
         assert_eq!(t.args[2], "2");
+    }
+
+    #[test]
+    fn swift_per_test_grounded_by_captured_xctest_and_swift_testing_lines() {
+        // Captured live (Swift 6.4): XCTest prints the space form inside the
+        // brackets, Swift Testing the bare function followed by `()`. The
+        // captured name is kept as-is: the space form, per Part I decision 7.
+        let out = "Test Case '-[store_kitTests.StoreTests testLoad]' passed (0.000 seconds).\n\
+                   Test Case '-[store_kitTests.StoreTests testLoad]' failed (0.001 seconds).\n\
+                   \u{2714} Test testXLoad() passed after 0.001 seconds.\n\
+                   \u{2718} Test testFail() failed after 0.002 seconds.\n\
+                   \u{2714} Test run with 2 tests in 1 suite passed after 0.003 seconds.\n";
+        let results = builtin("swift").per_test_results(out);
+        assert!(
+            results.contains(&("store_kitTests.StoreTests testLoad".to_string(), true)),
+            "XCTest space-form name, passed: {results:?}"
+        );
+        assert!(
+            results.contains(&("store_kitTests.StoreTests testLoad".to_string(), false)),
+            "XCTest space-form name, failed: {results:?}"
+        );
+        assert!(
+            results.contains(&("testXLoad".to_string(), true)),
+            "Swift Testing bare-function name: {results:?}"
+        );
+        assert!(
+            results.contains(&("testFail".to_string(), false)),
+            "Swift Testing failure line: {results:?}"
+        );
+        assert_eq!(
+            results.len(),
+            4,
+            "the run-summary line must not count as a per-test result: {results:?}"
+        );
     }
 
     fn proof_def() -> CompiledDef {

@@ -16,6 +16,37 @@ fn has(out: &crate::graph::extract::Extracted, predicate: &str, args: &[&str]) -
 }
 
 #[test]
+fn junit_test_methods_define_tests_only_in_test_context() {
+    let project = project(&[
+        (
+            "pom.xml",
+            "<project><artifactId>core</artifactId></project>",
+        ),
+        (
+            "src/test/java/com/x/StoreSpec.java",
+            "package com.x; class StoreTest { @Test void testLoad() {} }",
+        ),
+        (
+            "src/main/java/com/x/Store.java",
+            "package com.x; class Store { @Test void testLoad() {} }",
+        ),
+    ]);
+
+    let test = project.extract("src/test/java/com/x/StoreSpec.java");
+    assert!(has(
+        &test,
+        "defines_test",
+        &[
+            "src/test/java/com/x/StoreSpec.java",
+            "java:core::com::x::StoreTest::testLoad",
+        ]
+    ));
+
+    let production = project.extract("src/main/java/com/x/Store.java");
+    assert!(!production.edges.iter().any(|edge| edge.p == "defines_test"));
+}
+
+#[test]
 fn maven_project_emits_package_edges_and_canonical_static_test_coverage() {
     let project = project(&[
         (

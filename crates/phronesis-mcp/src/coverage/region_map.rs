@@ -274,10 +274,12 @@ fn qualified_parts(id: &str) -> Option<(bool, &str, Option<&str>)> {
     Some((true, leaf_of(item_path)?, anchor.split('.').next()))
 }
 
+#[derive(Debug)]
 pub struct FunctionSite {
     /// Qualified item path (grammar above), ordinal included.
     pub item_path: String,
     pub start_line: u64,
+    pub body_start_line: u64,
     pub end_line: u64,
 }
 
@@ -432,30 +434,63 @@ fn parse(source: &str) -> Result<tree_sitter::Tree> {
 /// Function sites keyed by tree-sitter node id, so branch sites can name
 /// their enclosing function by the same (ordinal-disambiguated) item path.
 fn function_sites_by_node(visits: &[Visit]) -> Vec<(usize, FunctionSite)> {
-    let mut seen: HashMap<String, u32> = HashMap::new();
-    let mut sites = Vec::new();
+    let mut raw = Vec::new();
     for Visit { node, scopes, .. } in visits {
         if !is_named_function(*node) {
             continue;
         }
         let base = scopes.join("::");
-        let count = seen.entry(base.clone()).or_insert(0);
-        *count += 1;
-        let item_path = if *count > 1 {
-            format!("{base}.{count}")
-        } else {
-            base
-        };
-        sites.push((
+        let start_line = node.start_position().row as u64 + 1;
+        let body_start_line = node
+            .child_by_field_name("body")
+            .map(|b| b.start_position().row as u64 + 1)
+            .unwrap_or(start_line);
+        raw.push((
             node.id(),
-            FunctionSite {
-                item_path,
-                start_line: node.start_position().row as u64 + 1,
+            RawSite {
+                path: base,
+                start_line,
+                body_start_line,
                 end_line: node.end_position().row as u64 + 1,
             },
         ));
     }
-    sites
+    assign_function_ordinals(raw.iter().map(|(_, site)| site.clone()).collect())
+        .into_iter()
+        .zip(raw)
+        .map(|(site, (id, _))| (id, site))
+        .collect()
+}
+
+#[derive(Clone)]
+pub(super) struct RawSite {
+    pub(super) path: String,
+    pub(super) start_line: u64,
+    pub(super) body_start_line: u64,
+    pub(super) end_line: u64,
+}
+
+pub(super) fn assign_function_ordinals(raw: Vec<RawSite>) -> Vec<FunctionSite> {
+    let mut seen: HashMap<String, u32> = HashMap::new();
+    raw.into_iter()
+        .map(|r| {
+            let n = seen
+                .entry(r.path.clone())
+                .and_modify(|c| *c += 1)
+                .or_insert(1);
+            let item_path = if *n > 1 {
+                format!("{}.{n}", r.path)
+            } else {
+                r.path
+            };
+            FunctionSite {
+                item_path,
+                start_line: r.start_line,
+                body_start_line: r.body_start_line,
+                end_line: r.end_line,
+            }
+        })
+        .collect()
 }
 
 /// Every named function (free fns, methods, trait default methods, nested
@@ -466,6 +501,77 @@ pub fn extract_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
         .into_iter()
         .map(|(_, site)| site)
         .collect())
+}
+
+pub fn extract_function_sites_for(rel_path: &str, source: &str) -> Result<Vec<FunctionSite>> {
+    match crate::coverage::language::language_for_path(rel_path) {
+        Some(l) => match l.function_sites_for_path {
+            // A language whose grammar choice depends on the path (TSX vs
+            // TypeScript) extracts per path; the plain `function_sites`
+            // entry point stays for the path-blind registry field.
+            Some(for_path) => for_path(rel_path, source),
+            None => (l.function_sites)(source),
+        },
+        None => Ok(Vec::new()),
+    }
+}
+
+pub(super) fn inclusive_end_line(node: tree_sitter::Node<'_>) -> u64 {
+    let end = node.end_position();
+    let row = end.row as u64 + 1;
+    if end.column == 0 {
+        row.saturating_sub(1)
+            .max(node.start_position().row as u64 + 1)
+    } else {
+        row
+    }
+}
+
+pub fn python_function_sites(source: &str) -> Result<Vec<FunctionSite>> {
+    let parsed = crate::syntax::parsed::ParsedFile::parse_python(source)
+        .ok_or_else(|| anyhow::anyhow!("tree-sitter failed to parse Python source"))?;
+    let crate::syntax::parsed::ParsedFile::Python { tree, source: text } = &parsed else {
+        anyhow::bail!("parse_python returned a non-Python tree")
+    };
+    fn walk(
+        node: tree_sitter::Node<'_>,
+        src: &[u8],
+        scope: &mut Vec<String>,
+        out: &mut Vec<RawSite>,
+    ) {
+        let mut pushed = false;
+        if matches!(node.kind(), "function_definition" | "class_definition")
+            && let Some(name) = node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(src).ok())
+        {
+            scope.push(name.to_string());
+            pushed = true;
+            if node.kind() == "function_definition" {
+                let start_line = node.start_position().row as u64 + 1;
+                let body_start_line = node
+                    .child_by_field_name("body")
+                    .map(|b| b.start_position().row as u64 + 1)
+                    .unwrap_or(start_line);
+                out.push(RawSite {
+                    path: scope.join("::"),
+                    start_line,
+                    body_start_line,
+                    end_line: inclusive_end_line(node),
+                });
+            }
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, src, scope, out);
+        }
+        if pushed {
+            scope.pop();
+        }
+    }
+    let mut raw = Vec::new();
+    walk(tree.root_node(), text.as_bytes(), &mut Vec::new(), &mut raw);
+    Ok(assign_function_ordinals(raw))
 }
 
 /// Every `if_expression`, with the anchor hashed from its condition text and
@@ -678,7 +784,12 @@ pub fn changed_regions(file: &str, old: &str, new: &str) -> Result<ChangedRegion
     let mut branches = HashSet::new();
     for (source, changed) in [(old, &changed_old), (new, &changed_new)] {
         let touched = |start: u64, end: u64| (start..=end).any(|line| changed.contains(&line));
-        let (function_sites, branch_sites) = extract_sites(source)?;
+        let function_sites = extract_function_sites_for(file, source)?;
+        let branch_sites = if file.ends_with(".rs") {
+            extract_branch_sites(source)?
+        } else {
+            Vec::new()
+        };
         for site in function_sites {
             if touched(site.start_line, site.end_line) {
                 functions.insert(site.region_id(file));

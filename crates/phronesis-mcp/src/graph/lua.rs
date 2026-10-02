@@ -31,7 +31,7 @@ static REQUIRE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
 });
 
 /// Classify a `.lua` file as `test`, `build`, or `production`.
-fn file_type(file_path: &str) -> &'static str {
+pub(crate) fn file_type(file_path: &str) -> &'static str {
     if file_path.starts_with("test/")
         || file_path.starts_with("tests/")
         || file_path.starts_with("spec/")
@@ -202,6 +202,10 @@ pub fn extract_lua(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
     // Extract function definitions.
     insert_fn_defs(&mut out, content, file_path, &self_module);
 
+    // busted specs: describe/it call nodes, through the tree-sitter-lua
+    // parse (Part K decision 3).
+    insert_busted_tests(&mut out, content, file_path, &self_module);
+
     // Extract require() calls and resolve to imports edges.
     for cap in REQUIRE_RE.captures_iter(content) {
         let arg = cap.get(1).map_or("", |m| m.as_str());
@@ -229,7 +233,110 @@ pub fn extract_lua(file_path: &str, content: &str, unit: &UnitContext) -> Extrac
     }
 }
 
-/// Insert a `defines_fn` edge for every function definition in `content`.
+/// Insert a `defines_test` edge for every busted `it()` call, detected
+/// through the tree-sitter-lua parse (Part K decision 3): `describe` and
+/// `it` calls whose first argument is a string title. The id mirrors
+/// Python's `qualified_test_id` shape — `<unit>::<spec path segments>::
+/// <describe titles>::<it title>` — with describe titles in nesting order.
+/// A parse failure skips busted detection only: the regex edges above stay
+/// authoritative for everything else, and a file busted cares about parses.
+fn insert_busted_tests(
+    out: &mut BTreeSet<(String, Vec<String>)>,
+    content: &str,
+    file_path: &str,
+    self_module: &str,
+) {
+    let Some(crate::syntax::parsed::ParsedFile::Lua { tree, source }) =
+        crate::syntax::parsed::ParsedFile::parse_lua(content)
+    else {
+        return;
+    };
+    if tree.root_node().has_error() {
+        return;
+    }
+    let mut titles: Vec<String> = Vec::new();
+    busted_walk(
+        tree.root_node(),
+        source.as_bytes(),
+        &mut titles,
+        out,
+        file_path,
+        self_module,
+    );
+}
+
+/// Walk for busted `describe`/`it` calls, keeping the enclosing describe
+/// titles on a stack so a nested `it` qualifies under them.
+fn busted_walk(
+    node: tree_sitter::Node<'_>,
+    src: &[u8],
+    titles: &mut Vec<String>,
+    out: &mut BTreeSet<(String, Vec<String>)>,
+    file_path: &str,
+    self_module: &str,
+) {
+    if node.kind() == "function_call"
+        && let Some(title) = busted_title(node, src)
+    {
+        match node
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(src).ok())
+        {
+            Some("describe") => {
+                // Only a describe with a callback creates a nesting level;
+                // its own its live inside that callback's body.
+                if let Some(body) = busted_callback_body(node) {
+                    titles.push(title.to_string());
+                    busted_walk(body, src, titles, out, file_path, self_module);
+                    titles.pop();
+                    return;
+                }
+            }
+            Some("it") => {
+                let mut segments: Vec<&str> = titles.iter().map(String::as_str).collect();
+                segments.push(title);
+                let qualified = format!("{self_module}::{}", segments.join("::"));
+                out.insert((
+                    "defines_test".to_string(),
+                    vec![file_path.to_string(), qualified],
+                ));
+                // Fall through to the ordinary descent: a describe nested
+                // inside an it callback still gets detected.
+            }
+            _ => {}
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        busted_walk(child, src, titles, out, file_path, self_module);
+    }
+}
+
+/// The string title of a busted call — the first `string` argument — or
+/// `None` for calls that are not title-bearing busted shapes.
+fn busted_title<'a>(node: tree_sitter::Node<'_>, src: &'a [u8]) -> Option<&'a str> {
+    let name = node.child_by_field_name("name")?;
+    if name.kind() != "identifier" || !matches!(name.utf8_text(src).ok()?, "describe" | "it") {
+        return None;
+    }
+    let arguments = node.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    let first = arguments
+        .children(&mut cursor)
+        .find(|c| c.kind() == "string")?;
+    let content = first.child_by_field_name("content")?;
+    content.utf8_text(src).ok()
+}
+
+/// The body block of a busted call's `function_definition` callback.
+fn busted_callback_body(node: tree_sitter::Node<'_>) -> Option<tree_sitter::Node<'_>> {
+    let arguments = node.child_by_field_name("arguments")?;
+    let mut cursor = arguments.walk();
+    arguments
+        .children(&mut cursor)
+        .find(|c| c.kind() == "function_definition")?
+        .child_by_field_name("body")
+}
 fn insert_fn_defs(
     out: &mut BTreeSet<(String, Vec<String>)>,
     content: &str,
@@ -513,5 +620,47 @@ function M.c() return 3 end
         assert!(apis.iter().any(|a| a[1] == "assert"));
         assert!(apis.iter().any(|a| a[1] == "setfenv"));
         assert!(apis.iter().any(|a| a[1] == "module"));
+    }
+
+    #[test]
+    fn busted_describe_it_emits_defines_test_with_the_decided_id() {
+        let spec = "describe('store', function()\n  \
+                    it('loads', function()\n    assert.truthy(1)\n  end)\nend)\n";
+        let out = extract_lua("spec/store_spec.lua", spec, &ctx("lua:myapp"));
+        let tests = edges_of(&out, "defines_test");
+        assert_eq!(tests.len(), 1, "{tests:?}");
+        assert_eq!(
+            tests[0],
+            vec![
+                "spec/store_spec.lua".to_string(),
+                "lua:myapp::spec::store_spec::store::loads".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn nested_describes_qualify_the_it_title() {
+        let spec = "describe('outer', function()\n  \
+                    describe('inner', function()\n    \
+                    it('works', function() end)\n  end)\nend)\n";
+        let out = extract_lua("spec/chain_spec.lua", spec, &ctx("lua:myapp"));
+        let tests = edges_of(&out, "defines_test");
+        assert_eq!(
+            tests,
+            vec![vec![
+                "spec/chain_spec.lua".to_string(),
+                "lua:myapp::spec::chain_spec::outer::inner::works".to_string(),
+            ]]
+        );
+    }
+
+    #[test]
+    fn production_lua_without_busted_calls_emits_no_defines_test() {
+        let out = extract_lua(
+            "src/store.lua",
+            "local function load() return 1 end\nreturn { load = load }\n",
+            &ctx("lua:myapp"),
+        );
+        assert!(edges_of(&out, "defines_test").is_empty());
     }
 }

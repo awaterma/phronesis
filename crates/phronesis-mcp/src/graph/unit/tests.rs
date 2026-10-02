@@ -592,6 +592,16 @@ mod typescript_tests {
     }
 
     #[test]
+    fn javascript_extensions_map_to_the_typescript_language() {
+        // The graph has no JavaScript identity of its own: a `.js` file in a
+        // package.json unit is TypeScript's plain-JavaScript dialect, so it
+        // claims the four JS extensions (Revision 2, plan Task H1 / GLM M1).
+        for path in ["a.js", "a.jsx", "a.mjs", "a.cjs"] {
+            assert_eq!(lang_of_path(path), Some(LANG_TYPESCRIPT), "{path}");
+        }
+    }
+
+    #[test]
     fn an_unclaimed_typescript_file_falls_back_to_a_typescript_namespace() {
         // The fallback follows the file's own language, as Python's does.
         let m = UnitMap::default();

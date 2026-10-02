@@ -1,0 +1,20 @@
+TN:typescript:ts-store#test:store.test.ts::tests::store.test::Store loads
+# node: tests/store.test.ts -t Store loads
+SF:/workspace/src/store.ts
+FN:2,load
+FN:6,oneLiner
+FN:7,missingFnda
+FNF:3
+FNH:1
+FNDA:1,load
+FNDA:0,oneLiner
+DA:1,1
+DA:2,1
+DA:3,1
+DA:4,1
+DA:5,1
+DA:6,1
+DA:7,1
+LF:7
+LH:7
+end_of_record

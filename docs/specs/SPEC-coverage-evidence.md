@@ -278,3 +278,111 @@ If a later rule needs to count relevant tests, the host re-asserts per-element `
 1. Branch-site anchor scheme (condition-text hash vs tree-sitter node identity) — Phase 1 spike, decided by A2.
 2. Should `changed_region` persist across the pre→post hook pair via in-flight state for commit correlation?
 3. Should import record a journey tag (`coverage:imported`) so confidence can count fresh coverage as a signal? (lean yes, Phase 3)
+
+## 12. Languages
+
+One row per language in the coverage language registry
+(`crates/phronesis-mcp/src/coverage/language.rs`) decides function-site
+extraction, the production-source filter, the test-id namespace, the
+one-liner rule, and the runnable command `coverage select` renders.
+
+| Language | Extensions | Test-id prefix | Producer | One-liner rule |
+|----------|------------|----------------|----------|----------------|
+| Rust | `.rs` | none (bare libtest names) | cargo-llvm-cov | no one-liner path: the llvm-cov collector never consults `hit_sites` |
+| Python | `.py` | `python:` | coverage.py via pytest, lcov | `body_start_line == start_line` (a split one-liner still counts); attributed by `FNDA` when present, otherwise unattributable |
+| Java | `.java` | `java:` | JaCoCo XML converted to the shared in-memory source shape | `end_line == start_line`; attributed by method counters when present |
+| Swift | `.swift` | `swift:` | SwiftPM per-test `swift test --enable-code-coverage --filter`, `llvm-cov export -format=lcov` | `end_line == start_line` (brace rows); one-liners are unattributable because llvm-cov's lcov `FN` names are mangled and never matched |
+| TypeScript/JavaScript | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` | `typescript:` | c8 / vitest / jest, lcov | `end_line == start_line` (brace-row rule); attributed by `FNDA` when present, otherwise unattributable |
+| Lua | `.lua` | `lua:` | luacov via busted (`luacov -r lcov`), lcov; `--filter` names the space-joined describe/it full name | `end_line == start_line`; luacov's lcov has no `FN`/`FNDA`, so a one-line function is always reported unattributable, never guessed |
+
+Collectors validate exactly one successful test before assigning its graph id
+to a report. Java checks the JUnit XML identity; Vitest/Jest check JSON
+assertion results; Node checks TAP; Swift checks XCTest and Swift Testing
+totals together; Busted checks its complete success/failure/error/pending
+summary. JavaScript selectors escape regex metacharacters and literal
+`describe` scopes are included in the runner title, so duplicate leaf names
+in different suites stay distinct. Dynamic suite names and nested Node TAP
+suites are conservatively unsupported. JS output directories must be empty;
+use a fresh `--out` directory for a new collection. Other collectors clear
+their prior generated evidence before collecting again.
+
+For JavaScript and Lua, multi-line body ranges begin at the first executable
+statement, not the declaration or opening brace. A positive declaration-line
+count from defining a function cannot establish that its body ran. Bodies
+whose first statement shares the declaration line, and empty bodies, require
+function-counter evidence even if they span several lines; absent reliable
+counters they remain unattributable.
+
+Python collection limits coverage to repository sources (`--source=.`), so
+imported runner/dependency packages outside the repository do not enter its
+manifest. Maven installs reactor dependencies with tests skipped before
+running the isolated selected module. Gradle receives an explicit init script
+configuring XML, JUnit and execution-data destinations, and reruns tasks.
+Java modules use their test-source directory rather than the graph namespace;
+custom Java test source roots are currently unsupported.
+
+Real-runner smoke tests in `scripts/coverage-runner-smoke.py` collect fresh
+reports twice, import them, assert exact per-test body attribution, and verify
+changed-body selection. CI runs Python, Vitest, Jest, Node, Maven, Gradle and
+Busted, plus Swift on Linux and macOS. These checks establish the exercised
+behavior; they do not establish a coverage percentage for the implementation.
+
+Java JaCoCo XML is imported directly, not as lcov text. Kotlin source files in
+a mixed module are skipped because this language row describes Java sites;
+anonymous-class methods are not independent sites. Abstract methods have no
+body region. Constructor sites carry the validator-safe item path `Class::new`
+(overload ordinals apply) — superseding Part J decision 3's `Class::<init>`,
+which the region-id validator's `[A-Za-z0-9_:./+-]` charset rejects — and the
+JaCoCo reader translates `<init>` method names to `new` so FNDA matching still
+joins constructor hits.
+
+Swift production sources mirror the graph's `file_type` classifier
+(test-named files, `Tests/` directories, `Package.swift`, and `.build/`
+carry no regions). Swift test ids are the graph's `defines_test` ids,
+`swift:<unit>::<file segments>::<scope>::<name>`; the runnable command is
+`swift test --filter '^<module>.<scope>/<name>$'` (module name = SwiftPM
+target with `-` mapped to `_`), the anchored form that matched both an
+XCTest class and a Swift Testing suite live. Xcode projects
+(`xcodebuild … -enableCodeCoverage YES` → `.xcresult` → `xcrun xccov`) are
+deferred to a later row.
+
+Coverage interchange uses lcov: `DA` line counters attribute multi-line
+functions of every language only when an executed line falls within
+`[body_start_line, end_line]`, and one-line functions are never attributed
+from the declaration line alone. Python branch regions are deferred.
+Per-test lcov imports require a manifest containing the collection revision
+and SHA-256 digests for covered source files; the importer verifies both
+against the host tree. Test ids are the graph's `defines_test` ids; Python's
+use the form `python:<namespace>::<path segments>::<test function>`, and
+TypeScript/JavaScript's end with the full runner title (literal `describe`
+scopes joined with spaces plus the raw `it()` title, which may contain
+spaces and `::`) after the test file's module segments, with the graph's
+target infix (`typescript:<unit>#test:<file>`) for files under `tests/`,
+and Lua's busted specs emit
+`lua:<unit>::<spec path segments>::<describe titles>::<it title>` (detected
+through the tree-sitter-lua parse).
+`coverage select` renders TypeScript/JavaScript tests as runnable
+vitest/jest/`node --test` commands chosen by the imported record's tool
+string (`c8+vitest`, `istanbul+jest`, `c8+node`).
+Parts H–L of the all-languages plan add rows; a language without a row has
+no coverage semantics and `coverage select` says so.
+
+Evaluated languages are not executed, so they have no coverage semantics
+at all: no function regions, no per-test hits, and no
+`region_without_dynamic_evidence` facts — hydration of an edit to one of
+them emits nothing. `coverage select` names their edits under the
+`no_coverage_semantics` key (`--json`) and in the table footer instead;
+their confidence signal is the validating tool's run:
+
+| Language | Extensions | Validating tool |
+|----------|------------|-----------------|
+| CUE | `.cue` | `cue vet` (toolchain def shipped by `phr-mcp init --packs cue`) |
+| JSON | `.json` | none (data, read by the tools that consume it) |
+| YAML | `.yaml`, `.yml` | none (data, read by the tools that consume it) |
+| Helm | `.tpl` (helm3) | `helm lint` (toolchain def shipped by `phr-mcp init --packs helm3`) |
+| Rhai | `.rhai` | the hook's own Rhai evaluation |
+
+Each listed edit prints: "`<file>`: evaluated, not executed; the compile
+signal comes from `cue vet` / `helm lint` / the hook's Rhai evaluation."
+Classification goes through `graph::unit::lang_of_path`, so unknown
+extensions stay unclassified and are not listed.

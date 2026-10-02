@@ -59,6 +59,9 @@ chrono = "0.4"
 dirs = "5"
 tree-sitter-python = "0.25.0"
 tree-sitter-typescript = "0.23.2"
+# Lua grammar for coverage regions and busted spec detection (PLAN.md Part K);
+# verified against tree-sitter 0.25 under rustc 1.90.
+tree-sitter-lua = "0.5.0"
 # 0.5.9–0.5.15 reject U+212A in string literals; covered by parser regression.
 tree-sitter-java-orchard = "=0.5.8"
 roxmltree = "0.20"

@@ -293,6 +293,61 @@ fn a_test_callback_with_no_calls_still_has_an_independent_identity() {
 }
 
 #[test]
+fn a_javascript_file_is_extracted_with_its_extension_in_its_identity() {
+    // Revision 2 (plan Task H1, GLM M1): the graph has no separate
+    // JavaScript identity — `.js`/`.jsx`/`.mjs`/`.cjs` are TypeScript's
+    // plain dialect, so the extractor gate accepts them, and
+    // `strip_known_extension` keeps the extension in the module segment
+    // exactly as `.tsx`/`.mts`/`.cts` already do.
+    let out = extract_typescript(
+        "src/util.js",
+        "export function f() { return 1 }\n",
+        &ctx(&["src/util.js"]),
+    );
+    assert_eq!(
+        edges_of(&out, "defines_fn"),
+        vec![vec![
+            "src/util.js".to_string(),
+            "typescript:myapp::util.js::f".to_string()
+        ]]
+    );
+}
+
+#[test]
+fn a_javascript_test_file_emits_defines_test_ids() {
+    let out = extract_typescript(
+        "tests/store.test.js",
+        "it('Store loads', () => { expect(true) })\n",
+        &ctx(&["tests/store.test.js"]),
+    );
+    assert_eq!(
+        edges_of(&out, "defines_test"),
+        vec![vec![
+            "tests/store.test.js".to_string(),
+            "typescript:myapp::tests::store.test.js::Store loads".to_string()
+        ]]
+    );
+}
+
+#[test]
+fn a_jsx_file_parses_with_the_tsx_grammar() {
+    // `.jsx` carries JSX syntax, which only the TSX grammar parses; the
+    // plain-TypeScript grammar would mark the file unparseable.
+    let out = extract_typescript(
+        "src/comp.jsx",
+        "export const C = () => <div/>;\n",
+        &ctx(&["src/comp.jsx"]),
+    );
+    assert_eq!(
+        edges_of(&out, "defines_fn"),
+        vec![vec![
+            "src/comp.jsx".to_string(),
+            "typescript:myapp::comp.jsx::C".to_string()
+        ]]
+    );
+}
+
+#[test]
 fn a_test_callback_records_what_it_calls() {
     // TS tests are callbacks, not named functions, so the coverage source is
     // identified by its title string — the only stable identity available.
@@ -356,7 +411,7 @@ fn a_test_wrapped_in_describe_still_counts() {
         edges_of(&out, "tested_by"),
         vec![vec![
             "charge".to_string(),
-            "typescript:myapp::billing.test::inner".to_string()
+            "typescript:myapp::billing.test::group inner".to_string()
         ]]
     );
 }
@@ -649,4 +704,39 @@ fn a_class_defined_inside_a_test_callback_still_gets_defines_fn_edges() {
         edges_of(&out, "defines_fn")[0][1],
         "typescript:myapp::billing.test::C::m"
     );
+}
+
+#[test]
+fn describe_scopes_distinguish_duplicate_titles_and_skip_dynamic_scopes() {
+    let file = "tests/store.test.ts";
+    let out = extract_typescript(
+        file,
+        r#"
+        describe('first::scope', () => { describe('nested', () => { it('loads', () => load()); }); });
+        describe('second', () => { it('loads', () => load()); });
+        it('outside', () => load());
+        describe(dynamicName, () => { it('unknown', () => load()); });
+        describe(`dynamic ${name}`, () => { it('unknownTemplate', () => load()); });
+    "#,
+        &ctx(&[file]),
+    );
+    let titles: Vec<_> = edges_of(&out, "defines_test")
+        .into_iter()
+        .map(|args| args[1].clone())
+        .collect();
+    assert_eq!(titles.len(), 3, "{titles:?}");
+    for (suffix, title) in [
+        ("first::scope nested loads", "first::scope nested loads"),
+        ("second loads", "second loads"),
+        ("outside", "outside"),
+    ] {
+        let id = titles
+            .iter()
+            .find(|id| id.ends_with(suffix))
+            .expect("full title");
+        let command =
+            crate::coverage::language::typescript::render_command_with_tool(id, file, "c8+vitest")
+                .expect("command");
+        assert!(command.ends_with(&format!("-t '^{title}$'")), "{command}");
+    }
 }
