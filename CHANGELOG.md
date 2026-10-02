@@ -148,6 +148,15 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **`phronesis-mcp` compiles on Windows again.** The redirected-output
+  evidence path called the Unix-gated
+  `security::read_file_capped_in_root` (hardened with `O_NOFOLLOW |
+  O_NONBLOCK`) from ungated code, breaking every Windows build of
+  0.37.0. Non-Unix hosts now contribute no redirected-output signal
+  instead of failing to compile, and a `windows-check` CI job
+  type-checks the crate on `windows-latest` so cfg-gating breaks
+  surface at PR time.
+
 - Coverage collection now validates exact per-test execution and clears or
   refuses reused output. Swift builds instrumented tests before discovery and
   supports executable and bundle layouts; JVM collectors configure real XML
