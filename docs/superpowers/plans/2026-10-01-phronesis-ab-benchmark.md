@@ -790,12 +790,10 @@ fn bad_commit_is_an_error() {
     let (_guard, url) = fixture_repo();
     let work = tempdir().unwrap();
     let mut s = spec(&url);
-    s.base_commit = "0" * 40 -> "0000000000000000000000000000000000000000".into();
+    s.base_commit = "0000000000000000000000000000000000000000".into();
     assert!(prep(&s, Arm::Control, work.path()).is_err());
 }
 ```
-
-(Fix the `s.base_commit = …` line to a plain assignment of the 40-zero string — shown split only to fit.)
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -816,7 +814,7 @@ fn bad_commit_is_an_error() {
 
 **Interfaces:**
 - Consumes: `manifest::{TaskSpec, Caps}`, `record::{Arm, RunRecord, RunExit}`, `prompt::render` (Task 4), `telemetry::parse_transcript` (Task 5), `governance::summarize` (Task 6), `arms::prep` (Task 7).
-- Produces: `runner::run(task: &TaskSpec, arm: Arm, run_dir: &Path, caps: &Caps) -> anyhow::Result<RunRecord>`; artifacts under `run_dir`: `transcript.jsonl`, `patch.diff`, `<arm>.json` (the record). Tasks 9/10 read `patch.diff` and the record.
+- Produces: `runner::run(task: &TaskSpec, arm: Arm, clone_dir: &Path, run_dir: &Path, caps: &Caps) -> anyhow::Result<RunRecord>`; artifacts under `run_dir` (= `bench/results/<run-id>/runs/<instance_id>/<arm>/`): `transcript.jsonl`, `patch.diff`, `record.json`. Tasks 9/10 read `patch.diff` and `record.json`; the clone dir is `bench/results/<run-id>/clones/<instance_id>/<arm>/` (Task 7 layout).
 
 - [ ] **Step 1: Write the failing tests** (test the pure pieces: cap classification and diff extraction, with an injectable command runner)
 
@@ -903,9 +901,8 @@ pub fn not_wired_record(instance_id: &str, arm: Arm) -> Result<RunRecord> {
     })
 }
 
-pub fn run(task: &TaskSpec, arm: Arm, run_dir: &Path, caps: &Caps) -> Result<RunRecord> {
+pub fn run(task: &TaskSpec, arm: Arm, clone_dir: &Path, run_dir: &Path, caps: &Caps) -> Result<RunRecord> {
     std::fs::create_dir_all(run_dir)?;
-    let clone_dir = run_dir.parent().unwrap().join("clone");
     let rendered = prompt::render(task);
     let started = Instant::now();
     let transcript_path = run_dir.join("transcript.jsonl");
@@ -924,8 +921,11 @@ pub fn run(task: &TaskSpec, arm: Arm, run_dir: &Path, caps: &Caps) -> Result<Run
     let diff = extract_diff(&clone_dir)?;
     std::fs::write(run_dir.join("patch.diff"), &diff)?;
     let jsonl = std::fs::read_to_string(&transcript_path)?;
-    let stats = parse_transcript(&jsonl)
-        .map_err(|e| e).unwrap_or_else(|_| Default::default()); // see note
+    let (stats, transcript_ok) = match parse_transcript(&jsonl) {
+        Ok(s) => (s, true),
+        // Unparseable transcript: zeroed stats + Error below — never a silent pass.
+        Err(_) => (TranscriptStats::default(), false),
+    };
     let governance = match arm {
         Arm::Control => None,
         Arm::Treatment => {
@@ -940,9 +940,13 @@ pub fn run(task: &TaskSpec, arm: Arm, run_dir: &Path, caps: &Caps) -> Result<Run
             }
         }
     };
-    let exit = classify_exit(elapsed > Duration::from_secs(caps.max_wall_clock_secs),
-                             stats.turns >= caps.max_turns,
-                             status.success(), "");
+    let exit = if !transcript_ok {
+        RunExit::Error { reason: "transcript_unparseable".into() }
+    } else {
+        classify_exit(elapsed > Duration::from_secs(caps.max_wall_clock_secs),
+                      stats.turns >= caps.max_turns,
+                      status.success(), "")
+    };
     let rec = RunRecord {
         instance_id: task.instance_id.clone(), arm, exit,
         resolved: None, turns: stats.turns,
@@ -950,17 +954,17 @@ pub fn run(task: &TaskSpec, arm: Arm, run_dir: &Path, caps: &Caps) -> Result<Run
         wall_clock_secs: elapsed.as_secs(), diff_bytes: diff.len() as u64,
         audit: None, governance,
     };
-    std::fs::write(run_dir.join(format!("{}.json", arm.as_str())),
+    std::fs::write(run_dir.join("record.json"),
                    serde_json::to_vec_pretty(&rec)?)?;
     Ok(rec)
 }
 ```
 
-Note in Step 3: replace the `.unwrap_or_else(|_| Default::default())` sketch with a real transcript-error path — a transcript that cannot be parsed is `RunExit::Error { reason: "transcript_unparseable" }` with the stats zeroed, **never** a silent pass. Make `TranscriptStats` implement `Default` to make this a clean expression.
+`TranscriptStats` must implement `Default` for the zeroed-stats path above; `classify_exit` still owns every other exit classification.
 
 `wait_with_timeout` polls `try_wait()` every 5 s and `kill()`s at the cap, returning the collected status; a killed process is not `success()`.
 
-Wire the `run` subcommand in `main.rs`: `--manifest`, `--run-id`, `--arm`, iterating the manifest's tasks sequentially, calling `arms::prep` then `runner::run`, writing records under `bench/results/<run-id>/runs/<instance_id>/<arm>.json` and clones under `bench/results/<run-id>/clones/…` (gitignored).
+Wire the `run` subcommand in `main.rs`: `--manifest`, `--run-id`, `--arm`, iterating the manifest's tasks sequentially, calling `arms::prep` then `runner::run`, with clones under `bench/results/<run-id>/clones/<instance_id>/<arm>/` and records under `bench/results/<run-id>/runs/<instance_id>/<arm>/record.json` (gitignored).
 
 - [ ] **Step 4: Run tests** — Expected: PASS (3) plus prior suites.
 
@@ -1027,7 +1031,7 @@ fn instance_missing_from_report_is_not_resolved() {
 
 - [ ] **Step 3: Run to verify failure**
 
-- [ ] **Step 4: Implement** — `write_predictions` writes the JSONL (escape patch text via `serde_json::to_string` on a small `#[derive(Serialize)]` struct, never hand-concatenated strings); `parse_harness_report` deserializes to `BTreeMap<String, struct { resolved: bool }>` (tolerating extra metadata fields per the fixture); `apply_resolved` loads each `<arm>.json` record, sets `resolved = map.get(id).copied()` (absent → `Some(false)`), revalidates with `record::validate`, writes back. The subcommand shells out to the pinned harness command from `SPIKE-FINDINGS.md` between write and parse, with one retry on non-zero exit (recorded), per the spec's flakiness rule.
+- [ ] **Step 4: Implement** — `write_predictions` writes the JSONL (escape patch text via `serde_json::to_string` on a small `#[derive(Serialize)]` struct, never hand-concatenated strings); `parse_harness_report` deserializes to `BTreeMap<String, struct { resolved: bool }>` (tolerating extra metadata fields per the fixture); `apply_resolved` loads each `runs/<instance_id>/<arm>/record.json`, sets `resolved = map.get(id).copied()` (absent → `Some(false)`), revalidates with `record::validate`, writes back. The subcommand shells out to the pinned harness command from `SPIKE-FINDINGS.md` between write and parse, with one retry on non-zero exit (recorded), per the spec's flakiness rule.
 
 - [ ] **Step 5: Run tests** — Expected: PASS (3).
 
@@ -1104,11 +1108,9 @@ fn audit_of_a_clone_excludes_governance_files() {
     let summary = audit_clone(&repo, "{\"rules\":[]}", dir.path().join("p.diff")).unwrap();
     let after = phr_bench::runner::extract_diff(&repo).unwrap();
     assert_eq!(before, after, "staging must not change the tracked diff");
-    assert!(!summary.per_rule.is_empty() || summary.per_rule.is_empty()); // shape smoke
+    let _ = summary; // audit ran against the staged rules; content covered by parse tests
 }
 ```
-
-(Remove the last tautological assertion line during implementation — it is a note-to-self, not a test. The meaningful assertions are the equality and the refusal test.)
 
 - [ ] **Step 3: Run to verify failure**
 
@@ -1198,7 +1200,7 @@ fn odd_arm_counts_are_rejected() {
 
 **Files:**
 - Create: `bench/phr-bench/src/report.rs`
-- Modify: `bench/phr-bench/src/main.rs` (wire `report` subcommand: aggregate → render → write `bench/report/index.html` + copy JSON to `bench/report/data/`)
+- Modify: `bench/phr-bench/src/main.rs` (wire `report` subcommand: aggregate → render → write `bench/report/index.html` + `bench/report/data/aggregate.json` + `bench/report/data/records.json`)
 - Test: `bench/phr-bench/tests/report.rs`
 
 **Interfaces:**
@@ -1208,14 +1210,27 @@ fn odd_arm_counts_are_rejected() {
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
+use phr_bench::record::{Arm, GovernanceSummary, RunExit, RunRecord};
 use phr_bench::report::{render, SECTION_IDS};
 
-fn sample() -> (phr_bench::aggregate::Aggregate, Vec<phr_bench::record::RunRecord>) {
-    // Build via the public aggregate() on synthetic records — reuse the
-    // record-building helper pattern from tests/aggregate.rs (two tasks,
-    // one discordant, one treatment block, null tokens on one record).
-    // Inline the helper here; do not reference "tests/aggregate.rs".
-    unimplemented!("inline the same rec() helper from Task 11 verbatim")
+fn rec(id: &str, arm: Arm, resolved: bool) -> RunRecord {
+    RunRecord {
+        instance_id: id.into(), arm, exit: RunExit::Completed,
+        resolved: Some(resolved), turns: 1, tokens_in: None, tokens_out: None,
+        wall_clock_secs: 5, diff_bytes: 1, audit: None,
+        governance: if arm == Arm::Treatment { Some(GovernanceSummary::default()) } else { None },
+    }
+}
+
+fn sample() -> (phr_bench::aggregate::Aggregate, Vec<RunRecord>) {
+    let records = vec![
+        rec("t1", Arm::Control, true),
+        rec("t1", Arm::Treatment, false),   // discordant: control won
+        rec("t2", Arm::Control, false),
+        rec("t2", Arm::Treatment, false),   // concordant
+    ];
+    let agg = phr_bench::aggregate::aggregate(&records).unwrap();
+    (agg, records)
 }
 
 #[test]
@@ -1341,7 +1356,7 @@ fn prompt_hash_recorded() {
 
 - [ ] **Step 3: Run to verify failure**
 
-- [ ] **Step 4: Implement** — parse each JSONL line into the pinned column layout (normalize: `FAIL_TO_PASS`→`fail_to_pass`, problem statement column → `issue_text`); Pilot: all `rust` instances, then seed-fill from each other language proportionally to reach 30 using `rand::rngs::StdRng::seed_from_u64(seed)` + `choose_multiple` per language (python first by size); Full: all `rust` + proportional fill to 100; sort the final `tasks` by `instance_id` for determinism; `prompt_hash` = sha256 of the rendered template over the first task (the template is task-independent except for issue text, so the manifest instead records the hash of the **template with a placeholder issue** — define `prompt::template_hash()` in Task 4's module during wiring and use it here); assert the manifest deserializes back.
+- [ ] **Step 4: Implement** — parse each JSONL line into the pinned column layout (normalize: `FAIL_TO_PASS`→`fail_to_pass`, problem statement column → `issue_text`); Pilot: all `rust` instances, then seed-fill from each other language proportionally to reach 30 using `rand::rngs::StdRng::seed_from_u64(seed)` + `choose_multiple` per language (python first by size); Full: all `rust` + proportional fill to 100; sort the final `tasks` by `instance_id` for determinism; `prompt_hash` = `prompt::template_hash()` (Task 4) — the hash of the template with a placeholder issue, task-independent; assert the manifest deserializes back.
 
 - [ ] **Step 5: Run tests** — Expected: PASS (4).
 
@@ -1373,8 +1388,8 @@ BIN="cargo run --quiet --manifest-path $ROOT/bench/phr-bench/Cargo.toml --"
 RUN_ID="pilot-$(date +%Y%m%d)"
 
 cargo install --path "$ROOT/crates/phronesis-mcp"        # hooks invoke the fresh binary
-phr-mcp --version | tee "$ROOT/bench/results/$RUN_ID-phr-version.txt" 2>/dev/null || true
-mkdir -p "$ROOT/bench/results"
+mkdir -p "$ROOT/bench/results" "$ROOT/bench/report"
+phr-mcp --version > "$ROOT/bench/report/phr-version.txt" || true   # committed with the report
 
 $BIN corpus --slice pilot --seed 20261001 --out "$ROOT/bench/tasks/manifest-pilot.json"
 $BIN arms   --manifest "$ROOT/bench/tasks/manifest-pilot.json" --run-id "$RUN_ID"
@@ -1385,16 +1400,16 @@ $BIN quality --run-id "$RUN_ID"
 $BIN report --run-id "$RUN_ID" --out "$ROOT/bench/report/index.html"
 ```
 
-- [ ] **Step 2: Run it** — expected: ~60 runs; sequential; watch for per-run caps. If any infra error rate exceeds 10% of runs (`grep -l '"type":"error"' bench/results/$RUN_ID/runs/*/*/control.json | wc -l`), stop and fix before continuing — infra failures are not data.
+- [ ] **Step 2: Run it** — expected: ~60 runs; sequential; watch for per-run caps. If any infra error rate exceeds 10% of runs (`grep -l '"type":"error"' bench/results/$RUN_ID/runs/*/control/record.json | wc -l`), stop and fix before continuing — infra failures are not data.
 
 - [ ] **Step 3: Gate — record integrity**
 
 ```bash
 RUN_DIR=bench/results/pilot-*
-test "$(ls $RUN_DIR/runs | wc -l)" -eq 30                          # 30 task dirs
-find $RUN_DIR/runs -name 'treatment.json' | wc -l | grep -qx 30
-find $RUN_DIR/runs -name 'control.json' | wc -l | grep -qx 30
-! grep -l 'governance_not_wired' $RUN_DIR/runs/*/treatment/treatment.json # zero not-wired
+test "$(ls $RUN_DIR/runs | wc -l | tr -d ' ')" -eq 30                        # 30 task dirs
+test "$(find $RUN_DIR/runs -name record.json -path '*/treatment/*' | wc -l | tr -d ' ')" -eq 30
+test "$(find $RUN_DIR/runs -name record.json -path '*/control/*' | wc -l | tr -d ' ')" -eq 30
+! grep -q 'governance_not_wired' $RUN_DIR/runs/*/treatment/record.json      # zero not-wired
 ```
 
 - [ ] **Step 4: Gate — report DoD check (pilot edition)**
@@ -1433,13 +1448,13 @@ In `pilot-false-positive-review.md`, append a *Phase 2 decision* section computi
 
 - [ ] **Step 2: Run it** — ≈100 tasks × 2 arms, k=1, sequential. Same 10% infra-error stop rule.
 
-- [ ] **Step 3: Gates — same as Task 14 Steps 3–4**, with counts scaled to the full manifest (`test "$(ls $RUN_DIR/runs | wc -l)" -eq "$(python3 -c 'import json;print(len(json.load(open("bench/tasks/manifest-full.json"))["tasks"]))')"`), plus:
+- [ ] **Step 3: Gates — same as Task 14 Steps 3–4**, with counts scaled to the full manifest (`test "$(ls $RUN_DIR/runs | wc -l | tr -d ' ')" -eq "$(python3 -c 'import json;print(len(json.load(open("bench/tasks/manifest-full.json"))["tasks"]))')"`), plus:
 
 ```bash
 # self-containment: no external anything
 ! grep -qE 'https?://|<script|<link' bench/report/index.html
 # data committed alongside
-test -d bench/report/data && ls bench/report/data/*.json | wc -l | grep -qx 2  # aggregate.json + records.json
+test -d bench/report/data && test "$(ls bench/report/data/*.json | wc -l | tr -d ' ')" -eq 2  # aggregate.json + records.json
 ```
 
 - [ ] **Step 4: Write `bench/report/README.md`** — one paragraph: what was compared, headline numbers (resolved delta, sign p, debt delta, median turn delta), and a pointer to `index.html`. No claims beyond what the report computes.
