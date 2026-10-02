@@ -48,6 +48,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace
 
+  # Platform guard: cfg-gating breaks (Unix-only helpers called from ungated
+  # code) are invisible to the ubuntu matrix — 0.37.0 shipped a Windows
+  # compile break this job would have caught. Check-level, lib + bins only,
+  # matching what release-binaries builds.
+  windows:
+    name: windows-check (cargo check)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check -p phronesis-mcp
+
   coverage-runners:
     name: Real coverage collector (${{ matrix.runner }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}

@@ -273,6 +273,15 @@ fn redirect_target_for(project_root: &Path, command: &str) -> Option<String> {
     })
 }
 
+/// Redirected-output evidence: the file a handled command sent stdout to, when
+/// it is a fresh regular file inside the project.
+///
+/// Unix-only by design. The read goes through
+/// `security::read_file_capped_in_root`, which hardens it with `open(2)`
+/// flags (`O_NOFOLLOW | O_NONBLOCK`) that have no portable equivalent; a
+/// hasty cross-platform port would weaken that guarantee, so non-Unix
+/// hosts contribute no redirected-output signal instead.
+#[cfg(unix)]
 fn redirect_output(project_root: &Path, command: &str, not_before: Option<u64>) -> Option<String> {
     let not_before = not_before?;
     let target = redirect_target_for(project_root, command)?;
@@ -288,6 +297,17 @@ fn redirect_output(project_root: &Path, command: &str, not_before: Option<u64>) 
         .map(|rel| root.join(rel))
         .unwrap_or(path);
     crate::security::read_file_capped_in_root(&candidate, &root, not_before).ok()
+}
+
+/// Non-Unix hosts contribute no redirected-output evidence; see the Unix
+/// twin for why the hardened read is not ported.
+#[cfg(not(unix))]
+fn redirect_output(
+    _project_root: &Path,
+    _command: &str,
+    _not_before: Option<u64>,
+) -> Option<String> {
+    None
 }
 
 /// The property a proof result speaks for: the name itself when it is a
