@@ -520,19 +520,34 @@ mod tests {
         // every line in the log to return the last few, so a project with an
         // accumulated log paid tens of milliseconds on every single hook.
         //
-        // The threshold is deliberately loose — this asserts "not linear in
-        // the whole file", not a specific speed. Parsing all 60k records
-        // takes ~50ms; a backward scan for 5 is bounded by the file read.
-        let dir = tempfile::tempdir().unwrap();
+        // The guard is a ratio against a full parse of the same file on the
+        // same machine, never a wall-clock budget. Both reads pay the same
+        // file-read cost, which varies by an order of magnitude across
+        // machines (reading this fixture alone exceeded the old absolute
+        // 25ms budget on a loaded CI runner — that flake is why this test
+        // is ratio-based). The fixture is large enough that parse cost
+        // dominates any realistic read cost, so if the limited path ever
+        // regresses to full parsing the ratio approaches 1 and fails.
+        let dir = tempfile::tempdir().expect("tempdir for perf-guard test");
         let path = dir.path().join("log.jsonl");
         let mut bulk = String::new();
-        for i in 0..60_000u64 {
+        for i in 0..600_000u64 {
             bulk.push_str(&format!(
                 "{{\"ts\":{},\"kind\":\"hook\",\"event\":\"pre_check\",\"x\":1}}\n",
                 100 + i
             ));
         }
-        std::fs::write(&path, bulk).unwrap();
+        std::fs::write(&path, bulk).expect("write perf-guard fixture");
+
+        // Baseline: a full parse of the same file, on the same machine.
+        let full_opts = ReadOpts {
+            kind: Some("hook".into()),
+            ..ReadOpts::default()
+        };
+        let started = std::time::Instant::now();
+        let all = read_recent(&path, &full_opts).expect("baseline full read");
+        let full_elapsed = started.elapsed();
+        assert_eq!(all.len(), 600_000, "baseline read parses the whole log");
 
         let opts = ReadOpts {
             kind: Some("hook".into()),
@@ -540,14 +555,15 @@ mod tests {
             ..ReadOpts::default()
         };
         let started = std::time::Instant::now();
-        let entries = read_recent(&path, &opts).unwrap();
-        let elapsed = started.elapsed();
+        let entries = read_recent(&path, &opts).expect("limited read");
+        let limited_elapsed = started.elapsed();
 
         assert_eq!(entries.len(), 5);
-        assert_eq!(entries[4].ts, 60_099, "still the newest record");
+        assert_eq!(entries[4].ts, 600_099, "still the newest record");
         assert!(
-            elapsed < std::time::Duration::from_millis(25),
-            "a limited read took {elapsed:?}; it should not parse the whole log"
+            limited_elapsed * 2 < full_elapsed,
+            "a limited read took {limited_elapsed:?} vs {full_elapsed:?} for the \
+             full parse; it should not parse the whole log"
         );
     }
 
