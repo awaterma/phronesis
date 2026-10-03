@@ -1,0 +1,87 @@
+[
+ {
+  "instance": "astral-sh__ruff-15309",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "astral-sh__ruff-15330",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "astral-sh__ruff-15356",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "astral-sh__ruff-15394",
+  "control": {},
+  "treatment": {
+   "audit-rust-let-mut-count-high": 1
+  }
+ },
+ {
+  "instance": "astral-sh__ruff-15443",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "astral-sh__ruff-15543",
+  "control": {},
+  "treatment": {
+   "audit-rust-let-binding-count-high": 1
+  }
+ },
+ {
+  "instance": "astral-sh__ruff-15626",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "burntsushi__ripgrep-2209",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "burntsushi__ripgrep-2576",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "nushell__nushell-12901",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "nushell__nushell-12950",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "nushell__nushell-13246",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "nushell__nushell-13605",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "nushell__nushell-13831",
+  "control": {},
+  "treatment": {}
+ },
+ {
+  "instance": "sharkdp__bat-1892",
+  "control": {
+   "enforce-no-unwrap-in-src": 13,
+   "warn-pub-fn-missing-doc": 7
+  },
+  "treatment": {
+   "enforce-no-unwrap-in-src": 13,
+   "warn-pub-fn-missing-doc": 7
+  }
+ }
+]
