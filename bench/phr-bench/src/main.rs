@@ -1,8 +1,10 @@
 // Main entry point; subcommand bodies arrive with their tasks
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use phr_bench::arms::prep;
 use phr_bench::corpus::{build_manifest, Slice};
-use phr_bench::manifest::DatasetRef;
+use phr_bench::manifest::{DatasetRef, Manifest};
+use phr_bench::record::Arm;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -29,6 +31,13 @@ enum Commands {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Clone and prepare both arms' repositories for a run.
+    Arms {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        run_id: String,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -50,6 +59,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Some(Commands::Corpus { slice, seed, out }) => run_corpus(slice.into(), seed, &out),
+        Some(Commands::Arms { manifest, run_id }) => run_arms(&manifest, &run_id),
         None => Ok(()),
     }
 }
@@ -74,6 +84,41 @@ fn run_corpus(slice: Slice, seed: u64, out: &Path) -> Result<()> {
         manifest.tasks.len(),
         out.display()
     );
+    Ok(())
+}
+
+fn run_arms(manifest_path: &Path, run_id: &str) -> Result<()> {
+    validate_run_id(run_id)?;
+    let encoded = std::fs::read(manifest_path)
+        .with_context(|| format!("read manifest {}", manifest_path.display()))?;
+    let manifest: Manifest = serde_json::from_slice(&encoded)
+        .with_context(|| format!("parse manifest {}", manifest_path.display()))?;
+    let root = project_root()?;
+    let clones_dir = root.join("bench/results").join(run_id).join("clones");
+    for task in &manifest.tasks {
+        for arm in [Arm::Control, Arm::Treatment] {
+            let clone = prep(task, arm, &clones_dir)
+                .with_context(|| format!("prepare {} arm for {}", arm.as_str(), task.instance_id))?;
+            println!(
+                "prepared {} arm for {} at {}",
+                arm.as_str(),
+                task.instance_id,
+                clone.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn validate_run_id(run_id: &str) -> Result<()> {
+    if run_id.is_empty()
+        || run_id == "."
+        || run_id == ".."
+        || run_id.contains(['/', '\\'])
+        || run_id.contains('\0')
+    {
+        bail!("invalid run id {run_id:?}: must be a single path segment");
+    }
     Ok(())
 }
 
