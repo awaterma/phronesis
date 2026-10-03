@@ -810,6 +810,27 @@ fn cartesian_product(
     results
 }
 
+/// Strip the OR-expansion suffix that `unfold_or` appends to child rule ids
+/// (`#or0`, `#or0-or1`, …), returning the base id as authored on disk.
+/// Decision pages, drift detectors, and consequence provenance identify
+/// rules by this logical id; ids without an expansion suffix — including
+/// ids that merely contain `#or` — are returned unchanged.
+pub fn base_rule_id(id: &str) -> &str {
+    match id.split_once('#') {
+        Some((base, suffix)) if is_or_expansion_suffix(suffix) => base,
+        _ => id,
+    }
+}
+
+/// `unfold_or` suffix grammar: `or<digits>` per or-position, joined by `-`
+/// for multi-position products (`#or0`, `#or0-or1`, `#or0-or1-or2`, …).
+fn is_or_expansion_suffix(suffix: &str) -> bool {
+    suffix.split('-').all(|part| {
+        part.strip_prefix("or")
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
 /// Expand a SourceRule's OR clauses into flat, OR-free DiskRules via
 /// disjunctive-normal-form (DNF) expansion. Each OR position contributes
 /// one alternative per (flattened) branch; the cartesian product across
@@ -1734,6 +1755,21 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].id, "r");
         assert_eq!(out[0].conditions.len(), 2);
+    }
+
+    #[test]
+    fn base_rule_id_strips_or_expansion_suffixes() {
+        assert_eq!(base_rule_id("r"), "r");
+        assert_eq!(base_rule_id("r#or0"), "r");
+        assert_eq!(base_rule_id("r#or0-or1"), "r");
+        assert_eq!(base_rule_id("r#or0-or1-or2"), "r");
+        assert_eq!(
+            base_rule_id("warn-untested-risky-call#or4"),
+            "warn-untested-risky-call"
+        );
+        // Merely containing "#or" is not an expansion suffix.
+        assert_eq!(base_rule_id("x#organic"), "x#organic");
+        assert_eq!(base_rule_id("r#or"), "r#or");
     }
 
     #[test]
