@@ -31,19 +31,44 @@ pub fn write_predictions(records: &[(String, String)], out: &Path) -> Result<()>
 }
 
 /// Parse the SWE-bench harness results.json report.
-/// Format: `{"<instance_id>": {"resolved": <bool>}, ...}`
+/// Real shape (pinned harness @ 02e7a74f, verified against live runs):
+/// top-level counters plus id lists — `resolved_ids`, `unresolved_ids`,
+/// `error_ids`, etc. The original per-instance map format
+/// (`{"<id>": {"resolved": bool}}`) was a wrong fixture assumption, caught
+/// in the live pilot run and corrected here.
 pub fn parse_harness_report(json: &str) -> Result<BTreeMap<String, bool>> {
     #[derive(Deserialize)]
-    struct InstanceResult {
-        resolved: Option<bool>,
+    struct Report {
+        #[serde(default)]
+        resolved_ids: Vec<String>,
+        #[serde(default)]
+        unresolved_ids: Vec<String>,
+        #[serde(default)]
+        error_ids: Vec<String>,
+        #[serde(default)]
+        infra_failure_ids: Vec<String>,
+        #[serde(default)]
+        ambiguous_failure_ids: Vec<String>,
+        #[serde(default)]
+        empty_patch_ids: Vec<String>,
     }
 
-    let report: BTreeMap<String, InstanceResult> =
+    let report: Report =
         serde_json::from_str(json).context("parse harness report JSON")?;
 
     let mut result = BTreeMap::new();
-    for (instance_id, entry) in report {
-        result.insert(instance_id, entry.resolved.unwrap_or(false));
+    for id in report.resolved_ids {
+        result.insert(id, true);
+    }
+    for id in report
+        .unresolved_ids
+        .into_iter()
+        .chain(report.error_ids)
+        .chain(report.infra_failure_ids)
+        .chain(report.ambiguous_failure_ids)
+        .chain(report.empty_patch_ids)
+    {
+        result.insert(id, false);
     }
 
     Ok(result)

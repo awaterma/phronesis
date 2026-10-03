@@ -1,5 +1,22 @@
 {
-  "i-rust-1": {"resolved": true},
-  "i-rust-2": {"resolved": false},
-  "i-py-1": {"resolved": false}
+  "total_instances": 300,
+  "submitted_instances": 3,
+  "completed_instances": 3,
+  "resolved_instances": 1,
+  "unresolved_instances": 1,
+  "infra_failure_instances": 0,
+  "ambiguous_failure_instances": 0,
+  "empty_patch_instances": 0,
+  "error_instances": 1,
+  "completed_ids": ["i-rust-1", "i-rust-2", "i-py-1"],
+  "incomplete_ids": [],
+  "empty_patch_ids": [],
+  "submitted_ids": ["i-rust-1", "i-rust-2", "i-py-1"],
+  "resolved_ids": ["i-rust-1"],
+  "unresolved_ids": ["i-rust-2"],
+  "error_ids": ["i-py-1"],
+  "schema_version": 2,
+  "unstopped_instances": 0,
+  "unstopped_containers": 0,
+  "unremoved_images": 0
 }
