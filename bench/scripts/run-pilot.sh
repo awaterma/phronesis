@@ -41,7 +41,9 @@ json.dump(m, open(dst, "w"), indent=2)
 print(f"trimmed manifest to {len(m['tasks'])} tasks -> {dst}")
 EOF
 
-$BIN arms   --manifest "$ROOT/bench/tasks/manifest-pilot-lite.json" --run-id "$RUN_ID"
+# The run subcommand does its own prep (arms::prep inside run_cmd) and its
+# preflight REFUSES pre-existing clone dirs — so we do NOT pre-stage with the
+# arms subcommand (t8 wiring design; discovered live in the first launch).
 $BIN run    --manifest "$ROOT/bench/tasks/manifest-pilot-lite.json" --run-id "$RUN_ID" --arm control
 $BIN run    --manifest "$ROOT/bench/tasks/manifest-pilot-lite.json" --run-id "$RUN_ID" --arm treatment
 $BIN verify --run-id "$RUN_ID"
