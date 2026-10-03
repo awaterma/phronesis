@@ -250,6 +250,7 @@ fn project_root() -> Result<PathBuf> {
 }
 
 fn run_cmd(manifest_path: &Path, run_id: &str, arm: Arm) -> Result<()> {
+    validate_run_id(run_id)?;
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
     let manifest: Manifest =

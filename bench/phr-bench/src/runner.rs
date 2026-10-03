@@ -48,9 +48,15 @@ pub fn classify_exit(timed_out: bool, turns_capped: bool, success: bool, stderr:
 /// Stage everything in the clone and diff the index against the pre-run HEAD,
 /// so the patch captures agent commits AND untracked files — the agent may
 /// commit, and the pre-run HEAD is recorded before claude starts
-/// (SPIKE-FINDINGS correction 2). Governance wiring dirs written by
-/// `phr-mcp init` before the run are excluded: they are bench infrastructure,
-/// not agent output.
+/// (SPIKE-FINDINGS correction 2). Governance wiring written by
+/// `phr-mcp init` before the run is excluded: it is bench infrastructure,
+/// not agent output — the wiring dirs (`.phronesis`, `.claude`, `.codex`,
+/// `.gemini`) plus the two root files init creates or appends to
+/// (`.mcp.json`, `.gitignore`). rv8 Major finding: without the two file
+/// excludes every treatment patch carried a one-sided .gitignore + .mcp
+/// hunk, biasing diff_bytes against treatment. Trade-off: excluding
+/// `.gitignore` also drops legitimate agent edits to it — accepted, and
+/// rare in SWE-bench fixes.
 pub fn extract_diff(clone_dir: &Path, pre_head: &str) -> Result<String> {
     let dir = clone_dir
         .to_str()
@@ -79,6 +85,8 @@ pub fn extract_diff(clone_dir: &Path, pre_head: &str) -> Result<String> {
             ":(exclude).claude",
             ":(exclude).codex",
             ":(exclude).gemini",
+            ":(exclude).mcp.json",
+            ":(exclude).gitignore",
         ])
         .output()
         .context("git diff --cached")?;

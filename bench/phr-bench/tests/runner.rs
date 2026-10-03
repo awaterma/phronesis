@@ -227,11 +227,15 @@ fn diff_extraction_excludes_governance_wiring_dirs() {
     let pre_head = head(&clone);
 
     // phr-mcp init writes these BEFORE the run; they are bench wiring, not
-    // agent output, so they must not pollute the patch.
+    // agent output, so they must not pollute the patch. The root files init
+    // creates or appends to (.mcp.json, .gitignore) are excluded too —
+    // rv8 Major: without them every treatment patch carried an init hunk.
     std::fs::create_dir_all(clone.join(".phronesis")).unwrap();
     std::fs::write(clone.join(".phronesis/rules.json"), "{}\n").unwrap();
     std::fs::create_dir_all(clone.join(".claude")).unwrap();
     std::fs::write(clone.join(".claude/settings.local.json"), "{}\n").unwrap();
+    std::fs::write(clone.join(".mcp.json"), "{}\n").unwrap();
+    std::fs::write(clone.join(".gitignore"), ".phronesis/log.jsonl\n").unwrap();
     std::fs::write(clone.join("tracked.txt"), "agent change\n").unwrap();
 
     let diff = extract_diff(&clone, &pre_head).unwrap();
@@ -243,6 +247,14 @@ fn diff_extraction_excludes_governance_wiring_dirs() {
     assert!(
         !diff.contains(".claude"),
         "claude settings must not enter the patch"
+    );
+    assert!(
+        !diff.contains(".mcp.json"),
+        "init-written .mcp.json must not enter the patch"
+    );
+    assert!(
+        !diff.contains(".gitignore"),
+        "init-appended .gitignore must not enter the patch"
     );
 }
 
