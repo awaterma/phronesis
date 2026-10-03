@@ -6,6 +6,21 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.37.1] - 2026-10-02
+
+### Fixed
+
+- **`phronesis-mcp` compiles on Windows again.** The redirected-output
+  evidence path called the Unix-gated
+  `security::read_file_capped_in_root` (hardened with `O_NOFOLLOW |
+  O_NONBLOCK`) from ungated code, breaking every Windows build of
+  0.37.0. Non-Unix hosts now contribute no redirected-output signal
+  instead of failing to compile, and a `windows-check` CI job
+  type-checks the crate on `windows-latest` so cfg-gating breaks
+  surface at PR time.
+
+## [0.37.0] - 2026-10-02
+
 ### Added
 
 - **Java coverage evidence.** Java method and constructor regions use
@@ -108,6 +123,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `FN` names are mangled). The built-in `swift` toolchain def now grounds
   per-test outcomes from XCTest and Swift Testing output lines. Xcode
   projects are deferred.
+
 - **Confidence signals survive redirected output and hand-run gates.** When a
   handled command sends stdout to a fresh regular file inside the project and
   the host captured nothing, post-check parses that file and journals
@@ -127,26 +143,17 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Changed
 
-- **`init.rs` and `audit.rs` are now directory modules.** The two largest
-  files in `phronesis-mcp` (5,228 and 3,926 physical lines) were split into
-  `src/init/` (types, global install, hook and scaffold writers, JSON
-  helpers, per-language rule packs, rule sync) and `src/audit/` (types,
-  engine, run, diagnostics, trend, render, graph), each with its own
-  `tests/` directory. Every new file is under the 800-line
-  `audit-file-loc-high` threshold. Code moved verbatim; the only edits are
-  visibility (`pub(crate)`/`pub(super)`), `use`/`mod` wiring, and
-  re-exports, so `crate::init::*` and `crate::audit::*` resolve as before.
-  Nine production `.unwrap()` calls in the init writers, which
-  `enforce-no-unwrap-in-src` did not report while they sat inside the
-  monolithic file, are replaced with `?` or an `expect()` naming the
-  invariant.
-
-- **`phr-mcp` now ships with the Prometheus exporter.** The `metrics` feature
-  is on by default, so `cargo install phronesis-mcp` includes `phr-mcp
-  metrics` and the `/metrics` endpoint. A build without the HTTP stack is
-  still available with `--no-default-features --features rhai`.
+- **Visibility tightened across `src/init/` and `src/audit/`**
+  (`pub(crate)` to `pub(super)`), and nine production `.unwrap()` calls
+  in the init writers — hidden from `enforce-no-unwrap-in-src` while the
+  module was one file — are replaced with `?` or a named `expect()`.
 
 ### Fixed
+
+- **CI-stable limited-read guard.** The action-log latency regression
+  test asserts a machine-relative ratio against a full parse of the
+  same fixture instead of an absolute 25ms wall-clock budget, which
+  flaked red on loaded shared CI runners.
 
 - Coverage collection now validates exact per-test execution and clears or
   refuses reused output. Swift builds instrumented tests before discovery and
@@ -176,6 +183,31 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `repo_dir`. Relative paths, unrelated repositories, and shell forms the
   parser does not model still fall back to the project root.
 
+## [0.36.0] - 2026-09-28
+
+### Changed
+
+- **`init.rs` and `audit.rs` are now directory modules.** The two largest
+  files in `phronesis-mcp` (5,228 and 3,926 physical lines) were split into
+  `src/init/` (types, global install, hook and scaffold writers, JSON
+  helpers, per-language rule packs, rule sync) and `src/audit/` (types,
+  engine, run, diagnostics, trend, render, graph), each with its own
+  `tests/` directory. Every new file is under the 800-line
+  `audit-file-loc-high` threshold. Code moved verbatim; the only edits are
+  visibility (`pub(crate)`/`pub(super)`), `use`/`mod` wiring, and
+  re-exports, so `crate::init::*` and `crate::audit::*` resolve as before.
+  Nine production `.unwrap()` calls in the init writers, which
+  `enforce-no-unwrap-in-src` did not report while they sat inside the
+  monolithic file, are replaced with `?` or an `expect()` naming the
+  invariant.
+
+- **`phr-mcp` now ships with the Prometheus exporter.** The `metrics` feature
+  is on by default, so `cargo install phronesis-mcp` includes `phr-mcp
+  metrics` and the `/metrics` endpoint. A build without the HTTP stack is
+  still available with `--no-default-features --features rhai`.
+
+### Fixed
+
 - **A benign Python property body could be refused for "interpolating
   outside a string" when the value only ever sat inside a `'...'` string or
   a `#` comment.** The rendered-body validator's non-Rust fallback only knew
@@ -202,10 +234,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   straddles a literal boundary is rejected. An unterminated string fails
   safe, for Python and the generic fallback alike: the dangling text and
   everything after it stay live, never guessed closed.
+
 - **The nudge README that `init` writes showed a capsule that could never
   fire.** Its `journey_seen` example used the window `"session"`, which is not
   a window token; the session window is `"s"`. The example now uses `"s"`, and
   the README lists the valid windows (`s`, `<N>c`, `<N>s`/`m`/`h`/`d`).
+
 - **After a broken rules file was repaired, `load_rules_file` reported
   success but the MCP server kept its stale rules and still reported the
   file as failing.** The server held its startup copy (rules since changed
@@ -215,10 +249,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   on, reloads the repaired file wholesale and reports how many rules it
   loaded. With autopersist off the load stays additive, so rules added in
   memory are kept.
+
 - **An MCP `add_rule` phase typo did not say which rule it was.** `"Pre"`
   was refused with `phase must be "pre" or "post", got: Pre`. The message now
   names the rule, the field, the bad value and the allowed values, like the
   other rule-shape errors.
+
 - **A coverage import in progress could make hooks report a corrupt
   coverage store.** A hook that could not get the store lock within its
   200 ms bound (an import running back to back starves it — flock queues no
@@ -300,6 +336,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   accepted properties with changed dependencies raise `property_obligation`
   again until re-proved. This repository's own hand-seeded kani record is
   one of them.
+
 - **One bad line in the property results file silently turned off every
   property rule.** A malformed `property-results.jsonl` line (or a malformed
   `properties.json`) failed the whole property hydration with a stderr
@@ -349,6 +386,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   is now linear in file size: a pre-check on a large file that took minutes
   (tree-sitter parent walks and a full line-diff table, both quadratic)
   returns promptly.
+
 - **Coverage evidence joined different functions that shared a name.** Region
   ids were the bare leaf name (`fn:new`, `branch:safe_divide:<anchor>`), so a
   test that executed `new` in one file counted as evidence for every other
@@ -366,6 +404,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `phr-mcp coverage collect` again (see the upgrade note below). Property `depends_on` entries still using
   the old ids keep matching conservatively (every same-named site) until
   rewritten.
+
 - **A coverage import interrupted between its two writes no longer passes
   off new hits as the old revision's evidence.** The coverage index now
   records a digest and count of the records file it commits, and every read
@@ -506,6 +545,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   not load, an edit (or Codex patch) whose target is that file is allowed with
   a warning so an agent can repair it, and `session-context` /
   `interaction-context` lead with the load error instead of printing nothing.
+
 - **The MCP server could erase every rule in a rules file it could not
   load.** On startup it loaded nothing from such a file, and the next
   `add_rule` autosaved only the new rule over it; a second call rotated the
@@ -516,12 +556,14 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   reports the error as `load_error` (also with `PHRONESIS_NO_AUTOPERSIST`).
   Once the file is fixed, the same server reloads it — the repaired file
   wins over the copy the server held — before the next write.
+
 - **`add_rule` with an existing id, or extracting the same guide twice,
   wrote a duplicate rule id.** Under the stricter loader that duplicate
   blocked every tool call. `add_rule` now replaces a rule with the same id
   (keeping its phase unless one is given) and says `replaced`;
   `extract_rules` replaces by id; and every rules-file write keeps only the
   last definition of an id.
+
 - **A `block` rule whose message started with `?` fired but did not block.**
   `{"block": "?reason: force-pushing rewrites history"}` — or any message
   whose first word was a `?var` no condition binds — made the engine drop the
@@ -654,6 +696,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   checkout, found an unrelated project's rules. The `gitdir` is now resolved
   against the directory holding the `.git` file, and the main checkout root is
   canonicalized.
+
 - **Stray `.phronesis/journey/` directories switched governance off for their
   subtree.** Hooks fired from a directory no project governed (and, before
   project-root discovery walked up, from any subdirectory) created
@@ -693,6 +736,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   - In an ungoverned root, `codex-hook PreToolUse` with a malformed
     `apply_patch` now answers `{}` (allow) instead of denying, matching every
     other ungoverned tool call. A payload that is not valid JSON still denies.
+
 - **`phr-mcp kalpa start`, `phr-mcp unit start` and the MCP
   `submit_suggestion` tool reported success in a directory no project
   governed**, creating `.phronesis/journey/` and `log.jsonl` there — the
@@ -708,6 +752,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `TMPDIR`), daemon lookups are denied, signals may target only the verifier
   itself, and network is still denied; the real Verus harness still proves
   under it.
+
 - **The devcontainer tier ran whatever image the verifier command named.** The
   `docker run` line had no image and no mount, so the first verifier word was
   pulled from a registry as the image and any image that printed the summary
@@ -715,6 +760,7 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `verification/templates/devcontainer.json`, must be pinned by digest (the
   tier is refused otherwise), is never pulled, and sees only the artifact's
   run directory, mounted read-only.
+
 - **A hung verifier hung its caller forever.** Verifier runs had no time
   limit on any tier, although S9 promises one, and a verifier that filled a
   pipe while its solver child kept running could deadlock. Runs now get a
@@ -722,10 +768,12 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   default 300 — after which the verifier's whole process group (z3 children
   included) is killed, a devcontainer run's container is stopped by name, and
   the result is recorded as `timeout`. Output is drained concurrently.
+
 - **The devcontainer tier failed on podman-only hosts.** Tier detection
   accepted podman, but the run always invoked `docker`, so a host with only
   podman selected the tier and then could not run anything. The run now
   invokes whichever runtime the probe found, with the same confinement flags.
+
 - **A tampered artifact ran as approved.** Verifier execution trusted the hash
   the caller passed in, so edited bytes ran under an old approval, and a
   hand-edited allowlist entry with an empty hash or principal was accepted.
@@ -802,74 +850,6 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   `.phronesis/rules.json` and `.phronesis/loader.json` (only those), and the
   MCP rule-writing tools refuse rather than overwrite it. A broken layer file
   outside `.phronesis/` must be fixed by a human.
-
-## [0.37.1] - 2026-10-02
-
-### Fixed
-
-- **`phronesis-mcp` compiles on Windows again.** The redirected-output
-  evidence path called the Unix-gated
-  `security::read_file_capped_in_root` (hardened with `O_NOFOLLOW |
-  O_NONBLOCK`) from ungated code, breaking every Windows build of
-  0.37.0. Non-Unix hosts now contribute no redirected-output signal
-  instead of failing to compile, and a `windows-check` CI job
-  type-checks the crate on `windows-latest` so cfg-gating breaks
-  surface at PR time.
-
-## [0.37.0] - 2026-10-02
-
-### Added
-
-- **Coverage evidence beyond Rust.** The coverage collector now speaks
-  Python, Java, Swift, TypeScript/JavaScript, and Lua alongside Rust:
-  per-language function regions, isolated per-test collection via
-  `phr-mcp coverage collect --tool pytest-cov|java-cov|swift-cov|js-cov|
-  lua-cov --emit-script`, import after manifest verification (JaCoCo XML
-  for Java, lcov for the rest), and `coverage select` rendering runnable
-  pytest, Maven/Gradle, `swift test`, vitest/jest/`node --test`, and
-  busted commands. One language registry (`coverage/language.rs`) owns
-  extraction, production-source filters, and test-id namespaces per
-  language. Evaluated files (cue, JSON, YAML, Helm, Rhai) are reported
-  under a new `no_coverage_semantics` key — compiled or linted, never
-  executed, so no test is ever selected for them; the `cue` and `helm3`
-  packs ship compile-signal toolchain defs, and the new `java` and `lua`
-  packs ship theirs merge-if-absent.
-
-- **Confidence signals from redirected output.** When a handled command
-  writes stdout to a fresh file inside the project, post-check parses it
-  and journals `outcome:output_from_file`; `phr-mcp signal ingest
-  --command <cmd> --output <file> [--exit N]` brings hand-run gate
-  output into the confidence band, refusing unknown toolchains and
-  output with no result.
-
-- **Kani grounds the `proof` signal.** A project toolchain definition
-  recognises `cargo kani`, pairing each `Checking harness …` header with
-  its own `VERIFICATION:-` verdict; a harness bound by an `encodings`
-  entry (`{"verifier":"kani","artifact":"harness:<path>"}`) journals
-  `outcome:proof_pass:<property>` and lifts the band. Results for
-  unregistered harnesses are journaled as `proof_unbound`, not dropped.
-
-- **Linked-worktree commits are recorded.** A commit made in a linked
-  worktree of the governed repository is journaled with `repo_dir` —
-  the hook probes the absolute directory the head-moving invocation
-  names when it shares this repository's common git dir.
-
-### Fixed
-
-- **`.phronesisignore` exempts lexical rules only**, and excluded files
-  are reported in audit output instead of disappearing silently.
-
-- **CI-stable limited-read guard.** The action-log latency regression
-  test asserts a machine-relative ratio against a full parse of the
-  same fixture instead of an absolute 25ms wall-clock budget, which
-  flaked red on loaded shared CI runners.
-
-### Changed
-
-- **Visibility tightened across `src/init/` and `src/audit/`**
-  (`pub(crate)` to `pub(super)`), and nine production `.unwrap()` calls
-  in the init writers — hidden from `enforce-no-unwrap-in-src` while the
-  module was one file — are replaced with `?` or a named `expect()`.
 
 ## [0.35.0] - 2026-09-21
 
