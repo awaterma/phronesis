@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use serde::Serialize;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct TranscriptStats {
     pub assistant_events: u32,
     pub tool_use_events: u32,
