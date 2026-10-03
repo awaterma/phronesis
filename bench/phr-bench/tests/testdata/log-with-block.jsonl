@@ -1,0 +1,5 @@
+{"ts":1760000000,"kind":"hook","event":"pre_check","phase":"pre","tool":"Edit","file":"src/x.rs","exit":2,"consequences":[{"rule_id":"no-unwrap-in-src","action_type":"constraint_violation","message":"Avoid .unwrap() in src/"}],"blocked_by":[{"kind":"rule","rule":"no-unwrap-in-src","message":"Avoid .unwrap() in src/"}]}
+{"ts":1760000001,"kind":"hook","event":"pre_check","phase":"pre","tool":"Edit","file":"src/y.rs","exit":0,"consequences":[]}
+{"ts":1760000002,"kind":"hook","event":"post_check","phase":"post","tool":"Edit","file":"src/y.rs","exit":1,"consequences":[{"rule_id":"audit-file-loc-high","action_type":"constraint_violation","message":"file over budget"}]}
+{"ts":1760000003,"kind":"hook","event":"pre_check","phase":"pre","tool":"Edit","file":"src/z.rs","exit":2,"consequences":[],"blocked_by":[{"kind":"fail_closed","stage":"load_rules","message":"rules file unreadable"}]}
+{"ts":1760000004,"kind":"lifecycle","event":"session_start","exit":0}
