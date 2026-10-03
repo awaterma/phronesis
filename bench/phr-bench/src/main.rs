@@ -4,7 +4,7 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use phr_bench::corpus::{build_manifest, Slice};
 use phr_bench::manifest::{DatasetRef, Manifest};
 use phr_bench::record::Arm;
-use phr_bench::{arms, runner};
+use phr_bench::{arms, quality, runner};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -55,6 +55,16 @@ enum Commands {
         #[arg(long, value_enum)]
         arm: ArmArg,
     },
+    /// Run symmetric audit on both arms' clones for every task.
+    ///
+    /// For each task: treatment clones use their own init rules;
+    /// control clones receive the paired treatment clone's rules.json.
+    /// Audit results are written to bench/results/<run-id>/quality.json.
+    Quality {
+        /// Benchmark run id; reads from bench/results/<run-id>/.
+        #[arg(long)]
+        run_id: String,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -97,6 +107,7 @@ fn main() -> Result<()> {
             run_id,
             arm,
         }) => run_cmd(&manifest, &run_id, arm.into()),
+        Some(Commands::Quality { run_id }) => run_quality(&run_id),
         None => {
             let _ = Cli::command().print_help();
             Ok(())
@@ -274,5 +285,101 @@ fn preflight(manifest: &Manifest, arm: Arm, clones_root: &Path) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+fn run_quality(run_id: &str) -> Result<()> {
+    validate_run_id(run_id)?;
+    let results_root = Path::new("bench/results").join(run_id);
+    let clones_root = results_root.join("clones");
+    let runs_root = results_root.join("runs");
+
+    // Iterate over all tasks and both arms, collecting audit summaries
+    let mut quality_results = std::collections::BTreeMap::new();
+
+    for entry in std::fs::read_dir(&clones_root)
+        .with_context(|| format!("read clones directory {}", clones_root.display()))?
+    {
+        let entry = entry.context("read clone entry")?;
+        let instance_id = entry.file_name();
+        let instance_str = instance_id
+            .to_str()
+            .context("instance_id is not valid UTF-8")?
+            .to_owned();
+
+        for arm in [Arm::Control, Arm::Treatment] {
+            let clone_dir = entry.path().join(arm.as_str());
+            let runs_dir = runs_root.join(&instance_str).join(arm.as_str());
+            let patch_path = runs_dir.join("patch.diff");
+
+            // Skip if patch artifact is absent (shouldn't happen if runs succeeded, but be defensive)
+            if !patch_path.exists() {
+                eprintln!(
+                    "warning: patch artifact {} absent for {} [{}], skipping quality audit",
+                    patch_path.display(),
+                    instance_str,
+                    arm.as_str()
+                );
+                continue;
+            }
+
+            // For control clones: read the treatment clone's rules.json (symmetry requirement)
+            let rules_json = match arm {
+                Arm::Treatment => {
+                    // Treatment clones have their own rules from init
+                    let rules_path = clone_dir.join(".phronesis/rules.json");
+                    std::fs::read_to_string(&rules_path).with_context(|| {
+                        format!("read treatment rules from {}", rules_path.display())
+                    })?
+                }
+                Arm::Control => {
+                    // Control clones get the paired treatment clone's rules
+                    let treatment_rules_path = clones_root
+                        .join(&instance_str)
+                        .join(Arm::Treatment.as_str())
+                        .join(".phronesis/rules.json");
+                    std::fs::read_to_string(&treatment_rules_path).with_context(|| {
+                        format!(
+                            "read paired treatment rules from {} for control arm symmetry",
+                            treatment_rules_path.display()
+                        )
+                    })?
+                }
+            };
+
+            match quality::audit_clone(&clone_dir, &rules_json, &patch_path) {
+                Ok(summary) => {
+                    let key = format!("{}/{}", instance_str, arm.as_str());
+                    quality_results.insert(key.clone(), summary.clone());
+                    println!(
+                        "{} [{}] total_violations={} rules={}",
+                        instance_str,
+                        arm.as_str(),
+                        summary.total_violations,
+                        summary.per_rule.len()
+                    );
+                }
+                Err(err) => {
+                    eprintln!(
+                        "quality audit failed for {} [{}]: {err:#}",
+                        instance_str,
+                        arm.as_str()
+                    );
+                }
+            }
+        }
+    }
+
+    // Write results to quality.json
+    let quality_json = results_root.join("quality.json");
+    let encoded = serde_json::to_vec_pretty(&quality_results)
+        .context("serialize quality results")?;
+    std::fs::write(&quality_json, encoded)
+        .with_context(|| format!("write quality results to {}", quality_json.display()))?;
+    println!(
+        "wrote quality audit results for {} instance(s) to {}",
+        quality_results.len() / 2,
+        quality_json.display()
+    );
     Ok(())
 }
