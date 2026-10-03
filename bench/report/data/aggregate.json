@@ -1,0 +1,883 @@
+{
+  "pairs": [
+    {
+      "instance_id": "astral-sh__ruff-15309",
+      "language": "astral",
+      "control": {
+        "instance_id": "astral-sh__ruff-15309",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 42,
+        "tokens_in": 68978,
+        "tokens_out": 31795,
+        "wall_clock_secs": 276,
+        "diff_bytes": 1761,
+        "audit": {
+          "total_violations": 466,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 51,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 412
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "astral-sh__ruff-15309",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 50,
+        "tokens_in": 74133,
+        "tokens_out": 46308,
+        "wall_clock_secs": 567,
+        "diff_bytes": 1761,
+        "audit": {
+          "total_violations": 466,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 51,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 412
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {},
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "astral-sh__ruff-15330",
+      "language": "astral",
+      "control": {
+        "instance_id": "astral-sh__ruff-15330",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 6,
+        "tokens_in": 5377,
+        "tokens_out": 2557,
+        "wall_clock_secs": 701,
+        "diff_bytes": 1958,
+        "audit": {
+          "total_violations": 469,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 51,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 415
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "astral-sh__ruff-15330",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 35,
+        "tokens_in": 87662,
+        "tokens_out": 46700,
+        "wall_clock_secs": 872,
+        "diff_bytes": 1958,
+        "audit": {
+          "total_violations": 469,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 51,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 415
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {},
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "astral-sh__ruff-15356",
+      "language": "astral",
+      "control": {
+        "instance_id": "astral-sh__ruff-15356",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 8,
+        "tokens_in": 4529,
+        "tokens_out": 2320,
+        "wall_clock_secs": 581,
+        "diff_bytes": 796,
+        "audit": {
+          "total_violations": 469,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 51,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 415
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "astral-sh__ruff-15356",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 21,
+        "tokens_in": 14960,
+        "tokens_out": 8298,
+        "wall_clock_secs": 842,
+        "diff_bytes": 796,
+        "audit": {
+          "total_violations": 469,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 51,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 415
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {
+            "warn-empty-test": 6
+          },
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "astral-sh__ruff-15394",
+      "language": "astral",
+      "control": {
+        "instance_id": "astral-sh__ruff-15394",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 34,
+        "tokens_in": 73107,
+        "tokens_out": 19751,
+        "wall_clock_secs": 566,
+        "diff_bytes": 2470,
+        "audit": {
+          "total_violations": 470,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 52,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 415
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "astral-sh__ruff-15394",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 72,
+        "tokens_in": 236384,
+        "tokens_out": 62192,
+        "wall_clock_secs": 757,
+        "diff_bytes": 4214,
+        "audit": {
+          "total_violations": 470,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 52,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 415
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {},
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "astral-sh__ruff-15443",
+      "language": "astral",
+      "control": {
+        "instance_id": "astral-sh__ruff-15443",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 49,
+        "tokens_in": 54197,
+        "tokens_out": 12068,
+        "wall_clock_secs": 721,
+        "diff_bytes": 1646,
+        "audit": {
+          "total_violations": 470,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 52,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 415
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "astral-sh__ruff-15443",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 45,
+        "tokens_in": 35542,
+        "tokens_out": 9748,
+        "wall_clock_secs": 166,
+        "diff_bytes": 0,
+        "audit": {
+          "total_violations": 470,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 52,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 415
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {},
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "astral-sh__ruff-15543",
+      "language": "astral",
+      "control": {
+        "instance_id": "astral-sh__ruff-15543",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 18,
+        "tokens_in": 4177,
+        "tokens_out": 5173,
+        "wall_clock_secs": 692,
+        "diff_bytes": 838,
+        "audit": {
+          "total_violations": 474,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 53,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 418
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "astral-sh__ruff-15543",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 62,
+        "tokens_in": 118962,
+        "tokens_out": 23974,
+        "wall_clock_secs": 782,
+        "diff_bytes": 1264,
+        "audit": {
+          "total_violations": 474,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 53,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 418
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {},
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "astral-sh__ruff-15626",
+      "language": "astral",
+      "control": {
+        "instance_id": "astral-sh__ruff-15626",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 40,
+        "tokens_in": 60380,
+        "tokens_out": 18522,
+        "wall_clock_secs": 236,
+        "diff_bytes": 1936,
+        "audit": {
+          "total_violations": 475,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 53,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 419
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "astral-sh__ruff-15626",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 68,
+        "tokens_in": 97723,
+        "tokens_out": 29880,
+        "wall_clock_secs": 1137,
+        "diff_bytes": 1936,
+        "audit": {
+          "total_violations": 475,
+          "per_rule": {
+            "block-panic-in-drop-impl": 2,
+            "enforce-no-panic-in-src": 53,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unwrap-in-src": 419
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {},
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "burntsushi__ripgrep-2209",
+      "language": "burntsushi__ripgrep",
+      "control": {
+        "instance_id": "burntsushi__ripgrep-2209",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": true,
+        "turns": 49,
+        "tokens_in": 81002,
+        "tokens_out": 67488,
+        "wall_clock_secs": 797,
+        "diff_bytes": 2731,
+        "audit": {
+          "total_violations": 76,
+          "per_rule": {
+            "enforce-no-panic-in-src": 13,
+            "enforce-no-unwrap-in-src": 63
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "burntsushi__ripgrep-2209",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": true,
+        "turns": 46,
+        "tokens_in": 121874,
+        "tokens_out": 36330,
+        "wall_clock_secs": 542,
+        "diff_bytes": 2880,
+        "audit": {
+          "total_violations": 75,
+          "per_rule": {
+            "enforce-no-panic-in-src": 13,
+            "enforce-no-unwrap-in-src": 62
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {
+            "warn-pub-fn-missing-doc": 22,
+            "warn-rust-function-param-count-high": 5
+          },
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "burntsushi__ripgrep-2576",
+      "language": "burntsushi__ripgrep",
+      "control": {
+        "instance_id": "burntsushi__ripgrep-2576",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 73,
+        "tokens_in": 161427,
+        "tokens_out": 46257,
+        "wall_clock_secs": 512,
+        "diff_bytes": 2224,
+        "audit": {
+          "total_violations": 68,
+          "per_rule": {
+            "enforce-no-panic-in-src": 9,
+            "enforce-no-unwrap-in-src": 59
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "burntsushi__ripgrep-2576",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 51,
+        "tokens_in": 70138,
+        "tokens_out": 43109,
+        "wall_clock_secs": 552,
+        "diff_bytes": 1721,
+        "audit": {
+          "total_violations": 68,
+          "per_rule": {
+            "enforce-no-panic-in-src": 9,
+            "enforce-no-unwrap-in-src": 59
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {},
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "nushell__nushell-12901",
+      "language": "nushell__nushell",
+      "control": {
+        "instance_id": "nushell__nushell-12901",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 47,
+        "tokens_in": 77233,
+        "tokens_out": 12814,
+        "wall_clock_secs": 1183,
+        "diff_bytes": 1055,
+        "audit": {
+          "total_violations": 78,
+          "per_rule": {
+            "enforce-no-panic-in-src": 57,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 11,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "nushell__nushell-12901",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 77,
+        "tokens_in": 18077,
+        "tokens_out": 6179,
+        "wall_clock_secs": 982,
+        "diff_bytes": 1055,
+        "audit": {
+          "total_violations": 78,
+          "per_rule": {
+            "enforce-no-panic-in-src": 57,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 11,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {
+            "warn-pub-fn-missing-doc": 2
+          },
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "nushell__nushell-12950",
+      "language": "nushell__nushell",
+      "control": {
+        "instance_id": "nushell__nushell-12950",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 23,
+        "tokens_in": 50501,
+        "tokens_out": 13880,
+        "wall_clock_secs": 201,
+        "diff_bytes": 979,
+        "audit": {
+          "total_violations": 69,
+          "per_rule": {
+            "enforce-no-panic-in-src": 53,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 6,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "nushell__nushell-12950",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 30,
+        "tokens_in": 74612,
+        "tokens_out": 15572,
+        "wall_clock_secs": 827,
+        "diff_bytes": 979,
+        "audit": {
+          "total_violations": 69,
+          "per_rule": {
+            "enforce-no-panic-in-src": 53,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 6,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {},
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "nushell__nushell-13246",
+      "language": "nushell__nushell",
+      "control": {
+        "instance_id": "nushell__nushell-13246",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 34,
+        "tokens_in": 40007,
+        "tokens_out": 9723,
+        "wall_clock_secs": 627,
+        "diff_bytes": 818,
+        "audit": {
+          "total_violations": 70,
+          "per_rule": {
+            "enforce-no-panic-in-src": 54,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 6,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "nushell__nushell-13246",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 20,
+        "tokens_in": 59106,
+        "tokens_out": 7253,
+        "wall_clock_secs": 707,
+        "diff_bytes": 919,
+        "audit": {
+          "total_violations": 70,
+          "per_rule": {
+            "enforce-no-panic-in-src": 54,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 6,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {
+            "warn-empty-test": 1,
+            "warn-rust-function-param-count-high": 5
+          },
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "nushell__nushell-13605",
+      "language": "nushell__nushell",
+      "control": {
+        "instance_id": "nushell__nushell-13605",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 27,
+        "tokens_in": 67887,
+        "tokens_out": 11966,
+        "wall_clock_secs": 171,
+        "diff_bytes": 2444,
+        "audit": {
+          "total_violations": 63,
+          "per_rule": {
+            "enforce-no-panic-in-src": 47,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 6,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "nushell__nushell-13605",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 57,
+        "tokens_in": 138925,
+        "tokens_out": 26173,
+        "wall_clock_secs": 842,
+        "diff_bytes": 2444,
+        "audit": {
+          "total_violations": 63,
+          "per_rule": {
+            "enforce-no-panic-in-src": 47,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 6,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {
+            "warn-pub-fn-missing-doc": 4,
+            "warn-rust-function-param-count-high": 4
+          },
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "nushell__nushell-13831",
+      "language": "nushell__nushell",
+      "control": {
+        "instance_id": "nushell__nushell-13831",
+        "arm": "control",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 29,
+        "tokens_in": 40160,
+        "tokens_out": 10570,
+        "wall_clock_secs": 131,
+        "diff_bytes": 4618,
+        "audit": {
+          "total_violations": 63,
+          "per_rule": {
+            "enforce-no-panic-in-src": 47,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 6,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "nushell__nushell-13831",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 47,
+        "tokens_in": 175859,
+        "tokens_out": 13510,
+        "wall_clock_secs": 1843,
+        "diff_bytes": 4618,
+        "audit": {
+          "total_violations": 63,
+          "per_rule": {
+            "enforce-no-panic-in-src": 47,
+            "enforce-no-todo-in-src": 1,
+            "enforce-no-unimplemented-in-src": 6,
+            "enforce-no-unwrap-in-src": 9
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {
+            "warn-empty-test": 7,
+            "warn-rust-function-param-count-high": 7
+          },
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    },
+    {
+      "instance_id": "sharkdp__bat-1892",
+      "language": "sharkdp__bat",
+      "control": {
+        "instance_id": "sharkdp__bat-1892",
+        "arm": "control",
+        "exit": {
+          "type": "cap_time"
+        },
+        "resolved": false,
+        "turns": 101,
+        "tokens_in": 205410,
+        "tokens_out": 49566,
+        "wall_clock_secs": 2700,
+        "diff_bytes": 11186,
+        "audit": {
+          "total_violations": 18,
+          "per_rule": {
+            "enforce-no-unwrap-in-src": 18
+          }
+        },
+        "governance": null
+      },
+      "treatment": {
+        "instance_id": "sharkdp__bat-1892",
+        "arm": "treatment",
+        "exit": {
+          "type": "completed"
+        },
+        "resolved": false,
+        "turns": 16,
+        "tokens_in": 16409,
+        "tokens_out": 9863,
+        "wall_clock_secs": 1773,
+        "diff_bytes": 9622,
+        "audit": {
+          "total_violations": 18,
+          "per_rule": {
+            "enforce-no-unwrap-in-src": 18
+          }
+        },
+        "governance": {
+          "blocks": {},
+          "warns": {
+            "warn-pub-fn-missing-doc": 37
+          },
+          "fail_closed": 0
+        }
+      },
+      "discordant": false,
+      "treatment_won": false
+    }
+  ],
+  "by_language": {
+    "astral": {
+      "resolved_control": 0,
+      "resolved_treatment": 0,
+      "mean_turns_control": 28.142857142857142,
+      "mean_turns_treatment": 50.42857142857143
+    },
+    "burntsushi__ripgrep": {
+      "resolved_control": 1,
+      "resolved_treatment": 1,
+      "mean_turns_control": 61.0,
+      "mean_turns_treatment": 48.5
+    },
+    "nushell__nushell": {
+      "resolved_control": 0,
+      "resolved_treatment": 0,
+      "mean_turns_control": 32.0,
+      "mean_turns_treatment": 46.2
+    },
+    "sharkdp__bat": {
+      "resolved_control": 0,
+      "resolved_treatment": 0,
+      "mean_turns_control": 101.0,
+      "mean_turns_treatment": 16.0
+    }
+  },
+  "headline": {
+    "resolved_control": 1,
+    "resolved_treatment": 1,
+    "n": 15,
+    "discordant": 0,
+    "treatment_won": 0,
+    "control_won": 0,
+    "sign_p": 1.0
+  }
+}
