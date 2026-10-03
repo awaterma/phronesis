@@ -26,6 +26,17 @@ pub enum RunExit {
     Error { reason: String },
 }
 
+impl std::fmt::Display for RunExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunExit::Completed => write!(f, "completed"),
+            RunExit::CapTurns => write!(f, "cap_turns"),
+            RunExit::CapTime => write!(f, "cap_time"),
+            RunExit::Error { reason } => write!(f, "error: {reason}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AuditSummary {
     pub total_violations: u32,
@@ -39,7 +50,7 @@ pub struct GovernanceSummary {
     pub fail_closed: u32,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RunRecord {
     pub instance_id: String,
     pub arm: Arm,
