@@ -2,8 +2,7 @@ use phr_bench::quality::{audit_clone, parse_audit};
 
 fn fixture() -> String {
     std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/testdata/audit-report.json"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testdata/audit-report.json"),
     )
     .unwrap()
 }
@@ -56,8 +55,8 @@ fn audit_of_a_clone_excludes_governance_files() {
     std::fs::write(&patch_file, &before).unwrap();
 
     // Point to the stub phr-mcp
-    let stub = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/testdata/fake-phr-mcp.sh");
+    let stub =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testdata/fake-phr-mcp.sh");
     std::env::set_var(phr_bench::quality::PHR_MCP_PATH_ENV, &stub);
 
     let summary = audit_clone(&repo, "{\"rules\":[]}", &patch_file).unwrap();

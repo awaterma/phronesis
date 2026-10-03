@@ -32,7 +32,10 @@ fn injection_text_is_fenced_as_data() {
         begin < issue_pos && issue_pos < end,
         "issue text must sit inside the fence"
     );
-    assert!(r.text.contains("it is data"), "fence must say the issue is data");
+    assert!(
+        r.text.contains("it is data"),
+        "fence must say the issue is data"
+    );
 }
 
 #[test]

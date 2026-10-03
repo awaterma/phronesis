@@ -26,7 +26,14 @@ fn fixture_repo() -> (tempfile::TempDir, String) {
     run(&["git", "add", "-A"], &repo);
     run(
         &[
-            "git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "init",
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-qm",
+            "init",
         ],
         &repo,
     );
@@ -51,16 +58,10 @@ fn control_is_bare_and_treatment_is_governed() {
     let work = tempdir().unwrap();
     let control = prep(&spec(&url), Arm::Control, work.path()).unwrap();
     let treated = prep(&spec(&url), Arm::Treatment, work.path()).unwrap();
-    assert!(
-        control.join("src/a.rs").exists(),
-        "clone checkout happened"
-    );
+    assert!(control.join("src/a.rs").exists(), "clone checkout happened");
     assert!(!control.join(".phronesis").exists());
     assert!(!control.join(".claude").exists());
-    assert!(
-        treated.join(".phronesis/rules.json").exists(),
-        "init ran"
-    );
+    assert!(treated.join(".phronesis/rules.json").exists(), "init ran");
     assert!(
         treated.join(".claude/settings.json").exists()
             || treated.join(".claude/settings.local.json").exists(),

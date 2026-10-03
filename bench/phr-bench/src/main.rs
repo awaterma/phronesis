@@ -182,8 +182,9 @@ fn run_arms(manifest_path: &Path, run_id: &str) -> Result<()> {
     let clones_dir = root.join("bench/results").join(run_id).join("clones");
     for task in &manifest.tasks {
         for arm in [Arm::Control, Arm::Treatment] {
-            let clone = arms::prep(task, arm, &clones_dir)
-                .with_context(|| format!("prepare {} arm for {}", arm.as_str(), task.instance_id))?;
+            let clone = arms::prep(task, arm, &clones_dir).with_context(|| {
+                format!("prepare {} arm for {}", arm.as_str(), task.instance_id)
+            })?;
             println!(
                 "prepared {} arm for {} at {}",
                 arm.as_str(),
@@ -251,7 +252,8 @@ fn project_root() -> Result<PathBuf> {
 fn run_cmd(manifest_path: &Path, run_id: &str, arm: Arm) -> Result<()> {
     let manifest_src = std::fs::read_to_string(manifest_path)
         .with_context(|| format!("reading manifest {}", manifest_path.display()))?;
-    let manifest: Manifest = serde_json::from_str(&manifest_src).context("parsing manifest JSON")?;
+    let manifest: Manifest =
+        serde_json::from_str(&manifest_src).context("parsing manifest JSON")?;
     let results_root = Path::new("bench/results").join(run_id);
     let clones_root = results_root.join("clones");
     preflight(&manifest, arm, &clones_root)?;
@@ -360,7 +362,11 @@ fn run_verify(run_id: &str, arm_filter: ArmFilterArg, swebench_path: Option<&Pat
             .with_context(|| format!("invoke harness for {}", arm.as_str()))?;
 
         // Parse results and apply to records
-        let results_json_path = results_root.join("logs").join("evaluation").join(run_id).join("results.json");
+        let results_json_path = results_root
+            .join("logs")
+            .join("evaluation")
+            .join(run_id)
+            .join("results.json");
         if !results_json_path.exists() {
             bail!(
                 "harness results not found at {}; check harness invocation",
@@ -368,10 +374,11 @@ fn run_verify(run_id: &str, arm_filter: ArmFilterArg, swebench_path: Option<&Pat
             );
         }
 
-        let results_text = std::fs::read_to_string(&results_json_path)
-            .with_context(|| format!("read harness results from {}", results_json_path.display()))?;
-        let resolved_map = verify::parse_harness_report(&results_text)
-            .context("parse harness report")?;
+        let results_text = std::fs::read_to_string(&results_json_path).with_context(|| {
+            format!("read harness results from {}", results_json_path.display())
+        })?;
+        let resolved_map =
+            verify::parse_harness_report(&results_text).context("parse harness report")?;
 
         // Apply resolved status from harness to all run records for this arm
         apply_resolved_to_arm(&runs_root, *arm, &resolved_map)
@@ -388,10 +395,7 @@ fn run_verify(run_id: &str, arm_filter: ArmFilterArg, swebench_path: Option<&Pat
 }
 
 /// Collect all patch.diff files from a specific arm into (instance_id, patch) pairs.
-fn collect_predictions(
-    runs_root: &Path,
-    arm: Arm,
-) -> Result<Vec<(String, String)>> {
+fn collect_predictions(runs_root: &Path, arm: Arm) -> Result<Vec<(String, String)>> {
     let mut predictions = Vec::new();
 
     for entry in std::fs::read_dir(runs_root).context("read runs directory")? {
@@ -453,7 +457,8 @@ fn resolve_swebench_path(cli_path: Option<&Path>, project_root: &Path) -> Result
 /// Invoke the pinned SWE-bench harness for a given arm.
 fn invoke_harness(swebench_path: &Path, run_id: &str, arm: Arm, results_root: &Path) -> Result<()> {
     let preds_path = results_root.join(format!("predictions_{}.jsonl", arm.as_str()));
-    let venv_python = swebench_path.parent()
+    let venv_python = swebench_path
+        .parent()
         .map(|p| p.join(".venv/bin/python"))
         .or_else(|| Some(PathBuf::from("bench/.venv/bin/python")))
         .context("determine venv python path")?;
@@ -467,14 +472,23 @@ fn invoke_harness(swebench_path: &Path, run_id: &str, arm: Arm, results_root: &P
 
     let status = Command::new(&venv_python)
         .args([
-            "-m", "swebench.harness.run_evaluation",
-            "-d", DATASET_ID,
-            "-s", "test",
-            "-p", preds_path.to_str().context("predictions path not UTF-8")?,
-            "-id", run_id,
-            "--max_workers", "1",
+            "-m",
+            "swebench.harness.run_evaluation",
+            "-d",
+            DATASET_ID,
+            "-s",
+            "test",
+            "-p",
+            preds_path.to_str().context("predictions path not UTF-8")?,
+            "-id",
+            run_id,
+            "--max_workers",
+            "1",
         ])
-        .env("PYTHONPATH", swebench_path.to_str().context("swebench path not UTF-8")?)
+        .env(
+            "PYTHONPATH",
+            swebench_path.to_str().context("swebench path not UTF-8")?,
+        )
         .current_dir(results_root)
         .status()
         .context("spawn harness process")?;
@@ -513,8 +527,8 @@ fn apply_resolved_to_arm(
 
         let record_text = std::fs::read_to_string(&record_path)
             .with_context(|| format!("read record from {}", record_path.display()))?;
-        let mut record: phr_bench::record::RunRecord = serde_json::from_str(&record_text)
-            .context("parse record JSON")?;
+        let mut record: phr_bench::record::RunRecord =
+            serde_json::from_str(&record_text).context("parse record JSON")?;
 
         let instance_id = instance_dir
             .file_name()
@@ -636,8 +650,8 @@ fn run_quality(run_id: &str) -> Result<()> {
 
     // Write results to quality.json
     let quality_json = results_root.join("quality.json");
-    let encoded = serde_json::to_vec_pretty(&quality_results)
-        .context("serialize quality results")?;
+    let encoded =
+        serde_json::to_vec_pretty(&quality_results).context("serialize quality results")?;
     std::fs::write(&quality_json, encoded)
         .with_context(|| format!("write quality results to {}", quality_json.display()))?;
     println!(

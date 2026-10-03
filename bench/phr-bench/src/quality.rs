@@ -11,8 +11,7 @@ pub const PHR_MCP_PATH_ENV: &str = "PHR_BENCH_PHR_MCP";
 /// Parse the `phr-mcp audit --json` output into an AuditSummary.
 /// Sums only block-level violations (level == "block") into total_violations and per_rule.
 pub fn parse_audit(json: &str) -> Result<AuditSummary> {
-    let report: Value = serde_json::from_str(json)
-        .context("failed to parse audit JSON")?;
+    let report: Value = serde_json::from_str(json).context("failed to parse audit JSON")?;
 
     let mut total_violations = 0u32;
     let mut per_rule = std::collections::BTreeMap::new();
@@ -44,11 +43,7 @@ pub fn parse_audit(json: &str) -> Result<AuditSummary> {
 /// (for control clones only; treatment clones keep theirs from init).
 ///
 /// **Ordering constraint:** Refuses if the patch artifact is absent.
-pub fn audit_clone(
-    clone_dir: &Path,
-    rules_json: &str,
-    patch_path: &Path,
-) -> Result<AuditSummary> {
+pub fn audit_clone(clone_dir: &Path, rules_json: &str, patch_path: &Path) -> Result<AuditSummary> {
     // Ordering gate: the diff must have been extracted before audit touches anything
     if !patch_path.exists() {
         bail!(
@@ -60,8 +55,7 @@ pub fn audit_clone(
 
     // Stage .phronesis/rules.json into the clone
     let phronesis_dir = clone_dir.join(".phronesis");
-    std::fs::create_dir_all(&phronesis_dir)
-        .context("create .phronesis directory")?;
+    std::fs::create_dir_all(&phronesis_dir).context("create .phronesis directory")?;
     std::fs::write(phronesis_dir.join("rules.json"), rules_json)
         .context("write staged rules.json")?;
 
@@ -81,8 +75,8 @@ pub fn audit_clone(
         );
     }
 
-    let audit_json = String::from_utf8(output.stdout)
-        .context("phr-mcp audit stdout was not valid UTF-8")?;
+    let audit_json =
+        String::from_utf8(output.stdout).context("phr-mcp audit stdout was not valid UTF-8")?;
 
     // Parse the audit output
     let summary = parse_audit(&audit_json)?;
@@ -97,7 +91,12 @@ pub fn audit_clone(
     std::fs::remove_file(phronesis_dir.join("rules.json")).ok();
 
     // If .phronesis is now empty, remove it (control clones only)
-    if phronesis_dir.read_dir().ok().map(|mut d| d.next().is_none()).unwrap_or(false) {
+    if phronesis_dir
+        .read_dir()
+        .ok()
+        .map(|mut d| d.next().is_none())
+        .unwrap_or(false)
+    {
         std::fs::remove_dir(&phronesis_dir).ok();
     }
 

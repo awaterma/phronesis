@@ -24,20 +24,20 @@ impl Default for Caps {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TaskSpec {
     pub instance_id: String,
-    pub language: String,       // lowercase dataset language, e.g. "rust"
-    pub repo: String,           // GitHub URL
+    pub language: String, // lowercase dataset language, e.g. "rust"
+    pub repo: String,     // GitHub URL
     pub base_commit: String,
     pub issue_text: String,
     pub fail_to_pass: Vec<String>,
     pub pass_to_pass: Vec<String>,
-    pub packs: Vec<String>,     // phr-mcp init packs, from the language map
+    pub packs: Vec<String>, // phr-mcp init packs, from the language map
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Manifest {
     pub dataset: DatasetRef,
     pub seed: u64,
-    pub prompt_hash: String,    // sha256 hex of the rendered template (Task 4)
+    pub prompt_hash: String, // sha256 hex of the rendered template (Task 4)
     pub caps: Caps,
     pub tasks: Vec<TaskSpec>,
 }

@@ -39,7 +39,12 @@ pub fn summarize(log_jsonl: &str) -> Result<GovernanceSummary, GovernanceError> 
 
         let entry = match serde_json::from_str::<Value>(trimmed) {
             Ok(v) => v,
-            Err(e) => return Err(GovernanceError::Malformed(format!("JSON parse error: {}", e))),
+            Err(e) => {
+                return Err(GovernanceError::Malformed(format!(
+                    "JSON parse error: {}",
+                    e
+                )))
+            }
         };
 
         // Only process "hook" kind entries.
@@ -57,10 +62,15 @@ pub fn summarize(log_jsonl: &str) -> Result<GovernanceSummary, GovernanceError> 
                 // pre_check with exit=2 (block): count blocked_by entries.
                 if let Some(blocked_by) = entry.get("blocked_by").and_then(|v| v.as_array()) {
                     for block_entry in blocked_by {
-                        let block_kind = block_entry.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                        let block_kind = block_entry
+                            .get("kind")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         match block_kind {
                             "rule" => {
-                                if let Some(rule_id) = block_entry.get("rule").and_then(|v| v.as_str()) {
+                                if let Some(rule_id) =
+                                    block_entry.get("rule").and_then(|v| v.as_str())
+                                {
                                     *summary.blocks.entry(rule_id.to_string()).or_insert(0) += 1;
                                 }
                             }

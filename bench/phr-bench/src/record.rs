@@ -55,9 +55,9 @@ pub struct RunRecord {
     pub instance_id: String,
     pub arm: Arm,
     pub exit: RunExit,
-    pub resolved: Option<bool>,      // None until Task 9's verify fills it
+    pub resolved: Option<bool>, // None until Task 9's verify fills it
     pub turns: u32,
-    pub tokens_in: Option<u64>,      // None = router did not report usage
+    pub tokens_in: Option<u64>, // None = router did not report usage
     pub tokens_out: Option<u64>,
     pub wall_clock_secs: u64,
     pub diff_bytes: u64,

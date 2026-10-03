@@ -208,7 +208,10 @@ fn diff_extraction_captures_untracked_files_and_agent_commits() {
     std::fs::write(clone.join("untracked.txt"), "agent left me behind\n").unwrap();
 
     let diff = extract_diff(&clone, &pre_head).unwrap();
-    assert!(diff.contains("tracked.txt"), "modified tracked file missing");
+    assert!(
+        diff.contains("tracked.txt"),
+        "modified tracked file missing"
+    );
     assert!(
         diff.contains("committed-new.txt"),
         "agent commit content missing"
@@ -277,7 +280,11 @@ fn control_run_completes_and_writes_all_artifacts() {
     assert!(patch.contains("proof.txt"), "agent work missing from patch");
     assert_eq!(rec.diff_bytes, patch.len() as u64);
 
-    assert_eq!(read_record(&run_dir), rec, "record.json must equal the record");
+    assert_eq!(
+        read_record(&run_dir),
+        rec,
+        "record.json must equal the record"
+    );
 
     let child_env = std::fs::read_to_string(&env_dump).unwrap();
     assert!(child_env.contains("ANTHROPIC_BASE_URL=http://127.0.0.1:11434"));
@@ -301,7 +308,10 @@ fn treatment_run_summarizes_clone_governance_log() {
         "exit was {:?}",
         rec.exit
     );
-    let governance = rec.governance.as_ref().expect("treatment carries governance");
+    let governance = rec
+        .governance
+        .as_ref()
+        .expect("treatment carries governance");
     assert_eq!(governance.blocks.get("no-unwrap-in-src"), Some(&1));
     assert_eq!(governance.warns.get("audit-file-loc-high"), Some(&1));
 
@@ -355,7 +365,11 @@ fn wall_clock_breach_kills_child_and_records_cap_time() {
     };
 
     let rec = run(&spec(), Arm::Control, &clone, &run_dir, &tight).unwrap();
-    assert!(matches!(rec.exit, RunExit::CapTime), "exit was {:?}", rec.exit);
+    assert!(
+        matches!(rec.exit, RunExit::CapTime),
+        "exit was {:?}",
+        rec.exit
+    );
     assert!(
         rec.wall_clock_secs >= 1 && rec.wall_clock_secs < 8,
         "child must be killed at the cap, took {}s",
@@ -393,7 +407,11 @@ fn turn_cap_records_cap_turns() {
     };
 
     let rec = run(&spec(), Arm::Control, &clone, &run_dir, &tight).unwrap();
-    assert!(matches!(rec.exit, RunExit::CapTurns), "exit was {:?}", rec.exit);
+    assert!(
+        matches!(rec.exit, RunExit::CapTurns),
+        "exit was {:?}",
+        rec.exit
+    );
     assert_eq!(rec.turns, 5);
 }
 
@@ -406,10 +424,7 @@ fn transcript_without_assistant_events_is_an_error_not_a_silent_pass() {
     let garbage = work.path().join("garbage.jsonl");
     std::fs::write(&garbage, "not json at all\n{\"type\":\"system\"}\n").unwrap();
 
-    let _fake = FakeClaude::new(&[(
-        "FAKE_CLAUDE_TRANSCRIPT",
-        garbage.to_str().unwrap().into(),
-    )]);
+    let _fake = FakeClaude::new(&[("FAKE_CLAUDE_TRANSCRIPT", garbage.to_str().unwrap().into())]);
 
     let rec = run(&spec(), Arm::Control, &clone, &run_dir, &caps()).unwrap();
     match &rec.exit {
@@ -433,7 +448,9 @@ fn claude_failure_is_error_with_stderr_reason() {
 
     let rec = run(&spec(), Arm::Control, &clone, &run_dir, &caps()).unwrap();
     match &rec.exit {
-        RunExit::Error { reason } => assert!(reason.contains("router exploded"), "reason: {reason}"),
+        RunExit::Error { reason } => {
+            assert!(reason.contains("router exploded"), "reason: {reason}")
+        }
         other => panic!("expected Error, got {other:?}"),
     }
     assert_eq!(rec.turns, 2, "stats still parsed from the valid transcript");

@@ -23,7 +23,8 @@ pub fn write_predictions(records: &[(String, String)], out: &Path) -> Result<()>
         std::fs::write(out, content + "\n")
             .with_context(|| format!("write predictions to {}", out.display()))?;
     } else {
-        std::fs::write(out, "").with_context(|| format!("write empty predictions to {}", out.display()))?;
+        std::fs::write(out, "")
+            .with_context(|| format!("write empty predictions to {}", out.display()))?;
     }
 
     Ok(())
@@ -37,8 +38,8 @@ pub fn parse_harness_report(json: &str) -> Result<BTreeMap<String, bool>> {
         resolved: Option<bool>,
     }
 
-    let report: BTreeMap<String, InstanceResult> = serde_json::from_str(json)
-        .context("parse harness report JSON")?;
+    let report: BTreeMap<String, InstanceResult> =
+        serde_json::from_str(json).context("parse harness report JSON")?;
 
     let mut result = BTreeMap::new();
     for (instance_id, entry) in report {
@@ -52,7 +53,7 @@ pub fn parse_harness_report(json: &str) -> Result<BTreeMap<String, bool>> {
 /// Loads each `runs/<instance_id>/<arm>/record.json`, updates `resolved` field,
 /// revalidates, and writes back.
 pub fn apply_resolved(records_dir: &Path, resolved: &BTreeMap<String, bool>) -> Result<()> {
-    use crate::record::{RunRecord, validate};
+    use crate::record::{validate, RunRecord};
 
     for entry in std::fs::read_dir(records_dir)
         .with_context(|| format!("read records directory {}", records_dir.display()))?
@@ -91,11 +92,10 @@ pub fn apply_resolved(records_dir: &Path, resolved: &BTreeMap<String, bool>) -> 
             // Update resolved: if instance is in the report, use that value; else None
             record.resolved = resolved.get(&instance_id).copied();
 
-            validate(&record)
-                .with_context(|| format!("validate record for {}", instance_id))?;
+            validate(&record).with_context(|| format!("validate record for {}", instance_id))?;
 
-            let updated_text = serde_json::to_string_pretty(&record)
-                .context("serialize updated record")?;
+            let updated_text =
+                serde_json::to_string_pretty(&record).context("serialize updated record")?;
             std::fs::write(&record_path, updated_text)
                 .with_context(|| format!("write updated record to {}", record_path.display()))?;
         }

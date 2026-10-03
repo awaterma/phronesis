@@ -42,7 +42,8 @@ pub fn parse_transcript(jsonl: &str) -> Result<TranscriptStats> {
                     .and_then(serde_json::Value::as_array)
                 {
                     for item in content {
-                        if item.get("type").and_then(serde_json::Value::as_str) == Some("tool_use") {
+                        if item.get("type").and_then(serde_json::Value::as_str) == Some("tool_use")
+                        {
                             stats.tool_use_events = stats.tool_use_events.saturating_add(1);
                         }
                     }
@@ -56,9 +57,7 @@ pub fn parse_transcript(jsonl: &str) -> Result<TranscriptStats> {
                 stats.tokens_out = usage
                     .and_then(|value| value.get("output_tokens"))
                     .and_then(serde_json::Value::as_u64);
-                stats.duration_ms = event
-                    .get("duration_ms")
-                    .and_then(serde_json::Value::as_u64);
+                stats.duration_ms = event.get("duration_ms").and_then(serde_json::Value::as_u64);
                 result_turns = event
                     .get("num_turns")
                     .and_then(serde_json::Value::as_u64)

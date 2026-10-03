@@ -15,8 +15,10 @@ fn predictions_jsonl_is_one_line_per_instance() {
 
 #[test]
 fn report_parser_maps_every_instance() {
-    let json = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/testdata/harness-report.json")).unwrap();
+    let json = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/testdata/harness-report.json"),
+    )
+    .unwrap();
     let m = parse_harness_report(&json).unwrap();
     assert_eq!(m.get("i-rust-1"), Some(&true));
     assert_eq!(m.get("i-rust-2"), Some(&false));
@@ -26,5 +28,9 @@ fn report_parser_maps_every_instance() {
 #[test]
 fn instance_missing_from_report_is_not_resolved() {
     let m = parse_harness_report("{}").unwrap();
-    assert_eq!(m.get("i-rust-1"), None, "absent means not resolved, never assumed");
+    assert_eq!(
+        m.get("i-rust-1"),
+        None,
+        "absent means not resolved, never assumed"
+    );
 }

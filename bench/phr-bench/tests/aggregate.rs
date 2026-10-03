@@ -24,9 +24,9 @@ fn rec(id: &str, arm: Arm, resolved: bool, gov: bool) -> RunRecord {
 #[test]
 fn sign_test_known_values() {
     assert!((sign_test_p(9, 1) - 0.021484375).abs() < 1e-9); // 2 * 11/1024
-    assert!((sign_test_p(6, 0) - 0.03125).abs() < 1e-9);      // 2 * 1/64
-    assert!((sign_test_p(2, 2) - 1.0).abs() < 1e-9);          // clamped
-    assert!((sign_test_p(0, 0) - 1.0).abs() < 1e-9);         // no discordant pairs
+    assert!((sign_test_p(6, 0) - 0.03125).abs() < 1e-9); // 2 * 1/64
+    assert!((sign_test_p(2, 2) - 1.0).abs() < 1e-9); // clamped
+    assert!((sign_test_p(0, 0) - 1.0).abs() < 1e-9); // no discordant pairs
 }
 
 #[test]
@@ -35,9 +35,9 @@ fn pairs_and_headline_roll_up() {
     let b = rec("b", Arm::Control, false, false);
     let records = vec![
         a.clone(),
-        rec("a", Arm::Treatment, false, true),   // control won
+        rec("a", Arm::Treatment, false, true), // control won
         b.clone(),
-        rec("b", Arm::Treatment, true, true),    // treatment won
+        rec("b", Arm::Treatment, true, true), // treatment won
         rec("c", Arm::Control, false, false),
         rec("c", Arm::Treatment, false, true),
     ];
@@ -51,7 +51,10 @@ fn pairs_and_headline_roll_up() {
 
 #[test]
 fn treatment_missing_governance_fails_loud() {
-    let records = vec![rec("x", Arm::Control, true, false), rec("x", Arm::Treatment, true, false)];
+    let records = vec![
+        rec("x", Arm::Control, true, false),
+        rec("x", Arm::Treatment, true, false),
+    ];
     let err = aggregate(&records).unwrap_err();
     assert!(err.to_string().contains("governance"));
 }

@@ -52,7 +52,9 @@ pub fn classify_exit(timed_out: bool, turns_capped: bool, success: bool, stderr:
 /// `phr-mcp init` before the run are excluded: they are bench infrastructure,
 /// not agent output.
 pub fn extract_diff(clone_dir: &Path, pre_head: &str) -> Result<String> {
-    let dir = clone_dir.to_str().context("clone path contains invalid UTF-8")?;
+    let dir = clone_dir
+        .to_str()
+        .context("clone path contains invalid UTF-8")?;
     let add = Command::new("git")
         .args(["-C", dir, "add", "-A"])
         .output()
@@ -135,12 +137,10 @@ pub fn run(
     let stderr_path = run_dir.join("claude-stderr.log");
     let cap = Duration::from_secs(caps.max_wall_clock_secs);
     let started = Instant::now();
-    let stdout = Stdio::from(
-        std::fs::File::create(&transcript_path).context("creating transcript.jsonl")?,
-    );
-    let stderr = Stdio::from(
-        std::fs::File::create(&stderr_path).context("creating claude-stderr.log")?,
-    );
+    let stdout =
+        Stdio::from(std::fs::File::create(&transcript_path).context("creating transcript.jsonl")?);
+    let stderr =
+        Stdio::from(std::fs::File::create(&stderr_path).context("creating claude-stderr.log")?);
     let mut child = Command::new(claude_path())
         .arg("-p")
         .arg(&rendered.text)
@@ -176,8 +176,8 @@ pub fn run(
         Arm::Control => None,
         Arm::Treatment => {
             // A missing log reads as empty, which summarize reports as NotWired.
-            let log = std::fs::read_to_string(clone_dir.join(".phronesis/log.jsonl"))
-                .unwrap_or_default();
+            let log =
+                std::fs::read_to_string(clone_dir.join(".phronesis/log.jsonl")).unwrap_or_default();
             match summarize(&log) {
                 Ok(summary) => Some(summary),
                 Err(GovernanceError::NotWired) => {
@@ -185,7 +185,10 @@ pub fn run(
                     write_record(run_dir, &rec)?;
                     return Ok(rec);
                 }
-                Err(e) => bail!("governance telemetry malformed for {}: {e}", task.instance_id),
+                Err(e) => bail!(
+                    "governance telemetry malformed for {}: {e}",
+                    task.instance_id
+                ),
             }
         }
     };
@@ -235,7 +238,9 @@ fn router_env() -> HashMap<String, String> {
 }
 
 fn record_head(clone_dir: &Path) -> Result<String> {
-    let dir = clone_dir.to_str().context("clone path contains invalid UTF-8")?;
+    let dir = clone_dir
+        .to_str()
+        .context("clone path contains invalid UTF-8")?;
     let out = Command::new("git")
         .args(["-C", dir, "rev-parse", "HEAD"])
         .output()

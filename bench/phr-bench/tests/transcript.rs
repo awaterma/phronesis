@@ -37,5 +37,7 @@ fn malformed_events_are_counted_and_do_not_hide_valid_assistant_events() {
 #[test]
 fn empty_transcript_is_an_error() {
     let error = parse_transcript("").expect_err("transcript without assistant events must fail");
-    assert!(error.to_string().contains("transcript has no assistant events"));
+    assert!(error
+        .to_string()
+        .contains("transcript has no assistant events"));
 }

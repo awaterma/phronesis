@@ -67,14 +67,21 @@ pub fn aggregate(records: &[RunRecord]) -> Result<Aggregate> {
     // Group by instance_id
     let mut by_id: BTreeMap<String, Vec<RunRecord>> = BTreeMap::new();
     for rec in records {
-        by_id.entry(rec.instance_id.clone()).or_default().push(rec.clone());
+        by_id
+            .entry(rec.instance_id.clone())
+            .or_default()
+            .push(rec.clone());
     }
 
     // Validate: each instance must have exactly one control and one treatment
     let mut pairs = Vec::new();
     for (id, recs) in by_id {
         if recs.len() != 2 {
-            bail!("instance {} has {} records, expected 2 (control + treatment)", id, recs.len());
+            bail!(
+                "instance {} has {} records, expected 2 (control + treatment)",
+                id,
+                recs.len()
+            );
         }
 
         let control = recs.iter().find(|r| r.arm == Arm::Control);
