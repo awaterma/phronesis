@@ -4,13 +4,19 @@ use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use phr_bench::corpus::{build_manifest, Slice};
 use phr_bench::manifest::{DatasetRef, Manifest};
 use phr_bench::record::Arm;
-use phr_bench::{arms, runner};
+use phr_bench::{arms, runner, verify};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// Dataset id/revision pinned in `bench/scripts/SPIKE-FINDINGS.md` (Task 2).
 const DATASET_ID: &str = "SWE-bench/SWE-bench_Multilingual";
 const DATASET_REVISION: &str = "846e647b9f33c0b51b739d005d13d85493c9af09";
+
+/// SWE-bench harness checkout path pinned in `bench/scripts/SPIKE-FINDINGS.md` (Task 2).
+/// Commit: 02e7a74ffd0b707aab73d203fe87bdc7c76afc8e
+/// Must be set as an environment variable SWEBENCH_PATH or provide a CLI arg for a custom path.
+/// If not set, defaults to checking ./swe-bench relative to project root.
+const SWEBENCH_DEFAULT_SUBDIR: &str = "swe-bench";
 
 #[derive(Parser)]
 #[command(name = "phr-bench")]
@@ -55,6 +61,22 @@ enum Commands {
         #[arg(long, value_enum)]
         arm: ArmArg,
     },
+    /// Verify patches via the official SWE-bench harness and record resolved status.
+    ///
+    /// Collects all patch.diff artifacts from bench/results/<run-id>/runs/,
+    /// builds predictions.jsonl, invokes the pinned SWE-bench harness,
+    /// parses results, and updates each run record's resolved field.
+    Verify {
+        /// Benchmark run id; reads from bench/results/<run-id>/runs/.
+        #[arg(long)]
+        run_id: String,
+        /// Which arms to verify (default: both).
+        #[arg(long, value_enum, default_value = "both")]
+        arm: ArmFilterArg,
+        /// Optional path to the SWE-bench checkout (defaults to SWEBENCH_PATH env var or ./swe-bench).
+        #[arg(long)]
+        swebench_path: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -87,6 +109,13 @@ impl From<ArmArg> for Arm {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ArmFilterArg {
+    Both,
+    Control,
+    Treatment,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -97,6 +126,11 @@ fn main() -> Result<()> {
             run_id,
             arm,
         }) => run_cmd(&manifest, &run_id, arm.into()),
+        Some(Commands::Verify {
+            run_id,
+            arm,
+            swebench_path,
+        }) => run_verify(&run_id, arm, swebench_path.as_deref()),
         None => {
             let _ = Cli::command().print_help();
             Ok(())
@@ -274,5 +308,235 @@ fn preflight(manifest: &Manifest, arm: Arm, clones_root: &Path) -> Result<()> {
             );
         }
     }
+    Ok(())
+}
+
+fn run_verify(run_id: &str, arm_filter: ArmFilterArg, swebench_path: Option<&Path>) -> Result<()> {
+    validate_run_id(run_id)?;
+
+    let root = project_root()?;
+    let results_root = root.join("bench/results").join(run_id);
+    let runs_root = results_root.join("runs");
+
+    if !runs_root.exists() {
+        bail!("runs directory {} does not exist", runs_root.display());
+    }
+
+    // Determine which arms to verify
+    let arms_to_verify = match arm_filter {
+        ArmFilterArg::Both => vec![Arm::Control, Arm::Treatment],
+        ArmFilterArg::Control => vec![Arm::Control],
+        ArmFilterArg::Treatment => vec![Arm::Treatment],
+    };
+
+    // Collect all patch.diff files and build predictions for each arm
+    for arm in &arms_to_verify {
+        let predictions = collect_predictions(&runs_root, *arm)?;
+        let preds_path = results_root.join(format!("predictions_{}.jsonl", arm.as_str()));
+        verify::write_predictions(&predictions, &preds_path)
+            .with_context(|| format!("write predictions for {}", arm.as_str()))?;
+        println!(
+            "wrote {} predictions to {}",
+            predictions.len(),
+            preds_path.display()
+        );
+
+        // Resolve swebench path
+        let swebench = resolve_swebench_path(swebench_path, &root)?;
+
+        // Invoke the harness
+        invoke_harness(&swebench, run_id, *arm, &results_root)
+            .with_context(|| format!("invoke harness for {}", arm.as_str()))?;
+
+        // Parse results and apply to records
+        let results_json_path = results_root.join("logs").join("evaluation").join(run_id).join("results.json");
+        if !results_json_path.exists() {
+            bail!(
+                "harness results not found at {}; check harness invocation",
+                results_json_path.display()
+            );
+        }
+
+        let results_text = std::fs::read_to_string(&results_json_path)
+            .with_context(|| format!("read harness results from {}", results_json_path.display()))?;
+        let resolved_map = verify::parse_harness_report(&results_text)
+            .context("parse harness report")?;
+
+        // Apply resolved status from harness to all run records for this arm
+        apply_resolved_to_arm(&runs_root, *arm, &resolved_map)
+            .context("apply resolved status to records")?;
+
+        println!("applied resolved status from harness for {}", arm.as_str());
+    }
+
+    // Write final verify.json summary
+    write_verify_summary(&results_root, &arms_to_verify)?;
+
+    println!("verify completed for run {}", run_id);
+    Ok(())
+}
+
+/// Collect all patch.diff files from a specific arm into (instance_id, patch) pairs.
+fn collect_predictions(
+    runs_root: &Path,
+    arm: Arm,
+) -> Result<Vec<(String, String)>> {
+    let mut predictions = Vec::new();
+
+    for entry in std::fs::read_dir(runs_root).context("read runs directory")? {
+        let entry = entry.context("read directory entry")?;
+        let instance_dir = entry.path();
+        if !instance_dir.is_dir() {
+            continue;
+        }
+
+        let instance_id = instance_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_owned())
+            .context("invalid instance_id")?;
+
+        let arm_dir = instance_dir.join(arm.as_str());
+        let patch_path = arm_dir.join("patch.diff");
+
+        if !patch_path.exists() {
+            continue;
+        }
+
+        let patch = std::fs::read_to_string(&patch_path)
+            .with_context(|| format!("read patch for {}", instance_id))?;
+        predictions.push((instance_id, patch));
+    }
+
+    Ok(predictions)
+}
+
+/// Resolve the swebench checkout path from env var, CLI arg, or default.
+fn resolve_swebench_path(cli_path: Option<&Path>, project_root: &Path) -> Result<PathBuf> {
+    if let Some(path) = cli_path {
+        if !path.exists() {
+            bail!("swebench path does not exist: {}", path.display());
+        }
+        return Ok(path.to_path_buf());
+    }
+
+    if let Ok(env_path) = std::env::var("SWEBENCH_PATH") {
+        let path = PathBuf::from(&env_path);
+        if !path.exists() {
+            bail!("SWEBENCH_PATH does not exist: {}", env_path);
+        }
+        return Ok(path);
+    }
+
+    let default_path = project_root.join(SWEBENCH_DEFAULT_SUBDIR);
+    if default_path.exists() {
+        return Ok(default_path);
+    }
+
+    bail!(
+        "swebench checkout not found; provide --swebench-path, set SWEBENCH_PATH env var, or place at {}",
+        default_path.display()
+    );
+}
+
+/// Invoke the pinned SWE-bench harness for a given arm.
+fn invoke_harness(swebench_path: &Path, run_id: &str, arm: Arm, results_root: &Path) -> Result<()> {
+    let preds_path = results_root.join(format!("predictions_{}.jsonl", arm.as_str()));
+    let venv_python = swebench_path.parent()
+        .map(|p| p.join(".venv/bin/python"))
+        .or_else(|| Some(PathBuf::from("bench/.venv/bin/python")))
+        .context("determine venv python path")?;
+
+    if !venv_python.exists() {
+        bail!(
+            "venv python not found at {}; install dependencies first",
+            venv_python.display()
+        );
+    }
+
+    let status = Command::new(&venv_python)
+        .args([
+            "-m", "swebench.harness.run_evaluation",
+            "-d", DATASET_ID,
+            "-s", "test",
+            "-p", preds_path.to_str().context("predictions path not UTF-8")?,
+            "-id", run_id,
+            "--max_workers", "1",
+        ])
+        .env("PYTHONPATH", swebench_path.to_str().context("swebench path not UTF-8")?)
+        .current_dir(results_root)
+        .status()
+        .context("spawn harness process")?;
+
+    if !status.success() {
+        eprintln!(
+            "harness exited with code {:?} for arm {}; see logs/evaluation/{}/",
+            status.code(),
+            arm.as_str(),
+            run_id
+        );
+    }
+
+    Ok(())
+}
+
+/// Apply resolved status from the harness report to all records for a given arm.
+fn apply_resolved_to_arm(
+    runs_root: &Path,
+    arm: Arm,
+    resolved_map: &std::collections::BTreeMap<String, bool>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(runs_root).context("read runs directory")? {
+        let entry = entry.context("read directory entry")?;
+        let instance_dir = entry.path();
+        if !instance_dir.is_dir() {
+            continue;
+        }
+
+        let arm_dir = instance_dir.join(arm.as_str());
+        let record_path = arm_dir.join("record.json");
+
+        if !record_path.exists() {
+            continue;
+        }
+
+        let record_text = std::fs::read_to_string(&record_path)
+            .with_context(|| format!("read record from {}", record_path.display()))?;
+        let mut record: phr_bench::record::RunRecord = serde_json::from_str(&record_text)
+            .context("parse record JSON")?;
+
+        let instance_id = instance_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .context("get instance_id from path")?;
+
+        record.resolved = resolved_map.get(instance_id).copied();
+
+        phr_bench::record::validate(&record)
+            .with_context(|| format!("validate record for {}", instance_id))?;
+
+        let updated_text = serde_json::to_string_pretty(&record).context("serialize record")?;
+        std::fs::write(&record_path, updated_text)
+            .with_context(|| format!("write updated record to {}", record_path.display()))?;
+    }
+
+    Ok(())
+}
+
+/// Write a summary verify.json file.
+fn write_verify_summary(results_root: &Path, arms: &[Arm]) -> Result<()> {
+    let summary = serde_json::json!({
+        "verified_arms": arms.iter().map(|a| a.as_str()).collect::<Vec<_>>(),
+        "timestamp": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .context("get current timestamp")?
+            .as_secs(),
+    });
+
+    let summary_path = results_root.join("verify.json");
+    let summary_text = serde_json::to_string_pretty(&summary).context("serialize summary")?;
+    std::fs::write(&summary_path, summary_text)
+        .with_context(|| format!("write verify summary to {}", summary_path.display()))?;
+
     Ok(())
 }
