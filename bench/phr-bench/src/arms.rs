@@ -13,8 +13,11 @@ pub fn prep(task: &TaskSpec, arm: Arm, workdir: &Path) -> Result<PathBuf> {
 
     // Clone the repository
     let clone_dir = arm_dir.clone();
+    let clone_path = clone_dir
+        .to_str()
+        .context("clone path contains invalid UTF-8")?;
     let status = Command::new("git")
-        .args(["clone", "--quiet", &task.repo, clone_dir.to_str().unwrap_or("")])
+        .args(["clone", "--quiet", &task.repo, clone_path])
         .status()
         .context("failed to spawn git clone")?;
 
@@ -23,10 +26,13 @@ pub fn prep(task: &TaskSpec, arm: Arm, workdir: &Path) -> Result<PathBuf> {
     }
 
     // Checkout the base commit
+    let checkout_path = clone_dir
+        .to_str()
+        .context("clone path contains invalid UTF-8")?;
     let status = Command::new("git")
         .args([
             "-C",
-            clone_dir.to_str().unwrap_or(""),
+            checkout_path,
             "checkout",
             "--quiet",
             &task.base_commit,
