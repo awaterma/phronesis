@@ -39,7 +39,15 @@ fn is_rule(v: &Value) -> bool {
 /// A rules-file-shaped value for a fenced block, or `None` when the block
 /// is not a rule example.
 fn as_rules_file(v: Value) -> Option<Value> {
-    if v.get("rules").is_some_and(Value::is_array) {
+    if let Some(items) = v.get("rules").and_then(Value::as_array) {
+        // Other payloads embed a top-level `"rules"` array too: `phr-mcp
+        // audit --json` reports `{totals, rules: [{rule_id, level, hits,
+        // files}]}`, and plan docs pin that real shape. Only a value with
+        // at least one rule-shaped entry is a rules-file example; the
+        // loader still rejects malformed sibling entries inside it.
+        if !items.iter().any(is_rule) {
+            return None;
+        }
         return Some(v);
     }
     if is_rule(&v) {
