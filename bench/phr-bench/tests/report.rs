@@ -153,15 +153,11 @@ fn no_timestamps_in_output() {
     let html = render(&agg, &recs).unwrap();
     assert!(!html.contains("timestamp"));
     let bytes = html.as_bytes();
-    let is_digits = |from: usize, len: usize| {
-        from + len <= bytes.len()
-            && bytes[from..from + len].iter().all(u8::is_ascii_digit)
-    };
-    for i in 0..bytes.len().saturating_sub(9) {
-        let date_like = bytes[i] == b'-'
-            && is_digits(i - 4, 4)
-            && is_digits(i + 1, 2)
-            && is_digits(i + 4, 2);
+    for window in bytes.windows(10) {
+        let date_like = window[4] == b'-'
+            && window[0..4].iter().all(u8::is_ascii_digit)
+            && window[5..7].iter().all(u8::is_ascii_digit)
+            && window[8..10].iter().all(u8::is_ascii_digit);
         assert!(!date_like, "no YYYY-MM-DD pattern in the report");
     }
 }
@@ -172,7 +168,10 @@ fn headline_numbers_rendered() {
     let html = render(&agg, &recs).unwrap();
     assert!(html.contains("control 1 of 2"), "resolved rate control");
     assert!(html.contains("treatment 0 of 2"), "resolved rate treatment");
-    assert!(html.contains("p = 1.000"), "sign test p rendered with 3 decimals");
+    assert!(
+        html.contains("p = 1.000"),
+        "sign test p rendered with 3 decimals"
+    );
     assert!(
         html.contains("Debt delta (audit violations, treatment minus control): -2"),
         "debt delta from audit summaries"
@@ -217,7 +216,10 @@ fn discordant_note_threaded_through_details() {
 fn friction_per_rule_and_fail_closed() {
     let (agg, recs) = sample();
     let html = render(&agg, &recs).unwrap();
-    assert!(html.contains("llm-deflection-blame"), "per-rule row present");
+    assert!(
+        html.contains("llm-deflection-blame"),
+        "per-rule row present"
+    );
     assert!(
         html.contains("Fail-closed events across treatment: 1"),
         "fail-closed total rendered"
@@ -288,15 +290,19 @@ fn load_records_reads_both_arms_sorted() {
     std::fs::write(unknown_arm.join("record.json"), b"{}").unwrap();
 
     let loaded = load_records(&runs).unwrap();
-    assert_eq!(loaded.len(), 4, "stray files and unknown arm dirs are skipped");
+    assert_eq!(
+        loaded.len(),
+        4,
+        "stray files and unknown arm dirs are skipped"
+    );
     let sorted = loaded.windows(2).all(|w| {
         (w[0].instance_id.clone(), w[0].arm.as_str())
             < (w[1].instance_id.clone(), w[1].arm.as_str())
     });
     assert!(sorted, "records sorted by (instance, arm)");
-    assert!(loaded.iter().all(|r| {
-        r.arm == Arm::Control || r.arm == Arm::Treatment
-    }));
+    assert!(loaded
+        .iter()
+        .all(|r| { r.arm == Arm::Control || r.arm == Arm::Treatment }));
 }
 
 #[test]
@@ -305,8 +311,10 @@ fn merge_quality_fills_missing_audit_only() {
         rec("rust-a", Arm::Control, Some(true)),
         rec("rust-a", Arm::Treatment, Some(false)),
     ];
-    let mut existing = AuditSummary::default();
-    existing.total_violations = 9;
+    let existing = AuditSummary {
+        total_violations: 9,
+        per_rule: BTreeMap::new(),
+    };
     records[1].audit = Some(existing);
     let quality = BTreeMap::from([(
         "rust-a/control".to_string(),
@@ -322,7 +330,8 @@ fn merge_quality_fills_missing_audit_only() {
 
 #[test]
 fn verified_arms_parsed_from_verify_json() {
-    let arms = verified_arms(r#"{"verified_arms":["treatment","control"],"timestamp":123}"#).unwrap();
+    let arms =
+        verified_arms(r#"{"verified_arms":["treatment","control"],"timestamp":123}"#).unwrap();
     assert_eq!(arms, vec!["control".to_string(), "treatment".to_string()]);
     assert!(verified_arms("not json").is_err());
 }
@@ -350,14 +359,11 @@ fn extract_note_takes_last_assistant_text() {
 
 #[test]
 fn governance_empty_maps_render_without_panic() {
-    let records = vec![
-        rec("py-a", Arm::Control, Some(false)),
-        {
-            let mut r = rec("py-a", Arm::Treatment, Some(false));
-            r.governance = Some(empty_gov());
-            r
-        },
-    ];
+    let records = vec![rec("py-a", Arm::Control, Some(false)), {
+        let mut r = rec("py-a", Arm::Treatment, Some(false));
+        r.governance = Some(empty_gov());
+        r
+    }];
     let agg = phr_bench::aggregate::aggregate(&records).unwrap();
     let html = render(&agg, &records).unwrap();
     assert!(html.contains("No rule friction recorded"));
