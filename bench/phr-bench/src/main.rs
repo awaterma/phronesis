@@ -3,8 +3,10 @@ use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use phr_bench::corpus::{build_manifest, Slice};
 use phr_bench::manifest::{DatasetRef, Manifest};
-use phr_bench::record::Arm;
+use phr_bench::record::{Arm, AuditSummary};
+use phr_bench::report::ReportExtras;
 use phr_bench::{arms, quality, runner, verify};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -87,6 +89,19 @@ enum Commands {
         #[arg(long)]
         run_id: String,
     },
+    /// Render the deterministic, self-contained HTML report for a run.
+    ///
+    /// Loads the run's records and, when present, verify.json and quality.json,
+    /// aggregates the paired records, and writes the seven-section report
+    /// (plus bench/report/data/ JSON companions) so every number is checkable.
+    Report {
+        /// Benchmark run id; reads from bench/results/<run-id>/runs/.
+        #[arg(long)]
+        run_id: String,
+        /// Output path for the HTML report (default: bench/report/index.html).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -142,6 +157,7 @@ fn main() -> Result<()> {
             swebench_path,
         }) => run_verify(&run_id, arm, swebench_path.as_deref()),
         Some(Commands::Quality { run_id }) => run_quality(&run_id),
+        Some(Commands::Report { run_id, out }) => run_report(&run_id, out.as_deref()),
         None => {
             let _ = Cli::command().print_help();
             Ok(())
@@ -661,4 +677,121 @@ fn run_quality(run_id: &str) -> Result<()> {
         quality_json.display()
     );
     Ok(())
+}
+
+/// Aggregate the run's records and render the deterministic HTML report.
+///
+/// Every input is optional except the records themselves: quality.json fills
+/// missing audit summaries, verify.json contributes the verified arms, and
+/// each treatment transcript's final assistant message becomes the discordant
+/// pair note. The report itself is loud — missing governance telemetry, e.g.
+/// a not-wired tombstone, aborts rendering with a named error.
+fn run_report(run_id: &str, out: Option<&Path>) -> Result<()> {
+    validate_run_id(run_id)?;
+    let root = project_root()?;
+    let results_root = root.join("bench/results").join(run_id);
+    let runs_root = results_root.join("runs");
+    if !runs_root.exists() {
+        bail!(
+            "runs directory {} does not exist; run the run subcommand first",
+            runs_root.display()
+        );
+    }
+
+    let mut records = phr_bench::report::load_records(&runs_root).context("load run records")?;
+    if records.is_empty() {
+        bail!("no record.json files found under {}", runs_root.display());
+    }
+
+    let quality_path = results_root.join("quality.json");
+    if quality_path.exists() {
+        let quality: BTreeMap<String, AuditSummary> = serde_json::from_slice(
+            &std::fs::read(&quality_path)
+                .with_context(|| format!("read {}", quality_path.display()))?,
+        )
+        .with_context(|| format!("parse {}", quality_path.display()))?;
+        phr_bench::report::merge_quality(&mut records, &quality);
+    }
+
+    let mut extras = ReportExtras {
+        run_id: run_id.to_owned(),
+        ..ReportExtras::default()
+    };
+    let verify_path = results_root.join("verify.json");
+    if verify_path.exists() {
+        let text = String::from_utf8(
+            std::fs::read(&verify_path)
+                .with_context(|| format!("read {}", verify_path.display()))?,
+        )
+        .with_context(|| format!("{} is not UTF-8", verify_path.display()))?;
+        extras.verified_arms = phr_bench::report::verified_arms(&text)?;
+    }
+    extras.notes = collect_notes(&runs_root);
+
+    let agg = phr_bench::aggregate::aggregate(&records).context("aggregate run records")?;
+    let html =
+        phr_bench::report::render_with_extras(&agg, &records, &extras).context("render report")?;
+
+    let out_path = out
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join("bench/report/index.html"));
+    if let Some(parent) = out_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create report directory {}", parent.display()))?;
+        }
+    }
+    std::fs::write(&out_path, html)
+        .with_context(|| format!("write report to {}", out_path.display()))?;
+
+    let data_dir = out_path.parent().unwrap_or(Path::new(".")).join("data");
+    std::fs::create_dir_all(&data_dir)
+        .with_context(|| format!("create report data directory {}", data_dir.display()))?;
+    let aggregate_path = data_dir.join("aggregate.json");
+    std::fs::write(
+        &aggregate_path,
+        serde_json::to_vec_pretty(&agg).context("serialize aggregate")?,
+    )
+    .with_context(|| format!("write {}", aggregate_path.display()))?;
+    let records_path = data_dir.join("records.json");
+    std::fs::write(
+        &records_path,
+        serde_json::to_vec_pretty(&records).context("serialize records")?,
+    )
+    .with_context(|| format!("write {}", records_path.display()))?;
+
+    println!(
+        "wrote report for {} task(s) to {} (data in {})",
+        agg.headline.n,
+        out_path.display(),
+        data_dir.display()
+    );
+    Ok(())
+}
+
+/// Final assistant message of each treatment transcript, keyed by instance;
+/// these become the discordant pair notes. A missing or prose-free transcript
+/// simply yields no note.
+fn collect_notes(runs_root: &Path) -> BTreeMap<String, String> {
+    let mut notes = BTreeMap::new();
+    let instances: BTreeMap<String, PathBuf> = match std::fs::read_dir(runs_root) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.path().is_dir())
+            .filter_map(|entry| {
+                let name = entry.file_name().into_string().ok()?;
+                Some((name, entry.path()))
+            })
+            .collect(),
+        Err(_) => BTreeMap::new(),
+    };
+    for (instance, dir) in instances {
+        let transcript = dir.join("treatment").join("transcript.jsonl");
+        if let Ok(jsonl) = std::fs::read_to_string(&transcript) {
+            if let Some(note) = phr_bench::report::extract_note(&jsonl) {
+                notes.insert(instance, note);
+            }
+        }
+    }
+    notes
 }
