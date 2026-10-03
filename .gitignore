@@ -66,3 +66,6 @@ bench/.venv/
 
 # SWE-bench harness evaluation output (written to ./logs by run_evaluation)
 logs/
+
+# phr-bench build state (standalone crate)
+bench/phr-bench/target/
