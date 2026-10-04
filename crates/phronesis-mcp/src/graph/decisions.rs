@@ -253,7 +253,7 @@ mod tests {
         annotate_consequences(dir.path(), &mut consequences);
         match &consequences[0].provenance {
             Provenance::RuleFiring { decisions, .. } => assert_eq!(decisions, &["choice"]),
-            other => assert!(false, "expected rule provenance, got {other:?}"),
+            other => panic!("expected rule provenance, got {other:?}"),
         }
     }
 
