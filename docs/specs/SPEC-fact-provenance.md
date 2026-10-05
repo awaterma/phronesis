@@ -180,6 +180,12 @@ guessed or silently dropped:
 - `superseded_decision_enforces(decision, rule)`
 - `rule_without_decision(rule)`
 
+Rule identity in these relations is the logical base id. `rules_file::read()`
+unfolds OR clauses into `base#orN` child ids; the decision layer normalizes
+both `enforces:` declarations and loaded rule ids (and consequence-provenance
+lookups) through `rules_file::base_rule_id`, so one decision governs every
+branch of a compound rule by naming it once.
+
 Rule-firing and rule-driven-lookup provenance carries a deterministic list of
 governing decision IDs. Hook action-log projections retain that list so a later
 reader can traverse consequence → rule → ADR as well as consequence → bound

@@ -82,8 +82,13 @@ pub fn run_with_dir(project_root: &Path, decisions_dir: &Path) -> Result<DriftRe
     let decisions = wiki::walk_decisions(decisions_dir)?;
     let rules_path = rules_file::default_path(project_root);
     let rules = rules_file::read(&rules_path).map_err(|e| DriftError::RulesIo(e.to_string()))?;
-    let rule_id_set: std::collections::HashSet<&str> =
-        rules.rules.iter().map(|r| r.id.as_str()).collect();
+    let rule_id_set: std::collections::HashSet<&str> = rules
+        .rules
+        .iter()
+        // `read()` unfolds OR clauses into `base#orN` child ids; decisions
+        // name the logical rule, so match on the base id.
+        .map(|r| rules_file::base_rule_id(&r.id))
+        .collect();
 
     let items = decisions
         .into_iter()
@@ -114,15 +119,17 @@ fn score_decision(
     }
 
     // 1. Explicit `enforces:` shortcut. If any listed rule id exists in the
-    //    pack, the decision is deterministically Covered.
+    //    pack, the decision is deterministically Covered. The base id and
+    //    any `#orN` expansion of it name the same logical rule.
     let enforces = decision.frontmatter.enforces.clone();
     for rid in &enforces {
-        if rule_id_set.contains(rid.as_str()) {
+        let rid = rules_file::base_rule_id(rid.as_str());
+        if rule_id_set.contains(rid) {
             return DriftItem {
                 decision,
                 bucket: Bucket::Covered,
                 best_match: Some(MatchedRule {
-                    rule_id: rid.clone().into(),
+                    rule_id: rid.to_string().into(),
                     shared_terms: Vec::new(),
                 }),
                 similarity: 1.0,
@@ -159,11 +166,11 @@ fn score_decision(
         let union: std::collections::HashSet<&String> =
             decision_tokens.iter().chain(rule_tokens.iter()).collect();
         let jaccard = shared.len() as f32 / union.len() as f32;
+        // Report the logical base id, never an `#orN` expansion.
+        let rule_id: RuleId = rules_file::base_rule_id(&rule.id).to_string().into();
         match &best {
-            None => best = Some((jaccard, rule.id.clone().into(), shared)),
-            Some((cur, _, _)) if jaccard > *cur => {
-                best = Some((jaccard, rule.id.clone().into(), shared))
-            }
+            None => best = Some((jaccard, rule_id, shared)),
+            Some((cur, _, _)) if jaccard > *cur => best = Some((jaccard, rule_id, shared)),
             _ => {}
         }
     }
@@ -446,6 +453,51 @@ mod tests {
 
     fn write_decision(dir: &Path, name: &str, content: &str) {
         fs::write(dir.join(name), content).unwrap();
+    }
+
+    #[test]
+    fn decision_enforcing_or_expanded_rule_base_id_is_covered() {
+        let (dir, dec_dir) = fixture_project(&[]);
+        // One OR-clause rule: `rules_file::read()` unfolds it into
+        // `compound#or0` / `compound#or1`; the decision names the base id.
+        fs::write(
+            dir.path().join(".phronesis/rules.json"),
+            r#"{"rules":[{"id":"compound","phase":"pre","priority":1,"when":[{"or":[{"new_content_contains":"a"},{"new_content_contains":"b"}]}],"then":{"warn":"m"}}]}"#,
+        )
+        .expect("write compound rules.json");
+        write_decision(
+            &dec_dir,
+            "2026-01-01-choice.md",
+            "---\nid: choice\ndate: 2026-01-01\nstatus: accepted\nenforces:\n  - compound\n---\nDecision.\n",
+        );
+        let report = run_with_dir(dir.path(), &dec_dir).expect("drift report");
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].bucket, Bucket::Covered);
+        let matched = report.items[0].best_match.as_ref().expect("best match");
+        assert_eq!(matched.rule_id.as_str(), "compound");
+    }
+
+    #[test]
+    fn fuzzy_match_reports_base_id_for_or_expanded_rules() {
+        let (dir, dec_dir) = fixture_project(&[]);
+        // One OR-clause rule with no `enforces:` shortcut in the decision:
+        // coverage comes from the Jaccard fallback, which must still report
+        // the logical base id, not an `#orN` expansion.
+        fs::write(
+            dir.path().join(".phronesis/rules.json"),
+            r#"{"rules":[{"id":"compound","phase":"pre","priority":1,"when":[{"or":[{"new_content_contains":"alpha"},{"new_content_contains":"beta"}]}],"then":{"warn":"alpha beta compound policy"}}]}"#,
+        )
+        .expect("write compound rules.json");
+        write_decision(
+            &dec_dir,
+            "2026-01-01-policy.md",
+            "---\nid: policy\ndate: 2026-01-01\nstatus: accepted\n---\nAdopt the alpha beta compound policy.\n",
+        );
+        let report = run_with_dir(dir.path(), &dec_dir).expect("drift report");
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].bucket, Bucket::LikelyCovered);
+        let matched = report.items[0].best_match.as_ref().expect("best match");
+        assert_eq!(matched.rule_id.as_str(), "compound");
     }
 
     fn sample_decision_with_enforces() -> Decision {

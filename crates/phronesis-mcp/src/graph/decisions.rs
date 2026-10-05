@@ -17,7 +17,9 @@ pub fn extract(root: &Path) -> Vec<Edge> {
             rules
                 .rules
                 .into_iter()
-                .map(|rule| rule.id.to_string())
+                // `read()` unfolds OR clauses into `base#orN` child ids;
+                // decisions govern the logical rule, so match on the base id.
+                .map(|rule| crate::rules_file::base_rule_id(&rule.id).to_string())
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
@@ -37,6 +39,9 @@ pub fn extract(root: &Path) -> Vec<Edge> {
             .to_string();
         edges.push(Edge::base("graph_decision", &[&id], &source));
         for rule in decision.frontmatter.enforces {
+            // Accept the base id or any `#orN` expansion of it — both name
+            // the same logical rule on disk.
+            let rule = crate::rules_file::base_rule_id(&rule).to_string();
             if !rules.contains(&rule) {
                 edges.push(Edge::base("decision_missing_rule", &[&id, &rule], &source));
                 continue;
@@ -98,7 +103,9 @@ pub fn annotate_consequences(root: &Path, consequences: &mut [Consequence]) {
             } => (rule_id.as_str(), decisions),
             _ => continue,
         };
-        if let Some(linked) = by_rule.get(rule_id) {
+        // The RETE network fires OR-expanded rules under `base#orN` ids;
+        // governance links are keyed by the base id.
+        if let Some(linked) = by_rule.get(crate::rules_file::base_rule_id(rule_id)) {
             *decisions = linked.clone();
             decisions.sort();
             decisions.dedup();
@@ -121,6 +128,43 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+
+    /// Rules file with one OR-clause rule: `rules_file::read()` unfolds it
+    /// into `compound#or0` / `compound#or1`, mirroring real packs such as
+    /// `warn-untested-risky-call`.
+    fn or_project() -> TempDir {
+        let dir = TempDir::new().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(DECISIONS_DIR)).expect("mkdir decisions dir");
+        std::fs::write(
+            dir.path().join(".phronesis/rules.json"),
+            r#"{"version":2,"rules":[{"id":"compound","when":[{"or":[{"p":"a"},{"p":"b"}]}],"then":{"warn":"x"}}]}"#,
+        )
+        .expect("write rules.json");
+        dir
+    }
+
+    #[test]
+    fn or_expanded_rules_link_to_decisions_by_base_id() {
+        let dir = or_project();
+        std::fs::write(
+            dir.path().join(DECISIONS_DIR).join("2026-01-01-choice.md"),
+            "---\nid: choice\ndate: 2026-01-01\nstatus: accepted\nenforces:\n  - compound\n---\nDecision.\n",
+        )
+        .expect("write decision");
+        let edges = extract(dir.path());
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.p == "decision_enforces" && edge.a == ["choice", "compound"])
+        );
+        assert!(
+            edges
+                .iter()
+                .any(|edge| edge.p == "rule_governed_by" && edge.a == ["compound", "choice"])
+        );
+        assert!(!edges.iter().any(|edge| edge.p == "decision_missing_rule"));
+        assert!(!edges.iter().any(|edge| edge.p == "rule_without_decision"));
     }
 
     #[test]
@@ -180,6 +224,35 @@ mod tests {
             Provenance::RuleFiring { decisions, .. } => {
                 assert_eq!(decisions, &["choice"]);
             }
+            other => panic!("expected rule provenance, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn or_expanded_consequence_is_annotated_from_base_id_link() {
+        let dir = or_project();
+        std::fs::write(
+            dir.path().join(DECISIONS_DIR).join("2026-01-01-choice.md"),
+            "---\nid: choice\ndate: 2026-01-01\nstatus: accepted\nenforces:\n  - compound\n---\nDecision.\n",
+        )
+        .expect("write decision");
+        // The RETE network fires or-expanded rules under ids like
+        // `compound#or0`; the accepted decision names the base id.
+        let mut consequences = vec![Consequence {
+            kind: ConsequenceKind::Constraint,
+            predicate: "compound".to_string(),
+            payload: serde_json::json!({}),
+            provenance: Provenance::RuleFiring {
+                rule_id: "compound#or0".into(),
+                bound_facts: Vec::new(),
+                bindings: Default::default(),
+                fact_sources: Default::default(),
+                decisions: Vec::new(),
+            },
+        }];
+        annotate_consequences(dir.path(), &mut consequences);
+        match &consequences[0].provenance {
+            Provenance::RuleFiring { decisions, .. } => assert_eq!(decisions, &["choice"]),
             other => panic!("expected rule provenance, got {other:?}"),
         }
     }

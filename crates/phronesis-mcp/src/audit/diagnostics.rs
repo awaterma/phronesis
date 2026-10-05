@@ -91,7 +91,7 @@ pub(super) fn near_miss_rule_ids(opted_in: &[&str], filter: &str) -> Vec<String>
     let needle = filter.to_ascii_lowercase();
     let mut out: Vec<String> = Vec::new();
     for id in opted_in {
-        let base = id.split_once("#or").map_or(*id, |(b, _)| b);
+        let base = crate::rules_file::base_rule_id(id);
         let hay = base.to_ascii_lowercase();
         if (hay.contains(&needle) || needle.contains(&hay)) && !out.iter().any(|o| o == base) {
             out.push(base.to_string());
