@@ -1270,6 +1270,29 @@ fn warn_empty_test_fires_on_test_with_no_assertions() {
 }
 
 #[test]
+fn warn_empty_test_does_not_fire_on_should_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "#[test]\n#[should_panic]\nfn expects_panic() {\n    risky();\n}\n",
+    )
+    .unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{
+            "id":"warn-empty-test","phase":"post","priority":5,
+            "when":[{"test_without_assertion":["?file","?fn"]}],
+            "then":{"warn":"empty test"}
+        }]}"#,
+    );
+    let payload = r##"{"tool_name":"Write","tool_input":{"file_path":"src/lib.rs","content":"#[test]\n#[should_panic]\nfn expects_panic() {\n    risky();\n}"}}"##;
+    let (code, stderr) = run_post_hook_with_root(payload, dir.path());
+    assert_eq!(code, 0);
+    assert!(!stderr.contains("empty test"));
+}
+
+#[test]
 fn block_rhai_inline_eval_string_blocks_edit() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();

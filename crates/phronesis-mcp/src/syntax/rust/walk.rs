@@ -87,6 +87,27 @@ pub fn is_test_fn(state: Node, source: &[u8]) -> bool {
     false
 }
 
+/// True if any preceding-sibling attribute is `#[should_panic]` or `#[should_panic(...)]`.
+pub fn has_should_panic_attr(state: Node, source: &[u8]) -> bool {
+    let mut prev = state.prev_sibling();
+    while let Some(sib) = prev {
+        match sib.kind() {
+            "attribute_item" => {
+                let text = sib.utf8_text(source).unwrap_or("");
+                if text.contains("should_panic") {
+                    return true;
+                }
+                prev = sib.prev_sibling();
+            }
+            "line_comment" | "block_comment" => {
+                prev = sib.prev_sibling();
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
 /// True when `node` sits in test code: inside a `#[test]`/`#[tokio::test]`
 /// function, or anywhere under a `#[cfg(test)]` module.
 ///

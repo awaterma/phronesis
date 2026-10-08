@@ -153,6 +153,7 @@ pub(super) fn rust_rules() -> Value {
                 "id": "warn-empty-test",
                 "phase": "post",
                 "priority": 5,
+                "audit": true,
                 "when": [
                     {"test_without_assertion": ["?file", "?fn"]}
                 ],
