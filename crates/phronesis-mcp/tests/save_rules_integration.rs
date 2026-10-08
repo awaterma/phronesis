@@ -369,6 +369,30 @@ fn mcp_reports_and_rebuilds_the_code_graph_lifecycle() {
 }
 
 #[test]
+fn mcp_query_code_graph_diagnostics_and_overview() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/lib.rs"), "pub fn first() {}\n").unwrap();
+    let mut client = McpClient::spawn(dir.path());
+
+    let _rebuilt = client.tool("rebuild_code_graph", serde_json::json!({}));
+
+    // Overview test
+    let overview = client.tool("query_code_graph", serde_json::json!({"relation": "overview"}));
+    assert!(overview["total_edges"].as_u64().unwrap() > 0);
+    assert!(overview["relations"].is_array());
+
+    // Diagnostics test on unknown relation
+    let unknown = client.tool(
+        "query_code_graph",
+        serde_json::json!({"relation": "unknown_rel"}),
+    );
+    assert_eq!(unknown["total"], 0);
+    assert!(unknown["diagnostics"]["unknown_relation"].as_bool().unwrap());
+    assert!(!unknown["diagnostics"]["suggested_relations"].as_array().unwrap().is_empty());
+}
+
+#[test]
 fn mcp_code_graph_status_includes_per_file_resolution() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();

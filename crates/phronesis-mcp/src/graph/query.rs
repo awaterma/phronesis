@@ -120,6 +120,135 @@ pub fn relation_summary(edges: &[Edge]) -> Vec<(String, usize)> {
     out
 }
 
+/// Diagnostic triage information returned when a query produces zero matches.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct QueryDiagnostics {
+    pub unknown_relation: bool,
+    pub relation_edge_count: usize,
+    pub suggested_relations: Vec<String>,
+    pub sample_argument_patterns: Vec<Vec<String>>,
+    pub suggestions: Vec<String>,
+}
+
+/// Produces diagnostic feedback when a query matches 0 edges, helping agents
+/// understand why the query returned empty and how to refine it.
+pub fn query_diagnostics(edges: &[Edge], pattern: &Pattern) -> Option<QueryDiagnostics> {
+    if edges.is_empty() {
+        return Some(QueryDiagnostics {
+            unknown_relation: false,
+            relation_edge_count: 0,
+            suggested_relations: Vec::new(),
+            sample_argument_patterns: Vec::new(),
+            suggestions: vec![
+                "Code graph is empty or has not been built. Run `rebuild_code_graph`.".to_string(),
+            ],
+        });
+    }
+
+    let summary = relation_summary(edges);
+
+    let req_rel = pattern.relation.as_ref()?;
+
+    // If wildcard relation "*", then none of the args matched across any edge
+    if req_rel == "*" || req_rel == "?" {
+        return Some(QueryDiagnostics {
+            unknown_relation: false,
+            relation_edge_count: edges.len(),
+            suggested_relations: summary.iter().take(5).map(|(r, _)| r.clone()).collect(),
+            sample_argument_patterns: Vec::new(),
+            suggestions: vec![
+                "Wildcard query matched 0 edges across all relations. Try loosening argument constraints.".to_string(),
+            ],
+        });
+    }
+
+    // Check if relation matches any edge in the graph
+    let matching_relation_edges: Vec<&Edge> = edges
+        .iter()
+        .filter(|e| glob_matches(req_rel, &e.p))
+        .collect();
+
+    if matching_relation_edges.is_empty() {
+        // Unknown relation
+        let mut candidates: Vec<String> = summary
+            .iter()
+            .filter(|(r, _)| r.contains(req_rel.as_str()) || req_rel.contains(r.as_str()))
+            .map(|(r, _)| r.clone())
+            .collect();
+
+        if candidates.is_empty() {
+            candidates = summary.iter().take(5).map(|(r, _)| r.clone()).collect();
+        }
+
+        let suggestions = vec![format!(
+            "Relation '{}' does not exist in graph. Available relations: {}.",
+            req_rel,
+            candidates.join(", ")
+        )];
+
+        return Some(QueryDiagnostics {
+            unknown_relation: true,
+            relation_edge_count: 0,
+            suggested_relations: candidates,
+            sample_argument_patterns: Vec::new(),
+            suggestions,
+        });
+    }
+
+    // Relation exists, but arguments did not match
+    let relation_edge_count = matching_relation_edges.len();
+
+    // Extract up to 3 distinct sample argument shapes
+    let mut sample_argument_patterns = Vec::new();
+    let mut seen_samples = std::collections::BTreeSet::new();
+    for edge in &matching_relation_edges {
+        if seen_samples.insert(edge.a.clone()) {
+            sample_argument_patterns.push(edge.a.clone());
+            if sample_argument_patterns.len() >= 3 {
+                break;
+            }
+        }
+    }
+
+    let mut suggestions = Vec::new();
+    let mut substring_found = false;
+
+    for (pos, arg_opt) in pattern.args.iter().enumerate() {
+        let Some(want) = arg_opt else { continue };
+        if want.contains('*') || want.contains('?') {
+            continue;
+        }
+        for edge in &matching_relation_edges {
+            if let Some(got) = edge.a.get(pos)
+                && got.contains(want.as_str())
+                && got != want
+            {
+                suggestions.push(format!(
+                    "Argument '{}' at position {} was not matched, but appears as a substring in '{}'. Try glob '*{}*'.",
+                    want, pos, got, want
+                ));
+                substring_found = true;
+                break;
+            }
+        }
+    }
+
+    if !substring_found {
+        suggestions.push(format!(
+            "Relation '{}' has {} edges, but none matched the specified arguments. Check sample_argument_patterns for expected argument formats.",
+            req_rel, relation_edge_count
+        ));
+    }
+
+    Some(QueryDiagnostics {
+        unknown_relation: false,
+        relation_edge_count,
+        suggested_relations: Vec::new(),
+        sample_argument_patterns,
+        suggestions,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +385,28 @@ mod tests {
         let s = relation_summary(&g);
         assert_eq!(s[0], ("defines_fn".to_string(), 2));
         assert!(s.iter().any(|(r, _)| r == "no_direct_test"));
+    }
+
+    #[test]
+    fn query_diagnostics_unknown_relation_suggests_existing() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["defines_not_exist"]));
+        let diag = query_diagnostics(&g, &p).expect("diagnostics should exist");
+        assert!(diag.unknown_relation);
+        assert_eq!(diag.relation_edge_count, 0);
+        assert!(!diag.suggested_relations.is_empty());
+        assert!(diag.suggestions[0].contains("defines_not_exist"));
+    }
+
+    #[test]
+    fn query_diagnostics_unmatched_arg_suggests_patterns_and_glob() {
+        let g = graph();
+        // Exact "a.rs" fails because edge has "src/a.rs"
+        let p = Pattern::parse(&toks(&["defines_fn", "a.rs"]));
+        let diag = query_diagnostics(&g, &p).expect("diagnostics should exist");
+        assert!(!diag.unknown_relation);
+        assert_eq!(diag.relation_edge_count, 2);
+        assert_eq!(diag.sample_argument_patterns.len(), 2);
+        assert!(diag.suggestions[0].contains("*a.rs*"));
     }
 }

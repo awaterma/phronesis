@@ -18,6 +18,10 @@ fn is_assertion_macro(bare: &str) -> bool {
         || FALLBACK_ASSERTION_MACROS.contains(&bare)
 }
 
+fn is_assertion_fn(bare: &str) -> bool {
+    bare.starts_with("assert") || bare.ends_with("_assert") || bare.starts_with("verify")
+}
+
 /// `#[test]` functions whose body has no assertion-macro invocation
 /// and no `?` operator. Functions marked with `#[should_panic]` are excluded
 /// because the test failure expectation is declared in the attribute.
@@ -71,6 +75,16 @@ fn has_assertion_or_exception(state: tree_sitter::Node, source: &[u8]) -> bool {
                 let text = name.utf8_text(source).unwrap_or("");
                 let bare = text.rsplit("::").next().unwrap_or(text);
                 if is_assertion_macro(bare) {
+                    return true;
+                }
+            }
+        }
+        "call_expression" => {
+            if let Some(func) = state.child_by_field_name("function") {
+                let text = func.utf8_text(source).unwrap_or("");
+                let bare = text.rsplit("::").next().unwrap_or(text);
+                let bare = bare.rsplit('.').next().unwrap_or(bare);
+                if is_assertion_fn(bare) {
                     return true;
                 }
             }
@@ -132,6 +146,16 @@ mod tests {
         assert!(
             facts.tests_without_assertion.is_empty(),
             "prop_assert! macro should count as assertion"
+        );
+    }
+
+    #[test]
+    fn test_with_custom_assert_function_helper_is_not_flagged() {
+        let code = "#[test]\nfn with_helper() { assert_custom_condition(val); }";
+        let facts = extract(code);
+        assert!(
+            facts.tests_without_assertion.is_empty(),
+            "assert_* helper function should count as assertion"
         );
     }
 

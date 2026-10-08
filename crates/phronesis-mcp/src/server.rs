@@ -1364,7 +1364,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `test_imports` (a `use` under `#[cfg(test)]`; excluded from `in_cycle`), `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` to list the vocabulary. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
+        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `test_imports` (a `use` under `#[cfg(test)]`; excluded from `in_cycle`), `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` or pass `\"overview\"` to inspect vocabulary and edge distribution. When queries return 0 results, structured diagnostics provide triage and format suggestions. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
     )]
     async fn query_code_graph(
         &self,
@@ -1384,15 +1384,26 @@ impl EpistemeMcp {
             );
         }
 
-        // No relation is a discovery request, not an empty result.
-        let Some(relation) = params.relation.as_deref() else {
+        // No relation or "overview" is a discovery request, not an empty result.
+        let is_overview = params.relation.as_deref().is_none_or(|r| r.eq_ignore_ascii_case("overview"));
+        if is_overview {
             let summary = q::relation_summary(&edges);
             return Self::ok_text(
                 serde_json::json!({
+                    "total_edges": edges.len(),
+                    "distinct_relations": summary.len(),
                     "relations": summary
                         .iter()
                         .map(|(r, n)| serde_json::json!({"relation": r, "edges": n}))
                         .collect::<Vec<_>>(),
+                })
+                .to_string(),
+            );
+        }
+        let Some(relation) = params.relation.as_deref() else {
+            return Self::ok_text(
+                serde_json::json!({
+                    "error": "missing relation parameter",
                 })
                 .to_string(),
             );
@@ -1410,18 +1421,22 @@ impl EpistemeMcp {
                 .with("matches", total as u64)
         });
 
-        Self::ok_text(
-            serde_json::json!({
-                "total": total,
-                "returned": rows.len(),
-                "truncated": rows.len() < total,
-                "results": rows
-                    .iter()
-                    .map(|e| serde_json::json!({"relation": e.p, "args": e.a, "derived": e.d}))
-                    .collect::<Vec<_>>(),
-            })
-            .to_string(),
-        )
+        let mut response = serde_json::json!({
+            "total": total,
+            "returned": rows.len(),
+            "truncated": rows.len() < total,
+            "results": rows
+                .iter()
+                .map(|e| serde_json::json!({"relation": e.p, "args": e.a, "derived": e.d}))
+                .collect::<Vec<_>>(),
+        });
+        if total == 0
+            && let Some(diag) = q::query_diagnostics(&edges, &pattern)
+        {
+            response["diagnostics"] = serde_json::to_value(diag).unwrap_or(serde_json::Value::Null);
+        }
+
+        Self::ok_text(response.to_string())
     }
 
     #[tool(
