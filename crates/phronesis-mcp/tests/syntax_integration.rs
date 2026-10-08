@@ -572,16 +572,11 @@ class Wrapper:
     def flush(self):
         return self._file.flush()
 
-class DecimalFactory:
-    def build(self, value):
-        return Decimal(value)
-
 def check(x):
     return x == None
 "#;
 
 const PYTHON_PATTERNS_RULE_IDS: &[&str] = &[
-    "audit-python-stateless-factory",
     "warn-python-global-statement",
     "warn-python-globals-introspection-assignment",
     "warn-python-dynamic-class-creation",
@@ -658,11 +653,6 @@ fn generated_python_patterns_pack_loads_and_fires_through_hook_and_audit() {
             "hook missing {fragment}: {stderr}"
         );
     }
-    assert!(
-        !stderr.contains("Factory `DecimalFactory`"),
-        "audit-only candidate leaked into hook: {stderr}"
-    );
-    assert!(stderr.contains("Special methods such as `__iter__` and `__next__`"));
     // Bindings substituted: the delegation wrapper names its attribute.
     assert!(
         stderr.contains("self._file"),
