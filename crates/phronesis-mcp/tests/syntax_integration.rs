@@ -572,11 +572,16 @@ class Wrapper:
     def flush(self):
         return self._file.flush()
 
+class DecimalFactory:
+    def build(self, value):
+        return Decimal(value)
+
 def check(x):
     return x == None
 "#;
 
 const PYTHON_PATTERNS_RULE_IDS: &[&str] = &[
+    "audit-python-stateless-factory",
     "warn-python-global-statement",
     "warn-python-globals-introspection-assignment",
     "warn-python-dynamic-class-creation",
@@ -653,6 +658,11 @@ fn generated_python_patterns_pack_loads_and_fires_through_hook_and_audit() {
             "hook missing {fragment}: {stderr}"
         );
     }
+    assert!(
+        !stderr.contains("Factory `DecimalFactory`"),
+        "audit-only candidate leaked into hook: {stderr}"
+    );
+    assert!(stderr.contains("Special methods such as `__iter__` and `__next__`"));
     // Bindings substituted: the delegation wrapper names its attribute.
     assert!(
         stderr.contains("self._file"),
@@ -1267,6 +1277,25 @@ fn warn_empty_test_fires_on_test_with_no_assertions() {
     let (code, stderr) = run_post_hook_with_root(payload, dir.path());
     assert_eq!(code, 1);
     assert!(stderr.contains("empty test"));
+}
+
+#[test]
+fn warn_empty_test_does_not_fire_on_should_panic() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(dir.path().join("src/lib.rs"), "#[test]\n#[should_panic]\nfn expects_panic() {\n    risky();\n}\n").unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{
+            "id":"warn-empty-test","phase":"post","priority":5,
+            "when":[{"test_without_assertion":["?file","?fn"]}],
+            "then":{"warn":"empty test"}
+        }]}"#,
+    );
+    let payload = r##"{"tool_name":"Write","tool_input":{"file_path":"src/lib.rs","content":"#[test]\n#[should_panic]\nfn expects_panic() {\n    risky();\n}"}}"##;
+    let (code, stderr) = run_post_hook_with_root(payload, dir.path());
+    assert_eq!(code, 0);
+    assert!(!stderr.contains("empty test"));
 }
 
 #[test]
