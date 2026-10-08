@@ -1283,7 +1283,11 @@ fn warn_empty_test_fires_on_test_with_no_assertions() {
 fn warn_empty_test_does_not_fire_on_should_panic() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
-    std::fs::write(dir.path().join("src/lib.rs"), "#[test]\n#[should_panic]\nfn expects_panic() {\n    risky();\n}\n").unwrap();
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        "#[test]\n#[should_panic]\nfn expects_panic() {\n    risky();\n}\n",
+    )
+    .unwrap();
     write_rules_file(
         dir.path(),
         r#"{"rules":[{

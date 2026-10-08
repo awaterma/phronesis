@@ -378,7 +378,10 @@ fn mcp_query_code_graph_diagnostics_and_overview() {
     let _rebuilt = client.tool("rebuild_code_graph", serde_json::json!({}));
 
     // Overview test
-    let overview = client.tool("query_code_graph", serde_json::json!({"relation": "overview"}));
+    let overview = client.tool(
+        "query_code_graph",
+        serde_json::json!({"relation": "overview"}),
+    );
     assert!(overview["total_edges"].as_u64().unwrap() > 0);
     assert!(overview["relations"].is_array());
 
@@ -388,8 +391,17 @@ fn mcp_query_code_graph_diagnostics_and_overview() {
         serde_json::json!({"relation": "unknown_rel"}),
     );
     assert_eq!(unknown["total"], 0);
-    assert!(unknown["diagnostics"]["unknown_relation"].as_bool().unwrap());
-    assert!(!unknown["diagnostics"]["suggested_relations"].as_array().unwrap().is_empty());
+    assert!(
+        unknown["diagnostics"]["unknown_relation"]
+            .as_bool()
+            .unwrap()
+    );
+    assert!(
+        !unknown["diagnostics"]["suggested_relations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

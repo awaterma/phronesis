@@ -1,11 +1,7 @@
 use super::super::parsed::ParsedFile;
 use super::walk::{function_name, has_should_panic_attr, is_test_fn};
 
-const FALLBACK_ASSERTION_MACROS: &[&str] = &[
-    "panic",
-    "unreachable",
-    "todo",
-];
+const FALLBACK_ASSERTION_MACROS: &[&str] = &["panic", "unreachable", "todo"];
 
 /// Returns true if a macro identifier is an assertion or panic-inducing macro.
 /// Matches any macro beginning with `assert` (e.g. `assert`, `assert_eq`, `assert_that`,

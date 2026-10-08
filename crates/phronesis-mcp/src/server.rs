@@ -1385,7 +1385,10 @@ impl EpistemeMcp {
         }
 
         // No relation or "overview" is a discovery request, not an empty result.
-        let is_overview = params.relation.as_deref().is_none_or(|r| r.eq_ignore_ascii_case("overview"));
+        let is_overview = params
+            .relation
+            .as_deref()
+            .is_none_or(|r| r.eq_ignore_ascii_case("overview"));
         if is_overview {
             let summary = q::relation_summary(&edges);
             return Self::ok_text(
