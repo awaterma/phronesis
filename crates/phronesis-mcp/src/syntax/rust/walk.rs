@@ -94,7 +94,7 @@ pub fn has_should_panic_attr(state: Node, source: &[u8]) -> bool {
         match sib.kind() {
             "attribute_item" => {
                 let text = sib.utf8_text(source).unwrap_or("");
-                if text.contains("#[should_panic") {
+                if text.contains("should_panic") {
                     return true;
                 }
                 prev = sib.prev_sibling();

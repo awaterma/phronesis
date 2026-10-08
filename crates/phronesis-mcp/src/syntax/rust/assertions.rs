@@ -176,6 +176,16 @@ mod tests {
     }
 
     #[test]
+    fn test_with_should_panic_whitespace_attribute_is_not_flagged() {
+        let code = "#[test]\n#[ should_panic ]\nfn expects_panic() { call_risky(); }";
+        let facts = extract(code);
+        assert!(
+            facts.tests_without_assertion.is_empty(),
+            "#[ should_panic ] with whitespace should not be flagged"
+        );
+    }
+
+    #[test]
     fn test_with_exception_operator_is_not_flagged() {
         let code = "#[test]\nfn good() -> Result<(), String> { let _ = parse(\"\")?; Ok(()) }";
         let facts = extract(code);

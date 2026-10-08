@@ -173,6 +173,10 @@ The boundary edges enable three automated governance rules:
 * **Condition:** `{"rhai_orphaned_predicate": ["?script", "?pred"]}`
 * **Action:** Warn when a Rhai predicate provider emits a fact that is never consumed by any rule in `.phronesis/rules.json`.
 
+### 6.4 Suppression & Dynamic Evaluation Discipline
+* **Dynamic Code (`eval`, variable function dispatch):** Calls made through dynamic reflection or runtime strings cannot be statically guaranteed. Rules `warn-rhai-unresolved-callable` and `audit-unused-rhai-export` are diagnostic advisories.
+* **Suppression Mechanism:** Intentional framework hooks, test-only script registrations, and dynamic evaluation points can be opted out using standard Phronesis inline rule filters or `.phronesisignore` for script paths.
+
 ---
 
 ## 7. Migration & Rollout Plan
