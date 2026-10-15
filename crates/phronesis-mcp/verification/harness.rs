@@ -14,6 +14,13 @@
 //
 //   3. line_ordering — `validate_record` requires start_line <= end_line;
 //      we verify that a simple checker enforces this.
+//
+// and one property of the code graph's query surface:
+//
+//   4. boundary_suffix_match — the bare-name arm of `arg_matches` in
+//      `graph/query.rs` matches only at a `:` boundary, finds every ID of
+//      the form `<prefix ending in ':'><name>`, and narrows as a name is
+//      qualified.
 
 #![allow(unused_imports)]
 
@@ -167,6 +174,121 @@ proof fn valid_line_range_correct(start: u64, end: u64)
 }
 
 // ---------------------------------------------------------------------------
+// Invariant 4: Bare-name graph query matching (mirror of `arg_matches`)
+// ---------------------------------------------------------------------------
+//
+// `graph query` / `graph ownership` let a literal argument (no `*` / `?`)
+// match a fully qualified node ID by suffix, but only when the suffix starts
+// right after a `:` — so `fire_all_consequences` finds
+// `rust:demo::Net::fire_all_consequences` while `consequences` does not. The
+// production rule in `graph/query.rs` is:
+//
+//     got.strip_suffix(want)
+//         .is_some_and(|prefix| want.starts_with(':') || prefix.ends_with(':'))
+//
+// Only this suffix arm is modelled; the glob arm (`glob_matches`) is not.
+
+/// Spec: `got` ends with `want`.
+pub open spec fn spec_ends_with(got: Seq<u8>, want: Seq<u8>) -> bool {
+    want.len() <= got.len()
+        && forall|i: int| 0 <= i < want.len() ==> #[trigger] got[got.len() - want.len() + i] == want[i]
+}
+
+/// Spec: the suffix arm of `arg_matches`. `prefix` is `got` minus `want`, so
+/// `prefix.ends_with(':')` is the byte just before the suffix.
+pub open spec fn spec_boundary_suffix_match(want: Seq<u8>, got: Seq<u8>) -> bool {
+    spec_ends_with(got, want)
+        && ((want.len() > 0 && want[0] == 0x3a)
+            || (got.len() > want.len() && got[got.len() - want.len() - 1] == 0x3a))
+}
+
+/// Exec function: the suffix arm of `arg_matches` over bytes.
+/// Verified to agree with `spec_boundary_suffix_match` on every input.
+fn boundary_suffix_match(want: &[u8], got: &[u8]) -> (result: bool)
+    ensures result == spec_boundary_suffix_match(want@, got@)
+{
+    if want.len() > got.len() {
+        return false;
+    }
+    let start = got.len() - want.len();
+    let mut i: usize = 0;
+    while i < want.len()
+        invariant
+            want.len() <= got.len(),
+            start == got.len() - want.len(),
+            0 <= i <= want.len(),
+            forall|j: int| 0 <= j < i ==> #[trigger] got@[got@.len() - want@.len() + j] == want@[j],
+        decreases want.len() - i,
+    {
+        if got[start + i] != want[i] {
+            return false;
+        }
+        i = i + 1;
+    }
+    (want.len() > 0 && want[0] == 0x3a) || (start > 0 && got[start - 1] == 0x3a)
+}
+
+/// Proof (soundness): a bare name that does not begin with `:` only ever
+/// matches a suffix that starts right after a `:` — it never matches from
+/// the middle of a segment, so `consequences` cannot match
+/// `fire_all_consequences`.
+proof fn boundary_match_never_splits_a_segment(want: Seq<u8>, got: Seq<u8>)
+    requires
+        spec_boundary_suffix_match(want, got),
+        want.len() == 0 || want[0] != 0x3a,
+    ensures
+        got.len() > want.len(),
+        got[got.len() - want.len() - 1] == 0x3a,
+{
+}
+
+/// Proof (characterisation): for a name not beginning with `:`, matching is
+/// exactly "the ID is some prefix ending in `:` followed by the name".
+/// Every such ID is found (completeness) and nothing else is (soundness).
+proof fn boundary_match_iff_colon_prefix(want: Seq<u8>, got: Seq<u8>)
+    requires
+        want.len() == 0 || want[0] != 0x3a,
+    ensures
+        spec_boundary_suffix_match(want, got) <==> (exists|p: Seq<u8>|
+            p.len() > 0 && p[p.len() - 1] == 0x3a && #[trigger] (p + want) =~= got),
+{
+    if spec_boundary_suffix_match(want, got) {
+        let p = got.take(got.len() - want.len());
+        assert forall|i: int| 0 <= i < got.len() implies #[trigger] (p + want)[i] == got[i] by {
+            if i >= p.len() {
+                assert(got[got.len() - want.len() + (i - p.len())] == want[i - p.len()]);
+            }
+        }
+        assert((p + want) =~= got);
+    }
+    if exists|p: Seq<u8>| p.len() > 0 && p[p.len() - 1] == 0x3a && #[trigger] (p + want) =~= got {
+        let p = choose|p: Seq<u8>| p.len() > 0 && p[p.len() - 1] == 0x3a && #[trigger] (p + want) =~= got;
+        assert forall|i: int| 0 <= i < want.len() implies #[trigger] got[got.len() - want.len() + i] == want[i] by {
+            assert(got[p.len() + i] == (p + want)[p.len() + i]);
+        }
+        assert(got[got.len() - want.len() - 1] == (p + want)[p.len() - 1]);
+    }
+}
+
+/// Proof (monotonicity): qualifying a name never widens its matches. If
+/// `Net::fire_all_consequences` matches an ID, so does
+/// `fire_all_consequences` — adding segments can only narrow a query.
+proof fn qualifying_a_name_only_narrows(q: Seq<u8>, want: Seq<u8>, got: Seq<u8>)
+    requires
+        q.len() > 0,
+        q[q.len() - 1] == 0x3a,
+        spec_boundary_suffix_match(q + want, got),
+    ensures
+        spec_boundary_suffix_match(want, got),
+{
+    let qw = q + want;
+    assert forall|i: int| 0 <= i < want.len() implies #[trigger] got[got.len() - want.len() + i] == want[i] by {
+        assert(got[got.len() - qw.len() + (q.len() + i)] == qw[q.len() + i]);
+    }
+    assert(got[got.len() - qw.len() + (q.len() - 1)] == qw[q.len() - 1]);
+}
+
+// ---------------------------------------------------------------------------
 // Entry point (exec, for standalone execution)
 // ---------------------------------------------------------------------------
 
@@ -205,6 +327,18 @@ fn main() {
     assert(r2);
     let r3 = valid_line_range(10, 1);
     assert(!r3);
+
+    // Smoke-test: bare-name matching
+    let hit = boundary_suffix_match(b"acquire", b"rust:demo::Scheduler::acquire");
+    let qualified = boundary_suffix_match(b"Scheduler::acquire", b"rust:demo::Scheduler::acquire");
+    let leading = boundary_suffix_match(b"::acquire", b"rust:demo::Scheduler::acquire");
+    let split = boundary_suffix_match(b"quire", b"rust:demo::Scheduler::acquire");
+    let exact = boundary_suffix_match(b"rust:demo::wme", b"rust:demo::wme");
+    // Byte-string literals are opaque to the verifier here, so these run
+    // rather than assert; the general cases are the proofs above, and the
+    // concrete ones are pinned against production `arg_matches` by
+    // `literal_matching_agrees_with_the_verified_spec_exhaustively`.
+    let _ = (hit, qualified, leading, split, exact);
 }
 
 } // verus!

@@ -6,6 +6,14 @@
 - **Rust toolchain:** 1.98.1-aarch64-apple-darwin
 - **Date:** 2026-09-24
 
+Re-run after adding invariant 5 (bare-name graph query matching):
+
+- **Verus version:** 0.2026.10.15.867383b (release profile, linux_x86_64,
+  built from source at that commit)
+- **Rust toolchain:** 1.98.1-x86_64-unknown-linux-gnu
+- **Z3:** 4.16.0 (the `z3-solver` PyPI wheel)
+- **Date:** 2026-10-15
+
 ## Command
 
 ```bash
@@ -21,10 +29,11 @@ bash crates/phronesis-mcp/verification/run-verification.sh
 ## Verifier Output
 
 ```
-verification results:: 10 verified, 0 errors
+verification results:: 15 verified, 0 errors
 ```
 
-All 10 verification conditions discharged by Z3 with zero errors.
+All 15 verification results discharged by Z3 with zero errors (10 before
+invariant 5 was added).
 
 ## What Was Proven
 
@@ -67,6 +76,33 @@ All 10 verification conditions discharged by Z3 with zero errors.
 - **Proof:** `valid_line_range_correct` confirms the spec agrees with the
   relational definition.
 
+### 5. Bare-name graph query matching (`boundary_suffix_match`)
+
+`graph query` and `graph ownership` let a literal argument match a fully
+qualified node ID by suffix, but only when the suffix starts right after a
+`:`. This mirrors the suffix arm of `arg_matches` in `src/graph/query.rs`:
+`got.strip_suffix(want).is_some_and(|prefix| want.starts_with(':') || prefix.ends_with(':'))`.
+
+- **Spec:** `spec_boundary_suffix_match(want, got)` — `got` ends with `want`,
+  and either `want` begins with `:` or the byte before the suffix is `:`.
+- **Exec:** `boundary_suffix_match(want: &[u8], got: &[u8]) -> bool`.
+- **Proven (correctness):** `ensures result == spec_boundary_suffix_match(want@, got@)`.
+- **Proven (`boundary_match_never_splits_a_segment`):** a name not beginning
+  with `:` only matches when the byte before it is `:` — `consequences`
+  can never match `fire_all_consequences`.
+- **Proven (`boundary_match_iff_colon_prefix`):** for such a name, a match
+  holds **iff** `got == p + want` for some non-empty `p` ending in `:` —
+  every ID of that shape is found, and nothing else.
+- **Proven (`qualifying_a_name_only_narrows`):** if `q + want` matches with
+  `q` ending in `:`, `want` matches too — `Net::fire_all_consequences`
+  never finds anything `fire_all_consequences` misses.
+- **Non-vacuity check:** weakening the exec boundary test to `start > 0`
+  makes Verus reject it (`postcondition not satisfied`).
+- **Bridge to production:** the harness verifies a reimplementation, so
+  `literal_matching_agrees_with_the_verified_spec_exhaustively` in
+  `src/graph/query.rs` checks production `arg_matches` against the same
+  rule for every pair of strings of up to five bytes over `{a, b, :}`.
+
 ## What Was Not Proven
 
 - The production code in `coverage/store.rs`, `coverage/import.rs`, and
@@ -78,6 +114,10 @@ All 10 verification conditions discharged by Z3 with zero errors.
 - No data-structure invariants on `HitRecord` fields (e.g. revision hex
   length, hit_kind membership) are proven yet — those are candidates for
   the next harness extension.
+- The glob arm of `arg_matches` (`glob_matches`, a backtracking `*`/`?`
+  matcher) is not modelled; invariant 5 covers only the bare-name suffix arm.
+- The `main` smoke calls for invariant 5 run but do not assert: byte-string
+  literals are opaque to the verifier in this harness.
 - The `compute_anchor` truncation (`format!("{hash:016x}")[..12]`) is not
   formally verified; the determinism of the underlying `fnv1a_64` is
   proven, but the hex-formatting and slicing step is not.
@@ -93,4 +133,5 @@ All 10 verification conditions discharged by Z3 with zero errors.
 | `valid_line_range` | exec | 1 |
 | `valid_line_range_correct` | proof | 1 |
 | `main` | exec | 2 (assertions) |
-| **Total** | | **10** |
+| `boundary_suffix_match` + 3 proofs (invariant 5) | exec + proof | 5 (rise in the reported total; not broken down per function) |
+| **Total** | | **15** |
