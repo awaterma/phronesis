@@ -175,7 +175,7 @@ impl AlphaNetwork {
         let _matching_state_ids: Vec<String> = Vec::new();
 
         // Process WMEs to identify matching states and get tokens
-        for (_state_id, state) in self.states.iter_mut() {
+        for state in self.states.values_mut() {
             if let Some(token) = state.process_wme(wme)? {
                 // Send this specific token to connected beta states
                 for child_id in &state.children {
