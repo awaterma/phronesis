@@ -1364,7 +1364,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `test_imports` (a `use` under `#[cfg(test)]`; excluded from `in_cycle`), `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. Bare names match the trailing `::` segment(s) of fully qualified IDs (e.g. `fire_all_consequences` or `ReteNetwork::fire_all_consequences`). Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` or pass `\"overview\"` to inspect vocabulary and edge distribution. When queries return 0 results, structured diagnostics provide triage and format suggestions. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
+        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `test_imports` (a `use` under `#[cfg(test)]`; excluded from `in_cycle`), `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. A bare name (no `*` or `?`) also matches a suffix of a fully qualified ID that starts right after a `:` — a `::` separator or a prefix such as `rust:` — so `fire_all_consequences`, `ReteNetwork::fire_all_consequences`, and `phronesis::wme` all resolve. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` or pass `\"overview\"` to inspect vocabulary and edge distribution. When queries return 0 results, structured diagnostics provide triage and format suggestions. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
     )]
     async fn query_code_graph(
         &self,
@@ -1446,7 +1446,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Explain the indexed Rust ownership evidence for a function, grouped by function and site. Returns, per function: every observed site (clone / filter / await / mutation / synchronous lock) with its source location and the literal operation observed; the derived structural relationships (`filter_before_clone`, `clone_before_await`, `read_before_mutation`, `lock_scope_ends_before_await`) each naming the sites that support it; the evidence level and provider behind every site; type-inference and MIR availability including `unavailable`, `partial`, `failed`, and `stale`; and the explicit limit of each claim. `function` is a canonical Rust function ID or a glob (`*` / `?`), matching `query_code_graph` semantics. This is evidence, not a verdict: an empty result means no indexed ownership evidence matched, never that the code has no ownership concern. Opt-in per project via `[ownership.rust]` in `.phronesis/graph.toml`; the project root is server-controlled and this tool takes no filesystem path."
+        description = "Explain the indexed Rust ownership evidence for a function, grouped by function and site. Returns, per function: every observed site (clone / filter / await / mutation / synchronous lock) with its source location and the literal operation observed; the derived structural relationships (`filter_before_clone`, `clone_before_await`, `read_before_mutation`, `lock_scope_ends_before_await`) each naming the sites that support it; the evidence level and provider behind every site; type-inference and MIR availability including `unavailable`, `partial`, `failed`, and `stale`; and the explicit limit of each claim. `function` is a canonical Rust function ID, a glob (`*` / `?`), or a bare name such as `Scheduler::acquire`, matching `query_code_graph` semantics. This is evidence, not a verdict: an empty result means no indexed ownership evidence matched, never that the code has no ownership concern. Opt-in per project via `[ownership.rust]` in `.phronesis/graph.toml`; the project root is server-controlled and this tool takes no filesystem path."
     )]
     async fn query_ownership_evidence(
         &self,
@@ -1675,8 +1675,8 @@ impl EpistemeMcp {
 pub(crate) const SERVER_INSTRUCTIONS: &str = "\
 Phronesis keeps structured, inspectable evidence about the code you are changing. \
 It provides: durable rules on disk, evaluated by host hooks at every tool call, that can warn about or block an edit; \
-a structural code graph (definitions, callers, tests, imports, import cycles) for Rust, Python, TypeScript, Swift, and Java; \
-test selection for changed functions; confidence bands derived from build and test outcomes you actually recorded; \
+a structural code graph (definitions, callers, tests, imports, import cycles) for Rust, Python, TypeScript/JavaScript, Swift, Java, and Lua; \
+test selection for changed functions (CLI only: phr-mcp coverage select); confidence bands derived from build and test outcomes you actually recorded; \
 and provenance for every decision (the rule, lookup, or assertion behind it).
 
 It is not a search engine. Use retrieval to find code; use Phronesis to establish and inspect the evidence for a change.
@@ -1685,13 +1685,13 @@ Where to start: call `get_code_graph_status`; if the graph is missing, stale, or
 Then `query_code_graph`: omit `relation` to list the relation vocabulary and edge counts. \
 Examples: relation `tested_by` with args [\"my_fn\", \"*\"] lists tests that call my_fn; \
 relation `calls` with args [\"*\", \"my_fn\"] lists its callers. \
-A bare name matches the trailing `::` segment(s) of a fully qualified ID; `*` and `?` are globs. \
+A bare name also matches a suffix of a fully qualified ID that starts right after a `:` (a `::` separator or a prefix such as `rust:`); `*` and `?` are globs. \
 Also useful: `audit_codebase` (whole-tree rule scan), `get_confidence` (band and signals for the open work unit), \
 `get_action_log` (what hooks allowed, warned, or blocked, and why), `list_rules` / `add_rule` (inspect or add rules).
 
 Limits: the graph is static, so tested_by means a test calls the function, not that it checks it. \
 Unresolved calls are dropped, not guessed, so an empty answer can mean unknown rather than none. \
-The graph reflects the last rebuild; check its status after checkout, rename, or rebase (test selection refuses a stale graph). \
+The graph reflects the last rebuild; check its status after checkout, rename, or rebase (test selection omits graph-based selection while the graph is stale). \
 Confidence reflects only outcomes that were recorded.
 
 Full guide: https://github.com/awaterma/phronesis/blob/main/docs/FOR_AGENTS.md";

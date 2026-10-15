@@ -37,7 +37,7 @@ use serde::Serialize;
 
 use crate::graph::model::Edge;
 use crate::graph::ownership::config;
-use crate::graph::query::glob_matches;
+use crate::graph::query::arg_matches;
 use crate::graph::store;
 
 pub use evidence::resolve_lines;
@@ -269,7 +269,7 @@ pub fn build(
     }
     let matched: Vec<&str> = names
         .into_iter()
-        .filter(|name| glob_matches(function_pattern, name))
+        .filter(|name| arg_matches(function_pattern, name))
         .collect();
 
     if matched.is_empty() {

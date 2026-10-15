@@ -23,7 +23,7 @@ and keeps structured, inspectable evidence about the code it is changing:
 
 | Capability | What you get | Where it lives |
 |---|---|---|
-| **Structural code graph** | Typed relations between files, functions, tests, modules, and rules: `defines_fn`, `calls`, `tested_by`, `test_reaches`, `no_direct_test`, `imports`, `in_cycle`, … Rust, Python, TypeScript, Swift, and Java. | `.phronesis/graph.jsonl` (derived, rebuildable) |
+| **Structural code graph** | Typed relations between files, functions, tests, modules, and rules: `defines_fn`, `calls`, `tested_by`, `test_reaches`, `no_direct_test`, `imports`, `in_cycle`, … Rust, Python, TypeScript/JavaScript, Swift, Java, and Lua. | `.phronesis/graph.jsonl` (derived, rebuildable) |
 | **Test selection** | Tests relevant to the functions you changed, each labeled by the kind of evidence behind it (static graph reach, or observed per-test coverage). | `phr-mcp coverage select` |
 | **Coverage evidence** | Per-test coverage imported at a known revision, so "this test executes this region" is an observation, not a guess. | `.phronesis/coverage/` |
 | **Confidence signals** | Build / test / known-bug outcomes parsed from commands you actually ran, rolled into a band for the current work unit. | `phr-mcp confidence` |
@@ -65,7 +65,8 @@ Probably not worth it when:
 - The task is a one-off lookup that `grep` or your host's search already
   answers.
 - The language is not one of the graph's languages (Rust, Python,
-  TypeScript/JavaScript, Swift, Java). Rules still work; the graph will not.
+  TypeScript/JavaScript, Swift, Java, Lua). Rules still work; the graph will
+  not.
 - You cannot run a local binary (Phronesis is a CLI + stdio MCP server, not
   a hosted service).
 
@@ -95,9 +96,10 @@ cd /your/project
 phr-mcp graph rebuild    # writes only .phronesis/graph.* and bindings.json
 ```
 
-This writes only derived files under `.phronesis/`; `phr-mcp state` lists
-them and `rm -rf .phronesis` removes them (`phr-mcp clean --cache` removes
-the graph caches but keeps the directory).
+This writes only derived files under `.phronesis/` (`graph.jsonl`,
+`graph.index`, `graph.resolution.json`, `bindings.json`); `rm -rf .phronesis`
+removes them all. `phr-mcp clean --cache` removes the first, second, and
+fourth but currently leaves `graph.resolution.json`.
 
 **Governed mode (hooks + MCP server).** `phr-mcp init` writes host hook
 configuration that runs on **every tool call** and can **block your edits
@@ -232,10 +234,10 @@ No tests selected: the coverage store is empty or no hits match changed regions.
 ```
 
 After `graph rebuild`, it named the changed function and the tests that
-statically reach it, each labeled with its evidence kind:
+statically reach it, each labeled with its evidence kind (one entry shown):
 
 ```json
-{"evidence": "static_reach", "regions": ["fn:crates/phronesis/src/network.rs::ReteNetwork::fire_all_consequences"], "test": "rust:phronesis#test:perf_smoke::hot_path_completes_within_budget"}
+{"command": null, "evidence": "static_reach", "regions": ["fn:crates/phronesis/src/network.rs::ReteNetwork::fire_all_consequences"], "test": "rust:phronesis#test:perf_smoke::hot_path_completes_within_budget"}
 ```
 
 It selected 613 tests — `fire_all_consequences` is the engine's main entry
@@ -245,8 +247,9 @@ JS/TS, and Lua), tests that were *observed* hitting the changed region are
 listed separately under `coverage_observation`, which is usually far
 narrower.
 
-**Resolution honesty.** `graph rebuild` and `graph status` report calls the
-resolver could not attribute, per file:
+**Resolution honesty.** `graph status` reports calls the resolver could not
+attribute, per file (`graph rebuild` prints the same list under "Top files by
+unresolved/ambiguous"):
 
 ```
 Resolution hotspots (unresolved then ambiguous):
@@ -360,7 +363,8 @@ block above still applied. Remove the scratch repository when done.
 - **The graph reflects the last rebuild.** Queries (`graph query`,
   `query_code_graph`) answer from whatever was last built; check
   `graph status` / `get_code_graph_status` first. Test selection
-  (`coverage select`) refuses a stale graph outright. After `git checkout`,
+  (`coverage select`) omits graph-based (static) selection while the graph
+  is stale, and says so; observed coverage still applies. After `git checkout`,
   `git mv`, a rebase, or edits made outside a hooked host, run
   `phr-mcp graph rebuild`.
 - **Confidence reflects only what was recorded.** The band comes from

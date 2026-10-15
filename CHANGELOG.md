@@ -22,7 +22,11 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   no `*` or `?` now also matches a trailing suffix of a fully qualified ID
   that starts right after a `:`, so `tested_by fire_all_consequences` finds
   `rust:phronesis::network::ReteNetwork::fire_all_consequences`. Previously
-  it returned nothing. Exact matches and globs behave as before. The
+  it returned nothing. This widens every literal argument: `tested_by new`
+  used to match only an ID equal to `new` and now matches every `::new`.
+  Globs are unchanged. `query_ownership_evidence` / `graph ownership` use
+  the same matcher, and zero-result diagnostics no longer suggest a glob for
+  a position that already matched. The
   `graph query --help` examples, which named a nonexistent `fire_all` and an
   unmatchable `crate::wme`, now run as written.
 - **The MCP server's `instructions` describe what Phronesis is for** — the

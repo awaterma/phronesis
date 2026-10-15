@@ -321,11 +321,11 @@ pub struct QueryCodeGraphParams {
     #[serde(default)]
     pub relation: Option<String>,
     /// Positional argument constraints, in order. Use `"*"` to leave a
-    /// position unconstrained — e.g. `["*", "crate::wme"]` on `imports`
-    /// asks "what depends on crate::wme?". Embedded `*` / `?` are globs; a
-    /// bare name with neither also matches the trailing `::` segment(s) of a
-    /// fully qualified ID (`fire_all_consequences` or
-    /// `ReteNetwork::fire_all_consequences`).
+    /// position unconstrained — e.g. `["*", "phronesis::wme"]` on `imports`
+    /// asks "what depends on phronesis::wme?". Embedded `*` / `?` are globs;
+    /// a bare name with neither also matches a suffix of a fully qualified ID
+    /// that starts right after a `:` — a `::` separator or a prefix such as
+    /// `rust:` (`fire_all_consequences`, `ReteNetwork::fire_all_consequences`).
     #[serde(default)]
     pub args: Option<Vec<String>>,
     /// Maximum rows returned. Defaults to 50; `0` means no limit. The
@@ -338,8 +338,8 @@ pub struct QueryCodeGraphParams {
 pub struct OwnershipEvidenceParams {
     /// Canonical Rust function ID, e.g.
     /// `rust:mycrate::llm::scheduler::Scheduler::acquire`, or a glob over
-    /// one (`rust:mycrate::llm::*`). Same `*` / `?` semantics as
-    /// `query_code_graph`.
+    /// one (`rust:mycrate::llm::*`), or a bare name such as
+    /// `Scheduler::acquire`. Same matching as `query_code_graph`.
     pub function: String,
     /// Maximum functions returned. Defaults to 20; `0` means no limit. The
     /// response always reports the unlimited total so truncation is visible.

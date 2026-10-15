@@ -1139,10 +1139,12 @@ enum GraphCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Query the graph by relation and positional arguments. `*` is a
-    /// wildcard in any position; omitting the relation lists the vocabulary.
-    /// A bare argument (no `*` or `?`) also matches the trailing `::`
-    /// segments of a fully qualified ID, so `fire_all_consequences` finds
+    /// Query the graph by relation and positional arguments.
+    ///
+    /// `*` is a wildcard in any position; omitting the relation lists the
+    /// vocabulary. A bare argument (no `*` or `?`) also matches a suffix of a
+    /// fully qualified ID that starts right after a `:` (a `::` separator or
+    /// a prefix such as `rust:`), so `fire_all_consequences` finds
     /// `rust:phronesis::network::ReteNetwork::fire_all_consequences`.
     ///
     /// Examples:
