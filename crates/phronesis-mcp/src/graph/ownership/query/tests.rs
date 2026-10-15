@@ -312,6 +312,35 @@ fn exact_and_embedded_glob_function_queries_both_select() {
     );
 }
 
+// Pins that a bare trailing name selects the same function an exact ID does,
+// the way `graph query` resolves bare names — the CLI and MCP docs promise
+// identical semantics. The suffix must start at a `::`/`:` boundary, so a
+// partial segment selects nothing.
+#[test]
+fn a_bare_trailing_name_selects_like_graph_query() {
+    let edges = scheduler_graph();
+    let exact = build_all(&edges, F);
+
+    for bare in [
+        "acquire",
+        "Scheduler::acquire",
+        "demo::llm::scheduler::Scheduler::acquire",
+    ] {
+        let report = build_all(&edges, bare);
+        assert_eq!(report.matched_functions, 1, "`{bare}` selects the function");
+        assert_eq!(
+            report.functions, exact.functions,
+            "`{bare}` must produce the same grouped evidence as the exact ID"
+        );
+    }
+
+    assert_eq!(
+        build_all(&edges, "quire").matched_functions,
+        0,
+        "a partial segment is not a bare name"
+    );
+}
+
 // A relationship whose supporting site has no site edges must render as
 // unattributed rather than silently disappearing (Addendum A.4).
 #[test]

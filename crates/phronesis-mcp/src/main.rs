@@ -1190,7 +1190,8 @@ enum GraphCmd {
     ///   graph ownership 'rust:mycrate::llm::Scheduler::acquire'
     ///   graph ownership 'rust:mycrate::llm::*'
     Ownership {
-        /// Canonical function ID, or a glob over one. `*` matches any run of
+        /// Canonical function ID, a bare trailing name (`acquire`,
+        /// `Scheduler::acquire`), or a glob over one. `*` matches any run of
         /// characters and `?` any single one, exactly as `graph query` does.
         #[arg(value_name = "FUNCTION")]
         function: String,
@@ -2418,6 +2419,20 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                     );
                 } else {
                     println!("\n{total} match(es).");
+                }
+                // Same hints the MCP tool returns as `diagnostics`; stderr so
+                // the result rows on stdout stay pipeable.
+                if total == 0
+                    && let Some(diag) = q::query_diagnostics(&edges, &pat)
+                {
+                    for hint in &diag.suggestions {
+                        eprintln!("hint: {hint}");
+                    }
+                    // A suggestion may point at `sample_argument_patterns`,
+                    // which only the JSON envelope would otherwise carry.
+                    for sample in &diag.sample_argument_patterns {
+                        eprintln!("hint: sample arguments: {}", sample.join("  "));
+                    }
                 }
             }
             Ok(())
