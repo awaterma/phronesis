@@ -7,6 +7,11 @@ durable enforcement of project conventions in LLM-assisted work.
 Rules live on disk in `.phronesis/rules.json`, fire from outside the
 context window at every tool call, and cannot be compressed away.
 
+**AI coding agents:** if you are deciding whether Phronesis helps with your
+task — code graph queries, test selection, or governing your own edits —
+read [Phronesis for Coding Agents](https://github.com/awaterma/phronesis/blob/main/docs/FOR_AGENTS.md).
+It includes a read-only way to evaluate it on your own repository.
+
 ## Quick start
 
 ```sh

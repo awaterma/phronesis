@@ -322,7 +322,10 @@ pub struct QueryCodeGraphParams {
     pub relation: Option<String>,
     /// Positional argument constraints, in order. Use `"*"` to leave a
     /// position unconstrained — e.g. `["*", "crate::wme"]` on `imports`
-    /// asks "what depends on crate::wme?".
+    /// asks "what depends on crate::wme?". Embedded `*` / `?` are globs; a
+    /// bare name with neither also matches the trailing `::` segment(s) of a
+    /// fully qualified ID (`fire_all_consequences` or
+    /// `ReteNetwork::fire_all_consequences`).
     #[serde(default)]
     pub args: Option<Vec<String>>,
     /// Maximum rows returned. Defaults to 50; `0` means no limit. The

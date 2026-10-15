@@ -156,8 +156,8 @@ same thing.
 | Build the graph | `phr-mcp graph rebuild` | `rebuild_code_graph` |
 | Is it current? | `phr-mcp graph status` | `get_code_graph_status` |
 | What relations exist? | `phr-mcp graph query` | `query_code_graph` (no `relation`) |
-| Tests for a function | `phr-mcp graph query tested_by '*::my_fn'` | `query_code_graph` `{"relation":"tested_by","args":["*::my_fn"]}` |
-| Callers of a function | `phr-mcp graph query calls '*' '*::my_fn'` | `query_code_graph` `{"relation":"calls","args":["*","*::my_fn"]}` |
+| Tests for a function | `phr-mcp graph query tested_by my_fn` | `query_code_graph` `{"relation":"tested_by","args":["my_fn"]}` |
+| Callers of a function | `phr-mcp graph query calls '*' my_fn` | `query_code_graph` `{"relation":"calls","args":["*","my_fn"]}` |
 | Tests for your uncommitted change | `phr-mcp coverage select` | — |
 | Untested functions | `phr-mcp graph query no_direct_test` | `query_code_graph` `{"relation":"no_direct_test"}` |
 | Whole-tree rule audit | `phr-mcp audit` | `audit_codebase` |
@@ -165,8 +165,14 @@ same thing.
 
 **Query syntax.** A query is a relation followed by positional arguments.
 `*` alone means "any value"; `*` and `?` inside an argument are globs. Node
-IDs are fully qualified (`rust:<crate>::<module>::<Type>::<fn>`), so a bare
-name like `my_fn` matches nothing — use `'*::my_fn'`. Add `--json` for
+IDs are fully qualified (`rust:<crate>::<module>::<Type>::<fn>`). An argument
+with no glob matches an ID exactly or as a trailing suffix, so
+`fire_all_consequences` and `ReteNetwork::fire_all_consequences` both match
+`rust:phronesis::network::ReteNetwork::fire_all_consequences`, and
+`phronesis::wme` matches `rust:phronesis::wme`. The suffix must start right
+after a `:` (a `::` separator or the `rust:` prefix), so `all_consequences`
+matches nothing. Use globs
+(`'*network*'`, `'rust:phronesis::*'`) for anything else. Add `--json` for
 machine-readable output and `--limit 0` for all rows; the total is always
 reported so truncation is visible. Over MCP, a query that returns zero rows
 comes back with diagnostics suggesting relations and ID formats to try.
@@ -190,7 +196,7 @@ imports                617
 in_cycle                 6
 ```
 
-**Direct tests of a function** (`graph query tested_by '*::fire_all_consequences' --limit 3`):
+**Direct tests of a function** (`graph query tested_by fire_all_consequences --limit 3`):
 
 ```
 tested_by  rust:phronesis::network::ReteNetwork::fire_all_consequences  rust:phronesis-mcp#test:journey_derive::absence_via_zero_count_fires
@@ -200,12 +206,14 @@ tested_by  rust:phronesis::network::ReteNetwork::fire_all_consequences  rust:phr
 3 of 32 match(es); raise --limit for more.
 ```
 
-**Callers** (`graph query calls '*' '*::fire_all_consequences' --limit 3`):
+**Callers** (`graph query calls '*' fire_all_consequences --limit 3`):
 
 ```
-calls  rust:phronesis-mcp::codex_hook::fire_verdict        rust:phronesis::network::ReteNetwork::fire_all_consequences
-calls  rust:phronesis-mcp::context::capsule::matched       rust:phronesis::network::ReteNetwork::fire_all_consequences
-calls  rust:phronesis-mcp::hook::post::evaluate_network    rust:phronesis::network::ReteNetwork::fire_all_consequences
+calls  rust:phronesis-mcp#bench:journey_derive::bench_journey_full  rust:phronesis::network::ReteNetwork::fire_all_consequences
+calls  rust:phronesis-mcp::codex_hook::fire_verdict                 rust:phronesis::network::ReteNetwork::fire_all_consequences
+calls  rust:phronesis-mcp::context::capsule::matched                rust:phronesis::network::ReteNetwork::fire_all_consequences
+
+3 of 9 match(es); raise --limit for more.
 ```
 
 **JSON shape** (`--json`): every row says whether it was extracted from
@@ -259,8 +267,8 @@ Do not take the claims above on trust. Test them on a real task.
 2. **Ask Phronesis for its callers and tests:**
    ```sh
    phr-mcp graph rebuild
-   phr-mcp graph query calls '*' '*::<fn>' --limit 0
-   phr-mcp graph query tested_by '*::<fn>' --limit 0
+   phr-mcp graph query calls '*' <fn> --limit 0
+   phr-mcp graph query tested_by <fn> --limit 0
    ```
 3. **Compare with your usual workflow** — grep, your host's code search, your
    language server's "find references", the project's test conventions.
@@ -282,6 +290,58 @@ Do not take the claims above on trust. Test them on a real task.
 You do not need to believe Phronesis is useful. Establish whether it helps
 with a real task, and report what you find either way.
 
+### Evaluate governance on a scratch repository
+
+The graph is the least distinctive part. This checks the rest: a rule on
+disk decides a tool call, and the log records which rule and why. Use a
+throwaway repository, so `init` needs no permission to change the human's
+project. In a real host the hook runs automatically on every tool call; the
+pipe below only lets you see the decision directly.
+
+1. **Set up:**
+   ```sh
+   mkdir -p /tmp/demo/src && cd /tmp/demo && git init -q
+   printf 'pub fn parse(s: &str) -> Option<i32> {\n    s.parse().ok()\n}\n' > src/lib.rs
+   git add -A && git commit -qm init
+   phr-mcp init --packs rust   # 52 rules, incl. enforce-no-unwrap-in-src (phase "pre")
+   ```
+2. **Send the hook a Claude Code `PreToolUse` payload** for an edit that adds
+   `.unwrap()`:
+   ```sh
+   echo '{"session_id":"demo","hook_event_name":"PreToolUse","cwd":"/tmp/demo",
+     "tool_name":"Edit","tool_input":{"file_path":"/tmp/demo/src/lib.rs",
+     "old_string":"    s.parse().ok()","new_string":"    Some(s.parse().unwrap())"}}' \
+     | phr-mcp pre-check; echo "exit=$?"
+   ```
+   ```
+   phronesis: BLOCKED — Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable.
+   exit=2
+   ```
+   The same payload with `"new_string":"    s.trim().parse().ok()"` prints
+   `{}` and exits 0.
+3. **Read why** in `.phronesis/log.jsonl` (trimmed):
+   ```json
+   {"kind":"hook","event":"pre_check","tool":"Edit","file":"/tmp/demo/src/lib.rs","exit":2,
+    "blocked_by":[{"kind":"rule","rule":"enforce-no-unwrap-in-src","message":"Avoid .unwrap() in src/ — …"}],
+    "consequences":[{"rule_id":"enforce-no-unwrap-in-src","action_type":"constraint_violation","message":"…"}]}
+   ```
+   and `phr-mcp stats`:
+   ```
+   Rule                      Blocked  Warned  Last fired
+   enforce-no-unwrap-in-src        1       0  3s ago
+   ```
+4. **Change the rule on disk and repeat step 2.** Set that rule's `"phase"`
+   to `"none"` in `.phronesis/rules.json`: the same payload exits 0. Restore
+   `"pre"`: it exits 2 again. Nothing is restarted; every hook call re-reads
+   the file. A typo such as `"phase": "Pre"` fails closed — exit 2 with
+   `blocked_by: [{"kind":"fail_closed","stage":"load_rules", …}]` naming the
+   rule, field, and allowed values.
+
+Editing `rules.json` also counts as a change to the graph's inputs: until the
+next rebuild the hook prints a note that the graph is stale and structural rules will
+warn rather than block; `phr-mcp graph rebuild` clears it. The `.unwrap()`
+block above still applied. Remove the scratch repository when done.
+
 ---
 
 ## What it does not establish
@@ -297,8 +357,12 @@ with a real task, and report what you find either way.
   functions it can select most of the suite. Observed coverage narrows it,
   but only after you collect and import it — and only at the revision it was
   collected for (hits from another revision are reported as stale).
-- **A stale graph is refused, not used.** After `git checkout`, `git mv`, a
-  rebase, or edits made outside a hooked host, run `phr-mcp graph rebuild`.
+- **The graph reflects the last rebuild.** Queries (`graph query`,
+  `query_code_graph`) answer from whatever was last built; check
+  `graph status` / `get_code_graph_status` first. Test selection
+  (`coverage select`) refuses a stale graph outright. After `git checkout`,
+  `git mv`, a rebase, or edits made outside a hooked host, run
+  `phr-mcp graph rebuild`.
 - **Confidence reflects only what was recorded.** The band comes from
   build/test outcomes the hooks journaled or that you recorded with
   `phr-mcp signal`; it says nothing about checks that were never run.
