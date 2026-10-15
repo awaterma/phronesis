@@ -364,6 +364,45 @@ mod tests {
         );
     }
 
+    /// Ties production `arg_matches` to the rule Verus proves in
+    /// `verification/harness.rs` (`spec_boundary_suffix_match`): over every
+    /// string of up to five bytes from `{a, b, :}`, a literal argument
+    /// matches exactly when it equals the ID, or the ID ends with it and the
+    /// suffix starts at a `:` boundary.
+    #[test]
+    fn literal_matching_agrees_with_the_verified_spec_exhaustively() {
+        fn strings(max: usize) -> Vec<String> {
+            let mut all = vec![String::new()];
+            let mut frontier = vec![String::new()];
+            for _ in 0..max {
+                let next: Vec<String> = frontier
+                    .iter()
+                    .flat_map(|s| ['a', 'b', ':'].map(|c| format!("{s}{c}")))
+                    .collect();
+                all.extend(next.iter().cloned());
+                frontier = next;
+            }
+            all
+        }
+        let spec = |want: &str, got: &str| {
+            let (w, g) = (want.as_bytes(), got.as_bytes());
+            let suffix = g.ends_with(w)
+                && (w.first() == Some(&b':')
+                    || (g.len() > w.len() && g[g.len() - w.len() - 1] == b':'));
+            want == got || suffix
+        };
+        let all = strings(5);
+        for want in &all {
+            for got in &all {
+                assert_eq!(
+                    arg_matches(want, got),
+                    spec(want, got),
+                    "want={want:?} got={got:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn a_glob_argument_gets_no_implicit_suffix_match() {
         let g = graph();

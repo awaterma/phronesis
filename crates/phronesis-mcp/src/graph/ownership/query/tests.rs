@@ -312,6 +312,25 @@ fn exact_and_embedded_glob_function_queries_both_select() {
     );
 }
 
+// `graph ownership` selects functions exactly as `graph query` matches an
+// argument, so a bare trailing segment finds the function without its
+// fully qualified ID — and only at a `::` boundary.
+#[test]
+fn a_bare_trailing_segment_selects_the_function() {
+    let edges = scheduler_graph();
+    let exact = build_all(&edges, F);
+    for bare in ["acquire", "Scheduler::acquire"] {
+        let report = build_all(&edges, bare);
+        assert_eq!(report.matched_functions, 1, "`{bare}` selects it");
+        assert_eq!(report.functions, exact.functions);
+    }
+    assert_eq!(
+        build_all(&edges, "quire").matched_functions,
+        0,
+        "a suffix that splits a segment selects none"
+    );
+}
+
 // A relationship whose supporting site has no site edges must render as
 // unattributed rather than silently disappearing (Addendum A.4).
 #[test]
