@@ -783,6 +783,7 @@ The `phr-mcp serve` command exposes these tools:
 | `get_drift` | Detect drift between written guidance and enforced rules across every corpus | `CallToolResult` |
 | `query_ownership_evidence` | Explain the indexed Rust ownership evidence for a function | `CallToolResult` |
 | `get_confidence` | Report the confidence band and grounded signals for the open work unit | `{ "subject", "band", "signals" }` |
+| `select_tests` | Tests relevant to the uncommitted change (same selection as `coverage select --json`); optional `change`, `limit` (default 100) | `{ "changed_functions", "tests", "total_tests", ... }` |
 | `set_property_status` | Transition a property's status (the promotion act); requires `because` | `CallToolResult` |
 
 ---

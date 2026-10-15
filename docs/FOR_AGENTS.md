@@ -160,7 +160,7 @@ same thing.
 | What relations exist? | `phr-mcp graph query` | `query_code_graph` (no `relation`) |
 | Tests for a function | `phr-mcp graph query tested_by my_fn` | `query_code_graph` `{"relation":"tested_by","args":["my_fn"]}` |
 | Callers of a function | `phr-mcp graph query calls '*' my_fn` | `query_code_graph` `{"relation":"calls","args":["*","my_fn"]}` |
-| Tests for your uncommitted change | `phr-mcp coverage select` | — |
+| Tests for your uncommitted change | `phr-mcp coverage select --json` | `select_tests` (same JSON, plus `total_tests`; `limit` defaults to 100) |
 | Untested functions | `phr-mcp graph query no_direct_test` | `query_code_graph` `{"relation":"no_direct_test"}` |
 | Whole-tree rule audit | `phr-mcp audit` | `audit_codebase` |
 | Confidence for the work unit | `phr-mcp confidence` | `get_confidence` |

@@ -16,6 +16,14 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   of what the evidence establishes. Linked from the README, `AGENTS.md`, and
   the crate README.
 
+- **`select_tests` MCP tool.** The same change-based test selection as
+  `phr-mcp coverage select --json` — changed regions, and per test its
+  evidence kind (`coverage_observation`, `coverage_observation_stale`,
+  `static_reach`) plus `static_note` / `coverage_note` — now reachable over
+  MCP, so an agent without shell access can ask which tests its
+  uncommitted edit affects. `limit` caps the list (default 100; static
+  reach is transitive) and `total_tests` always reports the full count.
+
 ### Changed
 
 - **`graph query` / `query_code_graph` accept bare names.** An argument with
