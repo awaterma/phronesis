@@ -6,6 +6,44 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **`docs/FOR_AGENTS.md`, a discovery guide for AI coding agents** deciding
+  whether to use Phronesis on another codebase: what it does and how it
+  differs from retrieval, how to connect (read-only graph evaluation vs.
+  governed `init`), first steps with CLI and MCP equivalents, real output,
+  two self-run evaluation tasks (code graph and governance), and the limits
+  of what the evidence establishes. Linked from the README, `AGENTS.md`, and
+  the crate README.
+
+- **`select_tests` MCP tool.** The same change-based test selection as
+  `phr-mcp coverage select --json` — changed regions, and per test its
+  evidence kind (`coverage_observation`, `coverage_observation_stale`,
+  `static_reach`) plus `static_note` / `coverage_note` — now reachable over
+  MCP, so an agent without shell access can ask which tests its
+  uncommitted edit affects. `limit` caps the list (default 100; static
+  reach is transitive) and `total_tests` always reports the full count.
+
+### Changed
+
+- **`graph query` / `query_code_graph` accept bare names.** An argument with
+  no `*` or `?` now also matches a trailing suffix of a fully qualified ID
+  that starts right after a `:`, so `tested_by fire_all_consequences` finds
+  `rust:phronesis::network::ReteNetwork::fire_all_consequences`. Previously
+  it returned nothing. This widens every literal argument: `tested_by new`
+  used to match only an ID equal to `new` and now matches every `::new`.
+  Globs are unchanged. `query_ownership_evidence` / `graph ownership` use
+  the same matcher, and zero-result diagnostics no longer suggest a glob for
+  a position that already matched. The
+  `graph query --help` examples, which named a nonexistent `fire_all` and an
+  unmatchable `crate::wme`, now run as written.
+- **The MCP server's `instructions` describe what Phronesis is for** — the
+  code graph, test selection, confidence, rules, provenance, and their
+  limits — and name the tools to start with, so a connected agent learns
+  this at handshake instead of from a one-line summary.
+- `phronesis-mcp` crate description and keywords now mention the code graph
+  and AI agents.
+
 ## [0.37.1] - 2026-10-02
 
 ### Fixed

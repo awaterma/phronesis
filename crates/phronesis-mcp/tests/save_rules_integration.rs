@@ -1129,3 +1129,76 @@ fn no_autopersist_env_var_disables_both_directions() {
         .collect();
     assert_eq!(ids, vec!["on-disk".to_string()]);
 }
+
+fn git_in(dir: &Path, args: &[&str]) {
+    let status = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "t")
+        .env("GIT_AUTHOR_EMAIL", "t@t")
+        .env("GIT_COMMITTER_NAME", "t")
+        .env("GIT_COMMITTER_EMAIL", "t@t")
+        .status()
+        .expect("run git");
+    assert!(status.success(), "git {args:?}");
+}
+
+#[test]
+fn mcp_select_tests_matches_coverage_select_for_an_uncommitted_edit() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("src")).unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    let lib = "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\
+               pub fn twice(a: i32) -> i32 {\n    add(a, a)\n}\n\
+               #[cfg(test)]\nmod tests {\n    use super::*;\n    #[test]\n    fn twice_doubles() {\n        assert_eq!(twice(2), 4);\n    }\n}\n";
+    std::fs::write(dir.path().join("src/lib.rs"), lib).unwrap();
+    git_in(dir.path(), &["init", "-q"]);
+    git_in(dir.path(), &["add", "-A"]);
+    git_in(dir.path(), &["commit", "-qm", "init"]);
+    let mut client = McpClient::spawn(dir.path());
+
+    // Edit `add`, then select before rebuilding: the graph is stale, so the
+    // static half is omitted and the response says why.
+    std::fs::write(
+        dir.path().join("src/lib.rs"),
+        lib.replace("    a + b\n", "    b + a\n"),
+    )
+    .unwrap();
+    let stale = structured_object_tool(&mut client, "select_tests", serde_json::json!({}));
+    assert_eq!(stale["static_reach_available"], false, "{stale}");
+    assert!(stale["static_note"].is_string(), "{stale}");
+    assert_eq!(stale["total_tests"], 0, "{stale}");
+
+    let rebuilt = structured_object_tool(&mut client, "rebuild_code_graph", serde_json::json!({}));
+    assert_eq!(rebuilt["status"], "fresh", "{rebuilt}");
+
+    let sel = structured_object_tool(&mut client, "select_tests", serde_json::json!({}));
+    assert_eq!(sel["static_reach_available"], true, "{sel}");
+    assert_eq!(
+        sel["changed_functions"],
+        serde_json::json!(["fn:src/lib.rs::add"]),
+        "{sel}"
+    );
+    let tests = sel["tests"].as_array().expect("tests");
+    assert!(
+        tests.iter().any(|t| t["evidence"] == "static_reach"
+            && t["test"]
+                .as_str()
+                .is_some_and(|id| id.ends_with("::twice_doubles"))),
+        "{sel}"
+    );
+    assert_eq!(sel["total_tests"], tests.len() as u64);
+    assert_eq!(sel["returned"], tests.len() as u64);
+
+    let capped = structured_object_tool(
+        &mut client,
+        "select_tests",
+        serde_json::json!({"limit": 0, "change": "demo-change"}),
+    );
+    assert_eq!(capped["change"], "demo-change", "{capped}");
+    assert_eq!(capped["total_tests"], sel["total_tests"]);
+}

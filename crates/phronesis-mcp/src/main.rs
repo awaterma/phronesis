@@ -1139,14 +1139,21 @@ enum GraphCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Query the graph by relation and positional arguments. `*` is a
-    /// wildcard in any position; omitting the relation lists the vocabulary.
+    /// Query the graph by relation and positional arguments.
+    ///
+    /// `*` is a wildcard in any position; omitting the relation lists the
+    /// vocabulary. A bare argument (no `*` or `?`) also matches a suffix of a
+    /// fully qualified ID that starts right after a `:` (a `::` separator or
+    /// a prefix such as `rust:`), so `fire_all_consequences` finds
+    /// `rust:phronesis::network::ReteNetwork::fire_all_consequences`.
     ///
     /// Examples:
-    ///   graph query                              # what relations exist
-    ///   graph query tested_by fire_all            # which tests cover it
-    ///   graph query imports '*' crate::wme        # what depends on wme
-    ///   graph query no_direct_test                # functions with no attributed direct test
+    ///   graph query                                     # what relations exist
+    ///   graph query tested_by fire_all_consequences     # which tests cover it
+    ///   graph query calls '*' fire_all_consequences     # who calls it
+    ///   graph query imports '*' phronesis::wme          # what depends on wme
+    ///   graph query no_direct_test                      # functions with no attributed direct test
+    #[command(verbatim_doc_comment)]
     Query {
         /// Relation, then positional argument constraints. `*` matches any.
         #[arg(value_name = "RELATION [ARG...]")]

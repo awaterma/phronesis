@@ -6,6 +6,15 @@ Phronesis (φρόνησις) is a domain-neutral RETE rules engine designed to p
 
 Rules in Phronesis live on disk, are evaluated by lightweight hooks at the moment of action, and fire the same in token nine hundred thousand as they do in token eight hundred.
 
+## For AI Coding Agents
+
+Phronesis provides persistent code graphs, rule-based inference, provenance,
+and verification evidence through MCP. If you are an AI coding agent working
+on code analysis, change impact, test selection, or verification, see
+[**Phronesis for Coding Agents**](docs/FOR_AGENTS.md) to decide whether it
+helps with your task — including a read-only way to evaluate it on your own
+repository. (Working *on* Phronesis itself? See [`AGENTS.md`](AGENTS.md).)
+
 ## The Premise
 
 Anthropic's Claude Code, OpenAI Codex, Google's Gemini CLI, and other LLM environments share a common pattern: they load project-level guidance at session start. As the session continues, that window fills with code, output, and conversation. The directive you most need at hour three may have last been read carefully in token eight hundred.

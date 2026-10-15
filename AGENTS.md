@@ -1,5 +1,9 @@
 # Agents.md - Phronesis Codebase Guide
 
+> This file is for agents working **on** Phronesis. If you are an agent
+> deciding whether to **use** Phronesis on another codebase, read
+> [`docs/FOR_AGENTS.md`](docs/FOR_AGENTS.md).
+
 ## Quick Overview
 
 This is a Rust workspace with four crates:
@@ -690,6 +694,7 @@ cargo run --example profile_audit -p phronesis-mcp
 | Document | Purpose |
 |----------|---------|
 | `README.md` | Project overview, quick start |
+| `docs/FOR_AGENTS.md` | Discovery guide for agents evaluating Phronesis as a tool |
 | `crates/phronesis-mcp/CLAUDE.md` | CLI reference, hook details, pack descriptions |
 | `crates/phronesis-mcp/docs/PATTERNS-WORKFLOW.md` | Working with patterns-guide rules |
 | `crates/phronesis-mcp/docs/RUST-PATTERNS-GUIDE.md` | Rust coding standards (source for `extract_rules`) |
@@ -778,6 +783,7 @@ The `phr-mcp serve` command exposes these tools:
 | `get_drift` | Detect drift between written guidance and enforced rules across every corpus | `CallToolResult` |
 | `query_ownership_evidence` | Explain the indexed Rust ownership evidence for a function | `CallToolResult` |
 | `get_confidence` | Report the confidence band and grounded signals for the open work unit | `{ "subject", "band", "signals" }` |
+| `select_tests` | Tests relevant to the uncommitted change (same selection as `coverage select --json`); optional `change`, `limit` (default 100) | `{ "changed_functions", "tests", "total_tests", ... }` |
 | `set_property_status` | Transition a property's status (the promotion act); requires `because` | `CallToolResult` |
 
 ---

@@ -563,6 +563,12 @@ pub fn render_table(sel: &Selection) -> String {
 /// Render the selection as JSON. `coverage_note` is `null` for a fresh or
 /// absent store.
 pub fn render_json(sel: &Selection) -> String {
+    to_json(sel).to_string()
+}
+
+/// The selection as a JSON object — the one shape shared by
+/// `coverage select --json` and the `select_tests` MCP tool.
+pub fn to_json(sel: &Selection) -> serde_json::Value {
     serde_json::json!({
         "change": sel.change,
         "changed_functions": sel.changed_functions,
@@ -578,7 +584,6 @@ pub fn render_json(sel: &Selection) -> String {
             "regions": t.regions,
         })).collect::<Vec<_>>(),
     })
-    .to_string()
 }
 
 #[cfg(test)]

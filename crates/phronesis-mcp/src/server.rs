@@ -1364,7 +1364,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `test_imports` (a `use` under `#[cfg(test)]`; excluded from `in_cycle`), `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` or pass `\"overview\"` to inspect vocabulary and edge distribution. When queries return 0 results, structured diagnostics provide triage and format suggestions. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
+        description = "Query the structural code graph at `.phronesis/graph.jsonl` — a map of code, configuration, and governance relationships built by the PostToolUse sensor. Relations include `defines_fn`, `tested_by`, `imports`, `test_imports` (a `use` under `#[cfg(test)]`; excluded from `in_cycle`), `in_cycle`, `generates`, `deserializes`, `data_flows_to`, `decision_enforces` [decision, rule], `rule_governed_by` [rule, decision], `decision_missing_rule`, `proposed_decision_enforces`, `superseded_decision_enforces`, and `rule_without_decision`. Use `\"*\"` for an unconstrained position; embedded `*` and `?` are globs. A bare name (no `*` or `?`) also matches a suffix of a fully qualified ID that starts right after a `:` — a `::` separator or a prefix such as `rust:` — so `fire_all_consequences`, `ReteNetwork::fire_all_consequences`, and `phronesis::wme` all resolve. Worked examples: tests covering a function -> `tested_by my_fn *`; Config flowing into consumers -> `data_flows_to yaml:* *`; accepted ADRs governing a rule -> `rule_governed_by no-unwrap *`. Omit `relation` or pass `\"overview\"` to inspect vocabulary and edge distribution. When queries return 0 results, structured diagnostics provide triage and format suggestions. Call `rebuild_code_graph` if the graph has never been built or its status is stale or outdated."
     )]
     async fn query_code_graph(
         &self,
@@ -1446,7 +1446,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Explain the indexed Rust ownership evidence for a function, grouped by function and site. Returns, per function: every observed site (clone / filter / await / mutation / synchronous lock) with its source location and the literal operation observed; the derived structural relationships (`filter_before_clone`, `clone_before_await`, `read_before_mutation`, `lock_scope_ends_before_await`) each naming the sites that support it; the evidence level and provider behind every site; type-inference and MIR availability including `unavailable`, `partial`, `failed`, and `stale`; and the explicit limit of each claim. `function` is a canonical Rust function ID or a glob (`*` / `?`), matching `query_code_graph` semantics. This is evidence, not a verdict: an empty result means no indexed ownership evidence matched, never that the code has no ownership concern. Opt-in per project via `[ownership.rust]` in `.phronesis/graph.toml`; the project root is server-controlled and this tool takes no filesystem path."
+        description = "Explain the indexed Rust ownership evidence for a function, grouped by function and site. Returns, per function: every observed site (clone / filter / await / mutation / synchronous lock) with its source location and the literal operation observed; the derived structural relationships (`filter_before_clone`, `clone_before_await`, `read_before_mutation`, `lock_scope_ends_before_await`) each naming the sites that support it; the evidence level and provider behind every site; type-inference and MIR availability including `unavailable`, `partial`, `failed`, and `stale`; and the explicit limit of each claim. `function` is a canonical Rust function ID, a glob (`*` / `?`), or a bare name such as `Scheduler::acquire`, matching `query_code_graph` semantics. This is evidence, not a verdict: an empty result means no indexed ownership evidence matched, never that the code has no ownership concern. Opt-in per project via `[ownership.rust]` in `.phronesis/graph.toml`; the project root is server-controlled and this tool takes no filesystem path."
     )]
     async fn query_ownership_evidence(
         &self,
@@ -1470,6 +1470,37 @@ impl EpistemeMcp {
     }
 
     #[tool(
+        description = "Select the tests relevant to the working tree's uncommitted changes — the same selection as `phr-mcp coverage select --json`. Returns the changed function and branch regions and, per test, its evidence kind: `coverage_observation` (imported per-test coverage hit a changed region), `coverage_observation_stale` (a hit imported at another revision), or `static_reach` (a code-graph edge reaches a changed function, transitively — broad for central functions). `static_note` explains when graph-based selection was omitted (e.g. the graph is stale: call `rebuild_code_graph`), `coverage_note` when imported coverage cannot be trusted, and `no_coverage_semantics` lists edited files that are evaluated rather than executed. `limit` caps `tests` (default 100, 0 = all); `total_tests` is always the full count. The project root is server-controlled; this tool takes no filesystem path."
+    )]
+    async fn select_tests(
+        &self,
+        Parameters(params): Parameters<SelectTestsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        if let Some(change) = &params.change {
+            validate_string(change, "change").map_err(|e| Self::err(e.to_string()))?;
+        }
+        let root = security::project_root();
+        let limit = params.limit.unwrap_or(DEFAULT_SELECT_TESTS_LIMIT);
+        let selection = crate::coverage::select::select(&root, params.change.as_deref())
+            .map_err(|e| Self::err(e.to_string()))?;
+        let total = selection.tests.len();
+        let mut payload = crate::coverage::select::to_json(&selection);
+        if limit != 0
+            && let Some(tests) = payload["tests"].as_array_mut()
+        {
+            tests.truncate(limit);
+        }
+        payload["total_tests"] = total.into();
+        payload["returned"] = payload["tests"].as_array().map_or(0, Vec::len).into();
+
+        Self::log_event("select_tests", |e| {
+            e.with("change", selection.change.clone())
+                .with("total_tests", total)
+        });
+        Self::ok_json(payload)
+    }
+
+    #[tool(
         description = "Report whether the current project's derived code graph is missing, fresh, stale, or built with an outdated format. Returns generation, indexed-file and edge counts, drifted files, and rule-binding state as structured JSON."
     )]
     async fn get_code_graph_status(&self) -> Result<CallToolResult, McpError> {
@@ -1478,7 +1509,7 @@ impl EpistemeMcp {
     }
 
     #[tool(
-        description = "Rebuild the current project's derived code graph from tracked Rust, Python, and TypeScript source, reconcile rule bindings, and return the resulting fresh status as structured JSON. The project root is server-controlled; this tool does not accept a filesystem path."
+        description = "Rebuild the current project's derived code graph from tracked source (Rust, Python, TypeScript/JavaScript, Swift, Java, Lua), reconcile rule bindings, and return the resulting fresh status as structured JSON. The project root is server-controlled; this tool does not accept a filesystem path."
     )]
     async fn rebuild_code_graph(&self) -> Result<CallToolResult, McpError> {
         let root = security::project_root();
@@ -1668,22 +1699,49 @@ impl EpistemeMcp {
     }
 }
 
+/// The `instructions` string a connected MCP client receives in
+/// `ServerInfo`: a compact version of `docs/FOR_AGENTS.md`. Every backticked
+/// snake_case name here must be a registered tool — see
+/// `server_instructions_tests`.
+/// Default cap on `select_tests` results: static reach is transitive, so a
+/// central function can select most of a suite.
+const DEFAULT_SELECT_TESTS_LIMIT: usize = 100;
+
+pub(crate) const SERVER_INSTRUCTIONS: &str = "\
+Phronesis keeps structured, inspectable evidence about the code you are changing. \
+It provides: durable rules on disk, evaluated by host hooks at every tool call, that can warn about or block an edit; \
+a structural code graph (definitions, callers, tests, imports, import cycles) for Rust, Python, TypeScript/JavaScript, Swift, Java, and Lua; \
+test selection for your uncommitted changes (`select_tests`); confidence bands derived from build and test outcomes you actually recorded; \
+and provenance for every decision (the rule, lookup, or assertion behind it).
+
+It is not a search engine. Use retrieval to find code; use Phronesis to establish and inspect the evidence for a change.
+
+Where to start: call `get_code_graph_status`; if the graph is missing, stale, or outdated, call `rebuild_code_graph`. \
+Then `query_code_graph`: omit `relation` to list the relation vocabulary and edge counts. \
+Examples: relation `tested_by` with args [\"my_fn\", \"*\"] lists tests that call my_fn; \
+relation `calls` with args [\"*\", \"my_fn\"] lists its callers. \
+A bare name also matches a suffix of a fully qualified ID that starts right after a `:` (a `::` separator or a prefix such as `rust:`); `*` and `?` are globs. \
+Also useful: `audit_codebase` (whole-tree rule scan), `get_confidence` (band and signals for the open work unit), \
+`get_action_log` (what hooks allowed, warned, or blocked, and why), `list_rules` / `add_rule` (inspect or add rules).
+
+Limits: the graph is static, so tested_by means a test calls the function, not that it checks it. \
+Unresolved calls are dropped, not guessed, so an empty answer can mean unknown rather than none. \
+The graph reflects the last rebuild; check its status after checkout, rename, or rebase (`select_tests` omits graph-based selection while the graph is stale and says why in `static_note`). \
+Confidence reflects only outcomes that were recorded.
+
+Full guide: https://github.com/awaterma/phronesis/blob/main/docs/FOR_AGENTS.md";
+
 #[tool_handler]
 impl ServerHandler for EpistemeMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo {
-            capabilities: ServerCapabilities::builder()
-                .enable_tools()
-                .build(),
+            capabilities: ServerCapabilities::builder().enable_tools().build(),
             server_info: Implementation {
                 name: "phr-mcp".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
                 ..Default::default()
             },
-            instructions: Some(
-                "RETE rules engine for rules-bounded LLM interaction. Use tools to manage rules, facts, fire the engine, and query consequences."
-                    .into(),
-            ),
+            instructions: Some(SERVER_INSTRUCTIONS.into()),
             ..Default::default()
         }
     }
@@ -2462,5 +2520,50 @@ mod get_journey_tests {
         let p: crate::server_params::GetJourneyParams =
             serde_json::from_str(r#"{"include_lifecycle":true}"#).expect("params deserialize");
         assert!(p.include_lifecycle);
+    }
+}
+
+#[cfg(test)]
+mod server_instructions_tests {
+    use super::*;
+
+    #[test]
+    fn instructions_name_the_graph_entry_points_and_the_agent_guide() {
+        let info = EpistemeMcp::new().get_info();
+        let text = info.instructions.unwrap_or_default();
+        assert_eq!(text, SERVER_INSTRUCTIONS);
+        for needle in [
+            "query_code_graph",
+            "get_code_graph_status",
+            "rebuild_code_graph",
+            "select_tests",
+            "https://github.com/awaterma/phronesis/blob/main/docs/FOR_AGENTS.md",
+        ] {
+            assert!(text.contains(needle), "instructions must mention {needle}");
+        }
+    }
+
+    /// Every backticked snake_case name containing `_` that is not a graph
+    /// relation or response field must be a registered tool, so the instructions
+    /// cannot point an agent at a tool that does not exist.
+    #[test]
+    fn every_backticked_tool_name_in_instructions_is_registered() {
+        let mcp = EpistemeMcp::new();
+        // Graph relations and response fields, not tools.
+        let not_tools = ["tested_by", "static_note"];
+        let names: Vec<&str> = SERVER_INSTRUCTIONS
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .filter(|t| t.contains('_') && t.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .filter(|t| !not_tools.contains(t))
+            .collect();
+        assert!(names.len() >= 8, "expected tool names, found {names:?}");
+        for name in names {
+            assert!(
+                mcp.tool_router.has_route(name),
+                "instructions mention `{name}` but no such tool is registered"
+            );
+        }
     }
 }

@@ -53,6 +53,28 @@ pub(crate) fn glob_matches(pattern: &str, value: &str) -> bool {
     p == pattern.len()
 }
 
+/// Argument match for ad-hoc queries: the glob match, plus — for a literal
+/// argument with no `*`/`?` — a match on a trailing suffix of the ID, so
+/// `tested_by fire_all_consequences` finds
+/// `rust:phronesis::network::ReteNetwork::fire_all_consequences` without the
+/// caller knowing the fully qualified ID. Exact values still match exactly;
+/// the suffix must start at a `:` boundary — a `::` path separator or the
+/// language/kind prefix (`rust:`, `#test:`) — so `phronesis::wme` matches
+/// `rust:phronesis::wme` but `consequences` does not match
+/// `fire_all_consequences`. An argument that itself starts with `:` (as in
+/// `::fire_all_consequences`) carries its own boundary. `pub(crate)` so the
+/// ownership query selects functions by the same rules.
+pub(crate) fn arg_matches(want: &str, got: &str) -> bool {
+    if glob_matches(want, got) {
+        return true;
+    }
+    if want.contains(['*', '?']) {
+        return false;
+    }
+    got.strip_suffix(want)
+        .is_some_and(|prefix| want.starts_with(':') || prefix.ends_with(':'))
+}
+
 impl Pattern {
     /// Parse CLI-style tokens: the first is the relation, the rest are
     /// arguments. `*` (or `?`) in any position means "anything".
@@ -81,7 +103,7 @@ impl Pattern {
         for (i, want) in self.args.iter().enumerate() {
             let Some(want) = want else { continue };
             match e.a.get(i) {
-                Some(got) if glob_matches(want, got) => {}
+                Some(got) if arg_matches(want, got) => {}
                 _ => return false,
             }
         }
@@ -218,6 +240,14 @@ pub fn query_diagnostics(edges: &[Edge], pattern: &Pattern) -> Option<QueryDiagn
         if want.contains('*') || want.contains('?') {
             continue;
         }
+        // A position some edge already satisfies is not the reason for the
+        // empty result; suggesting a glob for it would mislead.
+        let satisfied = matching_relation_edges
+            .iter()
+            .any(|e| e.a.get(pos).is_some_and(|got| arg_matches(want, got)));
+        if satisfied {
+            continue;
+        }
         for edge in &matching_relation_edges {
             if let Some(got) = edge.a.get(pos)
                 && got.contains(want.as_str())
@@ -266,6 +296,81 @@ mod tests {
 
     fn toks(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn a_bare_name_matches_a_trailing_path_segment() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["defines_fn", "*", "g"]));
+        let got = query(&g, &p, 0);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].a[1], "crate::b::g");
+
+        let p = Pattern::parse(&toks(&["defines_fn", "*", "b::g"]));
+        assert_eq!(query(&g, &p, 0).len(), 1);
+    }
+
+    #[test]
+    fn a_bare_name_suffix_must_start_at_a_path_boundary() {
+        let g = vec![Edge::base(
+            "defines_fn",
+            &["src/a.rs", "crate::a::fire_all_consequences"],
+            "src/a.rs",
+        )];
+        let p = Pattern::parse(&toks(&["defines_fn", "*", "consequences"]));
+        assert!(query(&g, &p, 0).is_empty());
+        let p = Pattern::parse(&toks(&["defines_fn", "*", "fire_all_consequences"]));
+        assert_eq!(query(&g, &p, 0).len(), 1);
+    }
+
+    #[test]
+    fn a_bare_name_can_start_after_the_language_prefix() {
+        let g = vec![Edge::base(
+            "imports",
+            &["rust:phronesis::agenda", "rust:phronesis::wme"],
+            "src/agenda.rs",
+        )];
+        let p = Pattern::parse(&toks(&["imports", "*", "phronesis::wme"]));
+        assert_eq!(query(&g, &p, 0).len(), 1);
+        let p = Pattern::parse(&toks(&["imports", "*", "nesis::wme"]));
+        assert!(query(&g, &p, 0).is_empty());
+    }
+
+    #[test]
+    fn a_leading_separator_carries_its_own_boundary() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["defines_fn", "*", "::g"]));
+        assert_eq!(query(&g, &p, 0).len(), 1);
+        let p = Pattern::parse(&toks(&["defines_fn", "*", "::b::g"]));
+        assert_eq!(query(&g, &p, 0).len(), 1);
+    }
+
+    #[test]
+    fn diagnostics_do_not_blame_a_position_that_matched() {
+        let g = vec![Edge::base(
+            "tested_by",
+            &["rust:c::m::fire_all_consequences", "rust:c::m::tests::t"],
+            "src/m.rs",
+        )];
+        let p = Pattern::parse(&toks(&["tested_by", "fire_all_consequences", "missing"]));
+        assert!(query(&g, &p, 0).is_empty());
+        let diag = query_diagnostics(&g, &p).expect("diagnostics for an empty result");
+        assert!(
+            diag.suggestions
+                .iter()
+                .all(|s| !s.contains("'fire_all_consequences' at position 0")),
+            "{:?}",
+            diag.suggestions
+        );
+    }
+
+    #[test]
+    fn a_glob_argument_gets_no_implicit_suffix_match() {
+        let g = graph();
+        let p = Pattern::parse(&toks(&["defines_fn", "*", "?"]));
+        assert_eq!(query(&g, &p, 0).len(), 2);
+        let p = Pattern::parse(&toks(&["defines_fn", "*", "b::*x"]));
+        assert!(query(&g, &p, 0).is_empty());
     }
 
     #[test]
