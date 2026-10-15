@@ -35,7 +35,8 @@ cargo run -- unit start [<id>] [--spec <path>|--bug <id>]  # Name the work item 
 cargo run -- drift            # Multi-source drift across CLAUDE.md, memory, wiki decisions, and code
 cargo run -- decision new <slug>  # Scaffold a new ADR page at .phronesis/wiki/decisions/<today>-<slug>.md
 cargo run -- graph rebuild        # Rescan every Rust file into .phronesis/graph.jsonl (resync after git checkout/rebase)
-cargo run -- graph query [relation] [args...]  # Query the graph by relation and positional arguments (`*` is a wildcard in any position; omitting the relation lists the vocabulary); --json for JSON output, --limit caps rows (0 = no limit). A bare argument also matches a trailing `::` segment: `graph query tested_by fire_all_consequences`, `graph query imports '*' phronesis::wme`
+cargo run -- graph query [relation] [args...]  # Query the graph by relation and positional arguments (`*` is a wildcard in any position; omitting the relation lists the vocabulary); --json for JSON output, --limit caps rows (0 = no limit)
+cargo run -- graph query tested_by fire_all_consequences  # Example: tests covering a function, by bare name (a literal arg also matches a trailing `::` segment of a qualified ID)
 cargo run -- graph status         # Does the code graph still match the working tree?
 cargo run -- graph ownership <fn> # Grouped Rust ownership evidence for a function (or glob): sites, spans, relationships, evidence level/provider, type & MIR availability, and the limit of each claim. Evidence with stated limits — never proof. Opt-in via `[ownership.rust]` in `.phronesis/graph.toml`.
 cargo run -- state                # Classify authored/cache/history/sensitive .phronesis state

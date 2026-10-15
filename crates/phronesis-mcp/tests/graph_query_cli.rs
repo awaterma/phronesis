@@ -71,7 +71,7 @@ fn a_miss_with_no_near_match_prints_sample_argument_shapes() {
         "{err}"
     );
     assert!(
-        err.contains("  sample: rust:demo::network::Net::fire_all_consequences"),
+        err.contains("hint: sample arguments: rust:demo::network::Net::fire_all_consequences"),
         "{err}"
     );
 }

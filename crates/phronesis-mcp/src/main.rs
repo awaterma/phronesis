@@ -1189,12 +1189,10 @@ enum GraphCmd {
     /// Examples:
     ///   graph ownership 'rust:mycrate::llm::Scheduler::acquire'
     ///   graph ownership 'rust:mycrate::llm::*'
-    ///   graph ownership Scheduler::acquire
     Ownership {
-        /// Canonical function ID, a glob over one, or a bare name matching a
-        /// suffix that starts right after a `:` (`Scheduler::acquire`). `*`
-        /// matches any run of characters and `?` any single one, exactly as
-        /// `graph query` does.
+        /// Canonical function ID, a bare trailing name (`acquire`,
+        /// `Scheduler::acquire`), or a glob over one. `*` matches any run of
+        /// characters and `?` any single one, exactly as `graph query` does.
         #[arg(value_name = "FUNCTION")]
         function: String,
         /// Project root (defaults to current directory).
@@ -2422,16 +2420,18 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                 } else {
                     println!("\n{total} match(es).");
                 }
-                // The MCP tool returns these as `diagnostics`; without them a
-                // miss reads as "nothing covers this function".
+                // Same hints the MCP tool returns as `diagnostics`; stderr so
+                // the result rows on stdout stay pipeable.
                 if total == 0
                     && let Some(diag) = q::query_diagnostics(&edges, &pat)
                 {
-                    for s in &diag.suggestions {
-                        eprintln!("hint: {s}");
+                    for hint in &diag.suggestions {
+                        eprintln!("hint: {hint}");
                     }
-                    for args in &diag.sample_argument_patterns {
-                        eprintln!("  sample: {}", args.join("  "));
+                    // A suggestion may point at `sample_argument_patterns`,
+                    // which only the JSON envelope would otherwise carry.
+                    for sample in &diag.sample_argument_patterns {
+                        eprintln!("hint: sample arguments: {}", sample.join("  "));
                     }
                 }
             }

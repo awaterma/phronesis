@@ -23,9 +23,9 @@ pub struct Pattern {
 }
 
 /// Single-level `*`/`?` glob match, the semantics every graph query already
-/// has. `pub(crate)` so the ownership explanation query can select functions
-/// with the same rules rather than growing a second, subtly different matcher.
-pub(crate) fn glob_matches(pattern: &str, value: &str) -> bool {
+/// has. Callers outside this module go through [`arg_matches`], which adds
+/// the bare-name rule on top.
+fn glob_matches(pattern: &str, value: &str) -> bool {
     let pattern = pattern.as_bytes();
     let value = value.as_bytes();
     let (mut p, mut v) = (0, 0);

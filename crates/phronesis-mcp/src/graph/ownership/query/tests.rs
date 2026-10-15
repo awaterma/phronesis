@@ -312,22 +312,32 @@ fn exact_and_embedded_glob_function_queries_both_select() {
     );
 }
 
-// `graph ownership` selects functions exactly as `graph query` matches an
-// argument, so a bare trailing segment finds the function without its
-// fully qualified ID — and only at a `::` boundary.
+// Pins that a bare trailing name selects the same function an exact ID does,
+// the way `graph query` resolves bare names — the CLI and MCP docs promise
+// identical semantics. The suffix must start at a `::`/`:` boundary, so a
+// partial segment selects nothing.
 #[test]
-fn a_bare_trailing_segment_selects_the_function() {
+fn a_bare_trailing_name_selects_like_graph_query() {
     let edges = scheduler_graph();
     let exact = build_all(&edges, F);
-    for bare in ["acquire", "Scheduler::acquire"] {
+
+    for bare in [
+        "acquire",
+        "Scheduler::acquire",
+        "demo::llm::scheduler::Scheduler::acquire",
+    ] {
         let report = build_all(&edges, bare);
-        assert_eq!(report.matched_functions, 1, "`{bare}` selects it");
-        assert_eq!(report.functions, exact.functions);
+        assert_eq!(report.matched_functions, 1, "`{bare}` selects the function");
+        assert_eq!(
+            report.functions, exact.functions,
+            "`{bare}` must produce the same grouped evidence as the exact ID"
+        );
     }
+
     assert_eq!(
         build_all(&edges, "quire").matched_functions,
         0,
-        "a suffix that splits a segment selects none"
+        "a partial segment is not a bare name"
     );
 }
 
