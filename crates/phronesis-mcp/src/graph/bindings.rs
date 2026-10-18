@@ -546,21 +546,23 @@ mod tests {
         let graph = super::super::store::graph_path(dir.path());
         super::super::store::write_atomic(&graph, &[]).expect("graph");
         let graph_body = std::fs::read_to_string(&graph).expect("graph body");
+        let mut entries = BTreeMap::from([
+            (
+                "src/lib.rs".to_string(),
+                super::super::sync::hash_content(body),
+            ),
+            (
+                super::super::store::GRAPH_REL_PATH.to_string(),
+                super::super::sync::hash_content(&graph_body),
+            ),
+        ]);
+        entries.extend(super::super::sync::builtin_pack_hashes());
         super::super::sync::save_index(
             &super::super::sync::index_path(dir.path()),
             &super::super::sync::Index {
                 format: super::super::sync::GRAPH_FORMAT,
                 generation,
-                entries: BTreeMap::from([
-                    (
-                        "src/lib.rs".to_string(),
-                        super::super::sync::hash_content(body),
-                    ),
-                    (
-                        super::super::store::GRAPH_REL_PATH.to_string(),
-                        super::super::sync::hash_content(&graph_body),
-                    ),
-                ]),
+                entries,
             },
         )
         .expect("index");

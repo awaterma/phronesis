@@ -8,7 +8,8 @@ use std::time::Instant;
 use crate::rules_file::{DiskRule, RulesFile};
 
 use super::engine::{
-    ScanFileInput, build_per_rule, filter_audit_rules, rule_has_ast_predicate, scan_file_into_accum,
+    ScanFileInput, build_per_rule, filter_audit_rules, rule_has_ast_predicate,
+    scan_file_into_accum, scan_pack_rules,
 };
 use super::types::{AuditOpts, AuditReport, Level, PerFileHits};
 
@@ -22,6 +23,10 @@ pub(super) fn run_core(
     mut times: Option<&mut AuditSectionTimes>,
 ) -> AuditReport {
     let total_start = Instant::now();
+    let (pack_registry, mut incomplete) = match crate::language_packs::load(&opts.project_root) {
+        Ok(registry) => (Some(registry), Vec::new()),
+        Err(error) => (None, vec![error.to_string()]),
+    };
 
     let audit_rules = filter_audit_rules(rules, opts.rule_filter.as_deref());
     if let Some(ref mut t) = times {
@@ -52,7 +57,12 @@ pub(super) fn run_core(
     let structural_rules: Vec<&DiskRule> = audit_rules
         .iter()
         .copied()
-        .filter(|r| rule_has_ast_predicate(r))
+        .filter(|r| {
+            rule_has_ast_predicate(r)
+                || r.conditions
+                    .iter()
+                    .any(|c| c.predicate.starts_with("pack_"))
+        })
         .collect();
     let size_cap = crate::security::max_file_bytes();
 
@@ -72,6 +82,18 @@ pub(super) fn run_core(
         };
         if let Some(ref mut t2) = times {
             t2.read_files += t.elapsed();
+        }
+        if let Some(registry) = &pack_registry
+            && let Err(error) = scan_pack_rules(
+                &opts.project_root,
+                path,
+                &content,
+                registry,
+                &audit_rules,
+                &mut accum,
+            )
+        {
+            incomplete.push(error.to_string());
         }
         scan_file_into_accum(ScanFileInput {
             project_root: &opts.project_root,
@@ -105,6 +127,18 @@ pub(super) fn run_core(
             };
             if let Some(ref mut t2) = times {
                 t2.read_files += t.elapsed();
+            }
+            if let Some(registry) = &pack_registry
+                && let Err(error) = scan_pack_rules(
+                    &opts.project_root,
+                    path,
+                    &content,
+                    registry,
+                    &structural_rules,
+                    &mut accum,
+                )
+            {
+                incomplete.push(error.to_string());
             }
             scan_file_into_accum(ScanFileInput {
                 project_root: &opts.project_root,
@@ -148,6 +182,7 @@ pub(super) fn run_core(
         files_scanned,
         per_rule,
         lexical_excluded,
+        incomplete,
     }
 }
 

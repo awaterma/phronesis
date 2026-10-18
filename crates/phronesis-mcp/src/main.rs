@@ -313,6 +313,13 @@ enum Command {
         #[command(subcommand)]
         cmd: GraphCmd,
     },
+    /// Install and inspect starter language packs
+    /// (`.phronesis/packs/<id>/`): validated manifest, bounded assets,
+    /// optional structural queries/Rhai adapter, rules, and toolchains.
+    Pack {
+        #[command(subcommand)]
+        cmd: PackCmd,
+    },
     /// Classify authored configuration, rebuildable caches, local history,
     /// backups, and sensitive captures under `.phronesis`.
     State {
@@ -1208,6 +1215,45 @@ enum GraphCmd {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum PackCmd {
+    /// List built-in and project-installed language packs. Never executes a
+    /// query, script, or fixture.
+    List {
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Emit JSON instead of a human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate a pack source directory (manifest shape, asset safety,
+    /// ownership, compilation, fixtures) without installing anything.
+    Validate {
+        /// Pack source directory containing `pack.json`.
+        dir: PathBuf,
+        /// Emit JSON instead of a human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Validate and atomically publish a pack directory as
+    /// `.phronesis/packs/<id>/`. Identical reinstall is a no-op; a
+    /// different digest under the same id is refused.
+    Install {
+        /// Pack source directory containing `pack.json`.
+        dir: PathBuf,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+        /// Preview without writing anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit JSON instead of a human-readable summary.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum ContextCmd {
     /// List rule-emitted capsules without leasing or changing delivery state.
     List {
@@ -1368,6 +1414,7 @@ async fn main() -> anyhow::Result<()> {
         Command::Decision { cmd } => handle_decision(cmd),
         Command::Context { cmd } => handle_context(cmd).await,
         Command::Graph { cmd } => handle_graph(cmd),
+        Command::Pack { cmd } => handle_pack(cmd),
         Command::State { path, json } => handle_state(path, json),
         Command::Clean { cache, path } => handle_clean(cache, path),
         Command::Init {
@@ -1828,6 +1875,9 @@ async fn handle_audit(
             rule_filter: rule.clone(),
         };
         let mut report = run(&rules, &opts);
+        if !report.incomplete.is_empty() {
+            anyhow::bail!("audit incomplete: {}", report.incomplete.join("; "));
+        }
         // Structural rules join relations across the whole repository, so the
         // file-scan loop above skips them. Evaluate them against the graph and
         // fold the findings in.
@@ -2512,6 +2562,34 @@ fn handle_graph(cmd: GraphCmd) -> anyhow::Result<()> {
                 println!("{}", ownership::render_json(&report));
             } else {
                 print!("{}", ownership::render_table(&report));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn handle_pack(cmd: PackCmd) -> anyhow::Result<()> {
+    use phronesis_mcp::language_packs::cli;
+
+    match cmd {
+        PackCmd::List { path, json } => {
+            cli::run_list(&path, json);
+            Ok(())
+        }
+        PackCmd::Validate { dir, json } => {
+            if !cli::run_validate(&dir, json) {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        PackCmd::Install {
+            dir,
+            path,
+            dry_run,
+            json,
+        } => {
+            if !cli::run_install(&path, &dir, dry_run, json) {
+                std::process::exit(1);
             }
             Ok(())
         }

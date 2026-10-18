@@ -47,6 +47,8 @@ pub struct EpistemeMcp {
     /// IDs whose winning definition belongs to the project rules file. Rules
     /// from team/personal layers are deliberately excluded from autosave.
     pub(crate) persistent_rule_ids: Arc<Mutex<HashSet<String>>>,
+    pub(crate) managed_rule_ids: Arc<Mutex<HashSet<String>>>,
+    pub(crate) managed_signature: Arc<Mutex<String>>,
     /// Project definitions currently shadowed by a later layer. They remain
     /// on disk unchanged even though their winner is the external definition.
     pub(crate) shadowed_project_rules: Arc<Mutex<HashMap<String, rules_file::DiskRule>>>,
@@ -72,6 +74,8 @@ impl EpistemeMcp {
             consequences: Arc::new(Mutex::new(Vec::new())),
             phase_map: Arc::new(Mutex::new(HashMap::new())),
             persistent_rule_ids: Arc::new(Mutex::new(HashSet::new())),
+            managed_rule_ids: Arc::new(Mutex::new(HashSet::new())),
+            managed_signature: Arc::new(Mutex::new(String::new())),
             shadowed_project_rules: Arc::new(Mutex::new(HashMap::new())),
             disk_load_error: Arc::new(Mutex::new(None)),
             tool_router: Self::tool_router(),
@@ -209,6 +213,19 @@ impl EpistemeMcp {
         let report =
             ownership::load(root, function, limit).map_err(|e| Self::err(e.to_string()))?;
         serde_json::to_value(&report).map_err(|e| Self::err(e.to_string()))
+    }
+
+    /// `PackInventory` for `root`, as the structured payload `list_language_packs`
+    /// and `phr-mcp pack list --json` both return — the same underlying
+    /// `language_packs::inspect` call either way, so the two surfaces cannot
+    /// drift. Takes an explicit root for the same reason
+    /// [`Self::ownership_evidence_payload`] does: a test can assert parity
+    /// without mutating `PHRONESIS_PROJECT_ROOT`.
+    fn language_pack_inventory_payload(
+        root: &std::path::Path,
+    ) -> Result<serde_json::Value, McpError> {
+        let inventory = crate::language_packs::inspect(root);
+        serde_json::to_value(&inventory).map_err(|e| Self::err(e.to_string()))
     }
 
     pub(crate) fn err(msg: impl ToString) -> McpError {
@@ -404,6 +421,7 @@ impl EpistemeMcp {
         description = "List all rules currently loaded in the RETE network. Returns {rules: [...]} as structured JSON."
     )]
     async fn list_rules(&self) -> Result<CallToolResult, McpError> {
+        let _ = self.ensure_disk_rules_load().await;
         let network = self.network.lock().await;
         let rules = network.get_all_rules().map_err(Self::err)?;
         drop(network);
@@ -423,6 +441,7 @@ impl EpistemeMcp {
         &self,
         Parameters(params): Parameters<RuleIdParam>,
     ) -> Result<CallToolResult, McpError> {
+        self.ensure_disk_rules_load().await?;
         let network = self.network.lock().await;
         match network
             .get_rule_by_id(params.rule_id.as_str())
@@ -443,6 +462,21 @@ impl EpistemeMcp {
         Parameters(params): Parameters<RuleIdParam>,
     ) -> Result<CallToolResult, McpError> {
         self.ensure_autosave_safe().await?;
+        if self
+            .managed_rule_ids
+            .lock()
+            .await
+            .contains(params.rule_id.as_str())
+            && !self
+                .persistent_rule_ids
+                .lock()
+                .await
+                .contains(params.rule_id.as_str())
+        {
+            return Err(Self::err(
+                "pack or external layer rule is managed by its source; remove or override it there",
+            ));
+        }
         let network = self.network.lock().await;
         network
             .remove_rule(params.rule_id.as_str())
@@ -691,6 +725,7 @@ impl EpistemeMcp {
         description = "Execute all pending agenda items, returning fired actions and generated consequences"
     )]
     async fn fire_rules(&self) -> Result<CallToolResult, McpError> {
+        self.ensure_disk_rules_load().await?;
         let new_consequences = {
             let network = self.network.lock().await;
             network.fire_all_consequences().map_err(Self::err)?
@@ -935,9 +970,15 @@ impl EpistemeMcp {
             rules_file::RulesFile { rules: vec![] }
         };
 
+        let persistent_ids = self.persistent_rule_ids.lock().await.clone();
         let in_memory = {
             let network = self.network.lock().await;
-            network.get_all_rules().map_err(Self::err)?
+            network
+                .get_all_rules()
+                .map_err(Self::err)?
+                .into_iter()
+                .filter(|rule| persistent_ids.contains(&rule.id))
+                .collect::<Vec<_>>()
         };
 
         let phase_map = self.phase_map.lock().await.clone();
@@ -983,6 +1024,11 @@ impl EpistemeMcp {
         // be stale, so reload wholesale and report that reload; without it,
         // rules added in memory are the user's and the load stays additive.
         let recovered = self.disk_load_error.lock().await.take().is_some();
+        if !recovered && !Self::autopersist_disabled() {
+            self.refresh_disk_managed(&root, resolved.clone(), false)
+                .await
+                .map_err(Self::err)?;
+        }
         if recovered && !Self::autopersist_disabled() {
             let loaded = resolved.rules.len();
             let overrides = resolved.overrides.len();
@@ -1216,6 +1262,12 @@ impl EpistemeMcp {
                 rule_filter: params.rule.clone(),
             };
             let mut report = run(&rules, &opts);
+            if !report.incomplete.is_empty() {
+                return Err(Self::err(format!(
+                    "audit incomplete: {}",
+                    report.incomplete.join("; ")
+                )));
+            }
             // Structural rules join relations across the whole repository, so
             // the file-scan loop skips them. Mirror the CLI and fold in the
             // graph findings — otherwise this tool reports zero structural
@@ -1509,6 +1561,14 @@ impl EpistemeMcp {
     }
 
     #[tool(
+        description = "List built-in and project-installed starter language packs for the current project: id, version, origin (built_in/installed), location, extensions, grammar, declared capabilities, per-capability activation status, and validation status/diagnostics. A damaged or removed pack stays visible with diagnostics rather than being silently dropped. Refreshed on every call; never executes a pack's query, script, or fixture, installs anything, or rebuilds the graph."
+    )]
+    async fn list_language_packs(&self) -> Result<CallToolResult, McpError> {
+        let root = security::project_root();
+        Self::ok_json(Self::language_pack_inventory_payload(&root)?)
+    }
+
+    #[tool(
         description = "Rebuild the current project's derived code graph from tracked source (Rust, Python, TypeScript/JavaScript, Swift, Java, Lua), reconcile rule bindings, and return the resulting fresh status as structured JSON. The project root is server-controlled; this tool does not accept a filesystem path."
     )]
     async fn rebuild_code_graph(&self) -> Result<CallToolResult, McpError> {
@@ -1722,7 +1782,8 @@ Examples: relation `tested_by` with args [\"my_fn\", \"*\"] lists tests that cal
 relation `calls` with args [\"*\", \"my_fn\"] lists its callers. \
 A bare name also matches a suffix of a fully qualified ID that starts right after a `:` (a `::` separator or a prefix such as `rust:`); `*` and `?` are globs. \
 Also useful: `audit_codebase` (whole-tree rule scan), `get_confidence` (band and signals for the open work unit), \
-`get_action_log` (what hooks allowed, warned, or blocked, and why), `list_rules` / `add_rule` (inspect or add rules).
+`get_action_log` (what hooks allowed, warned, or blocked, and why), `list_rules` / `add_rule` (inspect or add rules), \
+`list_language_packs` (built-in and installed starter language packs, with validation status).
 
 Limits: the graph is static, so tested_by means a test calls the function, not that it checks it. \
 Unresolved calls are dropped, not guessed, so an empty answer can mean unknown rather than none. \
@@ -2302,6 +2363,152 @@ mod audit_tool_tests {
 }
 
 #[cfg(test)]
+mod list_language_packs_tool_tests {
+    use super::*;
+
+    fn write_pack(dir: &std::path::Path, id: &str, ext: &str) {
+        let queries = dir.join("queries");
+        std::fs::create_dir_all(&queries).unwrap();
+        std::fs::write(queries.join("decls.scm"), "(function_definition) @def").unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": 1, "adapter_api": 1, "id": id, "version": "0.1.0",
+            "language": id, "extensions": [ext], "grammar": "python",
+            "capabilities": ["structural_facts"],
+            "queries": [{"id": "decls", "path": "queries/decls.scm", "emit": [
+                {"kind": "declaration", "name": "${name}", "scope": "", "span_capture": "def"}
+            ]}],
+        });
+        std::fs::write(dir.join("pack.json"), manifest.to_string()).unwrap();
+    }
+
+    #[test]
+    fn tool_is_registered() {
+        let mcp = EpistemeMcp::new();
+        assert!(
+            mcp.tool_router.has_route("list_language_packs"),
+            "list_language_packs must be registered. Registered tools: {:?}",
+            mcp.tool_router
+                .list_all()
+                .iter()
+                .map(|t| t.name.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// The MCP tool and `phr-mcp pack list --json` must return the same
+    /// document for the same project: both call `language_packs::inspect`
+    /// through this one payload builder, so they cannot drift.
+    #[test]
+    fn payload_matches_direct_inspect_call() {
+        let project = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        write_pack(src.path(), "demo_mcp", "demomcp");
+        crate::language_packs::install::install(project.path(), src.path(), false)
+            .expect("install");
+
+        let payload =
+            EpistemeMcp::language_pack_inventory_payload(project.path()).expect("payload builds");
+        let direct = serde_json::to_value(crate::language_packs::inspect(project.path()))
+            .expect("inspect serializes");
+        assert_eq!(payload, direct);
+    }
+
+    /// Listing is read-only: it must not write anything to the project, and
+    /// a pack installed or removed between two calls must be reflected —
+    /// there is no server-side cache of the registry snapshot.
+    #[test]
+    fn install_and_remove_are_visible_across_two_calls_with_no_writes() {
+        let project = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        write_pack(src.path(), "demo_visibility", "demovis");
+
+        let before = EpistemeMcp::language_pack_inventory_payload(project.path()).unwrap();
+        assert!(
+            before["packs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == "go" && p["origin"] == "built_in")
+        );
+        assert!(
+            before["packs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|p| p["id"] != "demo_visibility")
+        );
+        assert!(
+            !project.path().join(".phronesis").exists(),
+            "listing an empty project must not create .phronesis"
+        );
+
+        crate::language_packs::install::install(project.path(), src.path(), false)
+            .expect("install");
+        let after_install = EpistemeMcp::language_pack_inventory_payload(project.path()).unwrap();
+        assert!(
+            after_install["packs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == "demo_visibility" && p["origin"] == "installed")
+        );
+        assert!(
+            after_install["packs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == "go" && p["origin"] == "built_in")
+        );
+
+        std::fs::remove_dir_all(project.path().join(".phronesis/packs/demo_visibility")).unwrap();
+        let after_remove = EpistemeMcp::language_pack_inventory_payload(project.path()).unwrap();
+        assert!(
+            after_remove["packs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|p| p["id"] != "demo_visibility")
+        );
+        assert!(
+            after_remove["packs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["id"] == "go" && p["origin"] == "built_in")
+        );
+    }
+
+    /// A broken pack (unparseable manifest) stays a visible, diagnosable
+    /// entry rather than being silently dropped from the list.
+    #[test]
+    fn broken_pack_remains_visible_with_diagnostics() {
+        let project = tempfile::tempdir().unwrap();
+        let pack_dir = project.path().join(".phronesis/packs/broken");
+        std::fs::create_dir_all(&pack_dir).unwrap();
+        std::fs::write(pack_dir.join("pack.json"), "{ not valid json").unwrap();
+
+        let payload = EpistemeMcp::language_pack_inventory_payload(project.path()).unwrap();
+        let packs = payload["packs"].as_array().unwrap();
+        let broken = packs
+            .iter()
+            .find(|p| {
+                p["location"]
+                    .as_str()
+                    .is_some_and(|path| path.ends_with("/broken"))
+            })
+            .expect("broken installed row");
+        assert_eq!(broken["status"], "invalid");
+        assert!(!broken["diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            packs
+                .iter()
+                .any(|p| p["id"] == "go" && p["origin"] == "built_in")
+        );
+        assert_eq!(payload["complete"], false);
+    }
+}
+
+#[cfg(test)]
 mod ownership_evidence_tool_tests {
     use super::*;
     use crate::graph::model::Edge;
@@ -2537,6 +2744,7 @@ mod server_instructions_tests {
             "get_code_graph_status",
             "rebuild_code_graph",
             "select_tests",
+            "list_language_packs",
             "https://github.com/awaterma/phronesis/blob/main/docs/FOR_AGENTS.md",
         ] {
             assert!(text.contains(needle), "instructions must mention {needle}");

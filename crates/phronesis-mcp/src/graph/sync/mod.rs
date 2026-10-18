@@ -14,6 +14,8 @@ mod index;
 mod rebuild;
 mod rules;
 
+#[cfg(test)]
+pub(crate) use index::builtin_pack_hashes;
 pub use index::{TRACKED_EXTENSIONS, check_freshness, load_index, save_index};
 pub use rebuild::{on_save, rebuild, record_from_disk};
 pub use rules::{deprecated_graph_rule_predicates, reconcile_rules};
@@ -64,7 +66,9 @@ pub const RESOLUTION_STATS_REL_PATH: &str = ".phronesis/graph.resolution.json";
 /// 22 — `cargo_bin` build metadata, and `tested_by`/`calls` edges to a Cargo
 /// binary's `main` from tests that run it through `CARGO_BIN_EXE_<name>`;
 /// `Cargo.toml` becomes a freshness input.
-pub const GRAPH_FORMAT: u32 = 22;
+/// 23 — language-pack declarations, written references/imports, uniquely
+/// resolved calls, and installed/context/embedded pack freshness inputs.
+pub const GRAPH_FORMAT: u32 = 23;
 
 /// Header line stamping the format into the index file.
 const FORMAT_KEY: &str = "# format";
@@ -192,8 +196,13 @@ pub struct SaveOutcome {
 /// and a hash that changes under the reader would mark every file stale after
 /// a toolchain upgrade.
 pub fn hash_content(content: &str) -> u64 {
+    hash_bytes(content.as_bytes())
+}
+
+/// Stable hash for exact non-UTF-8 graph inputs.
+pub fn hash_bytes(content: &[u8]) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in content.as_bytes() {
+    for byte in content {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x1000_0000_01b3);
     }

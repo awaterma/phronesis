@@ -27,6 +27,9 @@ const ENTRIES: &[(&str, &str, bool)] = &[
     ("bugs.json", "authored", false),
     ("toolchains.json", "authored", false),
     ("nudges", "authored", false),
+    // Installed language packs (SPEC go-and-language-packs Task 3): authored
+    // configuration like rules.json, so `clean --cache` never touches it.
+    ("packs", "authored", false),
     ("graph.jsonl", "cache", false),
     ("graph.index", "cache", false),
     ("bindings.json", "cache", false),

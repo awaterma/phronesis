@@ -15,6 +15,17 @@ on code analysis, change impact, test selection, or verification, see
 helps with your task — including a read-only way to evaluate it on your own
 repository. (Working *on* Phronesis itself? See [`AGENTS.md`](AGENTS.md).)
 
+## Go and contributor language packs
+
+`phr-mcp init --packs go` selects the bundled Go starter's structural rules and
+`go build` / `go vet` / textual `go test` toolchains. `phr-mcp pack list --json`
+shows built-in and installed packs; `list_language_packs {}` provides the same
+read-only inventory to a connected MCP client. External authors can use
+bundled grammars, queries, bounded Rhai, fixtures, and namespaced rules without
+changing the core adapter. See [Language packs](docs/LANGUAGE-PACKS.md) and the
+[query-only/Rhai Python starter](examples/language-packs/python-starter/).
+Source relationships are static evidence; run the actual compiler and tests.
+
 ## The Premise
 
 Anthropic's Claude Code, OpenAI Codex, Google's Gemini CLI, and other LLM environments share a common pattern: they load project-level guidance at session start. As the session continues, that window fills with code, output, and conversation. The directive you most need at hour three may have last been read carefully in token eight hundred.

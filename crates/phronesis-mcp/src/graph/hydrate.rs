@@ -17,6 +17,11 @@ use std::path::{Path, PathBuf};
 /// graph load at all.
 pub const GRAPH_RELATIONS: &[&str] = &[
     "file_type",
+    "pack_declaration",
+    "pack_reference",
+    "pack_import",
+    "pack_test_command",
+    "pack_file_adapter",
     "build_member",
     "defines_fn",
     "defines_method",

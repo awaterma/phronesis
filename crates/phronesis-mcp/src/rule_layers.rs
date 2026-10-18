@@ -85,6 +85,8 @@ pub enum LayerError {
     Missing { name: String, path: String },
     #[error(transparent)]
     Rules(#[from] RulesFileError),
+    #[error("language pack: {0}")]
+    Pack(#[from] crate::language_packs::PackError),
 }
 
 impl LayerError {
@@ -152,45 +154,82 @@ pub fn config_path(project_root: &Path) -> PathBuf {
 /// Resolve effective rules. Without `loader.json`, this is exactly the legacy
 /// project-local `rules.json` behavior.
 pub fn resolve(project_root: &Path) -> Result<ResolvedRules, LayerError> {
-    let config_path = config_path(project_root);
-    if !config_path.exists() {
-        let path = rules_file::default_path(project_root);
-        let file = rules_file::read(&path)?;
-        let origin = RuleOrigin {
-            layer: "project".to_string(),
-            path,
-            decision: None,
-        };
-        let origins = file
-            .rules
-            .iter()
-            .map(|rule| (rule.id.clone(), origin.clone()))
-            .collect();
-        return Ok(ResolvedRules {
-            rules: file.rules,
-            origins,
-            overrides: Vec::new(),
-            configured: false,
-        });
-    }
+    let registry = crate::language_packs::load(project_root)?;
+    resolve_with_registry(project_root, &registry)
+}
 
-    let content = std::fs::read_to_string(&config_path).map_err(|source| LayerError::Io {
-        path: config_path.display().to_string(),
-        source,
-    })?;
-    let config: LayersConfig =
-        serde_json::from_str(&content).map_err(|source| LayerError::Malformed {
-            path: config_path.display().to_string(),
+pub fn resolve_with_registry(
+    project_root: &Path,
+    registry: &crate::language_packs::PackRegistry,
+) -> Result<ResolvedRules, LayerError> {
+    let pack_layers = crate::language_packs::integration::pack_rule_layers(registry)?;
+    // Resource validation belongs to the same strict operation snapshot;
+    // malformed toolchains cannot silently disappear from hook governance.
+    crate::language_packs::integration::pack_toolchains(registry)?;
+    resolve_with_pack_layers(project_root, pack_layers)
+}
+
+/// Compose validated pack layers first, then project layers. No registry call
+/// occurs below this point, so pack loading cannot recurse into rule loading.
+fn resolve_with_pack_layers(
+    project_root: &Path,
+    pack_layers: Vec<crate::language_packs::integration::PackRuleLayer>,
+) -> Result<ResolvedRules, LayerError> {
+    let config_file = config_path(project_root);
+    let configured = config_file.exists();
+    let project_layers = if configured {
+        let content = std::fs::read_to_string(&config_file).map_err(|source| LayerError::Io {
+            path: config_file.display().to_string(),
             source,
         })?;
-    validate(&config)?;
-
+        let config: LayersConfig =
+            serde_json::from_str(&content).map_err(|source| LayerError::Malformed {
+                path: config_file.display().to_string(),
+                source,
+            })?;
+        validate(&config)?;
+        config.layers
+    } else {
+        vec![LayerConfig {
+            name: "project".to_string(),
+            path: rules_file::default_path(project_root).display().to_string(),
+            decision: None,
+            optional: true,
+        }]
+    };
     let mut rules = Vec::<DiskRule>::new();
     let mut positions = HashMap::<String, usize>::new();
     let mut origins = HashMap::<String, RuleOrigin>::new();
     let mut overrides = Vec::new();
-
-    for layer in config.layers {
+    let mut apply = |file_rules: Vec<DiskRule>, origin: RuleOrigin| {
+        for rule in file_rules {
+            if let Some(position) = positions.get(&rule.id).copied() {
+                let overridden = origins
+                    .get(&rule.id)
+                    .cloned()
+                    .expect("indexed rule has origin");
+                overrides.push(RuleOverride {
+                    rule_id: rule.id.clone(),
+                    overridden,
+                    winner: origin.clone(),
+                });
+                rules[position] = rule.clone();
+            } else {
+                positions.insert(rule.id.clone(), rules.len());
+                rules.push(rule.clone());
+            }
+            origins.insert(rule.id.clone(), origin.clone());
+        }
+    };
+    for layer in pack_layers {
+        let origin = RuleOrigin {
+            layer: layer.name,
+            path: layer.path,
+            decision: None,
+        };
+        apply(layer.rules, origin);
+    }
+    for layer in project_layers {
         let path = resolve_path(project_root, &layer.path)?;
         if !path.exists() {
             if layer.optional {
@@ -207,31 +246,13 @@ pub fn resolve(project_root: &Path) -> Result<ResolvedRules, LayerError> {
             path,
             decision: layer.decision,
         };
-        for rule in file.rules {
-            if let Some(position) = positions.get(&rule.id).copied() {
-                let overridden = origins
-                    .get(&rule.id)
-                    .cloned()
-                    .expect("an indexed layered rule always has an origin");
-                overrides.push(RuleOverride {
-                    rule_id: rule.id.clone(),
-                    overridden,
-                    winner: origin.clone(),
-                });
-                rules[position] = rule.clone();
-            } else {
-                positions.insert(rule.id.clone(), rules.len());
-                rules.push(rule.clone());
-            }
-            origins.insert(rule.id.clone(), origin.clone());
-        }
+        apply(file.rules, origin);
     }
-
     Ok(ResolvedRules {
         rules,
         origins,
         overrides,
-        configured: true,
+        configured,
     })
 }
 

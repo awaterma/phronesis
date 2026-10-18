@@ -116,6 +116,7 @@ impl From<&str> for Patterns {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefSource {
     BuiltIn,
+    Pack,
     Project,
     /// A project def whose `id` shadows a built-in.
     Override,
@@ -125,6 +126,7 @@ impl DefSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             DefSource::BuiltIn => "built-in",
+            DefSource::Pack => "pack",
             DefSource::Project => "project",
             DefSource::Override => "override",
         }
@@ -618,6 +620,15 @@ pub fn load_project_defs(root: &Path) -> Vec<ToolchainDef> {
 pub fn registry(root: &Path) -> Vec<CompiledDef> {
     let project = load_project_defs(root);
     let builtins = builtin_defs();
+    // Runtime pack loading is strict: a broken installed pack is reported by
+    // rule resolution at hook/audit boundaries and cannot silently govern a
+    // command with a stale toolchain definition.
+    let pack_defs = crate::language_packs::load(root)
+        .and_then(|registry| crate::language_packs::integration::pack_toolchains(&registry))
+        .unwrap_or_else(|e| {
+            eprintln!("phronesis: language-pack toolchains unavailable: {e}");
+            Vec::new()
+        });
     let mut out: Vec<CompiledDef> = Vec::new();
     for def in &builtins {
         if let Some(over) = project.iter().find(|p| p.id == def.id) {
@@ -630,8 +641,17 @@ pub fn registry(root: &Path) -> Vec<CompiledDef> {
             out.push(c);
         }
     }
+    for def in pack_defs {
+        if let Some(over) = project.iter().find(|p| p.id == def.id) {
+            if let Ok(c) = CompiledDef::compile(over.clone(), DefSource::Override) {
+                out.push(c);
+            }
+        } else if let Ok(c) = CompiledDef::compile(def, DefSource::Pack) {
+            out.push(c);
+        }
+    }
     for def in project {
-        if builtins.iter().any(|b| b.id == def.id) {
+        if builtins.iter().any(|b| b.id == def.id) || out.iter().any(|p| p.def.id == def.id) {
             continue; // already placed as Override
         }
         if let Ok(c) = CompiledDef::compile(def, DefSource::Project) {

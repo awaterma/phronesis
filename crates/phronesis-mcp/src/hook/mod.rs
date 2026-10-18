@@ -212,16 +212,16 @@ fn unix_secs_now() -> u64 {
 struct LoadedRules {
     rules: Vec<Rule>,
     override_facts: Vec<phr::Fact>,
+    registry: crate::language_packs::PackRegistry,
 }
 
-fn load_rules(phase: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
+fn load_rules(phase: &str, file_path: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
     let root = security::project_root();
-    let project_path = crate::rules_file::default_path(&root);
-    let loader_path = crate::rule_layers::config_path(&root);
-    if !project_path.exists() && !loader_path.exists() {
-        return Ok(None);
-    }
-    let resolved = crate::rule_layers::resolve(&root).map_err(|e| {
+    let registry = crate::language_packs::load(&root).map_err(|error| RulesLoadError {
+        message: error.to_string(),
+        failing_file: crate::rule_layers::config_path(&root),
+    })?;
+    let resolved = crate::rule_layers::resolve_with_registry(&root, &registry).map_err(|e| {
         let failing_file = e.failing_file(&root);
         let shown = failing_file.display().to_string();
         let message = e.to_string();
@@ -245,12 +245,22 @@ fn load_rules(phase: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
         .map(|r| crate::rules_file::rule_from_disk(&r).0)
         .collect();
 
-    if rules.is_empty() {
+    let rel = crate::graph::hydrate::repo_relative(&root, file_path)
+        .unwrap_or_else(|| file_path.to_string());
+    let pack_owned = registry
+        .for_path(&rel)
+        .map_err(|error| RulesLoadError {
+            message: error.to_string(),
+            failing_file: crate::rule_layers::config_path(&root),
+        })?
+        .is_some();
+    if rules.is_empty() && !pack_owned {
         Ok(None)
     } else {
         Ok(Some(LoadedRules {
             rules,
             override_facts,
+            registry,
         }))
     }
 }

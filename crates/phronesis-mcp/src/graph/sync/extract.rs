@@ -1,7 +1,6 @@
 //! Per-file extraction routing and the Rust-only ownership enrichment that
 //! rides alongside it.
 
-use super::index::tracked_files;
 use crate::graph;
 use crate::graph::extract::{
     DEFAULT_WATCHLIST, extract_rust_at_module_with_ownership, module_path,
@@ -140,16 +139,16 @@ fn resolve_inclusion_target(
     Some(relative.to_str()?.replace('\\', "/"))
 }
 
-fn chart_for(root: &Path, rel: &str) -> Option<(String, String)> {
-    tracked_files(root)
-        .into_iter()
+fn chart_for(root: &Path, rel: &str, files: &[String]) -> Option<(String, String)> {
+    files
+        .iter()
         .filter(|file| file.ends_with("Chart.yaml") || file.ends_with("Chart.yml"))
         .filter_map(|file| {
             let directory = file.rsplit_once('/').map_or("", |(directory, _)| directory);
             if !rel.starts_with(directory) {
                 return None;
             }
-            let body = std::fs::read_to_string(root.join(&file)).ok()?;
+            let body = std::fs::read_to_string(root.join(file)).ok()?;
             let value: serde_norway::Value = serde_norway::from_str(&body).ok()?;
             let name = value.get("name")?.as_str()?.to_string();
             Some((directory.to_string(), name))
@@ -164,6 +163,7 @@ pub(super) struct ExtractOneParams<'a> {
     pub(super) rel: &'a str,
     pub(super) content: &'a str,
     pub(super) units: &'a UnitMap,
+    pub(super) files: &'a [String],
     pub(super) cue_index: Option<&'a graph::cue::PackageIndex>,
     pub(super) java_project: Option<&'a graph::java::project::Project>,
     pub(super) rust_inclusions: &'a BTreeMap<String, IncludedRustModule>,
@@ -194,14 +194,14 @@ fn cue_unit_for(root: &Path, rel: &str) -> UnitContext {
 
 /// `unit` with every tracked file attached, for extractors that resolve
 /// cross-file references.
-fn with_tracked_files(root: &Path, mut unit: UnitContext) -> UnitContext {
-    unit.files = tracked_files(root);
+fn with_tracked_files(files: &[String], mut unit: UnitContext) -> UnitContext {
+    unit.files = files.to_vec();
     unit
 }
 
 /// `unit` with every tracked file attached as Lua resolution candidates.
-fn with_lua_files(root: &Path, mut unit: UnitContext) -> UnitContext {
-    unit.lua_files = tracked_files(root);
+fn with_lua_files(files: &[String], mut unit: UnitContext) -> UnitContext {
+    unit.lua_files = files.to_vec();
     unit
 }
 
@@ -212,6 +212,7 @@ pub(super) fn extract_one(params: ExtractOneParams<'_>) -> graph::extract::Extra
         rel,
         content,
         units,
+        files,
         cue_index,
         java_project,
         rust_inclusions,
@@ -227,7 +228,7 @@ pub(super) fn extract_one(params: ExtractOneParams<'_>) -> graph::extract::Extra
     if matches!(graph::unit::lang_of_path(rel), Some(graph::unit::LANG_YAML))
         && rel.contains("/templates/")
         && content.contains("{{")
-        && let Some((chart_root, _chart_name)) = chart_for(root, rel)
+        && let Some((chart_root, _chart_name)) = chart_for(root, rel, files)
     {
         let helm_unit = helm_unit_for(
             &chart_root,
@@ -246,7 +247,7 @@ pub(super) fn extract_one(params: ExtractOneParams<'_>) -> graph::extract::Extra
         }
         Some(graph::unit::LANG_SWIFT) => graph::swift::extract_swift(rel, content, &unit),
         Some(graph::unit::LANG_LUA) => {
-            graph::lua::extract_lua(rel, content, &with_lua_files(root, unit))
+            graph::lua::extract_lua(rel, content, &with_lua_files(files, unit))
         }
         Some(graph::unit::LANG_RHAI) => graph::rhai::extract_rhai(rel, content, &unit),
         Some(graph::unit::LANG_CUE) => {
@@ -262,7 +263,7 @@ pub(super) fn extract_one(params: ExtractOneParams<'_>) -> graph::extract::Extra
             }
         }
         Some(graph::unit::LANG_HELM3) => {
-            if let Some((chart_root, _chart_name)) = chart_for(root, rel) {
+            if let Some((chart_root, _chart_name)) = chart_for(root, rel, files) {
                 let helm_unit = helm_unit_for(&chart_root, unit);
                 helm3::extract_helm3(rel, content, &helm_unit, Some(&chart_root))
             } else {
@@ -270,10 +271,10 @@ pub(super) fn extract_one(params: ExtractOneParams<'_>) -> graph::extract::Extra
             }
         }
         Some(graph::unit::LANG_JSON) => {
-            graph::json_extractor::extract_json(rel, content, &with_tracked_files(root, unit))
+            graph::json_extractor::extract_json(rel, content, &with_tracked_files(files, unit))
         }
         Some(graph::unit::LANG_YAML) => {
-            graph::yaml::extract_yaml(rel, content, &with_tracked_files(root, unit))
+            graph::yaml::extract_yaml(rel, content, &with_tracked_files(files, unit))
         }
         // Ownership enrichment rides the tree this call already parses (§7.1,
         // D13) and is gated inside the extractor on `enabled` plus

@@ -1,0 +1,34 @@
+[
+  {
+    "id": "go.build",
+    "matches": "^go\\s+build(\\s|$)",
+    "compile_fail": [
+      "(?m)^# ",
+      "(?m)^\\S+\\.go:\\d+:\\d+: "
+    ]
+  },
+  {
+    "id": "go.vet",
+    "matches": "^go\\s+vet(\\s|$)",
+    "compile_fail": [
+      "(?m)^# ",
+      "(?m)^\\S+\\.go:\\d+:\\d+: "
+    ]
+  },
+  {
+    "id": "go.test",
+    "matches": "^go\\s+test(\\s|$)",
+    "compile_fail": [
+      "\\[build failed\\]",
+      "(?m)^# "
+    ],
+    "compile_success": [
+      "(?m)^ok\\s",
+      "(?m)^PASS$"
+    ],
+    "per_test": "(?m)^--- (?P<status>PASS|FAIL|SKIP): (?P<name>\\S+)",
+    "pass_tokens": [
+      "PASS"
+    ]
+  }
+]

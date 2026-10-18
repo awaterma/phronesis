@@ -59,8 +59,17 @@ fn language_pack_defs(packs: &[Pack]) -> Vec<ToolchainDef> {
         if *pack == Pack::Lua {
             defs.extend(lua_pack_defs());
         }
+        if *pack == Pack::Go {
+            defs.extend(go_pack_defs());
+        }
     }
     defs
+}
+
+/// Go toolchains share the exact embedded resource used by pack validation.
+fn go_pack_defs() -> Vec<ToolchainDef> {
+    serde_json::from_str(include_str!("../../packs/go/toolchains.json"))
+        .expect("bundled Go toolchains are valid JSON")
 }
 
 /// The lua pack's toolchain def. The summary regex is pinned from busted's

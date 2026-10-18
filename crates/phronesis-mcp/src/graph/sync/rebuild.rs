@@ -5,7 +5,10 @@ use super::extract::{
     ExtractOneParams, IncludedRustModule, compiler_evidence, extract_one,
     incremental_compiler_staleness, rust_path_inclusions,
 };
-use super::index::{decision_input_files, is_tracked, load_index, save_index, tracked_files};
+use super::index::{
+    builtin_pack_hashes, context_input_files, decision_input_files, is_tracked, load_index,
+    pack_input_files, save_index, tracked_files,
+};
 use super::rules::{
     migrate_graph_rule_predicates, reconcile_bindings_best_effort, rule_predicate_edges,
 };
@@ -19,6 +22,7 @@ use crate::graph::model::Edge;
 use crate::graph::ownership;
 use crate::graph::store;
 use crate::graph::unit::UnitMap;
+use crate::language_packs::{self, PackRegistry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -163,10 +167,25 @@ fn forces_rebuild(root: &Path, file_path: &str, content: &str) -> std::io::Resul
                     && edge.a.first().is_some_and(|owner| owner == file_path)
             }));
     let data_contract_input = declared_artifact(root, file_path);
+    let pack_input = file_path.starts_with(".phronesis/packs/")
+        || match language_packs::load(root) {
+            Err(_) => true, // Rebuild purges old pack edges and leaves the index stale.
+            Ok(registry) => {
+                registry
+                    .for_path(file_path)
+                    .map_or(true, |pack| pack.is_some())
+                    || registry.packs().iter().any(|pack| {
+                        pack.assets.manifest.context_files.iter().any(|name| {
+                            file_path == name || file_path.ends_with(&format!("/{name}"))
+                        })
+                    })
+            }
+        };
     // A manifest names units and bin targets that other files' edges resolve
     // against; no single file's re-extraction can apply that change.
     let cargo_manifest = file_path == "Cargo.toml" || file_path.ends_with("/Cargo.toml");
-    Ok(file_path.ends_with(".cue")
+    Ok(pack_input
+        || file_path.ends_with(".cue")
         || cargo_manifest
         || path_module_owner
         || file_path == ".phronesis/graph.toml"
@@ -210,6 +229,7 @@ fn extract_for_save(
         rel: file_path,
         content,
         units: &units,
+        files: &files,
         cue_index: None,
         java_project: None,
         rust_inclusions: &rust_inclusions,
@@ -291,6 +311,9 @@ pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<S
     index
         .entries
         .insert(file_path.to_string(), hash_content(content));
+    // Embedded pack bytes are part of the binary, not the source tree. A
+    // native incremental save must stamp the same virtual inputs as rebuild.
+    index.entries.extend(builtin_pack_hashes());
     record_graph_hash(&mut index, persisted.graph_hash);
     save_index(&ipath, &index)?;
     reconcile_bindings_best_effort(root, index.generation);
@@ -353,6 +376,7 @@ struct RebuildScan {
     rust_inclusions: BTreeMap<String, IncludedRustModule>,
     ownership: ownership::config::OwnershipConfig,
     java: graph::java::project::Project,
+    packs: PackRegistry,
 }
 
 impl RebuildScan {
@@ -372,7 +396,9 @@ impl RebuildScan {
         // file read; doing it per tracked file would repeat it thousands of times
         // to reach the same answer.
         let ownership = ownership::config::load_or_disabled(root);
+        let packs = language_packs::load(root).map_err(|e| std::io::Error::other(e.to_string()))?;
         Ok(Self {
+            packs,
             units,
             cue_index,
             files,
@@ -397,10 +423,66 @@ fn next_index(root: &Path) -> Index {
 /// Extract every tracked file, recording each one's hash in `index`.
 /// Returns the base edges and the number of items the extractor declined
 /// to name.
-fn extract_tracked(root: &Path, scan: &RebuildScan, index: &mut Index) -> (Vec<Edge>, usize) {
+fn extract_tracked(
+    root: &Path,
+    scan: &RebuildScan,
+    index: &mut Index,
+) -> (Vec<Edge>, usize, Vec<String>) {
     let mut base = Vec::new();
     let mut skipped = 0;
+    let mut diagnostics = Vec::new();
     for rel in &scan.files {
+        let pack = match scan.packs.for_path(rel) {
+            Ok(pack) => pack,
+            Err(e) => {
+                diagnostics.push(format!("{rel}: {e}"));
+                skipped += 1;
+                continue;
+            }
+        };
+        if let Some(pack) = pack {
+            let extracted = language_packs::assets::read_bounded(
+                root,
+                Some(&pack.assets.manifest.id),
+                rel,
+                language_packs::limits::MAX_FILE_BYTES,
+            )
+            .and_then(|bytes| {
+                String::from_utf8(bytes).map_err(|e| language_packs::PackError::Record {
+                    pack: Some(pack.assets.manifest.id.clone()),
+                    path: Some(rel.clone()),
+                    message: format!("source is not UTF-8: {e}"),
+                })
+            })
+            .and_then(|content| {
+                language_packs::file_context(root, rel, pack).and_then(|context| {
+                    let records = language_packs::extract(pack, &context, &content)?;
+                    if !records.diagnostics.is_empty() {
+                        return Err(language_packs::PackError::Record {
+                            pack: Some(pack.assets.manifest.id.clone()),
+                            path: Some(rel.clone()),
+                            message: format!(
+                                "{} extraction diagnostics; graph evidence incomplete",
+                                records.diagnostics.len()
+                            ),
+                        });
+                    }
+                    let edges = language_packs::graph_records(pack, &context, &records)?;
+                    Ok((edges, hash_content(&content)))
+                })
+            });
+            match extracted {
+                Ok((edges, hash)) => {
+                    base.extend(edges);
+                    index.entries.insert(rel.clone(), hash);
+                }
+                Err(e) => {
+                    diagnostics.push(format!("{rel}: {e}"));
+                    skipped += 1;
+                }
+            }
+            continue;
+        }
         // Java's snapshot already read and parsed these bytes. Re-reading
         // here could stamp a different edit's hash onto the extracted edges.
         let content = if rel.ends_with(".java") {
@@ -416,6 +498,7 @@ fn extract_tracked(root: &Path, scan: &RebuildScan, index: &mut Index) -> (Vec<E
             rel,
             content: &content,
             units: &scan.units,
+            files: &scan.files,
             cue_index: Some(&scan.cue_index),
             java_project: Some(&scan.java),
             rust_inclusions: &scan.rust_inclusions,
@@ -466,7 +549,7 @@ fn extract_tracked(root: &Path, scan: &RebuildScan, index: &mut Index) -> (Vec<E
     for (manifest, hash) in scan.units.cargo_manifests() {
         index.entries.insert(manifest.clone(), *hash);
     }
-    (base, skipped)
+    (base, skipped, diagnostics)
 }
 
 /// Hash the non-source inputs (`graph.toml`, rules, decisions) into `index`.
@@ -475,6 +558,27 @@ fn record_auxiliary_inputs(root: &Path, index: &mut Index) {
         index
             .entries
             .insert(".phronesis/graph.toml".to_string(), hash_content(&content));
+    }
+    index.entries.extend(builtin_pack_hashes());
+    for rel in pack_input_files(root) {
+        if let Ok(bytes) = language_packs::assets::read_bounded(
+            root,
+            None,
+            &rel,
+            language_packs::limits::MAX_TOTAL_ASSET_BYTES,
+        ) {
+            index.entries.insert(rel, super::hash_bytes(&bytes));
+        }
+    }
+    for rel in context_input_files(root) {
+        if let Ok(bytes) = language_packs::assets::read_bounded(
+            root,
+            None,
+            &rel,
+            language_packs::limits::MAX_TOTAL_ASSET_BYTES,
+        ) {
+            index.entries.insert(rel, super::hash_bytes(&bytes));
+        }
     }
     for rel in decision_input_files(root) {
         if let Ok(content) = std::fs::read_to_string(root.join(&rel)) {
@@ -498,7 +602,29 @@ fn rebuild_with_overlay(
     // inputs so the rebuild cannot make its own index immediately stale.
     let migrated_rules = migrate_graph_rule_predicates(root)?;
     let mut index = next_index(root);
-    let scan = RebuildScan::discover(root, overlay)?;
+    let scan = match RebuildScan::discover(root, overlay) {
+        Ok(scan) => scan,
+        Err(error) => {
+            // A damaged pack must not leave its previously extracted facts
+            // in the durable graph. The old index remains untouched, so the
+            // new graph hash also makes every reader report stale evidence.
+            if let Ok(existing) = store::load(&store::graph_path(root)) {
+                let pack_files = existing
+                    .iter()
+                    .filter(|edge| !edge.d && edge.p == "pack_file_adapter")
+                    .filter_map(|edge| edge.a.first().cloned())
+                    .collect::<BTreeSet<_>>();
+                if !pack_files.is_empty() {
+                    let base = existing
+                        .into_iter()
+                        .filter(|edge| !edge.d && !pack_files.contains(&edge.src))
+                        .collect();
+                    let _ = persist(root, base, None);
+                }
+            }
+            return Err(error);
+        }
+    };
     if let Some((file, _)) = overlay
         && scan.java.failed_inputs.contains(file)
     {
@@ -507,13 +633,15 @@ fn rebuild_with_overlay(
             1,
         ));
     }
-    let (mut base, skipped) = extract_tracked(root, &scan, &mut index);
+    let (mut base, skipped, mut pack_diagnostics) = extract_tracked(root, &scan, &mut index);
+    base.extend(language_packs::resolve_pack_references(&base));
 
     graph::data_contracts::augment(root, &mut base);
     // Compiler enrichment is rebuild-only (§8.2) and runs after AST extraction
     // because its subject list is read back off the extracted edges — the ids
     // must be the ones already in the graph, not a second reconstruction.
     let (compiler_edges, mut diagnostics) = compiler_evidence(root, &scan.ownership, &base);
+    diagnostics.append(&mut pack_diagnostics);
     for (name, objects) in &scan.java.diagnostics.0 {
         diagnostics.push(format!("java.{name}={}", objects.len()));
     }

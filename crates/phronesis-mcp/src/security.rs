@@ -156,6 +156,10 @@ pub fn resolve_project_root(start: &Path) -> PathBuf {
 pub fn is_governed(root: &Path) -> bool {
     crate::rules_file::default_path(root).is_file()
         || crate::rule_layers::config_path(root).is_file()
+        || root
+            .join(crate::language_packs::registry::PACKS_DIR)
+            .read_dir()
+            .is_ok_and(|mut entries| entries.next().is_some())
 }
 
 /// If `root` is a git worktree (its `.git` is a file pointer), return the main

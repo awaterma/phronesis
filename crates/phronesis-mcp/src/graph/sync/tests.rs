@@ -88,6 +88,21 @@ fn different_content_hashes_differently() {
 }
 
 #[test]
+fn native_incremental_save_keeps_embedded_pack_input_fresh() {
+    let d = project();
+    write(d.path(), "src/lib.rs", "fn first() {}\n");
+    rebuild(d.path()).expect("rebuild");
+    let changed = "fn second() {}\n";
+    write(d.path(), "src/lib.rs", changed);
+    on_save(d.path(), "src/lib.rs", changed).expect("incremental save");
+    let index = load_index(&index_path(d.path())).expect("index");
+    assert_eq!(check_freshness(d.path(), &index), Freshness::Fresh);
+    for (key, hash) in builtin_pack_hashes() {
+        assert_eq!(index.entries.get(&key), Some(&hash), "{key}");
+    }
+}
+
+#[test]
 fn graph_sync_reconciles_rule_bindings_in_the_same_generation() {
     let d = project();
     write_binding_rule(d.path());

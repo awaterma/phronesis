@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "id": "go.warn-dot-import",
+      "phase": "post",
+      "priority": 10,
+      "audit": true,
+      "when": [
+        { "pack_go_dot_import": ["?file", "?path"] },
+        { "file_extension_is": "go" }
+      ],
+      "then": {
+        "warn": "Dot import of ?path hides where names come from; prefer a qualified import."
+      }
+    }
+  ]
+}
