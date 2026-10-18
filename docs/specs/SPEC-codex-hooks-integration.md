@@ -65,8 +65,8 @@ hooks. The generated documentation states this boundary plainly.
 | `PostToolUse` | post-phase check | advisory context; action/journey/outcome records |
 | `SessionStart` | session context | active rules + durable directives; session identity |
 | `UserPromptSubmit` | interaction context | durable directives + recent decisions |
-| `PreCompact` | durable context | inject directives before compaction |
-| `PostCompact` | session context | re-inject rules + directives |
+| `PreCompact` | durable directives | advisory `systemMessage`; no context-injection envelope |
+| `PostCompact` | durable directives | advisory `systemMessage`; no context-injection envelope |
 | `SubagentStart` | session context | project governance for delegated work |
 | `SubagentStop` / `Stop` | confidence report | block low confidence; warn on medium; no-op when disabled, unopened, or high |
 | `Interrupt` | lifecycle record | record the abort, close the turn, respond `{}`; its schema permits `systemMessage` only |
@@ -198,7 +198,7 @@ Codex payloads and explicitly labeled fixture provenance.
 8. PostToolUse captures `cargo test` output for confidence outcomes.
 9. PostToolUse journals only executed supported actions.
 10. SessionStart and UserPromptSubmit inject bounded active-rule/durable/recent-outcome context with the Codex event name.
-11. PreCompact/PostCompact restore durable context.
+11. PreCompact/PostCompact emit durable directives as a schema-valid advisory `systemMessage`; SessionStart supplies model context after compaction.
 12. SubagentStart receives governance context.
 13. Stop/SubagentStop enforce low confidence and remain inert without an open work unit.
 14. Unsupported tools are safe no-ops.
