@@ -14,6 +14,9 @@
 //! Context events (SessionStart, etc.):
 //! → `{ hookSpecificOutput: { hookEventName, additionalContext } }`
 //!
+//! PreCompact/PostCompact:
+//! → `{ systemMessage }` (advisory; no context-injection envelope)
+//!
 //! Stop/SubagentStop:
 //! - low confidence → `{ continue: false, stopReason, systemMessage }`
 //! - medium confidence → `{ systemMessage }`
@@ -84,6 +87,13 @@ fn render_context(event: &str, d: &CodexDecision) -> String {
     } else {
         d.additional_context.clone()
     };
+    // Compaction accepts common output fields, not a context envelope.
+    if matches!(event, "PreCompact" | "PostCompact") {
+        return serde_json::to_string(&CodexCompletionWarn {
+            system_message: &truncated,
+        })
+        .unwrap_or_default();
+    }
     let obj = codex_context(event, &truncated);
     serde_json::to_string(&obj).unwrap_or_default()
 }
@@ -316,8 +326,7 @@ mod tests {
 
     /// Permitted stdout keys per event, from SPEC-agent-lifecycle-events
     /// §"Host adapters / Codex CLI". Codex rejects the whole response on any
-    /// unlisted key. PreCompact/PostCompact are deliberately absent: today's
-    /// renderer violates their schemas (spec Adjacent finding 1, separate PR).
+    /// unlisted key, including the context envelope on compaction events.
     fn permitted_keys(event: &str) -> &'static [&'static str] {
         const CTX: &[&str] = &[
             "continue",
@@ -327,6 +336,9 @@ mod tests {
             "hookSpecificOutput",
         ];
         match event {
+            "PreCompact" | "PostCompact" => {
+                &["continue", "stopReason", "suppressOutput", "systemMessage"]
+            }
             "SessionStart" | "SubagentStart" => CTX,
             "UserPromptSubmit" => &[
                 "continue",
@@ -382,6 +394,8 @@ mod tests {
             "PostToolUse",
             "SessionStart",
             "UserPromptSubmit",
+            "PreCompact",
+            "PostCompact",
             "SubagentStart",
             "SubagentStop",
             "Stop",
@@ -402,6 +416,25 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    #[test]
+    fn compact_events_preserve_directives_as_system_messages() {
+        for event in ["PreCompact", "PostCompact", "pre-compact", "post-compact"] {
+            let json = render_codex_response(event, &decision(&[], &[], "Keep the durable rules"));
+            let value: serde_json::Value = serde_json::from_str(&json).expect("JSON");
+            assert_eq!(
+                value,
+                serde_json::json!({"systemMessage": "Keep the durable rules"})
+            );
+            assert_eq!(render_codex_response(event, &decision(&[], &[], "")), "{}");
+            let long = "é".repeat(context::DEFAULT_MAX_BYTES);
+            let json = render_codex_response(event, &decision(&[], &[], &long));
+            let value: serde_json::Value = serde_json::from_str(&json).expect("JSON");
+            let message = value["systemMessage"].as_str().expect("message");
+            assert!(message.len() <= context::DEFAULT_MAX_BYTES);
+            assert!(message.ends_with("…[truncated]"));
         }
     }
 

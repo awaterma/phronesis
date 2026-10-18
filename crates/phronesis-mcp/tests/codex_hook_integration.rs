@@ -584,11 +584,29 @@ fn codex_hook_cli_context_uses_pascal_event_and_is_bounded() {
         "SubagentStart",
     ] {
         let payload = json!({"hook_event_name": event, "session_id": "s", "turn_id": "t"});
-        let body = response(&run_hook(project.path(), &payload));
-        assert_eq!(body["hookSpecificOutput"]["hookEventName"], event);
-        let context = body["hookSpecificOutput"]["additionalContext"]
-            .as_str()
-            .expect("context string");
+        let output = run_hook(project.path(), &payload);
+        assert!(output.status.success(), "{event}: {:?}", output.stderr);
+        let body = response(&output);
+        let context = if matches!(event, "PreCompact" | "PostCompact") {
+            // Compaction accepts only common fields; hookSpecificOutput is
+            // rejected by the host even when its event name is correct.
+            let object = body.as_object().expect("response object");
+            for key in object.keys() {
+                assert!(
+                    ["continue", "stopReason", "suppressOutput", "systemMessage"]
+                        .contains(&key.as_str()),
+                    "{event}: unexpected field {key}"
+                );
+            }
+            let message = body["systemMessage"].as_str().expect("advisory message");
+            assert!(message.contains("important durable guidance"));
+            message
+        } else {
+            assert_eq!(body["hookSpecificOutput"]["hookEventName"], event);
+            body["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .expect("context string")
+        };
         assert!(context.len() <= phronesis_mcp::context::DEFAULT_MAX_BYTES);
     }
 }
