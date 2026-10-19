@@ -925,6 +925,12 @@ field, the bad value, and the allowed values. Rejected shapes:
 - an empty `when` (or v1 `conditions`) — such a rule never fires;
 - a rule key outside `id`, `phase`, `priority`, `audit`, `silent`,
   `doc_excepted`, `binds`, `when`, `then` (v1: `conditions`, `actions`);
+- a `bash_command_matches` or `bash_command_code_matches` condition whose
+  pattern does not compile as a regex (the unclosed group in `"rm -rf ("`;
+  escape it as `"rm -rf \\("`) or that has no pattern, `or` branches
+  included — such a rule could never match, so it used to load and allow
+  the command it was written to stop. `new_content_contains` is a literal
+  substring, never compiled, so `"legacy_call("` stays valid;
 - a non-integer `priority` or a non-boolean flag;
 - v1 legacy only: a non-string `args`/`params` element, an `actions` array
   that does not hold exactly one action, or an `action_type` outside

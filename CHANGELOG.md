@@ -6,6 +6,27 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An invalid `bash_command_matches` / `bash_command_code_matches` regex is
+  now a load error, so the hook fails closed.** The hook used to compile
+  each pattern at evaluation time and, on a compile error, print a warning
+  and skip it — so `{"bash_command_matches": "rm -rf ("}` loaded cleanly and
+  `pre-check` *allowed* `rm -rf / (`. The rules-file loader now compiles
+  these patterns (inside `or` and in v1 `conditions` too) and rejects a bad
+  one with the usual message naming the rule, field, and pattern:
+  `pre-check` blocks, `post-check` warns, `audit` and `load_rules_file`
+  error, and `add_rule` refuses. As with every load error, an edit to
+  `.phronesis/rules.json` itself is still allowed, so the project stays
+  recoverable. A command-regex condition with no pattern is rejected too.
+  `new_content_contains` is unaffected: it is a literal substring match, not
+  a regex (`AGENTS.md` called it one; corrected).
+
+### Migration
+
+- A rules file that used to load with a `WARNING — invalid … regex` line
+  on stderr now fails to load. Fix or escape the pattern the error names.
+
 ## [0.39.0] - 2026-10-18
 
 ### Added

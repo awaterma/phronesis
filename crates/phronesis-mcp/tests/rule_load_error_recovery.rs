@@ -620,6 +620,18 @@ fn add_rule_refuses_the_shapes_the_loader_rejects() {
         assert!(err.contains(part), "phase typo: missing {part:?}: {err}");
     }
 
+    let mut bad_regex = new_rule("bad-regex");
+    bad_regex["conditions"] = json!([{"predicate": "bash_command_matches", "args": ["rm -rf ("]}]);
+    let err = mcp.tool("add_rule", bad_regex).refused("invalid regex");
+    for part in [
+        "rule `bad-regex`",
+        "field `conditions[0]`",
+        "`rm -rf (`",
+        "allowed:",
+    ] {
+        assert!(err.contains(part), "invalid regex: missing {part:?}: {err}");
+    }
+
     // Nothing reached disk or the network.
     assert_eq!(
         std::fs::read_to_string(rules_path(root)).expect("rules"),

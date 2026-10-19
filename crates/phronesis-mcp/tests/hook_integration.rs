@@ -330,6 +330,100 @@ fn post_check_warns_on_malformed_rules_json() {
     assert!(stderr.contains("malformed"), "stderr: {}", stderr);
 }
 
+/// The rule from the report: an unclosed group never compiles, so before
+/// load-time validation the hook skipped it with a warning and allowed the
+/// very command the rule was written to block.
+const INVALID_BASH_REGEX_RULES: &str = r#"{"version":2,"rules":[{"id":"no-rm-rf","phase":"pre",
+    "when":[{"bash_command_matches":"rm -rf ("}],"then":{"block":"no rm -rf"}}]}"#;
+
+#[test]
+fn pre_check_fails_closed_on_invalid_bash_command_regex() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(dir.path(), INVALID_BASH_REGEX_RULES);
+    let payload = r#"{"tool_name":"Bash","tool_input":{"command":"rm -rf / ("}}"#;
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2, "an invalid regex must block, not allow: {stderr}");
+    for part in [
+        "rule `no-rm-rf`",
+        "field `when[0]`",
+        "bash_command_matches",
+        "invalid regex `rm -rf (`",
+    ] {
+        assert!(stderr.contains(part), "missing {part:?}: {stderr}");
+    }
+}
+
+#[test]
+fn invalid_code_regex_inside_or_fails_closed_for_unrelated_tools() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"shells","phase":"post",
+            "when":[{"or":[{"bash_command_code_matches":"ok"},{"bash_command_code_matches":"[a-"}]}],
+            "then":{"warn":"m"}}]}"#,
+    );
+    // A load error blocks every tool, not only the shell calls the rule is about.
+    let payload = r#"{"tool_name":"Edit",
+        "tool_input":{"file_path":"src/x.rs","old_string":"a","new_string":"b"}}"#;
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2, "stderr: {stderr}");
+    assert!(stderr.contains("field `when[0].or[1]`"), "stderr: {stderr}");
+    assert!(stderr.contains("`[a-`"), "stderr: {stderr}");
+}
+
+#[test]
+fn invalid_bash_regex_still_allows_fixing_rules_json() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(dir.path(), INVALID_BASH_REGEX_RULES);
+    let rules = dir.path().join(".phronesis/rules.json");
+    let payload = serde_json::json!({
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": rules.display().to_string(),
+            "old_string": "rm -rf (",
+            "new_string": "rm -rf \\\\(",
+        }
+    })
+    .to_string();
+    let (code, stderr) = run_hook_in("pre-check", &payload, Some(dir.path()));
+    assert_eq!(code, 1, "the fix to rules.json must go through: {stderr}");
+    assert!(stderr.contains("invalid regex"), "stderr: {stderr}");
+}
+
+#[test]
+fn audit_errors_on_invalid_bash_command_regex() {
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(dir.path(), INVALID_BASH_REGEX_RULES);
+    let output = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .arg("audit")
+        .current_dir(dir.path())
+        .output()
+        .expect("run audit");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "audit must fail: {stderr}");
+    assert!(
+        stderr.contains("invalid regex `rm -rf (`"),
+        "stderr: {stderr}"
+    );
+}
+
+#[test]
+fn literal_new_content_needle_with_regex_metacharacters_still_loads() {
+    // `new_content_contains` is a literal substring, so an unbalanced `(`
+    // is a valid needle and must not be rejected as a bad regex.
+    let dir = tempfile::tempdir().unwrap();
+    write_rules_file(
+        dir.path(),
+        r#"{"rules":[{"id":"legacy","phase":"pre",
+            "when":[{"new_content_contains":"legacy_call("}],"then":{"block":"no legacy"}}]}"#,
+    );
+    let payload = r#"{"tool_name":"Write",
+        "tool_input":{"file_path":"src/x.rs","content":"fn f() { legacy_call(1); }"}}"#;
+    let (code, stderr) = run_hook_in("pre-check", payload, Some(dir.path()));
+    assert_eq!(code, 2, "the literal needle must still match: {stderr}");
+    assert!(stderr.contains("no legacy"), "stderr: {stderr}");
+}
+
 #[test]
 fn pre_check_allows_when_rules_file_is_empty_array() {
     let dir = tempfile::tempdir().unwrap();

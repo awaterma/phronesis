@@ -207,7 +207,7 @@ hook exiting non-zero would discard the human's prompt.
       "conditions": [
         {
           "predicate": "new_content_contains",
-          "args": ["\\.unwrap\\(\\)"]
+          "args": [".unwrap()"]
         },
         {
           "predicate": "file_path_matches",
@@ -236,11 +236,14 @@ hook exiting non-zero would discard the human's prompt.
 
 A rule shape the engine cannot honor — an unknown `then` verb or `phase`
 (both case-sensitive), an empty `when`, an unknown rule key, a duplicate id in
-one file, a non-string v1 arg — **fails closed at load** like malformed JSON:
+one file, a non-string v1 arg, a `bash_command_matches` /
+`bash_command_code_matches` regex that does not compile (or is missing) —
+**fails closed at load** like malformed JSON:
 `pre-check` blocks, `post-check` warns, Codex denies, `audit` and the MCP
 `load_rules_file`/`add_rule` tools error, each naming the rule, field, bad
 value, and allowed values. Valid verbs and phases live in `ACTION_VERBS` /
-`RULE_PHASES` in `crates/phronesis-mcp/src/rules_file.rs`.
+`RULE_PHASES`, and the regex-taking predicates in `REGEX_PREDICATES`, in
+`crates/phronesis-mcp/src/rules_file.rs`.
 
 #### Available Predicates
 
@@ -252,7 +255,7 @@ value, and allowed values. Valid verbs and phases live in `ACTION_VERBS` /
 | `bash_command_code_matches(?regex)` | Regex over the command's code: heredoc bodies removed (unless fed to a shell), `sh -c`/`eval` scripts unwrapped |
 | `project_path_is(?rel)` | Exact path relative to the project root (normalized; symlinked dirs resolved) |
 | `project_path_under(?dir)` | File lies under this root-relative directory, e.g. `verification/templates` |
-| `new_content_contains(?pattern)` | Regex substring in new content |
+| `new_content_contains(?pattern)` | Literal substring in new content (not a regex) |
 | `function_added(?file, ?name)` | Function introduced in diff |
 | `function_removed(?file, ?name)` | Function removed in diff |
 | `import_added(?file, ?target)` | Import introduced |

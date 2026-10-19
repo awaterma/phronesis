@@ -308,6 +308,15 @@ impl EpistemeMcp {
             .map_err(Self::err)?;
         rules_file::check_single_action(&params.id, "actions", params.actions.len())
             .map_err(Self::err)?;
+        for (i, condition) in params.conditions.iter().enumerate() {
+            rules_file::check_condition_regex(
+                &params.id,
+                &format!("conditions[{i}]"),
+                &condition.predicate,
+                &condition.args,
+            )
+            .map_err(Self::err)?;
+        }
         for action in &params.actions {
             rules_file::check_action_type(&params.id, "action_type", &action.action_type)
                 .map_err(Self::err)?;

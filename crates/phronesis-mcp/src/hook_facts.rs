@@ -521,8 +521,11 @@ pub(crate) struct BashCommandPattern {
 /// predicate is about the command being run, never about file content
 /// that happens to quote the same text.
 ///
-/// An invalid regex is skipped with a stderr warning — a rule-author typo
-/// must never block the project.
+/// An invalid regex is an error, so pre-check fails closed. The rules-file
+/// loader already rejects such a rule (naming rule, field, and pattern), and
+/// that load error still lets the agent edit `rules.json` itself, so the
+/// project stays recoverable; this branch is defense in depth for rules that
+/// reach the hook some other way.
 pub(crate) async fn check_bash_command_patterns(
     network: &ReteNetwork,
     command: &str,
@@ -530,16 +533,8 @@ pub(crate) async fn check_bash_command_patterns(
 ) -> Result<(), HookError> {
     let mut code: Option<String> = None;
     for BashCommandPattern { predicate, pattern } in patterns {
-        let re = match regex::Regex::new(pattern) {
-            Ok(re) => re,
-            Err(e) => {
-                eprintln!(
-                    "phronesis: WARNING — invalid {} regex '{}': {}",
-                    predicate, pattern, e
-                );
-                continue;
-            }
-        };
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| format!("invalid {predicate} regex `{pattern}`: {e}"))?;
         let text = if *predicate == BASH_COMMAND_CODE_MATCHES {
             code.get_or_insert_with(|| shell_code_text(command))
                 .as_str()

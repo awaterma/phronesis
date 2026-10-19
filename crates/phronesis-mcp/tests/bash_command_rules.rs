@@ -2,8 +2,9 @@
 //!
 //! The predicate fires only for command tools (Bash / run_shell_command):
 //! a file edit whose *content* happens to contain the same text must not
-//! trigger it. An invalid regex in a rule is skipped with a warning and
-//! never blocks (rule-author typo must not brick the project).
+//! trigger it. An invalid regex in a rule is a load error, so the hook
+//! fails closed; the load-error path still lets the agent edit
+//! `rules.json` itself, so a rule-author typo cannot brick the project.
 
 use std::io::Write;
 use std::path::Path;
@@ -110,7 +111,7 @@ fn file_content_mentioning_pattern_does_not_fire_command_rule() {
 }
 
 #[test]
-fn invalid_regex_is_skipped_with_warning_not_block() {
+fn invalid_regex_is_a_load_error_that_blocks() {
     let dir = tempfile::tempdir().unwrap();
     write_rules_file(
         dir.path(),
@@ -128,12 +129,13 @@ fn invalid_regex_is_skipped_with_warning_not_block() {
     );
     let (code, stderr) = run_hook_in("pre-check", &bash_payload("git status"), dir.path());
     assert_eq!(
-        code, 0,
-        "author typo must not brick the hook; stderr: {stderr}"
+        code, 2,
+        "a rule that can never match must not silently allow; stderr: {stderr}"
     );
     assert!(
-        stderr.contains("invalid bash_command_matches"),
-        "author should see the typo surfaced; stderr: {stderr}"
+        stderr.contains("rule `broken-regex-rule`")
+            && stderr.contains("invalid regex `([unclosed`"),
+        "author should see the rule and pattern named; stderr: {stderr}"
     );
 }
 

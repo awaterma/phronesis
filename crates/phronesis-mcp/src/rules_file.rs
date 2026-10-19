@@ -196,6 +196,69 @@ pub fn check_single_action(rule_id: &str, field: &str, len: usize) -> Result<(),
     Ok(())
 }
 
+/// Predicates whose first argument the hook compiles as a regex. A pattern
+/// that does not compile can never match, so a rule conditioned on it loaded
+/// and then allowed everything it was written to stop; it is a load error
+/// instead. (`new_content_contains` is not here: its argument is a literal
+/// substring at hook and audit time, so `legacy_call(` is a valid needle.)
+pub const REGEX_PREDICATES: &[&str] = &[
+    crate::hook_facts::BASH_COMMAND_MATCHES,
+    crate::hook_facts::BASH_COMMAND_CODE_MATCHES,
+];
+
+/// The load-error message for one condition whose predicate takes a regex,
+/// without the `rule `id`:` prefix; `None` when the condition is fine.
+fn regex_arg_error(field: &str, predicate: &str, args: &[String]) -> Option<String> {
+    if !REGEX_PREDICATES.contains(&predicate) {
+        return None;
+    }
+    let Some(pattern) = args.first() else {
+        return Some(format!(
+            "field `{field}` (`{predicate}`) has no pattern; it needs one regex argument"
+        ));
+    };
+    regex::Regex::new(pattern).err().map(|e| {
+        format!(
+            "field `{field}` (`{predicate}`) has invalid regex `{pattern}`; allowed: a valid regex (escape metacharacters such as `(` as `\\(`): {e}"
+        )
+    })
+}
+
+/// Validate a condition's regex argument (the MCP `add_rule` tool), returning
+/// the same load-error message the rules-file loader produces.
+pub fn check_condition_regex(
+    rule_id: &str,
+    field: &str,
+    predicate: &str,
+    args: &[String],
+) -> Result<(), String> {
+    match regex_arg_error(field, predicate, args) {
+        Some(message) => Err(format!("rule `{rule_id}`: {message}")),
+        None => Ok(()),
+    }
+}
+
+/// Walk a rule's `when` (including `or` branches) and reject the first
+/// condition whose regex argument does not compile.
+fn check_when_regexes(when: &[WhenClause], legacy: bool) -> anyhow::Result<()> {
+    fn walk(clause: &WhenClause, field: String) -> anyhow::Result<()> {
+        match clause {
+            WhenClause::Or(alts) => alts
+                .iter()
+                .enumerate()
+                .try_for_each(|(j, alt)| walk(alt, format!("{field}.or[{j}]"))),
+            WhenClause::Leaf(c) => match regex_arg_error(&field, &c.predicate, &c.args) {
+                Some(message) => Err(anyhow!(message)),
+                None => Ok(()),
+            },
+        }
+    }
+    let base = if legacy { "conditions" } else { "when" };
+    when.iter()
+        .enumerate()
+        .try_for_each(|(i, clause)| walk(clause, format!("{base}[{i}]")))
+}
+
 fn check_phase(phase: &str) -> anyhow::Result<()> {
     if RULE_PHASES.contains(&phase) {
         return Ok(());
@@ -518,11 +581,13 @@ fn parse_source_rule(
                 .ok_or_else(|| anyhow!("field `{key}` must be true or false, got `{value}`")),
         }
     };
+    let when = parse_when_field(obj)?;
+    check_when_regexes(&when, obj.contains_key("conditions"))?;
     Ok(SourceRule {
         id: id.to_string(),
         phase,
         priority,
-        when: parse_when_field(obj)?,
+        when,
         then: parse_then_field(obj)?,
         silent: flag("silent")?,
         audit: flag("audit")?,
@@ -1539,6 +1604,83 @@ mod tests {
         assert!(serde_json::from_str::<WhenClause>(r#"{"a": true, "b": true}"#).is_err());
         assert!(serde_json::from_str::<WhenClause>(r#"{"or": "not_an_array"}"#).is_err());
         assert!(serde_json::from_str::<WhenClause>(r#"{"pred": 42}"#).is_err());
+    }
+
+    fn load_error(rule: serde_json::Value) -> String {
+        serde_json::from_value::<SourceRule>(rule)
+            .expect_err("rule must not load")
+            .to_string()
+    }
+
+    #[test]
+    fn invalid_command_regex_is_a_load_error_naming_rule_field_and_pattern() {
+        let err = load_error(serde_json::json!({
+            "id": "no-rm-rf", "phase": "pre",
+            "when": [{"bash_command_matches": "rm -rf ("}],
+            "then": {"block": "no rm -rf"}
+        }));
+        for part in [
+            "rule `no-rm-rf`",
+            "field `when[0]`",
+            "`bash_command_matches`",
+            "invalid regex `rm -rf (`",
+            "allowed:",
+        ] {
+            assert!(err.contains(part), "missing {part:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn invalid_code_regex_is_found_inside_or_and_in_v1_conditions() {
+        let err = load_error(serde_json::json!({
+            "id": "nested",
+            "when": [{"file_path_matches": "x"},
+                     {"or": [{"bash_command_code_matches": "fine"},
+                             {"bash_command_code_matches": "a{2,1}"}]}],
+            "then": {"warn": "m"}
+        }));
+        assert!(err.contains("field `when[1].or[1]`"), "{err}");
+        assert!(err.contains("`a{2,1}`"), "{err}");
+
+        let err = load_error(serde_json::json!({
+            "id": "legacy",
+            "conditions": [{"predicate": "bash_command_matches", "args": ["("]}],
+            "actions": [{"action_type": "log", "params": ["m"]}]
+        }));
+        assert!(err.contains("field `conditions[0]`"), "{err}");
+    }
+
+    #[test]
+    fn command_regex_predicate_without_a_pattern_is_a_load_error() {
+        let err = load_error(serde_json::json!({
+            "id": "empty", "when": [{"bash_command_matches": true}], "then": {"warn": "m"}
+        }));
+        assert!(err.contains("has no pattern"), "{err}");
+    }
+
+    #[test]
+    fn valid_command_regex_and_literal_content_needles_load() {
+        for rule in [
+            serde_json::json!({"id": "a", "when": [{"bash_command_matches": "rm\\s+-rf\\s+\\("}], "then": {"block": "m"}}),
+            serde_json::json!({"id": "b", "when": [{"bash_command_code_matches": "^git (commit|push)"}], "then": {"warn": "m"}}),
+            // A literal substring, never compiled: an unbalanced paren is fine.
+            serde_json::json!({"id": "c", "when": [{"new_content_contains": "legacy_call("}], "then": {"block": "m"}}),
+        ] {
+            serde_json::from_value::<SourceRule>(rule.clone())
+                .unwrap_or_else(|e| panic!("{rule} should load: {e}"));
+        }
+    }
+
+    #[test]
+    fn check_condition_regex_matches_the_loader_message() {
+        let args = vec!["(".to_string()];
+        let err = check_condition_regex("r", "conditions[0]", "bash_command_matches", &args)
+            .expect_err("invalid");
+        assert!(err.starts_with("rule `r`: field `conditions[0]`"), "{err}");
+        assert!(check_condition_regex("r", "c", "new_content_contains", &args).is_ok());
+        assert!(
+            check_condition_regex("r", "c", "bash_command_matches", &["ok".to_string()]).is_ok()
+        );
     }
 
     #[test]
