@@ -6,6 +6,8 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.39.0] - 2026-10-18
+
 ### Added
 
 - **`docs/FOR_AGENTS.md`, a discovery guide for AI coding agents** deciding
@@ -43,6 +45,60 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   this at handshake instead of from a one-line summary.
 - `phronesis-mcp` crate description and keywords now mention the code graph
   and AI agents.
+
+### Fixed
+
+- **Codex `PreCompact` and `PostCompact` hooks return responses Codex
+  accepts.** Phronesis answered both events with `hookSpecificOutput`,
+  which Codex does not permit for them, so Codex rejected every non-empty
+  compaction response. The durable directives now travel in the advisory
+  `systemMessage` field, bounded and truncated on a UTF-8 boundary; an
+  empty response is still `{}`. Both events are now in the permitted-field
+  regression checks. (#149)
+- `cargo clippy --workspace -- -D warnings` is clean on current stable
+  toolchains again: the alpha network iterated a map by key and value
+  where only the values were used (`for_kv_map`, rustc 1.97). No behaviour
+  change; CI's clippy runs on MSRV 1.90 and did not see it. (#147)
+
+## [0.38.0] - 2026-10-08
+
+### Added
+
+- **`query_code_graph` explains empty answers.** A query that matches no
+  edges now returns structured diagnostics: whether the relation is
+  unknown, the nearest relations that do exist, sample argument patterns,
+  and glob suggestions. Calling it with no relation, or with `"overview"`,
+  returns a relation summary with edge counts (unless the graph has a real
+  relation named `overview`).
+- `docs/specs/SPEC-rhai-code-graph-boundary.md` specifies the Rust ↔ Rhai
+  graph edges (`exposes`, `rhai_callable_backing`, `loads_rhai_script`,
+  `calls`, `rhai_emits_predicate`), the relations derived from them, and
+  the limits of the static analysis.
+
+### Changed
+
+- **`warn-empty-test` recognises more assertions and joins the audit.**
+  A `#[should_panic]` test (with or without an expected message, any
+  attribute whitespace) is no longer flagged as empty. Assertion matching
+  now accepts prefix and suffix macro forms (`assert*!`, `*_assert!`,
+  `insta::assert_snapshot!`) and helper calls (`assert_*`, `verify*`,
+  `*_assert`). The Rust pack's rule now sets `"audit": true`, so
+  `phr-mcp audit` reports empty tests across the tree; run
+  `phr-mcp init --rules-only` to pick it up.
+
+## [0.37.2] - 2026-10-04
+
+### Fixed
+
+- **Decisions that `enforces:` an OR rule link to it.** `rules.json` OR
+  clauses unfold into `base#orN` child rules, and the decision layer only
+  knew the child ids. A decision naming the compound rule was reported as
+  `decision_missing_rule`, never linked through `rule_governed_by` (so
+  firings carried no decision provenance), inflated `rule_without_decision`
+  to one edge per branch, and showed as uncovered in `wiki-drift`. Rule
+  identity now normalises to the base id (a strict `#or<digits>` suffix)
+  in the graph decision layer, `wiki-drift`, and audit's `--rule`
+  near-miss suggestions. (#136)
 
 ## [0.37.1] - 2026-10-02
 
