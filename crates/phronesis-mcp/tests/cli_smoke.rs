@@ -121,6 +121,36 @@ fn audit_exits_zero_and_emits_audit_output() {
     );
 }
 
+/// `audit --fail-on <level>` with no rules configured must fail: a CI gate
+/// with nothing to check passing silently is how the repository's own gate
+/// went vacuous. Plain `audit` keeps its exit-0 hint.
+#[test]
+fn audit_fail_on_without_rules_exits_nonzero() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.rs"), "fn f() { x.unwrap(); }\n").unwrap();
+
+    for level in ["block", "warn"] {
+        let out = run_bin(&["audit", "--fail-on", level], dir.path());
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            !out.status.success(),
+            "audit --fail-on {level} with no rules exited 0: {stderr}"
+        );
+        assert!(
+            stderr.contains("no rules configured"),
+            "expected the no-rules reason on stderr, got: {stderr}"
+        );
+    }
+
+    let out = run_bin(&["audit"], dir.path());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "plain audit with no rules should stay exit 0: {stderr}"
+    );
+    assert!(stderr.contains("no rules configured"), "got: {stderr}");
+}
+
 /// `audit --rule X` where X names a rule stored as `X#or0`/`X#or1` (an `or`
 /// clause in `when`) must select those expansions; an unmatched filter must
 /// say so rather than blame `.gitignore` for "walked 0 files".

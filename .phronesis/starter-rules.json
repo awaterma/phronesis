@@ -1,0 +1,1066 @@
+{
+  "rules": [
+    {
+      "id": "enforce-no-pre-existing-issue",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Don't deflect with 'pre-existing issue'. Either fix it as part of this change, defer with a clear rationale, or drop the disclaimer."
+      },
+      "when": [
+        {
+          "new_content_contains": "pre-existing issue"
+        }
+      ]
+    },
+    {
+      "id": "enforce-no-not-from-our-changes",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Drop the 'not from our changes' disclaimer. Name the issue and decide: fix or defer."
+      },
+      "when": [
+        {
+          "new_content_contains": "not from our changes"
+        }
+      ]
+    },
+    {
+      "id": "enforce-no-not-caused-by-our",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Drop the 'not caused by our' disclaimer. Own the fix or own the decision to defer."
+      },
+      "when": [
+        {
+          "new_content_contains": "not caused by our"
+        }
+      ]
+    },
+    {
+      "id": "enforce-no-should-work-claim",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Avoid claiming a fix is complete without evidence. Run the verification (test, manual exercise, traced call chain) before reporting, or explicitly label the work 'untested' so the human knows to check."
+      },
+      "when": [
+        {
+          "new_content_contains": "should work now"
+        }
+      ]
+    },
+    {
+      "id": "enforce-no-should-be-fixed-claim",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Don't make repair claims without verifying. Run the failing case end-to-end before reporting a fix; otherwise mark it 'untested' so the user knows to verify."
+      },
+      "when": [
+        {
+          "new_content_contains": "should be fixed"
+        }
+      ]
+    },
+    {
+      "id": "nudge-verify-before-commit",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "About to commit. Trace the call chain end-to-end before reporting done. Half-fixes where one layer is wired but another is not are a recurring failure mode."
+      },
+      "when": [
+        {
+          "bash_command_matches": "(?:^|[;&|]\\s*)(?:(?:command|exec)\\s+)?(?:env\\s+(?:\\S+=\\S+\\s+)*)?\\\\?(?:\\S*/)?git\\b(?:\\s+(?:-c\\s+\\S+|-C\\s+\\S+|--git-dir=\\S+|--work-tree=\\S+|--namespace=\\S+|--exec-path(?:=\\S+)?|--no-pager|--paginate|--bare|--literal-pathspecs|--no-optional-locks|--no-lazy-fetch|-p|-P))*\\s+(?:commit)(?:\\s|$)"
+        },
+        {
+          "__script__": "facts_count('confidence_enabled', []) == 0"
+        }
+      ]
+    },
+    {
+      "id": "llm-warn-git-add-all",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "Stage files explicitly — git add -A / git add . sweeps unrelated changes into the commit. List the files you actually changed."
+      },
+      "when": [
+        {
+          "bash_command_matches": "(?:^|[;&|]\\s*)(?:(?:command|exec)\\s+)?(?:env\\s+(?:\\S+=\\S+\\s+)*)?\\\\?(?:\\S*/)?git\\b(?:\\s+(?:-c\\s+\\S+|-C\\s+\\S+|--git-dir=\\S+|--work-tree=\\S+|--namespace=\\S+|--exec-path(?:=\\S+)?|--no-pager|--paginate|--bare|--literal-pathspecs|--no-optional-locks|--no-lazy-fetch|-p|-P))*\\s+add\\s+(?:-A\\b|\\.(?:$|\\s))"
+        }
+      ]
+    },
+    {
+      "id": "llm-warn-kill-build",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "Builds are I/O-bound: a rustc at 0% CPU is usually in disk-wait, not hung. Give it time or check `ps` state before killing the build."
+      },
+      "when": [
+        {
+          "bash_command_matches": "\\b(pkill|killall|kill)\\b[^;|&]*\\b(cargo|rustc)\\b"
+        }
+      ]
+    },
+    {
+      "id": "block-agent-write-to-verification-allowlist",
+      "phase": "pre",
+      "priority": 100,
+      "then": {
+        "block": "The verification allowlist is a trust anchor: approvals are human-principal acts (SPEC-C S3). An approval written by the agent is not a review — ask the human to approve the artifact."
+      },
+      "when": [
+        {
+          "project_path_is": ".phronesis/verification-allowlist.json"
+        }
+      ]
+    },
+    {
+      "id": "block-agent-write-to-verification-optin",
+      "phase": "pre",
+      "priority": 100,
+      "then": {
+        "block": "`.phronesis/verification.json` is the verification opt-in (including `raw_execution`) and a trust anchor (SPEC-C S1). Only the human changes it."
+      },
+      "when": [
+        {
+          "project_path_is": ".phronesis/verification.json"
+        }
+      ]
+    },
+    {
+      "id": "block-agent-write-to-verification-templates",
+      "phase": "pre",
+      "priority": 100,
+      "then": {
+        "block": "`verification/templates/` is a trust anchor (SPEC-C S1/S3): templates and the devcontainer declaration are human-principal content. Propose the change to the human instead of writing it."
+      },
+      "when": [
+        {
+          "project_path_under": "verification/templates"
+        }
+      ]
+    },
+    {
+      "id": "warn-agent-shell-write-to-trust-anchors",
+      "phase": "pre",
+      "priority": 100,
+      "then": {
+        "warn": "This command appears to write a verification trust anchor (`.phronesis/verification-allowlist.json`, `.phronesis/verification.json`, or `verification/templates/`). Those are human-principal acts (SPEC-C S1/S3) — reading them is fine; changing them is the human's call. Stop and ask unless the human asked for this change."
+      },
+      "when": [
+        {
+          "bash_command_code_matches": "(?s)\\A(?:[^\"'\\\\]|\\\\.|\"(?:[^\"\\\\]|\\\\.)*\"|'[^']*')*?(?:(?:\\d|&)?>>?\\|?\\s*[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*(?:tee|unlink|truncate|touch|patch|shred)\\s(?:[^;&|<\\n]*?\\s)?[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*rm(?:\\s+(?:[^\\s;&|<\\-][^\\s;&|<]*|-[^\\s;&|<\\-][^\\s;&|<]*|--(?:[^\\s;&|<c][^\\s;&|<]*|c[^\\s;&|<a][^\\s;&|<]*)?))*?\\s+[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*restore(?:\\s+(?:[^\\s;&|<\\-][^\\s;&|<]*|-[^\\s;&|<\\-S][^\\s;&|<]*|--(?:[^\\s;&|<s][^\\s;&|<]*|s[^\\s;&|<t][^\\s;&|<]*)?))*?\\s+[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*checkout(?:\\s+[^\\s;&|<]+)*?\\s+--(?:\\s+[^\\s;&|<]+)*?\\s+[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*(?:cp|mv|install|ln|rsync)\\s(?:[^;&|<\\n]*?\\s)?[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?\\s*(?:\\d?>[^;&|\\n]*)?(?:[;&|)`\\n]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*(?:cp|mv|install|ln)(?:\\s[^;&|<\\n]*?)?\\s(?:-t\\s*|--target-directory[=\\s])[\"']?(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*(?:cp|mv|install|ln|rsync)\\s[^;&|<\\n]*?[\\s/\"'](?i:verification(?:-allowlist)?\\.json)[\"']?\\s(?:[^;&|<\\n]*?\\s)?[\"']?(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/?[\"']?\\s*(?:\\d?>[^;&|\\n]*)?(?:[;&|)`\\n]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*(?:cp|mv|install|ln|rsync)\\s[^;&|<\\n]*?[\\s/\"'](?i:templates)/?[\"']?\\s(?:[^;&|<\\n]*?\\s)?[\"']?(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification)/?[\"']?\\s*(?:\\d?>[^;&|\\n]*)?(?:[;&|)`\\n]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*(?:sed|perl|ruby)\\s(?:[^;&|<\\n]*?\\s)?(?:-[A-Za-z]*i\\S*|--in-place\\S*)\\s(?:[^;&|<\\n]*?\\s)?[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*dd\\s[^;&|<\\n]*?\\bof=[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*(?:(?:[A-Za-z_][A-Za-z0-9_]*=\\S*|sudo|env|command|exec|xargs|nohup|time|git|then|do|else)\\s+(?:-\\S*\\s+)*)*(?:curl|wget)(?:\\s[^;&|<\\n]*?)?\\s(?:-[A-Za-z]*[oO]\\s*|--output(?:-document)?[=\\s])[\"']?(?:(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/(?i:verification(?:-allowlist)?\\.json)|(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:verification/templates)(?:/[^\\s;&|<>\"'()]*)?)[\"']?(?:[\\s;&|<>)`]|\\z)|(?:\\A|[;&|({`\\n])\\s*cd\\s+[\"']?(?:\\./|\\$\\{?PWD\\}?/|\\$\\(pwd\\)/)?(?i:\\.phronesis)/?[\"']?\\s*(?:&&|;|\\n)(?:[^c]|c+[^cd]|c+d\\S)*?(?:>>?\\|?\\s*|(?:tee|rm|touch|truncate|sed\\s+-i\\S*)\\s(?:[^;&|<\\n]*?\\s)?)[\"']?(?:\\./)?(?i:verification(?:-allowlist)?\\.json)[\"']?(?:[\\s;&|<>)`]|\\z))"
+        }
+      ]
+    },
+    {
+      "id": "confidence-low-blocks-commit",
+      "phase": "pre",
+      "priority": 30,
+      "then": {
+        "warn": "Low confidence — compile/tests/known-bug evidence is incomplete or failing. Run `phr-mcp confidence` for the per-signal report before presenting this as done."
+      },
+      "when": [
+        {
+          "bash_command_matches": "(?:^|[;&|]\\s*)(?:(?:command|exec)\\s+)?(?:env\\s+(?:\\S+=\\S+\\s+)*)?\\\\?(?:\\S*/)?git\\b(?:\\s+(?:-c\\s+\\S+|-C\\s+\\S+|--git-dir=\\S+|--work-tree=\\S+|--namespace=\\S+|--exec-path(?:=\\S+)?|--no-pager|--paginate|--bare|--literal-pathspecs|--no-optional-locks|--no-lazy-fetch|-p|-P))*\\s+(?:commit|merge|rebase|cherry-pick|revert|pull)(?:\\s|$)"
+        },
+        {
+          "__script__": "facts_count('signal_pass', ['*','*']) <= 1"
+        }
+      ]
+    },
+    {
+      "id": "confidence-medium-warns-commit",
+      "phase": "pre",
+      "priority": 29,
+      "then": {
+        "warn": "Medium confidence — one grounded signal is missing. Review before presenting this as done."
+      },
+      "when": [
+        {
+          "bash_command_matches": "(?:^|[;&|]\\s*)(?:(?:command|exec)\\s+)?(?:env\\s+(?:\\S+=\\S+\\s+)*)?\\\\?(?:\\S*/)?git\\b(?:\\s+(?:-c\\s+\\S+|-C\\s+\\S+|--git-dir=\\S+|--work-tree=\\S+|--namespace=\\S+|--exec-path(?:=\\S+)?|--no-pager|--paginate|--bare|--literal-pathspecs|--no-optional-locks|--no-lazy-fetch|-p|-P))*\\s+(?:commit|merge|rebase|cherry-pick|revert|pull)(?:\\s|$)"
+        },
+        {
+          "__script__": "facts_count('signal_pass', ['*','*']) == 2"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-untested-risky-call",
+      "phase": "pre",
+      "priority": 20,
+      "then": {
+        "warn": "`?func` (in ?file) calls a panicking API from the unwrap/expect/panic/todo/unimplemented family, and no test calls it directly. A panicking path with no test is where a crash reaches a user unnoticed — add a test that exercises this function, or handle the failure case explicitly. Coverage is matched by direct call only, so a function covered transitively may still be flagged."
+      },
+      "when": [
+        {
+          "edited_file": "?file"
+        },
+        {
+          "file_type": [
+            "?file",
+            "production"
+          ]
+        },
+        {
+          "defines_fn": [
+            "?file",
+            "?func"
+          ]
+        },
+        {
+          "or": [
+            {
+              "calls_api": [
+                "?func",
+                "unwrap"
+              ]
+            },
+            {
+              "calls_api": [
+                "?func",
+                "expect"
+              ]
+            },
+            {
+              "calls_api": [
+                "?func",
+                "panic"
+              ]
+            },
+            {
+              "calls_api": [
+                "?func",
+                "todo"
+              ]
+            },
+            {
+              "calls_api": [
+                "?func",
+                "unimplemented"
+              ]
+            }
+          ]
+        },
+        {
+          "no_direct_test": [
+            "?func"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-import-cycle",
+      "phase": "pre",
+      "priority": 20,
+      "then": {
+        "warn": "Module `?module` is part of import cycle `?cycle`. Mutually importing modules can't be understood, tested, or extracted independently, and the cycle tends to attract more coupling over time. Move the shared items into a third module both can depend on."
+      },
+      "when": [
+        {
+          "edited_file": "?file"
+        },
+        {
+          "declares_module": [
+            "?file",
+            "?module"
+          ]
+        },
+        {
+          "in_cycle": [
+            "?module",
+            "?cycle"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-ts-untested-risky-call",
+      "phase": "pre",
+      "priority": 20,
+      "then": {
+        "warn": "`?func` uses a non-null assertion (`!`) and has no direct test. `!` tells the compiler a value cannot be null and produces no runtime check, so when the assumption is wrong the failure surfaces later and elsewhere, usually as a TypeError. Add a test that exercises the null case, or narrow the type so the assertion is unnecessary."
+      },
+      "when": [
+        {
+          "edited_file": "?file"
+        },
+        {
+          "file_type": [
+            "?file",
+            "production"
+          ]
+        },
+        {
+          "defines_fn": [
+            "?file",
+            "?func"
+          ]
+        },
+        {
+          "calls_api": [
+            "?func",
+            "non_null_assertion"
+          ]
+        },
+        {
+          "no_direct_test": [
+            "?func"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-unconsumed-config-key",
+      "phase": "pre",
+      "priority": 20,
+      "then": {
+        "warn": "Generated configuration key `?pointer` in ?artifact has no accepted field on ?consumer and may be silently dropped. Rename or alias the field, remove the key, or make intentional extra-field handling explicit."
+      },
+      "when": [
+        {
+          "edited_file": "?file"
+        },
+        {
+          "declares_module": [
+            "?file",
+            "?artifact"
+          ]
+        },
+        {
+          "unconsumed_data_key": [
+            "?artifact",
+            "?pointer",
+            "?consumer"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-generated-artifact-diagnostic",
+      "phase": "pre",
+      "priority": 20,
+      "then": {
+        "warn": "Generated-artifact binding has diagnostic `?kind` for `?reference`; no cross-language seam was guessed. Correct the exact producer, artifact, or consumer reference."
+      },
+      "when": [
+        {
+          "edited_file": ".phronesis/graph.toml"
+        },
+        {
+          "generated_artifact_diagnostic": [
+            "?kind",
+            "?reference"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "enforce-no-unwrap-in-src",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Avoid .unwrap() in src/ — use ? for error propagation, or expect() with a clear message if truly unreachable."
+      },
+      "when": [
+        {
+          "rust_governed_invocation": [
+            "?file",
+            "?fn",
+            "unwrap"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "enforce-no-todo-in-src",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Don't ship todo!() in src/ — finish the implementation or split it into a tracked task."
+      },
+      "when": [
+        {
+          "rust_governed_invocation": [
+            "?file",
+            "?fn",
+            "todo"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "enforce-no-panic-in-src",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Avoid panic!() in src/ — return a Result and let the caller decide."
+      },
+      "when": [
+        {
+          "rust_governed_invocation": [
+            "?file",
+            "?fn",
+            "panic"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "enforce-no-unimplemented-in-src",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Avoid unimplemented!() in src/ — implement the path or remove it."
+      },
+      "when": [
+        {
+          "rust_governed_invocation": [
+            "?file",
+            "?fn",
+            "unimplemented"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "id": "enforce-no-result-string-error",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "`?fn` in ?file returns Result<_, String>. Define a proper error enum with thiserror."
+      },
+      "when": [
+        {
+          "function_returns_result_string": [
+            "?file",
+            "?fn"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-dbg-in-src",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "dbg!() in src/ — remove before committing, or use tracing::debug!() for diagnostics that stay."
+      },
+      "when": [
+        {
+          "rust_governed_invocation": [
+            "?file",
+            "?fn",
+            "dbg"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "id": "warn-rust-public-fn-takes-string-ref",
+      "phase": "post",
+      "priority": 10,
+      "then": {
+        "warn": "Public `?fn` takes `?param: &String` — prefer `&str` for ergonomics and to avoid forcing callers to own a String."
+      },
+      "when": [
+        {
+          "function_is_public": [
+            "?file",
+            "?fn"
+          ]
+        },
+        {
+          "function_param_type": [
+            "?file",
+            "?fn",
+            "?param",
+            "&String"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-rust-function-param-count-high",
+      "phase": "post",
+      "priority": 5,
+      "then": {
+        "warn": "Function `?fn` in ?file has ?count parameters. Consider grouping related params into a struct (builder/options pattern) or splitting the function — long signatures correlate with God-function debt."
+      },
+      "when": [
+        {
+          "function_param_count_high": [
+            "?file",
+            "?fn",
+            "?count"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "doc_excepted": true,
+      "id": "audit-file-loc-high",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "File exceeds 800 lines — consider splitting into focused submodules. Long files correlate with God-object debt and slow down navigation. (Scoped to src/; test blocks excluded from the count; a top-of-file `//! phronesis-allow: audit-file-loc-high <reason>` doc-comment exempts intentional god-files.)"
+      },
+      "when": [
+        {
+          "file_extension_is": "rs"
+        },
+        {
+          "file_path_matches": "src"
+        },
+        {
+          "file_line_count_above": "800"
+        }
+      ]
+    },
+    {
+      "id": "warn-rust-public-fn-takes-vec-ref",
+      "phase": "post",
+      "priority": 10,
+      "then": {
+        "warn": "Public `?fn` takes `?param: &Vec<T>` — prefer `&[T]` for ergonomics; a slice accepts arrays, slices, and Vecs alike. From the patterns guide §API Design 1."
+      },
+      "when": [
+        {
+          "function_is_public": [
+            "?file",
+            "?fn"
+          ]
+        },
+        {
+          "function_param_is_vec_ref": [
+            "?file",
+            "?fn",
+            "?param"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "warn-cargo-build-without-workspace",
+      "phase": "pre",
+      "priority": 3,
+      "then": {
+        "warn": "Running `?cmd` without `--workspace` only checks part of the workspace. Use `cargo <subcommand> --workspace --tests --examples` to catch sibling-crate breakage, or pass `-p <crate>` if scope was intentional."
+      },
+      "when": [
+        {
+          "cargo_command_lacks_workspace": "?cmd"
+        }
+      ]
+    },
+    {
+      "id": "warn-clone-heavy",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "`?fn` in ?file calls .clone() ?count times — review whether references or borrowed slices would work."
+      },
+      "when": [
+        {
+          "function_clone_count_high": [
+            "?file",
+            "?fn",
+            "?count"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-pub-fn-missing-doc",
+      "phase": "post",
+      "priority": 3,
+      "then": {
+        "warn": "Public fn `?fn` in ?file has no doc comment — public items should carry a `///` doc comment explaining what they do (Rust API Guidelines C-DOC)."
+      },
+      "when": [
+        {
+          "pub_fn_without_doc_comment": [
+            "?file",
+            "?fn"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-empty-test",
+      "phase": "post",
+      "priority": 5,
+      "then": {
+        "warn": "Test `?fn` in ?file has no assertions or `?` propagation — a placeholder test that always passes hides regressions."
+      },
+      "when": [
+        {
+          "test_without_assertion": [
+            "?file",
+            "?fn"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-deref-for-non-pointer-type",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "`impl Deref for` — Deref polymorphism is an anti-pattern for non-pointer types. Reserve Deref for smart-pointer wrappers (Box/Arc/Rc); for other types, prefer explicit delegation methods so the API surface is intentional."
+      },
+      "when": [
+        {
+          "rust_trait_impl": [
+            "?file",
+            "?type",
+            "Deref"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "audit-manual-err-return",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "Manual `=> return Err(...)` in a match arm — the `?` operator usually replaces this whole shape. Surface during one-time audit sweeps; deliberately silent at hook time so in-progress refactors aren't blocked."
+      },
+      "when": [
+        {
+          "rust_governed_match_arm": [
+            "?file",
+            "?fn",
+            "return_err"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "doc_excepted": true,
+      "id": "audit-newtype-id-string",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "Field named `*_id: String` — consider a newtype like `StateId(String)` for type safety so one ID kind can't be passed where another is expected. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt. A `///` doc-comment immediately above the field marks an intentional string ID, e.g. one crossing a JSON registry boundary, as an accepted exception.)"
+      },
+      "when": [
+        {
+          "new_content_contains": "_id: String"
+        },
+        {
+          "file_extension_is": "rs"
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "audit-newtype-id-u64",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "Field named `*_id: u64` — consider a newtype like `UserId(u64)` to prevent mixing different ID types. From the patterns guide §Design Patterns 2 (Newtype Pattern). (Scoped to src/ — test fixtures are exempt.)"
+      },
+      "when": [
+        {
+          "rust_primitive_id_field": [
+            "?file",
+            "?field",
+            "u64"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "audit-if-let-opportunity-none-empty",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "`match` with a `None => {}` arm — `if let Some(x) = ...` is usually clearer. From the patterns guide §Idioms 2."
+      },
+      "when": [
+        {
+          "rust_governed_match_arm": [
+            "?file",
+            "?fn",
+            "none_empty"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "audit-if-let-opportunity-err-empty",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "`match` arm `Err(_) => {}` silently swallows errors. Either handle the error (log/return) or use `if let Ok(x) = ...` to make the intent explicit."
+      },
+      "when": [
+        {
+          "rust_governed_match_arm": [
+            "?file",
+            "?fn",
+            "err_empty"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "block-panic-in-drop-impl",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "Panicking construct (?construct) inside `Drop::drop` for `?type` — a panic that occurs during unwind inside Drop::drop aborts the whole process (std::process::abort) rather than failing gracefully. Log and swallow the error in drop() instead of panicking."
+      },
+      "when": [
+        {
+          "rust_panic_in_drop": [
+            "?file",
+            "?type",
+            "?construct"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "block-deny-warnings-attribute",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "`#![deny(warnings)]` breaks builds on toolchain upgrades, since each rustc release introduces new warnings. Move the policy to CI with `RUSTFLAGS=\"-D warnings\"` instead. From the patterns guide §Anti-patterns (deny-warnings)."
+      },
+      "when": [
+        {
+          "rust_governed_attribute": [
+            "?file",
+            "deny_warnings"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-public-fn-takes-box-ref",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "Parameter type `&Box<T>` adds a useless layer of indirection — prefer `&T` directly. From the patterns guide §Idioms (borrowed-types-for-arguments)."
+      },
+      "when": [
+        {
+          "function_param_is_box_ref": [
+            "?file",
+            "?fn",
+            "?param"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-expect-with-empty-message",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "`.expect(\"\")` is strictly worse than `.unwrap()` — same panic, no explanation of the invariant. Either supply a real message or use `.unwrap()` and let the existing rule flag it."
+      },
+      "when": [
+        {
+          "rust_governed_invocation": [
+            "?file",
+            "?fn",
+            "expect_empty"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "audit-rc-refcell-in-src",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "`Rc<RefCell<T>>` is the textbook 'fighting the borrow checker' shape — often a signal that an arena, index-based references, or a redesigned ownership model would be a better fit. Confirm intent."
+      },
+      "when": [
+        {
+          "rust_rc_refcell_type": [
+            "?file",
+            "?count"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "doc_excepted": true,
+      "id": "audit-string-concat-with-plus",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "String concatenation with `\" + &` — prefer `format!(\"{}{}\", a, b)` for readability and to avoid intermediate allocations. From the patterns guide §Idioms (concat-format)."
+      },
+      "when": [
+        {
+          "new_content_contains": "\" + &"
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "doc_excepted": true,
+      "id": "audit-allow-dead-code-in-src",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "`#[allow(dead_code)]` in src/ — either delete the code or add a `///` doc-comment immediately above explaining why it's kept (planned API, generic-constraint trick, intentional placeholder). Documented exceptions are not flagged."
+      },
+      "when": [
+        {
+          "new_content_contains": "#[allow(dead_code)]"
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "audit-env-set-var-in-src",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "`env::set_var(` in src/ — mutating process environment variables is unsound under concurrent reads (which is why edition 2024 marks the call unsafe). Verify the call site is genuinely single-threaded, or refactor to pass configuration explicitly through function arguments / a context struct. Tests where you control the thread count are usually fine; library code almost never is."
+      },
+      "when": [
+        {
+          "rust_governed_invocation": [
+            "?file",
+            "?fn",
+            "env_set_var"
+          ]
+        },
+        {
+          "file_path_matches": "src"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "doc_excepted": true,
+      "id": "audit-rust-let-binding-count-high",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "`?fn` in ?file has ?count outer-scope `let` bindings — consider scoping intermediate temporaries into a block (`let result = { let raw = ...; let parsed = ...; ... }`) so only the final value is visible to the rest of the function. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025). (Scoped to src/ — examples/benches/tests are not production code and are exempt.)"
+      },
+      "when": [
+        {
+          "file_path_matches": "src"
+        },
+        {
+          "function_let_binding_count_high": [
+            "?file",
+            "?fn",
+            "?count"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "doc_excepted": true,
+      "id": "audit-rust-let-mut-count-high",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "`?fn` in ?file has ?count outer-scope `let mut` declarations — consider John Nunley's block pattern: wrap the mutation in `let x = { let mut tmp = ...; ...; tmp }` so the surrounding scope sees an immutable binding. Block pattern: John Nunley, 'Rust's Block Pattern' (Dec 2025). (Scoped to src/ — examples/benches/tests are not production code and are exempt.)"
+      },
+      "when": [
+        {
+          "file_path_matches": "src"
+        },
+        {
+          "function_let_mut_count_high": [
+            "?file",
+            "?fn",
+            "?count"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "audit-rust-sync-lock-across-await",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "`?fn` in ?file keeps std synchronization guard `?guard` in scope across `.await` — close the guard's lexical scope before awaiting. A synchronous Mutex/RwLock can block the executor and often makes the future non-Send."
+      },
+      "when": [
+        {
+          "rust_sync_lock_guard_across_await": [
+            "?file",
+            "?fn",
+            "?guard"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "audit-rust-unsafe-without-safety-comment",
+      "phase": "audit",
+      "priority": 3,
+      "then": {
+        "warn": "Unsafe block in `?fn` (?file) has no nearby `SAFETY:` explanation — document the invariant that makes the operation sound so reviewers can verify it."
+      },
+      "when": [
+        {
+          "rust_unsafe_without_safety_comment": [
+            "?file",
+            "?fn"
+          ]
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "warn-rust-blocking-call-in-async",
+      "phase": "pre",
+      "priority": 5,
+      "then": {
+        "warn": "Async function `?fn` in ?file calls blocking `?callee` directly — use the async runtime's equivalent or isolate the operation with `spawn_blocking`."
+      },
+      "when": [
+        {
+          "rust_async_blocking_call": [
+            "?file",
+            "?fn",
+            "?callee"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "block-rhai-inline-eval-string",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "`?fn` in ?file calls `engine.eval(<string literal>)`. Inline string-eval can't be tested independently of the surrounding Rust code and bypasses any script registry. Move the script to a `.rhai` file and load it via `engine.compile_file(...)` (or `compile(...)` on `include_str!`-ed content) so the AST can be cached, values-checked at build time, and exercised in isolation."
+      },
+      "when": [
+        {
+          "engine_eval_string_literal": [
+            "?file",
+            "?fn"
+          ]
+        },
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "audit": true,
+      "id": "block-rhai-print-in-script",
+      "phase": "pre",
+      "priority": 10,
+      "then": {
+        "block": "`print(` appears in a .rhai script. `print` is Rhai's equivalent of `dbg!()` — debug output that bypasses whatever response/logging channel your host has registered. Use the host-registered function for emitting output (commonly a `log`, `emit`, or `response_*` proxy your `Engine` exposes via `register_fn`) so script output flows through the same path as the rest of your application."
+      },
+      "when": [
+        {
+          "new_content_contains": "print("
+        },
+        {
+          "file_extension_is": "rhai"
+        }
+      ]
+    }
+  ]
+}

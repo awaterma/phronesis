@@ -1810,6 +1810,14 @@ async fn handle_audit(
         }
     };
     if rules.rules.is_empty() {
+        // A gate with nothing to check must not pass: `--fail-on` in CI on a
+        // checkout without `.phronesis/rules.json` would otherwise exit 0
+        // forever and look like a clean tree.
+        if fail_on.is_some() {
+            anyhow::bail!(
+                "no rules configured, so `--fail-on` has nothing to check; run `phr-mcp init` first"
+            );
+        }
         eprintln!("phronesis: no rules configured; run `phr-mcp init` first");
         return Ok(());
     }

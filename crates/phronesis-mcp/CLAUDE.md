@@ -782,6 +782,10 @@ phr-mcp audit --json                   # machine-readable
 phr-mcp audit --fail-on block          # exit 1 on any blocked violation (CI gate)
 ```
 
+`--fail-on` also exits non-zero when no rules are configured: a gate with
+nothing to check fails rather than passing vacuously. Plain `phr-mcp audit`
+still prints the `run phr-mcp init first` hint and exits 0.
+
 Rules opt in via `audit: true` on the disk rule. Diff-only rules and
 LLM-deflection rules don't participate by default. The audit engine
 honors `new_content_contains` predicates plus `file_path_matches` and

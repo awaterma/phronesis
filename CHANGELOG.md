@@ -6,6 +6,18 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`phr-mcp audit --fail-on <level>` no longer passes when no rules are
+  configured.** It exits non-zero naming the missing rules, so a CI gate run
+  on a checkout without `.phronesis/rules.json` fails instead of reporting a
+  clean tree. Plain `phr-mcp audit` keeps its exit-0 hint.
+- **This repository's CI audit gate now checks something.** `.phronesis/rules.json`
+  and its `starter-rules.json` baseline (generated with
+  `phr-mcp init --rules-only --packs rust,rhai`) are versioned; previously
+  `.gitignore` excluded them, so the `msrv` job's
+  `audit --fail-on block` ran against no rules and exited 0.
+
 ## [0.39.0] - 2026-10-18
 
 ### Added
