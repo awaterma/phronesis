@@ -1,5 +1,16 @@
 {
   "hooks": {
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "command": "phr-mcp codex-hook Interrupt",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
     "PostCompact": [
       {
         "hooks": [
@@ -44,6 +55,17 @@
         "matcher": "^(Bash|apply_patch)$"
       }
     ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "phr-mcp codex-hook SessionEnd",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
     "SessionStart": [
       {
         "hooks": [
@@ -52,7 +74,7 @@
             "type": "command"
           }
         ],
-        "matcher": "startup|resume|clear"
+        "matcher": ""
       }
     ],
     "Stop": [
