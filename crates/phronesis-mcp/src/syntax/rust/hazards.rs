@@ -37,7 +37,60 @@ fn has_safety_comment(node: Node, source: &[u8]) -> bool {
 
     let body_end = node.end_byte().min(source.len());
     let body_prefix_end = (start + 200).min(body_end);
-    explains_safety(std::str::from_utf8(&source[start..body_prefix_end]).unwrap_or(""))
+    if explains_safety(std::str::from_utf8(&source[start..body_prefix_end]).unwrap_or("")) {
+        return true;
+    }
+
+    leading_comments_explain_safety(statement_anchor(node), source)
+}
+
+/// The outermost ancestor that begins on the unsafe block's line — the
+/// statement a leading comment documents, e.g. the `let` in
+/// `let x = unsafe {`. Stops below any enclosing block, whose own leading
+/// comments describe something else.
+fn statement_anchor(node: Node) -> Node {
+    let row = node.start_position().row;
+    let mut anchor = node;
+    while let Some(parent) = anchor.parent() {
+        if parent.start_position().row != row
+            || matches!(parent.kind(), "block" | "source_file" | "declaration_list")
+        {
+            break;
+        }
+        anchor = parent;
+    }
+    anchor
+}
+
+/// Whether the contiguous run of comments directly above `anchor` explains
+/// safety. A `// SAFETY:` paragraph spans several lines, so only checking
+/// the line just above the block misses its marker. The run ends at a blank
+/// line or any non-comment sibling; attributes are skipped, since they sit
+/// between a comment and the item it documents.
+fn leading_comments_explain_safety(anchor: Node, source: &[u8]) -> bool {
+    let mut next_start = anchor.start_byte();
+    let mut current = anchor.prev_sibling();
+    while let Some(sibling) = current {
+        let kind = sibling.kind();
+        if !matches!(kind, "line_comment" | "block_comment" | "attribute_item") {
+            return false;
+        }
+        let end = sibling.end_byte().min(next_start);
+        let trimmed_end = source[..end]
+            .iter()
+            .rposition(|byte| !byte.is_ascii_whitespace())
+            .map_or(0, |last| last + 1);
+        let gap = &source[trimmed_end..next_start];
+        if gap.iter().filter(|byte| **byte == b'\n').count() > 1 {
+            return false;
+        }
+        if kind != "attribute_item" && explains_safety(sibling.utf8_text(source).unwrap_or("")) {
+            return true;
+        }
+        next_start = sibling.start_byte();
+        current = sibling.prev_sibling();
+    }
+    false
 }
 
 /// Whether nearby prose reads as a safety justification.
@@ -352,6 +405,37 @@ mod tests {
         let inside = parse("fn g(p: *const u8) { unsafe { // SAFETY: checked above.\n*p; } }");
         assert!(extract_unsafe_without_safety(&before).is_empty());
         assert!(extract_unsafe_without_safety(&inside).is_empty());
+    }
+
+    // Pins the false positive on `properties::process::kill_group`: the
+    // `SAFETY:` marker opens a multi-line comment, so it is not on the line
+    // directly above `unsafe {`.
+    #[test]
+    fn multi_line_safety_comment_above_block_is_accepted() {
+        let statement = parse(
+            "fn f(pgid: i32) {\n    // SAFETY: killpg takes plain integers; the\n    // group id is our own child's pid,\n    // so it cannot name an unrelated group.\n    // Errors are ignored.\n    unsafe {\n        killpg(pgid, 9);\n    }\n}",
+        );
+        let binding = parse(
+            "fn g(p: *const u8) -> u8 {\n    // SAFETY: the caller hands us a live pointer\n    // into the buffer.\n    // Reading one byte stays in bounds.\n    let byte = unsafe { *p };\n    byte\n}",
+        );
+        let block_comment = parse(
+            "fn h(p: *const u8) {\n    /* SAFETY: p is live.\n       It came from a Box. */\n    // Read it.\n    unsafe { *p; }\n}",
+        );
+        assert!(extract_unsafe_without_safety(&statement).is_empty());
+        assert!(extract_unsafe_without_safety(&binding).is_empty());
+        assert!(extract_unsafe_without_safety(&block_comment).is_empty());
+    }
+
+    #[test]
+    fn unrelated_comment_block_above_unsafe_is_reported() {
+        let unrelated = parse(
+            "fn f(p: *const u8) {\n    // Read the first byte of the header.\n    // Callers pass the buffer start.\n    // See the parser for the layout.\n    unsafe { *p; }\n}",
+        );
+        let separated = parse(
+            "fn g(p: *const u8) {\n    // SAFETY: about the call below.\n    other();\n    // Read the byte.\n\n    // Then return.\n    unsafe { *p; }\n}",
+        );
+        assert_eq!(extract_unsafe_without_safety(&unrelated), vec!["f"]);
+        assert_eq!(extract_unsafe_without_safety(&separated), vec!["g"]);
     }
 
     #[test]
