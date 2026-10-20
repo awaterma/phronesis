@@ -146,6 +146,17 @@ def main():
                                    '--output', fail_output, '--exit', '1'])['stdout']
         assert 'outcome:compile_ok' in tags and 'outcome:test_fail' in tags, tags
         assert 'outcome:test_pass' not in tags, tags
+        # A test that exits the process reports nothing: earlier PASS lines
+        # and a nonzero exit must not ground a test pass.
+        write('calc_test.go', 'package verify\nimport ("os"; "testing")\n'
+              'func TestAdd(t *testing.T) { if Add(2, 3) != 5 { t.Fatal("bad") } }\n'
+              'func TestExit(t *testing.T) { os.Exit(3) }\n')
+        exited = run('go-test-exit', [go, 'test', '-v', './...'], expect=1)
+        exit_output = out / 'go-test-exit.txt'
+        exit_output.write_text(exited['stdout'] + exited['stderr'])
+        tags = run('signal-exit', [binary, 'signal', 'ingest', '--command', 'go test -v ./...',
+                                   '--output', exit_output, '--exit', '1'])['stdout']
+        assert 'outcome:compile_ok' in tags and 'outcome:test_' not in tags, tags
         write('calc.go', 'package verify\nfunc Add(a, b int) int { return missing + b }\n')
         compile_failure = run('go-compile-fail', [go, 'test', '-v', './...'], expect=1)
         assert 'undefined: missing' in compile_failure['stdout'] + compile_failure['stderr']

@@ -352,29 +352,31 @@ impl CompiledDef {
     /// stops the search: two patterns describe two output formats of the same
     /// tool, so matching both would double-count rather than accumulate.
     ///
-    /// `None` when the def has no summary regex or none of them matched,
-    /// unless the def opted into `test_counts: "per_test"` and at least one
-    /// per-test line matched.
-    fn test_counts(&self, output: &str) -> Option<TestCounts> {
+    /// `None` when the def has no summary regex or none of them matched;
+    /// `per_test_counts` is the opted-in fallback.
+    fn test_counts(
+        &self,
+        output: &str,
+        per_test_lines: &[(String, bool)],
+        command_exit: Option<i32>,
+    ) -> Option<TestCounts> {
         self.summary_counts(output)
-            .or_else(|| self.per_test_counts(output))
+            .or_else(|| Self::per_test_counts(per_test_lines, command_exit))
     }
 
-    /// Counts from the opted-in per-test lines; `None` when the def did not
-    /// opt in or no line matched (a quiet run proves no test ran).
-    fn per_test_counts(&self, output: &str) -> Option<TestCounts> {
-        if !self.counts_from_per_test {
+    /// Counts from the opted-in per-test lines. A line reports one test; it
+    /// says nothing about tests that never reported (a test that called
+    /// `os.Exit`, a timeout, a truncated capture). Only a zero exit closes
+    /// that gap, so a nonzero or absent exit grounds counts only when some
+    /// line failed: per-test lines can prove a failure, never a pass, from
+    /// a run that did not exit clean.
+    fn per_test_counts(lines: &[(String, bool)], command_exit: Option<i32>) -> Option<TestCounts> {
+        if lines.is_empty() {
             return None;
         }
-        let results = self.per_test_results(output);
-        if results.is_empty() {
-            return None;
-        }
-        let passed = results.iter().filter(|(_, passed)| *passed).count();
-        Some(TestCounts {
-            passed,
-            failed: results.len() - passed,
-        })
+        let passed = lines.iter().filter(|(_, passed)| *passed).count();
+        let failed = lines.len() - passed;
+        (failed > 0 || command_exit == Some(0)).then_some(TestCounts { passed, failed })
     }
 
     fn summary_counts(&self, output: &str) -> Option<TestCounts> {
@@ -454,15 +456,23 @@ impl CompiledDef {
         output: &str,
         command_exit: Option<i32>,
     ) -> Vec<OutcomeFact> {
-        let counts = self.test_counts(output);
+        let per_test_lines = if self.counts_from_per_test {
+            self.per_test_results(output)
+        } else {
+            Vec::new()
+        };
+        let counts = self.test_counts(output, &per_test_lines, command_exit);
+        // Tests that reported proves the code compiled, even when the lines
+        // ground no counts (a run that died after some tests passed).
+        let tests_ran = counts.is_some() || !per_test_lines.is_empty();
         let status = if self.compile_fail_hit(output) {
             BuildStatus::Fail
         } else {
             match command_exit {
                 Some(0) => BuildStatus::Pass,
-                Some(_) if counts.is_some() => BuildStatus::Pass,
+                Some(_) if tests_ran => BuildStatus::Pass,
                 Some(_) => BuildStatus::Fail,
-                None if counts.is_some() || self.compile_success_hit(output) => BuildStatus::Pass,
+                None if tests_ran || self.compile_success_hit(output) => BuildStatus::Pass,
                 None => BuildStatus::Unknown,
             }
         };
@@ -1675,6 +1685,38 @@ mod tests {
         let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", "...truncated", None);
         assert_eq!(build_status(&facts), Some("unknown"));
         assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn per_test_counts_never_turn_a_failed_run_into_a_pass() {
+        // `os.Exit` inside a test, or `-timeout`, prints only the earlier
+        // tests' PASS lines and exits nonzero: the run failed, no line says
+        // which test, so there is no test verdict (the build still passed).
+        let exited = "=== RUN   TestA\n--- PASS: TestA (0.00s)\n=== RUN   TestB\nFAIL\texample.com/demo\t0.227s\nFAIL\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", exited, Some(1));
+        assert_eq!(
+            build_status(&facts),
+            Some("pass"),
+            "tests ran, so it compiled"
+        );
+        assert!(test_fact(&facts).is_none(), "{facts:?}");
+    }
+
+    #[test]
+    fn per_test_counts_without_an_exit_never_ground_a_pass() {
+        // A truncated prefix that ends after a PASS line proves nothing
+        // about the tests that had not reported yet.
+        let prefix = "=== RUN   TestA\n--- PASS: TestA (0.00s)\n=== RUN   TestB\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", prefix, None);
+        assert_eq!(
+            build_status(&facts),
+            Some("pass"),
+            "tests ran, so it compiled"
+        );
+        assert!(test_fact(&facts).is_none(), "{facts:?}");
+        // Even with the package's `ok` line, no exit code means no pass.
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", GO_PASS, None);
+        assert!(test_fact(&facts).is_none(), "{facts:?}");
     }
 
     #[test]
