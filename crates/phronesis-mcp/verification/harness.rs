@@ -21,6 +21,14 @@
 //      `graph/query.rs` matches only at a `:` boundary, finds every ID of
 //      the form `<prefix ending in ':'><name>`, and narrows as a name is
 //      qualified.
+//
+// and one property of toolchain outcome parsing:
+//
+//   6. graded_outcome — `CompiledDef::parse` and its count source in
+//      `outcomes/toolchain.rs`, plus the `signal ingest` refusal in
+//      `outcomes/mod.rs`: opting into `test_counts: "per_test"` never
+//      invents a test verdict, never overrides a summary, and never turns a
+//      compile failure or a failing test into a pass.
 
 #![allow(unused_imports)]
 
@@ -289,6 +297,301 @@ proof fn qualifying_a_name_only_narrows(q: Seq<u8>, want: Seq<u8>, got: Seq<u8>)
 }
 
 // ---------------------------------------------------------------------------
+// Invariant 6: Graded toolchain outcome (mirror of `CompiledDef::parse`)
+// ---------------------------------------------------------------------------
+//
+// The production rule in `outcomes/toolchain.rs`, for a non-proof def:
+//
+//     counts = summary_counts(output)            // first matching test_summary
+//         .or_else(|| per_test_counts(output));  // only with test_counts: "per_test"
+//     build  = if compile_fail_hit { Fail } else { match exit {
+//         Some(0) => Pass, Some(_) if counts.is_some() => Pass, Some(_) => Fail,
+//         None if counts.is_some() || compile_success_hit => Pass, None => Unknown } };
+//     test   = (build == Pass).then(counts)      // test_outcome(passed, failed, total)
+//     tag    = total > 0 && failed == 0 => test_pass; total > 0 => test_fail; else none
+//
+// and `record_from_output` refuses (`NoOutcome`) exactly when every tag is
+// `compile_unknown`. Regex matching is abstracted to its results: whether a
+// `compile_fail` / `compile_success` pattern hit, the summary's counts if one
+// matched, and one bool per matched per-test line (`true` = a `pass_tokens`
+// status).
+
+pub enum Build {
+    Pass,
+    Fail,
+    Unknown,
+}
+
+pub enum TestVerdict {
+    NoVerdict,
+    TestPass,
+    TestFail,
+}
+
+/// Spec: how many per-test lines carry a pass status.
+pub open spec fn spec_count_pass(lines: Seq<bool>) -> nat
+    decreases lines.len(),
+{
+    if lines.len() == 0 {
+        0
+    } else {
+        spec_count_pass(lines.drop_last()) + if lines.last() { 1nat } else { 0nat }
+    }
+}
+
+/// Spec: `per_test_counts` — `None` unless opted in and at least one line
+/// matched; otherwise (passed, failed).
+pub open spec fn spec_per_test_counts(opt_in: bool, lines: Seq<bool>) -> Option<(nat, nat)> {
+    if !opt_in || lines.len() == 0 {
+        None
+    } else {
+        Some((spec_count_pass(lines), (lines.len() - spec_count_pass(lines)) as nat))
+    }
+}
+
+/// Spec: `test_counts` — a matching summary first, then the opt-in source.
+pub open spec fn spec_counts(summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>) -> Option<(nat, nat)> {
+    if summary.is_some() {
+        summary
+    } else {
+        spec_per_test_counts(opt_in, lines)
+    }
+}
+
+/// Spec: the graded build table.
+pub open spec fn spec_build(
+    compile_fail_hit: bool,
+    exit: Option<i32>,
+    counts: Option<(nat, nat)>,
+    compile_success_hit: bool,
+) -> Build {
+    if compile_fail_hit {
+        Build::Fail
+    } else {
+        match exit {
+            Some(code) => if code == 0 || counts.is_some() { Build::Pass } else { Build::Fail },
+            None => if counts.is_some() || compile_success_hit { Build::Pass } else { Build::Unknown },
+        }
+    }
+}
+
+/// Spec: the test tag — emitted only after a passing build.
+pub open spec fn spec_test(build: Build, counts: Option<(nat, nat)>) -> TestVerdict {
+    match (build, counts) {
+        (Build::Pass, Some((passed, failed))) =>
+            if passed + failed > 0 && failed == 0 {
+                TestVerdict::TestPass
+            } else if passed + failed > 0 {
+                TestVerdict::TestFail
+            } else {
+                TestVerdict::NoVerdict
+            },
+        _ => TestVerdict::NoVerdict,
+    }
+}
+
+/// Spec: the whole outcome for one parsed run.
+pub open spec fn spec_outcome(
+    compile_fail_hit: bool,
+    exit: Option<i32>,
+    compile_success_hit: bool,
+    summary: Option<(nat, nat)>,
+    opt_in: bool,
+    lines: Seq<bool>,
+) -> (Build, TestVerdict) {
+    let counts = spec_counts(summary, opt_in, lines);
+    let build = spec_build(compile_fail_hit, exit, counts, compile_success_hit);
+    (build, spec_test(build, counts))
+}
+
+/// Spec: `signal ingest` refuses exactly the runs whose only tag is
+/// `compile_unknown`.
+pub open spec fn spec_ingest_refused(outcome: (Build, TestVerdict)) -> bool {
+    outcome.0 == Build::Unknown && outcome.1 == TestVerdict::NoVerdict
+}
+
+pub open spec fn lift(summary: Option<(u64, u64)>) -> Option<(nat, nat)> {
+    match summary {
+        Some((p, f)) => Some((p as nat, f as nat)),
+        None => None,
+    }
+}
+
+proof fn count_pass_bounded(lines: Seq<bool>)
+    ensures spec_count_pass(lines) <= lines.len(),
+    decreases lines.len(),
+{
+    if lines.len() > 0 {
+        count_pass_bounded(lines.drop_last());
+    }
+}
+
+/// Exec: count the passing per-test lines.
+fn count_pass(lines: &[bool]) -> (n: u64)
+    requires lines.len() <= u64::MAX,
+    ensures n as nat == spec_count_pass(lines@),
+{
+    let mut n: u64 = 0;
+    let mut i: usize = 0;
+    while i < lines.len()
+        invariant
+            0 <= i <= lines.len(),
+            lines.len() <= u64::MAX,
+            n as nat == spec_count_pass(lines@.subrange(0, i as int)),
+            n <= i,
+        decreases lines.len() - i,
+    {
+        assert(lines@.subrange(0, i as int + 1).drop_last() =~= lines@.subrange(0, i as int));
+        if lines[i] {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    assert(lines@.subrange(0, lines.len() as int) =~= lines@);
+    n
+}
+
+/// Exec: the outcome, mirroring `CompiledDef::parse`. Verified to agree with
+/// `spec_outcome` on every input.
+fn outcome(
+    compile_fail_hit: bool,
+    exit: Option<i32>,
+    compile_success_hit: bool,
+    summary: Option<(u64, u64)>,
+    opt_in: bool,
+    lines: &[bool],
+) -> (result: (Build, TestVerdict))
+    requires lines.len() <= u64::MAX,
+    ensures result == spec_outcome(compile_fail_hit, exit, compile_success_hit, lift(summary), opt_in, lines@),
+{
+    let counts: Option<(u64, u64)> = match summary {
+        Some(c) => Some(c),
+        None => if opt_in && lines.len() > 0 {
+            let passed = count_pass(lines);
+            proof { count_pass_bounded(lines@); }
+            Some((passed, lines.len() as u64 - passed))
+        } else {
+            None
+        },
+    };
+    let build = if compile_fail_hit {
+        Build::Fail
+    } else {
+        match exit {
+            Some(code) => if code == 0 || counts.is_some() { Build::Pass } else { Build::Fail },
+            None => if counts.is_some() || compile_success_hit { Build::Pass } else { Build::Unknown },
+        }
+    };
+    let test = match (&build, counts) {
+        (Build::Pass, Some((passed, failed))) =>
+            if failed == 0 && passed > 0 {
+                TestVerdict::TestPass
+            } else if failed > 0 {
+                TestVerdict::TestFail
+            } else {
+                TestVerdict::NoVerdict
+            },
+        _ => TestVerdict::NoVerdict,
+    };
+    (build, test)
+}
+
+/// Proof (backward compatibility): without the opt-in, counts are exactly
+/// the summary's — every def written before `test_counts` behaves as before.
+proof fn opting_out_is_the_old_behaviour(summary: Option<(nat, nat)>, lines: Seq<bool>)
+    ensures spec_counts(summary, false, lines) == summary,
+{
+}
+
+/// Proof (precedence): a matching summary always wins over per-test lines.
+proof fn a_summary_wins(summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>)
+    requires summary.is_some(),
+    ensures spec_counts(summary, opt_in, lines) == summary,
+{
+}
+
+/// Proof (no invention): with no summary and no per-test line, there is no
+/// test verdict, whatever the exit code says.
+proof fn a_quiet_run_has_no_test_verdict(
+    compile_fail_hit: bool, exit: Option<i32>, compile_success_hit: bool, opt_in: bool, lines: Seq<bool>,
+)
+    requires lines.len() == 0,
+    ensures spec_outcome(compile_fail_hit, exit, compile_success_hit, None, opt_in, lines).1 == TestVerdict::NoVerdict,
+{
+}
+
+/// Proof (separation): a compile failure is a build failure with no test
+/// verdict, so it is never confused with a failing test.
+proof fn a_compile_failure_has_no_test_verdict(
+    exit: Option<i32>, compile_success_hit: bool, summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>,
+)
+    ensures ({
+        let o = spec_outcome(true, exit, compile_success_hit, summary, opt_in, lines);
+        o.0 == Build::Fail && o.1 == TestVerdict::NoVerdict
+    }),
+{
+}
+
+/// Proof (soundness of a pass): a test pass needs a passing build, at least
+/// one passed test, and zero failures.
+proof fn a_test_pass_is_grounded(
+    compile_fail_hit: bool, exit: Option<i32>, compile_success_hit: bool,
+    summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>,
+)
+    requires spec_outcome(compile_fail_hit, exit, compile_success_hit, summary, opt_in, lines).1 == TestVerdict::TestPass,
+    ensures ({
+        let c = spec_counts(summary, opt_in, lines);
+        spec_outcome(compile_fail_hit, exit, compile_success_hit, summary, opt_in, lines).0 == Build::Pass
+            && c.is_some() && c.unwrap().0 > 0 && c.unwrap().1 == 0
+    }),
+{
+}
+
+proof fn a_failing_line_caps_the_count(lines: Seq<bool>, i: int)
+    requires 0 <= i < lines.len(), !lines[i],
+    ensures spec_count_pass(lines) < lines.len(),
+    decreases lines.len(),
+{
+    count_pass_bounded(lines.drop_last());
+    if i < lines.len() - 1 {
+        a_failing_line_caps_the_count(lines.drop_last(), i);
+    }
+}
+
+/// Proof (soundness of per-test counts): one failing per-test line rules out
+/// a test pass when the counts come from per-test lines.
+proof fn a_failing_line_rules_out_a_test_pass(
+    compile_fail_hit: bool, exit: Option<i32>, compile_success_hit: bool, lines: Seq<bool>, i: int,
+)
+    requires 0 <= i < lines.len(), !lines[i],
+    ensures spec_outcome(compile_fail_hit, exit, compile_success_hit, None, true, lines).1 != TestVerdict::TestPass,
+{
+    a_failing_line_caps_the_count(lines, i);
+}
+
+/// Proof (absent evidence is unknown): no exit code, no compile pattern hit
+/// and no counts is `unknown`, never a pass.
+proof fn no_exit_and_no_evidence_is_unknown(opt_in: bool, lines: Seq<bool>)
+    requires !opt_in || lines.len() == 0,
+    ensures spec_outcome(false, None, false, None, opt_in, lines).0 == Build::Unknown,
+{
+}
+
+/// Proof (ingest): `signal ingest` refuses exactly the runs with an unknown
+/// build — a compile failure, a compile pass, and any test verdict are all
+/// recorded.
+proof fn ingest_refuses_exactly_the_ungrounded(
+    compile_fail_hit: bool, exit: Option<i32>, compile_success_hit: bool,
+    summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>,
+)
+    ensures ({
+        let o = spec_outcome(compile_fail_hit, exit, compile_success_hit, summary, opt_in, lines);
+        spec_ingest_refused(o) <==> o.0 == Build::Unknown
+    }),
+{
+}
+
+// ---------------------------------------------------------------------------
 // Entry point (exec, for standalone execution)
 // ---------------------------------------------------------------------------
 
@@ -339,6 +642,16 @@ fn main() {
     // concrete ones are pinned against production `arg_matches` by
     // `literal_matching_agrees_with_the_verified_spec_exhaustively`.
     let _ = (hit, qualified, leading, split, exact);
+
+    // Smoke-test: graded outcome (`go test -v` shapes)
+    let pass_lines = [true, true];
+    let fail_lines = [true, false];
+    let quiet: [bool; 0] = [];
+    let passing = outcome(false, Some(0), false, None, true, &pass_lines);
+    let failing = outcome(false, Some(1), false, None, true, &fail_lines);
+    let compile_error = outcome(true, Some(1), false, None, true, &quiet);
+    let quiet_run = outcome(false, Some(0), true, None, true, &quiet);
+    let _ = (passing, failing, compile_error, quiet_run);
 }
 
 } // verus!

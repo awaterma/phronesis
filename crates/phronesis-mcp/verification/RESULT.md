@@ -14,6 +14,12 @@ Re-run after adding invariant 5 (bare-name graph query matching):
 - **Z3:** 4.16.0 (the `z3-solver` PyPI wheel)
 - **Date:** 2026-10-15
 
+Re-run after adding invariant 6 (graded toolchain outcome):
+
+- **Verus version:** 0.2026.09.20.aef82ed (release profile, macos_aarch64)
+- **Rust toolchain:** 1.98.1-aarch64-apple-darwin
+- **Date:** 2026-10-19
+
 ## Command
 
 ```bash
@@ -29,11 +35,11 @@ bash crates/phronesis-mcp/verification/run-verification.sh
 ## Verifier Output
 
 ```
-verification results:: 15 verified, 0 errors
+verification results:: 29 verified, 0 errors
 ```
 
-All 15 verification results discharged by Z3 with zero errors (10 before
-invariant 5 was added).
+All 29 verification results discharged by Z3 with zero errors (10 before
+invariant 5 was added, 15 before invariant 6).
 
 ## What Was Proven
 
@@ -103,6 +109,36 @@ qualified node ID by suffix, but only when the suffix starts right after a
   `src/graph/query.rs` checks production `arg_matches` against the same
   rule for every pair of strings of up to five bytes over `{a, b, :}`.
 
+### 6. Graded toolchain outcome (`outcome` + 8 proofs)
+
+- **Spec:** `spec_outcome` models `CompiledDef::parse` in
+  `outcomes/toolchain.rs` for a non-proof def: the count source (first
+  matching `test_summary`, else per-test lines when the def sets
+  `test_counts: "per_test"`), the graded build table, and the test tag.
+  `spec_ingest_refused` models the `NoOutcome` refusal in
+  `outcomes/mod.rs`. Regex matching is abstracted to its results.
+- **Exec:** `outcome` (with `count_pass`) mirrors the production code.
+  Proven: `ensures result == spec_outcome(...)` on every input.
+- **Proven properties:**
+  - `opting_out_is_the_old_behaviour`: without the opt-in, counts are
+    exactly the summary's.
+  - `a_summary_wins`: a matching summary always beats per-test lines.
+  - `a_quiet_run_has_no_test_verdict`: no summary and no per-test line
+    means no test verdict, whatever the exit code.
+  - `a_compile_failure_has_no_test_verdict`: a compile failure is a build
+    failure with no test verdict.
+  - `a_test_pass_is_grounded`: a test pass needs a passing build, at least
+    one pass, and zero failures.
+  - `a_failing_line_rules_out_a_test_pass`: one failing per-test line rules
+    out a test pass.
+  - `no_exit_and_no_evidence_is_unknown`: absent evidence is `unknown`,
+    never a pass.
+  - `ingest_refuses_exactly_the_ungrounded`: `signal ingest` refuses only an
+    unknown build.
+- **Mutation check:** letting the exec mirror pass a run with zero tests, or
+  letting the spec keep counts through a compile failure, each fails
+  verification (1 and 2 errors).
+
 ## What Was Not Proven
 
 - The production code in `coverage/store.rs`, `coverage/import.rs`, and
@@ -118,6 +154,10 @@ qualified node ID by suffix, but only when the suffix starts right after a
   matcher) is not modelled; invariant 5 covers only the bare-name suffix arm.
 - The `main` smoke calls for invariant 5 run but do not assert: byte-string
   literals are opaque to the verifier in this harness.
+- Invariant 6 models `CompiledDef::parse`; it is a mirror, not the
+  production function. The Rust unit tests in `outcomes/toolchain.rs` pin
+  the same cases against the real code. Proof defs (`outcome_kind:
+  "proof"`) and the regexes themselves are not modelled.
 - The `compute_anchor` truncation (`format!("{hash:016x}")[..12]`) is not
   formally verified; the determinism of the underlying `fnv1a_64` is
   proven, but the hex-formatting and slicing step is not.
@@ -134,4 +174,5 @@ qualified node ID by suffix, but only when the suffix starts right after a
 | `valid_line_range_correct` | proof | 1 |
 | `main` | exec | 2 (assertions) |
 | `boundary_suffix_match` + 3 proofs (invariant 5) | exec + proof | 5 (rise in the reported total; not broken down per function) |
-| **Total** | | **15** |
+| `outcome` + `count_pass` + 8 proofs (invariant 6) | exec + proof | 14 (rise in the reported total; not broken down per function) |
+| **Total** | | **29** |
