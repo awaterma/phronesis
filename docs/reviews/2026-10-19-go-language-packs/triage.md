@@ -151,3 +151,15 @@ Real-cargo end-to-end check after the fix: a passing `cargo test --lib`
 then an aborted custom harness (`tests/odd dir/\`harness.rs`) leaves the
 signals at `compile` only (tests withdrawn); a failing build script records
 only `compile_error`.
+
+## Eighth pass (2026-10-20)
+
+Review: `codex-review-eighth.md` (Codex, read-only, at `f77eb57`), brief
+`brief-eighth-pass.md`. 7.1, 7.2 and 7.3 closed (rerun with real cargo). No
+remaining BLOCKER on the branch.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 8.1 | Regression from `db988de`: an example run as a test (binary under `examples/`) was not a launch | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `466cf05` |
+| 8.2 | Regression from `db988de`: a target directory with parentheses hid launches | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `466cf05` |
+| 6.3 | Non-Unix `pack remove` path-based | Accepted | — | Open: user's decision |
