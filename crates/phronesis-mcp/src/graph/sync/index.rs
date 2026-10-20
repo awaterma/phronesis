@@ -69,6 +69,10 @@ pub(super) fn tracked_files(root: &Path) -> Vec<String> {
     walk(root).0
 }
 
+fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
+    walk_with(root, crate::language_packs::load(root).ok().as_ref())
+}
+
 /// One walk yielding both the tracked-language files and the build
 /// manifests (Java's, and every `Cargo.toml`). `check_freshness` needs both
 /// sets; collecting them in separate
@@ -78,12 +82,13 @@ pub(super) fn tracked_files(root: &Path) -> Vec<String> {
 /// The manifest policy here must stay identical to
 /// `java::project::input_files`, which shares this hidden-directory and
 /// `node_modules` handling.
-fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
+fn walk_with(
+    root: &Path,
+    registry: Option<&crate::language_packs::PackRegistry>,
+) -> (Vec<String>, Vec<String>) {
     let mut tracked = Vec::new();
     let mut manifests = Vec::new();
-    let registry = crate::language_packs::load(root).ok();
     let pack_extensions = registry
-        .as_ref()
         .map(|r| {
             r.packs()
                 .iter()
@@ -175,11 +180,14 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
             expected: GRAPH_FORMAT,
         };
     }
-    if crate::language_packs::load(root).is_err() {
+    // One registry load and one tree walk serve every input below; this
+    // runs on the hook path whenever a rule names a graph relation.
+    let Ok(registry) = crate::language_packs::load(root) else {
         return Freshness::Stale(vec![".phronesis/packs".into()]);
-    }
+    };
     let mut drifted = Vec::new();
-    let (mut on_disk, manifests) = walk(root);
+    let (mut on_disk, manifests) = walk_with(root, Some(&registry));
+    let context_inputs = context_inputs_for(root, &registry, &on_disk);
     on_disk.extend(manifests);
     if root.join(".phronesis/graph.toml").is_file() {
         on_disk.push(".phronesis/graph.toml".to_string());
@@ -187,7 +195,7 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     on_disk.extend(decision_input_files(root));
     let guarded_inputs = pack_input_files(root)
         .into_iter()
-        .chain(context_input_files(root))
+        .chain(context_inputs)
         .collect::<std::collections::BTreeSet<_>>();
     on_disk.extend(guarded_inputs.iter().cloned());
     let builtin_hashes = builtin_pack_hashes();
@@ -318,10 +326,20 @@ pub(super) fn context_input_files(root: &Path) -> Vec<String> {
     let Ok(registry) = crate::language_packs::load(root) else {
         return Vec::new();
     };
+    let tracked = walk_with(root, Some(&registry)).0;
+    context_inputs_for(root, &registry, &tracked)
+}
+
+/// [`context_input_files`] over an already-loaded registry and tracked list.
+fn context_inputs_for(
+    root: &Path,
+    registry: &crate::language_packs::PackRegistry,
+    tracked: &[String],
+) -> Vec<String> {
     let mut out = std::collections::BTreeSet::new();
-    for source in tracked_files(root) {
+    for source in tracked {
         let Ok(Some(pack)) =
-            registry.for_path_with(&source, crate::language_packs::Capability::Graph)
+            registry.for_path_with(source, crate::language_packs::Capability::Graph)
         else {
             continue;
         };
