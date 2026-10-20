@@ -46,6 +46,12 @@ pub struct ToolchainDef {
     /// compatible: defs written before 0.19.0 deserialize with an empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compile_success: Vec<String>,
+    /// Evidence that test binaries started (cargo's `Running` lines, Go's
+    /// `=== RUN`). Unlike `compile_success`, it holds under a nonzero exit:
+    /// a run that died before printing any result still compiled, so it is a
+    /// failed test run, not a compile error. Optional; defaults to none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_started: Vec<String>,
     /// Regex(es) with named groups `(?P<passed>\d+)` (required) and optional
     /// `(?P<failed>\d+)`.
     ///
@@ -175,6 +181,7 @@ pub struct CompiledDef {
     matches: Regex,
     compile_fail: Vec<Regex>,
     compile_success: Vec<Regex>,
+    test_started: Vec<Regex>,
     /// Alternative summary formats, in declaration order. Empty when the def
     /// declares none.
     test_summary: Vec<Regex>,
@@ -225,6 +232,11 @@ impl CompiledDef {
             .compile_fail
             .iter()
             .map(|p| compile_field(&def.id, "compile_fail", p))
+            .collect::<Result<Vec<_>, _>>()?;
+        let test_started = def
+            .test_started
+            .iter()
+            .map(|p| compile_field(&def.id, "test_started", p))
             .collect::<Result<Vec<_>, _>>()?;
         let compile_success = def
             .compile_success
@@ -295,6 +307,7 @@ impl CompiledDef {
             matches,
             compile_fail,
             compile_success,
+            test_started,
             test_summary,
             per_test,
             section_start,
@@ -343,6 +356,10 @@ impl CompiledDef {
 
     fn compile_success_hit(&self, output: &str) -> bool {
         self.compile_success.iter().any(|re| re.is_match(output))
+    }
+
+    fn test_started_hit(&self, output: &str) -> bool {
+        self.test_started.iter().any(|re| re.is_match(output))
     }
 
     /// Test counts from the first `test_summary` pattern that matches.
@@ -462,17 +479,23 @@ impl CompiledDef {
             Vec::new()
         };
         let counts = self.test_counts(output, &per_test_lines, command_exit);
-        // Tests that reported proves the code compiled, even when the lines
-        // ground no counts (a run that died after some tests passed).
-        let tests_ran = counts.is_some() || !per_test_lines.is_empty();
+        // Evidence the tests started, which proves the build finished:
+        // reported tests (even when they ground no counts, as in a run that
+        // died after some passed) or a `test_started` match, which also
+        // covers a run that died before its first result. With a nonzero
+        // exit that is a failed test run, not a compile error. Plain
+        // `compile_success` text is not enough under a nonzero exit (a build
+        // can print `Finished` and still fail).
+        let started =
+            counts.is_some() || !per_test_lines.is_empty() || self.test_started_hit(output);
         let status = if self.compile_fail_hit(output) {
             BuildStatus::Fail
         } else {
             match command_exit {
                 Some(0) => BuildStatus::Pass,
-                Some(_) if tests_ran => BuildStatus::Pass,
+                Some(_) if started => BuildStatus::Pass,
                 Some(_) => BuildStatus::Fail,
-                None if tests_ran || self.compile_success_hit(output) => BuildStatus::Pass,
+                None if started || self.compile_success_hit(output) => BuildStatus::Pass,
                 None => BuildStatus::Unknown,
             }
         };
@@ -495,7 +518,7 @@ impl CompiledDef {
                     facts.push(OutcomeFact::test_run_failed(subject));
                 }
                 Some(c) => facts.push(OutcomeFact::test(subject, c.passed, c.failed)),
-                None if run_failed && tests_ran => {
+                None if run_failed && started => {
                     facts.push(OutcomeFact::test_run_failed(subject));
                 }
                 None => {}
@@ -612,6 +635,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
+            test_started: vec![],
             test_counts: None,
         },
         ToolchainDef {
@@ -624,6 +648,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
+            test_started: vec![],
             test_counts: None,
         },
     ]
@@ -638,6 +663,8 @@ fn cargo_builtin() -> ToolchainDef {
             "could not compile".to_string(),
         ],
         compile_success: vec![r"Finished .* profile".to_string()],
+        // `cargo test` / `cargo nextest` launching test binaries.
+        test_started: vec![r"(?m)^\s+Running ".to_string(), r"(?m)^\s+Starting \d+ tests?".to_string()],
         // `matches` accepts `cargo nextest`, and nextest never emits libtest's
         // `test result:` line — it emits `Summary [...] N tests run: ...`.
         // With only the libtest pattern the def claimed the command, parsed
@@ -1720,6 +1747,30 @@ mod tests {
 
     fn run_failed(facts: &[crate::outcomes::facts::OutcomeFact]) -> bool {
         facts.iter().any(|f| f.predicate == "test_run_failed")
+    }
+
+    #[test]
+    fn a_run_that_dies_before_its_first_result_is_a_failed_test_run() {
+        // Third-pass review finding 3: the first test exits the process, so
+        // no result line or summary exists, only evidence the binary ran.
+        let mut def = go_style(Some("per_test")).def;
+        def.test_started.push("(?m)^=== RUN ".to_string());
+        let def = CompiledDef::compile(def, DefSource::Project).unwrap();
+        let out = "=== RUN   TestA\nFAIL\texample.com/demo\t0.227s\nFAIL\n";
+        let facts = def.parse("u", "go test -v ./...", out, Some(1));
+        assert_eq!(build_status(&facts), Some("pass"), "the test binary ran");
+        assert!(run_failed(&facts), "{facts:?}");
+        // Cargo: the test profile finished building, then a binary crashed.
+        let out = "    Finished `test` profile [unoptimized] target(s) in 0.4s\n     Running unittests src/lib.rs\nerror: test failed, to rerun pass `--lib`\n";
+        let cargo = CompiledDef::compile(cargo_builtin(), DefSource::BuiltIn).unwrap();
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(run_failed(&facts), "{facts:?}");
+        // A real compile error is still a build failure with no test verdict.
+        let out = "error[E0425]: cannot find value `x`\nerror: could not compile `demo`\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(!run_failed(&facts) && test_fact(&facts).is_none());
     }
 
     #[test]

@@ -117,7 +117,10 @@ qualified node ID by suffix, but only when the suffix starts right after a
   `test_counts: "per_test"`, admitted only when a line failed or the run
   exited 0), the graded build table, and the test tag, where a nonzero exit
   vetoes a pass from any count source and becomes a run-level test failure
-  (`test_run_failed`) when no failure was counted.
+  (`test_run_failed`) when no failure was counted. Tests count as started
+  from counts, per-test lines, or a `test_started` pattern (cargo's
+  `Running`, Go's `=== RUN`); plain `compile_success` text rescues only a
+  run with no exit code.
   `spec_ingest_refused` models the `NoOutcome` refusal in
   `outcomes/mod.rs`. Regex matching is abstracted to its results.
 - **Exec:** `outcome` (with `count_pass`) mirrors the production code.
@@ -149,8 +152,8 @@ qualified node ID by suffix, but only when the suffix starts right after a
     unknown build.
 - **Mutation check:** letting the exec mirror pass a run with zero tests, or
   letting the spec keep counts through a compile failure, or admitting
-  per-test counts without the exit gate, or dropping the nonzero-exit veto,
-  each fails verification.
+  per-test counts without the exit gate, dropping the nonzero-exit veto, or
+  ignoring `test_started` evidence, each fails verification.
 
 ## What Was Not Proven
 

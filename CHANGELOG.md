@@ -54,7 +54,10 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
   run's passing `tests` signal in place. A nonzero exit now vetoes a pass
   from any count source; when no failure was counted, the run records a
   run-level failure (`test_run_failed`, journaled as `outcome:test_fail`),
-  which supersedes the earlier pass.
+  which supersedes the earlier pass. Toolchain definitions may declare
+  `test_started` patterns (cargo's built-in matches `Running`; Go matches
+  `=== RUN`), so a run whose first test died before reporting anything is
+  recorded as a compiled run with failed tests, not a compile error.
 - `signal ingest` refused output whose only evidence was a compile
   verdict, so it could not record a real compile error or a clean build.
   It now refuses only output that grounds nothing (`compile_unknown`).

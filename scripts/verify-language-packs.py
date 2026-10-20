@@ -156,7 +156,18 @@ def main():
         exit_output.write_text(exited['stdout'] + exited['stderr'])
         tags = run('signal-exit', [binary, 'signal', 'ingest', '--command', 'go test -v ./...',
                                    '--output', exit_output, '--exit', '1'])['stdout']
-        assert 'outcome:compile_ok' in tags and 'outcome:test_' not in tags, tags
+        assert 'outcome:compile_ok' in tags and 'outcome:test_fail' in tags, tags
+        # The first test exits the process: no result line at all. The run
+        # still compiled, and it must withdraw the earlier pass.
+        write('calc_test.go', 'package verify\nimport ("os"; "testing")\n'
+              'func TestExitFirst(t *testing.T) { os.Exit(3) }\n')
+        first = run('go-test-exit-first', [go, 'test', '-v', './...'], expect=1)
+        first_output = out / 'go-test-exit-first.txt'
+        first_output.write_text(first['stdout'] + first['stderr'])
+        tags = run('signal-exit-first', [binary, 'signal', 'ingest', '--command',
+                                         'go test -v ./...', '--output', first_output,
+                                         '--exit', '1'])['stdout']
+        assert 'outcome:compile_ok' in tags and 'outcome:test_fail' in tags, tags
         write('calc.go', 'package verify\nfunc Add(a, b int) int { return missing + b }\n')
         compile_failure = run('go-compile-fail', [go, 'test', '-v', './...'], expect=1)
         assert 'undefined: missing' in compile_failure['stdout'] + compile_failure['stderr']

@@ -24,6 +24,7 @@ fn typescript_pack_defs() -> Vec<ToolchainDef> {
             section_start: None,
             pass_tokens: vec!["✓".into()],
             outcome_kind: None,
+            test_started: vec![],
             test_counts: None,
         },
         ToolchainDef {
@@ -38,6 +39,7 @@ fn typescript_pack_defs() -> Vec<ToolchainDef> {
             section_start: None,
             pass_tokens: vec!["PASSED".into()],
             outcome_kind: None,
+            test_started: vec![],
             test_counts: None,
         },
     ]
@@ -90,6 +92,7 @@ fn lua_pack_defs() -> Vec<ToolchainDef> {
         section_start: None,
         pass_tokens: vec![],
         outcome_kind: None,
+        test_started: vec![],
         test_counts: None,
     }]
 }

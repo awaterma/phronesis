@@ -26,6 +26,10 @@
       "(?m)^ok\\s",
       "(?m)^PASS$"
     ],
+    "test_started": [
+      "(?m)^=== RUN ",
+      "(?m)^FAIL\\t\\S+\\t[0-9.]+s$"
+    ],
     "per_test": "(?m)^--- (?P<status>PASS|FAIL): (?P<name>\\S+)",
     "pass_tokens": [
       "PASS"
