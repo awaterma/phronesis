@@ -88,3 +88,21 @@ rule that a present exit code is authoritative (a build can print
 `Finished` and still fail; `nonzero_exit_is_fail_even_with_compile_success_text`).
 It was reverted for the narrower `test_started` patterns, which match the
 reviewer's suggestion of a run marker for test invocations.
+
+## Fourth pass (2026-10-20)
+
+Review: `codex-review-fourth.md` (Codex, read-only, at `b08fb90`), brief
+`brief-fourth-pass.md`. Third-pass 3.1, 3.2 and 3.4 closed; 3.3 partly.
+New findings were unconfirmed by execution; each was checked against the
+code and against real `cargo test` output on this machine.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 4.1 | Cargo's `Running` start marker also matched a verbose build's build-script line, so a failed build script read as compiled | Confirmed (RED test) | MAJOR | **Fixed** `716cf0e` |
+| 4.2 | `cargo test --quiet` prints only libtest's `running N tests` banner, which nothing matched | Confirmed (RED test; real cargo output) | MAJOR | **Fixed** `716cf0e` |
+| 4.3 | The printed repair command was not admissible for paths with spaces, non-ASCII, or a relative project root | Confirmed (RED test from a project named `my project é`) | MINOR | **Fixed** `b6bc842` |
+
+While fixing 4.1, the existing test `unknown_build_does_not_ground_bug_caught`
+caught that start markers must not count when no exit code was captured (a
+truncated capture with a bare banner stays unknown); `test_started` now
+applies only alongside an exit code, in the code and the Verus model.
