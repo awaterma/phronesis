@@ -28,6 +28,20 @@ pub fn facts_with_lines(
         return Ok(Vec::new());
     };
     let extraction = extract(pack, context, source)?;
+    // A failed emission dropped a record this file should have produced, so
+    // its facts are incomplete; graph rebuild and selection refuse the same
+    // extraction. Hooks fail closed on this error and audit reports it.
+    if !extraction.diagnostics.is_empty() {
+        return Err(PackError::Record {
+            pack: Some(pack.assets.manifest.id.clone()),
+            path: Some(context.file_rel.clone()),
+            message: format!(
+                "{} extraction diagnostic(s); pack facts incomplete: {}",
+                extraction.diagnostics.len(),
+                extraction.diagnostics[0].message
+            ),
+        });
+    }
     let mut facts = Vec::new();
     for record in extraction.records {
         if let PackRecord::Fact { name, args, span } = record {

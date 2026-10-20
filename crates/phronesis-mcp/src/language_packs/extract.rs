@@ -389,7 +389,19 @@ pub fn extract(
                             });
                         }
                     },
-                    Err(diagnostic) => diagnostics.push(diagnostic),
+                    Err(diagnostic) => {
+                        // Bounded like records: every attempt yields one or
+                        // the other, so together they cap render work.
+                        if diagnostics.len() == limits::MAX_OUTPUT_RECORDS {
+                            return Err(PackError::Limit {
+                                pack: Some(pack_id.clone()),
+                                path: Some(file_rel.to_string()),
+                                what: "failed template emissions".into(),
+                                max: limits::MAX_OUTPUT_RECORDS,
+                            });
+                        }
+                        diagnostics.push(diagnostic);
+                    }
                 }
             }
         }
