@@ -163,3 +163,21 @@ remaining BLOCKER on the branch.
 | 8.1 | Regression from `db988de`: an example run as a test (binary under `examples/`) was not a launch | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `466cf05` |
 | 8.2 | Regression from `db988de`: a target directory with parentheses hid launches | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `466cf05` |
 | 6.3 | Non-Unix `pack remove` path-based | Accepted | — | Open: user's decision |
+
+## Ninth pass (2026-10-20)
+
+Review: `codex-review-ninth.md` (Codex, read-only, at `06e2491`), brief
+`brief-ninth-pass.md`. 8.1 and 8.2 closed (real cargo). No remaining BLOCKER.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 9.1 | A failing build script's quoted payload (`Running cmake (/x/examples/configure)`) read as a test launch; colored, its diagnostic also slipped the compile-failure pattern (a false compile pass) | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `0e20aee` |
+| 9.2 | `--color always` hid cargo's launch line | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `0e20aee` |
+| 9.3 | A compiler excerpt quoting a libtest summary was counted as a test result | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `0e20aee` |
+| 6.3 | Non-Unix `pack remove` path-based | Accepted | — | Open: user's decision |
+
+These three share one cause: patterns matched text without regard to where
+it sat in cargo's output. The fix reads the structure instead: terminal
+escapes are stripped before any pattern runs, cargo's own launch line must
+sit in its right-aligned 12-column status position, and libtest's summary
+must start at column 0.
