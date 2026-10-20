@@ -727,6 +727,7 @@ async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> Result<CodexDecisi
             if e.pack_failure
                 && crate::language_packs::repair::is_pack_repair_command(
                     &extract_bash_command(payload),
+                    root,
                 ) =>
         {
             return Err(warn_decision(format!(

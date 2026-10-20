@@ -12,6 +12,9 @@ use std::process::{Command, Stdio};
 use phronesis_mcp::language_packs::install::{install, remove};
 use serde_json::{Value, json};
 
+/// The hook's own binary: the repair exception admits only it.
+const BIN: &str = env!("CARGO_BIN_EXE_phr-mcp");
+
 fn manifest(id: &str, ext: &str) -> Value {
     json!({
         "schema_version": 1,
@@ -121,11 +124,25 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
     // would reject the new bytes), so it is not admitted either.
     assert_eq!(pre_edit(root, ".phronesis/packs/demo_a/pack.json").0, 2);
 
-    // The repair: the pack CLI alone, allowed with a warning.
-    let (code, err) = pre_bash(root, "phr-mcp pack remove demo_a");
+    // A file merely named `phr-mcp` is not the hook's own binary, and the
+    // pack CLI cannot be pointed at another project's pack store.
+    fs::write(root.join("phr-mcp"), b"#!/bin/sh\necho ran\n").unwrap();
+    assert_eq!(pre_bash(root, "./phr-mcp pack list").0, 2);
+    let other = tempfile::tempdir().unwrap();
+    assert_eq!(
+        pre_bash(
+            root,
+            &format!("{BIN} pack remove victim --path {}", other.path().display())
+        )
+        .0,
+        2
+    );
+
+    // The repair: this binary's pack CLI alone, allowed with a warning.
+    let (code, err) = pre_bash(root, &format!("{BIN} pack remove demo_a"));
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("WARNING"), "{err}");
-    assert_eq!(pre_bash(root, "phr-mcp pack list --json").0, 1);
+    assert_eq!(pre_bash(root, &format!("{BIN} pack list --json")).0, 1);
 
     // Running it removes the pack, and governance resumes.
     let (code, out, err) = phr(root, &["pack", "remove", "demo_a"], None);
@@ -225,7 +242,7 @@ fn codex_admits_only_the_pack_cli_while_a_pack_is_broken() {
             .is_some_and(|r| r.contains("phr-mcp pack remove demo_a")),
         "{denied}"
     );
-    let allowed = codex("phr-mcp pack remove demo_a");
+    let allowed = codex(&format!("{BIN} pack remove demo_a"));
     assert_ne!(
         allowed["hookSpecificOutput"]["permissionDecision"], "deny",
         "{allowed}"

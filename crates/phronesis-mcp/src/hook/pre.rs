@@ -92,7 +92,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                 let command = super::extract_new_content(&payload, &tool_name).unwrap_or_default();
                 if e.pack_failure
                     && is_shell(&tool_name)
-                    && crate::language_packs::repair::is_pack_repair_command(&command)
+                    && crate::language_packs::repair::is_pack_repair_command(&command, &root)
                 {
                     // An installed pack cannot be edited back into shape;
                     // its repair is the pack CLI. Allowed with a warning,
