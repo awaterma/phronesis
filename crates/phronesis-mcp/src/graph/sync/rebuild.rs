@@ -175,15 +175,10 @@ fn forces_rebuild(root: &Path, file_path: &str, content: &str) -> std::io::Resul
                     .for_path_with(file_path, crate::language_packs::Capability::Graph)
                     .map_or(true, |pack| pack.is_some())
                     || registry
-                        .packs()
-                        .iter()
-                        .filter(|pack| {
-                            pack.assets
-                                .manifest
-                                .has(crate::language_packs::Capability::Graph)
-                        })
-                        .any(|pack| {
-                            pack.assets.manifest.context_files.iter().any(|name| {
+                        .manifests()
+                        .filter(|manifest| manifest.has(crate::language_packs::Capability::Graph))
+                        .any(|manifest| {
+                            manifest.context_files.iter().any(|name| {
                                 file_path == name || file_path.ends_with(&format!("/{name}"))
                             })
                         })

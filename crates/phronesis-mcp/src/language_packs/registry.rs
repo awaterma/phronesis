@@ -130,17 +130,71 @@ pub struct PackInventory {
     pub complete: bool,
 }
 
-/// A loaded, strict snapshot: every entry compiled and every extension
-/// uniquely owned. Built for runtime consumers (hooks, audit, graph).
+/// A loaded, strict snapshot: every extension uniquely owned, and every
+/// installed pack compiled. Built for runtime consumers (hooks, audit,
+/// graph).
 pub struct PackRegistry {
     root: PathBuf,
-    packs: Vec<ValidatedPack>,
+    packs: Vec<RegistryEntry>,
     by_extension: BTreeMap<String, usize>,
     /// Extensions whose pack exists but could not be activated right now
     /// (e.g. a built-in pack needing a compiled-out feature). Looking one up
     /// returns an explicit `PackError::Unsupported` rather than silently
     /// falling through to native/unknown-file handling.
     unsupported_extensions: BTreeMap<String, String>,
+}
+
+/// One pack in a [`PackRegistry`]. An installed pack is compiled while
+/// loading, so a broken install fails `load` and the hooks fail closed. A
+/// built-in pack is compiled on first use: its bytes ship in this binary
+/// and a unit test holds them to their fixtures, and compiling its queries
+/// on every hook invocation (most of which never touch its language) cost
+/// about 2 ms per registry load.
+struct RegistryEntry {
+    manifest: PackManifest,
+    origin: PackOrigin,
+    pending: std::sync::Mutex<Option<PackAssets>>,
+    compiled: std::sync::OnceLock<Result<ValidatedPack, String>>,
+}
+
+impl RegistryEntry {
+    fn compiled(pack: ValidatedPack, origin: PackOrigin) -> Self {
+        let manifest = pack.assets.manifest.clone();
+        let compiled = std::sync::OnceLock::new();
+        let _ = compiled.set(Ok(pack));
+        Self {
+            manifest,
+            origin,
+            pending: std::sync::Mutex::new(None),
+            compiled,
+        }
+    }
+
+    fn deferred(assets: PackAssets, origin: PackOrigin) -> Self {
+        Self {
+            manifest: assets.manifest.clone(),
+            origin,
+            pending: std::sync::Mutex::new(Some(assets)),
+            compiled: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn pack(&self) -> Result<&ValidatedPack, PackError> {
+        self.compiled
+            .get_or_init(|| {
+                let assets = self.pending.lock().ok().and_then(|mut slot| slot.take());
+                match assets {
+                    Some(assets) => compile_pack(assets).map_err(|e| e.to_string()),
+                    None => Err("pack assets are unavailable".to_string()),
+                }
+            })
+            .as_ref()
+            .map_err(|message| PackError::Record {
+                pack: Some(self.manifest.id.clone()),
+                path: None,
+                message: message.clone(),
+            })
+    }
 }
 
 impl PackRegistry {
@@ -194,8 +248,18 @@ impl PackRegistry {
         out.into_iter().collect()
     }
 
-    pub fn packs(&self) -> &[ValidatedPack] {
-        &self.packs
+    /// Every pack's manifest, without compiling anything.
+    pub fn manifests(&self) -> impl Iterator<Item = &PackManifest> {
+        self.packs.iter().map(|entry| &entry.manifest)
+    }
+
+    /// The installed (project) packs, all compiled at load.
+    pub fn installed_packs(&self) -> Result<Vec<&ValidatedPack>, PackError> {
+        self.packs
+            .iter()
+            .filter(|entry| entry.origin == PackOrigin::Installed)
+            .map(RegistryEntry::pack)
+            .collect()
     }
 
     /// The validated pack owning `rel`'s extension, if any. `Ok(None)` means
@@ -213,7 +277,10 @@ impl PackRegistry {
                 ),
             });
         }
-        Ok(self.by_extension.get(ext).map(|&i| &self.packs[i]))
+        self.by_extension
+            .get(ext)
+            .map(|&i| self.packs[i].pack())
+            .transpose()
     }
 
     /// [`for_path`](Self::for_path), restricted to a pack that declares
@@ -226,6 +293,16 @@ impl PackRegistry {
         rel: &str,
         capability: Capability,
     ) -> Result<Option<&ValidatedPack>, PackError> {
+        // Decide from the manifest first, so a caller that needs a
+        // capability the owning pack lacks never compiles it.
+        let Some(ext) = Path::new(rel).extension().and_then(|e| e.to_str()) else {
+            return Ok(None);
+        };
+        if let Some(&i) = self.by_extension.get(ext)
+            && !self.packs[i].manifest.has(capability)
+        {
+            return Ok(None);
+        }
         Ok(self
             .for_path(rel)?
             .filter(|pack| pack.assets.manifest.has(capability)))
@@ -774,21 +851,26 @@ pub fn load(root: &Path) -> Result<PackRegistry, PackError> {
 
     for (origin, assets) in assets {
         let manifest = assets.manifest.clone();
-        match compile_pack(assets) {
-            Ok(pack) => {
-                let index = packs.len();
-                for ext in &manifest.extensions {
-                    by_extension.insert(ext.clone(), index);
-                }
-                packs.push(pack);
-            }
-            Err(PackError::Unsupported { message, .. }) if origin == PackOrigin::BuiltIn => {
+        let entry = if origin == PackOrigin::BuiltIn {
+            if super::grammar::grammar_for(&manifest.grammar).is_none() {
+                let message = format!(
+                    "grammar `{}` is a known bundled grammar, but this binary was built without it",
+                    manifest.grammar
+                );
                 for ext in &manifest.extensions {
                     unsupported_extensions.insert(ext.clone(), message.clone());
                 }
+                continue;
             }
-            Err(err) => return Err(err),
+            RegistryEntry::deferred(assets, origin)
+        } else {
+            RegistryEntry::compiled(compile_pack(assets)?, origin)
+        };
+        let index = packs.len();
+        for ext in &manifest.extensions {
+            by_extension.insert(ext.clone(), index);
         }
+        packs.push(entry);
     }
 
     Ok(PackRegistry {
@@ -797,4 +879,27 @@ pub fn load(root: &Path) -> Result<PackRegistry, PackError> {
         by_extension,
         unsupported_extensions,
     })
+}
+
+#[cfg(test)]
+mod lazy_builtin_tests {
+    use super::load;
+
+    /// Loading the registry must not compile a built-in pack: most hook
+    /// invocations never touch its language, and compiling the Go pack's
+    /// queries cost about 2 ms per load. First use compiles it.
+    #[test]
+    fn a_built_in_pack_compiles_on_first_use_not_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let registry = load(dir.path()).unwrap();
+        if registry.packs.is_empty() {
+            return; // the Go grammar is compiled out of this build
+        }
+        assert!(registry.packs.iter().all(|e| e.compiled.get().is_none()));
+        assert!(registry.for_path("src/lib.rs").unwrap().is_none());
+        assert!(registry.packs.iter().all(|e| e.compiled.get().is_none()));
+        let go = registry.for_path("main.go").unwrap().expect("go pack");
+        assert_eq!(go.assets.manifest.id, "go");
+        assert!(registry.packs.iter().any(|e| e.compiled.get().is_some()));
+    }
 }

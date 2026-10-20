@@ -128,7 +128,7 @@ pub fn pack_rule_layers(registry: &PackRegistry) -> Result<Vec<PackRuleLayer>, P
         .map(|asset| asset.manifest.id)
         .collect();
     let mut layers = Vec::new();
-    for pack in registry.packs() {
+    for pack in registry.installed_packs()? {
         if builtin_ids.contains(&pack.assets.manifest.id) {
             continue;
         }
@@ -145,7 +145,7 @@ pub fn pack_toolchains(registry: &PackRegistry) -> Result<Vec<ToolchainDef>, Pac
         .map(|asset| asset.manifest.id)
         .collect();
     let mut out = Vec::new();
-    for pack in registry.packs() {
+    for pack in registry.installed_packs()? {
         if builtin_ids.contains(&pack.assets.manifest.id) {
             continue;
         }

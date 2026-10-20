@@ -90,14 +90,9 @@ fn walk_with(
     let mut manifests = Vec::new();
     let pack_extensions = registry
         .map(|r| {
-            r.packs()
-                .iter()
-                .filter(|p| {
-                    p.assets
-                        .manifest
-                        .has(crate::language_packs::Capability::Graph)
-                })
-                .flat_map(|p| p.assets.manifest.extensions.iter().cloned())
+            r.manifests()
+                .filter(|m| m.has(crate::language_packs::Capability::Graph))
+                .flat_map(|m| m.extensions.iter().cloned())
                 .collect::<std::collections::BTreeSet<_>>()
         })
         .unwrap_or_default();
