@@ -14,7 +14,11 @@ directory. Read both first.
 
 The fixes are the commits from `7ca493f` (finding 2) and `ba87199` through
 `8693a3a` (findings 1, 3-14). `git log --format='%h %s' origin/main..HEAD`
-lists them; each commit message names its finding.
+lists them; each commit message names its finding. One more fix came from
+our latency gate rather than your review: `3301a4b` compiles built-in packs
+on first use instead of on every registry load (`language_packs/registry.rs`,
+`RegistryEntry`). Review it too: it moves a built-in pack's compile errors
+from load time to first use, while installed packs still compile at load.
 
 ## What to check, in priority order
 
