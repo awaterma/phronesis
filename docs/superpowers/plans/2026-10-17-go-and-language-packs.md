@@ -78,35 +78,40 @@ Verified on 2026-10-19:
   pass (init 108 ms on an idle machine; the earlier 180 s timeout was CPU
   starvation from a concurrent test run).
 
-Review and fixes (2026-10-19/20): a read-only Codex review
-(`docs/reviews/2026-10-19-go-language-packs/codex-review.md`) raised 14
-findings; each was verified against the code before fixing
-(`triage.md` there). 13 are fixed test-first and one was refuted (its
-sub-claim fixed); every fix commit names its finding. The branch was then
-rebased onto `main` (v0.39.0) without conflicts.
+Review and fixes (2026-10-19/20): twelve read-only Codex review passes, each
+finding verified against the code (with real `go` and `cargo` runs where it
+mattered) before a test-first fix, recorded pass by pass in
+`docs/reviews/2026-10-19-go-language-packs/triage.md`. The twelfth pass
+reported no new BLOCKER or MAJOR. One finding was refuted (1.11) and one is
+accepted and open: **6.3, non-Unix `pack remove` is path-based** (on Unix it is
+descriptor-anchored); refusing removal on Windows is the alternative, and is
+the user's decision. The branch was rebased onto `main` (v0.39.0) without
+conflicts.
 
-The T8 latency gate (warm release builds, one warm-up then 30 samples,
-`p50`) found and drove one more fix (`3301a4b`): every hook load compiled
-the built-in Go pack, doubling hook time in projects with no Go. Built-in
-packs now compile on first use. After the fix:
+The latency gate (warm release builds, one warm-up then 30 samples, `p50`)
+found one regression, fixed in `3301a4b` (built-in packs compile on first
+use). Final measurements, branch vs `main`:
 
 | project | measure | main | branch |
 |---|---|---|---|
-| Rust | pre-check | 10.2 ms | 10.6 ms |
-| Rust | post-check | 26.9 ms | 27.9 ms |
-| Rust | audit | 11.2 ms | 11.7 ms |
-| Go | pre-check | 4.3 ms (no Go support) | 14.6 ms |
-| Go | post-check | 17.1 ms (no Go support) | 44.1 ms |
-| Go | audit | 4.4 ms (no Go support) | 24.9 ms |
+| Rust | pre-check | 9.2 ms | 9.2 ms |
+| Rust | post-check | 25.9 ms | 26.7 ms |
+| Rust | audit | 10.3 ms | 10.6 ms |
+| Go | pre-check | 3.8 ms (no Go support) | 12.6 ms |
+| Go | post-check | 17.0 ms (no Go support) | 40.2 ms |
+| Go | audit | 3.9 ms (no Go support) | 22.8 ms |
 
-Verified on the rebased branch (2026-10-20): whole-workspace `cargo test
---no-fail-fast` 121/121 binaries (3646 passed, 0 failed); fmt, workspace
-clippy `-D warnings`, and `--no-default-features` clean; real-Go
-`scripts/verify-language-packs.py` 25/25; Verus 31 verified, 0 errors.
+Verified at the final code (2026-10-20, 04:20): whole-workspace `cargo test
+--no-fail-fast` 121/121 binaries (3658 passed, 0 failed, 4 ignored); fmt,
+workspace clippy `-D warnings`, and `--no-default-features` clean; real-Go
+`scripts/verify-language-packs.py` 27/27; Verus 35 verified, 0 errors, with
+each modelled rule mutation-checked. Limit: the outcome patterns are
+heuristics over tool text; Verus proves the classification logic over the
+evidence they recognize, not that a pattern recognizes the right line.
 
 Still open before this can become a PR:
 
-- A second Codex pass over the fixes (`brief-fixes.md`).
+- The user's decision on 6.3.
 - Split the WIP snapshot into per-task commits or accept one feature
   commit; squash-merge makes this a PR-title question for the user.
 - The user reviews the diff before the one push that opens the draft PR.
