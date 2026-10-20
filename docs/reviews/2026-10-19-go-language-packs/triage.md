@@ -66,3 +66,25 @@ bundled-fixture tests skip only when the Go grammar is compiled out of the
 build, which is the intended no-grammar behaviour; `PHR_BLESS_FIXTURES`
 rewrites expectations by design and is documented as needing a reviewed
 diff.
+
+## Third pass (2026-10-20)
+
+Review: `codex-review-third.md` (Codex, read-only, at `7945f89`), brief
+`brief-third-pass.md`. Of the second pass: 2.3 and 2.5 closed; 2.1, 2.2,
+2.4, 2.6 and 2.7 partly, with the remainders below. Its new findings were
+unconfirmed by execution; each was checked against the code.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 3.1 | A relative `PATH` entry before the trusted directory let the shell run a local `phr-mcp` the check had skipped | Confirmed (code) | MAJOR | **Fixed** `938ac5a`: the executable must be an absolute path |
+| 3.2 | Relative paths validated against the project root, but the shell resolves them from its own directory | Confirmed (code) | MAJOR | **Fixed** `938ac5a`: store writes need an absolute `--path` naming the project |
+| 3.3 | A run whose first test died before any result read as a compile error and kept the earlier pass | Confirmed (RED test; real Go in acceptance) | MAJOR | **Fixed** `389b5db` (`test_started` patterns) |
+| 3.4 | The bounded audit read depended on pack rules being selected | Confirmed (code) | MINOR | **Fixed** `458b9f9` |
+| 2.6 (rest) | Non-Unix `pack remove` stays path-based | Accepted | — | Documented platform limitation |
+
+For 3.3 our first attempt reused `compile_success` text as evidence the
+tests started; an existing test caught that it broke the evidence-integrity
+rule that a present exit code is authoritative (a build can print
+`Finished` and still fail; `nonzero_exit_is_fail_even_with_compile_success_text`).
+It was reverted for the narrower `test_started` patterns, which match the
+reviewer's suggestion of a run marker for test invocations.
