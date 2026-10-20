@@ -666,15 +666,17 @@ fn cargo_builtin() -> ToolchainDef {
         compile_fail: vec![
             r"error\[E\d+\]".to_string(),
             "could not compile".to_string(),
-            "failed to run custom build command".to_string(),
+            // Cargo's diagnostic, not the phrase anywhere (a test may print it).
+            "(?m)^error: failed to run custom build command for ".to_string(),
         ],
         compile_success: vec![r"Finished .* profile".to_string()],
         // Test binaries launching, never build activity: cargo's launch line
-        // names a path and its target in parentheses (a verbose build script
-        // line is a backtick-quoted command instead), libtest's own banner
+        // names a source path (which may contain spaces) and its target in
+        // parentheses (a verbose build script line is a backtick-quoted
+        // command instead), libtest's own banner
         // (all `--quiet` prints), and nextest's start line.
         test_started: vec![
-            r"(?m)^\s+Running (?:unittests )?[^`\s]\S* \(".to_string(),
+            r"(?m)^\s+Running (?:unittests )?[^`\s][^`\n]* \(".to_string(),
             r"(?m)^running \d+ tests?$".to_string(),
             r"(?m)^\s+Starting \d+ tests?".to_string(),
         ],
@@ -1800,6 +1802,16 @@ mod tests {
         let out = "\nrunning 3 tests\nerror: test failed, to rerun pass `--lib`\n";
         let facts = cargo.parse("u", "cargo test --quiet", out, Some(101));
         assert_eq!(build_status(&facts), Some("pass"), "{facts:?}");
+        assert!(run_failed(&facts), "{facts:?}");
+        // Fifth-pass findings 1 and 2: a test whose own output mentions the
+        // custom-build phrase is a test failure, not a build failure; and a
+        // test source path may contain a space.
+        let out = "running 1 test\nthread 'x' panicked at src/lib.rs:3:5:\nfailed to run custom build command\ntest x ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert_eq!(build_status(&facts), Some("pass"), "{facts:?}");
+        assert_eq!(counts(&facts), Some(("0", "1")));
+        let out = "     Running tests/custom harness.rs (target/debug/deps/custom-123)\nerror: test failed, to rerun pass `--test custom`\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
         assert!(run_failed(&facts), "{facts:?}");
         // The verbose launch line names its target in parentheses.
         let out =

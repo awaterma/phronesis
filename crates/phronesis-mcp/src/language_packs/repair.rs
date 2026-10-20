@@ -44,15 +44,20 @@ pub fn repair_hint(location: &Path) -> String {
     let exe = std::env::current_exe()
         .ok()
         .and_then(|exe| exe.canonicalize().ok())
-        .map(|exe| shell_word(&exe.display().to_string()))
-        .unwrap_or_else(|| "phr-mcp".to_string());
+        .and_then(|exe| shell_word(&exe.display().to_string()));
     let project = location
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
         .and_then(|root| root.canonicalize().ok())
-        .map(|root| shell_word(&root.display().to_string()))
-        .unwrap_or_else(|| ".".to_string());
+        .and_then(|root| shell_word(&root.display().to_string()));
+    let (Some(exe), Some(project)) = (exe, project) else {
+        // No admissible spelling exists, so do not print one: the hooks
+        // govern agent tool calls, not a person's own terminal.
+        return format!(
+            " Installed packs cannot be repaired by editing them (the install digest rejects changed bytes), and this project's path or the phr-mcp path cannot be written as a command the hooks admit (it contains a single quote or a control character). Run `phr-mcp pack remove {id}` yourself from a terminal in the project, then reinstall it from its source with `phr-mcp pack install <dir>`."
+        );
+    };
     format!(
         " Installed packs cannot be repaired by editing them (the install digest rejects changed bytes): remove it with `{exe} pack remove {id} --path {project}`, then reinstall from its source with `{exe} pack install <dir> --path {project}`. Until then only that pack CLI is allowed, with the binary and `--path` written as absolute paths."
     )
@@ -64,15 +69,17 @@ fn is_plain(c: char) -> bool {
     c.is_ascii_alphanumeric() || "-_./=:+@,".contains(c)
 }
 
-/// `word` as one shell word: as-is when every character is plain, else
-/// single-quoted (inside single quotes the shell expands nothing). A word
-/// containing a single quote is left as-is; the check will refuse it, and
-/// the human runs the repair from a terminal instead.
-fn shell_word(word: &str) -> String {
-    if word.chars().all(is_plain) || word.contains('\'') {
-        word.to_string()
+/// `word` as one shell word the check admits: as-is when every character is
+/// plain, else single-quoted (inside single quotes the shell expands
+/// nothing). `None` when it cannot be written that way: a single quote or a
+/// control character has no form [`literal_words`] accepts.
+fn shell_word(word: &str) -> Option<String> {
+    if word.chars().all(is_plain) {
+        Some(word.to_string())
+    } else if word.contains('\'') || word.chars().any(char::is_control) {
+        None
     } else {
-        format!("'{word}'")
+        Some(format!("'{word}'"))
     }
 }
 
@@ -206,6 +213,21 @@ fn canonical(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::is_repair_for;
+
+    #[test]
+    fn a_path_with_a_quote_gets_no_command_the_check_would_refuse() {
+        use super::{repair_hint, shell_word};
+        assert_eq!(shell_word("/a/b").as_deref(), Some("/a/b"));
+        assert_eq!(shell_word("/a/my b").as_deref(), Some("'/a/my b'"));
+        assert_eq!(shell_word("/a/Andrew's b"), None);
+        assert_eq!(shell_word("/a/b\n"), None);
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("Andrew's project");
+        std::fs::create_dir_all(root.join(".phronesis/packs/demo_a")).unwrap();
+        let hint = repair_hint(&root.join(".phronesis/packs/demo_a"));
+        assert!(hint.contains("yourself from a terminal"), "{hint}");
+        assert!(!hint.contains("--path"), "{hint}");
+    }
 
     #[test]
     fn only_this_binary_by_absolute_path_on_this_project_is_a_repair() {
