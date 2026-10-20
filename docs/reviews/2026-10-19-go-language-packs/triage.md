@@ -194,3 +194,15 @@ no false test pass or false compile pass reproduced in the last three passes.
 | 10.2 | A build-script payload indented three spaces landed in cargo's five-space status column | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `c094a47` (quoted payload is dropped before matching) |
 | 10.3 | A quoted nextest `Summary` in build-script payload counted as a test result | Confirmed (reproduced; RED test; real cargo, with and without exit) | MAJOR | **Fixed** `c094a47` |
 | 6.3 | Non-Unix `pack remove` path-based | Accepted | — | Open: user's decision |
+
+## Eleventh pass (2026-10-20)
+
+Review: `codex-review-eleventh.md` (Codex, read-only, at `32d5488`), brief
+`brief-eleventh-pass.md`. 10.1 closed; 10.2 and 10.3 partly, through one
+cause. Remaining known MAJORs: that cause and 6.3. No BLOCKER; no false test
+pass or false compile pass reproduced in the last four passes.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 11.1 | Cargo leaves empty payload lines unindented, so a blank line ended the payload filter and later quoted text counted again | Confirmed (reproduced; RED test; real cargo, with and without exit) | MAJOR | **Fixed** `6b4b982` |
+| 6.3 | Non-Unix `pack remove` path-based | Accepted | — | Open: user's decision |
