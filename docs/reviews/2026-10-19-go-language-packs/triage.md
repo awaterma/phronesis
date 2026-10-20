@@ -133,3 +133,21 @@ reproduced by Codex with real cargo or directly.
 | 6.2 | A cargo test path containing a backtick was not recognized as a launch | Confirmed (reproduced; RED test) | MAJOR | **Fixed** `192eef0` |
 | 6.3 | Non-Unix `pack remove` remains path-based (carried over from 2.6) | Accepted | MAJOR per reviewer | Open: documented platform limitation; refusing `pack remove` on Windows is the alternative, and is the user's decision |
 | 6.4 | A broken entry whose name is not a pack identifier got a command the check refuses | Confirmed (unit test) | MINOR | **Fixed** `192eef0` |
+
+## Seventh pass (2026-10-20)
+
+Review: `codex-review-seventh.md` (Codex, read-only, at `c77bd45`), brief
+`brief-seventh-pass.md`. 6.4 closed; 6.1 and 6.2 partly. No remaining
+BLOCKER on the branch. Three MAJORs, two reproduced by Codex with real cargo.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 7.1 | An explicit failed summary with no exit code, beside compile-failure text, left an earlier pass standing | Confirmed (reproduced; RED test) | MAJOR | **Fixed** `db988de`: counted failures always record a test failure |
+| 7.2 | A cargo launch whose source path starts with a backtick was missed | Confirmed (reproduced; RED test; real cargo end to end) | MAJOR | **Fixed** `db988de`: launches recognized by their `deps/` binary tail |
+| 7.3 | Regression from `192eef0`: a build script's `Running cmake (configure)` status line withdrew a valid test pass | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `db988de` |
+| 6.3 | Non-Unix `pack remove` path-based | Accepted | — | Open: user's decision |
+
+Real-cargo end-to-end check after the fix: a passing `cargo test --lib`
+then an aborted custom harness (`tests/odd dir/\`harness.rs`) leaves the
+signals at `compile` only (tests withdrawn); a failing build script records
+only `compile_error`.
