@@ -119,3 +119,17 @@ no evidence either way; the suite passes outside it.
 | 5.1 | Unanchored `failed to run custom build command` matched a test's own output, turning a test failure into a build failure | Confirmed (RED test) | MAJOR | **Fixed** `cc57c9c` (anchored to cargo's `error:` diagnostic) |
 | 5.2 | The narrowed cargo launch pattern rejected test source paths with spaces | Confirmed (RED test) | MAJOR | **Fixed** `cc57c9c` |
 | 5.3 | Repair hint printed an unusable command for a path with a single quote or control character | Confirmed (unit test) | MINOR | **Fixed** `cc57c9c` (no command is printed; run it from a terminal) |
+
+## Sixth pass (2026-10-20)
+
+Review: `codex-review-sixth.md` (Codex, read-only, at `9b9cfea`), brief
+`brief-sixth-pass.md`. Fifth-pass 5.2 and 5.3 closed; 5.1 partly. Codex
+reported no remaining BLOCKER on the branch. Findings 1, 2 and 4 were
+reproduced by Codex with real cargo or directly.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 6.1 | Compile-failure precedence suppressed every test outcome, so a run also matching a compile-failure pattern (a test printing cargo's custom-build diagnostic; a Go run with one package failing to build) kept an earlier pass | Confirmed (reproduced; RED test) | MAJOR | **Fixed** `192eef0`: build stays failed and the run also records `test_run_failed` |
+| 6.2 | A cargo test path containing a backtick was not recognized as a launch | Confirmed (reproduced; RED test) | MAJOR | **Fixed** `192eef0` |
+| 6.3 | Non-Unix `pack remove` remains path-based (carried over from 2.6) | Accepted | MAJOR per reviewer | Open: documented platform limitation; refusing `pack remove` on Windows is the alternative, and is the user's decision |
+| 6.4 | A broken entry whose name is not a pack identifier got a command the check refuses | Confirmed (unit test) | MINOR | **Fixed** `192eef0` |
