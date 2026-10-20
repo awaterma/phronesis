@@ -206,3 +206,20 @@ pass or false compile pass reproduced in the last four passes.
 |---|---|---|---|---|
 | 11.1 | Cargo leaves empty payload lines unindented, so a blank line ended the payload filter and later quoted text counted again | Confirmed (reproduced; RED test; real cargo, with and without exit) | MAJOR | **Fixed** `6b4b982` |
 | 6.3 | Non-Unix `pack remove` path-based | Accepted | — | Open: user's decision |
+
+## Twelfth pass (2026-10-20): converged
+
+Review: `codex-review-twelfth.md` (Codex, read-only, at `308458c`), brief
+`brief-twelfth-pass.md`. 11.1 closed. **No new BLOCKER or MAJOR.** The only
+remaining known MAJOR from any pass is 6.3 (non-Unix `pack remove` is
+path-based), awaiting the user's decision. Codex's fresh real-cargo sweep
+(quiet/verbose harness aborts, backtick paths, examples, parenthesized target
+dirs, forced color, JSON compiler output, compiler excerpts, quoted
+build-script payloads) produced no false compile pass, no false test pass,
+and no wrongful withdrawal.
+
+Across twelve passes: 14 + 7 + 4 + 3 + 3 + 4 + 3 + 2 + 3 + 3 + 1 findings,
+each verified before fixing; one refuted (1.11); one accepted and open (6.3).
+The output-recognition patterns remain heuristics over tool text, with the
+limits stated in `verification/RESULT.md`: Verus proves the classification
+logic over recognized evidence, not that a pattern recognizes the right line.
