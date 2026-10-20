@@ -33,14 +33,25 @@ pub fn locate_broken_pack(root: &Path, error: &PackError) -> Option<PathBuf> {
         .map(|entry| PathBuf::from(entry.location))
 }
 
-/// The sentence a load error ends with, naming the repair command.
+/// The sentence a load error ends with, naming the exact repair command:
+/// this binary by absolute path and the project by absolute `--path`,
+/// which is the only form the hooks admit (see [`is_pack_repair_command`]).
 pub fn repair_hint(location: &Path) -> String {
     let id = location
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
+    let exe = std::env::current_exe()
+        .map(|exe| exe.display().to_string())
+        .unwrap_or_else(|_| "phr-mcp".to_string());
+    let project = location
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(|root| root.display().to_string())
+        .unwrap_or_else(|| ".".to_string());
     format!(
-        " Installed packs cannot be repaired by editing them (the install digest rejects changed bytes): remove it with `phr-mcp pack remove {id}`, then reinstall from its source with `phr-mcp pack install <dir>`. Until then only the pack CLI is allowed."
+        " Installed packs cannot be repaired by editing them (the install digest rejects changed bytes): remove it with `{exe} pack remove {id} --path {project}`, then reinstall from its source with `{exe} pack install <dir> --path {project}`. Until then only that pack CLI is allowed, with the binary and `--path` written as absolute paths."
     )
 }
 
@@ -50,20 +61,23 @@ pub fn repair_hint(location: &Path) -> String {
 ///
 /// - one command and no shell syntax (no chaining, pipes, redirects,
 ///   substitution, or quoting);
-/// - the executable is this hook's own binary: an explicit path, or a bare
-///   `phr-mcp` found on an absolute `PATH` entry, must canonicalize to the
-///   running executable, so a project-local file named `phr-mcp` is not it;
-/// - a pack subcommand with exactly its own arguments, and any `--path`
-///   naming this project, so the repair cannot reach another pack store.
+/// - the executable is written as an absolute path that canonicalizes to
+///   this hook's own binary. A bare name or relative path would be resolved
+///   by the shell (through `PATH`, from its own working directory), which
+///   the hook cannot see, so neither is admitted;
+/// - a pack subcommand with exactly its own arguments. The two that write
+///   the pack store, `install` and `remove`, must name it with an absolute
+///   `--path` that canonicalizes to this project; a relative or omitted one
+///   would resolve against the shell's working directory. `list` and
+///   `validate` only read.
 pub fn is_pack_repair_command(command: &str, project_root: &Path) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
-    let path_env = std::env::var_os("PATH").unwrap_or_default();
-    is_repair_for(command, project_root, &exe, &path_env)
+    is_repair_for(command, project_root, &exe)
 }
 
-fn is_repair_for(command: &str, root: &Path, exe: &Path, path_env: &std::ffi::OsStr) -> bool {
+fn is_repair_for(command: &str, root: &Path, exe: &Path) -> bool {
     let command = command.trim();
     let safe = |c: char| c.is_ascii_alphanumeric() || " -_./=~:+@,".contains(c);
     if command.is_empty() || !command.chars().all(safe) {
@@ -76,31 +90,22 @@ fn is_repair_for(command: &str, root: &Path, exe: &Path, path_env: &std::ffi::Os
     let Some(trusted) = canonical(exe) else {
         return false;
     };
-    let resolved = if binary.contains('/') {
-        canonical(&root.join(binary))
-    } else if *binary == "phr-mcp" {
-        std::env::split_paths(path_env)
-            .filter(|dir| dir.is_absolute())
-            .map(|dir| dir.join(binary))
-            .find(|candidate| candidate.is_file())
-            .and_then(|candidate| canonical(&candidate))
-    } else {
-        None
-    };
-    if resolved.as_ref() != Some(&trusted) {
+    let binary = Path::new(binary);
+    if !binary.is_absolute() || canonical(binary).as_ref() != Some(&trusted) {
         return false;
     }
-    let (positionals, flags): (usize, &[&str]) = match *subcommand {
-        "list" => (0, &["--json", "--path"]),
-        "validate" => (1, &["--json"]),
-        "install" => (1, &["--json", "--dry-run", "--path"]),
-        "remove" => (1, &["--path"]),
+    let (positionals, flags, writes): (usize, &[&str], bool) = match *subcommand {
+        "list" => (0, &["--json", "--path"], false),
+        "validate" => (1, &["--json"], false),
+        "install" => (1, &["--json", "--dry-run", "--path"], true),
+        "remove" => (1, &["--path"], true),
         _ => return false,
     };
     let Some(project) = canonical(root) else {
         return false;
     };
     let mut seen_positionals = 0;
+    let mut named_project = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         if !arg.starts_with('-') {
@@ -118,14 +123,16 @@ fn is_repair_for(command: &str, root: &Path, exe: &Path, path_env: &std::ffi::Os
             let Some(value) = inline.or_else(|| rest.next().copied()) else {
                 return false;
             };
-            if canonical(&root.join(value)).as_ref() != Some(&project) {
+            let value = Path::new(value);
+            if !value.is_absolute() || canonical(value).as_ref() != Some(&project) {
                 return false;
             }
+            named_project = true;
         } else if inline.is_some() {
             return false;
         }
     }
-    seen_positionals == positionals
+    seen_positionals == positionals && (named_project || !writes)
 }
 
 fn canonical(path: &Path) -> Option<PathBuf> {
@@ -136,71 +143,64 @@ fn canonical(path: &Path) -> Option<PathBuf> {
 mod tests {
     use super::is_repair_for;
 
-    /// A project with a fake "trusted" binary at `<bin>/phr-mcp`, standing in
-    /// for the hook's own executable.
-    fn setup() -> (tempfile::TempDir, tempfile::TempDir, std::path::PathBuf) {
+    #[test]
+    fn only_this_binary_by_absolute_path_on_this_project_is_a_repair() {
         let root = tempfile::tempdir().unwrap();
+        let root = root.path();
         let bin = tempfile::tempdir().unwrap();
         let exe = bin.path().join("phr-mcp");
         std::fs::write(&exe, b"").unwrap();
-        (root, bin, exe)
-    }
-
-    #[test]
-    fn only_this_binary_running_a_pack_subcommand_on_this_project_is_a_repair() {
-        let (root, bin, exe) = setup();
-        let root = root.path();
-        let path_env = std::ffi::OsString::from(bin.path());
         let exe_s = exe.display().to_string();
+        let project = root.canonicalize().unwrap().display().to_string();
         let other = tempfile::tempdir().unwrap();
-        let ok = |c: &str| is_repair_for(c, root, &exe, &path_env);
+        let ok = |c: &str| is_repair_for(c, root, &exe);
         for c in [
-            "phr-mcp pack remove demo_a".to_string(),
-            "  phr-mcp pack list --json ".to_string(),
-            format!("{exe_s} pack install ../packs/demo --path ."),
-            format!("{exe_s} pack remove demo_a --path={}", root.display()),
-            "phr-mcp pack validate ./src --json".to_string(),
+            format!("{exe_s} pack remove demo_a --path {project}"),
+            format!("{exe_s} pack remove demo_a --path={project}"),
+            format!("  {exe_s} pack install ../packs/demo --path {project} --json "),
+            format!("{exe_s} pack list --json"),
+            format!("{exe_s} pack validate ./src --json"),
         ] {
             assert!(ok(&c), "{c}");
         }
-        // A project-local file named `phr-mcp` is not this binary.
         std::fs::write(root.join("phr-mcp"), b"#!/bin/sh\necho pwned\n").unwrap();
         for c in [
-            "./phr-mcp pack list".to_string(),
+            // Resolved by the shell, not by the hook: a bare name, relative paths.
+            format!("phr-mcp pack remove demo_a --path {project}"),
+            format!("./phr-mcp pack remove demo_a --path {project}"),
             format!("{}/phr-mcp pack list", root.display()),
-            // Another project's pack store is out of reach.
+            // A store write must name this project, absolutely.
+            format!("{exe_s} pack remove demo_a"),
+            format!("{exe_s} pack remove demo_a --path ."),
+            format!("{exe_s} pack install ./src --path ."),
             format!(
-                "phr-mcp pack remove victim --path {}",
+                "{exe_s} pack remove victim --path {}",
                 other.path().display()
             ),
-            format!("phr-mcp pack list --path={}", other.path().display()),
+            format!("{exe_s} pack list --path={}", other.path().display()),
             // Wrong arity, unknown or valued boolean flags.
-            "phr-mcp pack remove".to_string(),
-            "phr-mcp pack remove a b".to_string(),
-            "phr-mcp pack remove demo_a --force".to_string(),
-            "phr-mcp pack list --json=1".to_string(),
-            "phr-mcp pack list --path".to_string(),
+            format!("{exe_s} pack remove --path {project}"),
+            format!("{exe_s} pack remove a b --path {project}"),
+            format!("{exe_s} pack remove demo_a --force --path {project}"),
+            format!("{exe_s} pack list --json=1"),
+            format!("{exe_s} pack list --path"),
             // Shell syntax and other commands.
-            "".to_string(),
+            String::new(),
             "rm -rf .phronesis/packs/demo_a".to_string(),
-            "phr-mcp pack remove demo_a && rm -rf src".to_string(),
-            "phr-mcp pack remove demo_a; rm -rf src".to_string(),
-            "phr-mcp pack remove demo_a | tee x".to_string(),
-            "phr-mcp pack remove $(whoami)".to_string(),
-            "phr-mcp pack remove `id`".to_string(),
-            "phr-mcp pack remove demo_a > out".to_string(),
-            "phr-mcp pack remove 'demo a'".to_string(),
-            "echo phr-mcp pack remove demo_a".to_string(),
-            "phr-mcp-evil pack remove demo_a".to_string(),
-            "phr-mcp init --force".to_string(),
-            "phr-mcp pack".to_string(),
-            "phr-mcp pack remove demo_a\nrm -rf src".to_string(),
-            "env X=1 phr-mcp pack remove demo_a".to_string(),
+            format!("{exe_s} pack remove demo_a --path {project} && rm -rf src"),
+            format!("{exe_s} pack remove demo_a --path {project}; rm -rf src"),
+            format!("{exe_s} pack list | tee x"),
+            format!("{exe_s} pack remove $(whoami) --path {project}"),
+            format!("{exe_s} pack remove `id` --path {project}"),
+            format!("{exe_s} pack list > out"),
+            format!("{exe_s} pack remove 'demo a' --path {project}"),
+            format!("echo {exe_s} pack list"),
+            format!("{exe_s} init --force"),
+            format!("{exe_s} pack"),
+            format!("{exe_s} pack list\nrm -rf src"),
+            format!("env X=1 {exe_s} pack list"),
         ] {
             assert!(!ok(&c), "{c:?}");
         }
-        // A relative PATH entry never resolves the bare name.
-        let relative = std::ffi::OsString::from(".");
-        assert!(!is_repair_for("phr-mcp pack list", root, &exe, &relative));
     }
 }

@@ -15,6 +15,11 @@ use serde_json::{Value, json};
 /// The hook's own binary: the repair exception admits only it.
 const BIN: &str = env!("CARGO_BIN_EXE_phr-mcp");
 
+/// The project root as the repair command must name it: absolute.
+fn project(root: &Path) -> String {
+    root.canonicalize().unwrap().display().to_string()
+}
+
 fn manifest(id: &str, ext: &str) -> Value {
     json!({
         "schema_version": 1,
@@ -111,7 +116,7 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
     let (code, err) = pre_edit(root, "README.md");
     assert_eq!(code, 2, "{err}");
     assert!(err.contains(".phronesis/packs/demo_a"), "{err}");
-    assert!(err.contains("phr-mcp pack remove demo_a"), "{err}");
+    assert!(err.contains("pack remove demo_a --path"), "{err}");
 
     // Not a repair: a raw delete, or the pack CLI chained with anything.
     assert_eq!(pre_bash(root, "rm -rf .phronesis/packs/demo_a").0, 2);
@@ -139,7 +144,16 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
     );
 
     // The repair: this binary's pack CLI alone, allowed with a warning.
-    let (code, err) = pre_bash(root, &format!("{BIN} pack remove demo_a"));
+    // Relative forms resolve in the shell, not the hook: refused.
+    assert_eq!(pre_bash(root, &format!("{BIN} pack remove demo_a")).0, 2);
+    assert_eq!(
+        pre_bash(root, &format!("{BIN} pack remove demo_a --path .")).0,
+        2
+    );
+    let (code, err) = pre_bash(
+        root,
+        &format!("{BIN} pack remove demo_a --path {}", project(root)),
+    );
     assert_eq!(code, 1, "{err}");
     assert!(err.contains("WARNING"), "{err}");
     assert_eq!(pre_bash(root, &format!("{BIN} pack list --json")).0, 1);
@@ -239,10 +253,13 @@ fn codex_admits_only_the_pack_cli_while_a_pack_is_broken() {
     assert!(
         denied["hookSpecificOutput"]["permissionDecisionReason"]
             .as_str()
-            .is_some_and(|r| r.contains("phr-mcp pack remove demo_a")),
+            .is_some_and(|r| r.contains("pack remove demo_a --path")),
         "{denied}"
     );
-    let allowed = codex(&format!("{BIN} pack remove demo_a"));
+    let allowed = codex(&format!(
+        "{BIN} pack remove demo_a --path {}",
+        project(root)
+    ));
     assert_ne!(
         allowed["hookSpecificOutput"]["permissionDecision"], "deny",
         "{allowed}"
