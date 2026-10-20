@@ -19,7 +19,7 @@ serde JSON, RETE, rmcp, clap, SHA-256 content digests, bundled Go grammar.
 
 **Spec:** `docs/superpowers/specs/2026-10-17-go-and-language-packs-design.md`
 
-Status (2026-10-18, parked): The Codex-run Swarming campaign stopped when the
+Status (2026-10-18, parked; resumed 2026-10-19): The Codex-run Swarming campaign stopped when the
 Codex account hit its usage limit (resets 2026-10-24). Code for every task
 T1-T8 exists in the `feat/go-language-packs` worktree
 (`.worktrees/go-packs`) and is committed there as one WIP snapshot; nothing
@@ -54,16 +54,39 @@ Verified on 2026-10-18 after parking (gate target dir `target/swarm/gate`):
     before the explicit rebuild). Needs a reviewer who knows the graph
     generation contract.
 
+Resumed 2026-10-19 (Opus 5.5, interactive, no swarm), four commits on top
+of the WIP snapshot:
+
+- `dde8fd1` fixes the `save_rules_integration` regression. It was never a
+  generation bug: line 336 asserts `files_indexed == 1`, and the index's
+  virtual `@pack-builtin/go` freshness key was being counted as a file.
+- `da10577` adds the opt-in `test_counts: "per_test"` toolchain field and
+  opts `go.test` into it. Before this, no `go test` run could ground a test
+  outcome (Go prints no counts), and a failing assertion read as a build
+  failure, against the spec's unknown/fail/pass requirement.
+- `163066e` lets `signal ingest` record compile-only evidence (it refused a
+  real compile error), and makes the acceptance script assert the verdicts.
+- `d6acfce` adds Verus invariant 6 (graded toolchain outcome): 29 verified,
+  0 errors.
+
+Verified on 2026-10-19:
+
+- Whole-workspace `cargo test --no-fail-fast`: 118 of 118 test binaries
+  green, 3622 passed, 0 failed, 4 ignored. fmt and clippy
+  (`--all-targets -D warnings`) clean.
+- `scripts/verify-language-packs.py` against real Go 1.26.4: all 23 steps
+  pass (init 108 ms on an idle machine; the earlier 180 s timeout was CPU
+  starvation from a concurrent test run).
+
 Still open before this can become a PR (T8 gates):
 
-- Fix the `generation` regression above and rerun the full workspace suite.
-
-- Independent review of the whole branch; no reviewer has seen T4-T8.
-- `scripts/verify-language-packs.py` has not been run against a real Go
-  toolchain here.
+- Rebase onto current `main` (v0.39.0).
+- Independent review of the whole branch; no reviewer has seen T4-T8 or the
+  four 2026-10-19 commits.
 - Warm hook/audit latency measurement (one warm-up, 30 samples) not done.
 - Split the WIP snapshot into the per-task commits the plan names, or
   accept one feature commit; squash-merge makes this a title question.
+- CHANGELOG entries, including the `test_counts` field and the ingest fix.
 - The swarm ledger for this campaign was not found under
   `/Volumes/Data/Git/phronesis-wt/`; spend and bid records live only in the
   Codex session transcript.
