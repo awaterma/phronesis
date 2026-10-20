@@ -106,3 +106,16 @@ While fixing 4.1, the existing test `unknown_build_does_not_ground_bug_caught`
 caught that start markers must not count when no exit code was captured (a
 truncated capture with a bare banner stays unknown); `test_started` now
 applies only alongside an exit code, in the code and the Verus model.
+
+## Fifth pass (2026-10-20)
+
+Review: `codex-review-fifth.md` (Codex, read-only, at `b41a674`), brief
+`brief-fifth-pass.md`. Fourth-pass 4.1 and 4.2 closed; 4.3 partly. Codex's
+repair integration runs stalled at `_dyld_start` inside its sandbox and are
+no evidence either way; the suite passes outside it.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 5.1 | Unanchored `failed to run custom build command` matched a test's own output, turning a test failure into a build failure | Confirmed (RED test) | MAJOR | **Fixed** `cc57c9c` (anchored to cargo's `error:` diagnostic) |
+| 5.2 | The narrowed cargo launch pattern rejected test source paths with spaces | Confirmed (RED test) | MAJOR | **Fixed** `cc57c9c` |
+| 5.3 | Repair hint printed an unusable command for a path with a single quote or control character | Confirmed (unit test) | MINOR | **Fixed** `cc57c9c` (no command is printed; run it from a terminal) |
