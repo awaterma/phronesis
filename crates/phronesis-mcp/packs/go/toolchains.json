@@ -26,9 +26,10 @@
       "(?m)^ok\\s",
       "(?m)^PASS$"
     ],
-    "per_test": "(?m)^--- (?P<status>PASS|FAIL|SKIP): (?P<name>\\S+)",
+    "per_test": "(?m)^--- (?P<status>PASS|FAIL): (?P<name>\\S+)",
     "pass_tokens": [
       "PASS"
-    ]
+    ],
+    "test_counts": "per_test"
   }
 ]

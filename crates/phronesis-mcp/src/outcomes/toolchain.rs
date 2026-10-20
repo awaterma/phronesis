@@ -83,6 +83,15 @@ pub struct ToolchainDef {
     /// `outcome:proof_run_inconclusive` for a run that was not a clean pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_kind: Option<String>,
+    /// Where test counts come from when no `test_summary` pattern matches.
+    /// `None` (the default): nowhere, so a run without a summary grounds no
+    /// test outcome. `"per_test"`: count the `per_test` matches, a
+    /// `pass_tokens` status as passed and any other as failed. For tools
+    /// that print a line per test but never a total (`go test -v`). A
+    /// matching `test_summary` still wins, and no per-test lines means no
+    /// counts, so nothing is invented from a quiet run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_counts: Option<String>,
 }
 
 /// One regex or several, in a field that historically held exactly one.
@@ -148,7 +157,12 @@ pub enum ToolchainError {
         field: &'static str,
         groups: &'static str,
     },
+    #[error("toolchain `{id}`: `test_counts` {reason}")]
+    BadTestCounts { id: String, reason: &'static str },
 }
+
+/// The only `test_counts` source today.
+const TEST_COUNTS_PER_TEST: &str = "per_test";
 
 /// A `ToolchainDef` with its regexes compiled and validated.
 #[derive(Debug, Clone)]
@@ -169,6 +183,9 @@ pub struct CompiledDef {
     /// inside each section (one match to the next), so a multi-line `per_test`
     /// can never span two harnesses.
     section_start: Option<Regex>,
+    /// `test_counts: "per_test"`: count `per_test` matches when no
+    /// `test_summary` matched.
+    counts_from_per_test: bool,
 }
 
 fn compile_field(id: &str, field: &'static str, pattern: &str) -> Result<Regex, ToolchainError> {
@@ -250,6 +267,28 @@ impl CompiledDef {
             .as_deref()
             .map(|p| compile_field(&def.id, "section_start", p))
             .transpose()?;
+        let counts_from_per_test = match def.test_counts.as_deref() {
+            None => false,
+            Some(TEST_COUNTS_PER_TEST) if is_proof => {
+                return Err(ToolchainError::BadTestCounts {
+                    id: def.id.clone(),
+                    reason: "cannot be set on an `outcome_kind: \"proof\"` def; proofs are not test counts",
+                });
+            }
+            Some(TEST_COUNTS_PER_TEST) if per_test.is_none() => {
+                return Err(ToolchainError::BadTestCounts {
+                    id: def.id.clone(),
+                    reason: "is \"per_test\" but the def has no `per_test` regex",
+                });
+            }
+            Some(TEST_COUNTS_PER_TEST) => true,
+            Some(_) => {
+                return Err(ToolchainError::BadTestCounts {
+                    id: def.id.clone(),
+                    reason: "must be \"per_test\" when set",
+                });
+            }
+        };
         Ok(Self {
             def,
             source,
@@ -260,6 +299,7 @@ impl CompiledDef {
             per_test,
             section_start,
             is_proof,
+            counts_from_per_test,
         })
     }
 
@@ -312,8 +352,32 @@ impl CompiledDef {
     /// stops the search: two patterns describe two output formats of the same
     /// tool, so matching both would double-count rather than accumulate.
     ///
-    /// `None` when the def has no summary regex or none of them matched.
+    /// `None` when the def has no summary regex or none of them matched,
+    /// unless the def opted into `test_counts: "per_test"` and at least one
+    /// per-test line matched.
     fn test_counts(&self, output: &str) -> Option<TestCounts> {
+        self.summary_counts(output)
+            .or_else(|| self.per_test_counts(output))
+    }
+
+    /// Counts from the opted-in per-test lines; `None` when the def did not
+    /// opt in or no line matched (a quiet run proves no test ran).
+    fn per_test_counts(&self, output: &str) -> Option<TestCounts> {
+        if !self.counts_from_per_test {
+            return None;
+        }
+        let results = self.per_test_results(output);
+        if results.is_empty() {
+            return None;
+        }
+        let passed = results.iter().filter(|(_, passed)| *passed).count();
+        Some(TestCounts {
+            passed,
+            failed: results.len() - passed,
+        })
+    }
+
+    fn summary_counts(&self, output: &str) -> Option<TestCounts> {
         self.test_summary.iter().find_map(|re| {
             let mut found = false;
             let mut counts = TestCounts {
@@ -525,6 +589,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
+            test_counts: None,
         },
         ToolchainDef {
             id: "swift".to_string(),
@@ -536,6 +601,7 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
+            test_counts: None,
         },
     ]
 }
@@ -565,6 +631,7 @@ fn cargo_builtin() -> ToolchainDef {
         section_start: None,
         pass_tokens: default_pass_tokens(),
         outcome_kind: None,
+        test_counts: None,
     }
 }
 
@@ -1536,5 +1603,139 @@ mod tests {
         assert_eq!(kani.source, DefSource::Project);
         assert!(kani.is_proof);
         assert!(kani.handles("cargo kani -p phronesis --harness x"));
+    }
+
+    // ── test_counts: "per_test" (counts from per-test lines) ──────────────
+
+    fn go_style(test_counts: Option<&str>) -> CompiledDef {
+        let mut def: ToolchainDef = serde_json::from_str(
+            r#"{
+                "id": "gotest",
+                "matches": "^go\\s+test(\\s|$)",
+                "compile_fail": ["\\[build failed\\]", "(?m)^# "],
+                "compile_success": ["(?m)^ok\\s", "(?m)^PASS$"],
+                "per_test": "(?m)^--- (?P<status>PASS|FAIL): (?P<name>\\S+)",
+                "pass_tokens": ["PASS"]
+            }"#,
+        )
+        .unwrap();
+        def.test_counts = test_counts.map(str::to_string);
+        CompiledDef::compile(def, DefSource::Project).unwrap()
+    }
+
+    fn counts(facts: &[crate::outcomes::facts::OutcomeFact]) -> Option<(&str, &str)> {
+        test_fact(facts).map(|f| (f.args[1].as_str(), f.args[2].as_str()))
+    }
+
+    const GO_PASS: &str = "=== RUN   TestAdd\n--- PASS: TestAdd (0.00s)\n=== RUN   TestSub\n--- PASS: TestSub (0.00s)\nPASS\nok  \texample.com/demo\t0.003s\n";
+    const GO_FAIL: &str = "=== RUN   TestAdd\n--- FAIL: TestAdd (0.00s)\n    calc_test.go:6: bad sum\n=== RUN   TestSub\n--- PASS: TestSub (0.00s)\nFAIL\nFAIL\texample.com/demo\t0.002s\n";
+
+    #[test]
+    fn per_test_counts_ground_a_passing_run() {
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", GO_PASS, Some(0));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert_eq!(counts(&facts), Some(("2", "0")));
+    }
+
+    #[test]
+    fn per_test_counts_split_an_assertion_failure_from_a_build_failure() {
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", GO_FAIL, Some(1));
+        assert_eq!(build_status(&facts), Some("pass"), "the code compiled");
+        assert_eq!(counts(&facts), Some(("1", "1")));
+    }
+
+    #[test]
+    fn per_test_counts_never_survive_a_compile_failure() {
+        let out = "# example.com/demo [example.com/demo.test]\n./calc.go:2:30: undefined: missing\nFAIL\texample.com/demo [build failed]\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", out, Some(1));
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn per_test_counts_invent_nothing_without_per_test_lines() {
+        // Plain `go test` prints no per-test lines on success: tests ran or
+        // not, the output cannot say how many, so no test fact.
+        let quiet = "ok  \texample.com/demo\t0.003s\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test ./...", quiet, Some(0));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_none());
+        let none = "?   \texample.com/demo\t[no test files]\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test ./...", none, Some(0));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn per_test_counts_without_an_exit_need_their_own_evidence() {
+        // Absent exit: per-test lines are evidence the tests ran, just as a
+        // summary match is.
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", GO_FAIL, None);
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert_eq!(counts(&facts), Some(("1", "1")));
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", "...truncated", None);
+        assert_eq!(build_status(&facts), Some("unknown"));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn without_test_counts_per_test_lines_still_ground_no_counts() {
+        let facts = go_style(None).parse("u", "go test -v ./...", GO_PASS, Some(0));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_none(), "opt-in only");
+        let facts = go_style(None).parse("u", "go test -v ./...", GO_FAIL, Some(1));
+        assert_eq!(build_status(&facts), Some("fail"), "pre-existing behaviour");
+    }
+
+    #[test]
+    fn a_matching_test_summary_wins_over_per_test_counts() {
+        let mut def = synthetic().def;
+        def.test_counts = Some("per_test".to_string());
+        let def = CompiledDef::compile(def, DefSource::Project).unwrap();
+        // Two per-test lines, but the summary says 10 passed, 2 failed.
+        let out = "a PASSED\nb FAILED\n=== 2 failed, 10 passed in 0.5s ===\n";
+        let facts = def.parse("u", "pytest", out, Some(1));
+        assert_eq!(counts(&facts), Some(("10", "2")));
+    }
+
+    #[test]
+    fn test_counts_rejects_unknown_values_and_impossible_combinations() {
+        let load = |json: &str| {
+            let def: ToolchainDef = serde_json::from_str(json).unwrap();
+            CompiledDef::compile(def, DefSource::Project)
+        };
+        let err = load(r#"{"id":"x","matches":"x","per_test":"(?P<name>\\S+) (?P<status>ok)","test_counts":"summary"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("test_counts") && err.contains("per_test"),
+            "{err}"
+        );
+        let err = load(r#"{"id":"x","matches":"x","test_counts":"per_test"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("test_counts") && err.contains("per_test"),
+            "{err}"
+        );
+        let err = load(r#"{"id":"x","matches":"x","outcome_kind":"proof","per_test":"(?P<name>\\S+) (?P<status>ok)","test_counts":"per_test"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("test_counts") && err.contains("proof"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_counts_is_omitted_when_unset_and_round_trips_when_set() {
+        let def: ToolchainDef = serde_json::from_str(r#"{"id":"x","matches":"x"}"#).unwrap();
+        assert!(!serde_json::to_string(&def).unwrap().contains("test_counts"));
+        let def: ToolchainDef =
+            serde_json::from_str(r#"{"id":"x","matches":"x","test_counts":"per_test"}"#).unwrap();
+        assert!(
+            serde_json::to_string(&def)
+                .unwrap()
+                .contains(r#""test_counts":"per_test""#)
+        );
     }
 }

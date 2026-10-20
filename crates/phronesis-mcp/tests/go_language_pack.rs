@@ -613,6 +613,12 @@ mod toolchain_outcomes {
         CompiledDef::compile(def, DefSource::Project).expect("compile def")
     }
 
+    /// `(passed, failed)` from the `test_outcome` fact, if any.
+    fn test_counts(facts: &[OutcomeFact]) -> Option<(usize, usize)> {
+        let fact = facts.iter().find(|f| f.predicate == "test_outcome")?;
+        Some((fact.args[1].parse().ok()?, fact.args[2].parse().ok()?))
+    }
+
     fn build_outcome(facts: &[OutcomeFact]) -> &str {
         facts
             .iter()
@@ -678,9 +684,12 @@ mod toolchain_outcomes {
         );
         assert_eq!(build_outcome(&facts), "pass");
 
+        // A quiet success prints no per-test lines, so it proves the build
+        // but not how many tests ran: no test count is manufactured.
+        assert!(test_counts(&facts).is_none());
+
         // No test files: still a pass (compiled fine, nothing ran) and no
-        // positive test count is ever manufactured (no `test_outcome` fact
-        // exists for this toolchain at all).
+        // positive test count is ever manufactured.
         let facts = test.parse(
             "s",
             "go test ./...",
@@ -688,19 +697,29 @@ mod toolchain_outcomes {
             Some(0),
         );
         assert_eq!(build_outcome(&facts), "pass");
-        assert!(!facts.iter().any(|f| f.predicate == "test_outcome"));
+        assert!(test_counts(&facts).is_none());
 
-        // A failing test (compiles fine, assertion fails).
+        // A verbose success counts its per-test lines; skipped tests are
+        // neither passed nor failed.
+        let pass_output = "=== RUN   TestAdd\n--- PASS: TestAdd (0.00s)\n=== RUN   TestSkip\n--- SKIP: TestSkip (0.00s)\nPASS\nok  \texample.com/demo\t0.002s\n";
+        let facts = test.parse("s", "go test -v ./...", pass_output, Some(0));
+        assert_eq!(build_outcome(&facts), "pass");
+        assert_eq!(test_counts(&facts), Some((1, 0)));
+
+        // A failing test compiles fine and fails its assertion: build pass,
+        // test fail. Never the same verdict as a compile error.
         let fail_output =
             "=== RUN   TestAdd\n--- FAIL: TestAdd (0.00s)\nFAIL\nFAIL\texample.com/demo\t0.002s\n";
         let facts = test.parse("s", "go test -v ./...", fail_output, Some(1));
-        assert_eq!(build_outcome(&facts), "fail");
+        assert_eq!(build_outcome(&facts), "pass");
+        assert_eq!(test_counts(&facts), Some((0, 1)));
 
         // A build failure surfaced through `go test` (compile error, not a
         // test assertion failure).
         let build_fail = "# example.com/demo [example.com/demo.test]\n./main.go:5:2: undefined: Foo\nFAIL\texample.com/demo [build failed]\n";
         let facts = test.parse("s", "go test ./...", build_fail, Some(2));
         assert_eq!(build_outcome(&facts), "fail");
+        assert!(test_counts(&facts).is_none());
 
         // Unknown exit, no recognizable text at all (e.g. truncated output).
         let facts = test.parse("s", "go test ./...", "...truncated", None);
