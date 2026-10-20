@@ -122,3 +122,18 @@ pub fn run_install(root: &Path, dir: &Path, dry_run: bool, json_output: bool) ->
         }
     }
 }
+
+/// `phr-mcp pack remove <id>`. Returns `false` (exit 1) when nothing was
+/// removed.
+pub fn run_remove(root: &Path, id: &str) -> bool {
+    match super::install::remove(root, id) {
+        Ok(location) => {
+            println!("removed {id} ({})", location.display());
+            true
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            false
+        }
+    }
+}

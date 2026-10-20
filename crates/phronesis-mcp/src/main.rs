@@ -1251,6 +1251,17 @@ enum PackCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Remove the installed pack `<id>` from `.phronesis/packs/`. The repair
+    /// for a broken install (an installed pack cannot be edited back into
+    /// shape) and the first step of an upgrade. Built-in packs cannot be
+    /// removed.
+    Remove {
+        /// Pack identifier (the directory name under `.phronesis/packs/`).
+        id: String,
+        /// Project root (defaults to current directory).
+        #[arg(long, default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 #[derive(clap::Subcommand, Debug)]
@@ -2589,6 +2600,12 @@ fn handle_pack(cmd: PackCmd) -> anyhow::Result<()> {
             json,
         } => {
             if !cli::run_install(&path, &dir, dry_run, json) {
+                std::process::exit(1);
+            }
+            Ok(())
+        }
+        PackCmd::Remove { id, path } => {
+            if !cli::run_remove(&path, &id) {
                 std::process::exit(1);
             }
             Ok(())

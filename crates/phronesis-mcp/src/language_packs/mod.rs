@@ -20,6 +20,7 @@ pub mod integration;
 pub mod manifest;
 pub mod records;
 pub mod registry;
+pub mod repair;
 pub mod selection;
 pub mod templates;
 

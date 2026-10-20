@@ -10,7 +10,7 @@
 
 use std::fs;
 use std::io::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 use serde::Serialize;
@@ -296,16 +296,7 @@ pub fn install(root: &Path, dir: &Path, dry_run: bool) -> Result<InstallReport, 
     ensure_no_symlink_components(root, packs_rel)?;
     ensure_no_symlink_components(root, &packs_rel.join(&id))?;
 
-    let lock_path = packs_dir.join(".install.lock");
-    let lock_file = fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .map_err(|e| io_err(&id, &lock_path, e))?;
-    lock_file
-        .lock_exclusive()
-        .map_err(|e| io_err(&id, &lock_path, e))?;
+    let _lock = lock_pack_store(&packs_dir, &id)?;
 
     // Check extension ownership against every other installed/built-in pack
     // under the same lock, so two concurrent installs cannot both claim the
@@ -368,6 +359,109 @@ pub fn install(root: &Path, dir: &Path, dry_run: bool) -> Result<InstallReport, 
         dry_run: false,
         location: target.display().to_string(),
     })
+}
+
+/// Open and exclusively lock `.phronesis/packs/.install.lock`, the lock every
+/// pack-store write holds. The lock is opened without following a symlink
+/// in its final component (and without blocking on a FIFO), and must be a
+/// regular file, so a planted link cannot make an install create or open a
+/// file outside the project.
+fn lock_pack_store(packs_dir: &Path, id: &str) -> Result<fs::File, PackError> {
+    let lock_path = packs_dir.join(".install.lock");
+    let unsafe_lock = |reason: &str| PackError::UnsafePath {
+        pack: Some(id.to_string()),
+        path: lock_path.display().to_string(),
+        reason: reason.to_string(),
+    };
+    if let Ok(meta) = fs::symlink_metadata(&lock_path)
+        && !meta.file_type().is_file()
+    {
+        return Err(unsafe_lock("is not a regular file; refusing to open it"));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.create(true).write(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let lock_file = options.open(&lock_path).map_err(|e| {
+        if e.raw_os_error() == Some(libc::ELOOP) {
+            unsafe_lock("is a symlink; refusing to follow it")
+        } else {
+            io_err(id, &lock_path, e)
+        }
+    })?;
+    let is_file = lock_file
+        .metadata()
+        .map_err(|e| io_err(id, &lock_path, e))?
+        .is_file();
+    if !is_file {
+        return Err(unsafe_lock("is not a regular file; refusing to open it"));
+    }
+    lock_file
+        .lock_exclusive()
+        .map_err(|e| io_err(id, &lock_path, e))?;
+    Ok(lock_file)
+}
+
+/// Remove the installed pack `id`: the repair for a broken install (an
+/// installed pack cannot be edited back into shape, since its recorded
+/// digest rejects changed bytes) and the first step of an upgrade.
+///
+/// Only a real directory directly under `.phronesis/packs/` named by a pack
+/// identifier is removed, under the pack-store lock and never through a
+/// symlink. The directory is first renamed to a hidden name, which
+/// enumeration skips, so an interrupted removal never leaves a half-deleted
+/// pack that loads. A built-in pack cannot be removed. Returns the removed
+/// directory.
+pub fn remove(root: &Path, id: &str) -> Result<PathBuf, PackError> {
+    let refused = |message: String| PackError::Manifest {
+        pack: Some(id.to_string()),
+        path: PACKS_DIR.to_string(),
+        field: "remove".to_string(),
+        message,
+    };
+    if !super::is_identifier(id) {
+        return Err(refused(format!("`{id}` is not a pack identifier")));
+    }
+    let packs_rel = Path::new(PACKS_DIR);
+    let target_rel = packs_rel.join(id);
+    ensure_no_symlink_components(root, &target_rel)?;
+    let packs_dir = root.join(PACKS_DIR);
+    let target = packs_dir.join(id);
+    match fs::symlink_metadata(&target) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => {
+            return Err(PackError::UnsafePath {
+                pack: Some(id.to_string()),
+                path: target.display().to_string(),
+                reason: "is not a directory; refusing to remove it".to_string(),
+            });
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            let builtin = super::builtin::builtin_pack_sources()
+                .iter()
+                .any(|pack| pack.manifest.id == id);
+            return Err(refused(if builtin {
+                format!("`{id}` is a built-in pack; it ships in the binary and cannot be removed")
+            } else {
+                format!("no pack `{id}` is installed in {}", packs_dir.display())
+            }));
+        }
+        Err(e) => return Err(io_err(id, &target, e)),
+    }
+
+    let _lock = lock_pack_store(&packs_dir, id)?;
+    // Recheck under the lock: the path must still be a real directory.
+    ensure_no_symlink_components(root, &target_rel)?;
+    let doomed = packs_dir.join(format!(".removing-{id}-{}", std::process::id()));
+    if fs::symlink_metadata(&doomed).is_ok() {
+        fs::remove_dir_all(&doomed).map_err(|e| io_err(id, &doomed, e))?;
+    }
+    fs::rename(&target, &doomed).map_err(|e| io_err(id, &target, e))?;
+    fs::remove_dir_all(&doomed).map_err(|e| io_err(id, &doomed, e))?;
+    Ok(target)
 }
 
 fn io_err(pack: &str, path: &Path, source: std::io::Error) -> PackError {

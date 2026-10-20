@@ -228,10 +228,10 @@ pub(crate) fn builtin_pack_sources() -> Vec<PackAssets> {
 /// assets fail to read/parse/validate, so a broken pack is a visible,
 /// identifiable entry (via `PackError::pack()`) rather than a bare
 /// diagnostic with no id.
-struct Enumerated {
-    origin: PackOrigin,
-    location: String,
-    assets: Result<PackAssets, PackError>,
+pub(crate) struct Enumerated {
+    pub(crate) origin: PackOrigin,
+    pub(crate) location: String,
+    pub(crate) assets: Result<PackAssets, PackError>,
 }
 
 /// Enumerate every pack this project could see: built-in sources plus
@@ -239,7 +239,7 @@ struct Enumerated {
 /// directory-level read failure (e.g. `.phronesis/packs` itself is missing a
 /// permission) is reported as a location-less diagnostic in the returned
 /// `Vec`'s second element; per-pack failures stay attached to their entry.
-fn enumerate(root: &Path) -> (Vec<Enumerated>, Vec<PackDiagnostic>) {
+pub(crate) fn enumerate(root: &Path) -> (Vec<Enumerated>, Vec<PackDiagnostic>) {
     let mut out = Vec::new();
     let mut top_level_diagnostics = Vec::new();
 

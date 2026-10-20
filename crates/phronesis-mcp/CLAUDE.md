@@ -5,7 +5,7 @@ MCP server wrapping the phronesis RETE rules engine for rules-bounded LLM intera
 ## Go and contributor language packs
 
 `phr-mcp init --packs go` selects the bundled Go starter rule and toolchains.
-`phr-mcp pack validate <dir>`, `pack install <dir>`, and `pack list --json`
+`phr-mcp pack validate <dir>`, `pack install <dir>`, `pack remove <id>`, and `pack list --json`
 operate on bounded declared assets; MCP `list_language_packs` exposes the same
 live inventory. See `../../docs/LANGUAGE-PACKS.md` and the external
 `../../examples/language-packs/python-starter/` example. Pack facts and graph

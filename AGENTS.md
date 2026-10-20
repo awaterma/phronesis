@@ -20,7 +20,7 @@ This is a Rust workspace with four crates:
 ## Go and external language packs
 
 `phr-mcp init --packs go` selects the Go starter. `phr-mcp pack validate
-<dir>`, `pack install <dir>`, and `pack list --json` operate on declared,
+<dir>`, `pack install <dir>`, `pack remove <id>`, and `pack list --json` operate on declared,
 validated assets; MCP `list_language_packs` reports the same live inventory.
 Contributors should use [docs/LANGUAGE-PACKS.md](docs/LANGUAGE-PACKS.md) and
 [the Python starter](examples/language-packs/python-starter/). Pack facts and

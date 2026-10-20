@@ -89,6 +89,28 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                     });
                     process::exit(1);
                 }
+                let command = super::extract_new_content(&payload, &tool_name).unwrap_or_default();
+                if e.pack_failure
+                    && is_shell(&tool_name)
+                    && crate::language_packs::repair::is_pack_repair_command(&command)
+                {
+                    // An installed pack cannot be edited back into shape;
+                    // its repair is the pack CLI. Allowed with a warning,
+                    // like the rules-file repair edit above.
+                    eprintln!(
+                        "phronesis: WARNING — allowing this pack command because a language pack failed to load and the pack CLI is its repair; every other tool call stays blocked until it loads. {e}"
+                    );
+                    super::log_hook_event(&super::LogEventInput {
+                        phase: "pre",
+                        tool_name: &tool_name,
+                        file_path: &file_path,
+                        exit: 1,
+                        command_exit: None,
+                        consequences: &[],
+                        subject: None,
+                    });
+                    process::exit(1);
+                }
                 eprintln!("phronesis: BLOCKED — {}", e);
                 fail_closed_exit(&root, &inflight_key, &payload, "load_rules", &e.to_string());
             }
@@ -317,6 +339,11 @@ fn is_file_edit(tool_name: &str) -> bool {
         tool_name,
         "Edit" | "Write" | "MultiEdit" | "replace" | "write_file"
     )
+}
+
+/// Shell tools (Claude Code and Gemini names).
+fn is_shell(tool_name: &str) -> bool {
+    matches!(tool_name, "Bash" | "run_shell_command")
 }
 
 fn blocked_exit(root: &std::path::Path, key: &str, tool_name: &str) -> ! {

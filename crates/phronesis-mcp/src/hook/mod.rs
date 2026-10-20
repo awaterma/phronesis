@@ -37,6 +37,9 @@ use fs2::FileExt as _;
 struct RulesLoadError {
     message: String,
     failing_file: std::path::PathBuf,
+    /// An installed language pack failed to load: the repair is the pack
+    /// CLI, not an edit (see `language_packs::repair`).
+    pack_failure: bool,
 }
 
 /// Hook-internal error type. Engine failures arrive typed as
@@ -217,9 +220,19 @@ struct LoadedRules {
 
 fn load_rules(phase: &str, file_path: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
     let root = security::project_root();
-    let registry = crate::language_packs::load(&root).map_err(|error| RulesLoadError {
-        message: error.to_string(),
-        failing_file: crate::rule_layers::config_path(&root),
+    let registry = crate::language_packs::load(&root).map_err(|error| {
+        let location = crate::language_packs::repair::locate_broken_pack(&root, &error);
+        let hint = location
+            .as_deref()
+            .map(crate::language_packs::repair::repair_hint)
+            .unwrap_or_default();
+        let failing_file =
+            location.unwrap_or_else(|| root.join(crate::language_packs::registry::PACKS_DIR));
+        RulesLoadError {
+            message: format!("{}: {error}.{hint}", failing_file.display()),
+            failing_file,
+            pack_failure: true,
+        }
     })?;
     let resolved = crate::rule_layers::resolve_with_registry(&root, &registry).map_err(|e| {
         let failing_file = e.failing_file(&root);
@@ -234,6 +247,7 @@ fn load_rules(phase: &str, file_path: &str) -> Result<Option<LoadedRules>, Rules
         RulesLoadError {
             message,
             failing_file,
+            pack_failure: e.is_pack_failure(),
         }
     })?;
 
@@ -252,6 +266,7 @@ fn load_rules(phase: &str, file_path: &str) -> Result<Option<LoadedRules>, Rules
         .map_err(|error| RulesLoadError {
             message: error.to_string(),
             failing_file: crate::rule_layers::config_path(&root),
+            pack_failure: false,
         })?
         .is_some();
     if rules.is_empty() && !pack_owned {

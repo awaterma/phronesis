@@ -99,8 +99,20 @@ impl LayerError {
                 .path()
                 .map(PathBuf::from)
                 .unwrap_or_else(|| config_path(project_root)),
+            LayerError::Pack(error) => {
+                crate::language_packs::repair::locate_broken_pack(project_root, error)
+                    .unwrap_or_else(|| {
+                        project_root.join(crate::language_packs::registry::PACKS_DIR)
+                    })
+            }
             _ => config_path(project_root),
         }
+    }
+
+    /// Whether this is an installed language pack failing to load, whose
+    /// repair is the pack CLI rather than an edit.
+    pub fn is_pack_failure(&self) -> bool {
+        matches!(self, LayerError::Pack(_))
     }
 }
 
