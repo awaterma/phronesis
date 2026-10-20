@@ -290,13 +290,17 @@ pub(super) fn pack_input_files(root: &Path) -> Vec<String> {
     out
 }
 
+/// Index-key prefix for an embedded pack's freshness input. The key names no
+/// file under the project root, so file counts must skip it.
+pub(crate) const BUILTIN_PACK_KEY_PREFIX: &str = "@pack-builtin/";
+
 /// Virtual freshness inputs for embedded packs, whose bytes are in the binary
 /// rather than under the project root.
 pub(crate) fn builtin_pack_hashes() -> BTreeMap<String, u64> {
     crate::language_packs::registry::builtin_pack_sources()
         .into_iter()
         .map(|assets| {
-            let key = format!("@pack-builtin/{}", assets.manifest.id);
+            let key = format!("{BUILTIN_PACK_KEY_PREFIX}{}", assets.manifest.id);
             let digest = crate::language_packs::digest_assets(&assets);
             (key, hash_bytes(digest.as_bytes()))
         })

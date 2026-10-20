@@ -14,6 +14,7 @@ mod index;
 mod rebuild;
 mod rules;
 
+pub(crate) use index::BUILTIN_PACK_KEY_PREFIX;
 #[cfg(test)]
 pub(crate) use index::builtin_pack_hashes;
 pub use index::{TRACKED_EXTENSIONS, check_freshness, load_index, save_index};
