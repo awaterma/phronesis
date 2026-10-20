@@ -818,3 +818,25 @@ fn every_local_binding_form_shadows_a_package_function_call() {
         PackRecord::Reference { target, resolution, .. }
             if target == "Work" && *resolution == ReferenceMode::SameScope)));
 }
+
+/// A `*_test.go` file is a test file whatever it declares (review finding
+/// 14): one holding only helpers was classified `production` because the
+/// classification came from finding a test declaration.
+#[test]
+fn a_helper_only_go_test_file_is_classified_as_a_test_file() {
+    let pack = go_pack();
+    let file_type = |file: &str, source: &str| -> String {
+        let context = ctx(file);
+        let extraction = extract(&pack, &context, source).unwrap();
+        let edges =
+            phronesis_mcp::language_packs::graph_records(&pack, &context, &extraction).unwrap();
+        edges
+            .iter()
+            .find(|e| e.p == "file_type")
+            .map(|e| e.a[1].clone())
+            .unwrap()
+    };
+    let helpers = "package main\n\nfunc helper() int { return 1 }\n";
+    assert_eq!(file_type("helpers_test.go", helpers), "test");
+    assert_eq!(file_type("helpers.go", helpers), "production");
+}

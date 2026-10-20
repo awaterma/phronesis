@@ -51,6 +51,11 @@ pub struct PackManifest {
     pub context_files: Vec<String>,
     #[serde(default)]
     pub fixtures: Vec<FixtureSpec>,
+    /// File-name suffixes that make a file a test file whatever it declares
+    /// (Go: `_test.go`), so a file holding only test helpers is still
+    /// classified `test`. Each must end with one of the pack's extensions.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_file_suffixes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -223,6 +228,24 @@ pub fn validate_manifest(m: &PackManifest) -> Result<(), PackError> {
         }
     }
 
+    if m.test_file_suffixes.len() > MAX_TEST_FILE_SUFFIXES {
+        return Err(limit("test_file_suffixes", MAX_TEST_FILE_SUFFIXES));
+    }
+    for suffix in &m.test_file_suffixes {
+        let owned = m
+            .extensions
+            .iter()
+            .any(|ext| suffix.len() > ext.len() + 1 && suffix.ends_with(&format!(".{ext}")));
+        if !owned || suffix.len() > 64 || suffix.contains(['/', '\\']) {
+            return Err(bad(
+                "test_file_suffixes",
+                format!(
+                    "`{suffix}` must be a file-name suffix (no path separator, at most 64 bytes) ending in one of this pack's extensions"
+                ),
+            ));
+        }
+    }
+
     // Contradictory declarations.
     if m.toolchains.is_some() != m.has(Capability::Toolchains) {
         return Err(bad(
@@ -324,6 +347,8 @@ fn check_template(template: &RecordTemplate) -> Result<(), RecordError> {
         Some(_) => Err(RecordError("`span_capture` must be a capture name".into())),
     }
 }
+
+const MAX_TEST_FILE_SUFFIXES: usize = 8;
 
 /// The host-owned `pack_*` relation a pack with this id could forge through
 /// its `pack_<id>_<name>` facts, if any.

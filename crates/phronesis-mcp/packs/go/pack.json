@@ -16,6 +16,7 @@
   "rules": "rules.json",
   "toolchains": "toolchains.json",
   "context_files": ["go.mod"],
+  "test_file_suffixes": ["_test.go"],
   "fixtures": [
     { "path": "fixtures/basic.go", "expected": "fixtures/basic.expected.json" }
   ]

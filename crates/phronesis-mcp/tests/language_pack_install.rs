@@ -430,3 +430,27 @@ fn pack_ids_cannot_make_fact_predicates_ambiguous_or_forge_host_relations() {
     write_pack(shorter.path(), &manifest("solo", "solo2"));
     assert!(install(root.path(), shorter.path(), false).is_err());
 }
+
+#[test]
+fn test_file_suffixes_must_be_file_name_suffixes_of_the_packs_extensions() {
+    let root = tempfile::tempdir().unwrap();
+    for (bad, why) in [
+        ("_test.py", "another extension"),
+        ("dir/_test.demob", "a path separator"),
+        (".demob", "the bare extension"),
+    ] {
+        let mut m = manifest("demo_b", "demob");
+        m["test_file_suffixes"] = json!([bad]);
+        let src = tempfile::tempdir().unwrap();
+        write_pack(src.path(), &m);
+        let err = install(root.path(), src.path(), false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("test_file_suffixes"), "{why}: {err}");
+    }
+    let mut ok = manifest("demo_b", "demob");
+    ok["test_file_suffixes"] = json!(["_test.demob"]);
+    let src = tempfile::tempdir().unwrap();
+    write_pack(src.path(), &ok);
+    install(root.path(), src.path(), false).unwrap();
+}

@@ -47,7 +47,13 @@ pub fn graph_records(
     let has_test = extraction
         .records
         .iter()
-        .any(|record| matches!(record, PackRecord::Declaration { test: true, .. }));
+        .any(|record| matches!(record, PackRecord::Declaration { test: true, .. }))
+        || pack
+            .assets
+            .manifest
+            .test_file_suffixes
+            .iter()
+            .any(|suffix| file.ends_with(suffix.as_str()));
     let mut edges = vec![
         Edge::base(
             "pack_file_adapter",
