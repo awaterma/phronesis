@@ -33,6 +33,37 @@ fn without_terminal_escapes(output: &str) -> std::borrow::Cow<'_, str> {
         std::borrow::Cow::Borrowed(output)
     }
 }
+
+/// Cargo quotes a failing build script's output under `  --- stdout` /
+/// `  --- stderr`, each line indented two spaces. That text is the script's,
+/// not cargo's or a test runner's, so no outcome pattern may read it: a
+/// script can print anything, including a launch line or a test summary.
+fn without_build_script_payload(output: &str) -> std::borrow::Cow<'_, str> {
+    if !output.contains("  --- std") {
+        return std::borrow::Cow::Borrowed(output);
+    }
+    let mut kept = String::with_capacity(output.len());
+    let mut in_payload = false;
+    for line in output.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\n', '\r']);
+        if bare == "  --- stdout" || bare == "  --- stderr" {
+            in_payload = true;
+            continue;
+        }
+        if in_payload && bare.starts_with("  ") {
+            continue;
+        }
+        in_payload = false;
+        kept.push_str(line);
+    }
+    std::borrow::Cow::Owned(kept)
+}
+
+/// The output outcome patterns read: terminal escapes removed, and cargo's
+/// quoted build-script payloads dropped.
+fn normalized_output(output: &str) -> String {
+    without_build_script_payload(&without_terminal_escapes(output)).into_owned()
+}
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -445,7 +476,7 @@ impl CompiledDef {
         let Some(re) = &self.per_test else {
             return Vec::new();
         };
-        let output = &*without_terminal_escapes(output);
+        let output = &*normalized_output(output);
         let sections: Vec<&str> = match &self.section_start {
             None => vec![output],
             Some(start) => {
@@ -489,7 +520,7 @@ impl CompiledDef {
         output: &str,
         command_exit: Option<i32>,
     ) -> Vec<OutcomeFact> {
-        let output = &*without_terminal_escapes(output);
+        let output = &*normalized_output(output);
         let per_test_lines = if self.counts_from_per_test {
             self.per_test_results(output)
         } else {
@@ -719,6 +750,10 @@ fn cargo_builtin() -> ToolchainDef {
             // script's quoted payload (under `--- stdout`) is indented two.
             r"(?m)^ {5}Running .+ \(.*[/\\](?:deps|examples)[/\\][^/\\\n]+\)\s*$".to_string(),
             r"(?m)^running \d+ tests?$".to_string(),
+            // Cargo's runtime-failure report, printed in every verbosity mode
+            // (including --quiet, which has no launch line) and only after a
+            // test binary ran and failed.
+            r"(?m)^error: (?:test|doctest) failed, to rerun pass ".to_string(),
             r"(?m)^\s+Starting \d+ tests?".to_string(),
         ],
         // `matches` accepts `cargo nextest`, and nextest never emits libtest's
@@ -1933,6 +1968,36 @@ mod tests {
                 test_fact(&facts).is_none() && !run_failed(&facts),
                 "{exit:?}: {facts:?}"
             );
+        }
+        // Tenth pass (reproduced with real cargo). 10.1: quiet and verbose
+        // custom-harness aborts print no parenthesized launch line, but cargo
+        // always reports the runtime failure.
+        for out in [
+            "error: test failed, to rerun pass `--test custom`\n\nCaused by:\n  process didn't exit successfully: `/t/debug/deps/custom-123` (exit status: 7)\n",
+            "     Running `/t/debug/deps/custom-123`\nerror: test failed, to rerun pass `--test custom`\n",
+        ] {
+            let facts = cargo.parse("u", "cargo test --quiet --test custom", out, Some(101));
+            assert_eq!(build_status(&facts), Some("pass"), "{out}");
+            assert!(run_failed(&facts), "{out}: {facts:?}");
+        }
+        // 10.2 and 10.3: a build script's quoted payload never counts, however
+        // it is indented, launch-shaped or summary-shaped.
+        for payload in [
+            "     Running cmake (/x/deps/configure)",
+            "  Summary [0.001s] 1 tests run: 0 passed, 1 failed",
+            "  test result: FAILED. 0 passed; 1 failed; 0 ignored",
+        ] {
+            let out = format!(
+                "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  process didn't exit successfully: `/t/build/demo-1/build-script-build` (exit status: 1)\n  --- stdout\n{payload}\n"
+            );
+            for exit in [Some(101), None] {
+                let facts = cargo.parse("u", "cargo build", &out, exit);
+                assert_eq!(build_status(&facts), Some("fail"), "{payload}");
+                assert!(
+                    test_fact(&facts).is_none() && !run_failed(&facts),
+                    "{payload} {exit:?}: {facts:?}"
+                );
+            }
         }
         // 7.3: a build script's own status line is not a test launch.
         let out = "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  process didn't exit successfully\n  --- stdout\n  Running cmake (configure)\n";
