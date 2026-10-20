@@ -452,16 +452,232 @@ pub fn remove(root: &Path, id: &str) -> Result<PathBuf, PackError> {
         Err(e) => return Err(io_err(id, &target, e)),
     }
 
-    let _lock = lock_pack_store(&packs_dir, id)?;
-    // Recheck under the lock: the path must still be a real directory.
-    ensure_no_symlink_components(root, &target_rel)?;
-    let doomed = packs_dir.join(format!(".removing-{id}-{}", std::process::id()));
-    if fs::symlink_metadata(&doomed).is_ok() {
+    let doomed = format!(".removing-{id}-{}", std::process::id());
+    #[cfg(unix)]
+    {
+        // Every step below is relative to one descriptor for the pack store,
+        // opened beneath the project root without following a symlink, so
+        // replacing `.phronesis` or `.phronesis/packs` after the checks above
+        // cannot redirect the lock, the rename, or the deletion.
+        let store = anchored::open_dir_beneath(root, &[".phronesis", "packs"])
+            .map_err(|e| io_err(id, &packs_dir, e))?;
+        let _lock = anchored::lock(&store, id, &packs_dir)?;
+        anchored::remove_pack(&store, id, &doomed).map_err(|e| io_err(id, &target, e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        // Path-based: an ancestor replaced between these steps is not
+        // detected on this platform.
+        let _lock = lock_pack_store(&packs_dir, id)?;
+        ensure_no_symlink_components(root, &target_rel)?;
+        let doomed = packs_dir.join(doomed);
+        if fs::symlink_metadata(&doomed).is_ok() {
+            fs::remove_dir_all(&doomed).map_err(|e| io_err(id, &doomed, e))?;
+        }
+        fs::rename(&target, &doomed).map_err(|e| io_err(id, &target, e))?;
         fs::remove_dir_all(&doomed).map_err(|e| io_err(id, &doomed, e))?;
     }
-    fs::rename(&target, &doomed).map_err(|e| io_err(id, &target, e))?;
-    fs::remove_dir_all(&doomed).map_err(|e| io_err(id, &doomed, e))?;
     Ok(target)
+}
+
+/// Descriptor-anchored pack-store operations for `remove` (Unix).
+#[cfg(unix)]
+mod anchored {
+    use std::ffi::CString;
+    use std::io;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    use fs2::FileExt;
+
+    use super::{PackError, io_err};
+
+    fn c(name: &str) -> io::Result<CString> {
+        CString::new(name).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))
+    }
+
+    fn check(ret: libc::c_int) -> io::Result<()> {
+        if ret == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    fn open_dir_at(dir: libc::c_int, name: &CString) -> io::Result<OwnedFd> {
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC;
+        // SAFETY: `name` is a valid NUL-terminated string and `dir` is an open
+        // directory descriptor borrowed from the caller.
+        let fd = unsafe { libc::openat(dir, name.as_ptr(), flags) };
+        if fd == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `fd` was just returned by a successful `openat`; we own it.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    /// Open `root/<components...>` as a directory, never following a symlink
+    /// in any component, including `root`'s own children.
+    pub(super) fn open_dir_beneath(root: &Path, components: &[&str]) -> io::Result<OwnedFd> {
+        let root_c = CString::new(root.as_os_str().as_bytes())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let flags = libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC;
+        // SAFETY: `root_c` is a valid NUL-terminated path.
+        let fd = unsafe { libc::open(root_c.as_ptr(), flags) };
+        if fd == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `fd` was just returned by a successful `open`; we own it.
+        let mut dir = unsafe { OwnedFd::from_raw_fd(fd) };
+        for component in components {
+            dir = open_dir_at(dir.as_raw_fd(), &c(component)?)?;
+        }
+        Ok(dir)
+    }
+
+    /// The store lock, opened relative to the store descriptor without
+    /// following a symlink (or blocking on a FIFO), and required to be a
+    /// regular file.
+    pub(super) fn lock(
+        store: &OwnedFd,
+        id: &str,
+        packs_dir: &Path,
+    ) -> Result<std::fs::File, PackError> {
+        let lock_path = packs_dir.join(".install.lock");
+        let name = c(".install.lock").map_err(|e| io_err(id, &lock_path, e))?;
+        let flags =
+            libc::O_CREAT | libc::O_WRONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC;
+        // SAFETY: `name` is a valid NUL-terminated string and `store` is an
+        // open directory descriptor owned by the caller.
+        let fd = unsafe {
+            libc::openat(
+                store.as_raw_fd(),
+                name.as_ptr(),
+                flags,
+                0o644 as libc::c_uint,
+            )
+        };
+        if fd == -1 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() == Some(libc::ELOOP) {
+                return Err(PackError::UnsafePath {
+                    pack: Some(id.to_string()),
+                    path: lock_path.display().to_string(),
+                    reason: "is a symlink; refusing to follow it".to_string(),
+                });
+            }
+            return Err(io_err(id, &lock_path, e));
+        }
+        // SAFETY: `fd` was just returned by a successful `openat`; we own it.
+        let file = std::fs::File::from(unsafe { OwnedFd::from_raw_fd(fd) });
+        let regular = file
+            .metadata()
+            .map_err(|e| io_err(id, &lock_path, e))?
+            .is_file();
+        if !regular {
+            return Err(PackError::UnsafePath {
+                pack: Some(id.to_string()),
+                path: lock_path.display().to_string(),
+                reason: "is not a regular file; refusing to open it".to_string(),
+            });
+        }
+        file.lock_exclusive()
+            .map_err(|e| io_err(id, &lock_path, e))?;
+        Ok(file)
+    }
+
+    fn is_dir_at(dir: &OwnedFd, name: &CString) -> io::Result<bool> {
+        // SAFETY: zeroed is a valid bit pattern for `stat`, which `fstatat`
+        // fills in before it is read.
+        let mut st: libc::stat = unsafe { std::mem::zeroed() };
+        // SAFETY: valid descriptor, NUL-terminated name, and a writable stat.
+        check(unsafe {
+            libc::fstatat(
+                dir.as_raw_fd(),
+                name.as_ptr(),
+                &mut st,
+                libc::AT_SYMLINK_NOFOLLOW,
+            )
+        })?;
+        Ok((st.st_mode & libc::S_IFMT) == libc::S_IFDIR)
+    }
+
+    /// Rename `store/id` to the hidden `store/doomed` (enumeration skips
+    /// dot-names, so an interrupted removal never leaves a loadable half
+    /// pack), then delete it, all relative to `store`.
+    pub(super) fn remove_pack(store: &OwnedFd, id: &str, doomed: &str) -> io::Result<()> {
+        let id_c = c(id)?;
+        let doomed_c = c(doomed)?;
+        if !is_dir_at(store, &id_c)? {
+            return Err(io::Error::other("installed pack is not a directory"));
+        }
+        if is_dir_at(store, &doomed_c).is_ok() {
+            remove_tree_at(store, &doomed_c)?;
+        }
+        // SAFETY: both names are NUL-terminated and relative to `store`.
+        check(unsafe {
+            libc::renameat(
+                store.as_raw_fd(),
+                id_c.as_ptr(),
+                store.as_raw_fd(),
+                doomed_c.as_ptr(),
+            )
+        })?;
+        remove_tree_at(store, &doomed_c)
+    }
+
+    /// Recursively delete the directory `parent/name`, never following a
+    /// symlink: links are unlinked as entries, not traversed.
+    fn remove_tree_at(parent: &OwnedFd, name: &CString) -> io::Result<()> {
+        let dir = open_dir_at(parent.as_raw_fd(), name)?;
+        for entry in entries(&dir)? {
+            if is_dir_at(&dir, &entry)? {
+                remove_tree_at(&dir, &entry)?;
+            } else {
+                // SAFETY: valid descriptor and NUL-terminated entry name.
+                check(unsafe { libc::unlinkat(dir.as_raw_fd(), entry.as_ptr(), 0) })?;
+            }
+        }
+        // SAFETY: valid descriptor and NUL-terminated name.
+        check(unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), libc::AT_REMOVEDIR) })
+    }
+
+    /// The names in `dir`, excluding `.` and `..`.
+    fn entries(dir: &OwnedFd) -> io::Result<Vec<CString>> {
+        // SAFETY: `dup` of an open descriptor; the copy is handed to
+        // `fdopendir`, which owns it from then on and `closedir` releases it.
+        let copy = unsafe { libc::dup(dir.as_raw_fd()) };
+        if copy == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `copy` is an open directory descriptor we own.
+        let stream = unsafe { libc::fdopendir(copy) };
+        if stream.is_null() {
+            let e = io::Error::last_os_error();
+            // SAFETY: `fdopendir` failed, so `copy` is still ours to close.
+            unsafe { libc::close(copy) };
+            return Err(e);
+        }
+        let mut names = Vec::new();
+        loop {
+            // SAFETY: `stream` is a valid, open DIR*.
+            let entry = unsafe { libc::readdir(stream) };
+            if entry.is_null() {
+                break;
+            }
+            // SAFETY: `readdir` returned a valid dirent whose `d_name` is
+            // NUL-terminated.
+            let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) };
+            let bytes = name.to_bytes();
+            if bytes != b"." && bytes != b".." {
+                names.push(name.to_owned());
+            }
+        }
+        // SAFETY: `stream` is a valid DIR* that is closed exactly once.
+        unsafe { libc::closedir(stream) };
+        Ok(names)
+    }
 }
 
 fn io_err(pack: &str, path: &Path, source: std::io::Error) -> PackError {
@@ -469,5 +685,51 @@ fn io_err(pack: &str, path: &Path, source: std::io::Error) -> PackError {
         pack: Some(pack.to_string()),
         path: path.display().to_string(),
         source,
+    }
+}
+
+#[cfg(all(test, unix))]
+mod anchored_tests {
+    use super::anchored;
+
+    /// Second-pass review finding 6: replacing `.phronesis/packs` after the
+    /// store descriptor is opened must not redirect the removal. The swap is
+    /// done deterministically between opening and removing.
+    #[test]
+    fn removal_stays_in_the_store_it_opened_when_an_ancestor_is_swapped() {
+        let root = tempfile::tempdir().unwrap();
+        let store = root.path().join(".phronesis/packs");
+        std::fs::create_dir_all(store.join("demo/queries")).unwrap();
+        std::fs::write(store.join("demo/pack.json"), b"{}").unwrap();
+        std::fs::write(store.join("demo/queries/q.scm"), b"q").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(outside.path().join("demo")).unwrap();
+        std::fs::write(outside.path().join("demo/keep.txt"), b"keep").unwrap();
+
+        let fd = anchored::open_dir_beneath(root.path(), &[".phronesis", "packs"]).unwrap();
+        // Swap: the real store moves aside, a symlink to `outside` takes its name.
+        let moved = root.path().join(".phronesis/packs-moved");
+        std::fs::rename(&store, &moved).unwrap();
+        std::os::unix::fs::symlink(outside.path(), &store).unwrap();
+
+        anchored::remove_pack(&fd, "demo", ".removing-demo-test").unwrap();
+        assert!(
+            outside.path().join("demo/keep.txt").exists(),
+            "followed the swapped ancestor"
+        );
+        assert!(
+            !moved.join("demo").exists(),
+            "the opened store's pack was not removed"
+        );
+        assert!(!moved.join(".removing-demo-test").exists());
+    }
+
+    #[test]
+    fn a_symlinked_store_is_never_opened() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".phronesis")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join(".phronesis/packs")).unwrap();
+        assert!(anchored::open_dir_beneath(root.path(), &[".phronesis", "packs"]).is_err());
     }
 }
