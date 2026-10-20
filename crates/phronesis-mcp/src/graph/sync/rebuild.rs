@@ -209,13 +209,33 @@ fn forces_rebuild(root: &Path, file_path: &str, content: &str) -> std::io::Resul
 /// file at a time: compaction replaces only the edited file's edges, so
 /// every other file would keep its old names and the two halves would
 /// never join. Rebuild once, then record this edit on top of the result.
+///
+/// The same holds when the embedded packs differ from the ones the index
+/// records (a binary upgrade that changed a bundled pack): an incremental
+/// save re-extracts only its own file, so it would keep the old pack's edges
+/// and then stamp this binary's digests over them, certifying stale
+/// evidence fresh.
 fn load_current_index(root: &Path, ipath: &Path) -> std::io::Result<Index> {
     let index = load_index(ipath)?;
-    if !index.entries.is_empty() && index.format != GRAPH_FORMAT {
+    if !index.entries.is_empty() && (index.format != GRAPH_FORMAT || embedded_packs_changed(&index))
+    {
         rebuild(root)?;
         return load_index(ipath);
     }
     Ok(index)
+}
+
+/// Whether the index's `@pack-builtin/*` digests differ from this binary's,
+/// in either keys or values.
+fn embedded_packs_changed(index: &Index) -> bool {
+    let current = builtin_pack_hashes();
+    let stored = index
+        .entries
+        .iter()
+        .filter(|(key, _)| key.starts_with(super::BUILTIN_PACK_KEY_PREFIX))
+        .map(|(key, hash)| (key.clone(), *hash))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    stored != current
 }
 
 /// Parse the edited file alone, with the per-save context it needs.
