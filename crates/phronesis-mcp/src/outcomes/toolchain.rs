@@ -35,7 +35,8 @@ fn without_terminal_escapes(output: &str) -> std::borrow::Cow<'_, str> {
 }
 
 /// Cargo quotes a failing build script's output under `  --- stdout` /
-/// `  --- stderr`, each line indented two spaces. That text is the script's,
+/// `  --- stderr`, each nonempty line indented two spaces (an empty line is
+/// left unindented). That text is the script's,
 /// not cargo's or a test runner's, so no outcome pattern may read it: a
 /// script can print anything, including a launch line or a test summary.
 fn without_build_script_payload(output: &str) -> std::borrow::Cow<'_, str> {
@@ -50,7 +51,9 @@ fn without_build_script_payload(output: &str) -> std::borrow::Cow<'_, str> {
             in_payload = true;
             continue;
         }
-        if in_payload && bare.starts_with("  ") {
+        // Cargo leaves an empty payload line unindented, so only a nonempty
+        // line without the two-space indent ends the payload.
+        if in_payload && (bare.is_empty() || bare.starts_with("  ")) {
             continue;
         }
         in_payload = false;
@@ -1996,6 +1999,23 @@ mod tests {
                 assert!(
                     test_fact(&facts).is_none() && !run_failed(&facts),
                     "{payload} {exit:?}: {facts:?}"
+                );
+            }
+        }
+        // Eleventh pass (reproduced with real cargo): cargo leaves an empty
+        // payload line unindented, which must not end the payload.
+        for payload in [
+            "  before\n\n     Running cmake (/x/deps/configure)",
+            "  before\n\n  Summary [0.001s] 1 tests run: 0 passed, 1 failed",
+        ] {
+            let out = format!(
+                "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  process didn't exit successfully: `/t/build/demo-1/build-script-build` (exit status: 1)\n  --- stdout\n{payload}\n"
+            );
+            for exit in [Some(101), None] {
+                let facts = cargo.parse("u", "cargo build", &out, exit);
+                assert!(
+                    test_fact(&facts).is_none() && !run_failed(&facts),
+                    "{payload:?} {exit:?}: {facts:?}"
                 );
             }
         }
