@@ -42,17 +42,79 @@ pub fn repair_hint(location: &Path) -> String {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_default();
     let exe = std::env::current_exe()
-        .map(|exe| exe.display().to_string())
-        .unwrap_or_else(|_| "phr-mcp".to_string());
+        .ok()
+        .and_then(|exe| exe.canonicalize().ok())
+        .map(|exe| shell_word(&exe.display().to_string()))
+        .unwrap_or_else(|| "phr-mcp".to_string());
     let project = location
         .parent()
         .and_then(Path::parent)
         .and_then(Path::parent)
-        .map(|root| root.display().to_string())
+        .and_then(|root| root.canonicalize().ok())
+        .map(|root| shell_word(&root.display().to_string()))
         .unwrap_or_else(|| ".".to_string());
     format!(
         " Installed packs cannot be repaired by editing them (the install digest rejects changed bytes): remove it with `{exe} pack remove {id} --path {project}`, then reinstall from its source with `{exe} pack install <dir> --path {project}`. Until then only that pack CLI is allowed, with the binary and `--path` written as absolute paths."
     )
+}
+
+/// Characters a repair-command word may contain unquoted: none is special
+/// to a POSIX shell.
+fn is_plain(c: char) -> bool {
+    c.is_ascii_alphanumeric() || "-_./=:+@,".contains(c)
+}
+
+/// `word` as one shell word: as-is when every character is plain, else
+/// single-quoted (inside single quotes the shell expands nothing). A word
+/// containing a single quote is left as-is; the check will refuse it, and
+/// the human runs the repair from a terminal instead.
+fn shell_word(word: &str) -> String {
+    if word.chars().all(is_plain) || word.contains('\'') {
+        word.to_string()
+    } else {
+        format!("'{word}'")
+    }
+}
+
+/// Split `command` into shell words, admitting only plain characters and
+/// single-quoted literal text. Anything else a shell would interpret
+/// (operators, substitutions, expansions, double quotes, escapes, an
+/// unterminated quote, control characters) makes the whole command
+/// unparseable: `None`.
+fn literal_words(command: &str) -> Option<Vec<String>> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut in_word = false;
+    let mut chars = command.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            ' ' | '\t' => {
+                if in_word {
+                    words.push(std::mem::take(&mut word));
+                    in_word = false;
+                }
+            }
+            '\'' => {
+                in_word = true;
+                loop {
+                    match chars.next()? {
+                        '\'' => break,
+                        c if c.is_control() => return None,
+                        c => word.push(c),
+                    }
+                }
+            }
+            c if is_plain(c) => {
+                in_word = true;
+                word.push(c);
+            }
+            _ => return None,
+        }
+    }
+    if in_word {
+        words.push(word);
+    }
+    Some(words)
 }
 
 /// Whether `command` is a lone pack-CLI invocation a pack load error may
@@ -78,12 +140,10 @@ pub fn is_pack_repair_command(command: &str, project_root: &Path) -> bool {
 }
 
 fn is_repair_for(command: &str, root: &Path, exe: &Path) -> bool {
-    let command = command.trim();
-    let safe = |c: char| c.is_ascii_alphanumeric() || " -_./=~:+@,".contains(c);
-    if command.is_empty() || !command.chars().all(safe) {
+    let Some(words) = literal_words(command) else {
         return false;
-    }
-    let words: Vec<&str> = command.split_whitespace().collect();
+    };
+    let words: Vec<&str> = words.iter().map(String::as_str).collect();
     let [binary, "pack", subcommand, args @ ..] = words.as_slice() else {
         return false;
     };
@@ -109,6 +169,10 @@ fn is_repair_for(command: &str, root: &Path, exe: &Path) -> bool {
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         if !arg.starts_with('-') {
+            // `remove` deletes by id, so the id must be a pack identifier.
+            if *subcommand == "remove" && !super::is_identifier(arg) {
+                return false;
+            }
             seen_positionals += 1;
             continue;
         }
@@ -160,8 +224,22 @@ mod tests {
             format!("  {exe_s} pack install ../packs/demo --path {project} --json "),
             format!("{exe_s} pack list --json"),
             format!("{exe_s} pack validate ./src --json"),
+            // Single-quoted literal words: a path with a space or non-ASCII.
+            format!("'{exe_s}' pack list --path '{project}'"),
+            format!("{exe_s} pack validate '/tmp/my packs/é'"),
         ] {
             assert!(ok(&c), "{c}");
+        }
+        for c in [
+            // Quoting never hides shell syntax outside the quotes, and an
+            // unterminated or double quote is refused.
+            format!("{exe_s} pack list '--path' x; rm -rf src"),
+            format!("{exe_s} pack validate 'src"),
+            format!("{exe_s} pack validate \"src\""),
+            format!("{exe_s} pack validate src\\ x"),
+            format!("{exe_s} pack remove 'demo_a' --path ~"),
+        ] {
+            assert!(!ok(&c), "{c:?}");
         }
         std::fs::write(root.join("phr-mcp"), b"#!/bin/sh\necho pwned\n").unwrap();
         for c in [

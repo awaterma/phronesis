@@ -265,3 +265,37 @@ fn codex_admits_only_the_pack_cli_while_a_pack_is_broken() {
         "{allowed}"
     );
 }
+
+/// Fourth-pass review finding 3: the command the load error prints must be
+/// one the hook admits, including for a project path with a space or a
+/// non-ASCII character in it.
+#[test]
+fn the_printed_repair_command_is_admitted_verbatim() {
+    let parent = tempfile::tempdir().unwrap();
+    let root = parent.path().join("my project é");
+    fs::create_dir_all(&root).unwrap();
+    write(&root, ".phronesis/rules.json", br#"{"rules": []}"#);
+    let src = tempfile::tempdir().unwrap();
+    write(
+        src.path(),
+        "queries/decls.scm",
+        b"(function_definition) @def",
+    );
+    write(
+        src.path(),
+        "pack.json",
+        manifest("demo_a", "demoa").to_string().as_bytes(),
+    );
+    install(&root, src.path(), false).unwrap();
+    write(&root, "README.md", b"hello\n");
+    break_pack(&root);
+
+    let (code, err) = pre_edit(&root, "README.md");
+    assert_eq!(code, 2, "{err}");
+    let start = err.find("remove it with `").expect("names a repair") + "remove it with `".len();
+    let command = &err[start..start + err[start..].find('`').unwrap()];
+    let (code, err) = pre_bash(&root, command);
+    assert_eq!(code, 1, "printed command {command:?} was refused: {err}");
+    let (code, out, err) = phr(&root, &["pack", "remove", "demo_a"], None);
+    assert_eq!(code, 0, "{out}{err}");
+}
