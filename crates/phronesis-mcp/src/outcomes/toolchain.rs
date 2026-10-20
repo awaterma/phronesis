@@ -486,8 +486,13 @@ impl CompiledDef {
         // exit that is a failed test run, not a compile error. Plain
         // `compile_success` text is not enough under a nonzero exit (a build
         // can print `Finished` and still fail).
-        let started =
-            counts.is_some() || !per_test_lines.is_empty() || self.test_started_hit(output);
+        //
+        // `test_started` counts only alongside an exit code. With none, a
+        // capture may be truncated anywhere, so the build is graded from
+        // reported results and `compile_success` text as before (a bare
+        // start banner in a truncated capture stays unknown).
+        let reported = counts.is_some() || !per_test_lines.is_empty();
+        let started = reported || self.test_started_hit(output);
         let status = if self.compile_fail_hit(output) {
             BuildStatus::Fail
         } else {
@@ -495,7 +500,7 @@ impl CompiledDef {
                 Some(0) => BuildStatus::Pass,
                 Some(_) if started => BuildStatus::Pass,
                 Some(_) => BuildStatus::Fail,
-                None if started || self.compile_success_hit(output) => BuildStatus::Pass,
+                None if reported || self.compile_success_hit(output) => BuildStatus::Pass,
                 None => BuildStatus::Unknown,
             }
         };
@@ -661,10 +666,18 @@ fn cargo_builtin() -> ToolchainDef {
         compile_fail: vec![
             r"error\[E\d+\]".to_string(),
             "could not compile".to_string(),
+            "failed to run custom build command".to_string(),
         ],
         compile_success: vec![r"Finished .* profile".to_string()],
-        // `cargo test` / `cargo nextest` launching test binaries.
-        test_started: vec![r"(?m)^\s+Running ".to_string(), r"(?m)^\s+Starting \d+ tests?".to_string()],
+        // Test binaries launching, never build activity: cargo's launch line
+        // names a path and its target in parentheses (a verbose build script
+        // line is a backtick-quoted command instead), libtest's own banner
+        // (all `--quiet` prints), and nextest's start line.
+        test_started: vec![
+            r"(?m)^\s+Running (?:unittests )?[^`\s]\S* \(".to_string(),
+            r"(?m)^running \d+ tests?$".to_string(),
+            r"(?m)^\s+Starting \d+ tests?".to_string(),
+        ],
         // `matches` accepts `cargo nextest`, and nextest never emits libtest's
         // `test result:` line — it emits `Summary [...] N tests run: ...`.
         // With only the libtest pattern the def claimed the command, parsed
@@ -1761,7 +1774,7 @@ mod tests {
         assert_eq!(build_status(&facts), Some("pass"), "the test binary ran");
         assert!(run_failed(&facts), "{facts:?}");
         // Cargo: the test profile finished building, then a binary crashed.
-        let out = "    Finished `test` profile [unoptimized] target(s) in 0.4s\n     Running unittests src/lib.rs\nerror: test failed, to rerun pass `--lib`\n";
+        let out = "    Finished `test` profile [unoptimized] target(s) in 0.4s\n     Running unittests src/lib.rs (target/debug/deps/demo-1a2b)\nerror: test failed, to rerun pass `--lib`\n";
         let cargo = CompiledDef::compile(cargo_builtin(), DefSource::BuiltIn).unwrap();
         let facts = cargo.parse("u", "cargo test", out, Some(101));
         assert_eq!(build_status(&facts), Some("pass"));
@@ -1771,6 +1784,28 @@ mod tests {
         let facts = cargo.parse("u", "cargo test", out, Some(101));
         assert_eq!(build_status(&facts), Some("fail"));
         assert!(!run_failed(&facts) && test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn cargo_test_start_markers_are_test_launches_not_build_activity() {
+        let cargo = CompiledDef::compile(cargo_builtin(), DefSource::BuiltIn).unwrap();
+        // Fourth-pass review finding 1: a verbose build runs a build script
+        // and fails. No test started; this is a build failure.
+        let out = "   Compiling demo v0.1.0\n     Running `/t/debug/build/demo-1/build-script-build`\nerror: failed to run custom build command for `demo v0.1.0`\n";
+        let facts = cargo.parse("u", "cargo build -v", out, Some(101));
+        assert_eq!(build_status(&facts), Some("fail"), "{facts:?}");
+        assert!(!run_failed(&facts));
+        // Finding 2: `cargo test --quiet` prints only libtest's banner, and
+        // the first test aborted the process.
+        let out = "\nrunning 3 tests\nerror: test failed, to rerun pass `--lib`\n";
+        let facts = cargo.parse("u", "cargo test --quiet", out, Some(101));
+        assert_eq!(build_status(&facts), Some("pass"), "{facts:?}");
+        assert!(run_failed(&facts), "{facts:?}");
+        // The verbose launch line names its target in parentheses.
+        let out =
+            "     Running unittests src/lib.rs (target/debug/deps/demo-abc)\nerror: test failed\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
     }
 
     #[test]

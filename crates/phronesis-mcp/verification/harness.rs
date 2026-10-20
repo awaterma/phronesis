@@ -368,6 +368,7 @@ pub open spec fn spec_counts(summary: Option<(nat, nat)>, opt_in: bool, lines: S
 pub open spec fn spec_build(
     compile_fail_hit: bool,
     exit: Option<i32>,
+    reported: bool,
     started: bool,
     compile_success_hit: bool,
 ) -> Build {
@@ -376,7 +377,7 @@ pub open spec fn spec_build(
     } else {
         match exit {
             Some(code) => if code == 0 || started { Build::Pass } else { Build::Fail },
-            None => if started || compile_success_hit { Build::Pass } else { Build::Unknown },
+            None => if reported || compile_success_hit { Build::Pass } else { Build::Unknown },
         }
     }
 }
@@ -414,8 +415,9 @@ pub open spec fn spec_outcome(
     lines: Seq<bool>,
 ) -> (Build, TestVerdict) {
     let counts = spec_counts(summary, opt_in, lines, exit);
-    let started = counts.is_some() || (opt_in && lines.len() > 0) || test_started_hit;
-    let build = spec_build(compile_fail_hit, exit, started, compile_success_hit);
+    let reported = counts.is_some() || (opt_in && lines.len() > 0);
+    let started = reported || test_started_hit;
+    let build = spec_build(compile_fail_hit, exit, reported, started, compile_success_hit);
     (build, spec_test(build, counts, exit, started))
 }
 
@@ -493,13 +495,14 @@ fn outcome(
             None
         },
     };
-    let tests_ran = counts.is_some() || lines_seen || test_started_hit;
+    let reported = counts.is_some() || lines_seen;
+    let tests_ran = reported || test_started_hit;
     let build = if compile_fail_hit {
         Build::Fail
     } else {
         match exit {
             Some(code) => if code == 0 || tests_ran { Build::Pass } else { Build::Fail },
-            None => if tests_ran || compile_success_hit { Build::Pass } else { Build::Unknown },
+            None => if reported || compile_success_hit { Build::Pass } else { Build::Unknown },
         }
     };
     let run_failed = match exit { Some(code) => code != 0, None => false };
