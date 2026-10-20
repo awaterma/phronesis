@@ -512,6 +512,13 @@ impl CompiledDef {
         let run_failed = matches!(command_exit, Some(code) if code != 0);
         if self.is_proof {
             facts.extend(self.proof_facts(subject, output, command_exit, status));
+        } else if let Some(c) = counts.filter(|c| c.failed > 0)
+            && status != BuildStatus::Pass
+        {
+            // Explicitly counted failures are evidence whatever the build
+            // classification or captured exit: a test failure, never a pass,
+            // and never silence that would leave an earlier pass standing.
+            facts.push(OutcomeFact::test(subject, c.passed, c.failed));
         } else if status == BuildStatus::Fail
             && run_failed
             && started
@@ -682,12 +689,14 @@ fn cargo_builtin() -> ToolchainDef {
         ],
         compile_success: vec![r"Finished .* profile".to_string()],
         // Test binaries launching, never build activity: cargo's launch line
-        // names a source path (which may contain spaces or backticks) and its
-        // target in parentheses (a verbose build-script or rustc line opens
-        // with a backtick-quoted command instead), libtest's own banner
-        // (all `--quiet` prints), and nextest's start line.
+        // ends by naming the test binary inside the target `deps` directory,
+        // `(target/debug/deps/name-hash)`, whatever the source path holds
+        // (spaces, backticks). A verbose build-script or rustc line ends in a
+        // backtick-quoted command, and a build script's own status output has
+        // no `deps/` binary. Also libtest's banner (all `--quiet` prints) and
+        // nextest's start line.
         test_started: vec![
-            r"(?m)^\s+Running (?:unittests )?[^`\s][^\n]* \(".to_string(),
+            r"(?m)^\s+Running .+ \([^()\n]*[/\\]deps[/\\][^()/\\\n]+\)\s*$".to_string(),
             r"(?m)^running \d+ tests?$".to_string(),
             r"(?m)^\s+Starting \d+ tests?".to_string(),
         ],
@@ -1830,9 +1839,10 @@ mod tests {
         // failed, so the earlier pass must be withdrawn.
         let out = "running 1 test\nerror: failed to run custom build command for `demo v0.1.0`\ntest x ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
         let facts = cargo.parse("u", "cargo test", out, Some(101));
-        assert!(run_failed(&facts), "{facts:?}");
+        // Either form of test failure withdraws the pass; here the failure
+        // was counted, so it is the counted one.
         assert!(
-            test_fact(&facts).is_none_or(|f| f.args[2] != "0"),
+            test_fact(&facts).is_some_and(|f| f.args[2] == "1") || run_failed(&facts),
             "{facts:?}"
         );
         let out = "     Running tests/custom`harness.rs (target/debug/deps/custom-123)\nerror: test failed\n";
@@ -1842,6 +1852,23 @@ mod tests {
         // failure.
         let out = "error[E0425]: cannot find value `x`\nerror: could not compile `demo`\n";
         let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(!run_failed(&facts), "{facts:?}");
+        // Seventh pass (reproduced with real cargo). 7.1: explicit failures
+        // with no exit code are still a test failure, never silence.
+        let out = "running 1 test\nerror: failed to run custom build command for `demo v0.1.0`\ntest x ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let facts = cargo.parse("u", "cargo test", out, None);
+        assert!(
+            test_fact(&facts).is_some_and(|f| f.args[2] == "1") || run_failed(&facts),
+            "{facts:?}"
+        );
+        // 7.2: a launch whose source path starts with a backtick.
+        let out = "     Running `harness.rs (target/debug/deps/custom-0a1b)\nerror: test failed\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+        // 7.3: a build script's own status line is not a test launch.
+        let out = "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  process didn't exit successfully\n  --- stdout\n  Running cmake (configure)\n";
+        let facts = cargo.parse("u", "cargo build", out, Some(101));
+        assert_eq!(build_status(&facts), Some("fail"));
         assert!(!run_failed(&facts), "{facts:?}");
         // The verbose launch line names its target in parentheses.
         let out =

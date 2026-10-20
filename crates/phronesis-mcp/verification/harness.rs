@@ -421,7 +421,11 @@ pub open spec fn spec_outcome(
     let run_failed = match exit { Some(code) => code != 0, None => false };
     // Compile-failure text beside started tests in a failed run: the build
     // stays a failure and the run is also a failed test run.
-    let test = if compile_fail_hit && run_failed && started {
+    let counted_failure = match counts { Some((_p, f)) => f > 0, None => false };
+    let test = if counted_failure && build != Build::Pass {
+        // Counted failures are evidence whatever the build classification.
+        TestVerdict::TestFail
+    } else if compile_fail_hit && run_failed && started {
         TestVerdict::TestFail
     } else {
         spec_test(build, counts, exit, started)
@@ -514,7 +518,11 @@ fn outcome(
         }
     };
     let run_failed = match exit { Some(code) => code != 0, None => false };
-    let test = if compile_fail_hit && run_failed && tests_ran {
+    let counted_failure = match counts { Some((_p, f)) => f > 0, None => false };
+    let build_passed = match build { Build::Pass => true, _ => false };
+    let test = if counted_failure && !build_passed {
+        TestVerdict::TestFail
+    } else if compile_fail_hit && run_failed && tests_ran {
         TestVerdict::TestFail
     } else { match (&build, counts) {
         (Build::Pass, Some((passed, failed))) =>
@@ -641,6 +649,32 @@ proof fn a_failed_run_where_tests_ran_is_a_test_failure(
         code != 0,
         summary.is_some() || (opt_in && lines.len() > 0) || test_started_hit,
     ensures spec_outcome(false, Some(code), compile_success_hit, test_started_hit, summary, opt_in, lines).1 == TestVerdict::TestFail,
+{
+    count_pass_bounded(lines);
+}
+
+/// Proof (counted failures): a summary that counts a failure is always a
+/// test failure, whatever the compile classification or captured exit, so it
+/// withdraws an earlier pass.
+proof fn counted_failures_are_always_a_test_failure(
+    compile_fail_hit: bool, exit: Option<i32>, compile_success_hit: bool, test_started_hit: bool,
+    passed: nat, failed: nat, opt_in: bool, lines: Seq<bool>,
+)
+    requires failed > 0,
+    ensures spec_outcome(compile_fail_hit, exit, compile_success_hit, test_started_hit, Some((passed, failed)), opt_in, lines).1 == TestVerdict::TestFail,
+{
+}
+
+/// Proof (withdrawal beside a compile failure): compile-failure text in a
+/// failed run where tests demonstrably started is still a test failure.
+proof fn a_compile_failure_where_tests_started_withdraws(
+    code: i32, compile_success_hit: bool, test_started_hit: bool,
+    summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>,
+)
+    requires
+        code != 0,
+        summary.is_some() || (opt_in && lines.len() > 0) || test_started_hit,
+    ensures spec_outcome(true, Some(code), compile_success_hit, test_started_hit, summary, opt_in, lines).1 == TestVerdict::TestFail,
 {
     count_pass_bounded(lines);
 }

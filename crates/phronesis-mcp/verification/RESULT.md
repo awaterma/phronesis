@@ -35,10 +35,10 @@ bash crates/phronesis-mcp/verification/run-verification.sh
 ## Verifier Output
 
 ```
-verification results:: 33 verified, 0 errors
+verification results:: 35 verified, 0 errors
 ```
 
-All 33 verification results discharged by Z3 with zero errors (10 before
+All 35 verification results discharged by Z3 with zero errors (10 before
 invariant 5 was added, 15 before invariant 6).
 
 ## What Was Proven
@@ -109,7 +109,7 @@ qualified node ID by suffix, but only when the suffix starts right after a
   `src/graph/query.rs` checks production `arg_matches` against the same
   rule for every pair of strings of up to five bytes over `{a, b, :}`.
 
-### 6. Graded toolchain outcome (`outcome` + 12 proofs)
+### 6. Graded toolchain outcome (`outcome` + 14 proofs)
 
 - **Spec:** `spec_outcome` models `CompiledDef::parse` in
   `outcomes/toolchain.rs` for a non-proof def: the count source (first
@@ -148,6 +148,10 @@ qualified node ID by suffix, but only when the suffix starts right after a
     summary included, a nonzero exit never yields a test pass.
   - `a_failed_run_where_tests_ran_is_a_test_failure`: such a run is a test
     failure, never silence, so it withdraws an earlier pass.
+  - `counted_failures_are_always_a_test_failure`: a summary counting a
+    failure is a test failure under any compile classification or exit.
+  - `a_compile_failure_where_tests_started_withdraws`: compile-failure text
+    in a failed run where tests started is still a test failure.
   - `no_exit_and_no_evidence_is_unknown`: absent evidence is `unknown`,
     never a pass.
   - `ingest_refuses_exactly_the_ungrounded`: `signal ingest` refuses only an
@@ -155,7 +159,11 @@ qualified node ID by suffix, but only when the suffix starts right after a
 - **Mutation check:** letting the exec mirror pass a run with zero tests, or
   letting the spec keep counts through a compile failure, or admitting
   per-test counts without the exit gate, dropping the nonzero-exit veto, or
-  ignoring `test_started` evidence, each fails verification.
+  ignoring `test_started` evidence, or dropping the counted-failure or
+  compile-failure withdrawal branches, each fails verification. The model
+  abstracts each regex to a boolean, so it cannot show that a pattern
+  recognizes the right output; the unit tests (including real cargo and Go
+  shapes) and the real-Go acceptance script carry that.
 
 ## What Was Not Proven
 
@@ -192,5 +200,5 @@ qualified node ID by suffix, but only when the suffix starts right after a
 | `valid_line_range_correct` | proof | 1 |
 | `main` | exec | 2 (assertions) |
 | `boundary_suffix_match` + 3 proofs (invariant 5) | exec + proof | 5 (rise in the reported total; not broken down per function) |
-| `outcome` + `count_pass` + 12 proofs (invariant 6) | exec + proof | 18 (rise in the reported total; not broken down per function) |
-| **Total** | | **33** |
+| `outcome` + `count_pass` + 14 proofs (invariant 6) | exec + proof | 20 (rise in the reported total; not broken down per function) |
+| **Total** | | **35** |
