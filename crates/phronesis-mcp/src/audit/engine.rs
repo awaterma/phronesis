@@ -202,13 +202,25 @@ pub(super) fn validate_builtin_script(script: &str) -> Result<(), String> {
         .map_err(|error| format!("unsupported or malformed builtin script: {error}"))
 }
 
-/// Diagnose opted-in rules whose script guards cannot be evaluated by the
-/// whole-tree audit's builtin, zero-binding script surface.
+/// Conditions [`scan_pack_rules`] evaluates beside pack facts. Any other
+/// companion cannot be joined, so such a rule never matches in audit.
+const PACK_AUDIT_COMPANIONS: &[&str] = &[
+    "file_path_matches",
+    "file_extension_is",
+    "new_content_contains",
+    "__script__",
+];
+
+/// Diagnose opted-in rules the whole-tree audit cannot evaluate: script
+/// guards outside its builtin, zero-binding script surface, and rules over
+/// language-pack facts that also name a condition pack audit cannot join
+/// (which would otherwise read as a clean result).
 pub fn script_diagnostics(rules: &RulesFile, rule_filter: Option<&str>) -> Vec<String> {
     filter_audit_rules(rules, rule_filter)
         .into_iter()
         .filter_map(|rule| {
-            rule.conditions
+            let script = rule
+                .conditions
                 .iter()
                 .filter(|condition| condition.predicate == "__script__")
                 .find_map(|condition| {
@@ -221,7 +233,26 @@ pub fn script_diagnostics(rules: &RulesFile, rule_filter: Option<&str>) -> Vec<S
                         "phronesis: audit rule `{}` was skipped because its `__script__` guard is unsupported: {}.",
                         rule.id, reason
                     )
-                })
+                });
+            script.or_else(|| {
+                let uses_pack = rule
+                    .conditions
+                    .iter()
+                    .any(|c| c.predicate.starts_with("pack_"));
+                rule.conditions
+                    .iter()
+                    .map(|c| c.predicate.as_str())
+                    .find(|p| {
+                        uses_pack && !p.starts_with("pack_") && !PACK_AUDIT_COMPANIONS.contains(p)
+                    })
+                    .map(|predicate| {
+                        format!(
+                            "phronesis: audit rule `{}` was skipped because audit cannot evaluate its `{predicate}` condition alongside language-pack facts (only {} join them).",
+                            rule.id,
+                            PACK_AUDIT_COMPANIONS.join(", ")
+                        )
+                    })
+            })
         })
         .collect()
 }
