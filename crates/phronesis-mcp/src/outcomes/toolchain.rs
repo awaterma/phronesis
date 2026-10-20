@@ -483,10 +483,23 @@ impl CompiledDef {
         }];
         if self.is_proof {
             facts.extend(self.proof_facts(subject, output, command_exit, status));
-        } else if status == BuildStatus::Pass
-            && let Some(c) = counts
-        {
-            facts.push(OutcomeFact::test(subject, c.passed, c.failed));
+        } else if status == BuildStatus::Pass {
+            // A nonzero exit vetoes a test pass whatever the count source
+            // says: output can report only the tests that reported, and a
+            // run that died after a clean summary or clean per-test lines
+            // still failed. It is a test failure, so it also withdraws an
+            // earlier pass.
+            let run_failed = matches!(command_exit, Some(code) if code != 0);
+            match counts {
+                Some(c) if run_failed && c.failed == 0 => {
+                    facts.push(OutcomeFact::test_run_failed(subject));
+                }
+                Some(c) => facts.push(OutcomeFact::test(subject, c.passed, c.failed)),
+                None if run_failed && tests_ran => {
+                    facts.push(OutcomeFact::test_run_failed(subject));
+                }
+                None => {}
+            }
         }
         facts
     }
@@ -1700,6 +1713,33 @@ mod tests {
             "tests ran, so it compiled"
         );
         assert!(test_fact(&facts).is_none(), "{facts:?}");
+        // The failed run is still a test failure, so it withdraws any
+        // earlier pass for this subject.
+        assert!(run_failed(&facts), "{facts:?}");
+    }
+
+    fn run_failed(facts: &[crate::outcomes::facts::OutcomeFact]) -> bool {
+        facts.iter().any(|f| f.predicate == "test_run_failed")
+    }
+
+    #[test]
+    fn a_passing_summary_from_a_failed_run_is_a_failed_run_not_a_pass() {
+        // A multi-suite run where one suite printed a clean summary and a
+        // later one aborted before printing its own, exiting nonzero.
+        let out = "test_a.py::a PASSED\n=== 3 passed in 0.2s ===\nINTERNALERROR> crash\n";
+        let facts = synthetic().parse("u", "pytest", out, Some(1));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_none(), "{facts:?}");
+        assert!(run_failed(&facts), "{facts:?}");
+        // With failures in the summary it stays an ordinary test failure.
+        let out = "=== 1 failed, 3 passed in 0.2s ===\n";
+        let facts = synthetic().parse("u", "pytest", out, Some(1));
+        assert_eq!(counts(&facts), Some(("3", "1")));
+        assert!(!run_failed(&facts));
+        // A clean exit with a clean summary is a pass.
+        let facts = synthetic().parse("u", "pytest", "=== 3 passed in 0.2s ===\n", Some(0));
+        assert_eq!(counts(&facts), Some(("3", "0")));
+        assert!(!run_failed(&facts));
     }
 
     #[test]

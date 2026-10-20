@@ -49,6 +49,18 @@ impl OutcomeFact {
             ],
         }
     }
+
+    /// `test_run_failed(subject)` — the tests ran (the build passed) but the
+    /// run exited nonzero with no failure reported in its output: a test
+    /// that exited the process, a timeout, a suite that aborted before its
+    /// summary. A test failure without fabricated counts; it withdraws any
+    /// earlier passing test signal for the subject.
+    pub fn test_run_failed(subject: &str) -> Self {
+        Self {
+            predicate: "test_run_failed",
+            args: vec![subject.to_string()],
+        }
+    }
 }
 
 impl OutcomeFact {

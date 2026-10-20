@@ -379,17 +379,24 @@ pub open spec fn spec_build(
     }
 }
 
-/// Spec: the test tag — emitted only after a passing build.
-pub open spec fn spec_test(build: Build, counts: Option<(nat, nat)>) -> TestVerdict {
+/// Spec: the test tag — emitted only after a passing build. A nonzero exit
+/// vetoes a pass from any count source: with no failure counted, the run is
+/// a run-level test failure (`test_run_failed`), which withdraws any earlier
+/// pass.
+pub open spec fn spec_test(build: Build, counts: Option<(nat, nat)>, exit: Option<i32>, tests_ran: bool) -> TestVerdict {
+    let run_failed = match exit { Some(code) => code != 0, None => false };
     match (build, counts) {
         (Build::Pass, Some((passed, failed))) =>
-            if passed + failed > 0 && failed == 0 {
+            if run_failed && failed == 0 {
+                TestVerdict::TestFail
+            } else if passed + failed > 0 && failed == 0 {
                 TestVerdict::TestPass
             } else if passed + failed > 0 {
                 TestVerdict::TestFail
             } else {
                 TestVerdict::NoVerdict
             },
+        (Build::Pass, None) => if run_failed && tests_ran { TestVerdict::TestFail } else { TestVerdict::NoVerdict },
         _ => TestVerdict::NoVerdict,
     }
 }
@@ -406,7 +413,7 @@ pub open spec fn spec_outcome(
     let counts = spec_counts(summary, opt_in, lines, exit);
     let tests_ran = counts.is_some() || (opt_in && lines.len() > 0);
     let build = spec_build(compile_fail_hit, exit, tests_ran, compile_success_hit);
-    (build, spec_test(build, counts))
+    (build, spec_test(build, counts, exit, tests_ran))
 }
 
 /// Spec: `signal ingest` refuses exactly the runs whose only tag is
@@ -491,15 +498,19 @@ fn outcome(
             None => if tests_ran || compile_success_hit { Build::Pass } else { Build::Unknown },
         }
     };
+    let run_failed = match exit { Some(code) => code != 0, None => false };
     let test = match (&build, counts) {
         (Build::Pass, Some((passed, failed))) =>
-            if failed == 0 && passed > 0 {
+            if run_failed && failed == 0 {
+                TestVerdict::TestFail
+            } else if failed == 0 && passed > 0 {
                 TestVerdict::TestPass
             } else if failed > 0 {
                 TestVerdict::TestFail
             } else {
                 TestVerdict::NoVerdict
             },
+        (Build::Pass, None) => if run_failed && tests_ran { TestVerdict::TestFail } else { TestVerdict::NoVerdict },
         _ => TestVerdict::NoVerdict,
     };
     (build, test)
@@ -586,6 +597,32 @@ proof fn a_nonzero_exit_is_never_a_per_test_pass(
 )
     requires code != 0,
     ensures spec_outcome(compile_fail_hit, Some(code), compile_success_hit, None, true, lines).1 != TestVerdict::TestPass,
+{
+    count_pass_bounded(lines);
+}
+
+/// Proof (the exit veto, for every count source): a nonzero exit never
+/// yields a test pass, whether counts came from a summary or from per-test
+/// lines. A clean summary from a run that died later is not a pass.
+proof fn a_nonzero_exit_is_never_a_test_pass(
+    compile_fail_hit: bool, code: i32, compile_success_hit: bool,
+    summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>,
+)
+    requires code != 0,
+    ensures spec_outcome(compile_fail_hit, Some(code), compile_success_hit, summary, opt_in, lines).1 != TestVerdict::TestPass,
+{
+}
+
+/// Proof (withdrawal): when tests ran and the run exited nonzero, the
+/// verdict is a test failure, never silence, so it supersedes an earlier
+/// pass for the subject.
+proof fn a_failed_run_where_tests_ran_is_a_test_failure(
+    code: i32, compile_success_hit: bool, summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>,
+)
+    requires
+        code != 0,
+        summary.is_some() || (opt_in && lines.len() > 0),
+    ensures spec_outcome(false, Some(code), compile_success_hit, summary, opt_in, lines).1 == TestVerdict::TestFail,
 {
     count_pass_bounded(lines);
 }
@@ -683,7 +720,8 @@ fn main() {
     let exited = outcome(false, Some(1), false, None, true, &pass_lines);
     let compile_error = outcome(true, Some(1), false, None, true, &quiet);
     let quiet_run = outcome(false, Some(0), true, None, true, &quiet);
-    let _ = (passing, failing, exited, compile_error, quiet_run);
+    let summary_then_crash = outcome(false, Some(1), false, Some((3, 0)), false, &quiet);
+    let _ = (passing, failing, exited, compile_error, quiet_run, summary_then_crash);
 }
 
 } // verus!

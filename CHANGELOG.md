@@ -47,6 +47,14 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- **A failed test run is never a test pass, and it withdraws an earlier
+  one.** A run that exited nonzero could still ground `outcome:test_pass`
+  from a clean summary (a suite that printed `3 passed` before a later one
+  aborted), and a failed run that grounded no counts left the previous
+  run's passing `tests` signal in place. A nonzero exit now vetoes a pass
+  from any count source; when no failure was counted, the run records a
+  run-level failure (`test_run_failed`, journaled as `outcome:test_fail`),
+  which supersedes the earlier pass.
 - `signal ingest` refused output whose only evidence was a compile
   verdict, so it could not record a real compile error or a clean build.
   It now refuses only output that grounds nothing (`compile_unknown`).

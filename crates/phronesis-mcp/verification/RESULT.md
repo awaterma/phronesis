@@ -35,10 +35,10 @@ bash crates/phronesis-mcp/verification/run-verification.sh
 ## Verifier Output
 
 ```
-verification results:: 31 verified, 0 errors
+verification results:: 33 verified, 0 errors
 ```
 
-All 31 verification results discharged by Z3 with zero errors (10 before
+All 33 verification results discharged by Z3 with zero errors (10 before
 invariant 5 was added, 15 before invariant 6).
 
 ## What Was Proven
@@ -109,13 +109,15 @@ qualified node ID by suffix, but only when the suffix starts right after a
   `src/graph/query.rs` checks production `arg_matches` against the same
   rule for every pair of strings of up to five bytes over `{a, b, :}`.
 
-### 6. Graded toolchain outcome (`outcome` + 10 proofs)
+### 6. Graded toolchain outcome (`outcome` + 12 proofs)
 
 - **Spec:** `spec_outcome` models `CompiledDef::parse` in
   `outcomes/toolchain.rs` for a non-proof def: the count source (first
   matching `test_summary`, else per-test lines when the def sets
   `test_counts: "per_test"`, admitted only when a line failed or the run
-  exited 0), the graded build table, and the test tag.
+  exited 0), the graded build table, and the test tag, where a nonzero exit
+  vetoes a pass from any count source and becomes a run-level test failure
+  (`test_run_failed`) when no failure was counted.
   `spec_ingest_refused` models the `NoOutcome` refusal in
   `outcomes/mod.rs`. Regex matching is abstracted to its results.
 - **Exec:** `outcome` (with `count_pass`) mirrors the production code.
@@ -137,14 +139,18 @@ qualified node ID by suffix, but only when the suffix starts right after a
     passed (a test that called `os.Exit`, or a timeout).
   - `no_exit_is_never_a_per_test_pass`: with no exit code, per-test lines
     can ground a failure, never a pass (a truncated capture).
+  - `a_nonzero_exit_is_never_a_test_pass`: for every count source,
+    summary included, a nonzero exit never yields a test pass.
+  - `a_failed_run_where_tests_ran_is_a_test_failure`: such a run is a test
+    failure, never silence, so it withdraws an earlier pass.
   - `no_exit_and_no_evidence_is_unknown`: absent evidence is `unknown`,
     never a pass.
   - `ingest_refuses_exactly_the_ungrounded`: `signal ingest` refuses only an
     unknown build.
 - **Mutation check:** letting the exec mirror pass a run with zero tests, or
   letting the spec keep counts through a compile failure, or admitting
-  per-test counts without the exit gate, each fails verification (1, 2 and
-  1 errors).
+  per-test counts without the exit gate, or dropping the nonzero-exit veto,
+  each fails verification.
 
 ## What Was Not Proven
 
@@ -181,5 +187,5 @@ qualified node ID by suffix, but only when the suffix starts right after a
 | `valid_line_range_correct` | proof | 1 |
 | `main` | exec | 2 (assertions) |
 | `boundary_suffix_match` + 3 proofs (invariant 5) | exec + proof | 5 (rise in the reported total; not broken down per function) |
-| `outcome` + `count_pass` + 10 proofs (invariant 6) | exec + proof | 16 (rise in the reported total; not broken down per function) |
-| **Total** | | **31** |
+| `outcome` + `count_pass` + 12 proofs (invariant 6) | exec + proof | 18 (rise in the reported total; not broken down per function) |
+| **Total** | | **33** |
