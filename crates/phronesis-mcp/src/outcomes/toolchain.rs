@@ -18,6 +18,21 @@
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
+
+/// Terminal control sequences (`--color always`, progress bars): CSI and OSC
+/// escapes. Outcome patterns run on the text a person would read.
+static TERMINAL_ESCAPES: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+        .expect("terminal escape pattern compiles")
+});
+
+fn without_terminal_escapes(output: &str) -> std::borrow::Cow<'_, str> {
+    if output.contains('\x1b') {
+        TERMINAL_ESCAPES.replace_all(output, "")
+    } else {
+        std::borrow::Cow::Borrowed(output)
+    }
+}
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -430,6 +445,7 @@ impl CompiledDef {
         let Some(re) = &self.per_test else {
             return Vec::new();
         };
+        let output = &*without_terminal_escapes(output);
         let sections: Vec<&str> = match &self.section_start {
             None => vec![output],
             Some(start) => {
@@ -473,6 +489,7 @@ impl CompiledDef {
         output: &str,
         command_exit: Option<i32>,
     ) -> Vec<OutcomeFact> {
+        let output = &*without_terminal_escapes(output);
         let per_test_lines = if self.counts_from_per_test {
             self.per_test_results(output)
         } else {
@@ -697,7 +714,10 @@ fn cargo_builtin() -> ToolchainDef {
         // no `deps/` binary. Also libtest's banner (all `--quiet` prints) and
         // nextest's start line.
         test_started: vec![
-            r"(?m)^\s+Running .+ \(.*[/\\](?:deps|examples)[/\\][^/\\\n]+\)\s*$".to_string(),
+            // Cargo right-aligns status verbs to 12 columns, so its own
+            // launch line is exactly five spaces then `Running`; a build
+            // script's quoted payload (under `--- stdout`) is indented two.
+            r"(?m)^ {5}Running .+ \(.*[/\\](?:deps|examples)[/\\][^/\\\n]+\)\s*$".to_string(),
             r"(?m)^running \d+ tests?$".to_string(),
             r"(?m)^\s+Starting \d+ tests?".to_string(),
         ],
@@ -707,10 +727,12 @@ fn cargo_builtin() -> ToolchainDef {
         // nothing, and grounded no test signal, so a project gated on
         // `cargo nextest run` could never reach one.
         test_summary: Some(Patterns::Many(vec![
-            r"test result: \w+\. (?P<passed>\d+) passed; (?P<failed>\d+) failed".to_string(),
+            // libtest prints its summary at column 0; a compiler excerpt that
+            // quotes the same text sits behind a `N |` gutter.
+            r"(?m)^test result: \w+\. (?P<passed>\d+) passed; (?P<failed>\d+) failed".to_string(),
             // `failed` is optional: a clean run reports only passed/skipped,
             // and `[^,\n]*` steps over annotations like ` (1 flaky)`.
-            r"Summary \[[^\]]*\]\s+\d+ tests run: (?P<passed>\d+) passed[^,\n]*(?:, (?P<failed>\d+) failed)?"
+            r"(?m)^\s*Summary \[[^\]]*\]\s+\d+ tests run: (?P<passed>\d+) passed[^,\n]*(?:, (?P<failed>\d+) failed)?"
                 .to_string(),
         ])),
         per_test: Some(r"(?m)^test (?P<name>\S+) \.\.\. (?P<status>ok|FAILED)".to_string()),
@@ -1356,11 +1378,11 @@ mod tests {
         let summaries = def.test_summary.as_ref().expect("cargo declares summaries");
         assert_eq!(
             summaries.as_slice()[0],
-            "test result: \\w+\\. (?P<passed>\\d+) passed; (?P<failed>\\d+) failed",
+            "(?m)^test result: \\w+\\. (?P<passed>\\d+) passed; (?P<failed>\\d+) failed",
         );
         assert_eq!(
             summaries.as_slice()[1],
-            "Summary \\[[^\\]]*\\]\\s+\\d+ tests run: (?P<passed>\\d+) passed[^,\\n]*(?:, (?P<failed>\\d+) failed)?",
+            "(?m)^\\s*Summary \\[[^\\]]*\\]\\s+\\d+ tests run: (?P<passed>\\d+) passed[^,\\n]*(?:, (?P<failed>\\d+) failed)?",
         );
     }
 
@@ -1875,6 +1897,42 @@ mod tests {
         ] {
             let facts = cargo.parse("u", "cargo test", out, Some(101));
             assert!(run_failed(&facts), "{out}: {facts:?}");
+        }
+        // Ninth pass (reproduced with real cargo). 9.1: a build script's
+        // payload that looks like a launch, even naming an examples/ path.
+        for payload in [
+            "  Running cmake (/x/examples/configure)",
+            "  Running cmake (/x/deps/configure)",
+        ] {
+            let out = format!(
+                "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  --- stdout\n{payload}\n"
+            );
+            let facts = cargo.parse("u", "cargo build", &out, Some(101));
+            assert_eq!(build_status(&facts), Some("fail"), "{payload}");
+            assert!(!run_failed(&facts), "{payload}: {facts:?}");
+            // Colored, the diagnostic must still be recognized.
+            let colored = out.replace("error", "\u{1b}[1m\u{1b}[91merror\u{1b}[0m");
+            let facts = cargo.parse("u", "cargo build --color always", &colored, Some(101));
+            assert_eq!(
+                build_status(&facts),
+                Some("fail"),
+                "colored {payload}: {facts:?}"
+            );
+            assert!(!run_failed(&facts), "colored {payload}: {facts:?}");
+        }
+        // 9.2: a colored launch line.
+        let out = "\u{1b}[1m\u{1b}[92m     Running\u{1b}[0m tests/custom.rs (target/debug/deps/custom-123)\nerror: test failed\n";
+        let facts = cargo.parse("u", "cargo test --color always", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+        // 9.3: a compiler excerpt quoting a summary is not a test result.
+        let out = "error[E0308]: mismatched types\n --> src/lib.rs:1:29\n  |\n1 | pub const EXPECTED: usize = \"test result: FAILED. 0 passed; 1 failed\";\n  |                             ^^^^ expected `usize`, found `&str`\n";
+        for exit in [Some(101), None] {
+            let facts = cargo.parse("u", "cargo build", out, exit);
+            assert_eq!(build_status(&facts), Some("fail"));
+            assert!(
+                test_fact(&facts).is_none() && !run_failed(&facts),
+                "{exit:?}: {facts:?}"
+            );
         }
         // 7.3: a build script's own status line is not a test launch.
         let out = "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  process didn't exit successfully\n  --- stdout\n  Running cmake (configure)\n";
