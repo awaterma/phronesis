@@ -395,3 +395,38 @@ fn sixty_fifth_install_is_refused_in_dry_run_and_real_mode() {
     let unchanged = install(project.path(), src.path(), true).unwrap();
     assert_eq!(unchanged.action, InstallAction::Unchanged);
 }
+
+/// Fact predicates are `pack_<id>_<name>`. Two packs whose ids differ by an
+/// `_<suffix>` could emit the same predicate (`a`/`b_c` and `a_b`/`c` both
+/// give `pack_a_b_c`), and an id that opens a host-owned `pack_*` relation
+/// could forge it (`file`/`adapter` is `pack_file_adapter`).
+#[test]
+fn pack_ids_cannot_make_fact_predicates_ambiguous_or_forge_host_relations() {
+    let root = tempfile::tempdir().unwrap();
+    for (id, host) in [("file", "pack_file_adapter"), ("test", "pack_test_command")] {
+        let src = tempfile::tempdir().unwrap();
+        write_pack(src.path(), &manifest(id, &format!("{id}x")));
+        let err = install(root.path(), src.path(), false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains(host), "{id}: {err}");
+    }
+
+    let a = tempfile::tempdir().unwrap();
+    write_pack(a.path(), &manifest("demo", "demo1"));
+    install(root.path(), a.path(), false).unwrap();
+    let longer = tempfile::tempdir().unwrap();
+    write_pack(longer.path(), &manifest("demo_x", "demo2"));
+    let err = install(root.path(), longer.path(), false)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("demo_x") && err.contains("`demo`"), "{err}");
+
+    // The other order is refused too.
+    let other = tempfile::tempdir().unwrap();
+    write_pack(other.path(), &manifest("solo_y", "solo1"));
+    install(root.path(), other.path(), false).unwrap();
+    let shorter = tempfile::tempdir().unwrap();
+    write_pack(shorter.path(), &manifest("solo", "solo2"));
+    assert!(install(root.path(), shorter.path(), false).is_err());
+}

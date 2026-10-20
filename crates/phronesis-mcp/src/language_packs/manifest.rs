@@ -155,6 +155,17 @@ pub fn validate_manifest(m: &PackManifest) -> Result<(), PackError> {
             ));
         }
     }
+    // A pack's facts are `pack_<id>_<name>`: an id that opens a host-owned
+    // `pack_*` relation could forge it (`file` + `adapter`).
+    if let Some(host) = host_pack_relation_under(&m.id) {
+        return Err(bad(
+            "id",
+            format!(
+                "`{}` is reserved: its facts (`pack_{}_<name>`) could forge the host relation `{host}`",
+                m.id, m.id
+            ),
+        ));
+    }
     let numeric = |c: &str| !c.is_empty() && c.len() <= 9 && c.bytes().all(|b| b.is_ascii_digit());
     if m.version.split('.').count() != 3 || !m.version.split('.').all(numeric) {
         return Err(bad(
@@ -314,9 +325,25 @@ fn check_template(template: &RecordTemplate) -> Result<(), RecordError> {
     }
 }
 
-/// Reject duplicate pack IDs and any extension claimed twice, either by two
-/// packs or by a pack and a native/built-in owner in `reserved`
-/// (`(extension, owner)`). Matching is exact and case-sensitive.
+/// The host-owned `pack_*` relation a pack with this id could forge through
+/// its `pack_<id>_<name>` facts, if any.
+pub(crate) fn host_pack_relation_under(id: &str) -> Option<&'static str> {
+    let prefix = format!("pack_{id}_");
+    crate::graph::hydrate::GRAPH_RELATIONS
+        .iter()
+        .copied()
+        .find(|relation| relation.starts_with(&prefix))
+}
+
+/// Reject duplicate pack IDs, any extension claimed twice (by two packs, or
+/// by a pack and a native/built-in owner in `reserved`, as
+/// `(extension, owner)`), and two ids where one is the other plus `_...`.
+/// Matching is exact and case-sensitive.
+///
+/// The id rule keeps `pack_<id>_<name>` fact predicates unambiguous: if two
+/// different ids produced the same predicate, the shorter id followed by
+/// `_` would have to begin the longer one (`a`/`b_c` and `a_b`/`c` both give
+/// `pack_a_b_c`).
 pub fn check_ownership<'a>(
     manifests: impl IntoIterator<Item = &'a PackManifest>,
     reserved: &[(&str, &str)],
@@ -343,6 +370,20 @@ pub fn check_ownership<'a>(
                 });
             }
             owners.insert(ext, format!("pack `{}`", m.id));
+        }
+    }
+    let mut sorted: Vec<&str> = ids.into_iter().collect();
+    sorted.sort_unstable();
+    for (i, shorter) in sorted.iter().enumerate() {
+        let prefix = format!("{shorter}_");
+        // Sorted, so every id extending `shorter` follows it directly.
+        if let Some(longer) = sorted[i + 1..].iter().find(|id| id.starts_with(&prefix)) {
+            return Err(PackError::Ownership {
+                pack: Some((*longer).to_string()),
+                message: format!(
+                    "pack id `{longer}` extends pack id `{shorter}`, so their `pack_<id>_<name>` facts could collide; rename one"
+                ),
+            });
         }
     }
     Ok(())
