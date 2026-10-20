@@ -22,7 +22,7 @@ pub fn changed_pack_symbols(
 ) -> Result<Vec<PackChangedSymbol>, PackError> {
     let mut changed = BTreeSet::new();
     for diff in diffs {
-        let Some(pack) = registry.for_path(&diff.path)? else {
+        let Some(pack) = registry.for_path_with(&diff.path, super::Capability::Graph)? else {
             continue;
         };
         let context = file_context(root, &diff.path, pack)?;

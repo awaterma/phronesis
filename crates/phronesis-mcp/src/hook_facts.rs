@@ -81,7 +81,7 @@ pub(crate) async fn assert_language_pack_facts_with_registry(
     let rel = crate::graph::hydrate::repo_relative(&root, file_path)
         .unwrap_or_else(|| file_path.to_string());
     if let Some(pack) = registry
-        .for_path(&rel)
+        .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
         .map_err(|e| HookError::Engine(e.to_string()))?
     {
         let context = crate::language_packs::context::file_context(&root, &rel, pack)

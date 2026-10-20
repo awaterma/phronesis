@@ -177,7 +177,7 @@ impl PackRegistry {
             let Some(rel_str) = rel.to_str() else {
                 continue;
             };
-            let Ok(Some(pack)) = self.for_path(rel_str) else {
+            let Ok(Some(pack)) = self.for_path_with(rel_str, Capability::Graph) else {
                 continue;
             };
             let parent = rel.parent().unwrap_or_else(|| Path::new(""));
@@ -214,6 +214,21 @@ impl PackRegistry {
             });
         }
         Ok(self.by_extension.get(ext).map(|&i| &self.packs[i]))
+    }
+
+    /// [`for_path`](Self::for_path), restricted to a pack that declares
+    /// `capability`. A pack's capabilities decide what it runs: callers that
+    /// parse source for facts ask for `StructuralFacts`, callers that build
+    /// graph evidence ask for `Graph`, so a pack that declared neither (a
+    /// toolchains-only pack) is never parsed.
+    pub fn for_path_with(
+        &self,
+        rel: &str,
+        capability: Capability,
+    ) -> Result<Option<&ValidatedPack>, PackError> {
+        Ok(self
+            .for_path(rel)?
+            .filter(|pack| pack.assets.manifest.has(capability)))
     }
 }
 

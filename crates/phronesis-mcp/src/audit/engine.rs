@@ -629,7 +629,9 @@ pub(super) fn scan_pack_rules(
         .unwrap_or(path)
         .to_string_lossy()
         .replace('\\', "/");
-    let Some(pack) = registry.for_path(&rel)? else {
+    let Some(pack) =
+        registry.for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)?
+    else {
         return Ok(());
     };
     let context = crate::language_packs::context::file_context(root, &rel, pack)?;

@@ -479,7 +479,7 @@ async fn assert_pre_content_facts(
         let rel = crate::graph::hydrate::repo_relative(&root, file_path)
             .unwrap_or_else(|| file_path.to_string());
         registry
-            .for_path(&rel)
+            .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
             .map_err(|e| HookError::Engine(e.to_string()))?
             .is_some()
     };

@@ -172,13 +172,21 @@ fn forces_rebuild(root: &Path, file_path: &str, content: &str) -> std::io::Resul
             Err(_) => true, // Rebuild purges old pack edges and leaves the index stale.
             Ok(registry) => {
                 registry
-                    .for_path(file_path)
+                    .for_path_with(file_path, crate::language_packs::Capability::Graph)
                     .map_or(true, |pack| pack.is_some())
-                    || registry.packs().iter().any(|pack| {
-                        pack.assets.manifest.context_files.iter().any(|name| {
-                            file_path == name || file_path.ends_with(&format!("/{name}"))
+                    || registry
+                        .packs()
+                        .iter()
+                        .filter(|pack| {
+                            pack.assets
+                                .manifest
+                                .has(crate::language_packs::Capability::Graph)
                         })
-                    })
+                        .any(|pack| {
+                            pack.assets.manifest.context_files.iter().any(|name| {
+                                file_path == name || file_path.ends_with(&format!("/{name}"))
+                            })
+                        })
             }
         };
     // A manifest names units and bin targets that other files' edges resolve
@@ -432,7 +440,10 @@ fn extract_tracked(
     let mut skipped = 0;
     let mut diagnostics = Vec::new();
     for rel in &scan.files {
-        let pack = match scan.packs.for_path(rel) {
+        let pack = match scan
+            .packs
+            .for_path_with(rel, crate::language_packs::Capability::Graph)
+        {
             Ok(pack) => pack,
             Err(e) => {
                 diagnostics.push(format!("{rel}: {e}"));

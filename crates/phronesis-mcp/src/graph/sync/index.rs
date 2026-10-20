@@ -87,6 +87,11 @@ fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
         .map(|r| {
             r.packs()
                 .iter()
+                .filter(|p| {
+                    p.assets
+                        .manifest
+                        .has(crate::language_packs::Capability::Graph)
+                })
                 .flat_map(|p| p.assets.manifest.extensions.iter().cloned())
                 .collect::<std::collections::BTreeSet<_>>()
         })
@@ -315,7 +320,9 @@ pub(super) fn context_input_files(root: &Path) -> Vec<String> {
     };
     let mut out = std::collections::BTreeSet::new();
     for source in tracked_files(root) {
-        let Ok(Some(pack)) = registry.for_path(&source) else {
+        let Ok(Some(pack)) =
+            registry.for_path_with(&source, crate::language_packs::Capability::Graph)
+        else {
             continue;
         };
         let parent = Path::new(&source).parent().unwrap_or_else(|| Path::new(""));

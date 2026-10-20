@@ -262,7 +262,7 @@ fn load_rules(phase: &str, file_path: &str) -> Result<Option<LoadedRules>, Rules
     let rel = crate::graph::hydrate::repo_relative(&root, file_path)
         .unwrap_or_else(|| file_path.to_string());
     let pack_owned = registry
-        .for_path(&rel)
+        .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
         .map_err(|error| RulesLoadError {
             message: error.to_string(),
             failing_file: crate::rule_layers::config_path(&root),

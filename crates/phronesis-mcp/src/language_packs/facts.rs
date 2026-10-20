@@ -22,7 +22,9 @@ pub fn facts_with_lines(
     context: &FileContext,
     source: &str,
 ) -> Result<Vec<(Fact, u32)>, PackError> {
-    let Some(pack) = registry.for_path(&context.file_rel)? else {
+    let Some(pack) =
+        registry.for_path_with(&context.file_rel, super::Capability::StructuralFacts)?
+    else {
         return Ok(Vec::new());
     };
     let extraction = extract(pack, context, source)?;
