@@ -120,7 +120,9 @@ qualified node ID by suffix, but only when the suffix starts right after a
   (`test_run_failed`) when no failure was counted. Tests count as started
   from counts, per-test lines, or a `test_started` pattern (cargo's
   `Running`, Go's `=== RUN`); plain `compile_success` text rescues only a
-  run with no exit code.
+  run with no exit code. Compile-failure text beside started tests in a
+  failed run stays a build failure and is also a failed test run, so a
+  compile failure is never a test pass.
   `spec_ingest_refused` models the `NoOutcome` refusal in
   `outcomes/mod.rs`. Regex matching is abstracted to its results.
 - **Exec:** `outcome` (with `count_pass`) mirrors the production code.
@@ -132,7 +134,7 @@ qualified node ID by suffix, but only when the suffix starts right after a
   - `a_quiet_run_has_no_test_verdict`: no summary and no per-test line
     means no test verdict, whatever the exit code.
   - `a_compile_failure_has_no_test_verdict`: a compile failure is a build
-    failure with no test verdict.
+    failure and never a test pass.
   - `a_test_pass_is_grounded`: a test pass needs a passing build, at least
     one pass, and zero failures.
   - `a_failing_line_rules_out_a_test_pass`: one failing per-test line rules

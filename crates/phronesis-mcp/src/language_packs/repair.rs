@@ -51,11 +51,12 @@ pub fn repair_hint(location: &Path) -> String {
         .and_then(Path::parent)
         .and_then(|root| root.canonicalize().ok())
         .and_then(|root| shell_word(&root.display().to_string()));
-    let (Some(exe), Some(project)) = (exe, project) else {
+    let id_ok = super::is_identifier(&id);
+    let (Some(exe), Some(project), true) = (exe, project, id_ok) else {
         // No admissible spelling exists, so do not print one: the hooks
         // govern agent tool calls, not a person's own terminal.
         return format!(
-            " Installed packs cannot be repaired by editing them (the install digest rejects changed bytes), and this project's path or the phr-mcp path cannot be written as a command the hooks admit (it contains a single quote or a control character). Run `phr-mcp pack remove {id}` yourself from a terminal in the project, then reinstall it from its source with `phr-mcp pack install <dir>`."
+            " Installed packs cannot be repaired by editing them (the install digest rejects changed bytes), and this project's path or the phr-mcp path cannot be written as a command the hooks admit (a path contains a single quote or a control character, or the entry `{id}` is not a pack identifier). Remove `.phronesis/packs/{id}` yourself from a terminal in the project (`phr-mcp pack remove <id>` for a valid id), then reinstall it from its source with `phr-mcp pack install <dir>`."
         );
     };
     format!(
@@ -225,6 +226,16 @@ mod tests {
         let root = parent.path().join("Andrew's project");
         std::fs::create_dir_all(root.join(".phronesis/packs/demo_a")).unwrap();
         let hint = repair_hint(&root.join(".phronesis/packs/demo_a"));
+        assert!(hint.contains("yourself from a terminal"), "{hint}");
+        assert!(!hint.contains("--path"), "{hint}");
+    }
+
+    #[test]
+    fn an_entry_that_is_not_a_pack_id_gets_no_command() {
+        let root = tempfile::tempdir().unwrap();
+        let entry = root.path().join(".phronesis/packs/bad name");
+        std::fs::create_dir_all(&entry).unwrap();
+        let hint = super::repair_hint(&entry);
         assert!(hint.contains("yourself from a terminal"), "{hint}");
         assert!(!hint.contains("--path"), "{hint}");
     }

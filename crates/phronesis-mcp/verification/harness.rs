@@ -418,7 +418,15 @@ pub open spec fn spec_outcome(
     let reported = counts.is_some() || (opt_in && lines.len() > 0);
     let started = reported || test_started_hit;
     let build = spec_build(compile_fail_hit, exit, reported, started, compile_success_hit);
-    (build, spec_test(build, counts, exit, started))
+    let run_failed = match exit { Some(code) => code != 0, None => false };
+    // Compile-failure text beside started tests in a failed run: the build
+    // stays a failure and the run is also a failed test run.
+    let test = if compile_fail_hit && run_failed && started {
+        TestVerdict::TestFail
+    } else {
+        spec_test(build, counts, exit, started)
+    };
+    (build, test)
 }
 
 /// Spec: `signal ingest` refuses exactly the runs whose only tag is
@@ -506,7 +514,9 @@ fn outcome(
         }
     };
     let run_failed = match exit { Some(code) => code != 0, None => false };
-    let test = match (&build, counts) {
+    let test = if compile_fail_hit && run_failed && tests_ran {
+        TestVerdict::TestFail
+    } else { match (&build, counts) {
         (Build::Pass, Some((passed, failed))) =>
             if run_failed && failed == 0 {
                 TestVerdict::TestFail
@@ -519,7 +529,7 @@ fn outcome(
             },
         (Build::Pass, None) => if run_failed && tests_ran { TestVerdict::TestFail } else { TestVerdict::NoVerdict },
         _ => TestVerdict::NoVerdict,
-    };
+    } };
     (build, test)
 }
 
@@ -547,14 +557,15 @@ proof fn a_quiet_run_has_no_test_verdict(
 {
 }
 
-/// Proof (separation): a compile failure is a build failure with no test
-/// verdict, so it is never confused with a failing test.
+/// Proof (separation): a compile failure is a build failure and never a
+/// test pass (it is a failed test run only when tests demonstrably started
+/// in a failed run, which withdraws an earlier pass).
 proof fn a_compile_failure_has_no_test_verdict(
     exit: Option<i32>, compile_success_hit: bool, test_started_hit: bool, summary: Option<(nat, nat)>, opt_in: bool, lines: Seq<bool>,
 )
     ensures ({
         let o = spec_outcome(true, exit, compile_success_hit, test_started_hit, summary, opt_in, lines);
-        o.0 == Build::Fail && o.1 == TestVerdict::NoVerdict
+        o.0 == Build::Fail && o.1 != TestVerdict::TestPass
     }),
 {
 }

@@ -509,15 +509,26 @@ impl CompiledDef {
             BuildStatus::Fail => OutcomeFact::build(subject, false),
             BuildStatus::Unknown => OutcomeFact::build_unknown(subject),
         }];
+        let run_failed = matches!(command_exit, Some(code) if code != 0);
         if self.is_proof {
             facts.extend(self.proof_facts(subject, output, command_exit, status));
+        } else if status == BuildStatus::Fail
+            && run_failed
+            && started
+            && self.compile_fail_hit(output)
+        {
+            // Compile-failure text alongside evidence that tests ran (one Go
+            // package failed to build while another's tests ran, or a test
+            // printed a compiler-looking diagnostic): the build verdict stays
+            // a failure, never a false pass, and the run is also a failed test
+            // run, so it withdraws an earlier passing test signal.
+            facts.push(OutcomeFact::test_run_failed(subject));
         } else if status == BuildStatus::Pass {
             // A nonzero exit vetoes a test pass whatever the count source
             // says: output can report only the tests that reported, and a
             // run that died after a clean summary or clean per-test lines
             // still failed. It is a test failure, so it also withdraws an
             // earlier pass.
-            let run_failed = matches!(command_exit, Some(code) if code != 0);
             match counts {
                 Some(c) if run_failed && c.failed == 0 => {
                     facts.push(OutcomeFact::test_run_failed(subject));
@@ -671,12 +682,12 @@ fn cargo_builtin() -> ToolchainDef {
         ],
         compile_success: vec![r"Finished .* profile".to_string()],
         // Test binaries launching, never build activity: cargo's launch line
-        // names a source path (which may contain spaces) and its target in
-        // parentheses (a verbose build script line is a backtick-quoted
-        // command instead), libtest's own banner
+        // names a source path (which may contain spaces or backticks) and its
+        // target in parentheses (a verbose build-script or rustc line opens
+        // with a backtick-quoted command instead), libtest's own banner
         // (all `--quiet` prints), and nextest's start line.
         test_started: vec![
-            r"(?m)^\s+Running (?:unittests )?[^`\s][^`\n]* \(".to_string(),
+            r"(?m)^\s+Running (?:unittests )?[^`\s][^\n]* \(".to_string(),
             r"(?m)^running \d+ tests?$".to_string(),
             r"(?m)^\s+Starting \d+ tests?".to_string(),
         ],
@@ -1813,6 +1824,25 @@ mod tests {
         let out = "     Running tests/custom harness.rs (target/debug/deps/custom-123)\nerror: test failed, to rerun pass `--test custom`\n";
         let facts = cargo.parse("u", "cargo test", out, Some(101));
         assert!(run_failed(&facts), "{facts:?}");
+        // Sixth-pass findings 1 and 2 (both reproduced with real cargo): a
+        // test panicking with cargo's full custom-build diagnostic, and a
+        // launch path containing a backtick. Either way tests ran and the run
+        // failed, so the earlier pass must be withdrawn.
+        let out = "running 1 test\nerror: failed to run custom build command for `demo v0.1.0`\ntest x ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+        assert!(
+            test_fact(&facts).is_none_or(|f| f.args[2] != "0"),
+            "{facts:?}"
+        );
+        let out = "     Running tests/custom`harness.rs (target/debug/deps/custom-123)\nerror: test failed\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+        // A real compile failure with no sign of tests stays a plain build
+        // failure.
+        let out = "error[E0425]: cannot find value `x`\nerror: could not compile `demo`\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(!run_failed(&facts), "{facts:?}");
         // The verbose launch line names its target in parentheses.
         let out =
             "     Running unittests src/lib.rs (target/debug/deps/demo-abc)\nerror: test failed\n";
