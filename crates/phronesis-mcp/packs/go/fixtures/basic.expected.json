@@ -1,1 +1,147 @@
-{"records": [], "diagnostics": []}
+{
+  "records": [
+    {
+      "kind": "import",
+      "scope": "local/fixtures::main",
+      "target": "fmt",
+      "alias": null,
+      "span": {
+        "start_byte": 333,
+        "end_byte": 338,
+        "start_line": 12,
+        "end_line": 12
+      }
+    },
+    {
+      "kind": "import",
+      "scope": "local/fixtures::main",
+      "target": "strings",
+      "alias": "str",
+      "span": {
+        "start_byte": 344,
+        "end_byte": 353,
+        "start_line": 13,
+        "end_line": 13
+      }
+    },
+    {
+      "kind": "import",
+      "scope": "local/fixtures::main",
+      "target": "unsafe",
+      "alias": "_",
+      "span": {
+        "start_byte": 357,
+        "end_byte": 365,
+        "start_line": 14,
+        "end_line": 14
+      }
+    },
+    {
+      "kind": "import",
+      "scope": "local/fixtures::main",
+      "target": "errors",
+      "alias": ".",
+      "span": {
+        "start_byte": 369,
+        "end_byte": 377,
+        "start_line": 15,
+        "end_line": 15
+      }
+    },
+    {
+      "kind": "fact",
+      "name": "dot_import",
+      "args": [
+        "errors"
+      ],
+      "span": {
+        "start_byte": 367,
+        "end_byte": 377,
+        "start_line": 15,
+        "end_line": 15
+      }
+    },
+    {
+      "kind": "declaration",
+      "name": "greet",
+      "scope": "local/fixtures::main",
+      "receiver": null,
+      "span": {
+        "start_byte": 381,
+        "end_byte": 465,
+        "start_line": 18,
+        "end_line": 21
+      },
+      "test": false,
+      "command": null
+    },
+    {
+      "kind": "declaration",
+      "name": "Greet",
+      "scope": "local/fixtures::main",
+      "receiver": "Greeter",
+      "span": {
+        "start_byte": 507,
+        "end_byte": 574,
+        "start_line": 27,
+        "end_line": 29
+      },
+      "test": false,
+      "command": null
+    },
+    {
+      "kind": "declaration",
+      "name": "useStrings",
+      "scope": "local/fixtures::main",
+      "receiver": null,
+      "span": {
+        "start_byte": 576,
+        "end_byte": 630,
+        "start_line": 31,
+        "end_line": 33
+      },
+      "test": false,
+      "command": null
+    },
+    {
+      "kind": "reference",
+      "owner_start_byte": 381,
+      "target": "fmt.Sprintf",
+      "scope": "local/fixtures::main",
+      "resolution": "unresolved",
+      "span": {
+        "start_byte": 422,
+        "end_byte": 451,
+        "start_line": 19,
+        "end_line": 19
+      }
+    },
+    {
+      "kind": "reference",
+      "owner_start_byte": 507,
+      "target": "greet",
+      "scope": "local/fixtures::main",
+      "resolution": "unresolved",
+      "span": {
+        "start_byte": 561,
+        "end_byte": 572,
+        "start_line": 28,
+        "end_line": 28
+      }
+    },
+    {
+      "kind": "reference",
+      "owner_start_byte": 576,
+      "target": "str.ToUpper",
+      "scope": "local/fixtures::main",
+      "resolution": "unresolved",
+      "span": {
+        "start_byte": 611,
+        "end_byte": 628,
+        "start_line": 32,
+        "end_line": 32
+      }
+    }
+  ],
+  "diagnostics": []
+}

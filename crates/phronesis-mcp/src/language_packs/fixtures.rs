@@ -135,3 +135,54 @@ pub fn run_fixtures(pack: &ValidatedPack) -> Result<Vec<FixtureResult>, PackErro
 
     Ok(results)
 }
+
+#[cfg(test)]
+mod bundled_fixture_tests {
+    use super::{extract, fixture_context, run_fixtures};
+    use crate::language_packs::PackError;
+    use crate::language_packs::builtin::builtin_pack_sources;
+    use crate::language_packs::extract::compile_pack;
+
+    /// Every bundled pack's declared fixtures match their expectations, so a
+    /// shipped pack always passes its own `pack validate`. With
+    /// `PHR_BLESS_FIXTURES=1` the expectations are instead rewritten from the
+    /// actual extraction (review the diff before committing; the assets are
+    /// embedded at build time, so the next build checks the new files).
+    #[test]
+    fn bundled_pack_fixtures_match_their_expectations() {
+        let bless = std::env::var_os("PHR_BLESS_FIXTURES").is_some();
+        for assets in builtin_pack_sources() {
+            let pack = match compile_pack(assets) {
+                Ok(pack) => pack,
+                // A grammar compiled out of this build: nothing to check.
+                Err(PackError::Unsupported { .. }) => continue,
+                Err(e) => panic!("bundled pack does not compile: {e}"),
+            };
+            let id = pack.assets.manifest.id.clone();
+            if bless {
+                for fixture in &pack.assets.manifest.fixtures {
+                    let source = String::from_utf8(pack.assets.files[&fixture.path].clone())
+                        .expect("fixture source is UTF-8");
+                    let actual = extract(&pack, &fixture_context(&pack, &fixture.path), &source)
+                        .expect("fixture extracts");
+                    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                        .join("packs")
+                        .join(&id)
+                        .join(&fixture.expected);
+                    let json = serde_json::to_string_pretty(&actual).expect("serializes");
+                    std::fs::write(&path, json + "\n").expect("write expectation");
+                }
+                continue;
+            }
+            for result in run_fixtures(&pack).expect("fixtures run") {
+                assert!(
+                    result.ok,
+                    "bundled pack `{id}` fixture {} does not match {}: {}",
+                    result.path,
+                    result.expected,
+                    result.message.unwrap_or_default()
+                );
+            }
+        }
+    }
+}
