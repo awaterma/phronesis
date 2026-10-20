@@ -119,8 +119,9 @@ def main():
         assert 'PASS' in run('go-test-pass', [go, 'test', '-v', './...'])['stdout']
         pass_output = out / 'go-test-pass.txt'
         pass_output.write_text(report['steps'][-1]['stdout'] + report['steps'][-1]['stderr'])
-        run('signal-pass', [binary, 'signal', 'ingest', '--command', 'go test -v ./...',
-                            '--output', pass_output, '--exit', '0'])
+        tags = run('signal-pass', [binary, 'signal', 'ingest', '--command', 'go test -v ./...',
+                                   '--output', pass_output, '--exit', '0'])['stdout']
+        assert 'outcome:compile_ok' in tags and 'outcome:test_pass' in tags, tags
         mcp_inventory()
         # The optional policy is post/audit only: pre-check must allow this edit.
         dotted = 'package verify\n\nimport . "fmt"\n\nfunc Add(a, b int) int { Println(a, b); return a + b }\n'
@@ -141,15 +142,19 @@ def main():
         assert 'FAIL' in run('go-test-fail', [go, 'test', '-v', './...'], expect=1)['stdout']
         fail_output = out / 'go-test-fail.txt'
         fail_output.write_text(report['steps'][-1]['stdout'] + report['steps'][-1]['stderr'])
-        run('signal-fail', [binary, 'signal', 'ingest', '--command', 'go test -v ./...',
-                            '--output', fail_output, '--exit', '1'])
+        tags = run('signal-fail', [binary, 'signal', 'ingest', '--command', 'go test -v ./...',
+                                   '--output', fail_output, '--exit', '1'])['stdout']
+        assert 'outcome:compile_ok' in tags and 'outcome:test_fail' in tags, tags
+        assert 'outcome:test_pass' not in tags, tags
         write('calc.go', 'package verify\nfunc Add(a, b int) int { return missing + b }\n')
         compile_failure = run('go-compile-fail', [go, 'test', '-v', './...'], expect=1)
         assert 'undefined: missing' in compile_failure['stdout'] + compile_failure['stderr']
         compile_output = out / 'go-compile-fail.txt'
         compile_output.write_text(report['steps'][-1]['stdout'] + report['steps'][-1]['stderr'])
-        run('signal-compile-fail', [binary, 'signal', 'ingest', '--command', 'go test -v ./...',
-                                    '--output', compile_output, '--exit', '1'])
+        tags = run('signal-compile-fail', [binary, 'signal', 'ingest', '--command',
+                                           'go test -v ./...', '--output', compile_output,
+                                           '--exit', '1'])['stdout']
+        assert 'outcome:compile_error' in tags and 'outcome:test_' not in tags, tags
         report['passed'] = True
     except Exception as exc:
         report['error'] = repr(exc)

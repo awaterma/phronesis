@@ -146,12 +146,10 @@ pub fn record_from_output(
         not_before: None,
     });
     let subject_id = subject.ok_or_else(|| SignalError::NoToolchain(command.to_string()))?;
-    if tags.iter().all(|tag| {
-        matches!(
-            tag.as_str(),
-            "outcome:compile_ok" | "outcome:compile_error" | "outcome:compile_unknown"
-        )
-    }) {
+    // `compile_unknown` grounds no signal, so output that yields only it
+    // was not parsed into anything. A compile pass or failure is evidence
+    // even when no test ran.
+    if tags.iter().all(|tag| tag == "outcome:compile_unknown") {
         return Err(SignalError::NoOutcome);
     }
     tags.push("outcome:ingested".to_string());

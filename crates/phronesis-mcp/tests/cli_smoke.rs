@@ -581,6 +581,57 @@ fn signal_ingest_records_parsed_evidence_and_refuses_empty_or_unknown_output() {
     );
 }
 
+#[test]
+fn signal_ingest_records_a_compile_failure_and_refuses_only_ungrounded_output() {
+    let dir = ingest_project();
+    let root = dir.path();
+    // A compile error is evidence, not "nothing parsed": the build signal
+    // is grounded even though no test ran.
+    std::fs::write(
+        root.join("compile.log"),
+        "error[E0425]: cannot find value `missing` in this scope\n",
+    )
+    .expect("log");
+    let out = ingest_phr(
+        root,
+        &[
+            "signal",
+            "ingest",
+            "--command",
+            "cargo test",
+            "--output",
+            "compile.log",
+            "--exit",
+            "101",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("outcome:compile_error") && !stdout.contains("outcome:test_"),
+        "{stdout}"
+    );
+    // Unrecognizable output with no exit code grounds nothing: refused.
+    std::fs::write(root.join("noise.log"), "...truncated\n").expect("log");
+    let out = ingest_phr(
+        root,
+        &[
+            "signal",
+            "ingest",
+            "--command",
+            "cargo test",
+            "--output",
+            "noise.log",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no outcome"));
+}
+
 /// A `.phronesisignore` entry exempts lexical rules only; it must never
 /// hide a production file from structural audit rules (issue #114). The
 /// ignore file below carries a `src/*` pattern that used to hide
