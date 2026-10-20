@@ -181,3 +181,16 @@ it sat in cargo's output. The fix reads the structure instead: terminal
 escapes are stripped before any pattern runs, cargo's own launch line must
 sit in its right-aligned 12-column status position, and libtest's summary
 must start at column 0.
+
+## Tenth pass (2026-10-20)
+
+Review: `codex-review-tenth.md` (Codex, read-only, at `7c39f0c`), brief
+`brief-tenth-pass.md`. 9.2 and 9.3 closed; 9.1 partly. No remaining BLOCKER;
+no false test pass or false compile pass reproduced in the last three passes.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 10.1 | `--quiet`, `--verbose` and `-vv` custom-harness aborts printed no recognized launch, keeping an earlier pass | Confirmed (reproduced; RED test; real cargo, all three modes) | MAJOR | **Fixed** `c094a47` (cargo's runtime-failure report is start evidence) |
+| 10.2 | A build-script payload indented three spaces landed in cargo's five-space status column | Confirmed (reproduced; RED test; real cargo) | MAJOR | **Fixed** `c094a47` (quoted payload is dropped before matching) |
+| 10.3 | A quoted nextest `Summary` in build-script payload counted as a test result | Confirmed (reproduced; RED test; real cargo, with and without exit) | MAJOR | **Fixed** `c094a47` |
+| 6.3 | Non-Unix `pack remove` path-based | Accepted | — | Open: user's decision |
