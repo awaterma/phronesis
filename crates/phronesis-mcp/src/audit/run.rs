@@ -73,12 +73,11 @@ pub(super) fn run_core(
             .iter()
             .any(|c| c.predicate.starts_with("pack_"))
     });
-    // The root-relative path of a source a pack with rules in play owns.
+    // The root-relative path of a source a structural-facts pack owns. Its
+    // reads are bounded whatever rules are selected; a refused read is
+    // reported, since lexical rules would otherwise miss the file silently.
     let pack_owned = |path: &std::path::Path| -> Option<String> {
         let registry = pack_registry.as_ref()?;
-        if !has_pack_rules {
-            return None;
-        }
         let rel = path
             .strip_prefix(&opts.project_root)
             .unwrap_or(path)
@@ -126,7 +125,8 @@ pub(super) fn run_core(
         if let Some(ref mut t2) = times {
             t2.read_files += t.elapsed();
         }
-        if let Some(registry) = &pack_registry
+        if has_pack_rules
+            && let Some(registry) = &pack_registry
             && let Err(error) = scan_pack_rules(
                 &opts.project_root,
                 path,
@@ -176,7 +176,8 @@ pub(super) fn run_core(
             if let Some(ref mut t2) = times {
                 t2.read_files += t.elapsed();
             }
-            if let Some(registry) = &pack_registry
+            if has_pack_rules
+                && let Some(registry) = &pack_registry
                 && let Err(error) = scan_pack_rules(
                     &opts.project_root,
                     path,

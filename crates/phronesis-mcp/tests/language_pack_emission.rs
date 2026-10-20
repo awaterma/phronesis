@@ -224,3 +224,32 @@ fn audit_bounds_pack_source_reads() {
         "{stderr}"
     );
 }
+
+/// Third-pass review finding 4: the bounded read applied only when pack
+/// rules were selected. With only a lexical rule, an oversized pack-owned
+/// source is still refused before allocation and reported, not read whole.
+#[test]
+fn audit_bounds_pack_source_reads_without_pack_rules() {
+    let root = audited_project();
+    write(
+        root.path(),
+        ".phronesis/rules.json",
+        json!({"rules": [{"id": "lexical-only", "phase": "post", "audit": true,
+            "when": [{"new_content_contains": "danger"}],
+            "then": {"warn": "danger"}}]})
+        .to_string()
+        .as_bytes(),
+    );
+    let limit = phronesis_mcp::language_packs::limits::MAX_FILE_BYTES;
+    let line = "def f():\n    pass\n";
+    write(
+        root.path(),
+        "huge.emx",
+        line.repeat(limit / line.len() + 2).as_bytes(),
+    );
+    let (ok, stderr) = audit(root.path(), &[]);
+    assert!(
+        !ok && stderr.contains("huge.emx") && stderr.contains("limit"),
+        "{stderr}"
+    );
+}
