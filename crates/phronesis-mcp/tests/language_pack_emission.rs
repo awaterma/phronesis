@@ -138,3 +138,71 @@ fn failed_emissions_are_bounded() {
     let err = facts(root.path(), &source).unwrap_err().to_string();
     assert!(err.contains("exceeds the limit"), "{err}");
 }
+
+/// A project with a working `.emx` fact pack and an audit rule over it.
+fn audited_project() -> tempfile::TempDir {
+    let src = tempfile::tempdir().unwrap();
+    write(
+        src.path(),
+        "queries/defs.scm",
+        b"(function_definition name: (identifier) @name) @def",
+    );
+    let manifest = json!({
+        "schema_version": 1, "adapter_api": 1, "id": "emx", "version": "0.1.0",
+        "language": "emx", "extensions": ["emx"], "grammar": "python",
+        "capabilities": ["structural_facts"],
+        "queries": [{"id": "defs", "path": "queries/defs.scm", "emit": [
+            {"kind": "fact", "name": "seen", "args": ["${name}"], "span_capture": "def"}]}],
+        "context_files": [], "fixtures": []
+    });
+    write(src.path(), "pack.json", manifest.to_string().as_bytes());
+    let root = tempfile::tempdir().unwrap();
+    write(
+        root.path(),
+        ".phronesis/rules.json",
+        json!({"rules": [{"id": "emx-seen", "phase": "post", "audit": true,
+            "when": [{"pack_emx_seen": ["?file", "?name"]}],
+            "then": {"warn": "seen ?name"}}]})
+        .to_string()
+        .as_bytes(),
+    );
+    install(root.path(), src.path(), false).unwrap();
+    root
+}
+
+fn audit(root: &Path, env: &[(&str, &str)]) -> (bool, String) {
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["audit", "--json"])
+        .current_dir(root)
+        .env("PHRONESIS_PROJECT_ROOT", root)
+        .env("PHRONESIS_NO_ACTION_LOG", "1")
+        .envs(env.iter().copied())
+        .output()
+        .unwrap();
+    (
+        out.status.success(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// Review finding 8: a pack-owned file audit could not read was skipped
+/// silently, so the audit reported complete with the file unexamined.
+#[test]
+fn audit_reports_an_unreadable_pack_source_as_incomplete() {
+    let root = audited_project();
+    fs::write(root.path().join("bad.emx"), [0xff, 0xfe, b'd', b'e', b'f']).unwrap();
+    let (ok, stderr) = audit(root.path(), &[]);
+    assert!(!ok && stderr.contains("bad.emx"), "{stderr}");
+}
+
+#[test]
+fn audit_reports_an_oversized_excluded_pack_source_as_incomplete() {
+    let root = audited_project();
+    write(root.path(), ".phronesisignore", b"big.emx\n");
+    let body: String = (0..40)
+        .map(|i| format!("def f{i}():\n    pass\n"))
+        .collect();
+    write(root.path(), "big.emx", body.as_bytes());
+    let (ok, stderr) = audit(root.path(), &[("PHRONESIS_MAX_FILE_BYTES", "64")]);
+    assert!(!ok && stderr.contains("big.emx"), "{stderr}");
+}

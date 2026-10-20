@@ -65,6 +65,29 @@ pub(super) fn run_core(
         })
         .collect();
     let size_cap = crate::security::max_file_bytes();
+    // A pack-owned source audit cannot read (or skips as over the cap) is
+    // an unexamined file, not a clean one: with pack rules in play it makes
+    // the audit incomplete.
+    let has_pack_rules = audit_rules.iter().any(|r| {
+        r.conditions
+            .iter()
+            .any(|c| c.predicate.starts_with("pack_"))
+    });
+    let unexamined_pack_source = |path: &std::path::Path, why: &str| -> Option<String> {
+        let registry = pack_registry.as_ref()?;
+        if !has_pack_rules {
+            return None;
+        }
+        let rel = path
+            .strip_prefix(&opts.project_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let owned = registry
+            .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
+            .map_or(true, |pack| pack.is_some());
+        owned.then(|| format!("{rel}: pack-owned source not audited: {why}"))
+    };
 
     // per_rule[rule_id] -> (level, BTreeMap<path -> PerFileHits>)
     let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
@@ -73,10 +96,11 @@ pub(super) fn run_core(
         let t = Instant::now();
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => {
+            Err(error) => {
                 if let Some(ref mut t2) = times {
                     t2.read_files += t.elapsed();
                 }
+                incomplete.extend(unexamined_pack_source(path, &error.to_string()));
                 continue;
             }
         };
@@ -113,15 +137,20 @@ pub(super) fn run_core(
                 .map(|m| m.len() > size_cap)
                 .unwrap_or(true);
             if over_cap {
+                incomplete.extend(unexamined_pack_source(
+                    path,
+                    &format!("larger than the {size_cap}-byte cap"),
+                ));
                 continue;
             }
             let t = Instant::now();
             let content = match std::fs::read_to_string(path) {
                 Ok(c) => c,
-                Err(_) => {
+                Err(error) => {
                     if let Some(ref mut t2) = times {
                         t2.read_files += t.elapsed();
                     }
+                    incomplete.extend(unexamined_pack_source(path, &error.to_string()));
                     continue;
                 }
             };
