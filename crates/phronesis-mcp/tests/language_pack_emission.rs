@@ -206,3 +206,21 @@ fn audit_reports_an_oversized_excluded_pack_source_as_incomplete() {
     let (ok, stderr) = audit(root.path(), &[("PHRONESIS_MAX_FILE_BYTES", "64")]);
     assert!(!ok && stderr.contains("big.emx"), "{stderr}");
 }
+
+/// Second-pass review finding 7: a pack-owned source over the pack file
+/// limit is reported incomplete. (Audit now refuses it in the bounded read,
+/// before allocating it; this test pins the reported outcome, which the
+/// extractor's own size check already produced, not the allocation.)
+#[test]
+fn audit_bounds_pack_source_reads() {
+    let root = audited_project();
+    let limit = phronesis_mcp::language_packs::limits::MAX_FILE_BYTES;
+    let line = "def f():\n    pass\n";
+    let body = line.repeat(limit / line.len() + 2);
+    write(root.path(), "huge.emx", body.as_bytes());
+    let (ok, stderr) = audit(root.path(), &[]);
+    assert!(
+        !ok && stderr.contains("huge.emx") && stderr.contains("limit"),
+        "{stderr}"
+    );
+}

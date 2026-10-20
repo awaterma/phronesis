@@ -73,7 +73,8 @@ pub(super) fn run_core(
             .iter()
             .any(|c| c.predicate.starts_with("pack_"))
     });
-    let unexamined_pack_source = |path: &std::path::Path, why: &str| -> Option<String> {
+    // The root-relative path of a source a pack with rules in play owns.
+    let pack_owned = |path: &std::path::Path| -> Option<String> {
         let registry = pack_registry.as_ref()?;
         if !has_pack_rules {
             return None;
@@ -86,7 +87,25 @@ pub(super) fn run_core(
         let owned = registry
             .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
             .map_or(true, |pack| pack.is_some());
-        owned.then(|| format!("{rel}: pack-owned source not audited: {why}"))
+        owned.then_some(rel)
+    };
+    let unexamined_pack_source = |path: &std::path::Path, why: &str| -> Option<String> {
+        pack_owned(path).map(|rel| format!("{rel}: pack-owned source not audited: {why}"))
+    };
+    // A pack-owned source is read through the packs' bounded reader, so an
+    // oversized one is refused before it is allocated, not after.
+    let read_source = |path: &std::path::Path| -> Result<String, String> {
+        match pack_owned(path) {
+            Some(rel) => crate::language_packs::assets::read_bounded(
+                &opts.project_root,
+                None,
+                &rel,
+                crate::language_packs::limits::MAX_FILE_BYTES,
+            )
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string())),
+            None => std::fs::read_to_string(path).map_err(|e| e.to_string()),
+        }
     };
 
     // per_rule[rule_id] -> (level, BTreeMap<path -> PerFileHits>)
@@ -94,13 +113,13 @@ pub(super) fn run_core(
 
     for path in &discovery.scanned {
         let t = Instant::now();
-        let content = match std::fs::read_to_string(path) {
+        let content = match read_source(path) {
             Ok(c) => c,
             Err(error) => {
                 if let Some(ref mut t2) = times {
                     t2.read_files += t.elapsed();
                 }
-                incomplete.extend(unexamined_pack_source(path, &error.to_string()));
+                incomplete.extend(unexamined_pack_source(path, &error));
                 continue;
             }
         };
@@ -144,13 +163,13 @@ pub(super) fn run_core(
                 continue;
             }
             let t = Instant::now();
-            let content = match std::fs::read_to_string(path) {
+            let content = match read_source(path) {
                 Ok(c) => c,
                 Err(error) => {
                     if let Some(ref mut t2) = times {
                         t2.read_files += t.elapsed();
                     }
-                    incomplete.extend(unexamined_pack_source(path, &error.to_string()));
+                    incomplete.extend(unexamined_pack_source(path, &error));
                     continue;
                 }
             };
