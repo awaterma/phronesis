@@ -43,3 +43,26 @@ differs from the review's.
 Every finding is closed: 13 fixed with a failing test first, and finding 11
 refuted with its sub-claim fixed. Each fix commit names its finding. The
 fixes have not yet had an independent review.
+
+## Second pass (2026-10-20)
+
+Review: `codex-review-fixes.md` (Codex, read-only, at `96bfcf4`), brief
+`brief-fixes.md`. Of the first pass, 9 fixes were judged closed and 5
+partly closed; the partial ones are the second-pass findings below. Every
+new finding was checked against the code before fixing.
+
+| # | Finding | Verdict | Severity | Status |
+|---|---|---|---|---|
+| 2.1 | Repair exception trusted the executable's file name: a project-local `./phr-mcp` ran arbitrary code while governance was down | Confirmed (code; Codex executed it) | MAJOR | **Fixed** `b29272a` |
+| 2.2 | Repair exception ignored `--path`: `pack remove` could delete another project's pack | Confirmed (code; Codex executed it) | MAJOR | **Fixed** `b29272a` |
+| 2.3 | A clean summary from a nonzero-exit run still grounded `test_pass` (predates the branch) | Confirmed (RED test, cargo exit 101) | MAJOR | **Fixed** `5485638` |
+| 2.4 | A failed run that grounded no counts left an earlier passing `tests` signal active | Confirmed (RED CLI test) | MAJOR | **Fixed** `5485638` |
+| 2.5 | Local Go types, aliases, consts and type parameters did not shadow package calls (`Work(x)` conversion read as a call) | Confirmed (RED test) | MAJOR | **Fixed** `8bab8fe` |
+| 2.6 | `pack remove` acted by path after validating it: an ancestor swap could redirect the delete | Confirmed (code; race simulated deterministically in a test) | MAJOR | **Fixed** `58d0850` (Unix; other platforms documented as path-based) |
+| 2.7 | Audit read pack-owned sources whole before the size limit | Confirmed (code); outcome already reported, allocation was not | MINOR | **Fixed** `1b0af39` |
+
+Notes on the reviewer's test-effectiveness remarks: the lazy-compile and
+bundled-fixture tests skip only when the Go grammar is compiled out of the
+build, which is the intended no-grammar behaviour; `PHR_BLESS_FIXTURES`
+rewrites expectations by design and is documented as needing a reviewed
+diff.
