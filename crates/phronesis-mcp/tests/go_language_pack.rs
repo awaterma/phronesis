@@ -790,6 +790,26 @@ fn every_local_binding_form_shadows_a_package_function_call() {
             "func caller(v any) {\n\tswitch Work := v.(type) {\n\tcase func():\n\t\tWork()\n\t}\n}\n",
         ),
         (
+            "local_type",
+            "func caller() {\n\ttype Work func()\n\t_ = Work(nil)\n}\n",
+        ),
+        (
+            "local_type_alias",
+            "func caller() {\n\ttype Work = func()\n\t_ = Work(nil)\n}\n",
+        ),
+        (
+            "local_const",
+            "func caller() {\n\tconst Work = 1\n\t_ = Work\n\tWork()\n}\n",
+        ),
+        (
+            "type_parameter",
+            "func caller[Work any](x any) {\n\t_ = Work(x)\n}\n",
+        ),
+        (
+            "receiver_type_parameter",
+            "type List[T any] struct{}\n\nfunc (l *List[Work]) M(x any) {\n\t_ = Work(x)\n}\n",
+        ),
+        (
             "select_receive",
             "func caller(ch chan func()) {\n\tselect {\n\tcase Work := <-ch:\n\t\tWork()\n\t}\n}\n",
         ),

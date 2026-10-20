@@ -92,3 +92,35 @@
 
 (receive_statement
   left: (expression_list (identifier) @local_name)) @local_site
+
+; Type bindings: inside a function `Work(x)` can be a conversion to a local
+; type, alias, or type parameter rather than a call (second-pass review
+; finding 5). Local constants are included for the same conservative reason.
+(type_spec
+  name: (type_identifier) @local_name) @local_site
+
+(type_alias
+  name: (type_identifier) @local_name) @local_site
+
+(const_spec
+  name: (identifier) @local_name) @local_site
+
+(function_declaration
+  type_parameters: (type_parameter_list
+    (type_parameter_declaration name: (identifier) @local_name))) @local_site
+
+; A method's receiver type parameters: `func (l *List[T]) M()`.
+(method_declaration
+  receiver: (parameter_list
+    (parameter_declaration
+      type: (pointer_type
+        (generic_type
+          type_arguments: (type_arguments
+            (type_elem (type_identifier) @local_name))))))) @local_site
+
+(method_declaration
+  receiver: (parameter_list
+    (parameter_declaration
+      type: (generic_type
+        type_arguments: (type_arguments
+          (type_elem (type_identifier) @local_name)))))) @local_site
