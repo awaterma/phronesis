@@ -49,3 +49,46 @@
 
 (var_spec
   name: (identifier) @local_name) @local_site
+
+; Further binding forms that can shadow a package-level name (review
+; finding 4). Each is a `@local_site` attributed to the enclosing
+; declaration by span, like the two above: shadowing is decided per
+; function, never per block, which can only suppress a resolution.
+
+; `for k, Work := range xs`
+(range_clause
+  left: (expression_list (identifier) @local_name)) @local_site
+
+; `func(Work func()) { ... }` and its variadic form, inside any declaration.
+(func_literal
+  parameters: (parameter_list
+    (parameter_declaration name: (identifier) @local_name))) @local_site
+
+(func_literal
+  parameters: (parameter_list
+    (variadic_parameter_declaration name: (identifier) @local_name))) @local_site
+
+; A method's receiver name: `func (Work F) Run()`.
+(method_declaration
+  receiver: (parameter_list
+    (parameter_declaration name: (identifier) @local_name))) @local_site
+
+; Named results of functions, methods, and function literals.
+(function_declaration
+  result: (parameter_list
+    (parameter_declaration name: (identifier) @local_name))) @local_site
+
+(method_declaration
+  result: (parameter_list
+    (parameter_declaration name: (identifier) @local_name))) @local_site
+
+(func_literal
+  result: (parameter_list
+    (parameter_declaration name: (identifier) @local_name))) @local_site
+
+; `switch Work := v.(type)` and `case Work := <-ch:`
+(type_switch_statement
+  alias: (expression_list (identifier) @local_name)) @local_site
+
+(receive_statement
+  left: (expression_list (identifier) @local_name)) @local_site

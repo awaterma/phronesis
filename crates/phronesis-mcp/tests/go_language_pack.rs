@@ -275,19 +275,22 @@ package main
 func helper() {}
 
 func caller() {
-\thelper := 1
-\t_ = helper
+\thelper := func() {}
+\thelper()
 }
 ";
     let extraction = extract(&pack, &ctx("local.go"), local_shadow).unwrap();
-    let refs: Vec<&PackRecord> = extraction
+    let resolved: Vec<&PackRecord> = extraction
         .records
         .iter()
-        .filter(|r| matches!(r, PackRecord::Reference { .. }))
+        .filter(|r| {
+            matches!(r, PackRecord::Reference { target, resolution, .. }
+                if target == "helper" && *resolution == ReferenceMode::SameScope)
+        })
         .collect();
     assert!(
-        refs.is_empty(),
-        "no call expression exists, only a local decl: {refs:?}"
+        resolved.is_empty(),
+        "a call through the local `helper` must not resolve to the package function: {resolved:?}"
     );
 
     // A parameter shadows the call.
@@ -748,4 +751,70 @@ mod toolchain_outcomes {
             "missing ids are appended"
         );
     }
+}
+
+/// Every Go binding form that can shadow a package-level function name must
+/// suppress same-scope resolution of a call through it (review finding 4):
+/// otherwise the graph invents `calls` and `tested_by` edges to the package
+/// function. Each source calls `Work()` through a local of that name.
+#[test]
+fn every_local_binding_form_shadows_a_package_function_call() {
+    let pack = go_pack();
+    let cases = [
+        (
+            "short_var",
+            "func caller() {\n\tWork := func() {}\n\tWork()\n}\n",
+        ),
+        (
+            "range",
+            "func caller(cs []func()) {\n\tfor _, Work := range cs {\n\t\tWork()\n\t}\n}\n",
+        ),
+        (
+            "func_literal_param",
+            "func caller() {\n\tf := func(Work func()) { Work() }\n\t_ = f\n}\n",
+        ),
+        (
+            "func_literal_variadic",
+            "func caller() {\n\tf := func(Work ...func()) { Work[0]() }\n\t_ = f\n}\n",
+        ),
+        (
+            "receiver",
+            "type F func()\n\nfunc (Work F) Run() { Work() }\n",
+        ),
+        (
+            "named_result",
+            "func caller() (Work func()) {\n\tWork = func() {}\n\tWork()\n\treturn\n}\n",
+        ),
+        (
+            "type_switch",
+            "func caller(v any) {\n\tswitch Work := v.(type) {\n\tcase func():\n\t\tWork()\n\t}\n}\n",
+        ),
+        (
+            "select_receive",
+            "func caller(ch chan func()) {\n\tselect {\n\tcase Work := <-ch:\n\t\tWork()\n\t}\n}\n",
+        ),
+    ];
+    for (name, body) in cases {
+        let source = format!("package main\n\nfunc Work() {{}}\n\n{body}");
+        let extraction = extract(&pack, &ctx("shadow.go"), &source).unwrap();
+        let same_scope: Vec<&PackRecord> = extraction
+            .records
+            .iter()
+            .filter(|r| {
+                matches!(r, PackRecord::Reference { target, resolution, .. }
+                    if target == "Work" && *resolution == ReferenceMode::SameScope)
+            })
+            .collect();
+        assert!(
+            same_scope.is_empty(),
+            "{name}: a call through a local `Work` resolved to the package function: {same_scope:?}"
+        );
+    }
+
+    // Control: the same call with no local binding still resolves.
+    let source = "package main\n\nfunc Work() {}\n\nfunc caller() {\n\tWork()\n}\n";
+    let extraction = extract(&pack, &ctx("plain.go"), source).unwrap();
+    assert!(extraction.records.iter().any(|r| matches!(r,
+        PackRecord::Reference { target, resolution, .. }
+            if target == "Work" && *resolution == ReferenceMode::SameScope)));
 }
