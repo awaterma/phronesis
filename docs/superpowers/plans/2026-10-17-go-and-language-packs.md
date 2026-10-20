@@ -19,7 +19,7 @@ serde JSON, RETE, rmcp, clap, SHA-256 content digests, bundled Go grammar.
 
 **Spec:** `docs/superpowers/specs/2026-10-17-go-and-language-packs-design.md`
 
-Status (2026-10-18, parked; resumed 2026-10-19): The Codex-run Swarming campaign stopped when the
+Status (2026-10-18, parked; resumed 2026-10-19; reviewed and fixed 2026-10-20): The Codex-run Swarming campaign stopped when the
 Codex account hit its usage limit (resets 2026-10-24). Code for every task
 T1-T8 exists in the `feat/go-language-packs` worktree
 (`.worktrees/go-packs`) and is committed there as one WIP snapshot; nothing
@@ -57,16 +57,16 @@ Verified on 2026-10-18 after parking (gate target dir `target/swarm/gate`):
 Resumed 2026-10-19 (Opus 5.5, interactive, no swarm), four commits on top
 of the WIP snapshot:
 
-- `dde8fd1` fixes the `save_rules_integration` regression. It was never a
+- `c111397` fixes the `save_rules_integration` regression. It was never a
   generation bug: line 336 asserts `files_indexed == 1`, and the index's
   virtual `@pack-builtin/go` freshness key was being counted as a file.
-- `da10577` adds the opt-in `test_counts: "per_test"` toolchain field and
+- `4917afc` adds the opt-in `test_counts: "per_test"` toolchain field and
   opts `go.test` into it. Before this, no `go test` run could ground a test
   outcome (Go prints no counts), and a failing assertion read as a build
   failure, against the spec's unknown/fail/pass requirement.
-- `163066e` lets `signal ingest` record compile-only evidence (it refused a
+- `03e2d6b` lets `signal ingest` record compile-only evidence (it refused a
   real compile error), and makes the acceptance script assert the verdicts.
-- `d6acfce` adds Verus invariant 6 (graded toolchain outcome): 29 verified,
+- `a616e7e` adds Verus invariant 6 (graded toolchain outcome): 29 verified,
   0 errors.
 
 Verified on 2026-10-19:
@@ -78,16 +78,39 @@ Verified on 2026-10-19:
   pass (init 108 ms on an idle machine; the earlier 180 s timeout was CPU
   starvation from a concurrent test run).
 
-Still open before this can become a PR (T8 gates):
+Review and fixes (2026-10-19/20): a read-only Codex review
+(`docs/reviews/2026-10-19-go-language-packs/codex-review.md`) raised 14
+findings; each was verified against the code before fixing
+(`triage.md` there). 13 are fixed test-first and one was refuted (its
+sub-claim fixed); every fix commit names its finding. The branch was then
+rebased onto `main` (v0.39.0) without conflicts.
 
-- Rebase onto current `main` (v0.39.0).
-- Independent review of the whole branch; no reviewer has seen T4-T8 or the
-  four 2026-10-19 commits.
-- Warm hook/audit latency measurement (one warm-up, 30 samples) not done.
-- Split the WIP snapshot into the per-task commits the plan names, or
-  accept one feature commit; squash-merge makes this a title question.
-- CHANGELOG entries, including the `test_counts` field and the ingest fix.
-- The swarm ledger for this campaign was not found under
+The T8 latency gate (warm release builds, one warm-up then 30 samples,
+`p50`) found and drove one more fix (`3301a4b`): every hook load compiled
+the built-in Go pack, doubling hook time in projects with no Go. Built-in
+packs now compile on first use. After the fix:
+
+| project | measure | main | branch |
+|---|---|---|---|
+| Rust | pre-check | 10.2 ms | 10.6 ms |
+| Rust | post-check | 26.9 ms | 27.9 ms |
+| Rust | audit | 11.2 ms | 11.7 ms |
+| Go | pre-check | 4.3 ms (no Go support) | 14.6 ms |
+| Go | post-check | 17.1 ms (no Go support) | 44.1 ms |
+| Go | audit | 4.4 ms (no Go support) | 24.9 ms |
+
+Verified on the rebased branch (2026-10-20): whole-workspace `cargo test
+--no-fail-fast` 121/121 binaries (3646 passed, 0 failed); fmt, workspace
+clippy `-D warnings`, and `--no-default-features` clean; real-Go
+`scripts/verify-language-packs.py` 25/25; Verus 31 verified, 0 errors.
+
+Still open before this can become a PR:
+
+- A second Codex pass over the fixes (`brief-fixes.md`).
+- Split the WIP snapshot into per-task commits or accept one feature
+  commit; squash-merge makes this a PR-title question for the user.
+- The user reviews the diff before the one push that opens the draft PR.
+- The swarm ledger for the original campaign was not found under
   `/Volumes/Data/Git/phronesis-wt/`; spend and bid records live only in the
   Codex session transcript.
 
