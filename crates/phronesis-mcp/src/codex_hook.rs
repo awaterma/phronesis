@@ -721,6 +721,19 @@ async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> Result<CodexDecisi
     let loaded = match load_rules("pre") {
         Ok(Some(r)) => r,
         Ok(None) => return Ok(empty_decision()),
+        // An installed pack cannot be edited back into shape; its repair is
+        // the pack CLI, the one command a pack load error admits.
+        Err(e)
+            if e.pack_failure
+                && crate::language_packs::repair::is_pack_repair_command(
+                    &extract_bash_command(payload),
+                    root,
+                ) =>
+        {
+            return Err(warn_decision(format!(
+                "allowing this pack command because a language pack failed to load and the pack CLI is its repair; every other tool call stays blocked until it loads. rules error: {e}"
+            )));
+        }
         Err(e) => return Err(block_decision(format!("rules error: {}", e))),
     };
 
@@ -1276,6 +1289,9 @@ struct LoadedRules {
 struct RulesLoadError {
     message: String,
     failing_file: std::path::PathBuf,
+    /// An installed language pack failed to load: the repair is the pack
+    /// CLI, not an edit (see `language_packs::repair`).
+    pack_failure: bool,
 }
 
 impl std::fmt::Display for RulesLoadError {
@@ -1291,9 +1307,22 @@ fn load_rules(phase: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
     if !project_path.exists() && !loader_path.exists() {
         return Ok(None);
     }
-    let resolved = crate::rule_layers::resolve(&root).map_err(|e| RulesLoadError {
-        message: e.to_string(),
-        failing_file: e.failing_file(&root),
+    let resolved = crate::rule_layers::resolve(&root).map_err(|e| {
+        let failing_file = e.failing_file(&root);
+        let message = if e.is_pack_failure() {
+            format!(
+                "{}: {e}.{}",
+                failing_file.display(),
+                crate::language_packs::repair::repair_hint(&failing_file)
+            )
+        } else {
+            e.to_string()
+        };
+        RulesLoadError {
+            message,
+            failing_file,
+            pack_failure: e.is_pack_failure(),
+        }
     })?;
     let override_facts = crate::rule_layers::override_facts(&resolved.overrides);
     let rules: Vec<phr::Rule> = resolved

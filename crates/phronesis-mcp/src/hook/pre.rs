@@ -4,9 +4,10 @@ use std::process;
 use phr::{Fact, ReteNetwork};
 
 use crate::hook_facts::{
-    assert_coverage_facts, assert_diff_facts, assert_language_pack_facts, assert_properties_facts,
-    assert_test_facts, assert_values_facts, check_bash_command_patterns, check_content_patterns,
-    collect_bash_command_patterns, collect_content_patterns, collect_rule_predicates,
+    assert_coverage_facts, assert_diff_facts, assert_language_pack_facts_with_registry,
+    assert_properties_facts, assert_test_facts, assert_values_facts, check_bash_command_patterns,
+    check_content_patterns, collect_bash_command_patterns, collect_content_patterns,
+    collect_rule_predicates,
 };
 use crate::security;
 
@@ -62,8 +63,8 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         _ => super::exit_ok(),
     };
 
-    let (rules, override_facts, content_patterns, bash_command_patterns, rule_predicates) = {
-        let loaded = match super::load_rules("pre") {
+    let (rules, override_facts, registry, content_patterns, bash_command_patterns, rule_predicates) = {
+        let loaded = match super::load_rules("pre", &super::extract_file_path(&payload)) {
             Ok(Some(r)) => r,
             Ok(None) => super::exit_ok(),
             Err(e) => {
@@ -88,6 +89,28 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                     });
                     process::exit(1);
                 }
+                let command = super::extract_new_content(&payload, &tool_name).unwrap_or_default();
+                if e.pack_failure
+                    && is_shell(&tool_name)
+                    && crate::language_packs::repair::is_pack_repair_command(&command, &root)
+                {
+                    // An installed pack cannot be edited back into shape;
+                    // its repair is the pack CLI. Allowed with a warning,
+                    // like the rules-file repair edit above.
+                    eprintln!(
+                        "phronesis: WARNING — allowing this pack command because a language pack failed to load and the pack CLI is its repair; every other tool call stays blocked until it loads. {e}"
+                    );
+                    super::log_hook_event(&super::LogEventInput {
+                        phase: "pre",
+                        tool_name: &tool_name,
+                        file_path: &file_path,
+                        exit: 1,
+                        command_exit: None,
+                        consequences: &[],
+                        subject: None,
+                    });
+                    process::exit(1);
+                }
                 eprintln!("phronesis: BLOCKED — {}", e);
                 fail_closed_exit(&root, &inflight_key, &payload, "load_rules", &e.to_string());
             }
@@ -96,7 +119,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         let cp = collect_content_patterns(&rules);
         let bcp = collect_bash_command_patterns(&rules);
         let rp = collect_rule_predicates(&rules);
-        (rules, loaded.override_facts, cp, bcp, rp)
+        (rules, loaded.override_facts, loaded.registry, cp, bcp, rp)
     };
 
     // Populated only when the structural graph has drifted; these rules'
@@ -187,6 +210,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                 content_patterns: &content_patterns,
                 bash_command_patterns: &bash_command_patterns,
                 rule_predicates: &rule_predicates,
+                registry: &registry,
             },
         )
         .await
@@ -317,6 +341,11 @@ fn is_file_edit(tool_name: &str) -> bool {
     )
 }
 
+/// Shell tools (Claude Code and Gemini names).
+fn is_shell(tool_name: &str) -> bool {
+    matches!(tool_name, "Bash" | "run_shell_command")
+}
+
 fn blocked_exit(root: &std::path::Path, key: &str, tool_name: &str) -> ! {
     super::lifecycle_wiring::undo_blocked_pre(root, key, tool_name);
     process::exit(2)
@@ -354,6 +383,7 @@ struct PreContentInput<'a> {
     content_patterns: &'a [String],
     bash_command_patterns: &'a [crate::hook_facts::BashCommandPattern],
     rule_predicates: &'a HashSet<String>,
+    registry: &'a crate::language_packs::PackRegistry,
 }
 
 async fn assert_pre_content_facts(
@@ -368,6 +398,7 @@ async fn assert_pre_content_facts(
         content_patterns,
         bash_command_patterns,
         rule_predicates,
+        registry,
     } = input;
     network
         .assert_fact(Fact {
@@ -436,7 +467,43 @@ async fn assert_pre_content_facts(
             e
         })?;
 
-    assert_language_pack_facts(network, file_path, content)
+    // Only pack-owned files need the whole edited image (pack facts come
+    // from the full file, not the replacement fragment), and for those an
+    // image that cannot be mapped fails closed. Every other file keeps the
+    // pre-pack behaviour: the tool's content, with unreadable or oversized
+    // files reported as whole-file regions rather than blocked.
+    let pack_owned = if file_path.is_empty() {
+        false
+    } else {
+        let root = security::project_root();
+        let rel = crate::graph::hydrate::repo_relative(&root, file_path)
+            .unwrap_or_else(|| file_path.to_string());
+        registry
+            .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
+            .map_err(|e| HookError::Engine(e.to_string()))?
+            .is_some()
+    };
+    let pack_image = if !pack_owned {
+        content.to_string()
+    } else {
+        let edited = super::edit_images::pre_edited(
+            tool_name,
+            payload
+                .tool_input
+                .as_ref()
+                .unwrap_or(&serde_json::Value::Null),
+            &disk,
+            file_path,
+            content,
+        );
+        if let Some(reason) = edited.unmapped {
+            return Err(HookError::Engine(format!(
+                "cannot map whole edited file for language pack: {reason}"
+            )));
+        }
+        edited.new
+    };
+    assert_language_pack_facts_with_registry(network, file_path, &pack_image, registry)
         .await
         .map_err(|e| {
             eprintln!(

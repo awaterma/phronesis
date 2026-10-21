@@ -85,6 +85,9 @@ impl EpistemeMcp {
             .collect();
         let mut phase_map = self.phase_map.lock().await;
         hydrate_rules(&network, &mut phase_map, &resolved.rules, &existing).await?;
+        *self.managed_rule_ids.lock().await = resolved.rules.iter().map(|r| r.id.clone()).collect();
+        *self.managed_signature.lock().await =
+            format!("{:?}{:?}", resolved.rules, resolved.overrides);
         for fact in crate::rule_layers::override_facts(&resolved.overrides) {
             network.assert_fact(fact).await?;
         }
@@ -136,6 +139,8 @@ impl EpistemeMcp {
         }
         self.phase_map.lock().await.clear();
         self.persistent_rule_ids.lock().await.clear();
+        self.managed_rule_ids.lock().await.clear();
+        self.managed_signature.lock().await.clear();
         self.shadowed_project_rules.lock().await.clear();
         self.hydrate_from(root, resolved).await
     }
@@ -163,12 +168,77 @@ impl EpistemeMcp {
             }
             Ok(resolved) => {
                 let recovered = self.disk_load_error.lock().await.take().is_some();
-                if recovered && !Self::autopersist_disabled() {
-                    self.reload_from(&root, resolved).await.map_err(Self::err)?;
+                if !Self::autopersist_disabled() {
+                    self.refresh_disk_managed(&root, resolved, recovered)
+                        .await
+                        .map_err(Self::err)?;
                 }
                 Ok(())
             }
         }
+    }
+
+    /// Refresh only disk-managed definitions. Session facts and rules asserted
+    /// through MCP remain in the network across pack install/removal.
+    pub(crate) async fn refresh_disk_managed(
+        &self,
+        root: &std::path::Path,
+        resolved: crate::rule_layers::ResolvedRules,
+        recovered: bool,
+    ) -> Result<(), ReteError> {
+        let signature = format!("{:?}{:?}", resolved.rules, resolved.overrides);
+        if !recovered && *self.managed_signature.lock().await == signature {
+            return Ok(());
+        }
+        let network = self.network.lock().await;
+        let old_ids = self.managed_rule_ids.lock().await.clone();
+        for id in &old_ids {
+            network.remove_rule(id)?;
+        }
+        for fact in network.facts_matching_predicates(&[crate::rule_layers::OVERRIDE_PREDICATE])? {
+            network.retract_fact(&fact.id).await?;
+        }
+        let mut phase_map = self.phase_map.lock().await;
+        for id in &old_ids {
+            phase_map.remove(id);
+        }
+        for disk in &resolved.rules {
+            let (rule, phase) = rules_file::rule_from_disk(disk);
+            if !old_ids.contains(&rule.id)
+                && network.get_all_rules()?.iter().any(|r| r.id == rule.id)
+            {
+                network.remove_rule(&rule.id)?;
+            }
+            network.add_rule(rule).await?;
+            phase_map.insert(disk.id.clone(), phase);
+        }
+        for fact in crate::rule_layers::override_facts(&resolved.overrides) {
+            network.assert_fact(fact).await?;
+        }
+        drop(phase_map);
+        drop(network);
+        *self.managed_rule_ids.lock().await = resolved.rules.iter().map(|r| r.id.clone()).collect();
+        *self.managed_signature.lock().await = signature;
+        let project_path = rules_file::default_path(root);
+        *self.persistent_rule_ids.lock().await = resolved
+            .origins
+            .iter()
+            .filter_map(|(id, origin)| (origin.path == project_path).then_some(id.clone()))
+            .collect();
+        let project_file =
+            rules_file::read(&project_path).unwrap_or(rules_file::RulesFile { rules: Vec::new() });
+        *self.shadowed_project_rules.lock().await = project_file
+            .rules
+            .into_iter()
+            .filter(|rule| {
+                resolved
+                    .origins
+                    .get(&rule.id)
+                    .is_some_and(|origin| origin.path != project_path)
+            })
+            .map(|rule| (rule.id.clone(), rule))
+            .collect();
+        Ok(())
     }
 
     /// [`Self::ensure_disk_rules_load`] for tools that write only through
@@ -230,5 +300,125 @@ impl EpistemeMcp {
         rules_file::write_atomic(&path, &rules_file::RulesFile { rules: disk_rules })
             .map_err(|e| Self::err(e.to_string()))?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pack_refresh_tests {
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use phr::Fact;
+
+    use super::*;
+    use crate::rule_layers::{ResolvedRules, RuleOrigin};
+    use crate::rules_file::{DiskAction, DiskCondition};
+
+    fn disk_rule(id: &str) -> DiskRule {
+        DiskRule {
+            id: id.to_string(),
+            phase: "pre".to_string(),
+            priority: 0,
+            conditions: vec![DiskCondition {
+                predicate: "session_tag".to_string(),
+                args: vec!["yes".to_string()],
+                script: None,
+            }],
+            actions: vec![DiskAction {
+                action_type: "constraint_violation".to_string(),
+                params: vec!["hit".to_string()],
+                data: None,
+            }],
+            silent: None,
+            audit: None,
+            doc_excepted: None,
+        }
+    }
+
+    fn resolved(ids: &[(&str, &str)]) -> ResolvedRules {
+        let rules = ids.iter().map(|(id, _)| disk_rule(id)).collect();
+        let origins = ids
+            .iter()
+            .map(|(id, layer)| {
+                (
+                    id.to_string(),
+                    RuleOrigin {
+                        layer: layer.to_string(),
+                        path: PathBuf::from(format!("{layer}.json")),
+                        decision: None,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        ResolvedRules {
+            rules,
+            origins,
+            overrides: Vec::new(),
+            configured: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn refresh_adds_and_removes_disk_rules_without_retracting_session_facts() {
+        let project = tempfile::tempdir().unwrap();
+        let server = EpistemeMcp::new();
+        {
+            let network = server.network.lock().await;
+            network
+                .assert_fact(Fact {
+                    id: "session-fact".to_string(),
+                    predicate: "session_tag".to_string(),
+                    args: vec!["yes".to_string()],
+                    timestamp: 1,
+                    source: Some("session".to_string()),
+                })
+                .await
+                .unwrap();
+        }
+        server
+            .refresh_disk_managed(
+                project.path(),
+                resolved(&[("demo.first", "pack:demo")]),
+                false,
+            )
+            .await
+            .unwrap();
+        {
+            let network = server.network.lock().await;
+            assert!(
+                network
+                    .get_all_rules()
+                    .unwrap()
+                    .iter()
+                    .any(|r| r.id == "demo.first")
+            );
+        }
+        server
+            .refresh_disk_managed(
+                project.path(),
+                resolved(&[("demo.second", "pack:demo")]),
+                false,
+            )
+            .await
+            .unwrap();
+        {
+            let network = server.network.lock().await;
+            let rules = network.get_all_rules().unwrap();
+            assert!(!rules.iter().any(|r| r.id == "demo.first"));
+            assert!(rules.iter().any(|r| r.id == "demo.second"));
+        }
+        server
+            .refresh_disk_managed(project.path(), resolved(&[]), false)
+            .await
+            .unwrap();
+        let network = server.network.lock().await;
+        assert!(network.get_all_rules().unwrap().is_empty());
+        assert_eq!(
+            network
+                .facts_matching_predicates(&["session_tag"])
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

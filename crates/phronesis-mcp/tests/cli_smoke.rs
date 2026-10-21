@@ -581,6 +581,107 @@ fn signal_ingest_records_parsed_evidence_and_refuses_empty_or_unknown_output() {
     );
 }
 
+#[test]
+fn signal_ingest_records_a_compile_failure_and_refuses_only_ungrounded_output() {
+    let dir = ingest_project();
+    let root = dir.path();
+    // A compile error is evidence, not "nothing parsed": the build signal
+    // is grounded even though no test ran.
+    std::fs::write(
+        root.join("compile.log"),
+        "error[E0425]: cannot find value `missing` in this scope\n",
+    )
+    .expect("log");
+    let out = ingest_phr(
+        root,
+        &[
+            "signal",
+            "ingest",
+            "--command",
+            "cargo test",
+            "--output",
+            "compile.log",
+            "--exit",
+            "101",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("outcome:compile_error") && !stdout.contains("outcome:test_"),
+        "{stdout}"
+    );
+    // Unrecognizable output with no exit code grounds nothing: refused.
+    std::fs::write(root.join("noise.log"), "...truncated\n").expect("log");
+    let out = ingest_phr(
+        root,
+        &[
+            "signal",
+            "ingest",
+            "--command",
+            "cargo test",
+            "--output",
+            "noise.log",
+        ],
+    );
+    assert!(!out.status.success());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("no outcome"));
+}
+
+/// Second-pass review finding 4: a failed run that grounded no test count
+/// left an earlier passing `tests` signal in place, because confidence reads
+/// the latest test outcome. A failed run must withdraw it.
+#[test]
+fn a_later_failed_run_withdraws_an_earlier_tests_signal() {
+    let dir = ingest_project();
+    let root = dir.path();
+    std::fs::write(
+        root.join("pass.log"),
+        "test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n",
+    )
+    .expect("log");
+    let ingest = |log: &str, exit: &str| {
+        let out = ingest_phr(
+            root,
+            &[
+                "signal",
+                "ingest",
+                "--command",
+                "cargo test",
+                "--output",
+                log,
+                "--exit",
+                exit,
+            ],
+        );
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    assert!(ingest("pass.log", "0").contains("outcome:test_pass"));
+    let signals = |root: &std::path::Path| {
+        let out = ingest_phr(root, &["confidence", "--json"]);
+        let conf: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+        conf["signals"].to_string()
+    };
+    assert!(signals(root).contains("tests"));
+    // The same passing summary, but the run exited 101: a later binary
+    // aborted before printing its own summary.
+    let tags = ingest("pass.log", "101");
+    assert!(
+        tags.contains("outcome:test_fail") && !tags.contains("outcome:test_pass"),
+        "{tags}"
+    );
+    assert!(!signals(root).contains("tests"), "{}", signals(root));
+}
+
 /// A `.phronesisignore` entry exempts lexical rules only; it must never
 /// hide a production file from structural audit rules (issue #114). The
 /// ignore file below carries a `src/*` pattern that used to hide

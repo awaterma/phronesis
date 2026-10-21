@@ -18,6 +18,55 @@
 use std::path::{Path, PathBuf};
 
 use regex::Regex;
+
+/// Terminal control sequences (`--color always`, progress bars): CSI and OSC
+/// escapes. Outcome patterns run on the text a person would read.
+static TERMINAL_ESCAPES: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]")
+        .expect("terminal escape pattern compiles")
+});
+
+fn without_terminal_escapes(output: &str) -> std::borrow::Cow<'_, str> {
+    if output.contains('\x1b') {
+        TERMINAL_ESCAPES.replace_all(output, "")
+    } else {
+        std::borrow::Cow::Borrowed(output)
+    }
+}
+
+/// Cargo quotes a failing build script's output under `  --- stdout` /
+/// `  --- stderr`, each nonempty line indented two spaces (an empty line is
+/// left unindented). That text is the script's,
+/// not cargo's or a test runner's, so no outcome pattern may read it: a
+/// script can print anything, including a launch line or a test summary.
+fn without_build_script_payload(output: &str) -> std::borrow::Cow<'_, str> {
+    if !output.contains("  --- std") {
+        return std::borrow::Cow::Borrowed(output);
+    }
+    let mut kept = String::with_capacity(output.len());
+    let mut in_payload = false;
+    for line in output.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\n', '\r']);
+        if bare == "  --- stdout" || bare == "  --- stderr" {
+            in_payload = true;
+            continue;
+        }
+        // Cargo leaves an empty payload line unindented, so only a nonempty
+        // line without the two-space indent ends the payload.
+        if in_payload && (bare.is_empty() || bare.starts_with("  ")) {
+            continue;
+        }
+        in_payload = false;
+        kept.push_str(line);
+    }
+    std::borrow::Cow::Owned(kept)
+}
+
+/// The output outcome patterns read: terminal escapes removed, and cargo's
+/// quoted build-script payloads dropped.
+fn normalized_output(output: &str) -> String {
+    without_build_script_payload(&without_terminal_escapes(output)).into_owned()
+}
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -46,6 +95,12 @@ pub struct ToolchainDef {
     /// compatible: defs written before 0.19.0 deserialize with an empty list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub compile_success: Vec<String>,
+    /// Evidence that test binaries started (cargo's `Running` lines, Go's
+    /// `=== RUN`). Unlike `compile_success`, it holds under a nonzero exit:
+    /// a run that died before printing any result still compiled, so it is a
+    /// failed test run, not a compile error. Optional; defaults to none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub test_started: Vec<String>,
     /// Regex(es) with named groups `(?P<passed>\d+)` (required) and optional
     /// `(?P<failed>\d+)`.
     ///
@@ -83,6 +138,15 @@ pub struct ToolchainDef {
     /// `outcome:proof_run_inconclusive` for a run that was not a clean pass.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_kind: Option<String>,
+    /// Where test counts come from when no `test_summary` pattern matches.
+    /// `None` (the default): nowhere, so a run without a summary grounds no
+    /// test outcome. `"per_test"`: count the `per_test` matches, a
+    /// `pass_tokens` status as passed and any other as failed. For tools
+    /// that print a line per test but never a total (`go test -v`). A
+    /// matching `test_summary` still wins, and no per-test lines means no
+    /// counts, so nothing is invented from a quiet run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_counts: Option<String>,
 }
 
 /// One regex or several, in a field that historically held exactly one.
@@ -116,6 +180,7 @@ impl From<&str> for Patterns {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DefSource {
     BuiltIn,
+    Pack,
     Project,
     /// A project def whose `id` shadows a built-in.
     Override,
@@ -125,6 +190,7 @@ impl DefSource {
     pub fn as_str(&self) -> &'static str {
         match self {
             DefSource::BuiltIn => "built-in",
+            DefSource::Pack => "pack",
             DefSource::Project => "project",
             DefSource::Override => "override",
         }
@@ -146,7 +212,12 @@ pub enum ToolchainError {
         field: &'static str,
         groups: &'static str,
     },
+    #[error("toolchain `{id}`: `test_counts` {reason}")]
+    BadTestCounts { id: String, reason: &'static str },
 }
+
+/// The only `test_counts` source today.
+const TEST_COUNTS_PER_TEST: &str = "per_test";
 
 /// A `ToolchainDef` with its regexes compiled and validated.
 #[derive(Debug, Clone)]
@@ -159,6 +230,7 @@ pub struct CompiledDef {
     matches: Regex,
     compile_fail: Vec<Regex>,
     compile_success: Vec<Regex>,
+    test_started: Vec<Regex>,
     /// Alternative summary formats, in declaration order. Empty when the def
     /// declares none.
     test_summary: Vec<Regex>,
@@ -167,6 +239,9 @@ pub struct CompiledDef {
     /// inside each section (one match to the next), so a multi-line `per_test`
     /// can never span two harnesses.
     section_start: Option<Regex>,
+    /// `test_counts: "per_test"`: count `per_test` matches when no
+    /// `test_summary` matched.
+    counts_from_per_test: bool,
 }
 
 fn compile_field(id: &str, field: &'static str, pattern: &str) -> Result<Regex, ToolchainError> {
@@ -206,6 +281,11 @@ impl CompiledDef {
             .compile_fail
             .iter()
             .map(|p| compile_field(&def.id, "compile_fail", p))
+            .collect::<Result<Vec<_>, _>>()?;
+        let test_started = def
+            .test_started
+            .iter()
+            .map(|p| compile_field(&def.id, "test_started", p))
             .collect::<Result<Vec<_>, _>>()?;
         let compile_success = def
             .compile_success
@@ -248,16 +328,40 @@ impl CompiledDef {
             .as_deref()
             .map(|p| compile_field(&def.id, "section_start", p))
             .transpose()?;
+        let counts_from_per_test = match def.test_counts.as_deref() {
+            None => false,
+            Some(TEST_COUNTS_PER_TEST) if is_proof => {
+                return Err(ToolchainError::BadTestCounts {
+                    id: def.id.clone(),
+                    reason: "cannot be set on an `outcome_kind: \"proof\"` def; proofs are not test counts",
+                });
+            }
+            Some(TEST_COUNTS_PER_TEST) if per_test.is_none() => {
+                return Err(ToolchainError::BadTestCounts {
+                    id: def.id.clone(),
+                    reason: "is \"per_test\" but the def has no `per_test` regex",
+                });
+            }
+            Some(TEST_COUNTS_PER_TEST) => true,
+            Some(_) => {
+                return Err(ToolchainError::BadTestCounts {
+                    id: def.id.clone(),
+                    reason: "must be \"per_test\" when set",
+                });
+            }
+        };
         Ok(Self {
             def,
             source,
             matches,
             compile_fail,
             compile_success,
+            test_started,
             test_summary,
             per_test,
             section_start,
             is_proof,
+            counts_from_per_test,
         })
     }
 
@@ -303,6 +407,10 @@ impl CompiledDef {
         self.compile_success.iter().any(|re| re.is_match(output))
     }
 
+    fn test_started_hit(&self, output: &str) -> bool {
+        self.test_started.iter().any(|re| re.is_match(output))
+    }
+
     /// Test counts from the first `test_summary` pattern that matches.
     ///
     /// Within that pattern every match is summed, which is what makes a
@@ -310,8 +418,34 @@ impl CompiledDef {
     /// stops the search: two patterns describe two output formats of the same
     /// tool, so matching both would double-count rather than accumulate.
     ///
-    /// `None` when the def has no summary regex or none of them matched.
-    fn test_counts(&self, output: &str) -> Option<TestCounts> {
+    /// `None` when the def has no summary regex or none of them matched;
+    /// `per_test_counts` is the opted-in fallback.
+    fn test_counts(
+        &self,
+        output: &str,
+        per_test_lines: &[(String, bool)],
+        command_exit: Option<i32>,
+    ) -> Option<TestCounts> {
+        self.summary_counts(output)
+            .or_else(|| Self::per_test_counts(per_test_lines, command_exit))
+    }
+
+    /// Counts from the opted-in per-test lines. A line reports one test; it
+    /// says nothing about tests that never reported (a test that called
+    /// `os.Exit`, a timeout, a truncated capture). Only a zero exit closes
+    /// that gap, so a nonzero or absent exit grounds counts only when some
+    /// line failed: per-test lines can prove a failure, never a pass, from
+    /// a run that did not exit clean.
+    fn per_test_counts(lines: &[(String, bool)], command_exit: Option<i32>) -> Option<TestCounts> {
+        if lines.is_empty() {
+            return None;
+        }
+        let passed = lines.iter().filter(|(_, passed)| *passed).count();
+        let failed = lines.len() - passed;
+        (failed > 0 || command_exit == Some(0)).then_some(TestCounts { passed, failed })
+    }
+
+    fn summary_counts(&self, output: &str) -> Option<TestCounts> {
         self.test_summary.iter().find_map(|re| {
             let mut found = false;
             let mut counts = TestCounts {
@@ -345,6 +479,7 @@ impl CompiledDef {
         let Some(re) = &self.per_test else {
             return Vec::new();
         };
+        let output = &*normalized_output(output);
         let sections: Vec<&str> = match &self.section_start {
             None => vec![output],
             Some(start) => {
@@ -388,15 +523,35 @@ impl CompiledDef {
         output: &str,
         command_exit: Option<i32>,
     ) -> Vec<OutcomeFact> {
-        let counts = self.test_counts(output);
+        let output = &*normalized_output(output);
+        let per_test_lines = if self.counts_from_per_test {
+            self.per_test_results(output)
+        } else {
+            Vec::new()
+        };
+        let counts = self.test_counts(output, &per_test_lines, command_exit);
+        // Evidence the tests started, which proves the build finished:
+        // reported tests (even when they ground no counts, as in a run that
+        // died after some passed) or a `test_started` match, which also
+        // covers a run that died before its first result. With a nonzero
+        // exit that is a failed test run, not a compile error. Plain
+        // `compile_success` text is not enough under a nonzero exit (a build
+        // can print `Finished` and still fail).
+        //
+        // `test_started` counts only alongside an exit code. With none, a
+        // capture may be truncated anywhere, so the build is graded from
+        // reported results and `compile_success` text as before (a bare
+        // start banner in a truncated capture stays unknown).
+        let reported = counts.is_some() || !per_test_lines.is_empty();
+        let started = reported || self.test_started_hit(output);
         let status = if self.compile_fail_hit(output) {
             BuildStatus::Fail
         } else {
             match command_exit {
                 Some(0) => BuildStatus::Pass,
-                Some(_) if counts.is_some() => BuildStatus::Pass,
+                Some(_) if started => BuildStatus::Pass,
                 Some(_) => BuildStatus::Fail,
-                None if counts.is_some() || self.compile_success_hit(output) => BuildStatus::Pass,
+                None if reported || self.compile_success_hit(output) => BuildStatus::Pass,
                 None => BuildStatus::Unknown,
             }
         };
@@ -405,12 +560,43 @@ impl CompiledDef {
             BuildStatus::Fail => OutcomeFact::build(subject, false),
             BuildStatus::Unknown => OutcomeFact::build_unknown(subject),
         }];
+        let run_failed = matches!(command_exit, Some(code) if code != 0);
         if self.is_proof {
             facts.extend(self.proof_facts(subject, output, command_exit, status));
-        } else if status == BuildStatus::Pass
-            && let Some(c) = counts
+        } else if let Some(c) = counts.filter(|c| c.failed > 0)
+            && status != BuildStatus::Pass
         {
+            // Explicitly counted failures are evidence whatever the build
+            // classification or captured exit: a test failure, never a pass,
+            // and never silence that would leave an earlier pass standing.
             facts.push(OutcomeFact::test(subject, c.passed, c.failed));
+        } else if status == BuildStatus::Fail
+            && run_failed
+            && started
+            && self.compile_fail_hit(output)
+        {
+            // Compile-failure text alongside evidence that tests ran (one Go
+            // package failed to build while another's tests ran, or a test
+            // printed a compiler-looking diagnostic): the build verdict stays
+            // a failure, never a false pass, and the run is also a failed test
+            // run, so it withdraws an earlier passing test signal.
+            facts.push(OutcomeFact::test_run_failed(subject));
+        } else if status == BuildStatus::Pass {
+            // A nonzero exit vetoes a test pass whatever the count source
+            // says: output can report only the tests that reported, and a
+            // run that died after a clean summary or clean per-test lines
+            // still failed. It is a test failure, so it also withdraws an
+            // earlier pass.
+            match counts {
+                Some(c) if run_failed && c.failed == 0 => {
+                    facts.push(OutcomeFact::test_run_failed(subject));
+                }
+                Some(c) => facts.push(OutcomeFact::test(subject, c.passed, c.failed)),
+                None if run_failed && started => {
+                    facts.push(OutcomeFact::test_run_failed(subject));
+                }
+                None => {}
+            }
         }
         facts
     }
@@ -523,6 +709,8 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
+            test_started: vec![],
+            test_counts: None,
         },
         ToolchainDef {
             id: "swift".to_string(),
@@ -534,6 +722,8 @@ pub fn builtin_defs() -> Vec<ToolchainDef> {
             section_start: None,
             pass_tokens: default_pass_tokens(),
             outcome_kind: None,
+            test_started: vec![],
+            test_counts: None,
         },
     ]
 }
@@ -545,24 +735,49 @@ fn cargo_builtin() -> ToolchainDef {
         compile_fail: vec![
             r"error\[E\d+\]".to_string(),
             "could not compile".to_string(),
+            // Cargo's diagnostic, not the phrase anywhere (a test may print it).
+            "(?m)^error: failed to run custom build command for ".to_string(),
         ],
         compile_success: vec![r"Finished .* profile".to_string()],
+        // Test binaries launching, never build activity: cargo's launch line
+        // ends by naming the test binary inside the target `deps` (or, for an
+        // example run as a test, `examples`) directory,
+        // `(target/debug/deps/name-hash)`, whatever the source path or the
+        // target directory holds (spaces, backticks, parentheses). A verbose build-script or rustc line ends in a
+        // backtick-quoted command, and a build script's own status output has
+        // no `deps/` binary. Also libtest's banner (all `--quiet` prints) and
+        // nextest's start line.
+        test_started: vec![
+            // Cargo right-aligns status verbs to 12 columns, so its own
+            // launch line is exactly five spaces then `Running`; a build
+            // script's quoted payload (under `--- stdout`) is indented two.
+            r"(?m)^ {5}Running .+ \(.*[/\\](?:deps|examples)[/\\][^/\\\n]+\)\s*$".to_string(),
+            r"(?m)^running \d+ tests?$".to_string(),
+            // Cargo's runtime-failure report, printed in every verbosity mode
+            // (including --quiet, which has no launch line) and only after a
+            // test binary ran and failed.
+            r"(?m)^error: (?:test|doctest) failed, to rerun pass ".to_string(),
+            r"(?m)^\s+Starting \d+ tests?".to_string(),
+        ],
         // `matches` accepts `cargo nextest`, and nextest never emits libtest's
         // `test result:` line — it emits `Summary [...] N tests run: ...`.
         // With only the libtest pattern the def claimed the command, parsed
         // nothing, and grounded no test signal, so a project gated on
         // `cargo nextest run` could never reach one.
         test_summary: Some(Patterns::Many(vec![
-            r"test result: \w+\. (?P<passed>\d+) passed; (?P<failed>\d+) failed".to_string(),
+            // libtest prints its summary at column 0; a compiler excerpt that
+            // quotes the same text sits behind a `N |` gutter.
+            r"(?m)^test result: \w+\. (?P<passed>\d+) passed; (?P<failed>\d+) failed".to_string(),
             // `failed` is optional: a clean run reports only passed/skipped,
             // and `[^,\n]*` steps over annotations like ` (1 flaky)`.
-            r"Summary \[[^\]]*\]\s+\d+ tests run: (?P<passed>\d+) passed[^,\n]*(?:, (?P<failed>\d+) failed)?"
+            r"(?m)^\s*Summary \[[^\]]*\]\s+\d+ tests run: (?P<passed>\d+) passed[^,\n]*(?:, (?P<failed>\d+) failed)?"
                 .to_string(),
         ])),
         per_test: Some(r"(?m)^test (?P<name>\S+) \.\.\. (?P<status>ok|FAILED)".to_string()),
         section_start: None,
         pass_tokens: default_pass_tokens(),
         outcome_kind: None,
+        test_counts: None,
     }
 }
 
@@ -618,6 +833,15 @@ pub fn load_project_defs(root: &Path) -> Vec<ToolchainDef> {
 pub fn registry(root: &Path) -> Vec<CompiledDef> {
     let project = load_project_defs(root);
     let builtins = builtin_defs();
+    // Runtime pack loading is strict: a broken installed pack is reported by
+    // rule resolution at hook/audit boundaries and cannot silently govern a
+    // command with a stale toolchain definition.
+    let pack_defs = crate::language_packs::load(root)
+        .and_then(|registry| crate::language_packs::integration::pack_toolchains(&registry))
+        .unwrap_or_else(|e| {
+            eprintln!("phronesis: language-pack toolchains unavailable: {e}");
+            Vec::new()
+        });
     let mut out: Vec<CompiledDef> = Vec::new();
     for def in &builtins {
         if let Some(over) = project.iter().find(|p| p.id == def.id) {
@@ -630,8 +854,17 @@ pub fn registry(root: &Path) -> Vec<CompiledDef> {
             out.push(c);
         }
     }
+    for def in pack_defs {
+        if let Some(over) = project.iter().find(|p| p.id == def.id) {
+            if let Ok(c) = CompiledDef::compile(over.clone(), DefSource::Override) {
+                out.push(c);
+            }
+        } else if let Ok(c) = CompiledDef::compile(def, DefSource::Pack) {
+            out.push(c);
+        }
+    }
     for def in project {
-        if builtins.iter().any(|b| b.id == def.id) {
+        if builtins.iter().any(|b| b.id == def.id) || out.iter().any(|p| p.def.id == def.id) {
             continue; // already placed as Override
         }
         if let Ok(c) = CompiledDef::compile(def, DefSource::Project) {
@@ -1183,11 +1416,11 @@ mod tests {
         let summaries = def.test_summary.as_ref().expect("cargo declares summaries");
         assert_eq!(
             summaries.as_slice()[0],
-            "test result: \\w+\\. (?P<passed>\\d+) passed; (?P<failed>\\d+) failed",
+            "(?m)^test result: \\w+\\. (?P<passed>\\d+) passed; (?P<failed>\\d+) failed",
         );
         assert_eq!(
             summaries.as_slice()[1],
-            "Summary \\[[^\\]]*\\]\\s+\\d+ tests run: (?P<passed>\\d+) passed[^,\\n]*(?:, (?P<failed>\\d+) failed)?",
+            "(?m)^\\s*Summary \\[[^\\]]*\\]\\s+\\d+ tests run: (?P<passed>\\d+) passed[^,\\n]*(?:, (?P<failed>\\d+) failed)?",
         );
     }
 
@@ -1516,5 +1749,384 @@ mod tests {
         assert_eq!(kani.source, DefSource::Project);
         assert!(kani.is_proof);
         assert!(kani.handles("cargo kani -p phronesis --harness x"));
+    }
+
+    // ── test_counts: "per_test" (counts from per-test lines) ──────────────
+
+    fn go_style(test_counts: Option<&str>) -> CompiledDef {
+        let mut def: ToolchainDef = serde_json::from_str(
+            r#"{
+                "id": "gotest",
+                "matches": "^go\\s+test(\\s|$)",
+                "compile_fail": ["\\[build failed\\]", "(?m)^# "],
+                "compile_success": ["(?m)^ok\\s", "(?m)^PASS$"],
+                "per_test": "(?m)^--- (?P<status>PASS|FAIL): (?P<name>\\S+)",
+                "pass_tokens": ["PASS"]
+            }"#,
+        )
+        .unwrap();
+        def.test_counts = test_counts.map(str::to_string);
+        CompiledDef::compile(def, DefSource::Project).unwrap()
+    }
+
+    fn counts(facts: &[crate::outcomes::facts::OutcomeFact]) -> Option<(&str, &str)> {
+        test_fact(facts).map(|f| (f.args[1].as_str(), f.args[2].as_str()))
+    }
+
+    const GO_PASS: &str = "=== RUN   TestAdd\n--- PASS: TestAdd (0.00s)\n=== RUN   TestSub\n--- PASS: TestSub (0.00s)\nPASS\nok  \texample.com/demo\t0.003s\n";
+    const GO_FAIL: &str = "=== RUN   TestAdd\n--- FAIL: TestAdd (0.00s)\n    calc_test.go:6: bad sum\n=== RUN   TestSub\n--- PASS: TestSub (0.00s)\nFAIL\nFAIL\texample.com/demo\t0.002s\n";
+
+    #[test]
+    fn per_test_counts_ground_a_passing_run() {
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", GO_PASS, Some(0));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert_eq!(counts(&facts), Some(("2", "0")));
+    }
+
+    #[test]
+    fn per_test_counts_split_an_assertion_failure_from_a_build_failure() {
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", GO_FAIL, Some(1));
+        assert_eq!(build_status(&facts), Some("pass"), "the code compiled");
+        assert_eq!(counts(&facts), Some(("1", "1")));
+    }
+
+    #[test]
+    fn per_test_counts_never_survive_a_compile_failure() {
+        let out = "# example.com/demo [example.com/demo.test]\n./calc.go:2:30: undefined: missing\nFAIL\texample.com/demo [build failed]\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", out, Some(1));
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn per_test_counts_invent_nothing_without_per_test_lines() {
+        // Plain `go test` prints no per-test lines on success: tests ran or
+        // not, the output cannot say how many, so no test fact.
+        let quiet = "ok  \texample.com/demo\t0.003s\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test ./...", quiet, Some(0));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_none());
+        let none = "?   \texample.com/demo\t[no test files]\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test ./...", none, Some(0));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn per_test_counts_without_an_exit_need_their_own_evidence() {
+        // Absent exit: per-test lines are evidence the tests ran, just as a
+        // summary match is.
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", GO_FAIL, None);
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert_eq!(counts(&facts), Some(("1", "1")));
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", "...truncated", None);
+        assert_eq!(build_status(&facts), Some("unknown"));
+        assert!(test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn per_test_counts_never_turn_a_failed_run_into_a_pass() {
+        // `os.Exit` inside a test, or `-timeout`, prints only the earlier
+        // tests' PASS lines and exits nonzero: the run failed, no line says
+        // which test, so there is no test verdict (the build still passed).
+        let exited = "=== RUN   TestA\n--- PASS: TestA (0.00s)\n=== RUN   TestB\nFAIL\texample.com/demo\t0.227s\nFAIL\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", exited, Some(1));
+        assert_eq!(
+            build_status(&facts),
+            Some("pass"),
+            "tests ran, so it compiled"
+        );
+        assert!(test_fact(&facts).is_none(), "{facts:?}");
+        // The failed run is still a test failure, so it withdraws any
+        // earlier pass for this subject.
+        assert!(run_failed(&facts), "{facts:?}");
+    }
+
+    fn run_failed(facts: &[crate::outcomes::facts::OutcomeFact]) -> bool {
+        facts.iter().any(|f| f.predicate == "test_run_failed")
+    }
+
+    #[test]
+    fn a_run_that_dies_before_its_first_result_is_a_failed_test_run() {
+        // Third-pass review finding 3: the first test exits the process, so
+        // no result line or summary exists, only evidence the binary ran.
+        let mut def = go_style(Some("per_test")).def;
+        def.test_started.push("(?m)^=== RUN ".to_string());
+        let def = CompiledDef::compile(def, DefSource::Project).unwrap();
+        let out = "=== RUN   TestA\nFAIL\texample.com/demo\t0.227s\nFAIL\n";
+        let facts = def.parse("u", "go test -v ./...", out, Some(1));
+        assert_eq!(build_status(&facts), Some("pass"), "the test binary ran");
+        assert!(run_failed(&facts), "{facts:?}");
+        // Cargo: the test profile finished building, then a binary crashed.
+        let out = "    Finished `test` profile [unoptimized] target(s) in 0.4s\n     Running unittests src/lib.rs (target/debug/deps/demo-1a2b)\nerror: test failed, to rerun pass `--lib`\n";
+        let cargo = CompiledDef::compile(cargo_builtin(), DefSource::BuiltIn).unwrap();
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(run_failed(&facts), "{facts:?}");
+        // A real compile error is still a build failure with no test verdict.
+        let out = "error[E0425]: cannot find value `x`\nerror: could not compile `demo`\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(!run_failed(&facts) && test_fact(&facts).is_none());
+    }
+
+    #[test]
+    fn cargo_test_start_markers_are_test_launches_not_build_activity() {
+        let cargo = CompiledDef::compile(cargo_builtin(), DefSource::BuiltIn).unwrap();
+        // Fourth-pass review finding 1: a verbose build runs a build script
+        // and fails. No test started; this is a build failure.
+        let out = "   Compiling demo v0.1.0\n     Running `/t/debug/build/demo-1/build-script-build`\nerror: failed to run custom build command for `demo v0.1.0`\n";
+        let facts = cargo.parse("u", "cargo build -v", out, Some(101));
+        assert_eq!(build_status(&facts), Some("fail"), "{facts:?}");
+        assert!(!run_failed(&facts));
+        // Finding 2: `cargo test --quiet` prints only libtest's banner, and
+        // the first test aborted the process.
+        let out = "\nrunning 3 tests\nerror: test failed, to rerun pass `--lib`\n";
+        let facts = cargo.parse("u", "cargo test --quiet", out, Some(101));
+        assert_eq!(build_status(&facts), Some("pass"), "{facts:?}");
+        assert!(run_failed(&facts), "{facts:?}");
+        // Fifth-pass findings 1 and 2: a test whose own output mentions the
+        // custom-build phrase is a test failure, not a build failure; and a
+        // test source path may contain a space.
+        let out = "running 1 test\nthread 'x' panicked at src/lib.rs:3:5:\nfailed to run custom build command\ntest x ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert_eq!(build_status(&facts), Some("pass"), "{facts:?}");
+        assert_eq!(counts(&facts), Some(("0", "1")));
+        let out = "     Running tests/custom harness.rs (target/debug/deps/custom-123)\nerror: test failed, to rerun pass `--test custom`\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+        // Sixth-pass findings 1 and 2 (both reproduced with real cargo): a
+        // test panicking with cargo's full custom-build diagnostic, and a
+        // launch path containing a backtick. Either way tests ran and the run
+        // failed, so the earlier pass must be withdrawn.
+        let out = "running 1 test\nerror: failed to run custom build command for `demo v0.1.0`\ntest x ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        // Either form of test failure withdraws the pass; here the failure
+        // was counted, so it is the counted one.
+        assert!(
+            test_fact(&facts).is_some_and(|f| f.args[2] == "1") || run_failed(&facts),
+            "{facts:?}"
+        );
+        let out = "     Running tests/custom`harness.rs (target/debug/deps/custom-123)\nerror: test failed\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+        // A real compile failure with no sign of tests stays a plain build
+        // failure.
+        let out = "error[E0425]: cannot find value `x`\nerror: could not compile `demo`\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(!run_failed(&facts), "{facts:?}");
+        // Seventh pass (reproduced with real cargo). 7.1: explicit failures
+        // with no exit code are still a test failure, never silence.
+        let out = "running 1 test\nerror: failed to run custom build command for `demo v0.1.0`\ntest x ... FAILED\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let facts = cargo.parse("u", "cargo test", out, None);
+        assert!(
+            test_fact(&facts).is_some_and(|f| f.args[2] == "1") || run_failed(&facts),
+            "{facts:?}"
+        );
+        // 7.2: a launch whose source path starts with a backtick.
+        let out = "     Running `harness.rs (target/debug/deps/custom-0a1b)\nerror: test failed\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+        // Eighth pass (reproduced with real cargo): an example test binary
+        // lives under examples/, and a target directory may contain
+        // parentheses.
+        for out in [
+            "     Running unittests examples/custom.rs (target/debug/examples/custom-4a351cfc251d7eeb)\nerror: test failed\n",
+            "     Running tests/custom.rs (/tmp/target (review)/debug/deps/custom-bf92afa93b8e1ea7)\nerror: test failed\n",
+        ] {
+            let facts = cargo.parse("u", "cargo test", out, Some(101));
+            assert!(run_failed(&facts), "{out}: {facts:?}");
+        }
+        // Ninth pass (reproduced with real cargo). 9.1: a build script's
+        // payload that looks like a launch, even naming an examples/ path.
+        for payload in [
+            "  Running cmake (/x/examples/configure)",
+            "  Running cmake (/x/deps/configure)",
+        ] {
+            let out = format!(
+                "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  --- stdout\n{payload}\n"
+            );
+            let facts = cargo.parse("u", "cargo build", &out, Some(101));
+            assert_eq!(build_status(&facts), Some("fail"), "{payload}");
+            assert!(!run_failed(&facts), "{payload}: {facts:?}");
+            // Colored, the diagnostic must still be recognized.
+            let colored = out.replace("error", "\u{1b}[1m\u{1b}[91merror\u{1b}[0m");
+            let facts = cargo.parse("u", "cargo build --color always", &colored, Some(101));
+            assert_eq!(
+                build_status(&facts),
+                Some("fail"),
+                "colored {payload}: {facts:?}"
+            );
+            assert!(!run_failed(&facts), "colored {payload}: {facts:?}");
+        }
+        // 9.2: a colored launch line.
+        let out = "\u{1b}[1m\u{1b}[92m     Running\u{1b}[0m tests/custom.rs (target/debug/deps/custom-123)\nerror: test failed\n";
+        let facts = cargo.parse("u", "cargo test --color always", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+        // 9.3: a compiler excerpt quoting a summary is not a test result.
+        let out = "error[E0308]: mismatched types\n --> src/lib.rs:1:29\n  |\n1 | pub const EXPECTED: usize = \"test result: FAILED. 0 passed; 1 failed\";\n  |                             ^^^^ expected `usize`, found `&str`\n";
+        for exit in [Some(101), None] {
+            let facts = cargo.parse("u", "cargo build", out, exit);
+            assert_eq!(build_status(&facts), Some("fail"));
+            assert!(
+                test_fact(&facts).is_none() && !run_failed(&facts),
+                "{exit:?}: {facts:?}"
+            );
+        }
+        // Tenth pass (reproduced with real cargo). 10.1: quiet and verbose
+        // custom-harness aborts print no parenthesized launch line, but cargo
+        // always reports the runtime failure.
+        for out in [
+            "error: test failed, to rerun pass `--test custom`\n\nCaused by:\n  process didn't exit successfully: `/t/debug/deps/custom-123` (exit status: 7)\n",
+            "     Running `/t/debug/deps/custom-123`\nerror: test failed, to rerun pass `--test custom`\n",
+        ] {
+            let facts = cargo.parse("u", "cargo test --quiet --test custom", out, Some(101));
+            assert_eq!(build_status(&facts), Some("pass"), "{out}");
+            assert!(run_failed(&facts), "{out}: {facts:?}");
+        }
+        // 10.2 and 10.3: a build script's quoted payload never counts, however
+        // it is indented, launch-shaped or summary-shaped.
+        for payload in [
+            "     Running cmake (/x/deps/configure)",
+            "  Summary [0.001s] 1 tests run: 0 passed, 1 failed",
+            "  test result: FAILED. 0 passed; 1 failed; 0 ignored",
+        ] {
+            let out = format!(
+                "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  process didn't exit successfully: `/t/build/demo-1/build-script-build` (exit status: 1)\n  --- stdout\n{payload}\n"
+            );
+            for exit in [Some(101), None] {
+                let facts = cargo.parse("u", "cargo build", &out, exit);
+                assert_eq!(build_status(&facts), Some("fail"), "{payload}");
+                assert!(
+                    test_fact(&facts).is_none() && !run_failed(&facts),
+                    "{payload} {exit:?}: {facts:?}"
+                );
+            }
+        }
+        // Eleventh pass (reproduced with real cargo): cargo leaves an empty
+        // payload line unindented, which must not end the payload.
+        for payload in [
+            "  before\n\n     Running cmake (/x/deps/configure)",
+            "  before\n\n  Summary [0.001s] 1 tests run: 0 passed, 1 failed",
+        ] {
+            let out = format!(
+                "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  process didn't exit successfully: `/t/build/demo-1/build-script-build` (exit status: 1)\n  --- stdout\n{payload}\n"
+            );
+            for exit in [Some(101), None] {
+                let facts = cargo.parse("u", "cargo build", &out, exit);
+                assert!(
+                    test_fact(&facts).is_none() && !run_failed(&facts),
+                    "{payload:?} {exit:?}: {facts:?}"
+                );
+            }
+        }
+        // 7.3: a build script's own status line is not a test launch.
+        let out = "error: failed to run custom build command for `demo v0.1.0`\n\nCaused by:\n  process didn't exit successfully\n  --- stdout\n  Running cmake (configure)\n";
+        let facts = cargo.parse("u", "cargo build", out, Some(101));
+        assert_eq!(build_status(&facts), Some("fail"));
+        assert!(!run_failed(&facts), "{facts:?}");
+        // The verbose launch line names its target in parentheses.
+        let out =
+            "     Running unittests src/lib.rs (target/debug/deps/demo-abc)\nerror: test failed\n";
+        let facts = cargo.parse("u", "cargo test", out, Some(101));
+        assert!(run_failed(&facts), "{facts:?}");
+    }
+
+    #[test]
+    fn a_passing_summary_from_a_failed_run_is_a_failed_run_not_a_pass() {
+        // A multi-suite run where one suite printed a clean summary and a
+        // later one aborted before printing its own, exiting nonzero.
+        let out = "test_a.py::a PASSED\n=== 3 passed in 0.2s ===\nINTERNALERROR> crash\n";
+        let facts = synthetic().parse("u", "pytest", out, Some(1));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_none(), "{facts:?}");
+        assert!(run_failed(&facts), "{facts:?}");
+        // With failures in the summary it stays an ordinary test failure.
+        let out = "=== 1 failed, 3 passed in 0.2s ===\n";
+        let facts = synthetic().parse("u", "pytest", out, Some(1));
+        assert_eq!(counts(&facts), Some(("3", "1")));
+        assert!(!run_failed(&facts));
+        // A clean exit with a clean summary is a pass.
+        let facts = synthetic().parse("u", "pytest", "=== 3 passed in 0.2s ===\n", Some(0));
+        assert_eq!(counts(&facts), Some(("3", "0")));
+        assert!(!run_failed(&facts));
+    }
+
+    #[test]
+    fn per_test_counts_without_an_exit_never_ground_a_pass() {
+        // A truncated prefix that ends after a PASS line proves nothing
+        // about the tests that had not reported yet.
+        let prefix = "=== RUN   TestA\n--- PASS: TestA (0.00s)\n=== RUN   TestB\n";
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", prefix, None);
+        assert_eq!(
+            build_status(&facts),
+            Some("pass"),
+            "tests ran, so it compiled"
+        );
+        assert!(test_fact(&facts).is_none(), "{facts:?}");
+        // Even with the package's `ok` line, no exit code means no pass.
+        let facts = go_style(Some("per_test")).parse("u", "go test -v ./...", GO_PASS, None);
+        assert!(test_fact(&facts).is_none(), "{facts:?}");
+    }
+
+    #[test]
+    fn without_test_counts_per_test_lines_still_ground_no_counts() {
+        let facts = go_style(None).parse("u", "go test -v ./...", GO_PASS, Some(0));
+        assert_eq!(build_status(&facts), Some("pass"));
+        assert!(test_fact(&facts).is_none(), "opt-in only");
+        let facts = go_style(None).parse("u", "go test -v ./...", GO_FAIL, Some(1));
+        assert_eq!(build_status(&facts), Some("fail"), "pre-existing behaviour");
+    }
+
+    #[test]
+    fn a_matching_test_summary_wins_over_per_test_counts() {
+        let mut def = synthetic().def;
+        def.test_counts = Some("per_test".to_string());
+        let def = CompiledDef::compile(def, DefSource::Project).unwrap();
+        // Two per-test lines, but the summary says 10 passed, 2 failed.
+        let out = "a PASSED\nb FAILED\n=== 2 failed, 10 passed in 0.5s ===\n";
+        let facts = def.parse("u", "pytest", out, Some(1));
+        assert_eq!(counts(&facts), Some(("10", "2")));
+    }
+
+    #[test]
+    fn test_counts_rejects_unknown_values_and_impossible_combinations() {
+        let load = |json: &str| {
+            let def: ToolchainDef = serde_json::from_str(json).unwrap();
+            CompiledDef::compile(def, DefSource::Project)
+        };
+        let err = load(r#"{"id":"x","matches":"x","per_test":"(?P<name>\\S+) (?P<status>ok)","test_counts":"summary"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("test_counts") && err.contains("per_test"),
+            "{err}"
+        );
+        let err = load(r#"{"id":"x","matches":"x","test_counts":"per_test"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("test_counts") && err.contains("per_test"),
+            "{err}"
+        );
+        let err = load(r#"{"id":"x","matches":"x","outcome_kind":"proof","per_test":"(?P<name>\\S+) (?P<status>ok)","test_counts":"per_test"}"#)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("test_counts") && err.contains("proof"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn test_counts_is_omitted_when_unset_and_round_trips_when_set() {
+        let def: ToolchainDef = serde_json::from_str(r#"{"id":"x","matches":"x"}"#).unwrap();
+        assert!(!serde_json::to_string(&def).unwrap().contains("test_counts"));
+        let def: ToolchainDef =
+            serde_json::from_str(r#"{"id":"x","matches":"x","test_counts":"per_test"}"#).unwrap();
+        assert!(
+            serde_json::to_string(&def)
+                .unwrap()
+                .contains(r#""test_counts":"per_test""#)
+        );
     }
 }

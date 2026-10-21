@@ -6,6 +6,65 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+
+- **Go support** (`phr-mcp init --packs go`), built as a bundled language
+  pack on the same contract external packs use. The Go grammar is compiled
+  in. Structural facts and graph edges cover free functions, methods (with
+  pointer, value and generic receivers normalized), imports (plain,
+  aliased, blank, dot), the nearest `go.mod` module scope, and external
+  test packages. `TestXxx(t *testing.T)` functions, including through an
+  aliased `testing` import, become `defines_test`, and any `*_test.go` file
+  is classified as a test file. Unqualified calls resolve only to a unique
+  package-level function in the same package: a parameter, receiver, named
+  result, range, type-switch, `select` or other local binding of that name,
+  or any dot import in the file, leaves the call unresolved rather than
+  guessed. Static test selection renders `go test <pkg> -run '^TestX$'`.
+  Go has no dynamic coverage collector yet, so Go selections are static
+  reach only, never a coverage observation.
+  The pack ships one advisory rule, `go.warn-dot-import` (post-check and
+  audit), and `go.build`, `go.vet` and `go.test` toolchain definitions with
+  pass/fail/unknown outcomes.
+- **Language packs.** A pack under `.phronesis/packs/<id>/` declares a
+  `pack.json` manifest (schema 1), tree-sitter queries against a bundled
+  grammar, an optional sandboxed Rhai adapter, rules, toolchains, context
+  files, and fixtures, and adds structure for a language without native
+  code. Installs are validated, bounded, and pinned by a content digest
+  (an edited install is rejected as tampering). `phr-mcp pack list`,
+  `validate`, `install` and `remove` manage them, and MCP
+  `list_language_packs` reports the same inventory. Declared capabilities
+  decide what a pack runs: facts need `structural_facts`, graph evidence
+  and static selection need `graph`. Facts are named `pack_<id>_<name>`;
+  ids that could collide with another pack's or forge a host relation are
+  refused. A pack that fails to load blocks governed tool calls like a
+  malformed `rules.json`, names itself, and admits only the pack CLI until
+  repaired. Guide: `docs/LANGUAGE-PACKS.md`; external example:
+  `examples/language-packs/python-starter/`.
+- Toolchain definitions accept `test_counts: "per_test"`, for tools that
+  print a line per test but no totals (`go test -v`). Per-test lines then
+  ground test counts only when a line failed or the run exited 0, so a run
+  that died after some tests passed is never a pass.
+
+### Fixed
+
+- `pack remove` refuses on non-Unix platforms without touching the pack
+  store until directory-anchored removal is available there. Unix removal
+  remains anchored to the opened pack-store directory.
+- **A failed test run is never a test pass, and it withdraws an earlier
+  one.** A run that exited nonzero could still ground `outcome:test_pass`
+  from a clean summary (a suite that printed `3 passed` before a later one
+  aborted), and a failed run that grounded no counts left the previous
+  run's passing `tests` signal in place. A nonzero exit now vetoes a pass
+  from any count source; when no failure was counted, the run records a
+  run-level failure (`test_run_failed`, journaled as `outcome:test_fail`),
+  which supersedes the earlier pass. Toolchain definitions may declare
+  `test_started` patterns (cargo's built-in matches `Running`; Go matches
+  `=== RUN`), so a run whose first test died before reporting anything is
+  recorded as a compiled run with failed tests, not a compile error.
+- `signal ingest` refused output whose only evidence was a compile
+  verdict, so it could not record a real compile error or a clean build.
+  It now refuses only output that grounds nothing (`compile_unknown`).
+
 ## [0.39.0] - 2026-10-18
 
 ### Added

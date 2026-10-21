@@ -111,6 +111,7 @@ const RESERVED_EXACT: &[&str] = &[
     // Outcome ledger: the grounded signals the confidence gate counts.
     "build_outcome",
     "test_outcome",
+    "test_run_failed",
     "proof_outcome",
     "proof_unbound",
     "proof_run_outcome",

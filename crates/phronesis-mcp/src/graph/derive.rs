@@ -156,9 +156,17 @@ pub fn canonicalize_function_edges(base: &mut Vec<Edge>) -> (usize, usize, PerFi
             .unwrap_or_else(|| BTreeSet::from([impl_type.to_string()]))
     };
 
+    let pack_symbols = base_edges(base, "pack_declaration")
+        .filter_map(|edge| edge.a.get(1).cloned())
+        .collect::<BTreeSet<_>>();
     let mut normalized = Vec::with_capacity(base.len());
     for mut edge in base.drain(..) {
-        if !matches!(edge.p.as_str(), "tested_by" | "calls") || edge.a.len() != 2 {
+        if (edge.a.len() == 2
+            && pack_symbols.contains(&edge.a[0])
+            && pack_symbols.contains(&edge.a[1]))
+            || !matches!(edge.p.as_str(), "tested_by" | "calls")
+            || edge.a.len() != 2
+        {
             normalized.push(edge);
             continue;
         }
@@ -621,12 +629,17 @@ pub fn derive_all(base: &[Edge]) -> Vec<Edge> {
 /// joined with `bin_reaches(M, F)`; one hop suffices because `bin_reaches`
 /// is `main`'s full closure.
 pub fn test_reachability(base: &[Edge]) -> Vec<Edge> {
+    let pack_symbols = base_edges(base, "pack_declaration")
+        .filter_map(|edge| edge.a.get(1).map(String::as_str))
+        .collect::<BTreeSet<_>>();
     let mut calls: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
     for edge in base_edges(base, "calls") {
         let (Some(caller), Some(callee)) = (edge.a.first(), edge.a.get(1)) else {
             continue;
         };
-        if canonicalizes_calls(caller) && canonicalizes_calls(callee) {
+        if (canonicalizes_calls(caller) && canonicalizes_calls(callee))
+            || (pack_symbols.contains(caller.as_str()) && pack_symbols.contains(callee.as_str()))
+        {
             calls.entry(caller).or_default().insert(callee);
         }
     }

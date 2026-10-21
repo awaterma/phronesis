@@ -8,7 +8,8 @@ use std::time::Instant;
 use crate::rules_file::{DiskRule, RulesFile};
 
 use super::engine::{
-    ScanFileInput, build_per_rule, filter_audit_rules, rule_has_ast_predicate, scan_file_into_accum,
+    ScanFileInput, build_per_rule, filter_audit_rules, rule_has_ast_predicate,
+    scan_file_into_accum, scan_pack_rules,
 };
 use super::types::{AuditOpts, AuditReport, Level, PerFileHits};
 
@@ -22,6 +23,10 @@ pub(super) fn run_core(
     mut times: Option<&mut AuditSectionTimes>,
 ) -> AuditReport {
     let total_start = Instant::now();
+    let (pack_registry, mut incomplete) = match crate::language_packs::load(&opts.project_root) {
+        Ok(registry) => (Some(registry), Vec::new()),
+        Err(error) => (None, vec![error.to_string()]),
+    };
 
     let audit_rules = filter_audit_rules(rules, opts.rule_filter.as_deref());
     if let Some(ref mut t) = times {
@@ -52,26 +57,86 @@ pub(super) fn run_core(
     let structural_rules: Vec<&DiskRule> = audit_rules
         .iter()
         .copied()
-        .filter(|r| rule_has_ast_predicate(r))
+        .filter(|r| {
+            rule_has_ast_predicate(r)
+                || r.conditions
+                    .iter()
+                    .any(|c| c.predicate.starts_with("pack_"))
+        })
         .collect();
     let size_cap = crate::security::max_file_bytes();
+    // A pack-owned source audit cannot read (or skips as over the cap) is
+    // an unexamined file, not a clean one: with pack rules in play it makes
+    // the audit incomplete.
+    let has_pack_rules = audit_rules.iter().any(|r| {
+        r.conditions
+            .iter()
+            .any(|c| c.predicate.starts_with("pack_"))
+    });
+    // The root-relative path of a source a structural-facts pack owns. Its
+    // reads are bounded whatever rules are selected; a refused read is
+    // reported, since lexical rules would otherwise miss the file silently.
+    let pack_owned = |path: &std::path::Path| -> Option<String> {
+        let registry = pack_registry.as_ref()?;
+        let rel = path
+            .strip_prefix(&opts.project_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let owned = registry
+            .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
+            .map_or(true, |pack| pack.is_some());
+        owned.then_some(rel)
+    };
+    let unexamined_pack_source = |path: &std::path::Path, why: &str| -> Option<String> {
+        pack_owned(path).map(|rel| format!("{rel}: pack-owned source not audited: {why}"))
+    };
+    // A pack-owned source is read through the packs' bounded reader, so an
+    // oversized one is refused before it is allocated, not after.
+    let read_source = |path: &std::path::Path| -> Result<String, String> {
+        match pack_owned(path) {
+            Some(rel) => crate::language_packs::assets::read_bounded(
+                &opts.project_root,
+                None,
+                &rel,
+                crate::language_packs::limits::MAX_FILE_BYTES,
+            )
+            .map_err(|e| e.to_string())
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string())),
+            None => std::fs::read_to_string(path).map_err(|e| e.to_string()),
+        }
+    };
 
     // per_rule[rule_id] -> (level, BTreeMap<path -> PerFileHits>)
     let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
 
     for path in &discovery.scanned {
         let t = Instant::now();
-        let content = match std::fs::read_to_string(path) {
+        let content = match read_source(path) {
             Ok(c) => c,
-            Err(_) => {
+            Err(error) => {
                 if let Some(ref mut t2) = times {
                     t2.read_files += t.elapsed();
                 }
+                incomplete.extend(unexamined_pack_source(path, &error));
                 continue;
             }
         };
         if let Some(ref mut t2) = times {
             t2.read_files += t.elapsed();
+        }
+        if has_pack_rules
+            && let Some(registry) = &pack_registry
+            && let Err(error) = scan_pack_rules(
+                &opts.project_root,
+                path,
+                &content,
+                registry,
+                &audit_rules,
+                &mut accum,
+            )
+        {
+            incomplete.push(error.to_string());
         }
         scan_file_into_accum(ScanFileInput {
             project_root: &opts.project_root,
@@ -91,20 +156,38 @@ pub(super) fn run_core(
                 .map(|m| m.len() > size_cap)
                 .unwrap_or(true);
             if over_cap {
+                incomplete.extend(unexamined_pack_source(
+                    path,
+                    &format!("larger than the {size_cap}-byte cap"),
+                ));
                 continue;
             }
             let t = Instant::now();
-            let content = match std::fs::read_to_string(path) {
+            let content = match read_source(path) {
                 Ok(c) => c,
-                Err(_) => {
+                Err(error) => {
                     if let Some(ref mut t2) = times {
                         t2.read_files += t.elapsed();
                     }
+                    incomplete.extend(unexamined_pack_source(path, &error));
                     continue;
                 }
             };
             if let Some(ref mut t2) = times {
                 t2.read_files += t.elapsed();
+            }
+            if has_pack_rules
+                && let Some(registry) = &pack_registry
+                && let Err(error) = scan_pack_rules(
+                    &opts.project_root,
+                    path,
+                    &content,
+                    registry,
+                    &structural_rules,
+                    &mut accum,
+                )
+            {
+                incomplete.push(error.to_string());
             }
             scan_file_into_accum(ScanFileInput {
                 project_root: &opts.project_root,
@@ -148,6 +231,7 @@ pub(super) fn run_core(
         files_scanned,
         per_rule,
         lexical_excluded,
+        incomplete,
     }
 }
 

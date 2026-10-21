@@ -17,6 +17,15 @@ This is a Rust workspace with four crates:
 
 ---
 
+## Go and external language packs
+
+`phr-mcp init --packs go` selects the Go starter. `phr-mcp pack validate
+<dir>`, `pack install <dir>`, `pack remove <id>`, and `pack list --json` operate on declared,
+validated assets; MCP `list_language_packs` reports the same live inventory.
+Contributors should use [docs/LANGUAGE-PACKS.md](docs/LANGUAGE-PACKS.md) and
+[the Python starter](examples/language-packs/python-starter/). Pack facts and
+static graph edges are advisory; compile and test outcomes require real runs.
+
 ## Essential Commands
 
 ### Build & Test
@@ -252,7 +261,7 @@ value, and allowed values. Valid verbs and phases live in `ACTION_VERBS` /
 | `bash_command_code_matches(?regex)` | Regex over the command's code: heredoc bodies removed (unless fed to a shell), `sh -c`/`eval` scripts unwrapped |
 | `project_path_is(?rel)` | Exact path relative to the project root (normalized; symlinked dirs resolved) |
 | `project_path_under(?dir)` | File lies under this root-relative directory, e.g. `verification/templates` |
-| `new_content_contains(?pattern)` | Regex substring in new content |
+| `new_content_contains(?pattern)` | Literal substring in new content (not a regex; `bash_command_*` are the regex predicates) |
 | `function_added(?file, ?name)` | Function introduced in diff |
 | `function_removed(?file, ?name)` | Function removed in diff |
 | `import_added(?file, ?target)` | Import introduced |

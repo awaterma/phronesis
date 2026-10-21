@@ -47,6 +47,7 @@ pub enum Pack {
     Yaml,
     Helm3,
     Java,
+    Go,
     None,
 }
 
@@ -75,6 +76,7 @@ impl Pack {
         Self::Yaml,
         Self::Helm3,
         Self::Java,
+        Self::Go,
         Self::None,
     ];
 
@@ -94,6 +96,7 @@ impl Pack {
             "yaml" | "yml" => Ok(Self::Yaml),
             "helm3" | "helm" => Ok(Self::Helm3),
             "java" => Ok(Self::Java),
+            "go" | "golang" => Ok(Self::Go),
             "confidence" => Ok(Self::Confidence),
             "journey" => Ok(Self::Journey),
             "context" => Ok(Self::Context),
@@ -127,6 +130,7 @@ impl Pack {
             Self::Yaml => yaml_rules(),
             Self::Helm3 => helm3_rules(),
             Self::Java => java_rules(),
+            Self::Go => go_rules(),
         }
     }
 
@@ -145,6 +149,7 @@ impl Pack {
             Self::Yaml => "yaml",
             Self::Helm3 => "helm3",
             Self::Java => "java",
+            Self::Go => "go",
             Self::Confidence => "confidence",
             Self::Journey => "journey",
             Self::Context => "context",

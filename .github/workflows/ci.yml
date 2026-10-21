@@ -37,6 +37,42 @@ jobs:
       - run: cargo clippy -p phronesis-mcp --all-targets --no-default-features --features rhai -- -D warnings
       - run: cargo test -p phronesis-mcp --no-default-features --features rhai
 
+  language-pack-query-only:
+    name: Query-only pack without Rhai (MSRV 1.90)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p phronesis-mcp --no-default-features --test language_pack_extraction
+      - run: cargo build -p phronesis-mcp --no-default-features
+      - run: target/debug/phr-mcp pack validate examples/language-packs/python-starter/query-only --json
+
+  language-pack-go:
+    name: Real Go language-pack acceptance (Go 1.26.4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.90"
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.4"
+      - run: cargo build -p phronesis-mcp
+      - name: Real Go source, hooks, graph, test outcomes, and MCP inventory
+        run: python3 scripts/verify-language-packs.py --binary "$PWD/target/debug/phr-mcp" --artifacts "$RUNNER_TEMP/language-packs" --go "$(command -v go)"
+      - name: Keep verifier evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: language-pack-go-evidence
+          path: ${{ runner.temp }}/language-packs
+          if-no-files-found: error
+
   # Forward-compat canary: tests on current stable. No clippy here, so new
   # stable lints can't fail the build.
   stable:

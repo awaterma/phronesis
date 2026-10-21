@@ -23,6 +23,17 @@ pub(crate) async fn assert_language_pack_facts(
     file_path: &str,
     content: &str,
 ) -> Result<(), HookError> {
+    let registry = crate::language_packs::load(&crate::security::project_root())
+        .map_err(|e| HookError::Engine(e.to_string()))?;
+    assert_language_pack_facts_with_registry(network, file_path, content, &registry).await
+}
+
+pub(crate) async fn assert_language_pack_facts_with_registry(
+    network: &ReteNetwork,
+    file_path: &str,
+    content: &str,
+    registry: &crate::language_packs::PackRegistry,
+) -> Result<(), HookError> {
     use crate::graph::extract::Extracted;
     use crate::graph::unit::{LANG_HELM3, UnitContext};
 
@@ -66,6 +77,21 @@ pub(crate) async fn assert_language_pack_facts(
         "helm3_dynamic_tpl",
         "helm3_cluster_lookup",
     ];
+    let root = crate::security::project_root();
+    let rel = crate::graph::hydrate::repo_relative(&root, file_path)
+        .unwrap_or_else(|| file_path.to_string());
+    if let Some(pack) = registry
+        .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
+        .map_err(|e| HookError::Engine(e.to_string()))?
+    {
+        let context = crate::language_packs::context::file_context(&root, &rel, pack)
+            .map_err(|e| HookError::Engine(e.to_string()))?;
+        for fact in crate::language_packs::facts::facts_for_file(registry, &context, content)
+            .map_err(|e| HookError::Engine(e.to_string()))?
+        {
+            network.assert_fact(fact).await?;
+        }
+    }
     for edge in extracted
         .edges
         .into_iter()
