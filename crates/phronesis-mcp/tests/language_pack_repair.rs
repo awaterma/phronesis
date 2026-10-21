@@ -158,11 +158,18 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
     assert!(err.contains("WARNING"), "{err}");
     assert_eq!(pre_bash(root, &format!("{BIN} pack list --json")).0, 1);
 
-    // Running it removes the pack, and governance resumes.
+    // Unix can repair the pack; other platforms must refuse without changes.
     let (code, out, err) = phr(root, &["pack", "remove", "demo_a"], None);
-    assert_eq!(code, 0, "{out}{err}");
-    assert!(!root.join(".phronesis/packs/demo_a").exists());
-    assert_eq!(pre_edit(root, "README.md").0, 0);
+    if cfg!(unix) {
+        assert_eq!(code, 0, "{out}{err}");
+        assert!(!root.join(".phronesis/packs/demo_a").exists());
+        assert_eq!(pre_edit(root, "README.md").0, 0);
+    } else {
+        assert_eq!(code, 1, "{out}{err}");
+        assert!(err.contains("unsupported on non-Unix"), "{err}");
+        assert!(root.join(".phronesis/packs/demo_a").exists());
+        assert_eq!(pre_edit(root, "README.md").0, 2);
+    }
 }
 
 #[test]
@@ -188,9 +195,19 @@ fn pack_remove_removes_only_an_installed_pack_directory() {
         fs::remove_file(root.join(".phronesis/packs/linked")).unwrap();
     }
 
-    // An intact pack and a broken one are both removable.
-    remove(root, "demo_a").unwrap();
-    assert!(!root.join(".phronesis/packs/demo_a").exists());
+    let result = remove(root, "demo_a");
+    if cfg!(unix) {
+        result.unwrap();
+        assert!(!root.join(".phronesis/packs/demo_a").exists());
+    } else {
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("unsupported on non-Unix")
+        );
+        assert!(root.join(".phronesis/packs/demo_a/pack.json").exists());
+    }
 }
 
 #[cfg(unix)]
@@ -297,5 +314,11 @@ fn the_printed_repair_command_is_admitted_verbatim() {
     let (code, err) = pre_bash(&root, command);
     assert_eq!(code, 1, "printed command {command:?} was refused: {err}");
     let (code, out, err) = phr(&root, &["pack", "remove", "demo_a"], None);
-    assert_eq!(code, 0, "{out}{err}");
+    if cfg!(unix) {
+        assert_eq!(code, 0, "{out}{err}");
+    } else {
+        assert_eq!(code, 1, "{out}{err}");
+        assert!(err.contains("unsupported on non-Unix"), "{err}");
+        assert!(root.join(".phronesis/packs/demo_a").exists());
+    }
 }

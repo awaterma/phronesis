@@ -414,7 +414,8 @@ fn lock_pack_store(packs_dir: &Path, id: &str) -> Result<fs::File, PackError> {
 /// symlink. The directory is first renamed to a hidden name, which
 /// enumeration skips, so an interrupted removal never leaves a half-deleted
 /// pack that loads. A built-in pack cannot be removed. Returns the removed
-/// directory.
+/// directory. Removal requires Unix directory anchoring.
+#[cfg(unix)]
 pub fn remove(root: &Path, id: &str) -> Result<PathBuf, PackError> {
     let refused = |message: String| PackError::Manifest {
         pack: Some(id.to_string()),
@@ -464,20 +465,44 @@ pub fn remove(root: &Path, id: &str) -> Result<PathBuf, PackError> {
         let _lock = anchored::lock(&store, id, &packs_dir)?;
         anchored::remove_pack(&store, id, &doomed).map_err(|e| io_err(id, &target, e))?;
     }
-    #[cfg(not(unix))]
-    {
-        // Path-based: an ancestor replaced between these steps is not
-        // detected on this platform.
-        let _lock = lock_pack_store(&packs_dir, id)?;
-        ensure_no_symlink_components(root, &target_rel)?;
-        let doomed = packs_dir.join(doomed);
-        if fs::symlink_metadata(&doomed).is_ok() {
-            fs::remove_dir_all(&doomed).map_err(|e| io_err(id, &doomed, e))?;
-        }
-        fs::rename(&target, &doomed).map_err(|e| io_err(id, &target, e))?;
-        fs::remove_dir_all(&doomed).map_err(|e| io_err(id, &doomed, e))?;
-    }
     Ok(target)
+}
+
+/// Refuse removal until directory-anchored operations are supported here.
+#[cfg(not(unix))]
+pub fn remove(root: &Path, id: &str) -> Result<PathBuf, PackError> {
+    remove_without_anchoring(root, id)
+}
+
+#[cfg(any(not(unix), test))]
+fn remove_without_anchoring(_root: &Path, id: &str) -> Result<PathBuf, PackError> {
+    Err(PackError::Manifest {
+        pack: Some(id.to_string()),
+        path: PACKS_DIR.to_string(),
+        field: "remove".to_string(),
+        message: "pack remove is unsupported on non-Unix platforms until directory-anchored removal is available; no files were changed".to_string(),
+    })
+}
+
+#[cfg(test)]
+mod unsupported_removal_tests {
+    #[test]
+    fn removal_without_directory_anchoring_refuses_and_preserves_the_store() {
+        let root = tempfile::tempdir().unwrap();
+        let packs = root.path().join(super::PACKS_DIR);
+        let target = packs.join("demo");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("keep.txt"), b"keep").unwrap();
+
+        let error = super::remove_without_anchoring(root.path(), "demo")
+            .expect_err("non-Unix removal must refuse until directory anchoring is supported");
+        assert!(
+            error.to_string().contains("unsupported on non-Unix"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(target.join("keep.txt")).unwrap(), b"keep");
+        assert_eq!(std::fs::read_dir(&packs).unwrap().count(), 1);
+    }
 }
 
 /// Descriptor-anchored pack-store operations for `remove` (Unix).

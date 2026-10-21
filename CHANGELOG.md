@@ -47,6 +47,9 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Fixed
 
+- `pack remove` refuses on non-Unix platforms without touching the pack
+  store until directory-anchored removal is available there. Unix removal
+  remains anchored to the opened pack-store directory.
 - **A failed test run is never a test pass, and it withdraws an earlier
   one.** A run that exited nonzero could still ground `outcome:test_pass`
   from a clean summary (a suite that printed `3 passed` before a later one

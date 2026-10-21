@@ -223,3 +223,12 @@ each verified before fixing; one refuted (1.11); one accepted and open (6.3).
 The output-recognition patterns remain heuristics over tool text, with the
 limits stated in `verification/RESULT.md`: Verus proves the classification
 logic over recognized evidence, not that a pattern recognizes the right line.
+
+## Owner decision (2026-10-20)
+
+Finding 6.3 is resolved by refusing `pack remove` on non-Unix platforms,
+before any filesystem access. Unix retains descriptor-anchored removal.
+A regression test exercises the non-Unix handler on Unix as well and checks
+that refusal preserves the pack store. Platform-specific CLI expectations
+check refusal on non-Unix and successful removal on Unix. Native Windows
+execution remains a separate validation requirement.

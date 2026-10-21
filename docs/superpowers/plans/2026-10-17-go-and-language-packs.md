@@ -111,9 +111,9 @@ evidence they recognize, not that a pattern recognizes the right line.
 
 Still open before this can become a PR:
 
-- The user's decision on 6.3.
-- Split the WIP snapshot into per-task commits or accept one feature
-  commit; squash-merge makes this a PR-title question for the user.
+- Owner decisions (2026-10-20): refuse non-Unix `pack remove` until
+  directory anchoring is supported; retain branch history and use the PR
+  process for an eventual squash merge into one feature commit.
 - The user reviews the diff before the one push that opens the draft PR.
 - The swarm ledger for the original campaign was not found under
   `/Volumes/Data/Git/phronesis-wt/`; spend and bid records live only in the

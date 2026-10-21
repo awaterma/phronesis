@@ -1254,7 +1254,8 @@ enum PackCmd {
     /// Remove the installed pack `<id>` from `.phronesis/packs/`. The repair
     /// for a broken install (an installed pack cannot be edited back into
     /// shape) and the first step of an upgrade. Built-in packs cannot be
-    /// removed.
+    /// removed. Supported on Unix only; other platforms refuse until
+    /// directory-anchored removal is available.
     Remove {
         /// Pack identifier (the directory name under `.phronesis/packs/`).
         id: String,
