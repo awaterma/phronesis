@@ -69,15 +69,6 @@ pre-1.0: while `0.x`, MINOR versions may carry breaking changes.
 
 ### Added
 
-- **Go starter and external language packs.** Go source declarations,
-  imports, calls, test identities, a dot-import advisory, and `go build` /
-  `go vet` / textual `go test` toolchains use the same bounded manifest,
-  tree-sitter query, optional Rhai, and provenance path available to
-  contributors. `pack validate/install/list`, live MCP inventory, a Python
-  starter, and a real-Go verification script document the extension path.
-  Source-level relationships remain separate from observed test/coverage
-  evidence. See `docs/LANGUAGE-PACKS.md`.
-
 - **`docs/FOR_AGENTS.md`, a discovery guide for AI coding agents** deciding
   whether to use Phronesis on another codebase: what it does and how it
   differs from retrieval, how to connect (read-only graph evaluation vs.
