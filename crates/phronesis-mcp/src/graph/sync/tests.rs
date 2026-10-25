@@ -1402,6 +1402,7 @@ fn incremental_save_adds_other_files_newly_dropped_edges_to_their_rebuild_counts
 /// upgrade that changes the bundled Go assets) must not be certified fresh
 /// by a native incremental save. The save re-extracts only its own file, so
 /// it must rebuild first when the stored embedded digests differ.
+#[cfg(all(feature = "go-grammar", feature = "rhai"))]
 #[test]
 fn incremental_save_rebuilds_when_embedded_pack_digests_changed() {
     let d = project();

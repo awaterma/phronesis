@@ -386,11 +386,11 @@ fn lock_pack_store(packs_dir: &Path, id: &str) -> Result<fs::File, PackError> {
         options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let lock_file = options.open(&lock_path).map_err(|e| {
+        #[cfg(unix)]
         if e.raw_os_error() == Some(libc::ELOOP) {
-            unsafe_lock("is a symlink; refusing to follow it")
-        } else {
-            io_err(id, &lock_path, e)
+            return unsafe_lock("is a symlink; refusing to follow it");
         }
+        io_err(id, &lock_path, e)
     })?;
     let is_file = lock_file
         .metadata()
