@@ -31,3 +31,26 @@ Optional Rhai receives immutable `context` and `matches` values, returns an arra
 The bundled Go pack extracts package-scoped declarations, imports, calls, and `testing.T` tests from source. Same-scope, unambiguous free-function calls may resolve; receiver/interface dispatch, external targets, ambiguity, build tags, cgo, generated expansion, and compiler type resolution remain outside this source-level model. The starter's dot-import policy is an advisory post-check/audit warning. `go build`, `go vet`, and textual `go test` outputs are separate outcome signals; an absent exit or truncated output must not become a pass. Use real `go test` for validation. `coverage select` labels static reach separately from dynamic observations, and no pack manufactures dynamic coverage.
 
 The reproducible Go smoke is `scripts/verify-language-packs.py --binary /absolute/path/to/phr-mcp --artifacts /absolute/path/to/evidence --go /absolute/path/to/go`. It requires a real Go executable and records commands, revisions, exits, raw output, and durations. A passing test, deliberately failing test, and compile failure are separate evidence. An unavailable Go toolchain fails the verifier.
+
+### Structural demand and lexical limits
+
+Hooks activate a source pack's structural extractor only when an active rule
+in the current phase requests that pack's namespaced predicates. Empty rule
+sets, lexical-only rules, and another pack's predicates do not make ordinary
+Go edits depend on Go syntax, script budgets, or optional grammar support.
+Opaque `__script__` guards conservatively demand structural extraction because
+they can inspect facts and compute predicate names.
+Requested structural evidence still fails closed when unavailable or invalid;
+installed-pack integrity validation remains mandatory.
+
+Lexical-only audit reads of pack-owned source use `PHRONESIS_MAX_FILE_BYTES`
+(default 1 MiB, bounded at 64 MiB). Files refused by that read are listed in
+`lexical_excluded`. Raising this limit permits a complete lexical scan; it does
+not raise a structural extractor's limit. A source that cannot be examined for
+requested pack predicates makes the audit incomplete.
+
+Native graph source symlinks are ignored consistently by rebuild, freshness,
+and save handling. Pack-owned graph source symlinks remain unsafe inputs and
+are reported rather than followed. Saves through links rebuild the graph to
+purge any previously indexed regular-file evidence; repeated linked-path saves
+therefore incur a full rebuild.

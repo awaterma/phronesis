@@ -116,6 +116,13 @@ fn walk_with(
             continue;
         };
         let rel = rel.replace('\\', "/");
+        // Native discovery has always ignored symlinks. Pack-owned source
+        // links must reach the bounded reader so it can report them unsafe.
+        if entry.file_type().is_some_and(|t| t.is_symlink())
+            && !pack_extensions.contains(rel.rsplit('.').next().unwrap_or(""))
+        {
+            continue;
+        }
         // No manifest name carries a tracked extension, so the two sets stay
         // disjoint and a manifest never enters the tracked list.
         if crate::graph::java::project::is_manifest(&rel) || is_cargo_manifest(&rel) {

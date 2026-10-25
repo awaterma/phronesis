@@ -472,16 +472,17 @@ async fn assert_pre_content_facts(
     // image that cannot be mapped fails closed. Every other file keeps the
     // pre-pack behaviour: the tool's content, with unreadable or oversized
     // files reported as whole-file regions rather than blocked.
+    // Structural extraction (and its syntax/budget failures) runs only
+    // when a loaded rule's predicates actually ask for this file's
+    // structural pack owner (`pack_<id>_...`) — never merely because the
+    // extension matches an installed or built-in pack.
     let pack_owned = if file_path.is_empty() {
         false
     } else {
         let root = security::project_root();
         let rel = crate::graph::hydrate::repo_relative(&root, file_path)
             .unwrap_or_else(|| file_path.to_string());
-        registry
-            .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
-            .map_err(|e| HookError::Engine(e.to_string()))?
-            .is_some()
+        registry.structural_facts_demanded(&rel, rule_predicates)
     };
     let pack_image = if !pack_owned {
         content.to_string()
@@ -503,7 +504,7 @@ async fn assert_pre_content_facts(
         }
         edited.new
     };
-    assert_language_pack_facts_with_registry(network, file_path, &pack_image, registry)
+    assert_language_pack_facts_with_registry(network, file_path, &pack_image, registry, pack_owned)
         .await
         .map_err(|e| {
             eprintln!(

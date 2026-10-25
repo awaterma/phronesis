@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::process;
 
 use phr::Fact;
@@ -180,6 +181,7 @@ pub async fn run_post_check() -> anyhow::Result<()> {
                 content: &content,
                 content_patterns: &content_patterns,
                 missing_patterns: &missing_patterns,
+                rule_predicates: &rule_predicates,
                 registry: &registry,
             },
         )
@@ -355,6 +357,7 @@ struct PostContentInput<'a> {
     content: &'a str,
     content_patterns: &'a [String],
     missing_patterns: &'a [String],
+    rule_predicates: &'a HashSet<String>,
     registry: &'a crate::language_packs::PackRegistry,
 }
 
@@ -367,6 +370,7 @@ async fn assert_post_content_facts(
         content,
         content_patterns,
         missing_patterns,
+        rule_predicates,
         registry,
     } = input;
     // Only assert the full content as a fact when small enough to keep
@@ -428,7 +432,19 @@ async fn assert_post_content_facts(
             e
         })?;
 
-    assert_language_pack_facts_with_registry(network, file_path, content, registry)
+    // Structural extraction (and its syntax/budget failures) runs only
+    // when a loaded rule's predicates demand this file's structural pack
+    // owner — not merely because the extension matches an installed or
+    // built-in pack (see `PackRegistry::structural_facts_demanded`).
+    let pack_demanded = if file_path.is_empty() {
+        false
+    } else {
+        let root = security::project_root();
+        let rel = crate::graph::hydrate::repo_relative(&root, file_path)
+            .unwrap_or_else(|| file_path.to_string());
+        registry.structural_facts_demanded(&rel, rule_predicates)
+    };
+    assert_language_pack_facts_with_registry(network, file_path, content, registry, pack_demanded)
         .await
         .map_err(|e| {
             eprintln!(

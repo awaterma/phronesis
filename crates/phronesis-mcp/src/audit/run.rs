@@ -65,17 +65,10 @@ pub(super) fn run_core(
         })
         .collect();
     let size_cap = crate::security::max_file_bytes();
-    // A pack-owned source audit cannot read (or skips as over the cap) is
-    // an unexamined file, not a clean one: with pack rules in play it makes
-    // the audit incomplete.
-    let has_pack_rules = audit_rules.iter().any(|r| {
-        r.conditions
-            .iter()
-            .any(|c| c.predicate.starts_with("pack_"))
-    });
-    // The root-relative path of a source a structural-facts pack owns. Its
-    // reads are bounded whatever rules are selected; a refused read is
-    // reported, since lexical rules would otherwise miss the file silently.
+    let rule_predicates = audit_rules
+        .iter()
+        .flat_map(|r| r.conditions.iter().map(|c| c.predicate.clone()))
+        .collect::<std::collections::HashSet<_>>();
     let pack_owned = |path: &std::path::Path| -> Option<String> {
         let registry = pack_registry.as_ref()?;
         let rel = path
@@ -83,29 +76,40 @@ pub(super) fn run_core(
             .unwrap_or(path)
             .to_string_lossy()
             .replace('\\', "/");
-        let owned = registry
-            .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
-            .map_or(true, |pack| pack.is_some());
-        owned.then_some(rel)
+        registry.structural_owner(&rel).map(|_| rel)
+    };
+    let pack_demanded = |path: &std::path::Path| -> bool {
+        pack_owned(path).is_some_and(|rel| {
+            pack_registry
+                .as_ref()
+                .is_some_and(|r| r.structural_facts_demanded(&rel, &rule_predicates))
+        })
     };
     let unexamined_pack_source = |path: &std::path::Path, why: &str| -> Option<String> {
-        pack_owned(path).map(|rel| format!("{rel}: pack-owned source not audited: {why}"))
+        pack_owned(path)
+            .filter(|_| pack_demanded(path))
+            .map(|rel| format!("{rel}: pack-owned source not audited: {why}"))
     };
-    // A pack-owned source is read through the packs' bounded reader, so an
-    // oversized one is refused before it is allocated, not after.
+    // Lexical-only reads use the audit's configurable limit. A structural
+    // policy keeps the pack's stricter resource boundary and fails incomplete.
     let read_source = |path: &std::path::Path| -> Result<String, String> {
         match pack_owned(path) {
             Some(rel) => crate::language_packs::assets::read_bounded(
                 &opts.project_root,
                 None,
                 &rel,
-                crate::language_packs::limits::MAX_FILE_BYTES,
+                if pack_demanded(path) {
+                    crate::language_packs::limits::MAX_FILE_BYTES
+                } else {
+                    size_cap as usize
+                },
             )
             .map_err(|e| e.to_string())
             .and_then(|bytes| String::from_utf8(bytes).map_err(|e| e.to_string())),
             None => std::fs::read_to_string(path).map_err(|e| e.to_string()),
         }
     };
+    let mut read_excluded = Vec::new();
 
     // per_rule[rule_id] -> (level, BTreeMap<path -> PerFileHits>)
     let mut accum: BTreeMap<String, (Level, BTreeMap<PathBuf, PerFileHits>)> = BTreeMap::new();
@@ -119,13 +123,16 @@ pub(super) fn run_core(
                     t2.read_files += t.elapsed();
                 }
                 incomplete.extend(unexamined_pack_source(path, &error));
+                if pack_owned(path).is_some() {
+                    read_excluded.push(path.clone());
+                }
                 continue;
             }
         };
         if let Some(ref mut t2) = times {
             t2.read_files += t.elapsed();
         }
-        if has_pack_rules
+        if pack_demanded(path)
             && let Some(registry) = &pack_registry
             && let Err(error) = scan_pack_rules(
                 &opts.project_root,
@@ -176,7 +183,7 @@ pub(super) fn run_core(
             if let Some(ref mut t2) = times {
                 t2.read_files += t.elapsed();
             }
-            if has_pack_rules
+            if pack_demanded(path)
                 && let Some(registry) = &pack_registry
                 && let Err(error) = scan_pack_rules(
                     &opts.project_root,
@@ -203,6 +210,7 @@ pub(super) fn run_core(
     let mut lexical_excluded: Vec<PathBuf> = discovery
         .excluded
         .iter()
+        .chain(read_excluded.iter())
         .map(|p| {
             p.strip_prefix(&opts.scan_root)
                 .map(Path::to_path_buf)
@@ -210,6 +218,7 @@ pub(super) fn run_core(
         })
         .collect();
     lexical_excluded.sort();
+    lexical_excluded.dedup();
 
     let (per_rule, total) = {
         let t = Instant::now();

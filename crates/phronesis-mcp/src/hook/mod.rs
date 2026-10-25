@@ -218,7 +218,7 @@ struct LoadedRules {
     registry: crate::language_packs::PackRegistry,
 }
 
-fn load_rules(phase: &str, file_path: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
+fn load_rules(phase: &str, _file_path: &str) -> Result<Option<LoadedRules>, RulesLoadError> {
     let root = security::project_root();
     let registry = crate::language_packs::load(&root).map_err(|error| {
         let location = crate::language_packs::repair::locate_broken_pack(&root, &error);
@@ -259,17 +259,9 @@ fn load_rules(phase: &str, file_path: &str) -> Result<Option<LoadedRules>, Rules
         .map(|r| crate::rules_file::rule_from_disk(&r).0)
         .collect();
 
-    let rel = crate::graph::hydrate::repo_relative(&root, file_path)
-        .unwrap_or_else(|| file_path.to_string());
-    let pack_owned = registry
-        .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
-        .map_err(|error| RulesLoadError {
-            message: error.to_string(),
-            failing_file: crate::rule_layers::config_path(&root),
-            pack_failure: false,
-        })?
-        .is_some();
-    if rules.is_empty() && !pack_owned {
+    // An empty phase has no structural-fact demand. Inventory validation above
+    // still fails closed; grammar activation belongs to the demand gate.
+    if rules.is_empty() {
         Ok(None)
     } else {
         Ok(Some(LoadedRules {

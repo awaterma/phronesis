@@ -991,9 +991,21 @@ async fn assert_patch_content(
     crate::hook_facts::check_content_patterns(network, path, content, &patterns)
         .await
         .map_err(|e| block_decision(format!("pattern check failed: {}", e)))?;
-    crate::hook_facts::assert_language_pack_facts(network, path, content)
-        .await
-        .map_err(|error| block_decision(format!("language-pack fact assertion failed: {error}")))
+    let root = crate::security::project_root();
+    let registry = crate::language_packs::load(&root)
+        .map_err(|error| block_decision(format!("language-pack load failed: {error}")))?;
+    let rel = crate::graph::hydrate::repo_relative(&root, path).unwrap_or_else(|| path.to_string());
+    let predicates = crate::hook_facts::collect_rule_predicates(rules);
+    crate::hook_facts::assert_language_pack_facts_with_registry(
+        network,
+        path,
+        content,
+        &registry,
+        registry.structural_facts_demanded(&rel, &predicates),
+    )
+    .await
+    .map_err(|error| block_decision(format!("language-pack fact assertion failed: {error}")))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

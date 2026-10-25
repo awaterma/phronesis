@@ -283,6 +283,21 @@ fn untouched_outcome(existing: &[Edge], skipped: usize) -> SaveOutcome {
 /// build metadata can alter imports in otherwise unchanged source files.
 /// Other ordinary saves parse only the edited file before derivation.
 pub fn on_save(root: &Path, file_path: &str, content: &str) -> std::io::Result<SaveOutcome> {
+    // Match full discovery for native links, including a regular source that
+    // was replaced by a link since the last rebuild. Never index caller content
+    // under an ignored link's provenance.
+    let path = root.join(file_path);
+    if !path.starts_with(root)
+        || Path::new(file_path)
+            .components()
+            .any(|part| part == std::path::Component::ParentDir)
+        || path
+            .ancestors()
+            .take_while(|path| path.starts_with(root) && *path != root)
+            .any(|path| std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink()))
+    {
+        return rebuild(root);
+    }
     if file_path.ends_with(".java") || graph::java::project::is_manifest(file_path) {
         let Some(relative) = graph::java::project::overlay_path(root, file_path) else {
             return Ok(untouched_outcome(

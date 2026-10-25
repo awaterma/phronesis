@@ -307,3 +307,109 @@ fn go_multi_parameter_declaration_resolves_one_site_and_reaches_test() {
         "missing static reach"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn native_links_stay_ignored_across_rebuild_save_and_restart() {
+    use std::os::unix::fs::symlink;
+    let root = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    write(root.path(), "shared/config.yaml", b"app:\n  name: sample\n");
+    write(
+        outside.path(),
+        "secret.yaml",
+        b"OUTSIDE_SENTINEL:\n  name: private\n",
+    );
+    symlink("shared/config.yaml", root.path().join("config.yaml")).unwrap();
+    symlink(
+        outside.path().join("secret.yaml"),
+        root.path().join("external.yaml"),
+    )
+    .unwrap();
+    symlink("missing.yaml", root.path().join("dangling.yaml")).unwrap();
+    sync::rebuild(root.path()).unwrap();
+    let fresh = || {
+        let index = sync::load_index(&sync::index_path(root.path())).unwrap();
+        assert_eq!(
+            sync::check_freshness(root.path(), &index),
+            sync::Freshness::Fresh
+        );
+        for link in ["config.yaml", "external.yaml", "dangling.yaml"] {
+            assert!(!index.entries.contains_key(link));
+        }
+        let graph = fs::read_to_string(store::graph_path(root.path())).unwrap();
+        assert!(!graph.contains("OUTSIDE_SENTINEL"));
+        assert!(!graph.contains("INJECTED_SENTINEL"));
+    };
+    fresh();
+    sync::on_save(root.path(), "config.yaml", "INJECTED_SENTINEL: true\n").unwrap();
+    fresh();
+    sync::record_from_disk(root.path(), "external.yaml");
+    fresh();
+    sync::on_save(root.path(), "../outside.yaml", "INJECTED_SENTINEL: true\n").unwrap();
+    fresh();
+    // A symlinked parent directory is excluded by discovery too.
+    symlink(outside.path(), root.path().join("linked-dir")).unwrap();
+    sync::on_save(
+        root.path(),
+        "linked-dir/secret.yaml",
+        "INJECTED_SENTINEL: true\n",
+    )
+    .unwrap();
+    fresh();
+    let alias_parent = tempfile::tempdir().unwrap();
+    let alias = alias_parent.path().join("project-alias");
+    symlink(root.path(), &alias).unwrap();
+    sync::on_save(
+        &alias,
+        root.path().join("linked-dir/secret.yaml").to_str().unwrap(),
+        "INJECTED_SENTINEL: true\n",
+    )
+    .unwrap();
+    fresh();
+    write(
+        root.path(),
+        "shared/config.yaml",
+        b"app:\n  name: changed\n",
+    );
+    let index = sync::load_index(&sync::index_path(root.path())).unwrap();
+    assert!(matches!(
+        sync::check_freshness(root.path(), &index),
+        sync::Freshness::Stale(_)
+    ));
+    sync::on_save(root.path(), "shared/config.yaml", "app:\n  name: changed\n").unwrap();
+    fresh();
+    // A previously indexed regular source becoming a link must purge its edges.
+    fs::remove_file(root.path().join("shared/config.yaml")).unwrap();
+    symlink(
+        outside.path().join("secret.yaml"),
+        root.path().join("shared/config.yaml"),
+    )
+    .unwrap();
+    sync::on_save(
+        root.path(),
+        "shared/config.yaml",
+        "OUTSIDE_SENTINEL: true\n",
+    )
+    .unwrap();
+    fresh();
+}
+
+#[cfg(unix)]
+#[test]
+fn pack_source_links_still_report_unsafe_evidence() {
+    use std::os::unix::fs::symlink;
+    let source_pack = tempfile::tempdir().unwrap();
+    let _ = pack(source_pack.path());
+    let root = tempfile::tempdir().unwrap();
+    install(root.path(), source_pack.path(), false).unwrap();
+    write(root.path(), "source.txt", b"def work(): pass\n");
+    symlink("source.txt", root.path().join("linked.demograph")).unwrap();
+    let outcome = sync::rebuild(root.path()).unwrap();
+    assert!(outcome.skipped > 0);
+    let index = sync::load_index(&sync::index_path(root.path())).unwrap();
+    assert!(matches!(
+        sync::check_freshness(root.path(), &index),
+        sync::Freshness::Stale(_)
+    ));
+}

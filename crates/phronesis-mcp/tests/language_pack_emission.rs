@@ -66,7 +66,16 @@ fn a_failed_emission_makes_hook_facts_incomplete_not_silently_empty() {
         .to_string();
     assert!(err.contains("diagnostic"), "{err}");
 
-    // pre-check fails closed rather than evaluating without the fact.
+    // A policy requesting these facts must fail closed on missing emissions.
+    write(
+        root.path(),
+        ".phronesis/rules.json",
+        json!({"rules":[{
+        "id":"emx-demand","phase":"pre","when":[{"pack_emx_seen":["?file","?name"]}],
+        "then":{"block":"seen"}}]})
+        .to_string()
+        .as_bytes(),
+    );
     let payload = json!({"tool_name": "Write", "tool_input": {
         "file_path": root.path().join("a.emx").display().to_string(),
         "content": "def one():\n    pass\n"}});
@@ -247,9 +256,25 @@ fn audit_bounds_pack_source_reads_without_pack_rules() {
         "huge.emx",
         line.repeat(limit / line.len() + 2).as_bytes(),
     );
-    let (ok, stderr) = audit(root.path(), &[]);
+    let out = Command::new(env!("CARGO_BIN_EXE_phr-mcp"))
+        .args(["audit", "--json"])
+        .current_dir(root.path())
+        .env("PHRONESIS_PROJECT_ROOT", root.path())
+        .env_remove("PHRONESIS_MAX_FILE_BYTES")
+        .output()
+        .unwrap();
     assert!(
-        !ok && stderr.contains("huge.emx") && stderr.contains("limit"),
-        "{stderr}"
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        report["lexical_excluded"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|path| path.as_str() == Some("huge.emx")),
+        "{report}"
     );
 }

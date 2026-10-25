@@ -142,6 +142,12 @@ pub struct PackRegistry {
     /// returns an explicit `PackError::Unsupported` rather than silently
     /// falling through to native/unknown-file handling.
     unsupported_extensions: BTreeMap<String, String>,
+    /// Extension -> owning pack id, for every validated manifest that
+    /// declares `StructuralFacts`, captured before an unsupported built-in
+    /// is skipped. Cheap (manifest only, no grammar/script compile): used to
+    /// decide whether a loaded rule's predicates demand structural
+    /// extraction for a given file, without compiling anything to find out.
+    structural_owner_by_extension: BTreeMap<String, String>,
 }
 
 /// One pack in a [`PackRegistry`]. An installed pack is compiled while
@@ -306,6 +312,39 @@ impl PackRegistry {
         Ok(self
             .for_path(rel)?
             .filter(|pack| pack.assets.manifest.has(capability)))
+    }
+
+    /// The id of the pack that owns `rel`'s extension for `StructuralFacts`,
+    /// from the cheap manifest-only map (no compile, no grammar lookup).
+    /// `None` when no manifest claims the extension for that capability.
+    /// Unsupported built-ins retain their owner because their manifests
+    /// were validated and recorded even without a compiled grammar.
+    pub(crate) fn structural_owner(&self, rel: &str) -> Option<&str> {
+        let ext = Path::new(rel).extension().and_then(|e| e.to_str())?;
+        self.structural_owner_by_extension
+            .get(ext)
+            .map(|s| s.as_str())
+    }
+
+    /// Whether any predicate in `rule_predicates` is namespaced to the
+    /// structural pack that owns `rel`'s extension (`pack_<id>_...`). This
+    /// is the demand gate: structural extraction (and its syntax/budget
+    /// failures) only runs when a loaded rule actually asks for that pack's
+    /// facts, never merely because the file extension matches an installed
+    /// or built-in pack.
+    pub(crate) fn structural_facts_demanded(
+        &self,
+        rel: &str,
+        rule_predicates: &std::collections::HashSet<String>,
+    ) -> bool {
+        let Some(owner) = self.structural_owner(rel) else {
+            return false;
+        };
+        let prefix = format!("pack_{owner}_");
+        // Guards can inspect the complete fact array and compute predicate
+        // names, so their dependencies cannot safely be inferred from text.
+        rule_predicates.contains("__script__")
+            || rule_predicates.iter().any(|p| p.starts_with(&prefix))
     }
 }
 
@@ -848,9 +887,19 @@ pub fn load(root: &Path) -> Result<PackRegistry, PackError> {
     let mut packs = Vec::new();
     let mut by_extension = BTreeMap::new();
     let mut unsupported_extensions = BTreeMap::new();
+    let mut structural_owner_by_extension = BTreeMap::new();
 
     for (origin, assets) in assets {
         let manifest = assets.manifest.clone();
+        // Record every validated manifest's structural-fact ownership
+        // before an unsupported built-in's grammar is skipped below: this
+        // map needs no compile, so it demand-gates correctly even for a
+        // pack that cannot currently be activated.
+        if manifest.has(Capability::StructuralFacts) {
+            for ext in &manifest.extensions {
+                structural_owner_by_extension.insert(ext.to_string(), manifest.id.to_string());
+            }
+        }
         let entry = if origin == PackOrigin::BuiltIn {
             if super::grammar::grammar_for(&manifest.grammar).is_none() {
                 let message = format!(
@@ -878,6 +927,7 @@ pub fn load(root: &Path) -> Result<PackRegistry, PackError> {
         packs,
         by_extension,
         unsupported_extensions,
+        structural_owner_by_extension,
     })
 }
 

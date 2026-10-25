@@ -18,6 +18,7 @@ use crate::syntax;
 /// Assert language-pack diagnostics from the content currently being checked.
 /// Structural relations still come from the durable graph; this live producer
 /// covers proposed pre-check content that has not reached disk yet.
+#[cfg(test)]
 pub(crate) async fn assert_language_pack_facts(
     network: &ReteNetwork,
     file_path: &str,
@@ -25,7 +26,7 @@ pub(crate) async fn assert_language_pack_facts(
 ) -> Result<(), HookError> {
     let registry = crate::language_packs::load(&crate::security::project_root())
         .map_err(|e| HookError::Engine(e.to_string()))?;
-    assert_language_pack_facts_with_registry(network, file_path, content, &registry).await
+    assert_language_pack_facts_with_registry(network, file_path, content, &registry, true).await
 }
 
 pub(crate) async fn assert_language_pack_facts_with_registry(
@@ -33,6 +34,7 @@ pub(crate) async fn assert_language_pack_facts_with_registry(
     file_path: &str,
     content: &str,
     registry: &crate::language_packs::PackRegistry,
+    pack_demanded: bool,
 ) -> Result<(), HookError> {
     use crate::graph::extract::Extracted;
     use crate::graph::unit::{LANG_HELM3, UnitContext};
@@ -80,9 +82,10 @@ pub(crate) async fn assert_language_pack_facts_with_registry(
     let root = crate::security::project_root();
     let rel = crate::graph::hydrate::repo_relative(&root, file_path)
         .unwrap_or_else(|| file_path.to_string());
-    if let Some(pack) = registry
-        .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
-        .map_err(|e| HookError::Engine(e.to_string()))?
+    if pack_demanded
+        && let Some(pack) = registry
+            .for_path_with(&rel, crate::language_packs::Capability::StructuralFacts)
+            .map_err(|e| HookError::Engine(e.to_string()))?
     {
         let context = crate::language_packs::context::file_context(&root, &rel, pack)
             .map_err(|e| HookError::Engine(e.to_string()))?;
