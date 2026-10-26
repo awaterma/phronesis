@@ -19,105 +19,15 @@ serde JSON, RETE, rmcp, clap, SHA-256 content digests, bundled Go grammar.
 
 **Spec:** `docs/superpowers/specs/2026-10-17-go-and-language-packs-design.md`
 
-Status (2026-10-18, parked; resumed 2026-10-19; reviewed and fixed 2026-10-20): The Codex-run Swarming campaign stopped when the
-Codex account hit its usage limit (resets 2026-10-24). Code for every task
-T1-T8 exists in the `feat/go-language-packs` worktree
-(`.worktrees/go-packs`) and is committed there as one WIP snapshot; nothing
-is pushed and no PR exists. The checkboxes below were never ticked by the
-swarm, so use this block, not the boxes, as the record.
+## Implementation status (2026-10-25)
 
-Verified on 2026-10-18 after parking (gate target dir `target/swarm/gate`):
-
-- `cargo check -p phronesis-mcp --tests`: clean.
-- `cargo fmt --all --check`: clean (formatting was applied when parking).
-- `cargo clippy --workspace --all-targets -- -D warnings`: clean after two
-  needless-borrow fixes (`graph/sync/extract.rs`, `language_packs/templates.rs`).
-- The ten new suites (`language_pack_*`, `go_language_pack`,
-  `go_pack_selection`) and `phronesis-rhai --test adapter`: all green after
-  two test-side fixes (canonicalize the tempdir on macOS; read `get_rule`'s
-  text payload instead of a `structuredContent` field it never had).
-- `cargo package -p phronesis-mcp --list --allow-dirty` lists `packs/go/*`.
-- `docs/catalogue.html` contains the Go dot-import rule.
-- Whole-workspace `cargo test --no-fail-fast`: 115 of 116 test binaries
-  green. Two branch regressions were found against existing suites (both
-  pass on `main`):
-  - `hook_full_file_regions` (`unreadable_file_counts_as_wholly_changed`,
-    `oversized_file_is_bounded_and_wholly_changed`): pre-check blocked
-    (exit 2) instead of warning when the edited file's whole image could not
-    be mapped. FIXED when parking: `hook/pre.rs` now maps the whole image
-    only for pack-owned files; non-pack files keep the pre-pack behaviour.
-  - `save_rules_integration::mcp_reports_and_rebuilds_the_code_graph_lifecycle`:
-    the first `rebuild_code_graph` over MCP reports `generation` 2 instead
-    of 1. NOT FIXED. Something on the branch bumps the index generation
-    twice on the first rebuild (see `graph/sync/rebuild.rs` `next_index` vs
-    the incremental-save bump, and whether the server now persists an index
-    before the explicit rebuild). Needs a reviewer who knows the graph
-    generation contract.
-
-Resumed 2026-10-19 (Opus 5.5, interactive, no swarm), four commits on top
-of the WIP snapshot:
-
-- `c111397` fixes the `save_rules_integration` regression. It was never a
-  generation bug: line 336 asserts `files_indexed == 1`, and the index's
-  virtual `@pack-builtin/go` freshness key was being counted as a file.
-- `4917afc` adds the opt-in `test_counts: "per_test"` toolchain field and
-  opts `go.test` into it. Before this, no `go test` run could ground a test
-  outcome (Go prints no counts), and a failing assertion read as a build
-  failure, against the spec's unknown/fail/pass requirement.
-- `03e2d6b` lets `signal ingest` record compile-only evidence (it refused a
-  real compile error), and makes the acceptance script assert the verdicts.
-- `a616e7e` adds Verus invariant 6 (graded toolchain outcome): 29 verified,
-  0 errors.
-
-Verified on 2026-10-19:
-
-- Whole-workspace `cargo test --no-fail-fast`: 118 of 118 test binaries
-  green, 3622 passed, 0 failed, 4 ignored. fmt and clippy
-  (`--all-targets -D warnings`) clean.
-- `scripts/verify-language-packs.py` against real Go 1.26.4: all 23 steps
-  pass (init 108 ms on an idle machine; the earlier 180 s timeout was CPU
-  starvation from a concurrent test run).
-
-Review and fixes (2026-10-19/20): twelve read-only Codex review passes, each
-finding verified against the code (with real `go` and `cargo` runs where it
-mattered) before a test-first fix, recorded pass by pass in
-`docs/reviews/2026-10-19-go-language-packs/triage.md`. The twelfth pass
-reported no new BLOCKER or MAJOR. One finding was refuted (1.11) and one is
-accepted and open: **6.3, non-Unix `pack remove` is path-based** (on Unix it is
-descriptor-anchored); refusing removal on Windows is the alternative, and is
-the user's decision. The branch was rebased onto `main` (v0.39.0) without
-conflicts.
-
-The latency gate (warm release builds, one warm-up then 30 samples, `p50`)
-found one regression, fixed in `3301a4b` (built-in packs compile on first
-use). Final measurements, branch vs `main`:
-
-| project | measure | main | branch |
-|---|---|---|---|
-| Rust | pre-check | 9.2 ms | 9.2 ms |
-| Rust | post-check | 25.9 ms | 26.7 ms |
-| Rust | audit | 10.3 ms | 10.6 ms |
-| Go | pre-check | 3.8 ms (no Go support) | 12.6 ms |
-| Go | post-check | 17.0 ms (no Go support) | 40.2 ms |
-| Go | audit | 3.9 ms (no Go support) | 22.8 ms |
-
-Verified at the final code (2026-10-20, 04:20): whole-workspace `cargo test
---no-fail-fast` 121/121 binaries (3658 passed, 0 failed, 4 ignored); fmt,
-workspace clippy `-D warnings`, and `--no-default-features` clean; real-Go
-`scripts/verify-language-packs.py` 27/27; Verus 35 verified, 0 errors, with
-each modelled rule mutation-checked. Limit: the outcome patterns are
-heuristics over tool text; Verus proves the classification logic over the
-evidence they recognize, not that a pattern recognizes the right line.
-
-Still open before this can become a PR:
-
-- Owner decisions (2026-10-20): refuse non-Unix `pack remove` until
-  directory anchoring is supported; retain branch history and use the PR
-  process for an eventual squash merge into one feature commit.
-- The user reviews the diff before the one push that opens the draft PR.
-- The swarm ledger for the original campaign was not found under
-  `/Volumes/Data/Git/phronesis-wt/`; spend and bid records live only in the
-  Codex session transcript.
+Tasks T1-T8 are implemented on `feat/go-language-packs` in
+[draft PR #153](https://github.com/awaterma/phronesis/pull/153). The original
+checkboxes below are planning history. Current validation and known limits
+are summarized in [Go language-pack validation](../../reports/go-language-packs-validation.md).
+Non-Unix pack removal now refuses safely; the owner chose to retain branch
+history and use an eventual squash merge. Owner playtesting, PR promotion,
+merge, and release remain separate decisions.
 
 ## Global Constraints
 
