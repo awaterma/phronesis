@@ -12,7 +12,7 @@ phr-mcp pack list --json
 phr-mcp graph rebuild
 ```
 
-`validate` compiles the declared query/script, checks resource IDs and fixture expectations, and does not install. `install --dry-run` previews. Installed bytes live under `.phronesis/packs/<id>/` with digest metadata. `pack list --json` reports built-in and installed packs, capability activation, diagnostics, and an overall `complete` flag. A running MCP server exposes the same inventory through read-only `list_language_packs {}` and refreshes it on each request. If an installed file changes, validation fails with a digest error; run `phr-mcp pack remove <id>` and reinstall from validated source rather than editing it in place. A pack that fails to load blocks every governed tool call, like a malformed `rules.json`: the error names the broken pack's directory, and the only command the hooks admit until it loads is a lone `phr-mcp pack install|remove|list|validate` invocation: the hook's own binary written as an absolute path (a bare `phr-mcp` or a relative path is resolved by the shell, which the hook cannot see), exactly that subcommand's arguments, and for `install` and `remove` an absolute `--path` naming this project. Only plain characters and single-quoted literal words are accepted, so no chaining, pipes, redirects, substitutions, or expansions. The error message prints the exact command, single-quoting paths that need it. `pack remove` refuses built-in packs, symlinks, and anything that is not a directory under `.phronesis/packs/`. Removal is supported on Unix only, where operations are anchored to an opened directory descriptor. On non-Unix platforms (including Windows), it exits with an unsupported-platform error before touching the filesystem; removal and the remove/reinstall repair workflow remain unavailable until equivalent anchoring is implemented.
+`validate` compiles the declared query/script, checks resource IDs and fixture expectations, and does not install. `install --dry-run` previews. Installed bytes live under `.phronesis/packs/<id>/` with digest metadata. `pack list --json` reports built-in and installed packs, capability activation, diagnostics, and an overall `complete` flag. A running MCP server exposes the same inventory through read-only `list_language_packs {}` and refreshes it on each request. If an installed file changes, validation fails with a digest error. On Unix, remove it with `phr-mcp pack remove <id>` and reinstall from validated source rather than editing it in place; other platforms require the owner recovery described below. A pack that fails to load blocks every governed tool call, like a malformed `rules.json`: the error names the broken pack's directory, and on Unix the only commands the hooks admit until it loads are lone `phr-mcp pack install|remove|list|validate` invocations: the hook's own binary written as an absolute path (a bare `phr-mcp` or a relative path is resolved by the shell, which the hook cannot see), exactly that subcommand's arguments, and for `install` and `remove` an absolute `--path` naming this project. Only plain characters and single-quoted literal words are accepted, so no chaining, pipes, redirects, substitutions, or expansions. On Unix, the error message prints the exact repair command, single-quoting paths that need it. `pack remove` refuses built-in packs, symlinks, and anything that is not a directory under `.phronesis/packs/`. Removal is supported on Unix only, where operations are anchored to an opened directory descriptor. On non-Unix platforms (including Windows), it exits with an unsupported-platform error before touching the filesystem; removal and automatic remove/reinstall recovery remain unavailable until equivalent anchoring is implemented. While an installed pack is broken, non-Unix hooks admit only the narrowly validated read-only `pack list` and `pack validate` diagnostics; they refuse `pack install` and `pack remove` as automatic recovery. The message asks the project owner to restore the exact installed directory from a trusted, digest-consistent backup or quarantine it outside agent hooks before reinstalling from validated source.
 
 `phr-mcp init --packs go` selects the bundled Go starter rules and toolchains for a Go project. Built-in structural/graph support is available without copying rules. Project rules and toolchains with the same exact ID override a pack resource; `rule_overridden` records provenance. Pack rules never become project `rules.json` entries through server autosave. A script pack requires the `rhai` build feature; the query-only variant works without it.
 
@@ -54,3 +54,20 @@ and save handling. Pack-owned graph source symlinks remain unsafe inputs and
 are reported rather than followed. Saves through links rebuild the graph to
 purge any previously indexed regular-file evidence; repeated linked-path saves
 therefore incur a full rebuild.
+
+### Pack-load failures and cached graph state
+
+A failed installed-pack load is reported against that pack's exact directory
+when known; inventory-wide failures name the pack store. Native-file freshness
+checks continue, so an independent native edit or deletion remains visible.
+Pack sources and context inputs whose ownership cannot be loaded are unverified,
+not falsely reported as deleted. A failed rebuild leaves the previous graph and
+index intact, including evidence from healthy packs; restoring the original pack
+bytes does not require undoing destructive cache changes.
+
+The preserved graph is still an untrusted cached snapshot until validation
+succeeds. Hooks continue to fail closed: an installed pack can contribute rules
+for any file, so a damaged policy cannot safely be ignored by extension. Audit
+retains native findings it can compute but reports the inventory failure as
+incomplete rather than certifying unknown policy. This failure does not mean
+that every native source file changed.

@@ -98,7 +98,8 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
                     // its repair is the pack CLI. Allowed with a warning,
                     // like the rules-file repair edit above.
                     eprintln!(
-                        "phronesis: WARNING — allowing this pack command because a language pack failed to load and the pack CLI is its repair; every other tool call stays blocked until it loads. {e}"
+                        "phronesis: WARNING — {}. {e}",
+                        crate::language_packs::repair::exception_message()
                     );
                     super::log_hook_event(&super::LogEventInput {
                         phase: "pre",

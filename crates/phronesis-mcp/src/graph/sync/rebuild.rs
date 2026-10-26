@@ -169,7 +169,7 @@ fn forces_rebuild(root: &Path, file_path: &str, content: &str) -> std::io::Resul
     let data_contract_input = declared_artifact(root, file_path);
     let pack_input = file_path.starts_with(".phronesis/packs/")
         || match language_packs::load(root) {
-            Err(_) => true, // Rebuild purges old pack edges and leaves the index stale.
+            Err(_) => true, // Rebuild refuses; the existing snapshot remains untrusted.
             Ok(registry) => {
                 registry
                     .for_path_with(file_path, crate::language_packs::Capability::Graph)
@@ -639,33 +639,14 @@ fn rebuild_with_overlay(
     root: &Path,
     overlay: Option<(&str, &str)>,
 ) -> std::io::Result<SaveOutcome> {
+    // Preflight the entire registry before any migration or persistence. A
+    // transient pack failure must not purge other packs' or native evidence
+    // from a previously complete snapshot. Freshness keeps it untrusted.
+    let scan = RebuildScan::discover(root, overlay)?;
     // Rules are graph consumers. Migrate their vocabulary before hashing
     // inputs so the rebuild cannot make its own index immediately stale.
     let migrated_rules = migrate_graph_rule_predicates(root)?;
     let mut index = next_index(root);
-    let scan = match RebuildScan::discover(root, overlay) {
-        Ok(scan) => scan,
-        Err(error) => {
-            // A damaged pack must not leave its previously extracted facts
-            // in the durable graph. The old index remains untouched, so the
-            // new graph hash also makes every reader report stale evidence.
-            if let Ok(existing) = store::load(&store::graph_path(root)) {
-                let pack_files = existing
-                    .iter()
-                    .filter(|edge| !edge.d && edge.p == "pack_file_adapter")
-                    .filter_map(|edge| edge.a.first().cloned())
-                    .collect::<BTreeSet<_>>();
-                if !pack_files.is_empty() {
-                    let base = existing
-                        .into_iter()
-                        .filter(|edge| !edge.d && !pack_files.contains(&edge.src))
-                        .collect();
-                    let _ = persist(root, base, None);
-                }
-            }
-            return Err(error);
-        }
-    };
     if let Some((file, _)) = overlay
         && scan.java.failed_inputs.contains(file)
     {

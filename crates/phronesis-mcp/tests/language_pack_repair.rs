@@ -116,7 +116,12 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
     let (code, err) = pre_edit(root, "README.md");
     assert_eq!(code, 2, "{err}");
     assert!(err.contains(".phronesis/packs/demo_a"), "{err}");
-    assert!(err.contains("pack remove demo_a --path"), "{err}");
+    if cfg!(unix) {
+        assert!(err.contains("pack remove demo_a --path"), "{err}");
+    } else {
+        assert!(err.contains("automatic recovery is unavailable"), "{err}");
+        assert!(!err.contains("remove it with"), "{err}");
+    }
 
     // Not a repair: a raw delete, or the pack CLI chained with anything.
     assert_eq!(pre_bash(root, "rm -rf .phronesis/packs/demo_a").0, 2);
@@ -154,8 +159,15 @@ fn a_broken_installed_pack_names_itself_and_admits_only_the_pack_cli() {
         root,
         &format!("{BIN} pack remove demo_a --path {}", project(root)),
     );
-    assert_eq!(code, 1, "{err}");
-    assert!(err.contains("WARNING"), "{err}");
+    assert_eq!(code, if cfg!(unix) { 1 } else { 2 }, "{err}");
+    assert!(
+        err.contains(if cfg!(unix) {
+            "WARNING"
+        } else {
+            "automatic recovery is unavailable"
+        }),
+        "{err}"
+    );
     assert_eq!(pre_bash(root, &format!("{BIN} pack list --json")).0, 1);
 
     // Unix can repair the pack; other platforms must refuse without changes.
@@ -270,16 +282,26 @@ fn codex_admits_only_the_pack_cli_while_a_pack_is_broken() {
     assert!(
         denied["hookSpecificOutput"]["permissionDecisionReason"]
             .as_str()
-            .is_some_and(|r| r.contains("pack remove demo_a --path")),
+            .is_some_and(|r| r.contains(if cfg!(unix) {
+                "pack remove demo_a --path"
+            } else {
+                "automatic recovery is unavailable"
+            })),
         "{denied}"
     );
     let allowed = codex(&format!(
         "{BIN} pack remove demo_a --path {}",
         project(root)
     ));
-    assert_ne!(
-        allowed["hookSpecificOutput"]["permissionDecision"], "deny",
+    assert_eq!(
+        allowed["hookSpecificOutput"]["permissionDecision"] == "deny",
+        !cfg!(unix),
         "{allowed}"
+    );
+    let diagnostics = codex(&format!("{BIN} pack list --json"));
+    assert_ne!(
+        diagnostics["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{diagnostics}"
     );
 }
 
@@ -309,6 +331,11 @@ fn the_printed_repair_command_is_admitted_verbatim() {
 
     let (code, err) = pre_edit(&root, "README.md");
     assert_eq!(code, 2, "{err}");
+    if !cfg!(unix) {
+        assert!(err.contains("automatic recovery is unavailable"), "{err}");
+        assert!(!err.contains("remove it with"), "{err}");
+        return;
+    }
     let start = err.find("remove it with `").expect("names a repair") + "remove it with `".len();
     let command = &err[start..start + err[start..].find('`').unwrap()];
     let (code, err) = pre_bash(&root, command);

@@ -184,12 +184,22 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     }
     // One registry load and one tree walk serve every input below; this
     // runs on the hook path whenever a rule names a graph relation.
-    let Ok(registry) = crate::language_packs::load(root) else {
-        return Freshness::Stale(vec![".phronesis/packs".into()]);
+    let (registry, mut drifted) = match crate::language_packs::load(root) {
+        Ok(registry) => (Some(registry), Vec::new()),
+        Err(error) => (
+            None,
+            vec![crate::language_packs::repair::load_failure_path(
+                root, &error,
+            )],
+        ),
     };
-    let mut drifted = Vec::new();
-    let (mut on_disk, manifests) = walk_with(root, Some(&registry));
-    let context_inputs = context_inputs_for(root, &registry, &on_disk);
+    // A local pack failure must not hide independent native drift. It leaves
+    // pack-dependent evidence untrusted without rewriting graph/index state.
+    let (mut on_disk, manifests) = walk_with(root, registry.as_ref());
+    let context_inputs = registry
+        .as_ref()
+        .map(|registry| context_inputs_for(root, registry, &on_disk))
+        .unwrap_or_default();
     on_disk.extend(manifests);
     if root.join(".phronesis/graph.toml").is_file() {
         on_disk.push(".phronesis/graph.toml".to_string());
@@ -238,6 +248,12 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     // in the graph and would keep matching rules.
     for rel in index.entries.keys() {
         if !on_disk.contains(rel) {
+            // Without validated ownership/context metadata, a pack source or
+            // context missing from the native walk is unverified, not proven
+            // deleted. The failed pack directory already names that scope.
+            if registry.is_none() && !is_native_input(rel) {
+                continue;
+            }
             drifted.push(rel.clone());
         }
     }
@@ -249,6 +265,14 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
         drifted.dedup();
         Freshness::Stale(drifted)
     }
+}
+
+/// Inputs whose discovery does not depend on an installed pack manifest.
+fn is_native_input(rel: &str) -> bool {
+    is_tracked(rel)
+        || is_cargo_manifest(rel)
+        || crate::graph::java::project::is_manifest(rel)
+        || rel.starts_with(".phronesis/wiki/decisions/")
 }
 
 /// Every file extension the graph has an extractor for. A file outside this

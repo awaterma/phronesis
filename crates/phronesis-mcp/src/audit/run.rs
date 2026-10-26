@@ -25,7 +25,13 @@ pub(super) fn run_core(
     let total_start = Instant::now();
     let (pack_registry, mut incomplete) = match crate::language_packs::load(&opts.project_root) {
         Ok(registry) => (Some(registry), Vec::new()),
-        Err(error) => (None, vec![error.to_string()]),
+        Err(error) => (
+            None,
+            vec![format!(
+                "{}: language-pack inventory unavailable; audit cannot certify the complete policy: {error}",
+                crate::language_packs::repair::load_failure_path(&opts.project_root, &error)
+            )],
+        ),
     };
 
     let audit_rules = filter_audit_rules(rules, opts.rule_filter.as_deref());

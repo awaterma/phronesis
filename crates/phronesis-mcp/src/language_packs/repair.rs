@@ -6,7 +6,9 @@
 //! cannot repair it, because the digest recorded at install time treats new
 //! bytes as tampering. The repair is the pack CLI, so a load error names the
 //! broken pack and admits exactly one kind of command: a lone
-//! `phr-mcp pack install|remove|list|validate` invocation.
+//! `phr-mcp pack install|remove|list|validate` invocation on Unix. On other
+//! platforms only read-only `list`/`validate` diagnostics are admitted;
+//! recovery requires the project owner until anchored removal is supported.
 
 use std::path::{Path, PathBuf};
 
@@ -18,9 +20,9 @@ use super::registry::{PACKS_DIR, PackOrigin, enumerate};
 /// failing is a defect in this binary, not something to remove).
 pub fn locate_broken_pack(root: &Path, error: &PackError) -> Option<PathBuf> {
     let packs_dir = root.join(PACKS_DIR);
-    if let Some(id) = error.pack() {
+    if let Some(id) = error.pack().filter(|id| super::is_identifier(id)) {
         let dir = packs_dir.join(id);
-        if dir.is_dir() {
+        if std::fs::symlink_metadata(&dir).is_ok() {
             return Some(dir);
         }
     }
@@ -33,10 +35,44 @@ pub fn locate_broken_pack(root: &Path, error: &PackError) -> Option<PathBuf> {
         .map(|entry| PathBuf::from(entry.location))
 }
 
-/// The sentence a load error ends with, naming the exact repair command:
-/// this binary by absolute path and the project by absolute `--path`,
-/// which is the only form the hooks admit (see [`is_pack_repair_command`]).
+/// Root-relative input whose installed-pack load failed. Inventory-wide or
+/// built-in failures stay scoped to the store when no narrower path is known.
+/// This is a diagnostic scope, not permission to evaluate missing policy.
+pub(crate) fn load_failure_path(root: &Path, error: &PackError) -> String {
+    locate_broken_pack(root, error)
+        .and_then(|path| path.strip_prefix(root).ok().map(Path::to_path_buf))
+        .filter(|path| {
+            !path
+                .components()
+                .any(|part| part == std::path::Component::ParentDir)
+        })
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|| PACKS_DIR.to_string())
+}
+
+/// Why a pack CLI command was admitted while policy is unavailable.
+pub(crate) fn exception_message() -> &'static str {
+    if cfg!(unix) {
+        "allowing this pack command because a language pack failed to load and the pack CLI is its repair; every other tool call stays blocked until it loads"
+    } else {
+        "allowing this read-only pack diagnostic because a language pack failed to load; automatic recovery is unavailable on non-Unix platforms and other tool calls remain blocked"
+    }
+}
+
+/// Platform-specific recovery guidance. Unix names this binary and project
+/// with absolute paths, the only repair spelling hooks admit. Other platforms
+/// explain the owner-only recovery requirement without offering removal.
 pub fn repair_hint(location: &Path) -> String {
+    repair_hint_for_platform(location, cfg!(unix))
+}
+
+fn repair_hint_for_platform(location: &Path, automatic_repair: bool) -> String {
+    if !automatic_repair {
+        return format!(
+            " Installed-pack automatic recovery is unavailable on non-Unix platforms: pack removal requires directory-anchored operations, so no removal command is offered. Ask the project owner to restore `{}` from a trusted, digest-consistent backup or quarantine that exact directory outside the agent hooks, then reinstall from validated source. Policy evaluation remains blocked until the installed-pack inventory validates. Only read-only `pack list` and `pack validate` diagnostics are admitted through the hooks.",
+            location.display()
+        );
+    }
     let id = location
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -139,7 +175,8 @@ fn literal_words(command: &str) -> Option<Vec<String>> {
 ///   the pack store, `install` and `remove`, must name it with an absolute
 ///   `--path` that canonicalizes to this project; a relative or omitted one
 ///   would resolve against the shell's working directory. `list` and
-///   `validate` only read.
+///   `validate` only read. On non-Unix only those read-only diagnostics are
+///   admitted; store writes cannot serve as automatic recovery there.
 pub fn is_pack_repair_command(command: &str, project_root: &Path) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
@@ -148,6 +185,10 @@ pub fn is_pack_repair_command(command: &str, project_root: &Path) -> bool {
 }
 
 fn is_repair_for(command: &str, root: &Path, exe: &Path) -> bool {
+    is_repair_for_platform(command, root, exe, cfg!(unix))
+}
+
+fn is_repair_for_platform(command: &str, root: &Path, exe: &Path, automatic_repair: bool) -> bool {
     let Some(words) = literal_words(command) else {
         return false;
     };
@@ -155,6 +196,9 @@ fn is_repair_for(command: &str, root: &Path, exe: &Path) -> bool {
     let [binary, "pack", subcommand, args @ ..] = words.as_slice() else {
         return false;
     };
+    if !automatic_repair && matches!(*subcommand, "install" | "remove") {
+        return false;
+    }
     let Some(trusted) = canonical(exe) else {
         return false;
     };
@@ -213,11 +257,39 @@ fn canonical(path: &Path) -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use super::is_repair_for;
 
     #[test]
+    fn unsupported_platform_offers_diagnostics_and_owner_recovery_not_a_remove_command() {
+        let root = tempfile::tempdir().unwrap();
+        let location = root.path().join(".phronesis/packs/demo");
+        std::fs::create_dir_all(&location).unwrap();
+        let hint = super::repair_hint_for_platform(&location, false);
+        assert!(hint.contains("automatic recovery is unavailable"), "{hint}");
+        assert!(hint.contains("project owner"), "{hint}");
+        assert!(!hint.contains("remove it with"), "{hint}");
+        assert!(!hint.contains("--path"), "{hint}");
+        let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let binary = super::shell_word(&exe.display().to_string()).unwrap();
+        let project =
+            super::shell_word(&root.path().canonicalize().unwrap().display().to_string()).unwrap();
+        let allowed =
+            |command: &str| super::is_repair_for_platform(command, root.path(), &exe, false);
+        assert!(allowed(&format!("{binary} pack list --json")));
+        assert!(allowed(&format!("{binary} pack validate source --json")));
+        assert!(!allowed(&format!(
+            "{binary} pack remove demo --path {project}"
+        )));
+        assert!(!allowed(&format!(
+            "{binary} pack install source --path {project}"
+        )));
+        assert!(!allowed("rm -rf .phronesis/packs/demo"));
+    }
+
+    #[test]
     fn a_path_with_a_quote_gets_no_command_the_check_would_refuse() {
-        use super::{repair_hint, shell_word};
+        use super::shell_word;
         assert_eq!(shell_word("/a/b").as_deref(), Some("/a/b"));
         assert_eq!(shell_word("/a/my b").as_deref(), Some("'/a/my b'"));
         assert_eq!(shell_word("/a/Andrew's b"), None);
@@ -225,7 +297,7 @@ mod tests {
         let parent = tempfile::tempdir().unwrap();
         let root = parent.path().join("Andrew's project");
         std::fs::create_dir_all(root.join(".phronesis/packs/demo_a")).unwrap();
-        let hint = repair_hint(&root.join(".phronesis/packs/demo_a"));
+        let hint = super::repair_hint_for_platform(&root.join(".phronesis/packs/demo_a"), true);
         assert!(hint.contains("yourself from a terminal"), "{hint}");
         assert!(!hint.contains("--path"), "{hint}");
     }
@@ -235,11 +307,12 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let entry = root.path().join(".phronesis/packs/bad name");
         std::fs::create_dir_all(&entry).unwrap();
-        let hint = super::repair_hint(&entry);
+        let hint = super::repair_hint_for_platform(&entry, true);
         assert!(hint.contains("yourself from a terminal"), "{hint}");
         assert!(!hint.contains("--path"), "{hint}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn only_this_binary_by_absolute_path_on_this_project_is_a_repair() {
         let root = tempfile::tempdir().unwrap();

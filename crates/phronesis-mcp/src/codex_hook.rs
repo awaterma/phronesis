@@ -731,7 +731,8 @@ async fn evaluate_pre(payload: &CodexPayload, root: &Path) -> Result<CodexDecisi
                 ) =>
         {
             return Err(warn_decision(format!(
-                "allowing this pack command because a language pack failed to load and the pack CLI is its repair; every other tool call stays blocked until it loads. rules error: {e}"
+                "{}. rules error: {e}",
+                crate::language_packs::repair::exception_message()
             )));
         }
         Err(e) => return Err(block_decision(format!("rules error: {}", e))),

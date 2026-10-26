@@ -41,3 +41,23 @@ can inspect facts and compute predicate names.
   advisories compared with the baseline.
 - Owner playtesting and promotion remain separate. Keep the PR in draft;
   merging and release require the owner's decision.
+
+## PR feedback follow-up
+
+Pack-load failures now name the exact broken directory while native freshness
+checks continue. Failed rebuilds preserve the previous graph and index rather
+than deleting evidence from all packs. Unknown installed policy still fails
+closed, and audit remains incomplete while retaining native findings.
+
+Non-Unix recovery hints no longer advertise an unusable removal command. The
+hook exception there permits only read-only pack diagnostics and explains that
+recovery requires the project owner; Unix keeps the guarded CLI recovery path.
+Both platform policies are exercised through the same policy function on macOS;
+this does not establish native Windows runtime acceptance.
+
+Follow-up local checks: 3,673 workspace tests and 3,409 minimal/Rhai tests
+passed, with four ignored in each run and all 55 BDD scenarios passing.
+Focused query-only tests without Rhai also passed. Regression tests cover a
+broken pack beside a healthy pack and native source, preservation of cached
+state on rebuild failure, continued detection of native drift, retained native
+audit findings, and both recovery policies.

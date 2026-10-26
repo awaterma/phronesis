@@ -151,9 +151,17 @@ fn installed_asset_and_new_nearer_context_invalidate_freshness() {
         sync::check_freshness(project.path(), &index),
         sync::Freshness::Stale(_)
     ));
+    let cached_graph = fs::read(store::graph_path(project.path())).unwrap();
     assert!(sync::rebuild(project.path()).is_err());
-    let edges = store::load(&store::graph_path(project.path())).unwrap();
-    assert!(!edges.iter().any(|e| e.p == "pack_file_adapter"));
+    assert_eq!(
+        fs::read(store::graph_path(project.path())).unwrap(),
+        cached_graph
+    );
+    // A failed rebuild preserves the cached snapshot, but cannot vouch for it.
+    assert!(matches!(
+        sync::check_freshness(project.path(), &index),
+        sync::Freshness::Stale(_)
+    ));
 }
 
 #[test]
@@ -412,4 +420,67 @@ fn pack_source_links_still_report_unsafe_evidence() {
         sync::check_freshness(root.path(), &index),
         sync::Freshness::Stale(_)
     ));
+}
+
+#[test]
+fn pack_load_failure_is_scoped_and_does_not_hide_native_drift_or_rewrite_the_graph() {
+    let source_pack = tempfile::tempdir().unwrap();
+    let _ = pack(source_pack.path());
+    let root = tempfile::tempdir().unwrap();
+    install(root.path(), source_pack.path(), false).unwrap();
+    let other_source = tempfile::tempdir().unwrap();
+    let _ = pack(other_source.path());
+    let other_manifest = other_source.path().join("pack.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(&other_manifest).unwrap()).unwrap();
+    manifest["id"] = json!("other_graph");
+    manifest["extensions"] = json!(["othergraph"]);
+    fs::write(other_manifest, manifest.to_string()).unwrap();
+    install(root.path(), other_source.path(), false).unwrap();
+    write(root.path(), "healthy.othergraph", b"def healthy(): pass\n");
+    write(root.path(), "native.py", b"def native(): pass\n");
+    write(root.path(), "a.demograph", b"def work(): pass\n");
+    write(root.path(), "demo.mod", b"original context\n");
+    sync::rebuild(root.path()).unwrap();
+    let index_path = sync::index_path(root.path());
+    let index = sync::load_index(&index_path).unwrap();
+    let graph_before = fs::read(store::graph_path(root.path())).unwrap();
+    let index_before = fs::read(&index_path).unwrap();
+    let manifest_path = root.path().join(".phronesis/packs/demo_graph/pack.json");
+    let manifest_before = fs::read(&manifest_path).unwrap();
+    fs::write(&manifest_path, "{broken").unwrap();
+    let sync::Freshness::Stale(paths) = sync::check_freshness(root.path(), &index) else {
+        panic!("invalid pack must leave its evidence untrusted");
+    };
+    assert!(
+        paths.iter().any(|p| p == ".phronesis/packs/demo_graph"),
+        "{paths:?}"
+    );
+    assert!(
+        !paths.iter().any(|p| p == "native.py"
+            || p == "a.demograph"
+            || p == "demo.mod"
+            || p == "healthy.othergraph"),
+        "{paths:?}"
+    );
+    write(root.path(), "native.py", b"def changed(): pass\n");
+    let sync::Freshness::Stale(paths) = sync::check_freshness(root.path(), &index) else {
+        panic!("changed native file must be stale");
+    };
+    assert!(paths.iter().any(|p| p == "native.py"), "{paths:?}");
+    assert!(sync::rebuild(root.path()).is_err());
+    assert!(
+        fs::read(store::graph_path(root.path())).unwrap() == graph_before,
+        "failed rebuild changed the stored graph"
+    );
+    assert!(
+        fs::read(&index_path).unwrap() == index_before,
+        "failed rebuild changed the index"
+    );
+    fs::write(manifest_path, manifest_before).unwrap();
+    write(root.path(), "native.py", b"def native(): pass\n");
+    assert_eq!(
+        sync::check_freshness(root.path(), &index),
+        sync::Freshness::Fresh
+    );
 }

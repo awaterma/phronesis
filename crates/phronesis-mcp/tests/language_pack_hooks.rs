@@ -167,3 +167,44 @@ fn ignored_file_still_receives_structural_pack_audit() {
             .any(|p| p.ends_with("app.demox"))
     );
 }
+
+#[test]
+fn a_pack_load_error_keeps_native_audit_hits_and_names_the_failed_pack() {
+    let project = tempfile::tempdir().unwrap();
+    fixture(project.path());
+    write(project.path(), "native.py", "# AUDIT_NEEDLE\n");
+    write(project.path(), ".phronesis/packs/demo/pack.json", "{broken");
+    write(
+        project.path(),
+        ".phronesis/rules.json",
+        &json!({"rules":[{
+            "id":"native-lexical","phase":"audit","audit":true,
+            "when":[{"new_content_contains":"AUDIT_NEEDLE"}],"then":{"warn":"native hit"}
+        }]})
+        .to_string(),
+    );
+    let rules =
+        phronesis_mcp::rules_file::read(&project.path().join(".phronesis/rules.json")).unwrap();
+    let report = run(
+        &rules,
+        &AuditOpts {
+            project_root: project.path().into(),
+            scan_root: project.path().into(),
+            rule_filter: None,
+        },
+    );
+    assert!(report.per_rule.iter().any(|rule| {
+        rule.rule_id == "native-lexical"
+            && rule
+                .files
+                .iter()
+                .any(|file| file.path.ends_with("native.py"))
+    }));
+    assert_eq!(report.incomplete.len(), 1, "{:?}", report.incomplete);
+    assert!(
+        report.incomplete[0].starts_with(".phronesis/packs/demo:"),
+        "{:?}",
+        report.incomplete
+    );
+    assert!(!report.incomplete[0].contains("native.py"));
+}
