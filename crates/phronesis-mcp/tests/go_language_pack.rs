@@ -483,6 +483,68 @@ func (s *Suite) TestAdd(t *testing.T) {}
 // ── nested modules, external test packages ───────────────────────────────
 
 #[test]
+fn valid_module_directive_forms_keep_the_canonical_package_scope() {
+    let pack = go_pack();
+    let source = "package sample\nfunc Work() {}\n";
+    for (name, go_mod, module_path) in [
+        ("tab", "module\texample.com/tab\n", "example.com/tab"),
+        (
+            "quoted",
+            "module \"example.com/quoted\"\n",
+            "example.com/quoted",
+        ),
+        (
+            "comment",
+            "module example.com/comment // note\n",
+            "example.com/comment",
+        ),
+        (
+            "block",
+            "module (\nexample.com/block\n)\n",
+            "example.com/block",
+        ),
+    ] {
+        let context = FileContext {
+            file_rel: "pkg/work.go".into(),
+            context_files: vec![phronesis_mcp::language_packs::ContextFile {
+                name: "go.mod".into(),
+                file_rel: "go.mod".into(),
+                directory_rel: ".".into(),
+                content: go_mod.into(),
+            }],
+        };
+        let extraction = extract(&pack, &context, source).unwrap();
+        match decl_named(&extraction, "Work") {
+            PackRecord::Declaration { scope, .. } => {
+                assert_eq!(scope, &format!("{module_path}/pkg::sample"), "{name}");
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
+#[test]
+fn escaped_module_path_does_not_claim_a_literal_backslash_scope() {
+    let pack = go_pack();
+    // Go accepts this interpreted string as example.com/foo. The starter
+    // adapter does not decode escapes, so it must avoid a false path claim.
+    let context = FileContext {
+        file_rel: "pkg/work.go".into(),
+        context_files: vec![phronesis_mcp::language_packs::ContextFile {
+            name: "go.mod".into(),
+            file_rel: "go.mod".into(),
+            directory_rel: ".".into(),
+            content: "module \"example.com\\u002ffoo\"\n".into(),
+        }],
+    };
+    let extraction = extract(&pack, &context, "package sample\nfunc Work() {}\n").unwrap();
+    match decl_named(&extraction, "Work") {
+        PackRecord::Declaration { scope, .. } => assert_eq!(scope, "local/pkg::sample"),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
 fn nested_go_mod_scopes_a_file_to_its_own_module() {
     let pack = go_pack();
     let source = "package inner\n\nfunc F() {}\n";

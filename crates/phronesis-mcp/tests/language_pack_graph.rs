@@ -316,6 +316,63 @@ fn go_multi_parameter_declaration_resolves_one_site_and_reaches_test() {
     );
 }
 
+#[cfg(all(feature = "go-grammar", feature = "rhai"))]
+#[test]
+fn go_adapter_handles_many_declarations_and_calls_within_fixed_budget() {
+    use phronesis_mcp::language_packs::{builtin_packs, extract};
+
+    let packs = builtin_packs().unwrap();
+    let go = packs
+        .iter()
+        .find(|pack| pack.assets.manifest.id == "go")
+        .unwrap();
+    let mut source = String::from("package sample\nfunc Helper() {}\n");
+    for i in 0..100 {
+        source.push_str(&format!("func Work{i}() {{\n  local := 1\n  _ = local\n"));
+        if i == 0 {
+            source.push_str("  Helper := func() {}\n");
+        }
+        for _ in 0..8 {
+            source.push_str("  Helper()\n");
+        }
+        source.push_str("}\n");
+    }
+    let context = FileContext {
+        file_rel: "sample.go".into(),
+        context_files: vec![],
+    };
+    let result = extract(go, &context, &source).unwrap();
+    let declarations = result
+        .records
+        .iter()
+        .filter(|record| matches!(record, PackRecord::Declaration { .. }))
+        .count();
+    let references = result
+        .records
+        .iter()
+        .filter(|record| matches!(record, PackRecord::Reference { .. }))
+        .count();
+    assert_eq!(declarations, 101);
+    assert_eq!(references, 800);
+    let unresolved = result
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record,
+                PackRecord::Reference {
+                    resolution: ReferenceMode::Unresolved,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(
+        unresolved, 8,
+        "local Helper must shadow the package function"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn native_links_stay_ignored_across_rebuild_save_and_restart() {

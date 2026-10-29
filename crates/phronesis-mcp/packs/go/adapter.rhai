@@ -97,14 +97,47 @@ fn norm_dir(d) {
     }
 }
 
+// A go.mod directive is tokenized, not split at one literal space: Go
+// accepts tabs, quoted module paths, trailing comments, and block form.
+// Module paths cannot contain `//`, so this bounded comment trim is safe for
+// the path token. Malformed or unsupported spellings fall back to local scope.
+fn module_line_without_comment(line) {
+    let t = line;
+    let comment = t.index_of("//");
+    if comment >= 0 { t = t.sub_string(0, comment); }
+    t.trim();
+    t
+}
+
+fn module_path_token(line) {
+    let t = module_line_without_comment(line);
+    if t == "" { return ""; }
+    let first = t[0];
+    if first == '"' {
+        // Go interprets escapes in quoted module paths. Without a complete
+        // unquoter, claiming the literal spelling as the canonical path
+        // would invent package identities. Keep those in local scope.
+        if t.len() < 2 || t[t.len() - 1] != first || t.index_of("\\") >= 0 { return ""; }
+        return strip_quotes(t);
+    }
+    if first == '`' || t.index_of(" ") >= 0 || t.index_of("\t") >= 0 { return ""; }
+    t
+}
+
 fn parse_module_path(content) {
+    let in_block = false;
     for line in content.split("\n") {
         let t = line;
         t.trim();
-        if t.starts_with("module ") {
-            let module_path = t.sub_string(7);
-            module_path.trim();
-            return module_path;
+        if in_block {
+            if t == "" || t.starts_with("//") { continue; }
+            if t.starts_with(")") { return ""; }
+            return module_path_token(t);
+        }
+        if t.starts_with("module ") || t.starts_with("module\t") {
+            let arg = module_line_without_comment(t.sub_string(6));
+            if arg == "(" { in_block = true; continue; }
+            return module_path_token(arg);
         }
     }
     ""
@@ -361,21 +394,26 @@ fn test_info(d, is_test_file, alias_to_path, package_arg, module_dir) {
 
 // ── calls ─────────────────────────────────────────────────────────────
 
-// Smallest declaration whose span contains `start_byte` (methods/functions
-// never nest in Go; "smallest" is a defensive tie-break, not a requirement).
-fn find_owner(decls, start_byte) {
-    let owner = ();
-    for d in decls {
-        if start_byte < d.span.start_byte || start_byte >= d.span.end_byte {
-            continue;
+// Top-level Go declarations do not nest. Query matches normally arrive in
+// source order; retain a linear fallback if a future query changes that.
+fn find_owner(decls, sorted, start_byte) {
+    if !sorted {
+        for d in decls {
+            if start_byte >= d.span.start_byte && start_byte < d.span.end_byte {
+                return d;
+            }
         }
-        if owner == () {
-            owner = d;
-        } else if (d.span.end_byte - d.span.start_byte) < (owner.span.end_byte - owner.span.start_byte) {
-            owner = d;
-        }
+        return ();
     }
-    owner
+    let lo = 0;
+    let hi = decls.len();
+    while lo < hi {
+        let mid = (lo + hi) / 2;
+        if decls[mid].span.start_byte <= start_byte { lo = mid + 1; } else { hi = mid; }
+    }
+    if lo == 0 { return (); }
+    let d = decls[lo - 1];
+    if start_byte < d.span.end_byte { d } else { () }
 }
 
 fn shadowed_by_param(owner, target) {
@@ -387,35 +425,26 @@ fn shadowed_by_param(owner, target) {
     false
 }
 
-fn shadowed_by_local(owner, target, local_sites) {
-    for site in local_sites {
-        if site.start_byte < owner.span.start_byte || site.start_byte >= owner.span.end_byte {
-            continue;
-        }
-        for n in site.names {
-            if n == target {
-                return true;
-            }
-        }
-    }
-    false
+fn shadowed_by_local(owner, target, shadow_by_owner) {
+    let names = shadow_by_owner.get(owner.span.start_byte.to_string());
+    names != () && names.get(target) == true
 }
 
 // Conservative shadow suppression: a dot import makes every unqualified
 // name in the file ambiguous (it could have come from the dot-imported
 // package); `init`/`_` are never resolvable call targets.
-fn is_shadowed(owner, target, local_sites, has_dot_import) {
+fn is_shadowed(owner, target, shadow_by_owner, has_dot_import) {
     if has_dot_import || target == "_" || target == "init" {
         return true;
     }
-    shadowed_by_param(owner, target) || shadowed_by_local(owner, target, local_sites)
+    shadowed_by_param(owner, target) || shadowed_by_local(owner, target, shadow_by_owner)
 }
 
 // Returns unit when the call site has no enclosing declaration (nothing to
 // attribute an owner to), otherwise the reference record.
-fn call_reference(m, decls, local_sites, scope, has_dot_import) {
+fn call_reference(m, decls, sorted, shadow_by_owner, scope, has_dot_import) {
     let site_span = m.captures[0].span;
-    let owner = find_owner(decls, site_span.start_byte);
+    let owner = find_owner(decls, sorted, site_span.start_byte);
     if owner == () {
         return ();
     }
@@ -427,7 +456,7 @@ fn call_reference(m, decls, local_sites, scope, has_dot_import) {
         resolution = "unresolved";
     } else {
         target = cap1(m, "call_name").text;
-        resolution = if is_shadowed(owner, target, local_sites, has_dot_import) { "unresolved" } else { "same_scope" };
+        resolution = if is_shadowed(owner, target, shadow_by_owner, has_dot_import) { "unresolved" } else { "same_scope" };
     }
     reference_record(owner.span.start_byte, target, scope, resolution, site_span)
 }
@@ -477,22 +506,30 @@ fn imports_pass(matches, scope) {
 fn declarations_pass(matches) {
     let decls = [];
     let local_sites = [];
+    let sorted = true;
     for m in matches {
-        if m.query != "declarations" {
-            continue;
-        }
-        if has_cap(m, "func_decl") {
-            decls.push(func_decl_info(m));
-        } else if has_cap(m, "method_decl") {
-            decls.push(method_decl_info(m));
+        if m.query != "declarations" { continue; }
+        if has_cap(m, "func_decl") || has_cap(m, "method_decl") {
+            let d = if has_cap(m, "func_decl") { func_decl_info(m) } else { method_decl_info(m) };
+            if decls.len() > 0 && d.span.start_byte < decls[decls.len() - 1].span.start_byte { sorted = false; }
+            decls.push(d);
         } else if has_cap(m, "local_name") {
             let site = local_site_info(m);
-            if site.names.len() > 0 {
-                local_sites.push(site);
-            }
+            if site.names.len() > 0 { local_sites.push(site); }
         }
     }
-    #{ "decls": decls, "local_sites": local_sites }
+    // Bind local names to their enclosing declaration once per file.
+    let shadow_by_owner = #{};
+    for site in local_sites {
+        let owner = find_owner(decls, sorted, site.start_byte);
+        if owner == () { continue; }
+        let key = owner.span.start_byte.to_string();
+        let names = shadow_by_owner.get(key);
+        if names == () { names = #{}; }
+        for name in site.names { names[name] = true; }
+        shadow_by_owner[key] = names;
+    }
+    #{ "decls": decls, "sorted": sorted, "shadow_by_owner": shadow_by_owner }
 }
 
 fn declaration_records_pass(decls, scope, is_test_file, alias_to_path, package_arg, module_dir) {
@@ -504,13 +541,13 @@ fn declaration_records_pass(decls, scope, is_test_file, alias_to_path, package_a
     records
 }
 
-fn calls_pass(matches, decls, local_sites, scope, has_dot_import) {
+fn calls_pass(matches, decls, sorted, shadow_by_owner, scope, has_dot_import) {
     let records = [];
     for m in matches {
         if m.query != "calls" {
             continue;
         }
-        let rec = call_reference(m, decls, local_sites, scope, has_dot_import);
+        let rec = call_reference(m, decls, sorted, shadow_by_owner, scope, has_dot_import);
         if rec != () {
             records.push(rec);
         }
@@ -529,7 +566,7 @@ fn extract_go(context, matches) {
     let decl_records = declaration_records_pass(
         parsed.decls, scope, is_test_file, imports.alias_to_path, package_arg, module_dir
     );
-    let call_records = calls_pass(matches, parsed.decls, parsed.local_sites, scope, imports.has_dot_import);
+    let call_records = calls_pass(matches, parsed.decls, parsed.sorted, parsed.shadow_by_owner, scope, imports.has_dot_import);
 
     // `+` on two arrays returns their concatenation (a new array) — no
     // helper function needed, and no by-value-parameter mutation pitfall.
