@@ -199,3 +199,35 @@ fn script_diagnostics_reject_unsupported_scripts_once_per_rule() {
     assert_eq!(filtered.len(), 1, "{filtered:?}");
     assert!(filtered[0].contains("bound"));
 }
+
+/// Review finding 11 (sub-claim): pack audit evaluates pack facts only
+/// alongside path, extension, content, and script conditions; any other
+/// companion silently cleared the match, so the rule looked clean. It is
+/// diagnosed instead, like an unsupported script guard.
+#[test]
+fn script_diagnostics_name_pack_rules_with_conditions_audit_cannot_join() {
+    let condition = |predicate: &str, args: &[&str]| DiskCondition {
+        predicate: predicate.to_string(),
+        args: args.iter().map(|a| a.to_string()).collect(),
+        script: None,
+    };
+    let mut mixed = rule("pack-mixed", "x", "constraint_warning");
+    mixed.conditions = vec![
+        condition("pack_demo_seen", &["?file", "?name"]),
+        condition("file_line_count_above", &["?file", "800"]),
+    ];
+    let mut plain = rule("pack-plain", "x", "constraint_warning");
+    plain.conditions = vec![
+        condition("pack_demo_seen", &["?file", "?name"]),
+        condition("file_extension_is", &["demo"]),
+    ];
+    let rules = RulesFile {
+        rules: vec![mixed, plain],
+    };
+    let diagnostics = script_diagnostics(&rules, None);
+    assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+    assert!(
+        diagnostics[0].contains("pack-mixed") && diagnostics[0].contains("file_line_count_above"),
+        "{diagnostics:?}"
+    );
+}

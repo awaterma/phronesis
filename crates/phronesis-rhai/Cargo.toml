@@ -19,6 +19,11 @@ phronesis = { path = "../phronesis", version = "0.39.0" }
 # `no_module`/`no_closure` shrink the sandbox surface.
 rhai = { version = "1", features = ["sync", "no_module", "no_closure"] }
 thiserror = "2"
+# Language-pack adapter scripts exchange records as JSON (SPEC: language
+# packs). Converted to/from `Dynamic` by hand rather than via rhai's own
+# `serde` feature, so the conversion stays auditable in one place.
+serde_json = "1"
+regex = "1"
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["macros", "rt"] }

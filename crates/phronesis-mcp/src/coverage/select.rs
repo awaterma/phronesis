@@ -77,6 +77,8 @@ pub struct Selection {
     /// confidence signal is the validating tool run instead. Unknown
     /// extensions stay unclassified.
     pub no_coverage_semantics: Vec<String>,
+    /// Executable pack sources for which no dynamic collector exists.
+    pub dynamic_coverage_unsupported: Vec<String>,
 }
 
 /// A file diff entry: repo-relative path, old content, new content.
@@ -95,8 +97,11 @@ pub fn working_tree_diffs(root: &Path) -> Result<Vec<FileDiff>> {
     let mut diffs = Vec::new();
     for path in &tracked {
         let old = git_show_head(root, path).ok();
-        let new = std::fs::read_to_string(root.join(path))
-            .context(format!("reading working tree file: {path}"))?;
+        let new = match std::fs::read_to_string(root.join(path)) {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => return Err(error).context(format!("reading working tree file: {path}")),
+        };
         if old.as_deref() != Some(new.as_str()) {
             diffs.push(FileDiff {
                 path: path.clone(),
@@ -240,7 +245,22 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
     // --- Static half: graph store ---
     let graph_path = graph_store::graph_path(root);
     let edges = graph_store::load(&graph_path).unwrap_or_default();
-    let (static_available, static_note) = graph_freshness_status(root, &edges);
+    let (static_available, mut static_note) = graph_freshness_status(root, &edges);
+    let registry = crate::language_packs::load(root);
+    let dynamic_coverage_unsupported = registry
+        .as_ref()
+        .map(|registry| {
+            diffs
+                .iter()
+                .filter_map(|diff| match registry.for_path(&diff.path) {
+                    Ok(Some(_)) => Some(diff.path.clone()),
+                    _ => None,
+                })
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     if static_available {
         // A graph function reaches a changed region only when the graph
@@ -296,6 +316,46 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
                 add_entry(&mut by_test, test, STATIC_REACH, region);
             }
         }
+
+        // Pack symbols use exact scope-qualified identities and source
+        // spans. They do not participate in the native leaf-name join above.
+        match registry {
+            Ok(ref registry) => {
+                match crate::language_packs::changed_pack_symbols(registry, root, &diffs) {
+                    Ok(changes) => {
+                        let current: BTreeSet<(&str, &str)> = edges
+                            .iter()
+                            .filter(|edge| edge.p == "pack_declaration" && edge.a.len() >= 2)
+                            .map(|edge| (edge.src.as_str(), edge.a[1].as_str()))
+                            .collect();
+                        let reaches: BTreeMap<&str, BTreeSet<&str>> = {
+                            let mut map: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
+                            for edge in edges
+                                .iter()
+                                .filter(|edge| edge.p == "test_reaches" && edge.a.len() == 2)
+                            {
+                                map.entry(edge.a[1].as_str())
+                                    .or_default()
+                                    .insert(edge.a[0].as_str());
+                            }
+                            map
+                        };
+                        for change in changes {
+                            if !current.contains(&(change.file.as_str(), change.symbol.as_str())) {
+                                continue;
+                            }
+                            for test in reaches.get(change.symbol.as_str()).into_iter().flatten() {
+                                add_entry(&mut by_test, test, STATIC_REACH, &change.region);
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        static_note = Some(format!("pack static selection omitted: {error}"))
+                    }
+                }
+            }
+            Err(error) => static_note = Some(format!("pack static selection omitted: {error}")),
+        }
     }
 
     // BTreeMap order is (test, evidence kind): deterministic, no re-sort.
@@ -313,6 +373,19 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         .map(|h| (h.test.as_str(), h.tool.as_str()))
         .collect();
     for test in &mut tests {
+        if let Some(edge) = edges.iter().find(|edge| {
+            edge.p == "pack_test_command" && edge.a.len() == 4 && edge.a[0] == test.test
+        }) {
+            if let Ok(args) = serde_json::from_str::<Vec<String>>(&edge.a[3]) {
+                let command = crate::language_packs::TestCommand {
+                    cwd: edge.a[1].clone(),
+                    program: edge.a[2].clone(),
+                    args,
+                };
+                test.command = crate::language_packs::render_test_command(&command).ok();
+            }
+            continue;
+        }
         if let Some(file) = test_files.get(test.test.as_str()) {
             test.command =
                 crate::coverage::language::language_for_test_id(&test.test).and_then(|l| {
@@ -337,6 +410,7 @@ pub fn select(root: &Path, change_override: Option<&str>) -> Result<Selection> {
         static_note,
         coverage_note,
         no_coverage_semantics,
+        dynamic_coverage_unsupported,
     })
 }
 
@@ -374,6 +448,10 @@ fn no_coverage_footer(files: &[String]) -> String {
             )
         })
         .collect()
+}
+
+fn unsupported_dynamic_footer(files: &[String]) -> String {
+    files.iter().map(|file| format!("{file}: executable language-pack source; dynamic coverage collection is unsupported, so selected tests have static reach evidence only.\n")).collect()
 }
 
 /// Whether the changed function region `region` is the function named
@@ -461,6 +539,9 @@ pub fn render_table(sel: &Selection) -> String {
             out.push_str(&format!("  static reach: {note}\n"));
         }
         out.push_str(&no_coverage_footer(&sel.no_coverage_semantics));
+        out.push_str(&unsupported_dynamic_footer(
+            &sel.dynamic_coverage_unsupported,
+        ));
         return out;
     }
 
@@ -556,6 +637,9 @@ pub fn render_table(sel: &Selection) -> String {
         sel.tests.iter().map(|t| t.test.as_str()).collect();
     out.push_str(&format!("\n{} test(s) selected.\n", distinct.len()));
     out.push_str(&no_coverage_footer(&sel.no_coverage_semantics));
+    out.push_str(&unsupported_dynamic_footer(
+        &sel.dynamic_coverage_unsupported,
+    ));
 
     out
 }
@@ -574,6 +658,7 @@ pub fn to_json(sel: &Selection) -> serde_json::Value {
         "changed_functions": sel.changed_functions,
         "changed_branches": sel.changed_branches,
         "no_coverage_semantics": sel.no_coverage_semantics,
+        "dynamic_coverage_unsupported": sel.dynamic_coverage_unsupported,
         "static_reach_available": sel.static_reach_available,
         "static_note": sel.static_note,
         "coverage_note": sel.coverage_note,

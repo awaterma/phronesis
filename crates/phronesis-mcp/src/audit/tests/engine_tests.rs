@@ -168,6 +168,7 @@ fn empty_diagnostic_names_unmatched_rule_filter() {
         files_scanned: 0,
         per_rule: vec![],
         lexical_excluded: Vec::new(),
+        incomplete: vec![],
     };
     let diag = empty_result_diagnostic(
         &report,
@@ -587,6 +588,7 @@ fn empty_report() -> AuditReport {
         files_scanned: 0,
         per_rule: Vec::new(),
         lexical_excluded: Vec::new(),
+        incomplete: vec![],
     }
 }
 
@@ -606,6 +608,7 @@ fn report_with_hits() -> AuditReport {
             }],
         }],
         lexical_excluded: Vec::new(),
+        incomplete: vec![],
     }
 }
 

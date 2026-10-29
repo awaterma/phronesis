@@ -16,6 +16,15 @@ collection, hooks), the page says so.
 
 ---
 
+## Language packs
+
+The bundled Go starter and project-installed language packs add source-level
+facts and graph relationships through validated manifests, tree-sitter
+queries, and optional sandboxed Rhai. `phr-mcp pack list --json` and the MCP
+`list_language_packs` tool show capability activation and diagnostics; see
+[the contributor and limits guide](LANGUAGE-PACKS.md). Treat pack output as
+source analysis, not proof that code compiled or tests ran.
+
 ## What Phronesis does
 
 Phronesis is a RETE rules engine (`phr-mcp`) that sits beside a coding agent

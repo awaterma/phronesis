@@ -5,6 +5,12 @@ pub(super) fn java_rules() -> Value {
     json!({"rules": []})
 }
 
+/// Go's starter rule uses the structural dot-import fact from its pack.
+pub(super) fn go_rules() -> Value {
+    serde_json::from_str(include_str!("../../packs/go/rules.json"))
+        .expect("bundled Go rules are valid JSON")
+}
+
 /// Rhai-specific rules. Apply to projects that embed the Rhai scripting
 /// language, whether via the `rhai` crate from Rust or as standalone `.rhai`
 /// scripts. Messages are intentionally generic; project-specific guidance

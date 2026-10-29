@@ -22,7 +22,7 @@ name = "phr-mcp"
 path = "src/main.rs"
 
 [features]
-default = ["rhai", "metrics"]
+default = ["rhai", "metrics", "go-grammar"]
 # Route expressive `__script__` conditions through the sandboxed Rhai
 # evaluator and enable project predicate providers. Enabled by default;
 # `--no-default-features` retains the dependency-minimal builtin DSL.
@@ -31,6 +31,9 @@ rhai = ["dep:phronesis-rhai"]
 # On by default. It pulls in an HTTP stack (hyper); a dependency-minimal build
 # can drop it with `--no-default-features --features rhai`.
 metrics = ["dep:phronesis-metrics"]
+# Bundle the Go grammar by default. Minimal builds can omit it with
+# `--no-default-features`; the pack stays discoverable as unsupported there.
+go-grammar = ["dep:tree-sitter-go"]
 
 [dependencies]
 phr = { version = "0.39.0", path = "../phronesis", package = "phronesis", features = ["schemars"] }
@@ -62,6 +65,8 @@ tree-sitter-typescript = "0.23.2"
 # Lua grammar for coverage regions and busted spec detection (PLAN.md Part K);
 # verified against tree-sitter 0.25 under rustc 1.90.
 tree-sitter-lua = "0.5.0"
+# Go grammar for the starter language pack; optional for minimal builds.
+tree-sitter-go = { version = "0.25", optional = true }
 # 0.5.9–0.5.15 reject U+212A in string literals; covered by parser regression.
 tree-sitter-java-orchard = "=0.5.8"
 roxmltree = "0.20"
@@ -71,6 +76,8 @@ proc-macro2 = { version = "1", default-features = false, features = ["span-locat
 syn = { version = "2", default-features = false, features = ["full", "parsing"] }
 globset = "0.4"
 tempfile = "3"
+# Language-pack content digests (cryptographic, unlike the graph hash).
+sha2 = "0.10"
 
 # S9 verifier time limit: killpg reaches the verifier's whole process group
 # (solver children included). Already in the lock file.

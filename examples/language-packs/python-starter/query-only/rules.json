@@ -1,0 +1,26 @@
+{
+  "rules": [
+    {
+      "id": "python_starter.review_function",
+      "phase": "pre",
+      "audit": true,
+      "when": [
+        {
+          "pack_python_starter_function_seen": [
+            "?file",
+            "danger"
+          ]
+        },
+        {
+          "pack_python_starter_name_to_review": [
+            "?file",
+            "danger"
+          ]
+        }
+      ],
+      "then": {
+        "block": "Review danger function"
+      }
+    }
+  ]
+}

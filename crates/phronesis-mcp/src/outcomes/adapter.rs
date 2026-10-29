@@ -152,6 +152,7 @@ pub(crate) fn outcome_tags(facts: &[OutcomeFact]) -> Vec<String> {
         .filter_map(|f| match f.predicate {
             "build_outcome" => build_tag(f).map(str::to_string),
             "test_outcome" => test_tag(f).map(str::to_string),
+            "test_run_failed" => Some("outcome:test_fail".to_string()),
             "proof_outcome" => proof_tag(f),
             "proof_unbound" => proof_unbound_tag(f),
             "proof_run_outcome" => proof_run_tag(f).map(str::to_string),

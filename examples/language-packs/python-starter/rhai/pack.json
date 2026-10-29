@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "adapter_api": 1,
+  "id": "python_starter",
+  "version": "0.1.0",
+  "language": "python_starter",
+  "extensions": [
+    "pystarter"
+  ],
+  "grammar": "python",
+  "capabilities": [
+    "structural_facts",
+    "graph"
+  ],
+  "queries": [
+    {
+      "id": "functions",
+      "path": "functions.scm",
+      "emit": [
+        {
+          "kind": "declaration",
+          "name": "${name}",
+          "scope": "module",
+          "test": false,
+          "span_capture": "def"
+        },
+        {
+          "kind": "fact",
+          "name": "function_seen",
+          "args": [
+            "${name}"
+          ],
+          "span_capture": "def"
+        },
+        {
+          "kind": "fact",
+          "name": "name_to_review",
+          "args": [
+            "${name}"
+          ],
+          "span_capture": "name"
+        }
+      ]
+    }
+  ],
+  "rules": "rules.json",
+  "context_files": [],
+  "fixtures": [
+    {
+      "path": "fixtures/empty.pystarter",
+      "expected": "fixtures/empty.expected.json"
+    }
+  ],
+  "adapter": "adapter.rhai"
+}

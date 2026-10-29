@@ -88,6 +88,21 @@ fn different_content_hashes_differently() {
 }
 
 #[test]
+fn native_incremental_save_keeps_embedded_pack_input_fresh() {
+    let d = project();
+    write(d.path(), "src/lib.rs", "fn first() {}\n");
+    rebuild(d.path()).expect("rebuild");
+    let changed = "fn second() {}\n";
+    write(d.path(), "src/lib.rs", changed);
+    on_save(d.path(), "src/lib.rs", changed).expect("incremental save");
+    let index = load_index(&index_path(d.path())).expect("index");
+    assert_eq!(check_freshness(d.path(), &index), Freshness::Fresh);
+    for (key, hash) in builtin_pack_hashes() {
+        assert_eq!(index.entries.get(&key), Some(&hash), "{key}");
+    }
+}
+
+#[test]
 fn graph_sync_reconciles_rule_bindings_in_the_same_generation() {
     let d = project();
     write_binding_rule(d.path());
@@ -1381,4 +1396,48 @@ fn incremental_save_adds_other_files_newly_dropped_edges_to_their_rebuild_counts
         (outcome.unresolved_calls, outcome.ambiguous_calls),
         (full.unresolved_calls, full.ambiguous_calls)
     );
+}
+
+/// Review finding 7: a graph built under an older embedded pack (a binary
+/// upgrade that changes the bundled Go assets) must not be certified fresh
+/// by a native incremental save. The save re-extracts only its own file, so
+/// it must rebuild first when the stored embedded digests differ.
+#[cfg(all(feature = "go-grammar", feature = "rhai"))]
+#[test]
+fn incremental_save_rebuilds_when_embedded_pack_digests_changed() {
+    let d = project();
+    write(d.path(), "src/lib.rs", "fn first() {}\n");
+    write(d.path(), "a.go", "package main\n\nfunc A() {}\n");
+    rebuild(d.path()).expect("rebuild");
+    let go_edges = |root: &Path| edges(root).iter().filter(|e| e.src == "a.go").count();
+    assert!(go_edges(d.path()) > 0, "the Go pack contributes edges");
+
+    // Simulate a graph produced by a binary whose embedded Go pack differs:
+    // its Go edges are gone (stand-ins for edges the old pack produced) and
+    // the index records another digest. Everything else stays consistent.
+    let kept: Vec<Edge> = edges(d.path())
+        .into_iter()
+        .filter(|e| e.src != "a.go")
+        .collect();
+    store::write_atomic(&store::graph_path(d.path()), &kept).expect("write graph");
+    let ipath = index_path(d.path());
+    let mut index = load_index(&ipath).expect("index");
+    let graph_bytes = std::fs::read(store::graph_path(d.path())).expect("graph bytes");
+    index
+        .entries
+        .insert(store::GRAPH_REL_PATH.to_string(), hash_bytes(&graph_bytes));
+    for key in builtin_pack_hashes().keys() {
+        index.entries.insert(key.clone(), 0);
+    }
+    save_index(&ipath, &index).expect("save index");
+
+    let changed = "fn second() {}\n";
+    write(d.path(), "src/lib.rs", changed);
+    on_save(d.path(), "src/lib.rs", changed).expect("incremental save");
+    assert!(
+        go_edges(d.path()) > 0,
+        "stale embedded-pack evidence was certified instead of re-extracted"
+    );
+    let index = load_index(&ipath).expect("index");
+    assert_eq!(check_freshness(d.path(), &index), Freshness::Fresh);
 }

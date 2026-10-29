@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "adapter_api": 1,
+  "id": "go",
+  "version": "0.1.0",
+  "language": "go",
+  "extensions": ["go"],
+  "grammar": "go",
+  "capabilities": ["structural_facts", "graph", "toolchains"],
+  "queries": [
+    { "id": "declarations", "path": "declarations.scm", "emit": [] },
+    { "id": "calls", "path": "calls.scm", "emit": [] },
+    { "id": "imports", "path": "imports.scm", "emit": [] }
+  ],
+  "adapter": "adapter.rhai",
+  "rules": "rules.json",
+  "toolchains": "toolchains.json",
+  "context_files": ["go.mod"],
+  "test_file_suffixes": ["_test.go"],
+  "fixtures": [
+    { "path": "fixtures/basic.go", "expected": "fixtures/basic.expected.json" }
+  ]
+}

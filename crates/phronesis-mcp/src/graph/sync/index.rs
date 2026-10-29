@@ -1,7 +1,7 @@
 //! The staleness index: its on-disk format, the walk that decides which
 //! files it covers, and the freshness comparison.
 
-use super::{FORMAT_KEY, Freshness, GENERATION_KEY, GRAPH_FORMAT, Index, hash_content};
+use super::{FORMAT_KEY, Freshness, GENERATION_KEY, GRAPH_FORMAT, Index, hash_bytes};
 use crate::graph::store;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -69,6 +69,10 @@ pub(super) fn tracked_files(root: &Path) -> Vec<String> {
     walk(root).0
 }
 
+fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
+    walk_with(root, crate::language_packs::load(root).ok().as_ref())
+}
+
 /// One walk yielding both the tracked-language files and the build
 /// manifests (Java's, and every `Cargo.toml`). `check_freshness` needs both
 /// sets; collecting them in separate
@@ -78,16 +82,30 @@ pub(super) fn tracked_files(root: &Path) -> Vec<String> {
 /// The manifest policy here must stay identical to
 /// `java::project::input_files`, which shares this hidden-directory and
 /// `node_modules` handling.
-fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
+fn walk_with(
+    root: &Path,
+    registry: Option<&crate::language_packs::PackRegistry>,
+) -> (Vec<String>, Vec<String>) {
     let mut tracked = Vec::new();
     let mut manifests = Vec::new();
+    let pack_extensions = registry
+        .map(|r| {
+            r.manifests()
+                .filter(|m| m.has(crate::language_packs::Capability::Graph))
+                .flat_map(|m| m.extensions.iter().cloned())
+                .collect::<std::collections::BTreeSet<_>>()
+        })
+        .unwrap_or_default();
     for entry in ignore::WalkBuilder::new(root)
         .hidden(true)
         .filter_entry(|e| e.file_name() != "node_modules")
         .build()
         .flatten()
     {
-        if !entry.file_type().is_some_and(|t| t.is_file()) {
+        if !entry
+            .file_type()
+            .is_some_and(|t| t.is_file() || t.is_symlink())
+        {
             continue;
         }
         let path = entry.path();
@@ -98,13 +116,20 @@ fn walk(root: &Path) -> (Vec<String>, Vec<String>) {
             continue;
         };
         let rel = rel.replace('\\', "/");
+        // Native discovery has always ignored symlinks. Pack-owned source
+        // links must reach the bounded reader so it can report them unsafe.
+        if entry.file_type().is_some_and(|t| t.is_symlink())
+            && !pack_extensions.contains(rel.rsplit('.').next().unwrap_or(""))
+        {
+            continue;
+        }
         // No manifest name carries a tracked extension, so the two sets stay
         // disjoint and a manifest never enters the tracked list.
         if crate::graph::java::project::is_manifest(&rel) || is_cargo_manifest(&rel) {
             manifests.push(rel);
             continue;
         }
-        if !is_tracked(&rel) {
+        if !is_tracked(&rel) && !pack_extensions.contains(rel.rsplit('.').next().unwrap_or("")) {
             continue;
         }
         tracked.push(rel);
@@ -157,13 +182,36 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
             expected: GRAPH_FORMAT,
         };
     }
-    let mut drifted = Vec::new();
-    let (mut on_disk, manifests) = walk(root);
+    // One registry load and one tree walk serve every input below; this
+    // runs on the hook path whenever a rule names a graph relation.
+    let (registry, mut drifted) = match crate::language_packs::load(root) {
+        Ok(registry) => (Some(registry), Vec::new()),
+        Err(error) => (
+            None,
+            vec![crate::language_packs::repair::load_failure_path(
+                root, &error,
+            )],
+        ),
+    };
+    // A local pack failure must not hide independent native drift. It leaves
+    // pack-dependent evidence untrusted without rewriting graph/index state.
+    let (mut on_disk, manifests) = walk_with(root, registry.as_ref());
+    let context_inputs = registry
+        .as_ref()
+        .map(|registry| context_inputs_for(root, registry, &on_disk))
+        .unwrap_or_default();
     on_disk.extend(manifests);
     if root.join(".phronesis/graph.toml").is_file() {
         on_disk.push(".phronesis/graph.toml".to_string());
     }
     on_disk.extend(decision_input_files(root));
+    let guarded_inputs = pack_input_files(root)
+        .into_iter()
+        .chain(context_inputs)
+        .collect::<std::collections::BTreeSet<_>>();
+    on_disk.extend(guarded_inputs.iter().cloned());
+    let builtin_hashes = builtin_pack_hashes();
+    on_disk.extend(builtin_hashes.keys().cloned());
     // The graph file itself. Source hashes only prove the graph *should*
     // match the tree; this hash proves the graph on disk is the one the last
     // rebuild or save wrote. A truncated, garbled, emptied, or deleted graph —
@@ -172,9 +220,25 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     on_disk.push(store::GRAPH_REL_PATH.to_string());
 
     for rel in &on_disk {
-        let current = std::fs::read_to_string(root.join(rel))
+        let current = if let Some(hash) = builtin_hashes.get(rel) {
+            Some(*hash)
+        } else if guarded_inputs.contains(rel) {
+            crate::language_packs::assets::read_bounded(
+                root,
+                None,
+                rel,
+                crate::language_packs::limits::MAX_TOTAL_ASSET_BYTES,
+            )
             .ok()
-            .map(|c| hash_content(&c));
+            .map(|c| hash_bytes(&c))
+        } else if std::fs::symlink_metadata(root.join(rel))
+            .ok()
+            .is_some_and(|m| m.file_type().is_symlink())
+        {
+            None
+        } else {
+            std::fs::read(root.join(rel)).ok().map(|c| hash_bytes(&c))
+        };
         match (current, index.entries.get(rel)) {
             (Some(now), Some(&then)) if now == then => {}
             _ => drifted.push(rel.clone()),
@@ -184,6 +248,12 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
     // in the graph and would keep matching rules.
     for rel in index.entries.keys() {
         if !on_disk.contains(rel) {
+            // Without validated ownership/context metadata, a pack source or
+            // context missing from the native walk is unverified, not proven
+            // deleted. The failed pack directory already names that scope.
+            if registry.is_none() && !is_native_input(rel) {
+                continue;
+            }
             drifted.push(rel.clone());
         }
     }
@@ -195,6 +265,14 @@ pub fn check_freshness(root: &Path, index: &Index) -> Freshness {
         drifted.dedup();
         Freshness::Stale(drifted)
     }
+}
+
+/// Inputs whose discovery does not depend on an installed pack manifest.
+fn is_native_input(rel: &str) -> bool {
+    is_tracked(rel)
+        || is_cargo_manifest(rel)
+        || crate::graph::java::project::is_manifest(rel)
+        || rel.starts_with(".phronesis/wiki/decisions/")
 }
 
 /// Every file extension the graph has an extractor for. A file outside this
@@ -223,4 +301,84 @@ pub(super) fn is_tracked(file_path: &str) -> bool {
         return false;
     }
     TRACKED_EXTENSIONS.iter().any(|e| file_path.ends_with(e))
+}
+
+/// Every on-disk installed-pack byte is a freshness input, including locks and
+/// undeclared files. New and removed entries therefore invalidate the index.
+pub(super) fn pack_input_files(root: &Path) -> Vec<String> {
+    fn visit(root: &Path, dir: &Path, out: &mut Vec<String>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() && !path.is_symlink() {
+                visit(root, &path, out);
+            } else if let Ok(rel) = path.strip_prefix(root) {
+                out.push(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    visit(
+        root,
+        &root.join(crate::language_packs::registry::PACKS_DIR),
+        &mut out,
+    );
+    out.sort();
+    out
+}
+
+/// Index-key prefix for an embedded pack's freshness input. The key names no
+/// file under the project root, so file counts must skip it.
+pub(crate) const BUILTIN_PACK_KEY_PREFIX: &str = "@pack-builtin/";
+
+/// Virtual freshness inputs for embedded packs, whose bytes are in the binary
+/// rather than under the project root.
+pub(crate) fn builtin_pack_hashes() -> BTreeMap<String, u64> {
+    crate::language_packs::registry::builtin_pack_sources()
+        .into_iter()
+        .map(|assets| {
+            let key = format!("{BUILTIN_PACK_KEY_PREFIX}{}", assets.manifest.id);
+            let digest = crate::language_packs::digest_assets(&assets);
+            (key, hash_bytes(digest.as_bytes()))
+        })
+        .collect()
+}
+
+/// Actual nearest context inputs for each tracked pack source. Re-discovery
+/// catches a new file closer to a source, even when `.gitignore` excludes it.
+pub(super) fn context_input_files(root: &Path) -> Vec<String> {
+    let Ok(registry) = crate::language_packs::load(root) else {
+        return Vec::new();
+    };
+    let tracked = walk_with(root, Some(&registry)).0;
+    context_inputs_for(root, &registry, &tracked)
+}
+
+/// [`context_input_files`] over an already-loaded registry and tracked list.
+fn context_inputs_for(
+    root: &Path,
+    registry: &crate::language_packs::PackRegistry,
+    tracked: &[String],
+) -> Vec<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for source in tracked {
+        let Ok(Some(pack)) =
+            registry.for_path_with(source, crate::language_packs::Capability::Graph)
+        else {
+            continue;
+        };
+        let parent = Path::new(&source).parent().unwrap_or_else(|| Path::new(""));
+        for name in &pack.assets.manifest.context_files {
+            for dir in parent.ancestors() {
+                let rel = dir.join(name);
+                if std::fs::symlink_metadata(root.join(&rel)).is_ok() {
+                    out.insert(rel.to_string_lossy().replace('\\', "/"));
+                    break;
+                }
+            }
+        }
+    }
+    out.into_iter().collect()
 }

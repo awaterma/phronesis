@@ -1,7 +1,38 @@
 {
   "version": 1,
   "taggers": [
-    { "tag": "build", "when": [ { "bash_command_matches": "cargo (build|check|test)" } ] }
+    {
+      "tag": "build",
+      "when": [
+        {
+          "bash_command_matches": "cargo (build|check|test)"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "rs"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "py"
+        }
+      ]
+    },
+    {
+      "tag": "source-edit",
+      "when": [
+        {
+          "file_extension_is": "swift"
+        }
+      ]
+    }
   ],
   "modules": []
 }

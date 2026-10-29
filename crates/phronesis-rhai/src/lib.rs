@@ -54,6 +54,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+pub mod adapter;
+
+pub use adapter::{
+    AdapterError, evaluate_adapter, evaluate_adapter_with_output_limit, validate_adapter,
+};
 use phronesis::{BuiltinScriptEvaluator, Fact, ScriptEval};
 pub use rhai;
 use rhai::packages::{Package, StandardPackage};

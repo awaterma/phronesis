@@ -689,7 +689,7 @@
   </section>
 
 <!-- BEGIN GENERATED RULES -->
-<p class="catalogue-stamp">documents the default packs as of v0.35.0</p>
+<p class="catalogue-stamp">documents the default packs as of v0.38.0</p>
 <section class="pack-section" id="pack-llm">
 <h2 class="pack-name">llm pack</h2>
 <article class="rule" data-level="block" id="enforce-no-pre-existing-issue">
@@ -1620,6 +1620,18 @@
     <h3 class="rule-id">audit-helm3-lookup</h3>
     <p class="rule-summary">Helm template in ?file uses `lookup` — render depends on live cluster state and cannot be fully validated offline. Use `helm template --dry-run` with a test cluster to verify behavior.</p>
     <div class="rule-body"><code>helm3_cluster_lookup</code></div>
+  </div>
+</article>
+</section>
+<section class="pack-section" id="pack-go">
+<h2 class="pack-name">go pack</h2>
+<article class="rule" data-level="warn" id="go.warn-dot-import">
+  <div class="rule-mark" aria-hidden="true">!</div>
+  <div class="rule-content">
+    <div class="rule-tags"><span class="tag tag-warn">warn</span><span class="tag">post</span><span class="tag">go</span></div>
+    <h3 class="rule-id">go.warn-dot-import</h3>
+    <p class="rule-summary">Dot import of ?path hides where names come from; prefer a qualified import.</p>
+    <div class="rule-body"><code>pack_go_dot_import + file_extension_is</code></div>
   </div>
 </article>
 </section>

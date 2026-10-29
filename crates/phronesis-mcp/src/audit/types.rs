@@ -109,6 +109,8 @@ pub struct AuditReport {
     /// were still offered to structural rules (unless over the size cap).
     /// Relative to the scan root, sorted. Empty when nothing was excluded.
     pub lexical_excluded: Vec<PathBuf>,
+    /// Adapter/configuration errors that make a clean audit verdict impossible.
+    pub incomplete: Vec<String>,
 }
 
 #[derive(Debug, Clone)]

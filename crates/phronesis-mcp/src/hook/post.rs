@@ -1,13 +1,14 @@
+use std::collections::HashSet;
 use std::process;
 
 use phr::Fact;
 
 use crate::diff_extract;
 use crate::hook_facts::{
-    assert_coverage_facts, assert_diff_facts, assert_language_pack_facts, assert_properties_facts,
-    assert_test_facts, assert_values_facts, check_bash_command_patterns, check_content_patterns,
-    check_missing_patterns, collect_bash_command_patterns, collect_content_patterns,
-    collect_missing_patterns, collect_rule_predicates,
+    assert_coverage_facts, assert_diff_facts, assert_language_pack_facts_with_registry,
+    assert_properties_facts, assert_test_facts, assert_values_facts, check_bash_command_patterns,
+    check_content_patterns, check_missing_patterns, collect_bash_command_patterns,
+    collect_content_patterns, collect_missing_patterns, collect_rule_predicates,
 };
 use crate::security::{self, MAX_FACT_CONTENT_BYTES, read_file_capped, resolve_safe_path};
 
@@ -79,12 +80,13 @@ pub async fn run_post_check() -> anyhow::Result<()> {
     let (
         rules,
         override_facts,
+        registry,
         content_patterns,
         bash_command_patterns,
         missing_patterns,
         rule_predicates,
     ) = {
-        let loaded = match super::load_rules("post") {
+        let loaded = match super::load_rules("post", &file_path) {
             Ok(Some(r)) => r,
             Ok(None) => {
                 // No post rules — still journal the executed call so future
@@ -118,7 +120,15 @@ pub async fn run_post_check() -> anyhow::Result<()> {
         let rp = collect_rule_predicates(&rules);
         let bcp = collect_bash_command_patterns(&rules);
         let mp = collect_missing_patterns(&rules);
-        (rules, loaded.override_facts, cp, bcp, mp, rp)
+        (
+            rules,
+            loaded.override_facts,
+            loaded.registry,
+            cp,
+            bcp,
+            mp,
+            rp,
+        )
     };
 
     let network = {
@@ -171,6 +181,8 @@ pub async fn run_post_check() -> anyhow::Result<()> {
                 content: &content,
                 content_patterns: &content_patterns,
                 missing_patterns: &missing_patterns,
+                rule_predicates: &rule_predicates,
+                registry: &registry,
             },
         )
         .await
@@ -345,6 +357,8 @@ struct PostContentInput<'a> {
     content: &'a str,
     content_patterns: &'a [String],
     missing_patterns: &'a [String],
+    rule_predicates: &'a HashSet<String>,
+    registry: &'a crate::language_packs::PackRegistry,
 }
 
 async fn assert_post_content_facts(
@@ -356,6 +370,8 @@ async fn assert_post_content_facts(
         content,
         content_patterns,
         missing_patterns,
+        rule_predicates,
+        registry,
     } = input;
     // Only assert the full content as a fact when small enough to keep
     // working-memory growth bounded. Pattern checks below still operate on
@@ -416,7 +432,19 @@ async fn assert_post_content_facts(
             e
         })?;
 
-    assert_language_pack_facts(network, file_path, content)
+    // Structural extraction (and its syntax/budget failures) runs only
+    // when a loaded rule's predicates demand this file's structural pack
+    // owner — not merely because the extension matches an installed or
+    // built-in pack (see `PackRegistry::structural_facts_demanded`).
+    let pack_demanded = if file_path.is_empty() {
+        false
+    } else {
+        let root = security::project_root();
+        let rel = crate::graph::hydrate::repo_relative(&root, file_path)
+            .unwrap_or_else(|| file_path.to_string());
+        registry.structural_facts_demanded(&rel, rule_predicates)
+    };
+    assert_language_pack_facts_with_registry(network, file_path, content, registry, pack_demanded)
         .await
         .map_err(|e| {
             eprintln!(

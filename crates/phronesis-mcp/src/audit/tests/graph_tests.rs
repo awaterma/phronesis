@@ -21,6 +21,7 @@ fn empty_report() -> AuditReport {
         files_scanned: 0,
         per_rule: Vec::new(),
         lexical_excluded: Vec::new(),
+        incomplete: vec![],
     }
 }
 
