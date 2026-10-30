@@ -13,6 +13,10 @@ use thiserror::Error;
 
 use crate::rules_file::{self, DiskRule, RulesFileError};
 
+use phronesis_governance::composition::{
+    compose, override_facts_at, LoadedLayer, RuleOrigin as GovRuleOrigin, RuleOverride as GovRuleOverride,
+};
+
 pub const CONFIG_FILE: &str = "loader.json";
 pub const OVERRIDE_PREDICATE: &str = "rule_overridden";
 
@@ -181,8 +185,20 @@ pub fn resolve_with_registry(
     resolve_with_pack_layers(project_root, pack_layers)
 }
 
+fn from_gov_origin(origin: GovRuleOrigin) -> RuleOrigin {
+    RuleOrigin {
+        layer: origin.layer,
+        path: PathBuf::from(origin.source_id),
+        decision: origin.decision,
+    }
+}
+
 /// Compose validated pack layers first, then project layers. No registry call
 /// occurs below this point, so pack loading cannot recurse into rule loading.
+/// The ordered later-wins merge itself is
+/// [`phronesis_governance::composition::compose`]; filesystem paths cross the
+/// boundary as opaque `source_id` strings and map back onto
+/// [`RuleOrigin::path`].
 fn resolve_with_pack_layers(
     project_root: &Path,
     pack_layers: Vec<crate::language_packs::integration::PackRuleLayer>,
@@ -209,37 +225,16 @@ fn resolve_with_pack_layers(
             optional: true,
         }]
     };
-    let mut rules = Vec::<DiskRule>::new();
-    let mut positions = HashMap::<String, usize>::new();
-    let mut origins = HashMap::<String, RuleOrigin>::new();
-    let mut overrides = Vec::new();
-    let mut apply = |file_rules: Vec<DiskRule>, origin: RuleOrigin| {
-        for rule in file_rules {
-            if let Some(position) = positions.get(&rule.id).copied() {
-                let overridden = origins
-                    .get(&rule.id)
-                    .cloned()
-                    .expect("indexed rule has origin");
-                overrides.push(RuleOverride {
-                    rule_id: rule.id.clone(),
-                    overridden,
-                    winner: origin.clone(),
-                });
-                rules[position] = rule.clone();
-            } else {
-                positions.insert(rule.id.clone(), rules.len());
-                rules.push(rule.clone());
-            }
-            origins.insert(rule.id.clone(), origin.clone());
-        }
-    };
+    let mut loaded = Vec::new();
     for layer in pack_layers {
-        let origin = RuleOrigin {
-            layer: layer.name,
-            path: layer.path,
-            decision: None,
-        };
-        apply(layer.rules, origin);
+        loaded.push(LoadedLayer {
+            origin: GovRuleOrigin {
+                layer: layer.name,
+                source_id: layer.path.display().to_string(),
+                decision: None,
+            },
+            rules: layer.rules,
+        });
     }
     for layer in project_layers {
         let path = resolve_path(project_root, &layer.path)?;
@@ -253,15 +248,32 @@ fn resolve_with_pack_layers(
             });
         }
         let file = rules_file::read(&path)?;
-        let origin = RuleOrigin {
-            layer: layer.name,
-            path,
-            decision: layer.decision,
-        };
-        apply(file.rules, origin);
+        loaded.push(LoadedLayer {
+            origin: GovRuleOrigin {
+                layer: layer.name,
+                source_id: path.display().to_string(),
+                decision: layer.decision,
+            },
+            rules: file.rules,
+        });
     }
+    let composed = compose(&loaded);
+    let origins = composed
+        .origins
+        .into_iter()
+        .map(|(rule_id, origin)| (rule_id, from_gov_origin(origin)))
+        .collect();
+    let overrides = composed
+        .overrides
+        .into_iter()
+        .map(|o| RuleOverride {
+            rule_id: o.rule_id,
+            overridden: from_gov_origin(o.overridden),
+            winner: from_gov_origin(o.winner),
+        })
+        .collect();
     Ok(ResolvedRules {
-        rules,
+        rules: composed.rules,
         origins,
         overrides,
         configured,
@@ -310,24 +322,23 @@ pub fn override_facts(overrides: &[RuleOverride]) -> Vec<Fact> {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs())
         .unwrap_or(0);
-    overrides
+    let gov_overrides: Vec<GovRuleOverride> = overrides
         .iter()
-        .enumerate()
-        .map(|(index, item)| Fact {
-            id: format!("__rule_override__:{index}:{}", item.rule_id),
-            predicate: OVERRIDE_PREDICATE.to_string(),
-            args: vec![
-                item.rule_id.clone(),
-                item.overridden.layer.clone(),
-                item.overridden.path.display().to_string(),
-                item.winner.layer.clone(),
-                item.winner.path.display().to_string(),
-                item.winner.decision.clone().unwrap_or_default(),
-            ],
-            timestamp,
-            source: Some("rule_layers".to_string()),
+        .map(|item| GovRuleOverride {
+            rule_id: item.rule_id.clone(),
+            overridden: GovRuleOrigin {
+                layer: item.overridden.layer.clone(),
+                source_id: item.overridden.path.display().to_string(),
+                decision: item.overridden.decision.clone(),
+            },
+            winner: GovRuleOrigin {
+                layer: item.winner.layer.clone(),
+                source_id: item.winner.path.display().to_string(),
+                decision: item.winner.decision.clone(),
+            },
         })
-        .collect()
+        .collect();
+    override_facts_at(&gov_overrides, timestamp)
 }
 
 #[cfg(test)]

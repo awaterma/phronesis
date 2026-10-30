@@ -302,7 +302,7 @@ impl SourceRule {
             .iter()
             .map(|v| serde_json::from_value::<WhenClause>(v.clone()))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| PolicyError::Unfold {
+            .map_err(|e| PolicyError::SyntheticTagger {
                 source_id: id.clone(),
                 message: e.to_string(),
             })?;
@@ -668,6 +668,13 @@ pub enum PolicyError {
     /// A rule's `when` could not be expanded to flat disk rules.
     #[error("rules source `{source_id}` could not be expanded: {message}")]
     Unfold { source_id: String, message: String },
+    /// [`SourceRule::synthetic_tagger`] construction failure. Same payload
+    /// shape as [`PolicyError::Unfold`], but the display keeps the legacy
+    /// MCP wording ("rules file at …") because the MCP journey tagger
+    /// stringifies this error verbatim into its own config-error type and
+    /// that consumer's wording is outside this crate's control.
+    #[error("rules file at {source_id} could not be expanded: {message}")]
+    SyntheticTagger { source_id: String, message: String },
 }
 
 /// Structured replacement for the warnings the former loader printed to
@@ -879,6 +886,19 @@ fn is_or_expansion_suffix(suffix: &str) -> bool {
         part.strip_prefix("or")
             .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
     })
+}
+
+/// The OR-expansion position a flat rule id encodes relative to its source
+/// rule: `r#or0-or1` against source `r` is `Some([0, 1])`; an unexpanded
+/// rule (flat id equal to the source id, possibly with a literal `#` in
+/// it) is `None`. Ids that do not follow the expansion grammar — not
+/// producible by [`unfold_or_with_diagnostics`] — return `None`.
+fn expansion_path(flat_id: &str, source_id: &str) -> Option<Vec<usize>> {
+    let suffix = flat_id.strip_prefix(source_id)?.strip_prefix('#')?;
+    suffix
+        .split('-')
+        .map(|part| part.strip_prefix("or")?.parse::<usize>().ok())
+        .collect()
 }
 
 /// Expand a SourceRule's OR clauses into flat, OR-free DiskRules via
@@ -1095,6 +1115,26 @@ pub enum Selection {
     Audit,
 }
 
+/// Original-source metadata for one flat rule, preserved across unfolding
+/// by a private sidecar on [`CompiledPolicy`] instead of widening the
+/// public [`DiskRule`] shape (whose literal constructors must keep
+/// compiling). Only populated by the source route,
+/// [`CompiledPolicy::compile_source`]; the flat
+/// [`CompiledPolicy::compile`] route has no source metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceOrigin {
+    /// The [`SourceRule`] id this flat rule was unfolded from. Equal to
+    /// the flat rule's own id unless the source rule was OR-expanded.
+    pub source_rule_id: String,
+    /// The source-only `binds` flag: the graph-binding candidate
+    /// extraction opt-out that [`DiskRule`] cannot carry.
+    pub binds: Option<bool>,
+    /// OR-expansion position of this flat rule within its source rule,
+    /// as the `#or…` suffix segments in order. `None` when the source
+    /// rule produced a single flat rule under its own id.
+    pub expansion: Option<Vec<usize>>,
+}
+
 /// A validated set of flat disk rules ready for selection and engine
 /// compilation.
 ///
@@ -1106,6 +1146,9 @@ pub enum Selection {
 pub struct CompiledPolicy {
     rules: Vec<DiskRule>,
     diagnostics: Vec<PolicyDiagnostic>,
+    /// Private source-metadata sidecar: per kept flat rule id, the source
+    /// rule it was unfolded from. Empty for the flat compile route.
+    source_origins: HashMap<String, SourceOrigin>,
 }
 
 impl CompiledPolicy {
@@ -1117,8 +1160,69 @@ impl CompiledPolicy {
     /// source validation, using the same messages with `"conditions"` /
     /// `"actions"` as the field names.
     pub fn compile(rules: Vec<DiskRule>) -> Result<Self, PolicyError> {
+        let (keep, diagnostics) = Self::validate_rules(rules, "compiled")?;
+        Ok(CompiledPolicy {
+            rules: keep,
+            diagnostics,
+            source_origins: HashMap::new(),
+        })
+    }
+
+    /// Validate and compile source rules: unfold every OR clause with
+    /// [`unfold_or_with_diagnostics`], record the private source sidecar
+    /// (original source id, source-only `binds` flag, expansion position)
+    /// for each flat rule, then run exactly the validation
+    /// [`CompiledPolicy::compile`] runs — identical duplicate ids dedupe
+    /// with a [`PolicyDiagnostic::DuplicateIdenticalRule`] and the sidecar
+    /// entry of the first copy wins, same-id differing definitions are a
+    /// [`PolicyError::Invalid`]. Unfold errors carry the offending
+    /// source rule's id as `source_id`; unfold diagnostics (large OR
+    /// expansions) surface in [`CompiledPolicy::diagnostics`].
+    pub fn compile_source(sources: &[SourceRule]) -> Result<Self, PolicyError> {
+        let mut flat = Vec::new();
+        let mut sidecar: HashMap<String, SourceOrigin> = HashMap::new();
+        let mut unfold_diagnostics = Vec::new();
+        for source in sources {
+            let (expanded, source_diagnostics) = unfold_or_with_diagnostics(source)?;
+            unfold_diagnostics.extend(source_diagnostics);
+            for rule in expanded {
+                // Validation keeps the first copy of a duplicate id; the
+                // sidecar must keep the first copy's origin too.
+                sidecar.entry(rule.id.clone()).or_insert(SourceOrigin {
+                    source_rule_id: source.id.clone(),
+                    binds: source.binds,
+                    expansion: expansion_path(&rule.id, &source.id),
+                });
+                flat.push(rule);
+            }
+        }
+        let (keep, mut diagnostics) = Self::validate_rules(flat, "compiled")?;
+        // Dropped identical duplicates share their id with the kept copy,
+        // so keeping the kept ids' entries keeps the first copy's origin.
+        let source_origins = keep
+            .iter()
+            .filter_map(|rule| {
+                sidecar
+                    .get(&rule.id)
+                    .map(|origin| (rule.id.clone(), origin.clone()))
+            })
+            .collect();
+        diagnostics.extend(unfold_diagnostics);
+        Ok(CompiledPolicy {
+            rules: keep,
+            diagnostics,
+            source_origins,
+        })
+    }
+
+    /// Validate flat disk rules (strict loader contract) and dedupe
+    /// identical duplicates, returning the kept rules and diagnostics.
+    fn validate_rules(
+        rules: Vec<DiskRule>,
+        source_label: &str,
+    ) -> Result<(Vec<DiskRule>, Vec<PolicyDiagnostic>), PolicyError> {
         let invalid = |message: String| PolicyError::Invalid {
-            source_id: "compiled".to_string(),
+            source_id: source_label.to_string(),
             message,
         };
         let mut seen: HashMap<&str, &DiskRule> = HashMap::new();
@@ -1173,10 +1277,7 @@ impl CompiledPolicy {
                 }
             }
         }
-        Ok(CompiledPolicy {
-            rules: keep,
-            diagnostics,
-        })
+        Ok((keep, diagnostics))
     }
 
     /// The validated disk rules in input order, with all metadata
@@ -1188,6 +1289,15 @@ impl CompiledPolicy {
     /// Diagnostics produced while compiling (identical-duplicate dedupe).
     pub fn diagnostics(&self) -> &[PolicyDiagnostic] {
         &self.diagnostics
+    }
+
+    /// Source-route metadata for one compiled rule: the source rule it
+    /// was unfolded from, the source-only `binds` flag, and the
+    /// OR-expansion position. `None` when the policy was compiled from
+    /// flat [`DiskRule`]s via [`CompiledPolicy::compile`] or the id is
+    /// unknown.
+    pub fn source_origin(&self, rule_id: &str) -> Option<&SourceOrigin> {
+        self.source_origins.get(rule_id)
     }
 
     /// Select rules for a [`Selection`] and convert them to engine
@@ -1260,7 +1370,8 @@ mod tests {
         match err {
             PolicyError::Malformed { message, .. }
             | PolicyError::Invalid { message, .. }
-            | PolicyError::Unfold { message, .. } => message,
+            | PolicyError::Unfold { message, .. }
+            | PolicyError::SyntheticTagger { message, .. } => message,
         }
     }
 
@@ -1269,6 +1380,7 @@ mod tests {
             PolicyError::Malformed { .. } => "malformed",
             PolicyError::Invalid { .. } => "invalid",
             PolicyError::Unfold { .. } => "unfold",
+            PolicyError::SyntheticTagger { .. } => "synthetic_tagger",
         }
     }
 
@@ -2221,11 +2333,15 @@ mod tests {
     #[test]
     fn synthetic_tagger_malformed_when_is_unfold_error() {
         let err = SourceRule::synthetic_tagger("t", &[serde_json::json!({"p": 5})]).unwrap_err();
-        assert_eq!(err_kind(&err), "unfold");
-        match &err {
-            PolicyError::Unfold { source_id, .. } => assert_eq!(source_id, "tagger:t"),
-            other => panic!("wrong kind: {other}"),
-        }
+        assert_eq!(err_kind(&err), "synthetic_tagger");
+        assert_eq!(
+            err.to_string(),
+            "rules file at tagger:t could not be expanded: predicate value must be string, array, or bool; got 5"
+        );
+        assert!(matches!(
+            &err,
+            PolicyError::SyntheticTagger { source_id, .. } if source_id == "tagger:t"
+        ));
     }
 
     #[test]

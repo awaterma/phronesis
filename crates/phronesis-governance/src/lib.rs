@@ -17,9 +17,9 @@ pub use capsule::{
 pub use policy::{
     ACTION_VERBS, CompiledPolicy, DiskAction, DiskCondition, DiskRule, ParsedPolicy, ParsedSource,
     Phase, PolicyDiagnostic, PolicyError, RULE_PHASES, RuleCheckError, RulesFile, Selection,
-    SourceRule, WhenClause, base_rule_id, check_action_type, check_conditions_nonempty,
-    check_single_action, parse, parse_source, rule_from_disk, rule_to_disk, unfold_or,
-    unfold_or_with_diagnostics,
+    SourceOrigin, SourceRule, WhenClause, base_rule_id, check_action_type,
+    check_conditions_nonempty, check_single_action, parse, parse_source, rule_from_disk,
+    rule_to_disk, unfold_or, unfold_or_with_diagnostics,
 };
 
 pub mod composition;
