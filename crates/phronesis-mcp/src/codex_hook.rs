@@ -530,6 +530,10 @@ fn warn_decision(message: String) -> CodexDecision {
 /// Rule outcome of firing one network.
 #[derive(Debug)]
 struct Verdict {
+    /// The annotated raw consequences behind `logged`, kept so stale-evidence
+    /// demotion re-classifies through the shared governance decision layer
+    /// instead of rewriting log entries in place.
+    consequences: Vec<phr::Consequence>,
     logged: Vec<crate::hook_logged::LoggedConsequence>,
     block_msgs: Vec<String>,
     warn_msgs: Vec<String>,
@@ -538,18 +542,23 @@ struct Verdict {
 impl Verdict {
     /// Rules reading a drifted graph reason from evidence we cannot vouch
     /// for, so the harness declines to act on their verdicts: they warn
-    /// rather than block, exactly as the Claude pre-hook does.
+    /// rather than block, exactly as the Claude pre-hook does. The exact
+    /// stale ids drive demotion inside the shared classifier; the logged
+    /// wire entries (demoted blocks shown as `constraint_warning`) come out
+    /// byte-identical to the previous in-place rewrite.
     fn demote_stale(&mut self, stale_graph_rules: &std::collections::BTreeSet<phr::RuleId>) {
         if stale_graph_rules.is_empty() {
             return;
         }
-        crate::hook_logged::demote_violations_from(&mut self.logged, stale_graph_rules);
-        let (v, w) = crate::hook_logged::split_messages_by_action_type(&self.logged);
+        let (logged, v, w) =
+            crate::hook_logged::classify_logged(&self.consequences, stale_graph_rules);
+        self.logged = logged;
         self.block_msgs = v;
         self.warn_msgs = w;
     }
 
     fn extend(&mut self, other: Verdict) {
+        self.consequences.extend(other.consequences);
         self.logged.extend(other.logged);
         self.block_msgs.extend(other.block_msgs);
         self.warn_msgs.extend(other.warn_msgs);
@@ -621,14 +630,18 @@ async fn fire_verdict(network: &phr::ReteNetwork, root: &Path) -> Result<Verdict
         .update_agenda()
         .await
         .map_err(|e| format!("agenda update failed: {}", e))?;
-    let consequences = network
+    let mut consequences = network
         .fire_all_consequences()
         .map_err(|e| format!("rule execution failed: {}", e))?;
     crate::capsule::capture_for_hook(root, &consequences);
     crate::hook::report_unbound_at_fire(&consequences);
-    let (logged, block_msgs, warn_msgs) =
-        hook::collect_logged(&consequences, &security::project_root());
+    let (logged, block_msgs, warn_msgs) = hook::collect_logged(
+        &mut consequences,
+        &security::project_root(),
+        &std::collections::BTreeSet::new(),
+    );
     Ok(Verdict {
+        consequences,
         logged,
         block_msgs,
         warn_msgs,
@@ -1643,8 +1656,8 @@ mod hook {
 #[cfg(test)]
 mod tests {
     use super::{
-        CodexPayload, LoadedRules, PatchFile, ToolCall, assert_new_content, check_bash_patterns,
-        check_post_bash_command, evaluate_patch_file,
+        CodexPayload, LoadedRules, PatchFile, ToolCall, Verdict, assert_new_content,
+        check_bash_patterns, check_post_bash_command, evaluate_patch_file,
     };
 
     #[tokio::test]
@@ -1681,6 +1694,104 @@ mod tests {
         assert_eq!(call.tool_name, "apply_patch");
         assert_eq!(call.file_path, "src/lib.rs");
         assert!(call.supported());
+    }
+
+    fn firing(rule_id: &str, action_type: &str) -> phr::Consequence {
+        phr::Consequence {
+            kind: phr::consequence::ConsequenceKind::Constraint,
+            predicate: "check".into(),
+            payload: serde_json::json!({
+                "action_type": action_type,
+                "message": format!("from {rule_id}"),
+            }),
+            provenance: phr::consequence::Provenance::RuleFiring {
+                rule_id: rule_id.into(),
+                bound_facts: Vec::new(),
+                bindings: Default::default(),
+                fact_sources: Default::default(),
+                decisions: Vec::new(),
+            },
+        }
+    }
+
+    fn verdict_with(consequences: Vec<phr::Consequence>) -> Verdict {
+        let mut consequences = consequences;
+        let (logged, block_msgs, warn_msgs) = super::hook::collect_logged(
+            &mut consequences,
+            std::path::Path::new("/nonexistent"),
+            &Default::default(),
+        );
+        Verdict {
+            consequences,
+            logged,
+            block_msgs,
+            warn_msgs,
+        }
+    }
+
+    #[test]
+    fn demote_stale_reclassifies_through_the_shared_decision_layer() {
+        let mut verdict = verdict_with(vec![
+            firing("stale-graph-rule", "constraint_violation"),
+            firing("solid-rule", "constraint_violation"),
+        ]);
+        let stale: std::collections::BTreeSet<phr::RuleId> =
+            ["stale-graph-rule"].iter().map(|n| (*n).into()).collect();
+        verdict.demote_stale(&stale);
+        assert_eq!(
+            verdict.block_msgs,
+            vec!["from solid-rule"],
+            "only the exact stale id is demoted"
+        );
+        assert_eq!(verdict.warn_msgs, vec!["from stale-graph-rule"]);
+        let demoted = &verdict.logged[0];
+        assert_eq!(demoted.rule_id, "stale-graph-rule");
+        assert_eq!(
+            demoted.action_type, "constraint_warning",
+            "logged wire entry shows the demoted severity"
+        );
+    }
+
+    #[test]
+    fn demote_stale_without_stale_ids_is_a_no_op() {
+        let mut verdict = verdict_with(vec![firing("solid-rule", "constraint_violation")]);
+        let logged_before = verdict.logged.clone();
+        verdict.demote_stale(&Default::default());
+        assert_eq!(verdict.logged, logged_before);
+        assert_eq!(verdict.block_msgs, vec!["from solid-rule"]);
+        assert!(verdict.warn_msgs.is_empty());
+    }
+
+    #[test]
+    fn extend_merges_raw_consequences_and_projections() {
+        let mut merged = verdict_with(vec![firing("batch-rule", "constraint_warning")]);
+        merged.extend(verdict_with(vec![firing(
+            "file-rule",
+            "constraint_violation",
+        )]));
+        assert_eq!(merged.consequences.len(), 2);
+        assert_eq!(merged.logged.len(), 2);
+        assert_eq!(merged.warn_msgs, vec!["from batch-rule"]);
+        assert_eq!(merged.block_msgs, vec!["from file-rule"]);
+        merged.extend(verdict_with(vec![firing(
+            "stale-graph-rule",
+            "constraint_violation",
+        )]));
+        let stale: std::collections::BTreeSet<phr::RuleId> =
+            ["stale-graph-rule"].iter().map(|n| (*n).into()).collect();
+        merged.demote_stale(&stale);
+        assert!(
+            merged
+                .block_msgs
+                .iter()
+                .all(|m| m != "from stale-graph-rule"),
+            "stale demotion applies across merged per-network verdicts"
+        );
+        assert!(
+            merged
+                .warn_msgs
+                .contains(&"from stale-graph-rule".to_string())
+        );
     }
 
     // -----------------------------------------------------------------

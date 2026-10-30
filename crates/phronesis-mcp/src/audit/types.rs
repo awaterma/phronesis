@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 use phr::RuleId;
 
+use phronesis_governance::decision::{self, Severity};
+
 // ── Public types ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,11 +18,13 @@ pub enum Level {
 }
 
 impl Level {
+    /// Derived from the shared governance severity classification so the
+    /// audit and hook surfaces cannot disagree on what blocks or warns.
     pub(super) fn from_action_type(s: &str) -> Option<Self> {
-        match s {
-            "constraint_violation" => Some(Level::Block),
-            "constraint_warning" => Some(Level::Warn),
-            _ => None,
+        match decision::action_severity(s) {
+            Severity::Block => Some(Level::Block),
+            Severity::Warning => Some(Level::Warn),
+            Severity::Info => None,
         }
     }
 

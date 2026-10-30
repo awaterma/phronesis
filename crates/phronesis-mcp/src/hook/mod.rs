@@ -678,7 +678,7 @@ fn hook_log_entry(input: &LogEventInput<'_>) -> LogEntry {
     entry
 }
 
-pub(crate) use crate::hook_logged::{LoggedConsequence, split_messages_by_action_type};
+pub(crate) use crate::hook_logged::LoggedConsequence;
 
 /// Assert `cargo_command_lacks_workspace` facts for every cargo sub-command in
 /// `content` that is missing `--workspace`. Shared by pre- and post-check.
@@ -733,19 +733,23 @@ pub(crate) fn report_unbound_at_fire(consequences: &[Consequence]) {
 }
 
 /// Project `consequences` into logged entries and split into
-/// `(logged, violations, warnings)`. Shared by pre- and post-check.
+/// `(logged, violations, warnings)`, classifying through the shared
+/// governance decision layer (`phronesis_governance::decision::classify`).
+/// `demote_rule_ids` names the exact rule ids whose block verdicts must log
+/// and print as warnings (stale-evidence demotion); graph freshness
+/// detection stays a host concern and only supplies these ids. The
+/// annotated consequences are left in place so callers that demote later
+/// (the Codex adapter) can re-classify through the same path. Shared by
+/// pre- and post-check and the Codex adapter.
 pub(super) fn collect_logged(
-    consequences: &[Consequence],
+    consequences: &mut [Consequence],
     root: &std::path::Path,
+    demote_rule_ids: &std::collections::BTreeSet<phr::RuleId>,
 ) -> (Vec<LoggedConsequence>, Vec<String>, Vec<String>) {
-    let mut consequences = consequences.to_vec();
-    crate::graph::decisions::annotate_consequences(root, &mut consequences);
-    let logged: Vec<LoggedConsequence> = consequences
-        .iter()
-        .filter_map(LoggedConsequence::from_consequence)
-        .collect();
+    crate::graph::decisions::annotate_consequences(root, consequences);
+    let (logged, violations, warnings) =
+        crate::hook_logged::classify_logged(consequences, demote_rule_ids);
     report_guard_errors(&logged);
-    let (violations, warnings) = split_messages_by_action_type(&logged);
     (logged, violations, warnings)
 }
 
@@ -1258,36 +1262,35 @@ mod tests {
     }
 
     #[test]
-    fn split_messages_partitions_by_action_type() {
-        let items = vec![
-            LoggedConsequence {
-                rule_id: "r1".into(),
-                action_type: "constraint_violation".to_string(),
-                message: "v1".to_string(),
+    fn classify_logged_partitions_by_effective_severity() {
+        use phr::consequence::{ConsequenceKind, Provenance};
+        use serde_json::json;
+
+        let mk = |rule_id: &str, action_type: &str, message: &str| Consequence {
+            kind: ConsequenceKind::Constraint,
+            predicate: "check".to_string(),
+            payload: json!({"action_type": action_type, "message": message}),
+            provenance: Provenance::RuleFiring {
+                rule_id: rule_id.into(),
+                bound_facts: vec![],
                 bindings: HashMap::new(),
+                fact_sources: Default::default(),
                 decisions: Vec::new(),
-                guard_error: None,
             },
-            LoggedConsequence {
-                rule_id: "r2".into(),
-                action_type: "constraint_warning".to_string(),
-                message: "w1".to_string(),
-                bindings: HashMap::new(),
-                decisions: Vec::new(),
-                guard_error: None,
-            },
-            LoggedConsequence {
-                rule_id: "r3".into(),
-                action_type: "constraint_violation".to_string(),
-                message: "v2".to_string(),
-                bindings: HashMap::new(),
-                decisions: Vec::new(),
-                guard_error: None,
-            },
+        };
+        let mut cs = vec![
+            mk("r1", "constraint_violation", "v1"),
+            mk("r2", "constraint_warning", "w1"),
+            mk("r3", "constraint_violation", "v2"),
         ];
-        let (vs, ws) = split_messages_by_action_type(&items);
+        let (logged, vs, ws) = collect_logged(
+            &mut cs,
+            std::path::Path::new("/nonexistent"),
+            &Default::default(),
+        );
         assert_eq!(vs, vec!["v1", "v2"]);
         assert_eq!(ws, vec!["w1"]);
+        assert_eq!(logged.len(), 3);
     }
 
     #[test]

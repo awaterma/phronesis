@@ -248,7 +248,7 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
         eprintln!("phronesis: BLOCKED — {message}");
         fail_closed_exit(&root, &inflight_key, &payload, "update_agenda", &message);
     }
-    let consequences = match network.fire_all_consequences() {
+    let mut consequences = match network.fire_all_consequences() {
         Ok(c) => c,
         Err(e) => {
             let message = format!("rule execution failed: {e}");
@@ -259,21 +259,19 @@ pub async fn run_pre_check() -> anyhow::Result<()> {
     crate::capsule::capture_for_hook(&security::project_root(), &consequences);
     super::report_unbound_at_fire(&consequences);
 
-    let (mut logged, violations, warnings) =
-        super::collect_logged(&consequences, &security::project_root());
     // The open work unit, read once for all three exit paths below. Stamping it
     // on the log entry is what makes "which rules were evaluated for this work
     // item" a join rather than a guess (spec §"Work items", 2).
     let subject = crate::outcomes::subject::current(&security::project_root());
     // A drifted graph makes structural verdicts unreliable, so they warn
     // rather than block. The rules themselves are untouched — this is the
-    // harness declining to enforce on evidence it cannot vouch for.
-    let (violations, warnings) = if stale_graph_rules.is_empty() {
-        (violations, warnings)
-    } else {
-        crate::hook_logged::demote_violations_from(&mut logged, &stale_graph_rules);
-        super::split_messages_by_action_type(&logged)
-    };
+    // harness declining to enforce on evidence it cannot vouch for; the
+    // exact stale ids drive demotion inside the shared classifier.
+    let (logged, violations, warnings) = super::collect_logged(
+        &mut consequences,
+        &security::project_root(),
+        &stale_graph_rules,
+    );
 
     // Severity order: violations (block) > warnings (allow-with-message) > clean.
     if !violations.is_empty() {
