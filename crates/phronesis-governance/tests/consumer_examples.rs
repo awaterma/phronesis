@@ -238,3 +238,217 @@ async fn evaluations_are_isolated_and_rejections_leak_nothing() {
         }
     );
 }
+
+// The shipped expense-approval fixtures: a non-software domain (expense
+// approval, not code rules) evaluated through the same public surface the
+// operator flow uses. The fixtures live beside the acceptance script so the
+// packaged-consumer docs and these tests cannot drift apart.
+fn fixture_path(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/governance-consumer/fixtures")
+        .join(name)
+}
+
+fn read_fixture(name: &str) -> String {
+    std::fs::read_to_string(fixture_path(name))
+        .unwrap_or_else(|e| panic!("fixture {name} unreadable: {e}"))
+}
+
+fn expense_policy() -> CompiledPolicy {
+    let parsed = parse(&read_fixture("expense-rules.json"), "expense-rules.json").unwrap();
+    CompiledPolicy::compile(parsed.file.rules).unwrap()
+}
+
+#[derive(serde::Deserialize)]
+struct FixtureEvent {
+    id: String,
+    predicate: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    timestamp: u64,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+impl FixtureEvent {
+    fn into_fact(self) -> Fact {
+        Fact {
+            id: self.id,
+            predicate: self.predicate,
+            args: self.args,
+            timestamp: self.timestamp,
+            source: self.source,
+        }
+    }
+}
+
+// Mirrors the operator flow's events input: reservations are an explicit
+// host-configuration list, never derived from the host facts present.
+#[derive(serde::Deserialize)]
+struct FixtureEvents {
+    reserved_predicates: Vec<String>,
+    #[serde(default)]
+    host: Vec<FixtureEvent>,
+    #[serde(default)]
+    extensions: Vec<FixtureEvent>,
+}
+
+fn fixture_events(name: &str) -> FixtureEvents {
+    serde_json::from_str(&read_fixture(name))
+        .unwrap_or_else(|e| panic!("fixture {name} malformed: {e}"))
+}
+
+async fn evaluate_expense(
+    policy: &CompiledPolicy,
+    selection: Selection,
+    events: FixtureEvents,
+) -> Result<Decision, EvaluationError> {
+    let reserved: HashSet<String> = events.reserved_predicates.into_iter().collect();
+    let snapshot = FactSnapshot {
+        host: events.host.into_iter().map(|f| f.into_fact()).collect(),
+        extensions: events
+            .extensions
+            .into_iter()
+            .map(|f| f.into_fact())
+            .collect(),
+    };
+    evaluate(
+        policy,
+        selection,
+        &snapshot,
+        &reserved,
+        &no_demote(),
+        builtin_evaluator(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn expense_fixtures_approve_warn_deny_and_reject_spoof() {
+    let policy = expense_policy();
+
+    let approve = evaluate_expense(
+        &policy,
+        Selection::Hook(Phase::Pre),
+        fixture_events("expense-events-approve.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(approve.verdict, Verdict::Allow);
+    assert!(approve.reasons.is_empty());
+
+    let warn = evaluate_expense(
+        &policy,
+        Selection::Hook(Phase::Pre),
+        fixture_events("expense-events-warn.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(warn.verdict, Verdict::Warn);
+    assert!(
+        warn.warning_messages()
+            .iter()
+            .any(|m| m.contains("receipt")),
+        "expected a receipt warning, got {:?}",
+        warn.warning_messages()
+    );
+
+    let deny = evaluate_expense(
+        &policy,
+        Selection::Hook(Phase::Pre),
+        fixture_events("expense-events-deny.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(deny.verdict, Verdict::Deny);
+    assert!(
+        deny.block_messages()
+            .iter()
+            .any(|m| m.contains("approval limit")),
+        "expected a limit block, got {:?}",
+        deny.block_messages()
+    );
+    assert_eq!(
+        deny.reasons[0].rule_id.as_ref().unwrap().as_str(),
+        "expense-over-limit"
+    );
+
+    // The spoofed extension asserts `rule_overridden`, which the events
+    // configuration reserves but which NO host fact currently carries, and
+    // it claims source "host": reservations are explicit configuration, not
+    // derived from present host facts, and source is never authorization.
+    let spoof = fixture_events("expense-events-spoof.json");
+    assert!(
+        spoof
+            .reserved_predicates
+            .iter()
+            .any(|p| p == "rule_overridden"),
+        "spoof fixture must reserve rule_overridden by configuration"
+    );
+    assert!(
+        spoof.host.iter().all(|f| f.predicate != "rule_overridden"),
+        "spoof fixture's discriminator is the predicate's absence from host facts"
+    );
+    let rejected = evaluate_expense(&policy, Selection::Hook(Phase::Pre), spoof)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        rejected,
+        EvaluationError::ReservedExtensionPredicate {
+            fact_id: "ext-spoof-1045".to_string(),
+            predicate: "rule_overridden".to_string(),
+        }
+    );
+}
+
+#[tokio::test]
+async fn audit_phase_selection_targets_audit_flag_not_hook_phase() {
+    let policy = expense_policy();
+
+    // Selection::Audit picks the audit:true rule regardless of its disk
+    // phase ("post"), matching the MCP audit engine's filter_audit_rules.
+    let audited = evaluate_expense(
+        &policy,
+        Selection::Audit,
+        fixture_events("expense-events-approve.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(audited.verdict, Verdict::Allow);
+    assert_eq!(audited.reasons.len(), 1);
+    assert_eq!(
+        audited.reasons[0].rule_id.as_ref().unwrap().as_str(),
+        "expense-audit-trail"
+    );
+    assert!(audited.reasons[0].severity.is_block() || audited.reasons[0].action_type == "log");
+
+    // Selection::Hook(Phase::Audit) would select only rules whose disk
+    // phase is "audit" — none exist here, so nothing fires. This pins the
+    // operator flow's `--phase audit` to Selection::Audit, not Hook(Audit).
+    let hook_audit = evaluate_expense(
+        &policy,
+        Selection::Hook(Phase::Audit),
+        fixture_events("expense-events-approve.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(hook_audit.verdict, Verdict::Allow);
+    assert!(hook_audit.reasons.is_empty());
+
+    // At hook time the audit flag is ignored: the rule's disk phase ("post")
+    // matches Selection::Hook(Phase::Post) and fires as informational.
+    let hook_post = evaluate_expense(
+        &policy,
+        Selection::Hook(Phase::Post),
+        fixture_events("expense-events-approve.json"),
+    )
+    .await
+    .unwrap();
+    assert_eq!(hook_post.verdict, Verdict::Allow);
+    assert_eq!(hook_post.reasons.len(), 1);
+    assert_eq!(
+        hook_post.reasons[0].rule_id.as_ref().unwrap().as_str(),
+        "expense-audit-trail"
+    );
+}

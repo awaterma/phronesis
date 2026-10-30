@@ -5,6 +5,15 @@
 //!   cargo run -p phronesis-governance --example operator_flow -- \
 //!     <rules.json> <events.json> [--phase pre|post|audit]
 //! Exit codes: 0 allow, 1 warn (proceed), 2 deny (block), 3 input error.
+//!
+//! The events file carries the host configuration explicitly: its
+//! `reserved_predicates` list names the predicates only host code may
+//! assert. Reservations are never inferred from the host facts that happen
+//! to be present, so an extension fact spoofing a reserved predicate that
+//! no host fact currently carries is still rejected, whatever `source` it
+//! claims. `--phase audit` selects `audit: true` rules regardless of their
+//! disk phase (`Selection::Audit`), mirroring the MCP audit engine; `pre`
+//! and `post` select by disk phase exactly (`Selection::Hook`).
 
 use std::collections::{BTreeSet, HashSet};
 use std::fs;
@@ -70,6 +79,10 @@ impl OperatorFact {
 
 #[derive(Deserialize)]
 struct OperatorEvents {
+    /// Host configuration: predicates only the host may assert. Required,
+    /// so reservations are always an explicit operator decision — never
+    /// derived from which host facts happen to be present.
+    reserved_predicates: Vec<String>,
     #[serde(default)]
     host: Vec<OperatorFact>,
     #[serde(default)]
@@ -79,21 +92,27 @@ struct OperatorEvents {
 struct Arguments {
     rules_path: PathBuf,
     events_path: PathBuf,
-    phase: Phase,
+    selection: Selection,
 }
 
 fn parse_arguments() -> Result<Arguments, WorkflowError> {
     let mut args = std::env::args().skip(1);
     let rules_path = args.next().ok_or(WorkflowError::MissingRulesPath)?;
     let events_path = args.next().ok_or(WorkflowError::MissingEventsPath)?;
-    let mut phase = Phase::Pre;
+    let mut selection = Selection::Hook(Phase::Pre);
     while let Some(flag) = args.next() {
         match flag.as_str() {
             "--phase" => {
                 let value = args.next().ok_or(WorkflowError::MissingPhaseValue)?;
-                phase = Phase::from_str_lossy(&value)
-                    .filter(|p| !matches!(p, Phase::None))
-                    .ok_or_else(|| WorkflowError::BadPhase(value.clone()))?;
+                selection = match value.as_str() {
+                    "pre" => Selection::Hook(Phase::Pre),
+                    "post" => Selection::Hook(Phase::Post),
+                    // The audit phase is the audit engine, not a hook
+                    // phase: it selects `audit: true` rules regardless of
+                    // their disk phase, exactly like `filter_audit_rules`.
+                    "audit" => Selection::Audit,
+                    _ => return Err(WorkflowError::BadPhase(value.clone())),
+                };
             }
             other => return Err(WorkflowError::UnknownArgument(other.to_string())),
         }
@@ -101,7 +120,7 @@ fn parse_arguments() -> Result<Arguments, WorkflowError> {
     Ok(Arguments {
         rules_path: PathBuf::from(rules_path),
         events_path: PathBuf::from(events_path),
-        phase,
+        selection,
     })
 }
 
@@ -189,10 +208,10 @@ async fn run(arguments: &Arguments) -> Result<Verdict, WorkflowError> {
         println!("policy diagnostic: {}", diagnostic.message());
     }
     println!(
-        "loaded {} rule(s) from {} for the {} hook phase",
+        "loaded {} rule(s) from {} for selection {:?}",
         policy.rules().len(),
         arguments.rules_path.display(),
-        arguments.phase,
+        arguments.selection,
     );
 
     let events: OperatorEvents = serde_json::from_str(&events_text)?;
@@ -205,12 +224,16 @@ async fn run(arguments: &Arguments) -> Result<Verdict, WorkflowError> {
             .collect(),
     };
 
-    let reserved: HashSet<String> = snapshot.host.iter().map(|f| f.predicate.clone()).collect();
+    let reserved: HashSet<String> = events.reserved_predicates.into_iter().collect();
+    println!(
+        "reserving {} host-owned predicate(s) from the events configuration",
+        reserved.len()
+    );
     let demote = BTreeSet::new();
 
     let decision = evaluate(
         &policy,
-        Selection::Hook(arguments.phase),
+        arguments.selection,
         &snapshot,
         &reserved,
         &demote,
