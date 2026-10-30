@@ -1282,6 +1282,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "phronesis-governance"
+version = "0.40.0"
+dependencies = [
+ "anyhow",
+ "phronesis",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "phronesis-mcp"
 version = "0.40.0"
 dependencies = [
