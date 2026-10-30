@@ -20,3 +20,5 @@ pub use policy::{
     check_single_action, parse, parse_source, rule_from_disk, rule_to_disk, unfold_or,
     unfold_or_with_diagnostics,
 };
+
+pub mod composition;
