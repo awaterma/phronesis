@@ -1,9 +1,10 @@
 //! Embeddable governance core for the phronesis RETE engine.
 //!
-//! Extracted from `phronesis-mcp` as pure, filesystem-free pieces: the
+//! Experimental partial extraction from `phronesis-mcp` as pure pieces: the
 //! `.phronesis/rules.json` parser and strict validation, OR expansion, disk
 //! conversions, compiled-policy selection, and `emit_capsule` payload
-//! validation. Storage, capture, expiry, and project discovery stay in the
+//! validation, ordered composition, consequence classification, and isolated
+//! snapshot evaluation. Storage, capture, expiry, and project discovery stay in the
 //! MCP crate; this crate exposes only pure functions and value types.
 
 pub mod capsule;
@@ -22,3 +23,7 @@ pub use policy::{
 };
 
 pub mod composition;
+
+pub mod decision;
+
+pub mod evaluation;

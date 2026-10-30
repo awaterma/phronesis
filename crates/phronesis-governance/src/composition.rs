@@ -106,13 +106,14 @@ pub fn compose(layers: &[LoadedLayer]) -> ComposedPolicy {
 /// opaque source IDs: id `__rule_override__:{index}:{rule_id}`,
 /// predicate [`OVERRIDE_PREDICATE`], args `[rule_id, overridden.layer,
 /// overridden.source_id, winner.layer, winner.source_id,
-/// winner.decision or ""]`, current wall-clock timestamp, and source
-/// `"rule_layers"`.
+/// winner.decision or ""]`, timestamp zero, and source
+/// `"rule_layers"`. Use [`override_facts_at`] to supply an explicit timestamp.
 pub fn override_facts(overrides: &[RuleOverride]) -> Vec<Fact> {
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+    override_facts_at(overrides, 0)
+}
+
+/// Render override facts with caller-supplied time; never reads the host clock.
+pub fn override_facts_at(overrides: &[RuleOverride], timestamp: u64) -> Vec<Fact> {
     overrides
         .iter()
         .enumerate()

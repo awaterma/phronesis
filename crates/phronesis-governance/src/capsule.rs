@@ -41,7 +41,7 @@ pub fn parse_duration(s: &str) -> Option<Duration> {
     if s.is_empty() {
         return None;
     }
-    let (num_str, unit) = s.split_at(s.len() - 1);
+    let (num_str, unit) = s.split_at_checked(s.len() - 1)?;
     let num: u64 = num_str.parse().ok()?;
     if num == 0 {
         return None;

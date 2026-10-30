@@ -5,6 +5,7 @@
 //! to their lifecycle policy.
 
 use fs2::FileExt;
+use phronesis_governance::capsule::validate_emit_capsule_payload;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -39,46 +40,16 @@ struct CapsuleFile {
 }
 
 /// Lifecycle policy for a capsule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum CapsuleLifecycle {
-    /// Offered on the next interaction-context pass, then removed.
-    NextInteraction,
-    /// Offered only in the session in which it was emitted.
-    Session,
-    /// Offered across sessions until expiry or explicit retraction.
-    Persistent,
-}
-
-impl std::fmt::Display for CapsuleLifecycle {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CapsuleLifecycle::NextInteraction => write!(f, "next_interaction"),
-            CapsuleLifecycle::Session => write!(f, "session"),
-            CapsuleLifecycle::Persistent => write!(f, "persistent"),
-        }
-    }
-}
+///
+/// Re-exported from the governance core, where the `emit_capsule` payload
+/// validation lives; the serde shape and `Display` are unchanged.
+pub use phronesis_governance::capsule::CapsuleLifecycle;
 
 /// Parse a bounded duration string like "7d", "2h", "30m", "60s".
 /// Returns None for invalid formats or unbounded values.
-pub fn parse_duration(s: &str) -> Option<Duration> {
-    if s.is_empty() {
-        return None;
-    }
-    let (num_str, unit) = s.split_at(s.len() - 1);
-    let num: u64 = num_str.parse().ok()?;
-    if num == 0 {
-        return None;
-    }
-    match unit {
-        "s" => Some(Duration::from_secs(num)),
-        "m" => num.checked_mul(60).map(Duration::from_secs),
-        "h" => num.checked_mul(3600).map(Duration::from_secs),
-        "d" => num.checked_mul(86400).map(Duration::from_secs),
-        _ => None,
-    }
-}
+///
+/// Re-exported from the governance core alongside the payload validation.
+pub use phronesis_governance::capsule::parse_duration;
 
 /// A capsule emitted by a rule.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -506,6 +477,10 @@ pub fn build_capsule_from_action(
 }
 
 /// Build an EmittedCapsule from an action's data field and its origin.
+///
+/// Pure payload validation is shared with the governance core via
+/// [`validate_emit_capsule_payload`]; emission-time absolute expiry,
+/// session, and provenance attachment stay here.
 pub fn build_capsule(
     action_data: &serde_json::Value,
     origin: &CapsuleOrigin<'_>,
@@ -517,81 +492,23 @@ pub fn build_capsule(
         bound_facts,
         bindings,
     } = *origin;
-    #[derive(Deserialize)]
-    #[serde(deny_unknown_fields)]
-    struct CapsuleSpec {
-        id: String,
-        body: String,
-        lifecycle: String,
-        #[serde(default)]
-        priority: i32,
-        #[serde(default)]
-        max_bytes: Option<u64>,
-        #[serde(default)]
-        expires_after: Option<String>,
-    }
+    let spec = validate_emit_capsule_payload(action_data)
+        .map_err(|error| CapsuleError::Invalid(error.0))?;
 
-    let spec: CapsuleSpec = serde_json::from_value(action_data.clone())
-        .map_err(|e| CapsuleError::Invalid(format!("Invalid capsule spec: {}", e)))?;
-
-    // Validate ID (static string, no variable substitution)
-    if spec.id.is_empty()
-        || spec.id.len() > 128
-        || spec.id.contains('?')
-        || !spec
-            .id
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
-    {
-        return Err(CapsuleError::Invalid(
-            "Capsule ID must not contain variable substitutions".to_string(),
-        ));
-    }
-
-    // Validate lifecycle
-    let lifecycle = match spec.lifecycle.as_str() {
-        "next_interaction" => CapsuleLifecycle::NextInteraction,
-        "session" => CapsuleLifecycle::Session,
-        "persistent" => CapsuleLifecycle::Persistent,
-        other => {
-            return Err(CapsuleError::Invalid(format!(
-                "Invalid lifecycle: {}",
-                other
-            )));
-        }
-    };
-
-    // Validate body size
-    let max_bytes = spec.max_bytes.unwrap_or(MAX_RECORD_BYTES as u64);
-    if max_bytes == 0 || max_bytes > MAX_RECORD_BYTES as u64 {
-        return Err(CapsuleError::Invalid(
-            "max_bytes must be between 1 and 8192".into(),
-        ));
-    }
-    if spec.body.len() as u64 > max_bytes {
-        return Err(CapsuleError::Invalid(format!(
-            "Capsule body exceeds max_bytes limit of {}",
-            max_bytes
-        )));
-    }
-
-    // Parse expiry
-    let expires_at = match spec.expires_after.as_deref() {
+    // The shared validator checks relative expiry with a zero epoch, so the
+    // absolute-timestamp overflow stays an emission-time decision here.
+    let expires_at = match spec.expires_after {
         None => None,
-        Some(raw) => Some(
-            now.checked_add(
-                parse_duration(raw)
-                    .ok_or_else(|| CapsuleError::Invalid(format!("invalid expires_after: {raw}")))?
-                    .as_secs(),
-            )
-            .ok_or_else(|| CapsuleError::Invalid("expires_after overflows timestamp".into()))?,
+        Some(relative) => Some(
+            now.checked_add(relative.as_secs())
+                .ok_or_else(|| CapsuleError::Invalid("expires_after overflows timestamp".into()))?,
         ),
     };
 
     Ok(EmittedCapsule {
         id: spec.id,
         body: spec.body,
-        lifecycle,
+        lifecycle: spec.lifecycle,
         priority: spec.priority,
         expires_at,
         emitted_by: emitted_by.to_string(),
@@ -1006,6 +923,136 @@ mod tests {
             "test-session-override"
         );
         assert_eq!(session_id_from(None, 42), "session-42");
+    }
+
+    #[test]
+    fn build_capsule_matches_the_shared_core_validator_on_a_valid_payload() {
+        let payload = serde_json::json!({
+            "id": "review.edit-1",
+            "body": "Review ?path",
+            "lifecycle": "session",
+            "priority": 7,
+            "max_bytes": 512,
+            "expires_after": "2h",
+        });
+        let core_spec =
+            phronesis_governance::capsule::validate_emit_capsule_payload(&payload).unwrap();
+        let bindings = HashMap::from([("path".to_string(), "src/main.rs".to_string())]);
+        let capsule = build_capsule_from_action(
+            &payload,
+            "rule-a",
+            "session-9",
+            1_000,
+            &["fact-1".to_string()],
+            &bindings,
+        )
+        .unwrap();
+
+        assert_eq!(capsule.id, core_spec.id);
+        assert_eq!(capsule.body, core_spec.body);
+        assert_eq!(capsule.lifecycle, core_spec.lifecycle);
+        assert_eq!(capsule.priority, core_spec.priority);
+        assert_eq!(
+            capsule.expires_at,
+            Some(1_000 + core_spec.expires_after.unwrap().as_secs())
+        );
+
+        // Emission-time provenance and lease/delivery state.
+        assert_eq!(capsule.emitted_by, "rule-a");
+        assert_eq!(capsule.emitted_at, 1_000);
+        assert_eq!(capsule.session_id, "session-9");
+        assert_eq!(capsule.bound_facts, ["fact-1"]);
+        assert_eq!(capsule.bindings, bindings);
+        assert!(capsule.fact_sources.is_empty());
+        assert!(capsule.decisions.is_empty());
+        assert_eq!(capsule.lease_until, None);
+        assert_eq!(capsule.acknowledged, None);
+        assert_eq!(capsule.lease_token, None);
+    }
+
+    #[test]
+    fn build_capsule_malformed_payload_errors_match_the_core_validator() {
+        let origin = CapsuleOrigin::validation("rule-a");
+        let malformed: Vec<(serde_json::Value, String)> = vec![
+            (
+                serde_json::json!({"id": "?bad", "body": "b", "lifecycle": "session"}),
+                "Invalid capsule: Capsule ID must not contain variable substitutions".to_string(),
+            ),
+            (
+                serde_json::json!({"id": "ok", "body": "b", "lifecycle": "weekly"}),
+                "Invalid capsule: Invalid lifecycle: weekly".to_string(),
+            ),
+            (
+                serde_json::json!({"id": "ok", "body": "b", "lifecycle": "session", "max_bytes": 0}),
+                "Invalid capsule: max_bytes must be between 1 and 8192".to_string(),
+            ),
+            (
+                serde_json::json!({"id": "ok", "body": "b", "lifecycle": "session", "max_bytes": 8193}),
+                "Invalid capsule: max_bytes must be between 1 and 8192".to_string(),
+            ),
+            (
+                serde_json::json!({"id": "ok", "body": "x".repeat(8193), "lifecycle": "session"}),
+                "Invalid capsule: Capsule body exceeds max_bytes limit of 8192".to_string(),
+            ),
+            (
+                serde_json::json!({"id": "ok", "body": "b", "lifecycle": "session", "expires_after": "7x"}),
+                "Invalid capsule: invalid expires_after: 7x".to_string(),
+            ),
+            (
+                serde_json::json!({"id": "ok"}),
+                "Invalid capsule: Invalid capsule spec: missing field `body`".to_string(),
+            ),
+        ];
+        for (payload, expected) in malformed {
+            let core_error =
+                phronesis_governance::capsule::validate_emit_capsule_payload(&payload).unwrap_err();
+            let error = build_capsule(&payload, &origin).unwrap_err();
+            assert_eq!(error.to_string(), expected, "payload: {payload}");
+            assert_eq!(
+                error.to_string(),
+                format!("Invalid capsule: {}", core_error.0),
+                "payload: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_capsule_unknown_payload_field_fails_like_the_core_validator() {
+        let payload =
+            serde_json::json!({"id": "ok", "body": "b", "lifecycle": "session", "bogus": 1});
+        let core_error = phronesis_governance::capsule::validate_emit_capsule_payload(&payload)
+            .unwrap_err()
+            .0;
+        let error = build_capsule(&payload, &CapsuleOrigin::validation("rule-a")).unwrap_err();
+        assert_eq!(error.to_string(), format!("Invalid capsule: {core_error}"));
+        assert!(
+            core_error.starts_with("Invalid capsule spec: unknown field `bogus`"),
+            "unexpected core message: {core_error}"
+        );
+    }
+
+    #[test]
+    fn build_capsule_expiry_overflow_fails_at_emission_time() {
+        let payload = serde_json::json!({
+            "id": "overflow", "body": "b", "lifecycle": "persistent", "expires_after": "1s",
+        });
+        // The shared validator sees a zero epoch and cannot overflow.
+        assert!(
+            phronesis_governance::capsule::validate_emit_capsule_payload(&payload).is_ok(),
+            "core validation accepts the payload"
+        );
+        let origin = CapsuleOrigin {
+            emitted_by: "rule-a",
+            session_id: "s",
+            now: u64::MAX,
+            bound_facts: &[],
+            bindings: &HashMap::new(),
+        };
+        let error = build_capsule(&payload, &origin).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Invalid capsule: expires_after overflows timestamp"
+        );
     }
 
     #[test]

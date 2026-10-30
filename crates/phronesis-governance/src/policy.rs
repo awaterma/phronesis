@@ -1126,6 +1126,9 @@ impl CompiledPolicy {
         let mut diagnostics = Vec::new();
         let mut warned = std::collections::HashSet::new();
         for rule in &rules {
+            if rule.id.is_empty() {
+                return Err(invalid("rule missing non-empty string `id`".to_string()));
+            }
             check_phase(&rule.phase).map_err(|e| invalid(e.to_string()))?;
             check_conditions_nonempty(&rule.id, "conditions", rule.conditions.len())
                 .map_err(|e| invalid(e.to_string()))?;
@@ -1508,9 +1511,7 @@ mod tests {
         doc.file
             .rules
             .iter()
-            .map(|r| {
-                diskrule_to_source_for_tests(r)
-            })
+            .map(diskrule_to_source_for_tests)
             .collect()
     }
 
