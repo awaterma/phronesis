@@ -1308,6 +1308,7 @@ dependencies = [
  "ignore",
  "libc",
  "phronesis",
+ "phronesis-governance",
  "phronesis-metrics",
  "phronesis-rhai",
  "proc-macro2",
