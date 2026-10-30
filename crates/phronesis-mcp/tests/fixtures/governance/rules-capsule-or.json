@@ -1,0 +1,25 @@
+{
+  "rules": [
+    {
+      "id": "cap-danger",
+      "phase": "post",
+      "priority": 10,
+      "when": [
+        {
+          "or": [
+            { "bash_command_matches": "rm -rf /" },
+            { "bash_command_matches": "DROP TABLE" }
+          ]
+        }
+      ],
+      "then": {
+        "emit_capsule": {
+          "id": "cap-danger",
+          "body": "A destructive command appeared in the change set; verify it was intentional.",
+          "lifecycle": "session",
+          "priority": 60
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {
+      "id": "no-force-push",
+      "phase": "pre",
+      "priority": 10,
+      "when": [{ "new_content_contains": "git push --force" }],
+      "then": { "log": "overridden: force push is logged by the override layer" }
+    }
+  ]
+}

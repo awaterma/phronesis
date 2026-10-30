@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "layers": [
+    { "name": "base", "path": "__LAYER_BASE__" },
+    { "name": "override", "path": "__LAYER_OVERRIDE__" }
+  ]
+}
